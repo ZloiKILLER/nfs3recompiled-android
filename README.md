@@ -134,9 +134,6 @@ It reads `nfs3hp/nfs3.exe` and the three DLLs and rewrites
   moving. Not reproducible on Adreno with the same build, with or without
   mipmapping, so it looks like a driver difference rather than a bug in the
   Glide layer. Unresolved.
-- Faint seams along atlas tile borders on some full-screen images. Proper fix
-  is gutters around atlas tiles.
-- The phone gets warm. The virtual CPU is the bulk of the cost.
 
 ## How it works
 
