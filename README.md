@@ -26,10 +26,7 @@ Copy those two folders somewhere and clear the read-only attribute afterwards,
 or the game cannot write its settings and saves. That folder is what you import
 in the launcher.
 
-Use data from the **same 1998 release**. Data from the "Modern Patch" repack
-will not work: its menu files reference option lists (`fog`, `mirrorlevel`,
-`rearcamera`, `hudtypesingle`, `hudtypesplit`) that the 1998 executable does not
-implement, and the settings screens that use them stop repainting.
+Use data from the **same 1998 release**.
 
 `install.win` is the table of data paths the game reads before anything else,
 and the installer -- not the disc -- produces it. A working copy is in this
@@ -163,6 +160,4 @@ It reads `nfs3hp/nfs3.exe` and the three DLLs and rewrites
   MIT licence, vendored as `third_party/sse2neon.h`.
 
 Need for Speed III: Hot Pursuit is the property of Electronic Arts. This
-repository carries the original executables, as the upstream project does,
-because the recompilation is meaningless without them; it contains no game
-content -- no tracks, cars, audio or video. Those you bring from your own disc.
+repository contains no game content -- no tracks, cars, audio or video. Those you bring from your own disc.
