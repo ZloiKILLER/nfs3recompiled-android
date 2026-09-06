@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#000000"
+    android:fillViewport="true">
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:gravity="center"
+        android:padding="32dp">
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center"
+            android:text="@string/launcher_title"
+            android:textColor="#FFFFFF"
+            android:textSize="24sp" />
+        <TextView
+            android:id="@+id/active_data_text"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:gravity="center"
+            android:textColor="#FFFFFF"
+            android:textSize="16sp" />
+        <Button
+            android:id="@+id/play_button"
+            android:layout_width="220dp"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="20dp"
+            android:text="@string/play" />
+        <Button
+            android:id="@+id/data_button"
+            android:layout_width="220dp"
+            android:layout_height="wrap_content"
+            android:text="@string/data_settings" />
+        <Button
+            android:id="@+id/controls_button"
+            android:layout_width="220dp"
+            android:layout_height="wrap_content"
+            android:text="@string/controls_settings" />
+        <Button
+            android:id="@+id/touch_controls_button"
+            android:layout_width="220dp"
+            android:layout_height="wrap_content"
+            android:text="@string/touch_settings" />
+        <Button
+            android:id="@+id/screen_settings_button"
+            android:layout_width="220dp"
+            android:layout_height="wrap_content"
+            android:text="@string/screen_settings" />
+    </LinearLayout>
+</ScrollView>

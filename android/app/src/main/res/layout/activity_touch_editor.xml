@@ -1,0 +1,15 @@
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android" android:layout_width="match_parent" android:layout_height="match_parent" android:orientation="vertical" android:padding="12dp" android:background="@color/ui_background">
+ <LinearLayout android:layout_width="match_parent" android:layout_height="48dp" android:orientation="horizontal" android:gravity="center_vertical">
+  <Button android:id="@+id/editor_done" android:layout_width="100dp" android:layout_height="match_parent" android:text="Done"/>
+  <Spinner android:id="@+id/editor_mode" android:layout_width="160dp" android:layout_height="match_parent"/>
+  <TextView android:id="@+id/editor_selection" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:paddingLeft="12dp" android:text="Select a control" android:textColor="@color/ui_accent"/>
+  <Button android:id="@+id/editor_reset" android:layout_width="120dp" android:layout_height="match_parent" android:text="Reset layout"/>
+ </LinearLayout>
+ <FrameLayout android:id="@+id/editor_canvas" android:layout_width="match_parent" android:layout_height="0dp" android:layout_weight="1" android:layout_marginTop="8dp"/>
+ <LinearLayout android:layout_width="match_parent" android:layout_height="52dp" android:orientation="horizontal" android:gravity="center_vertical">
+  <TextView android:id="@+id/editor_visual_label" android:layout_width="110dp" android:layout_height="wrap_content" android:text="Button: 100%" android:textColor="@color/ui_text"/>
+  <SeekBar android:id="@+id/editor_visual" android:layout_width="0dp" android:layout_weight="1" android:layout_height="match_parent"/>
+  <TextView android:id="@+id/editor_hit_label" android:layout_width="120dp" android:layout_height="wrap_content" android:text="Touch zone: 100%" android:textColor="@color/ui_text"/>
+  <SeekBar android:id="@+id/editor_hit" android:layout_width="0dp" android:layout_weight="1" android:layout_height="match_parent"/>
+ </LinearLayout>
+</LinearLayout>

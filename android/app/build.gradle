@@ -1,0 +1,94 @@
+plugins {
+     id 'com.android.application'
+}
+
+android {
+    namespace = "dev.nfs3hp.port"
+    // AGP 9.1's max supported/default is compileSdk 36 + build-tools 36.0.0
+    // (both installed); 35 still builds but 36 is the version it targets.
+    compileSdk = 36
+    ndkVersion = "28.2.13676358"
+
+    defaultConfig {
+        applicationId = "dev.nfs3hp.port"
+        // Android 12+: this is also what lets M5 actually test the 16 KB-page
+        // fix from src/lib/memmap.cpp, rather than just carrying it untested.
+        minSdk = 31
+        targetSdk = 36
+        versionCode = 1
+        versionName = "1.0"
+        testInstrumentationRunner "dev.nfs3hp.port.TouchOverlayInstrumentation"
+        manifestPlaceholders = [launcherAppLabel: "@string/app_name"]
+
+        externalNativeBuild {
+            cmake {
+                /* AGP compiles the debug variant with no -O flag at all, so
+                 * clang defaults to -O0.  For ~60 MB of generated virtual-CPU
+                 * code that is the difference between a playable frame rate and
+                 * something that feels interpreted; the desktop reference build
+                 * is Release.  This lands after CMAKE_CXX_FLAGS_DEBUG, so it
+                 * wins, while -g is kept for symbolicating native crashes. */
+                cppFlags "-O2"
+                arguments(
+                    "-DANDROID_STL=c++_shared",
+                    // The game pumps SDL's event queue from a guest thread, so
+                    // SDL_assert(SDL_IsMainThread()) inside SDL_PumpEvents fires
+                    // on every single pump. SDL_HINT_ASSERT only suppresses the
+                    // dialog -- the assertion machinery itself still runs, and a
+                    // simpleperf profile put SDL_ReportAssertion at ~1% of total
+                    // CPU. "release" keeps the cheap assertions and drops that one.
+                    "-DSDL_ASSERTIONS=release",
+                    // Must match the desktop reference build, which has MMX on
+                    // (CMake default).  WITH_MMX only flips the MMX bit in the
+                    // emulated CPUID, and the game picks a completely different
+                    // set of copy/decode routines when it thinks MMX is absent --
+                    // that no-MMX path is what left the movie streamer's filename
+                    // buffer all zeroes on device.  sse2neon covers every SSE2
+                    // intrinsic the disassembly uses (verified in M1).
+                    "-DWITH_MMX=ON"
+                )
+                // Only nfs3hp is wired up for Android (see the NFS_BUILD_NFS2SE
+                // guard in the root CMakeLists.txt); the default is already OFF.
+                abiFilters 'arm64-v8a'
+            }
+        }
+    }
+
+    buildTypes {
+        debug {
+            // Optional isolated install for UI QA beside a release-signed game.
+            if (providers.gradleProperty("uiPreview").isPresent()) {
+                applicationIdSuffix ".preview"
+                manifestPlaceholders = [launcherAppLabel: "NFS III · UI Preview"]
+            }
+        }
+        release {
+            minifyEnabled = false
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_11
+        targetCompatibility JavaVersion.VERSION_11
+    }
+
+    externalNativeBuild {
+        cmake {
+            path 'jni/CMakeLists.txt'
+        }
+    }
+
+    sourceSets.main {
+        assets.srcDirs = ['src/main/assets']
+    }
+
+    lint {
+        abortOnError = false
+    }
+}
+
+dependencies {
+    implementation fileTree(include: ['*.jar'], dir: 'libs')
+    implementation 'androidx.documentfile:documentfile:1.0.1'
+}

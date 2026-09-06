@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- minSdk is 31, so every launcher uses the adaptive icon.  Without this the
+     platform wraps the legacy square bitmap on a light plate and shrinks it;
+     the background here is the same black the artwork already has, so the mask
+     cuts into black rather than into the logo. -->
+<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+    <background android:drawable="@color/ic_launcher_background" />
+    <foreground android:drawable="@mipmap/ic_launcher_foreground" />
+</adaptive-icon>

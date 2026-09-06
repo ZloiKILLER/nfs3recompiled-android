@@ -1,0 +1,33 @@
+<resources>
+ <string name="launcher_eyebrow">NFS III · ANDROID</string>
+ <string name="launcher_wordmark">NEED FOR SPEED III</string>
+ <string name="launcher_subtitle">HOT PURSUIT</string>
+ <string name="launcher_setup">SETTINGS</string>
+ <string name="touch_preview_description">Interactive preview of digital driving controls</string>
+ <string name="touch_preview_hint">Try the controls</string>
+ <string name="touch_digital_note">Digital steering · Tap Menu for navigation controls. Lights: L · Return to track: R.</string>
+ <string name="touch_dim_label">Auto-hide idle controls</string>
+ <string name="touch_edge_label">Distance from edges</string>
+ <string name="touch_raise_label">Raise driving controls</string>
+ <string name="touch_dim_note">Starts after all fingers lift. Hidden controls respond immediately.</string>
+ <string name="control_gear_up">GEAR +</string>
+ <string name="control_gear_down">GEAR −</string>
+ <string name="faq_title">Help / FAQ</string>
+ <string name="control_steering">STEER</string>
+ <string name="control_navigation">NAVIGATE</string>
+ <string name="control_gas">GAS</string>
+ <string name="control_brake">BRAKE</string>
+ <string name="control_handbrake">HANDBRAKE</string>
+ <string name="control_look_back">LOOK BACK</string>
+ <string name="control_camera">CAMERA</string>
+ <string name="control_horn">HORN</string>
+ <string name="control_confirm">OK</string>
+ <string name="control_back">BACK</string>
+ <string name="control_pause">PAUSE</string>
+ <string name="control_menu">MENU</string>
+ <string name="control_race">DRIVE</string>
+ <string name="control_lights">LIGHTS</string>
+ <string name="control_recover">RESET</string>
+ <string name="layout_right_handed">Steering on left</string>
+ <string name="layout_left_handed">Steering on right</string>
+</resources>

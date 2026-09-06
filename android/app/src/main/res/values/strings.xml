@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Need For Speed III</string>
+    <string name="checking_game_data">Checking game data...</string>
+    <string name="pick_data_folder">Select NFS3 data folder...</string>
+    <string name="importing_progress">Importing %1$s\n%2$d MB copied, %3$d files</string>
+    <string name="import_failed">Import failed: %1$s</string>
+    <string name="import_hint">Pick the folder that directly contains \'fedata\' and \'gamedata\' (for example, the CD root or a copy of it).</string>
+
+    <string name="launcher_title">Need For Speed III Launcher</string>
+    <string name="play">Play</string>
+    <string name="active_data_set">Active data: %1$s</string>
+    <string name="no_active_data_set">No active data set. Import one before playing.</string>
+    <string name="data_settings">Game data</string>
+    <string name="controls_settings">Controls mapping</string>
+    <string name="touch_settings">Touch controls</string>
+    <string name="screen_settings">Screen settings</string>
+    <string name="back_to_launcher">Back</string>
+
+    <string name="switch_data">Make active</string>
+    <string name="delete">Delete</string>
+    <string name="import_folder">Import folder...</string>
+    <string name="import_zip">Import ZIP...</string>
+    <string name="data_import_hint">Import a folder that directly contains \'fedata\' and \'gamedata\', or a ZIP containing those folders. Imports are copied into app storage.</string>
+    <string name="import_complete">Data import complete</string>
+    <string name="data_error">Data operation failed: %1$s</string>
+    <string name="delete_data_title">Delete data set?</string>
+    <string name="delete_data_message">Delete %1$s from this device? This cannot be undone.</string>
+
+    <string name="controls_explanation">This is the port\'s translation layer between physical gamepad or touch input and the emulated keyboard. It is separate from the game\'s own in-game Controls menu; that menu is unchanged and unaffected.</string>
+    <string name="controls_row_hint">For each action, choose a physical gamepad button, then the emulated key sent by both that button and its on-screen touch button.</string>
+
+    <string name="touch_mode_label">Input mode</string>
+    <string name="touch_mode_buttons">Buttons</string>
+    <string name="touch_mode_wheel">Steering wheel (coming soon)</string>
+    <string name="touch_mode_tilt">Tilt steering (coming soon)</string>
+    <string name="touch_layout_label">Button layout</string>
+    <string name="opacity_label">Button opacity</string>
+    <string name="size_label">Button size</string>
+    <string name="auto_hide_label">Auto-hide after 4 seconds idle</string>
+    <string name="auto_hide_note">There is no Java-visible menu/race signal yet, so auto-hide currently uses idle time in both menus and races. Touch the overlay to reveal it.</string>
+
+    <string name="orientation_label">Game orientation</string>
+    <string name="orientation_auto">Auto - follow system rotation (portrait and landscape)</string>
+    <string name="orientation_landscape">Fixed landscape</string>
+    <string name="fps_cap_label">FPS cap (1-240; default 30)</string>
+    <string name="fps_error">Enter a whole number from 1 to 240</string>
+    <string name="save">Save</string>
+    <string name="settings_saved">Settings saved</string>
+</resources>

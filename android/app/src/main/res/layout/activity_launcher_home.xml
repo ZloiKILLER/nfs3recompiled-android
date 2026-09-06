@@ -1,0 +1,17 @@
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android" android:layout_width="match_parent" android:layout_height="match_parent" android:background="@color/ui_background" android:fillViewport="true">
+ <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:gravity="center_vertical" android:padding="24dp">
+  <LinearLayout android:layout_width="0dp" android:layout_weight="1.25" android:layout_height="wrap_content" android:orientation="vertical" android:padding="28dp" android:background="@drawable/ui_hero" android:layout_marginRight="24dp">
+   <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="@string/launcher_eyebrow" android:textColor="@color/ui_accent" android:textSize="12sp" android:letterSpacing="0.16" android:fontFamily="sans-serif-medium"/>
+   <dev.nfs3hp.port.GameTitleView android:layout_width="match_parent" android:layout_height="100dp" android:layout_marginTop="16dp" android:contentDescription="NEED FOR SPEED III HOT PURSUIT"/>
+   <Button android:id="@+id/play_button" style="@style/LauncherPrimary" android:layout_width="match_parent" android:layout_height="64dp" android:layout_marginTop="16dp" android:text="@string/play"/>
+  </LinearLayout>
+  <LinearLayout android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:orientation="vertical">
+   <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="@string/launcher_setup" android:textColor="@color/ui_muted" android:textSize="12sp" android:letterSpacing="0.1" android:layout_marginBottom="12dp"/>
+   <Button android:id="@+id/touch_controls_button" android:layout_width="match_parent" android:layout_height="56dp" android:gravity="center_vertical|start" android:text="@string/touch_settings"/>
+   <Button android:id="@+id/controls_button" android:layout_width="match_parent" android:layout_height="56dp" android:layout_marginTop="10dp" android:gravity="center_vertical|start" android:text="@string/controls_settings"/>
+   <Button android:id="@+id/screen_settings_button" android:layout_width="match_parent" android:layout_height="56dp" android:layout_marginTop="10dp" android:gravity="center_vertical|start" android:text="@string/screen_settings"/>
+   <Button android:id="@+id/data_button" android:layout_width="match_parent" android:layout_height="56dp" android:layout_marginTop="10dp" android:gravity="center_vertical|start" android:text="@string/data_settings"/>
+   <Button android:id="@+id/faq_button" android:layout_width="match_parent" android:layout_height="48dp" android:layout_marginTop="10dp" android:gravity="center_vertical|start" android:text="@string/faq_title"/>
+  </LinearLayout>
+ </LinearLayout>
+</ScrollView>

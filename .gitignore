@@ -1,0 +1,35 @@
+build
+.vscode
+**/*.pyc
+__pycache__/
+build-win/
+build-probe/
+*.log
+*.err
+
+# Vendored SDL3 source clone (fetched by cloning github.com/libsdl-org/SDL into
+# this path; not committed here since it is its own upstream git repository).
+third_party/SDL/
+
+# Android/Gradle build outputs and machine-specific config.
+android/local.properties
+android/.gradle/
+android/.idea/
+android/app/build/
+android/app/.cxx/
+android/build/
+# Redirected GRADLE_USER_HOME/ANDROID_SDK_HOME a sandboxed build may create
+# when it lacks write access to the real user-global ones.
+android/.gradle-user/
+android/.android-user/
+.android-home/
+.gradle-cache/
+
+# Signed builds, the signing key and copies of game data: local only.
+APK/
+
+# Working notes, investigation reports and captured traces.
+diagnostics/
+handoff.md
+PORT_AUDIT_FOR_CLAUDE.md
+CLAUDE_UI_HANDOFF.md

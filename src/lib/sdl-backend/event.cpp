@@ -1,0 +1,137 @@
+#include <lib/event.h>
+#include <lib/thread.h>
+#include <SDL3/SDL.h>
+#include <algorithm>
+
+namespace win32
+{
+
+static SDL_Mutex* s_mutex = nullptr;
+static SDL_Condition* s_condition = nullptr;
+
+static const x86::sreg32 WAIT_TIMEOUT = 0x102;
+
+static unsigned s_eventIndex = 0;
+
+Event::Event(const char *name, bool manualReset, bool initialState)
+    :   m_name(name ? name : "")
+    ,   m_manualReset(manualReset)
+    ,   m_isSet(initialState)
+    ,   m_pulse(false)
+    ,   m_id(s_eventIndex++)
+{
+}
+
+Event::~Event()
+{
+}
+
+void Event::init()
+{
+    s_mutex = SDL_CreateMutex();
+    s_condition = SDL_CreateCondition();
+}
+
+void Event::fini()
+{
+    SDL_DestroyCondition(s_condition);
+    SDL_DestroyMutex(s_mutex);
+}
+
+void Event::broadcastTerminate()
+{
+    SDL_LockMutex(s_mutex);
+    SDL_BroadcastCondition(s_condition);
+    SDL_UnlockMutex(s_mutex);
+}
+
+void Event::set()
+{
+    SDL_LockMutex(s_mutex);
+    //SDL_Log("Event set: %s<%u>", m_name.c_str(), m_id);
+    m_pulse = false;
+    m_isSet = true;
+    /* Every event shares one condition variable, so a broadcast wakes every
+     * blocked guest thread, not just the ones waiting on this event -- each
+     * then relocks the mutex, finds nothing of its own set, recomputes a
+     * deadline and goes back to sleep.  The game's timer sets events several
+     * hundred times a second, which made that thundering herd one of the
+     * bigger CPU costs in a profile.  Waiters register themselves in
+     * m_waitingThreads under this same mutex, so checking it here is
+     * race-free: an empty list means nobody can be about to miss the wakeup.
+     * pulse() has always done this; set() never did. */
+    if (!m_waitingThreads.empty())
+    {
+        SDL_BroadcastCondition(s_condition);
+    }
+    SDL_UnlockMutex(s_mutex);
+}
+
+x86::reg32 Event::pulse()
+{
+    SDL_LockMutex(s_mutex);
+    //SDL_Log("Event pulse: %s<%u>", m_name.c_str(), m_id);
+    if (!m_waitingThreads.empty())
+    {
+        m_pulse = true;
+        m_isSet = true;
+        SDL_BroadcastCondition(s_condition);
+    }
+    SDL_UnlockMutex(s_mutex);
+    return 1;
+}
+
+x86::reg32 Event::wait(x86::CPU& cpu, Event** begin, Event** end, bool waitAll, x86::sreg32 timeout)
+{
+    NFS2_ASSERT(!waitAll);
+    SDL_LockMutex(s_mutex);
+    x86::reg32 result = WAIT_TIMEOUT;
+    for (Event** e = begin; e < end; ++e)
+    {
+        //SDL_Log("Event wait[%u]: %s<%u>", static_cast<unsigned>(e - begin), (*e)->m_name.c_str(), (*e)->m_id);
+        (*e)->m_waitingThreads.push_back(Thread::currentThreadId());
+    }
+    for (;;)
+    {
+        for (Event** e = begin; e < end; ++e)
+        {
+            if ((*e)->m_isSet)
+            {
+                //SDL_Log("Event wait finished[%u]: %s<%u>", static_cast<unsigned>(e - begin), (*e)->m_name.c_str(), (*e)->m_id);
+                if (result == WAIT_TIMEOUT)
+                    result = static_cast<x86::reg32>(e - begin);
+                if (!(*e)->m_manualReset)
+                    (*e)->m_isSet = false;
+            }
+        }
+
+        if (result != WAIT_TIMEOUT || timeout == 0)
+        {
+            break;
+        }
+        if (cpu.terminate)
+        {
+            result = x86::reg32(-1);
+            break;
+        }
+        bool event = SDL_WaitConditionTimeout(s_condition, s_mutex, timeout);
+        if (!event)
+        {
+            break;
+        }
+    }
+    for (Event** e = begin; e < end; ++e)
+    {
+        (*e)->m_waitingThreads.erase(std::remove((*e)->m_waitingThreads.begin(),
+                                                 (*e)->m_waitingThreads.end(),
+                                                 Thread::currentThreadId()),
+                                     (*e)->m_waitingThreads.end());
+        if ((*e)->m_pulse && !(*e)->m_waitingThreads.empty())
+            (*e)->m_isSet = false;
+    }
+    //SDL_Log("Event wait result: %d", result);
+    SDL_UnlockMutex(s_mutex);
+    return result;
+}
+
+}
