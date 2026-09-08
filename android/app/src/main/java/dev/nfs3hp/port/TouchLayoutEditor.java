@@ -29,7 +29,7 @@ final class TouchLayoutEditor {
         };
         visual.setOnSeekBarChangeListener(listener);hit.setOnSeekBarChangeListener(listener);
         Spinner mode=activity.findViewById(R.id.editor_mode);
-        ArrayAdapter<String> adapter=new ArrayAdapter<>(activity,android.R.layout.simple_spinner_dropdown_item,new String[]{"Race layout","Menu layout"});
+        ArrayAdapter<String> adapter=new ArrayAdapter<>(activity,android.R.layout.simple_spinner_dropdown_item,GamePreferences.get(activity).getBoolean(GamePreferences.TOUCH_SEPARATE,false)?new String[]{"Race layout","Menu layout"}:new String[]{"Shared layout"});
         mode.setAdapter(adapter);
         mode.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener(){
             public void onItemSelected(AdapterView<?> p,View v,int index,long id){overlay.setMenuMode(index==1);sync.run();}

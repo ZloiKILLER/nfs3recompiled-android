@@ -126,7 +126,7 @@ file(GLOB NFS3HP_DISASM_HEADERS
 # core static library
 # ---------------------------------------------------------------------------
 
-file(GLOB LIB_CPP_SOURCES
+file(GLOB LIB_CPP_SOURCES CONFIGURE_DEPENDS
      "${NFS_ROOT_DIR}/src/lib/*.cpp"
      "${NFS_ROOT_DIR}/src/lib/sdl-backend/*.cpp"
      "${NFS_ROOT_DIR}/src/lib/winapi/*.cpp"
@@ -212,3 +212,9 @@ function(add_game_exe name)
 endfunction()
 
 add_game_exe(nfs3hp)
+option(NFS_BUILD_FF_TESTS "Build guest COM force-feedback regression checks" OFF)
+if(NFS_BUILD_FF_TESTS AND NOT ANDROID)
+    add_executable(force_feedback_checks tools/force_feedback_checks.cpp)
+    target_include_directories(force_feedback_checks PRIVATE ${NFS_ROOT_DIR}/include)
+    target_link_libraries(force_feedback_checks PRIVATE nfs_core ${SDL3_LIB_TARGET} ${NFS_GL_LIBS})
+endif()

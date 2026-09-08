@@ -14,7 +14,7 @@ public:
 
     static x86::reg32 init(WinApplication* app, x86::reg32 memblockIndex, x86::reg8* memBlock);
 
-private:
+public:
     struct DIPROPHEADER;
     typedef DIPROPHEADER*       LPDIPROPHEADER;
     typedef const DIPROPHEADER* LPCDIPROPHEADER;

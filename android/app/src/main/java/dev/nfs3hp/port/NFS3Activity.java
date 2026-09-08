@@ -39,11 +39,18 @@ public class NFS3Activity extends SDLActivity
     private static final String TAG = "NFS3Activity";
     private TouchControlsOverlay touchControlsOverlay;
     private GameSurface gameSurface;
+    private GameHaptics haptics;
 
     @Override
     protected void onCreate(Bundle savedInstanceState)
     {
+        haptics=new GameHaptics(this);
         SharedPreferences preferences = GamePreferences.get(this);
+        setEnv("NFS_TOUCH_VIBRATION",preferences.getBoolean(GamePreferences.TOUCH_VIBRATION,false)?"1":"0");
+        setEnv("NFS_GAMEPAD_VIBRATION",preferences.getBoolean(GamePreferences.GAMEPAD_VIBRATION,false)?"1":"0");
+        for(String action:new String[]{"steer_left","steer_right","accelerate","brake"})
+            setEnv("NFS_TOUCH_"+action.toUpperCase(java.util.Locale.ROOT),
+                GamePreferences.keyName(GamePreferences.getTouchKey(preferences,action)));
         String orientation = preferences.getString(GamePreferences.ORIENTATION,
             GamePreferences.ORIENTATION_LANDSCAPE);
         int fpsCap = preferences.getInt(GamePreferences.FPS_CAP, 30);
@@ -81,6 +88,7 @@ public class NFS3Activity extends SDLActivity
     protected void onResume()
     {
         super.onResume();
+        if(haptics!=null)haptics.resume();
         attachTouchControls();
     }
 
@@ -90,6 +98,7 @@ public class NFS3Activity extends SDLActivity
         if (touchControlsOverlay != null)
             touchControlsOverlay.releaseAll();
         if (gameSurface != null) gameSurface.touchMouse.cancel();
+        if(haptics!=null)haptics.pause();
         super.onPause();
     }
 
@@ -116,9 +125,32 @@ public class NFS3Activity extends SDLActivity
     }
 
     @Override public boolean dispatchTouchEvent(android.view.MotionEvent event) {
+        if(haptics!=null&&event.getActionMasked()==android.view.MotionEvent.ACTION_DOWN)haptics.usePhone();
         if(touchControlsOverlay!=null&&event.getToolType(0)==android.view.MotionEvent.TOOL_TYPE_FINGER)
             touchControlsOverlay.onScreenTouch(event);
         return super.dispatchTouchEvent(event);
+    }
+
+    @Override public boolean dispatchKeyEvent(android.view.KeyEvent event) {
+        if(haptics!=null&&event.getAction()==android.view.KeyEvent.ACTION_DOWN)haptics.useController(event.getDevice());
+        return super.dispatchKeyEvent(event);
+    }
+    @Override public boolean dispatchGenericMotionEvent(android.view.MotionEvent event) {
+        if(haptics!=null&&event.isFromSource(android.view.InputDevice.SOURCE_JOYSTICK)
+            &&(Math.abs(event.getAxisValue(android.view.MotionEvent.AXIS_X))>.25f
+                ||Math.abs(event.getAxisValue(android.view.MotionEvent.AXIS_Y))>.25f
+                ||event.getAxisValue(android.view.MotionEvent.AXIS_RTRIGGER)>.25f
+                ||event.getAxisValue(android.view.MotionEvent.AXIS_LTRIGGER)>.25f))haptics.useController(event.getDevice());
+        return super.dispatchGenericMotionEvent(event);
+    }
+    @Override public void onWindowFocusChanged(boolean focus) {
+        super.onWindowFocusChanged(focus);
+        if(haptics!=null){if(focus)haptics.resume();else haptics.pause();}
+    }
+    /** JNI entry point, invoked only for effects issued by the game. */
+    public void onForceFeedback(float level) {
+        long sent=android.os.SystemClock.uptimeMillis();
+        runOnUiThread(()->{if(haptics!=null&&android.os.SystemClock.uptimeMillis()-sent<100)haptics.setLevel(level);});
     }
 
     private void setEnv(String name, String value)

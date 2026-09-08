@@ -56,7 +56,7 @@ public final class TouchOverlayInstrumentation extends Instrumentation {
                         shot.compress(android.graphics.Bitmap.CompressFormat.PNG,100,out);
                     }
                     shot.recycle();
-                    RectF gas=bounds(view,"accelerate"),stick=bounds(view,"steering");
+                    RectF gas=bounds(view,"accelerate"),stick=bounds(view,"steer_left"),spikes=bounds(view,"spike_strip");
                     float sx=stick.left+stick.width()*.18f,sy=stick.centerY(),gx=gas.centerX(),gy=gas.centerY();
                     int left=GamePreferences.getTouchKey(GamePreferences.get(getTargetContext()),"steer_left");
                     int up=GamePreferences.getTouchKey(GamePreferences.get(getTargetContext()),"accelerate");
@@ -72,6 +72,13 @@ public final class TouchOverlayInstrumentation extends Instrumentation {
                     require(held(view).containsKey(up),"sliding back re-engages pedal");
                     touch(view,MotionEvent.ACTION_CANCEL,new int[]{42},gx,gy);
                     require(held(view).isEmpty(),"cancel releases everything");
+                    int spikeKey=GamePreferences.getTouchKey(GamePreferences.get(getTargetContext()),"spike_strip");
+                    require(spikeKey==android.view.KeyEvent.KEYCODE_S,"spike strip defaults to S");
+                    touch(view,MotionEvent.ACTION_DOWN,new int[]{51},spikes.centerX(),spikes.centerY());
+                    require(held(view).containsKey(spikeKey),"spike strip emits its configured key");
+                    view.releaseAll();
+                    GamePreferences.get(getTargetContext()).edit().putBoolean(GamePreferences.TOUCH_SEPARATE,true).apply();
+                    view.refreshSettings();
                     RectF mode=bounds(view,"mode");
                     touch(view,MotionEvent.ACTION_DOWN,new int[]{9},mode.centerX(),mode.centerY());
                     bounds(view,"confirm");bounds(view,"headlights");bounds(view,"recover");
@@ -114,9 +121,25 @@ public final class TouchOverlayInstrumentation extends Instrumentation {
             android.app.Activity activity=startActivitySync(new android.content.Intent(getTargetContext(),LauncherActivity.class)
                 .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK));
             waitForIdleSync();
+            HapticsChecks.run(this);
             capture("ui-launcher.png");
+            runOnMainSync(()->activity.findViewById(R.id.controls_button).performClick());
+            waitForIdleSync();capture("ui-controls-home.png");
             runOnMainSync(()->activity.findViewById(R.id.touch_controls_button).performClick());
             waitForIdleSync();
+            runOnMainSync(()->{
+                android.widget.FrameLayout host=activity.findViewById(R.id.touch_preview);
+                require(host.getChildCount()==1,"preview has one touch canvas");
+                TouchControlsOverlay canvas=(TouchControlsOverlay)host.getChildAt(0);
+                require(canvas.getWidth()==host.getWidth()&&canvas.getHeight()==host.getHeight(),"side areas belong to touch canvas");
+                try {
+                    RectF leftButton=bounds(canvas,"steer_left");
+                    touch(canvas,MotionEvent.ACTION_DOWN,new int[]{61},leftButton.centerX(),leftButton.centerY());
+                    int leftKey=GamePreferences.getTouchKey(GamePreferences.get(getTargetContext()),"steer_left");
+                    require(held(canvas).containsKey(leftKey),"control in expanded side area is touchable");
+                    canvas.releaseAll();
+                } catch(Exception e) { throw new RuntimeException(e); }
+            });
             capture("ui-touch-settings.png");
             runOnMainSync(()->activity.findViewById(R.id.edit_touch_layout).performClick());waitForIdleSync();
             capture("ui-touch-editor-race.png");
@@ -124,12 +147,13 @@ public final class TouchOverlayInstrumentation extends Instrumentation {
             capture("ui-touch-editor-menu.png");
             runOnMainSync(()->activity.findViewById(R.id.editor_done).performClick());waitForIdleSync();
             runOnMainSync(()->activity.onBackPressed());waitForIdleSync();
-            runOnMainSync(()->activity.findViewById(R.id.controls_button).performClick());waitForIdleSync();
+            runOnMainSync(()->activity.findViewById(R.id.gamepad_controls_button).performClick());waitForIdleSync();
             capture("ui-controller-mapping.png");
+            runOnMainSync(()->activity.onBackPressed());waitForIdleSync();
             runOnMainSync(()->activity.onBackPressed());waitForIdleSync();
             runOnMainSync(()->activity.findViewById(R.id.faq_button).performClick());waitForIdleSync();
             capture("ui-faq.png");
-            result.putString("stream","PASS: multitouch, layout bounds, tap vs drag, cancellation, long press, shared/separate layouts, drag persistence, independent touch zones, reset, D-pad directions, optional gears, gas offset, auto-hide hold/delay/silhouette/invisible activation, mapping export\n");
+            result.putString("stream","PASS: multitouch, layout bounds, tap vs drag, cancellation, long press, spike strip pulse, shared/separate layouts, drag persistence, independent touch zones, reset, D-pad directions, optional gears, gas offset, auto-hide hold/delay/silhouette/invisible activation, mapping export\n");
             finish(-1,result);
         } catch(Throwable e) { result.putString("stream","FAIL: "+android.util.Log.getStackTraceString(e));finish(0,result); }
     }

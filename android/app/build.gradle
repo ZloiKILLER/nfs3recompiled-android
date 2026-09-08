@@ -13,7 +13,9 @@ android {
         applicationId = "dev.nfs3hp.port"
         // Android 12+: this is also what lets M5 actually test the 16 KB-page
         // fix from src/lib/memmap.cpp, rather than just carrying it untested.
-        minSdk = 31
+        // Android 10 is API 29. API 30 window/cutout calls are guarded in
+        // AndroidWindowCompat and the preview fallback uses DisplayMetrics.
+        minSdk = 29
         targetSdk = 36
         versionCode = 1
         versionName = "1.0"
@@ -60,6 +62,10 @@ android {
             if (providers.gradleProperty("uiPreview").isPresent()) {
                 applicationIdSuffix ".preview"
                 manifestPlaceholders = [launcherAppLabel: "NFS III · UI Preview"]
+            }
+            if (providers.gradleProperty("android10").isPresent()) {
+                applicationIdSuffix ".android10"
+                manifestPlaceholders = [launcherAppLabel: "NFS III · Android 10 Test"]
             }
         }
         release {

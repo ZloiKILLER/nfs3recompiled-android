@@ -56,7 +56,7 @@ final class TouchControlsOverlay extends View {
         setFocusable(false);setContentDescription(c.getString(R.string.touch_preview_description));
         setOnApplyWindowInsetsListener((v,insets)->{
             if(!preview) {
-                Insets safe=insets.getInsets(WindowInsets.Type.systemBars()|WindowInsets.Type.displayCutout());
+                android.graphics.Rect safe=AndroidWindowCompat.safeInsets(insets);
                 setPadding(safe.left,safe.top,safe.right,safe.bottom);rebuild();
             }
             return insets;
@@ -129,24 +129,35 @@ final class TouchControlsOverlay extends View {
         float w=width/scale-2*edge,h=height/scale-preferences.getInt(GamePreferences.TOUCH_RAISE,0);
         float size=Math.min(preferences.getInt(GamePreferences.TOUCH_SIZE,100)/100f,1.15f);
         float pad=140*size,pedal=62*size;
-        add("steering",menuMode?R.string.control_navigation:R.string.control_steering,20,h-20-pad,pad,pad,false);
-        if(menuMode) {
+        boolean separate=preferences.getBoolean(GamePreferences.TOUCH_SEPARATE,false);
+        boolean menuLayout=separate&&menuMode;
+        if(menuLayout) add("steering",R.string.control_navigation,20,h-20-pad,pad,pad,false);
+        else {
+            add("steer_left",R.string.control_left,20,h-20-76*size,68*size,76*size,false);
+            add("steer_right",R.string.control_right,28+68*size+14*pixelScale/scale,h-20-76*size,68*size,76*size,false);
+        }
+        if(menuLayout) {
             add("confirm",R.string.control_confirm,w-100*size,h-20-84*size,80*size,84*size,true);
             add("back",R.string.control_back,w-188*size,h-20-64*size,72*size,64*size,true);
         } else {
             add("accelerate",R.string.control_gas,w-20-pedal-5*pixelScale/scale,h-20-118*size,pedal,118*size,false);
-            add("brake",R.string.control_brake,w-32-2*pedal,h-20-84*size,pedal,84*size,false);
-            add("handbrake",R.string.control_handbrake,w-32-2*pedal,h-32-138*size,52*size,46*size,false);
+            add("brake",R.string.control_brake,w-32-2*pedal-12*pixelScale/scale,h-20-84*size,pedal,84*size,false);
+            add("handbrake",R.string.control_handbrake,w-32-2*pedal-12*pixelScale/scale,h-32-138*size,52*size,46*size,false);
             add("look_behind",R.string.control_look_back,w-86,h-244,50,48,false);
             add("camera",R.string.control_camera,w-146,h-244,50,48,true);
             add("horn",R.string.control_horn,24,h-244,48,48,false);
+            add("spike_strip",R.string.control_spikes,82,h-244,48,48,true);
             if(preferences.getBoolean(GamePreferences.TOUCH_GEARS,false)) {
                 add("gear_down",R.string.control_gear_down,w-208*size,h-20-52*size,48*size,52*size,true);
                 add("gear_up",R.string.control_gear_up,w-208*size,h-84-52*size,48*size,52*size,true);
             }
         }
+        if(!separate) {
+            add("confirm",R.string.control_confirm,150,18,54,48,true);
+            add("back",R.string.control_back,214,18,54,48,true);
+        }
         add("pause",R.string.control_pause,20,18,48,48,true);
-        add("mode",menuMode?R.string.control_race:R.string.control_menu,82,18,58,48,true);
+        if(separate) add("mode",menuMode?R.string.control_race:R.string.control_menu,82,18,58,48,true);
         add("headlights",R.string.control_lights,w-136,18,48,48,true);
         add("recover",R.string.control_recover,w-74,18,54,48,true);
         if(GamePreferences.TOUCH_LAYOUT_MIRRORED.equals(preferences.getString(GamePreferences.TOUCH_LAYOUT,"standard")))
@@ -226,6 +237,8 @@ final class TouchControlsOverlay extends View {
         switch(a) {
         case "gear_up": text(c,"+",x,y+7,24,0xffeff3fa);break;
         case "gear_down": text(c,"−",x,y+7,24,0xffeff3fa);break;
+        case "steer_left": arrow(c,x,y,-1,0);break;
+        case "steer_right": arrow(c,x,y,1,0);break;
         case "back": arrow(c,x,y,-1,0);break;
         case "pause": c.drawLine(x-4,y-6,x-4,y+6,paint);c.drawLine(x+4,y-6,x+4,y+6,paint);break;
         case "headlights":
@@ -240,6 +253,12 @@ final class TouchControlsOverlay extends View {
         case "horn":
             Path p=new Path();p.moveTo(x-9,y-3);p.lineTo(x-3,y-3);p.lineTo(x+3,y-8);p.lineTo(x+3,y+8);p.lineTo(x-3,y+3);p.lineTo(x-9,y+3);p.close();c.drawPath(p,paint);
             c.drawArc(new RectF(x+1,y-7,x+13,y+7),-60,120,false,paint);break;
+        case "spike_strip":
+            for(int i=-1;i<=1;i++) {
+                Path spike=new Path();float sx=x+i*7;
+                spike.moveTo(sx-3,y+5);spike.lineTo(sx,y-6);spike.lineTo(sx+3,y+5);spike.close();c.drawPath(spike,paint);
+            }
+            c.drawLine(x-12,y+6,x+12,y+6,paint);break;
         case "handbrake": text(c,"P",x,y+6,18,0xffeff3fa);break;
         default: break;
         }

@@ -1,6 +1,7 @@
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android" android:layout_width="match_parent" android:layout_height="match_parent" android:orientation="vertical" android:padding="20dp" android:background="@color/ui_background">
  <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="@string/controls_settings" android:textSize="24sp" android:fontFamily="sans-serif-black" android:textColor="@color/ui_text"/>
  <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Tap a controller button to assign an action. Restart the game to apply changes." android:textSize="12sp" android:textColor="@color/ui_muted"/>
+ <LinearLayout android:id="@+id/controller_options" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical"/>
  <FrameLayout android:id="@+id/controller_diagram" android:layout_width="match_parent" android:layout_height="0dp" android:layout_weight="1"/>
  <ScrollView android:id="@+id/mapping_scroll" android:layout_width="match_parent" android:layout_height="0dp" android:layout_weight="1" android:visibility="gone">
   <LinearLayout android:id="@+id/mapping_container" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical"/>

@@ -49,6 +49,10 @@ final class TouchRefinementChecks {
                 check(bounds(view,"gear_up","box")!=null&&bounds(view,"gear_down","box")!=null,"optional gears visible");
                 RectF gas=bounds(view,"accelerate","box");float scale=(float)field(view,"scale");
                 check(Math.abs(gas.right-(1280-20*scale-5))<.1f,"gas shifted exactly five physical pixels left");
+                RectF brakePair=bounds(view,"brake","box");
+                check(Math.abs((gas.left-brakePair.right)-(12*scale+7))<.1f,"pedal gap includes twelve extra physical pixels");
+                RectF leftPair=bounds(view,"steer_left","box"),rightPair=bounds(view,"steer_right","box");
+                check(Math.abs((rightPair.left-leftPair.right)-(8*scale+14))<.1f,"steering gap includes fourteen extra physical pixels");
                 view.setEditing(true,null);RectF lights=bounds(view,"headlights","box");
                 touch(view,0,lights.centerX(),lights.centerY());touch(view,2,640,240);touch(view,1,640,240);
                 check(view.selectedAction().equals("headlights"),"editor selected control");
@@ -66,6 +70,19 @@ final class TouchRefinementChecks {
                 view.resetLayout();check(Math.abs(bounds(view,"headlights","box").centerX()-600)>20,"reset restores layout");
                 prefs.edit().putBoolean(GamePreferences.TOUCH_SEPARATE,false).apply();view.refreshSettings();
                 check(Math.abs(bounds(view,"headlights","box").centerX()-640)<1,"reset separate layout preserves shared layout");
+                // Mirroring must also move custom positions, and be reversible.
+                GamePreferences.setTouchLayout(prefs,GamePreferences.TOUCH_LAYOUT_MIRRORED);
+                view.refreshSettings();
+                check(Math.abs(bounds(view,"headlights","box").centerX()-640)<1,"center stays centered when mirrored");
+                check(bounds(view,"steer_left","box").centerX()>640,"steering moves right");
+                GamePreferences.setTouchLayout(prefs,GamePreferences.TOUCH_LAYOUT_STANDARD);
+                view.refreshSettings();
+                check(bounds(view,"steer_left","box").centerX()<640,"steering moves left again");
+                check(bounds(view,"steering","box")==null&&bounds(view,"mode","box")==null,"shared layout has no stick or mode switch");
+                RectF sharedLeft=bounds(view,"steer_left","box");
+                view.setMenuMode(false);
+                check(sharedLeft.equals(bounds(view,"steer_left","box"))&&bounds(view,"confirm","box")!=null,"shared controls unchanged in race");
+                prefs.edit().putBoolean(GamePreferences.TOUCH_SEPARATE,true).apply();
                 view.setEditing(false,null);view.setMenuMode(true);RectF pad=bounds(view,"steering","box");
                 touch(view,0,pad.centerX(),pad.top+pad.height()*.1f);
                 Map<?,?> held=(Map<?,?>)field(field(view,"keys"),"held");
@@ -81,6 +98,8 @@ final class TouchRefinementChecks {
                 check(GamePreferences.gamepadMappingEnvironment(prefs).contains("north=unknown"),"unassigned button overrides native fallback");
                 prefs.edit().putString(GamePreferences.physicalKey("gear_up"),"north").apply();
                 check(GamePreferences.gamepadMappingEnvironment(prefs).contains("north=a"),"gear mapping exported");
+                prefs.edit().putString(GamePreferences.physicalKey("spike_strip"),"right_stick").apply();
+                check(GamePreferences.gamepadMappingEnvironment(prefs).contains("right_stick=s"),"spike strip mapping exported");
             }catch(Throwable e){failure[0]=e;}});
             if(failure[0]!=null)throw new AssertionError(failure[0]);
             Thread.sleep(1500);

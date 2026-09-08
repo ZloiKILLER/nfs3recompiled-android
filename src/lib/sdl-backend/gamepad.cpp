@@ -1,4 +1,8 @@
 #include <lib/gamepad.h>
+#include <winapi/dinput/idirectinputeffect.h>
+#ifdef __ANDROID__
+#include <jni.h>
+#endif
 #include <SDL3/SDL.h>
 #include <cstring>
 #include <string>
@@ -7,14 +11,18 @@
 namespace win32
 {
 
-static x86::reg32 s_kbPoll = 3;
+static x86::reg32 s_kbPoll = 0;
 
 static Gamepad* s_gp1;
 
 void Input::poll()
 {
-    s_kbPoll = 3;
     SDL_UpdateJoysticks();
+}
+
+void Gamepad::markInputRead() const
+{
+    if (m_joystick) s_kbPoll = 3;
 }
 
 bool Gamepad::isPolledByGame()
@@ -135,6 +143,7 @@ static bool keyBindingFromName(const char* name, KeyBinding& out)
         { "c",      SDLK_C,      SDL_SCANCODE_C      },
         { "b",      SDLK_B,      SDL_SCANCODE_B      },
         { "h",      SDLK_H,      SDL_SCANCODE_H      },
+        { "s",      SDLK_S,      SDL_SCANCODE_S      },
         { "l",      SDLK_L,      SDL_SCANCODE_L      },
         { "r",      SDLK_R,      SDL_SCANCODE_R      },
         { "a",      SDLK_A,      SDL_SCANCODE_A      },
@@ -346,7 +355,8 @@ static void pollMenuGamepad()
 void Gamepad::updateKeys()
 {
     pollMenuGamepad();
-    /* s_kbPoll is reset to 3 by Input::poll() every time the game actually
+    dinput::IDirectInputEffect::update();
+    /* s_kbPoll is reset to 3 by markInputRead() every time the game actually
      * reads this pad as a DirectInput device (idirectinputdevice.cpp).  It
      * has to be counted back down here, once per frame, or isPolledByGame()
      * would see the very first DirectInput read at boot, latch permanently
@@ -536,13 +546,14 @@ Gamepad::Gamepad(x86::reg32 gamepadIndex)
         m_joystick = SDL_OpenJoystick(ids[gamepadIndex]);
     SDL_free(ids);
     SDL_SetJoystickEventsEnabled(false);
-    if (!s_gp1)
+    if (m_joystick && !s_gp1)
         s_gp1 = this;
 }
 
 Gamepad::~Gamepad()
 {
-    if (s_gp1)
+    dinput::IDirectInputEffect::detach(this);
+    if (s_gp1 == this)
         s_gp1 = nullptr;
     SDL_CloseJoystick(m_joystick);
 }
@@ -552,23 +563,41 @@ x86::reg32 Gamepad::getCount()
     int count = 0;
     SDL_JoystickID *ids = SDL_GetJoysticks(&count);
     SDL_free(ids);
+#ifdef __ANDROID__
+    // Expose an output endpoint even with touch-only input. Its axes remain neutral.
+    const char* phone=SDL_getenv("NFS_TOUCH_VIBRATION");
+    if(count==0 && phone && phone[0]=='1')count=1;
+#endif
     return (x86::reg32)count;
 }
 
 x86::reg32 Gamepad::getButtonCount() const
 {
-    return SDL_GetNumJoystickButtons(m_joystick);
+    return m_joystick ? SDL_GetNumJoystickButtons(m_joystick) : 0;
 }
 
 x86::reg32 Gamepad::getAxesCount() const
 {
-    return SDL_GetNumJoystickAxes(m_joystick);
+    return m_joystick ? SDL_GetNumJoystickAxes(m_joystick) : 2;
 }
 
 GamepadState Gamepad::getState() const
 {
     GamepadState result;
     memset(&result, 0, sizeof(result));
+    if(!m_joystick) {
+        // Some saved game profiles select the touch FF endpoint for steering.
+        // Reflect the same held touch keys instead of returning permanently neutral axes.
+        const bool* keys=SDL_GetKeyboardState(nullptr);
+        auto down=[keys](const char* setting,SDL_Scancode fallback) {
+            const char* name=SDL_getenv(setting);
+            SDL_Scancode code=name?SDL_GetScancodeFromKey(SDL_GetKeyFromName(name),nullptr):fallback;
+            return code!=SDL_SCANCODE_UNKNOWN && keys[code];
+        };
+        result.axes[0]=x86::sreg16(32767*(int(down("NFS_TOUCH_STEER_RIGHT",SDL_SCANCODE_RIGHT))-int(down("NFS_TOUCH_STEER_LEFT",SDL_SCANCODE_LEFT))));
+        result.axes[1]=x86::sreg16(32767*(int(down("NFS_TOUCH_BRAKE",SDL_SCANCODE_DOWN))-int(down("NFS_TOUCH_ACCELERATE",SDL_SCANCODE_UP))));
+        return result;
+    }
     for (x86::reg32 button = 0; button < getButtonCount(); ++button)
     {
         result.buttons |= (SDL_GetJoystickButton(m_joystick, button) ? 1 : 0) << button;
@@ -588,3 +617,34 @@ GamepadState Gamepad::getState() const
 
 }
 
+
+#ifdef __ANDROID__
+namespace {
+// SDL supplies an attached JNIEnv on every calling thread. No global Activity refs.
+void androidForceFeedback(float strength) {
+    JNIEnv* env=static_cast<JNIEnv*>(SDL_GetAndroidJNIEnv());
+    jobject activity=static_cast<jobject>(SDL_GetAndroidActivity());
+    if(!env||!activity)return;
+    jclass cls=env->GetObjectClass(activity);
+    jmethodID method=env->GetMethodID(cls,"onForceFeedback","(F)V");
+    if(method)env->CallVoidMethod(activity,method,strength);
+    if(env->ExceptionCheck())env->ExceptionClear();
+    env->DeleteLocalRef(cls);env->DeleteLocalRef(activity);
+}
+}
+#endif
+bool win32::Gamepad::hasForceFeedback() const {
+#ifdef __ANDROID__
+    const char* phone=SDL_getenv("NFS_TOUCH_VIBRATION");const char* pad=SDL_getenv("NFS_GAMEPAD_VIBRATION");
+    return (phone&&phone[0]=='1')||(m_joystick&&pad&&pad[0]=='1');
+#else
+    return m_joystick&&SDL_GetBooleanProperty(SDL_GetJoystickProperties(m_joystick),SDL_PROP_JOYSTICK_CAP_RUMBLE_BOOLEAN,false);
+#endif
+}
+void win32::Gamepad::rumble(float strength) {
+#ifdef __ANDROID__
+    androidForceFeedback(strength);
+#else
+    if(m_joystick)SDL_RumbleJoystick(m_joystick,Uint16(strength*65535),Uint16(strength*65535),100);
+#endif
+}

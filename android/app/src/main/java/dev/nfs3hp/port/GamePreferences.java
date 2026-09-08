@@ -9,6 +9,19 @@ import java.util.Map;
 
 final class GamePreferences
 {
+    static void setTouchLayout(SharedPreferences preferences,String layout) {
+        String old=preferences.getString(TOUCH_LAYOUT,TOUCH_LAYOUT_STANDARD);
+        if(old.equals(layout)) return;
+        SharedPreferences.Editor edit=preferences.edit().putString(TOUCH_LAYOUT,layout);
+        boolean mirrored=TOUCH_LAYOUT_MIRRORED.equals(layout);
+        if(mirrored!=TOUCH_LAYOUT_MIRRORED.equals(old)) {
+            for(Map.Entry<String,?> entry:preferences.getAll().entrySet())
+                if(entry.getKey().startsWith("touch_position_")&&entry.getKey().endsWith("_x")&&entry.getValue() instanceof Float)
+                    edit.putFloat(entry.getKey(),1f-(Float)entry.getValue());
+        }
+        edit.apply();
+    }
+
     static final String FILE_NAME = "launcher_settings";
 
     static final String ACTIVE_DATA_SET_ID = "active_data_set_id";
@@ -23,6 +36,10 @@ final class GamePreferences
     static final String TOUCH_EDGE = "touch_edge_spacing";
     static final String TOUCH_RAISE = "touch_raise_controls";
     static final String TOUCH_SEPARATE = "touch_separate_layouts";
+    static final String TOUCH_VIBRATION = "touch_vibration";
+    static final String GAMEPAD_VIBRATION = "gamepad_vibration";
+    static final String TOUCH_VIBRATION_STRENGTH = "touch_vibration_strength";
+    static final String GAMEPAD_VIBRATION_STRENGTH = "gamepad_vibration_strength";
     static final String TOUCH_GEARS = "touch_show_gears";
     static final String TOUCH_HIDE_SECONDS = "touch_hide_seconds";
     static final String TOUCH_HIDE_FULL = "touch_hide_full";
@@ -38,17 +55,17 @@ final class GamePreferences
 
     static final String[] ACTION_IDS = {
         "steer_left", "steer_right", "accelerate", "brake", "confirm",
-        "handbrake", "camera", "look_behind", "horn", "pause", "headlights", "recover", "gear_up", "gear_down",
+        "handbrake", "camera", "look_behind", "horn", "spike_strip", "pause", "headlights", "recover", "gear_up", "gear_down",
     };
 
     static final String[] ACTION_LABELS = {
         "Steer left", "Steer right", "Accelerate / menu up", "Brake / menu down", "Confirm / OK",
-        "Handbrake", "Camera view", "Look behind", "Horn", "Escape / pause", "Headlights", "Return to track", "Shift up", "Shift down",
+        "Handbrake", "Camera view", "Look behind", "Horn", "Spike strip", "Escape / pause", "Headlights", "Return to track", "Shift up", "Shift down",
     };
 
     static final String[] DEFAULT_PHYSICAL_BUTTONS = {
         "dpad_left", "dpad_right", "dpad_up", "dpad_down", "south",
-        "west", "east", "left_shoulder", "right_shoulder", "start", "none", "none", "none", "none",
+        "west", "east", "left_shoulder", "right_shoulder", "none", "start", "none", "none", "none", "none",
     };
 
     static final int[] DEFAULT_KEYS = {
@@ -61,6 +78,7 @@ final class GamePreferences
         KeyEvent.KEYCODE_C,
         KeyEvent.KEYCODE_B,
         KeyEvent.KEYCODE_H,
+        KeyEvent.KEYCODE_S,
         KeyEvent.KEYCODE_ESCAPE,
         KeyEvent.KEYCODE_L,
         KeyEvent.KEYCODE_R,
@@ -95,6 +113,7 @@ final class GamePreferences
         KeyEvent.KEYCODE_C,
         KeyEvent.KEYCODE_B,
         KeyEvent.KEYCODE_H,
+        KeyEvent.KEYCODE_S,
         KeyEvent.KEYCODE_L,
         KeyEvent.KEYCODE_R,
         KeyEvent.KEYCODE_A,
@@ -103,7 +122,7 @@ final class GamePreferences
 
     static final String[] KEY_LABELS = {
         "Unassigned", "Up arrow", "Down arrow", "Left arrow", "Right arrow",
-        "Return / Enter", "Escape", "Space", "C", "B", "H", "L", "R", "A", "Z",
+        "Return / Enter", "Escape", "Space", "C", "B", "H", "S", "L", "R", "A", "Z",
     };
 
     private GamePreferences() {}
@@ -185,6 +204,7 @@ final class GamePreferences
         case KeyEvent.KEYCODE_C: return "c";
         case KeyEvent.KEYCODE_B: return "b";
         case KeyEvent.KEYCODE_H: return "h";
+        case KeyEvent.KEYCODE_S: return "s";
         case KeyEvent.KEYCODE_L: return "l";
         case KeyEvent.KEYCODE_R: return "r";
         case KeyEvent.KEYCODE_A: return "a";

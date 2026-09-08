@@ -44,7 +44,7 @@ the four executables from `nfs3hp/`.
 
 Requires Android SDK with **NDK 28.2.13676358**, build-tools 36.0.0, compileSdk
 36, and a JDK (Android Studio's bundled JBR works). The app is arm64-v8a only,
-minSdk 31.
+minSdk 29, so it installs on Android 10 and later.
 
 SDL3 is built from source on Android and is not vendored here — clone it first:
 
@@ -92,6 +92,7 @@ split between an install directory and the disc.
 | `WITH_PEDANTIC_FPU` | `OFF` | Strict 80-bit x87 emulation through NASM helpers. Linux only. |
 | `NFS_TRACE_MSG` | `OFF` | Message-pump and Glide state tracing. Very verbose, desktop diagnostics only. |
 | `NFS2_ASSERT_TRAP` | `OFF` | Turn the unsupported-path assert into a debugger break instead of a log line. |
+| `NFS_BUILD_FF_TESTS` | `OFF` | Build `force_feedback_checks`, a desktop regression test for the DirectInput force-feedback layer. Runs against an SDL virtual joystick; desktop only. |
 
 ## Running on a phone
 
@@ -99,8 +100,19 @@ split between an install directory and the disc.
 2. Launch the app, import that folder, make it the active data set.
 3. Play.
 
-The launcher also has controller mapping, a touch layout editor and screen
-settings.
+The launcher also has a controls hub (Controls → Touch / Gamepad) with
+button mapping, a touch layout editor, and screen settings.
+
+### Vibration
+
+The game's own DirectInput force-feedback effects are implemented
+(`src/lib/winapi/dinput/idirectinputeffect.cpp`) and translated to rumble:
+constant, ramp, the periodic waveforms and spring, with envelopes and gain.
+Turn it on per output in Controls — phone vibration under Touch, controller
+vibration under Gamepad — each with its own intensity, and enable force
+feedback in the game itself. Restart the game after changing it. Nothing
+vibrates on a button press; every effect comes from the game. The last input
+you used picks which output receives it.
 
 ### Environment variables
 
@@ -113,6 +125,9 @@ Read once at startup, set from `NFS3Activity.onCreate()` on Android:
 | `NFS_GAMEPAD_MAPPING` | unset | `button=key` pairs overriding the menu keyboard mapping, e.g. `south=return,west=space`. |
 | `NFS_TRACE_API` | unset | Log every intercepted Win32/DirectX call. Pair with `SDL_LOGGING=app=verbose` and filter logcat to `SDL/APP`. |
 | `NFS_SCREENSHOT` | unset | Path to write a `.bmp` of the framebuffer to, every `NFS_SCREENSHOT_MS` (default 2000). |
+| `NFS_TOUCH_VIBRATION` | `0` | `1` exposes a force-feedback output endpoint with touch-only input, so the game's effects reach the phone's vibrator. |
+| `NFS_GAMEPAD_VIBRATION` | `0` | `1` lets the game's effects drive an attached controller's rumble. |
+| `NFS_TOUCH_STEER_LEFT` etc. | unset | The keys the touch overlay sends for steering and the pedals, so that endpoint can report them as axes. Set from the touch mapping. |
 
 ## Regenerating the recompilation
 

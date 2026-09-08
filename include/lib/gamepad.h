@@ -94,6 +94,9 @@ public:
 
     static x86::reg32 getCount();
 
+    bool hasForceFeedback() const;
+    void markInputRead() const;
+    void rumble(float strength);
     GamepadState getState() const;
     static void updateKeys();
     /* True while the game is actively reading this pad as a DirectInput

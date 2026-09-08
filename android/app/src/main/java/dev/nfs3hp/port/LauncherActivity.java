@@ -50,8 +50,7 @@ public class LauncherActivity extends Activity
         root.setBackgroundColor(getColor(R.color.ui_background));
         final int l=root.getPaddingLeft(),t=root.getPaddingTop(),r=root.getPaddingRight(),b=root.getPaddingBottom();
         root.setOnApplyWindowInsetsListener((view,insets)->{
-            android.graphics.Insets safe=insets.getInsets(android.view.WindowInsets.Type.systemBars()
-                | android.view.WindowInsets.Type.displayCutout());
+            android.graphics.Rect safe=AndroidWindowCompat.safeInsets(insets);
             view.setPadding(l+safe.left,t+safe.top,r+safe.right,b+safe.bottom);
             return insets;
         });
@@ -100,8 +99,7 @@ public class LauncherActivity extends Activity
 
         playButton.setOnClickListener(v -> startGame());
         findViewById(R.id.data_button).setOnClickListener(v -> showDataScreen());
-        findViewById(R.id.controls_button).setOnClickListener(v -> showControlsScreen());
-        findViewById(R.id.touch_controls_button).setOnClickListener(v -> showTouchScreen());
+        findViewById(R.id.controls_button).setOnClickListener(v -> showControlsHome());
         findViewById(R.id.screen_settings_button).setOnClickListener(v -> showScreenScreen());
         findViewById(R.id.faq_button).setOnClickListener(v -> showFaq());
     }
@@ -143,11 +141,37 @@ public class LauncherActivity extends Activity
         });
     }
 
+    private void showControlsHome() {
+        currentScreen="controls_home";
+        setContentView(R.layout.activity_controls_home);
+        findViewById(R.id.touch_controls_button).setOnClickListener(v->showTouchScreen());
+        findViewById(R.id.gamepad_controls_button).setOnClickListener(v->showControlsScreen());
+        findViewById(R.id.back_button).setOnClickListener(v->showMainScreen());
+    }
+
+    private void addVibrationStrength(LinearLayout parent,String key) {
+        SharedPreferences prefs=GamePreferences.get(this);
+        TextView label=new TextView(this);label.setTextColor(getColor(R.color.ui_text));
+        SeekBar slider=new SeekBar(this);slider.setMax(100);slider.setProgress(prefs.getInt(key,100));
+        label.setText(getString(R.string.vibration_strength,slider.getProgress()));
+        parent.addView(label);parent.addView(slider,new LinearLayout.LayoutParams(-1,dp(48)));
+        slider.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener(){
+            public void onProgressChanged(SeekBar bar,int value,boolean user){
+                label.setText(getString(R.string.vibration_strength,value));
+                if(user)prefs.edit().putInt(key,value).apply();
+            }
+            public void onStartTrackingTouch(SeekBar bar){}
+            public void onStopTrackingTouch(SeekBar bar){}
+        });
+    }
+
     private void showControlsScreen()
     {
         currentScreen = "controls";
         setContentView(R.layout.activity_controller_mapping);
-        findViewById(R.id.back_button).setOnClickListener(v -> showMainScreen());
+        findViewById(R.id.back_button).setOnClickListener(v -> showControlsHome());
+        addPreferenceCheck(findViewById(R.id.controller_options),"Gamepad vibration (game effects)",GamePreferences.GAMEPAD_VIBRATION,false);
+        addVibrationStrength(findViewById(R.id.controller_options),GamePreferences.GAMEPAD_VIBRATION_STRENGTH);
         LinearLayout container = findViewById(R.id.mapping_container);
         SharedPreferences preferences = GamePreferences.get(this);
         ControllerDiagramView diagram=new ControllerDiagramView(this,button->{
@@ -223,7 +247,7 @@ public class LauncherActivity extends Activity
     {
         currentScreen = "touch";
         setContentView(R.layout.activity_touch_controls);
-        findViewById(R.id.back_button).setOnClickListener(v -> showMainScreen());
+        findViewById(R.id.back_button).setOnClickListener(v -> showControlsHome());
         SharedPreferences preferences = GamePreferences.get(this);
 
         // Replace the old wheel/tilt placeholders with an actual interactive preview.
@@ -241,7 +265,7 @@ public class LauncherActivity extends Activity
             preferences.getString(GamePreferences.TOUCH_LAYOUT,
                 GamePreferences.TOUCH_LAYOUT_STANDARD)));
         layout.setOnItemSelectedListener(new SimpleItemSelectedListener(position -> {
-            preferences.edit().putString(GamePreferences.TOUCH_LAYOUT, layoutValues[position]).apply();
+            GamePreferences.setTouchLayout(preferences,layoutValues[position]);
             if (touchPreview != null) touchPreview.refreshSettings();
         }));
 
@@ -257,6 +281,8 @@ public class LauncherActivity extends Activity
         autoHide.setOnCheckedChangeListener((button, checked) ->
             preferences.edit().putBoolean(GamePreferences.TOUCH_AUTO_HIDE, checked).apply());
         LinearLayout options=findViewById(R.id.touch_options);
+        addPreferenceCheck(options,"Phone vibration (game effects; restart game)",GamePreferences.TOUCH_VIBRATION,false);
+        addVibrationStrength(options,GamePreferences.TOUCH_VIBRATION_STRENGTH);
         addPreferenceCheck(options,"Separate menu and race layouts",GamePreferences.TOUCH_SEPARATE,false);
         addPreferenceCheck(options,"Show gear − / + buttons",GamePreferences.TOUCH_GEARS,false);
         addPreferenceCheck(options,"Hide completely (otherwise faint silhouette)",GamePreferences.TOUCH_HIDE_FULL,false);
@@ -549,6 +575,8 @@ public class LauncherActivity extends Activity
             return;
         if ("editor".equals(currentScreen))
             showTouchScreen();
+        else if ("touch".equals(currentScreen)||"controls".equals(currentScreen))
+            showControlsHome();
         else if (!"main".equals(currentScreen))
             showMainScreen();
         else
