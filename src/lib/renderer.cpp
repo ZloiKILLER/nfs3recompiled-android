@@ -1,3 +1,4 @@
+#include <new>
 #include <lib/renderer.h>
 #include <lib/window.h>
 #include <lib/gamepad.h>
@@ -115,6 +116,33 @@ inline void tick(const char*) {}
 namespace win32
 {
 
+/* Fraction of the picture's own height, not the window's: the game's dialog
+ * sits at a fixed place in the 640x480 frame, so a fraction of the frame
+ * behaves the same whatever the screen's shape.  Nineteen percent clears the
+ * keyboard with the dialog's Ok and Cancel still on screen -- fifteen cleared
+ * the field alone and cut the buttons off at the keyboard's edge.  The strip it
+ * frees at the bottom is itself under the keyboard, so raising the picture
+ * exposes nothing. */
+static const float s_keyboardShiftFraction = 0.19f;
+
+/* Written from the thread SDL raises the event on, read by present() on the
+ * SDL thread and by the activity over JNI. */
+static SDL_AtomicInt s_screenKeyboardVisible;
+
+/* Both edges arrive here, which is why this watches SDL instead of asking
+ * Android: SDL raises SHOWN from the task that opens the keyboard, and the
+ * system back key routes through onNativeKeyboardFocusLost -> SDL_StopTextInput
+ * -> HIDDEN.  A keyboard dismissed behind the game's back still reports. */
+static bool SDLCALL keyboardEventWatch(void* /*userdata*/, SDL_Event* event)
+{
+    if (event->type == SDL_EVENT_SCREEN_KEYBOARD_SHOWN)
+        SDL_SetAtomicInt(&s_screenKeyboardVisible, 1);
+    else if (event->type == SDL_EVENT_SCREEN_KEYBOARD_HIDDEN)
+        SDL_SetAtomicInt(&s_screenKeyboardVisible, 0);
+    return true;
+}
+
+
 #if !NFS_GLES
 void GLAPIENTRY errorCallback(GLenum /*source*/, GLenum type, GLuint /*id*/, GLenum severity, GLsizei /*length*/, const GLchar* message, const void* /*userParam*/)
 {
@@ -141,20 +169,42 @@ static const char g_blitVertexShader[] =
 "    gl_Position = vec4(a_position, 0.0, 1.0);"
 "}";
 
+/* Gamma is applied here, on the finished frame, rather than inside the Glide
+ * renderer: one pass over the screen instead of work on every fragment of every
+ * triangle, and it covers the 2D menus and the movies as well as a race.  The
+ * game has a gamma of its own that reaches the Glide shader; the two simply
+ * compose.  Above 1 this lifts the dark end hardest, which is the point -- the
+ * night tracks are lit almost entirely by the car's own headlights. */
 static const char g_blitFragmentShader[] =
 "in vec2 v_texCoord;"
 "layout (location=0) out vec4 o_color;"
 "uniform sampler2D u_texture;"
+"uniform float u_gamma;"
 "void main()"
 "{"
-"    o_color = texture(u_texture, v_texCoord);"
+"    vec4 texel = texture(u_texture, v_texCoord);"
+"    o_color = vec4(pow(max(texel.rgb, vec3(0.0)), vec3(1.0 / max(u_gamma, 0.001))), texel.a);"
 "}";
+
+/* Read once: the launcher sets it before the game starts, the way it does the
+ * frame cap and the orientation.  1.0 leaves the picture exactly as the game
+ * drew it, and is what an unset variable means. */
+static float displayGamma()
+{
+    static const float s_gamma = []() {
+        const char* value = SDL_getenv("NFS_GAMMA");
+        const float parsed = value ? float(SDL_atof(value)) : 1.f;
+        return (parsed > 0.05f && parsed < 10.f) ? parsed : 1.f;
+    }();
+    return s_gamma;
+}
 
 Renderer::Renderer(WinApplication* application, Window *window)
     :   m_application(application)
     ,   m_window(window)
     ,   m_renderer(SDL_GL_CreateContext(m_window->m_window))
     ,   m_blitProgram(0)
+    ,   m_blitGammaUniform(-1)
     ,   m_blitVertexArray(0)
     ,   m_blitVertexBuffer(0)
     ,   m_videoMemory(new MemMap(800*600*2*2)) // double buffer 16 bits 800x600
@@ -167,7 +217,10 @@ Renderer::Renderer(WinApplication* application, Window *window)
     ,   m_lastWindowW(-1)
     ,   m_lastWindowH(-1)
     ,   m_vpX(0), m_vpY(0), m_vpW(0), m_vpH(0)
+    ,   m_keyboardShift(0)
 {
+    SDL_SetAtomicInt(&s_screenKeyboardVisible, 0);
+    SDL_AddEventWatch(keyboardEventWatch, nullptr);
     setCurrent();
     loadGlFunctions();
 #if !NFS_GLES
@@ -282,12 +335,14 @@ void Renderer::initBlit()
     const GLint texLoc = glGetUniformLocation(m_blitProgram, "u_texture");
     if (texLoc >= 0)
         glUniform1i(texLoc, 0);
+    m_blitGammaUniform = glGetUniformLocation(m_blitProgram, "u_gamma");
     glUseProgram(0);
     glBindVertexArray(0);
 }
 
 Renderer::~Renderer()
 {
+    SDL_RemoveEventWatch(keyboardEventWatch, nullptr);
     free(m_convertBuffer);
     SDL_GL_DestroyContext(static_cast<SDL_GLContext>(m_renderer));
 }
@@ -304,6 +359,17 @@ void Renderer::clearCurrent()
 
 void Renderer::setVideoMode(x86::reg32 w, x86::reg32 h, x86::reg32 bpp)
 {
+    // Guest LFB remains two-byte RGB565 for Glide; allocate for the actual mode.
+    // This also covers the existing 1024x768 mode, beyond the old 800x600 buffer.
+    const size_t bytes = size_t(w) * h * 2 * 2;
+    if (!w || !h || bytes > 128u * 1024u * 1024u) throw std::bad_alloc();
+    if (bytes > m_videoMemory->getBlockSize()) {
+        MemMap* replacement = new MemMap(x86::reg32(bytes));
+        delete m_videoMemory;
+        m_videoMemory = replacement;
+    }
+    m_currentBuffer = 0;
+    m_lastWindowW = m_lastWindowH = -1;
     m_width = w;
     m_height = h;
     m_depth = bpp;
@@ -313,6 +379,7 @@ void Renderer::setVideoMode(x86::reg32 w, x86::reg32 h, x86::reg32 bpp)
      * 16-bit surface, RGBA bytes for the palettised one. */
     setCurrent();
     glBindTexture(GL_TEXTURE_2D, m_texture);
+    glDisable(GL_DITHER);
     /* Sized internal format, deliberately, and eight bits per channel for both
      * guest depths.  This used to ask for the unsized GL_RGB, which each
      * implementation is free to resolve as it likes: desktop GL picked 8 bits
@@ -386,6 +453,12 @@ void Renderer::present()
         m_lastWindowH = h;
     }
 
+    /* Recomputed every frame rather than cached with the letterbox: it follows
+     * the keyboard, not the window size. */
+    m_keyboardShift = SDL_GetAtomicInt(&s_screenKeyboardVisible)
+                    ? int(m_vpH * s_keyboardShiftFraction + 0.5f)
+                    : 0;
+
     glViewport(0, 0, w, h);
     glClearColor(0.f, 0.f, 0.f, 1.f);
     glClear(GL_COLOR_BUFFER_BIT);
@@ -393,7 +466,7 @@ void Renderer::present()
     /* Render the game texture into the aspect-ratio-correct viewport.  The quad
      * is in NDC, so the letterbox rectangle is expressed purely by the viewport
      * and no projection matrix is needed. */
-    glViewport(m_vpX, m_vpY, m_vpW, m_vpH);
+    glViewport(m_vpX, m_vpY + m_keyboardShift, m_vpW, m_vpH);
 
     /* The Glide renderer leaves depth test and blending enabled; neither makes
      * sense for the blit, and it re-sets both per draw call. */
@@ -401,6 +474,8 @@ void Renderer::present()
     glDisable(GL_BLEND);
 
     glUseProgram(m_blitProgram);
+    if (m_blitGammaUniform >= 0)
+        glUniform1f(m_blitGammaUniform, displayGamma());
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, m_texture);
     glBindVertexArray(m_blitVertexArray);

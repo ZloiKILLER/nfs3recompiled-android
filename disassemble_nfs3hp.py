@@ -19,7 +19,12 @@ DATA_SEGMENTS = [(0x401004, 0x401010),
                  (0x44e150, 0x44e170),
                  (0x4489f0, 0x448ef2),
                  (0x454f10, 0x455020),
-                 (0x45cb60, 0x45cdc0),
+                 # Up to 0x45cdd0, not 0x45cdc0: the 16 bytes in between are
+                 # alignment padding, and stopping short of them made the
+                 # recompiler seed a function on the padding.  The real prologue
+                 # is at 0x45cdd0, the game takes that address as a text-field
+                 # callback, and the call found nothing registered.
+                 (0x45cb60, 0x45cdd0),
                  (0x465d10, 0x465d60),
                  (0x46ccb0, 0x46cce0),
                  (0x472160, 0x4721f0),
@@ -87,3 +92,18 @@ if __name__ == '__main__':
                                                        (0xA86833, 0xA868A2)],
                                         known_subroutines=[0xA847D0, 0xA84810], rebase_after=softtria)
     application.write(THREAD_SEGMENTS, skip_instructions=SKIP_INSTRUCTIONS, dlls=[eacsnd, softtria, voodoo2a])
+
+    # Reapply the reviewed port heap budget after regenerating the original code.
+    from pathlib import Path
+    from tools.apply_heap_budget import apply
+    apply(Path(__file__).resolve().parent)
+
+    # tools/apply_glide_output.py is deliberately NOT applied.  Advertising a
+    # 32-bit output depth blacked out every race on device while leaving the
+    # resolution list still reading 16-bit -- the table is rewritten after the
+    # game has already built that list, and read again by something later.
+    # Confirmed by bisection: reverting these two files alone brought the
+    # picture back.  The tool is kept for whoever picks the work up again.
+
+    from tools.apply_menu_unlock import apply as apply_menu_unlock
+    apply_menu_unlock(Path(__file__).resolve().parent)

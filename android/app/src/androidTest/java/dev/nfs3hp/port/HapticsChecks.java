@@ -20,8 +20,11 @@ final class HapticsChecks {
                 Field field=GameHaptics.class.getDeclaredField("active");field.setAccessible(true);
                 Set<?> active=(Set<?>)field.get(h);
                 prefs.edit().putInt(strengthKeys[0],50).putInt(strengthKeys[1],25).commit();
-                if(h.scaledAmplitude(200,strengthKeys[0])!=100||h.scaledAmplitude(200,strengthKeys[1])!=50)
+                // Same raw amplitude, different scales: the phone quarters it, the pad takes the plain percentage.
+                if(h.scaledAmplitude(200,strengthKeys[0])!=25||h.scaledAmplitude(200,strengthKeys[1])!=50)
                     throw new AssertionError("phone and controller strengths must be independent");
+                prefs.edit().putInt(strengthKeys[0],100).commit();
+                if(h.scaledAmplitude(200,strengthKeys[0])!=50)throw new AssertionError("touch 100 percent is a quarter of the raw amplitude");
                 prefs.edit().putInt(strengthKeys[0],0).commit();
                 if(h.phonePulse(40,200)||!active.isEmpty())throw new AssertionError("zero intensity must stay silent");
                 prefs.edit().putInt(strengthKeys[0],100).commit();
@@ -35,6 +38,16 @@ final class HapticsChecks {
                 if(!active.isEmpty())throw new AssertionError("selecting touch must not vibrate");
                 boolean available=((android.os.Vibrator)test.getTargetContext().getSystemService(android.content.Context.VIBRATOR_SERVICE)).hasVibrator();
                 if(available&&!h.phonePulse(40,64))throw new AssertionError("available phone accepts effect");
+                /* The rate limit must not swallow a collision.  A drift inside
+                 * the window waits for it; a sharp rise goes through early. */
+                Field pulseField=GameHaptics.class.getDeclaredField("lastPulse");pulseField.setAccessible(true);
+                h.stop();Thread.sleep(45);
+                h.setLevel(.2f);long first=(long)pulseField.get(h);
+                h.setLevel(.25f);
+                if((long)pulseField.get(h)!=first)throw new AssertionError("a drift inside the window must wait");
+                Thread.sleep(20);
+                h.setLevel(.9f);
+                if((long)pulseField.get(h)==first)throw new AssertionError("a sharp rise must pass the rate limit early");
                 h.setLevel(0);
                 if(!active.isEmpty())throw new AssertionError("zero effect cancels output");
                 if(h.controllerPulse(null,40,64))throw new AssertionError("missing controller must not fall back to phone");

@@ -213,7 +213,7 @@ GlideRenderer::GlideRenderer(Renderer* renderer)
     ,   m_zTest(true)
     ,   m_depthAlways(false)
     ,   m_alphaBlend(true)
-    ,   m_dither(true)
+    ,   m_dither(false)
     ,   m_cull(false)
     ,   m_chromaKey(false)
     ,   m_textureMipLevels(1)
@@ -866,6 +866,9 @@ void GlideRenderer::setAlphaTestRef(x86::reg32 value)
 
 void GlideRenderer::setDither(bool enable)
 {
+    // RGBA8 output has no RGB565 quantization to hide with Bayer noise.
+    NFS2_USE(enable);
+    enable = false;
     if (enable != m_dither)
     {
         flush();

@@ -166,8 +166,15 @@ HRESULT IDirectInputDevice::SetProperty(WinApplication* app, x86::CPU& cpu,
 {
     NFS2_USE(app);
     NFS2_USE(cpu);
-    NFS2_USE(rguidProp);
-    if(x86::reg32(rguidProp)==7) {
+    // Which properties the game actually sets is only answerable at runtime.
+    if(WinApplication::traceApi())
+        SDL_Log("[API] SetProperty prop=%u",unsigned(x86::reg32(rguidProp)));
+    /* MAKEDIPROP() packs the property id into the GUID pointer itself, so the
+     * "pointer" is the small integer dinput.h defines.  8 is DIPROP_FFGAIN, the
+     * device's force-feedback strength.  This used to read 7, DIPROP_SATURATION
+     * -- an axis calibration property -- so the game's own strength setting was
+     * dropped on the floor while an unrelated number scaled every effect. */
+    if(x86::reg32(rguidProp)==8) {
         if(!pdiph||pdiph->dwSize<20)return 0x80070057;
         DWORD value;std::memcpy(&value,reinterpret_cast<const char*>(pdiph)+16,4);
         if(value>10000)return 0x80070057;

@@ -1,0 +1,152 @@
+<resources>
+ <!-- Deutsch. Die Beschriftungen des Controls-Bildschirms und die Aufschriften
+      der Bildschirmtasten bleiben bewusst englisch: dieser Bildschirm wird mit
+      den Einstellungen des Spiels selbst abgeglichen, und das Spiel ist
+      englisch.  Die vier Schaltflaechen im Startbildschirm haben eine feste
+      Hoehe von 56dp - ihre Beschriftungen bleiben deshalb kurz. -->
+
+ <string name="language_label">Sprache</string>
+ <string name="language_system">Systemsprache</string>
+ <string name="language_note">Nur der Launcher. Die Menüs des Spiels kommen von der Disc und bleiben in deren Sprache.</string>
+
+ <string name="checking_game_data">Spieldaten werden geprüft…</string>
+ <string name="pick_data_folder">NFS3-Datenordner wählen…</string>
+ <plurals name="importing_progress">
+  <item quantity="one">%1$s wird importiert\n%2$d MB kopiert, %3$d Datei</item>
+  <item quantity="other">%1$s wird importiert\n%2$d MB kopiert, %3$d Dateien</item>
+ </plurals>
+ <string name="import_failed">Import fehlgeschlagen: %1$s</string>
+ <string name="import_hint">Wähle den Ordner, der \'fedata\' und \'gamedata\' direkt enthält (etwa das CD-Stammverzeichnis oder eine Kopie davon).</string>
+ <string name="launcher_title">Need For Speed III Launcher</string>
+ <string name="play">Spielen</string>
+ <string name="active_data_set">Aktive Daten: %1$s</string>
+ <string name="no_active_data_set">Kein aktiver Datensatz. Importiere zuerst einen.</string>
+ <string name="data_settings">Daten</string>
+ <string name="game_data_title">Spieldaten</string>
+ <string name="launcher_settings_title">Launcher-Einstellungen</string>
+ <string name="launcher_settings_hint">Sichere die Einstellungen des Launchers — Touch-Layout, Tastenbelegung, Vibration — in eine Datei oder stelle sie wieder her. Der Import ersetzt die aktuellen und sichert sie zuvor.</string>
+ <string name="import_launcher">Einstellungen laden...</string>
+ <string name="export_launcher">Einstellungen sichern...</string>
+ <string name="launcher_export_complete">%1$d Einstellungen gesichert.</string>
+ <string name="launcher_import_complete">Einstellungen geladen. Vorherige gesichert als %1$s.</string>
+ <string name="launcher_import_complete_no_backup">Einstellungen geladen. Es gab keine vorherigen.</string>
+ <string name="launcher_nothing_to_export">Es gibt noch keine Launcher-Einstellungen.</string>
+ <string name="launcher_wrong_format">Das ist keine Launcher-Einstellungsdatei.</string>
+ <string name="controls_settings">Tastenbelegung</string>
+ <string name="touch_settings">Touch-Steuerung</string>
+ <string name="screen_settings">Bildschirm</string>
+ <string name="back_to_launcher">Zurück</string>
+ <string name="switch_data">Aktivieren</string>
+ <string name="delete">Löschen</string>
+ <string name="import_folder">Ordner importieren…</string>
+ <string name="import_zip">ZIP importieren…</string>
+ <string name="data_import_hint">Importiere einen Ordner, der \'fedata\' und \'gamedata\' direkt enthält, oder ein ZIP mit diesen Ordnern. Importiertes wird in den App-Speicher kopiert.</string>
+ <string name="import_complete">Datenimport abgeschlossen</string>
+ <string name="data_error">Datenvorgang fehlgeschlagen: %1$s</string>
+ <string name="delete_data_title">Datensatz löschen?</string>
+ <string name="delete_data_message">%1$s von diesem Gerät löschen? Das lässt sich nicht rückgängig machen.</string>
+ <string name="controls_explanation">Dies ist die Schicht des Ports zwischen physischem Gamepad oder Touch und der emulierten Tastatur. Sie ist unabhängig vom Controls-Menü im Spiel selbst; jenes Menü bleibt unverändert.</string>
+ <string name="controls_row_hint">Wähle für jede Aktion eine physische Gamepad-Taste und danach die emulierte Taste, die sowohl sie als auch die Bildschirmtaste sendet.</string>
+ <string name="touch_mode_label">Eingabemodus</string>
+ <string name="touch_mode_buttons">Tasten</string>
+ <string name="touch_mode_wheel">Lenkrad (in Arbeit)</string>
+ <string name="touch_mode_tilt">Neigungslenkung (in Arbeit)</string>
+ <string name="touch_layout_label">Tastenanordnung</string>
+ <string name="opacity_label">Deckkraft der Tasten</string>
+ <string name="size_label">Tastengröße</string>
+ <string name="auto_hide_label">Nach 4 Sekunden Untätigkeit ausblenden</string>
+ <string name="auto_hide_note">Ein Menü-/Rennen-Signal ist auf der Java-Seite noch nicht sichtbar, deshalb zählt das Ausblenden die Untätigkeit in Menüs und Rennen gleichermaßen. Tippe auf die Überlagerung, um sie wieder anzuzeigen.</string>
+ <string name="orientation_label">Ausrichtung des Spiels</string>
+ <string name="orientation_auto">Autodrehung — beide Querrichtungen</string>
+ <string name="orientation_landscape">Fest — Querformat</string>
+ <string name="orientation_landscape_reverse">Fest — Querformat, gedreht</string>
+ <string name="fps_30">30 FPS</string>
+ <string name="fps_60">60 FPS</string>
+ <string name="gamma_label">Gamma</string>
+ <string name="gamma_hint">Höher hellt dunkle Bereiche auf. Wirkt beim nächsten Start des Spiels.</string>
+ <string name="fps_cap_label">Bildrate</string>
+ <string name="fps_error">Gib eine ganze Zahl von 1 bis 240 ein</string>
+ <string name="save">Speichern</string>
+ <string name="settings_saved">Einstellungen gespeichert</string>
+
+ <string name="launcher_setup">EINSTELLUNGEN</string>
+ <string name="touch_preview_description">Interaktive Vorschau der digitalen Fahrsteuerung</string>
+ <string name="touch_preview_hint">Steuerung ausprobieren</string>
+ <string name="touch_digital_note">Tippe ☰, um zwischen Menü- und Rennanordnung zu wechseln</string>
+ <string name="touch_dim_label">Tasten automatisch ausblenden</string>
+ <string name="touch_edge_label">Abstand zu den Rändern</string>
+ <string name="touch_raise_label">Fahrtasten anheben</string>
+ <string name="touch_dim_note">Beginnt, sobald alle Finger abgehoben sind. Ausgeblendete Tasten reagieren sofort.</string>
+ <string name="gamepad_settings">Vibrationseinstellungen</string>
+ <string name="gamepad_settings_title">Player 1 · Vibration</string>
+ <string name="editor_drag_title">Elemente ziehen</string>
+ <string name="editor_resize_hint">Auswählen zum Ändern der Größe</string>
+ <string name="saves_title">Spielstände</string>
+ <string name="saves_hint">Exportiere das aktive Profil in ein ZIP oder importiere eines. Beim Import wird vor dem Ersetzen eine lokale Sicherung angelegt.</string>
+ <string name="import_saves">Spielstände importieren…</string>
+ <string name="export_saves">Spielstände exportieren…</string>
+ <string name="saves_not_found">Im aktiven Datensatz wurden keine Spielstände gefunden.</string>
+ <string name="saves_no_active_data">Importiere und aktiviere Spieldaten, bevor du Spielstände verwaltest.</string>
+ <string name="saves_open_failed">Das gewählte Spielstand-Archiv lässt sich nicht öffnen.</string>
+ <string name="saves_zip_empty">Das ZIP enthält keine Spielstände.</string>
+ <string name="saves_include_settings">Spieleinstellungen einschließen</string>
+ <string name="saves_export_complete">Exportierte Spielstand-Dateien: %1$d.</string>
+ <string name="saves_import_complete">Spielstände importiert. Die bisherigen liegen als %1$s gesichert.</string>
+ <string name="saves_import_complete_no_backup">Spielstände importiert. Es gab keine bisherigen Spielstände zu sichern.</string>
+ <string name="assign_button_title">%1$s belegen</string>
+ <string name="diagram_hint">Tippe eine Taste, Stick-Richtung oder einen Trigger an, um sie neu zu belegen</string>
+ <string name="diagram_description">Schema des Player-1-Gamepads. Tippe ein Element oder seine Belegung an, um es neu zu belegen.</string>
+ <string name="mapping_hint">Tippe eine Gamepad-Taste an, um eine Aktion zuzuweisen. Starte das Spiel neu, damit es wirkt.</string>
+ <string name="mapping_show_diagram">Gamepad-Schema</string>
+ <string name="mapping_show_list">Alle Aktionen &amp; Tasten</string>
+ <string name="faq_title">Hilfe / FAQ</string>
+ <string name="layout_right_handed">Lenkung links</string>
+ <string name="layout_left_handed">Lenkung rechts</string>
+
+ <string name="controls_hub">Steuerung</string>
+ <string name="controls_touch">Touch</string>
+ <string name="controls_gamepad">Gamepad</string>
+ <string name="vibration_strength">Vibrationsstärke: %1$d%%</string>
+
+ <string name="pref_gamepad_vibration">Gamepad-Vibration (Spieleffekte)</string>
+ <string name="pref_phone_vibration">Telefon-Vibration (Spieleffekte; Spiel neu starten)</string>
+ <string name="pref_separate_layouts">Getrennte Anordnungen für Menü und Rennen</string>
+ <string name="pref_show_gears">Gangtasten − / + anzeigen</string>
+ <string name="pref_hide_full">Ganz ausblenden (sonst blasse Silhouette)</string>
+ <string name="auto_hide_delay">Verzögerung: %1$d s</string>
+ <string name="editor_button_size">Taste: %1$d%%</string>
+ <string name="editor_touch_zone">Touch-Bereich: %1$d%%</string>
+ <string name="editor_mode_race">Rennen</string>
+ <string name="editor_mode_menu">Menü</string>
+ <string name="editor_mode_shared">Gemeinsam</string>
+ <string name="editor_reset_title">Diese Anordnung zurücksetzen?</string>
+ <string name="editor_reset_message">Standardpositionen, Tastengrößen und Touch-Bereiche dieser Anordnung wiederherstellen.</string>
+ <string name="edit_touch_layout">Positionen und Touch-Bereiche bearbeiten</string>
+ <string name="editor_done">Fertig</string>
+ <string name="editor_reset">Zurücksetzen</string>
+ <string name="editor_select_control">Element auswählen</string>
+ <string name="editor_drag_hint">Elemente ziehen · Auswählen zum Ändern der Größe</string>
+ <string name="data_set_name_default">Importierte Daten</string>
+ <string name="data_set_name_folder">Importierter Ordner</string>
+ <string name="data_set_name_zip">Importiertes ZIP</string>
+ <string name="data_set_active_suffix"> (aktiv)</string>
+ <string name="error_external_storage">Der externe Speicher ist nicht verfügbar</string>
+ <string name="error_import_incomplete">Den importierten Daten fehlen die erwarteten Dateien</string>
+ <string name="error_data_set_incomplete">Der gewählte Datensatz ist unvollständig</string>
+ <string name="importer_open_folder_failed">Der gewählte Ordner lässt sich nicht öffnen</string>
+ <string name="importer_missing_subfolder">Im gewählten Ordner fehlt der Unterordner \'%1$s\' — wähle den Ordner, der fedata und gamedata direkt enthält (etwa das CD-Stammverzeichnis).</string>
+ <string name="importer_open_zip_failed">Das gewählte ZIP lässt sich nicht öffnen</string>
+ <string name="importer_zip_missing_files">Im ZIP fehlen die erwarteten Ordner fedata/gamedata</string>
+
+ <string name="faq_layout_modes"><b>Menü oder Rennen?</b>\nMit getrennten Anordnungen wechselt eine einzige ☰-Taste zwischen ihnen: die Menüanordnung bringt ein Vier-Wege-Steuerkreuz mit ✓ und ←, die Rennanordnung die Tasten links / rechts und die Pedale. Von selbst wechselt sie nie. Bei einer gemeinsamen Anordnung bleiben alle Tasten sichtbar: Gas / Bremse navigieren zugleich auf / ab, und ✓ / ← wirken in den Menüs.</string>
+ <string name="faq_mouse"><b>Wie funktioniert die Maus?</b>\nWische über eine freie Stelle des Bildschirms, um den Zeiger zu bewegen. Hebst du nach einem Wischen ab, wird nicht geklickt. Ein kurzes Tippen ohne Bewegung klickt an der Zeigerposition. Hältst du still, wird die Taste gedrückt und bleibt gedrückt — dann kannst du ziehen; Abheben löst sie. Gesten mit mehreren Fingern klicken nicht.</string>
+ <string name="faq_size"><b>Was ändert die Größe?</b>\nDie Gesamtgröße skaliert die Standardelemente. Unter „Positionen und Touch-Bereiche bearbeiten“ ziehst du ein Element und änderst mit „Taste“ sein Aussehen oder mit „Touch-Bereich“ nur den Bereich, in dem es reagiert. Gestrichelte Linien zeigen die Touch-Bereiche; die Prozentwerte beziehen sich auf das Standardelement. Änderungen werden automatisch gespeichert.</string>
+ <string name="faq_shared_layouts"><b>Eine Anordnung oder zwei?</b>\nIst „Getrennte Anordnungen für Menü und Rennen“ aus, gelten in Menüs und Rennen dieselben Elemente, Positionen und Größen. Schalte es ein, um jeden Modus einzeln anzupassen. Das Umschalten behält beide gespeicherten Sätze. Das Zurücksetzen betrifft nur den gewählten Satz. „Lenkung links / rechts“ spiegelt sowohl Standard- als auch von Hand gespeicherte Positionen.</string>
+ <string name="faq_edges"><b>Ränder und Höhe</b>\nDer Abstand zu den Rändern schiebt die Standardelemente nach innen. „Fahrtasten anheben“ hebt die unteren Standardelemente an. Systemaussparungen werden berücksichtigt. Von Hand platzierte Elemente behalten ihre gespeicherten Positionen.</string>
+ <string name="faq_hiding"><b>Deckkraft und automatisches Ausblenden</b>\nDie Deckkraft legt die normale Sichtbarkeit fest. Das Ausblenden beginnt, sobald alle Finger abgehoben sind, nach 1 bis 30 Sekunden. Wähle eine blasse Silhouette oder völlige Unsichtbarkeit. Ausgeblendete Tasten reagieren schon auf die erste Berührung und werden wieder sichtbar. Wer ein Element hält, verhindert das Ausblenden.</string>
+ <string name="faq_gears"><b>Manuelle Gänge</b>\n„Gangtasten − / + anzeigen“ fügt der Rennanordnung zwei zusätzliche Tasten hinzu. Aktiviere im Spiel das manuelle Getriebe. Ihre Tasten werden in der Tastenbelegung festgelegt und müssen zu den Spieleinstellungen passen.</string>
+ <string name="faq_vibration"><b>Vibration</b>\nAktiviere „Telefon-Vibration“ in der Touch-Steuerung oder „Gamepad-Vibration“ in der Tastenbelegung und starte das Spiel neu. Die Effekte stammen aus dem Force-Feedback-System des Spiels, nie aus Tastendrücken. Aktiviere Force Feedback auch im Spiel. Die zuletzt benutzte Eingabe wählt die Ausgabe. Gamepad-Vibration hängt vom Android-Treiber ab: ein Gamepad kann zur Eingabe taugen, ohne Vibration bereitzustellen. Gerichtete Lenkkräfte werden in Vibrationsstärke umgesetzt.</string>
+ <string name="faq_mapping"><b>Gamepad-Belegung</b>\nTippe im Player-1-Schema auf eine Taste, einen Trigger oder eine Stick-Richtung, um die Aktion zu wählen. In der Liste darunter lassen sich das physische Element und die ans Spiel gesendete Taste wählen. Belegst du ein bereits vergebenes Element, ersetzt das seine bisherige Aktion. Starte das Spiel nach Änderungen neu.</string>
+ <string name="faq_lights"><b>Licht und Rückkehr zur Strecke</b>\n☼ sendet L. ↻ sendet R, um auf die Strecke zurückzukehren. Diese Belegungen lassen sich in der Tastenbelegung ändern.</string>
+ <string name="faq_screen_data"><b>Bildschirm und Spieldaten</b>\nQuerformat sperrt das Spiel waagerecht; Automatisch erlaubt das Drehen. Die FPS-Grenze begrenzt die Bildrate; ein niedrigerer Wert senkt die Last. „Spieldaten“ verwaltet die Importe und zeigt den aktiven Datensatz. „Spielen“ wird verfügbar, sobald ein Datensatz bereit ist.</string>
+</resources>

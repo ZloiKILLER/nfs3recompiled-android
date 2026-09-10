@@ -128,6 +128,13 @@ struct KeyBinding
     SDL_Scancode scancode;
 };
 
+enum AxisBinding
+{
+    AXIS_LEFT_UP, AXIS_LEFT_DOWN, AXIS_LEFT_LEFT, AXIS_LEFT_RIGHT,
+    AXIS_RIGHT_UP, AXIS_RIGHT_DOWN, AXIS_RIGHT_LEFT, AXIS_RIGHT_RIGHT,
+    AXIS_LEFT_TRIGGER, AXIS_RIGHT_TRIGGER, AXIS_BINDING_COUNT
+};
+
 static bool keyBindingFromName(const char* name, KeyBinding& out)
 {
     struct NamedKey { const char* name; SDL_Keycode key; SDL_Scancode scancode; };
@@ -193,12 +200,29 @@ static bool gamepadButtonFromName(const char* name, SDL_GamepadButton& out)
     return false;
 }
 
+static bool axisBindingFromName(const char* name, AxisBinding& out)
+{
+    static const struct { const char* name; AxisBinding binding; } names[] =
+    {
+        { "left_stick_up", AXIS_LEFT_UP }, { "left_stick_down", AXIS_LEFT_DOWN },
+        { "left_stick_left", AXIS_LEFT_LEFT }, { "left_stick_right", AXIS_LEFT_RIGHT },
+        { "right_stick_up", AXIS_RIGHT_UP }, { "right_stick_down", AXIS_RIGHT_DOWN },
+        { "right_stick_left", AXIS_RIGHT_LEFT }, { "right_stick_right", AXIS_RIGHT_RIGHT },
+        { "left_trigger", AXIS_LEFT_TRIGGER }, { "right_trigger", AXIS_RIGHT_TRIGGER },
+    };
+    for (size_t i=0;i<SDL_arraysize(names);++i) if(SDL_strcasecmp(name,names[i].name)==0){out=names[i].binding;return true;}
+    return false;
+}
+
 /* Parsed once (the env var never changes at runtime) into a flat table
  * indexed by SDL_GamepadButton -- small and fixed-size, so no map/allocation
  * needed.  s_overrideSet[button] is false for every button NFS_GAMEPAD_MAPPING
  * did not mention, which is every button whenever the variable is unset. */
 static bool        s_overrideSet[SDL_GAMEPAD_BUTTON_COUNT];
 static KeyBinding  s_override[SDL_GAMEPAD_BUTTON_COUNT];
+static bool        s_axisOverrideSet[AXIS_BINDING_COUNT];
+static KeyBinding  s_axisOverride[AXIS_BINDING_COUNT];
+static bool        s_mappingParsed;
 
 static void parseGamepadMapping()
 {
@@ -216,11 +240,17 @@ static void parseGamepadMapping()
         {
             SDL_GamepadButton button = SDL_GAMEPAD_BUTTON_INVALID;
             KeyBinding binding = { SDLK_UNKNOWN, SDL_SCANCODE_UNKNOWN };
-            if (gamepadButtonFromName(pair.substr(0, eq).c_str(), button) &&
-                keyBindingFromName(pair.substr(eq + 1).c_str(), binding))
+            const bool validKey=keyBindingFromName(pair.substr(eq + 1).c_str(), binding);
+            AxisBinding axis=AXIS_LEFT_UP;
+            if (validKey && gamepadButtonFromName(pair.substr(0, eq).c_str(), button))
             {
                 s_overrideSet[button] = true;
                 s_override[button] = binding;
+            }
+            else if(validKey && axisBindingFromName(pair.substr(0,eq).c_str(),axis))
+            {
+                s_axisOverrideSet[axis]=true;
+                s_axisOverride[axis]=binding;
             }
             else
             {
@@ -236,6 +266,15 @@ static void parseGamepadMapping()
 
 /* Resolves the effective key for `button`, applying the parsed override (if
  * any) on top of the compiled-in default. */
+static void ensureGamepadMappingParsed()
+{
+    if (!s_mappingParsed)
+    {
+        parseGamepadMapping();
+        s_mappingParsed = true;
+    }
+}
+
 static void resolveKey(SDL_GamepadButton button, SDL_Keycode defaultKey, SDL_Scancode defaultScancode,
                        SDL_Keycode& key, SDL_Scancode& scancode)
 {
@@ -251,6 +290,19 @@ static void resolveKey(SDL_GamepadButton button, SDL_Keycode defaultKey, SDL_Sca
         key = defaultKey;
         scancode = defaultScancode;
     }
+}
+
+static KeyBinding axisKey(AxisBinding binding)
+{
+    ensureGamepadMappingParsed();
+    return s_axisOverrideSet[binding] ? s_axisOverride[binding]
+        : KeyBinding{SDLK_UNKNOWN,SDL_SCANCODE_UNKNOWN};
+}
+
+static void updateTriggerAsKey(Sint16 value,bool& down,const KeyBinding& binding)
+{
+    const bool wanted=value>STICK_PRESS;
+    if(wanted!=down){sendKey(wanted,binding.key,binding.scancode);down=wanted;}
 }
 
 static void pollMenuGamepad()
@@ -317,6 +369,21 @@ static void pollMenuGamepad()
         }
     }
 
+    /* Explicit launcher mappings for sticks and triggers remain active even
+     * while DirectInput reads the pad, matching the button remapping behavior. */
+    static int s_mappedLeftX=0,s_mappedLeftY=0,s_mappedRightX=0,s_mappedRightY=0;
+    static bool s_mappedLT=false,s_mappedRT=false;
+    KeyBinding ll=axisKey(AXIS_LEFT_LEFT),lr=axisKey(AXIS_LEFT_RIGHT);
+    KeyBinding lu=axisKey(AXIS_LEFT_UP),ld=axisKey(AXIS_LEFT_DOWN);
+    KeyBinding rl=axisKey(AXIS_RIGHT_LEFT),rr=axisKey(AXIS_RIGHT_RIGHT);
+    KeyBinding ru=axisKey(AXIS_RIGHT_UP),rd=axisKey(AXIS_RIGHT_DOWN);
+    updateAxisAsKeys(SDL_GetGamepadAxis(s_padDevice,SDL_GAMEPAD_AXIS_LEFTX),s_mappedLeftX,ll.key,ll.scancode,lr.key,lr.scancode);
+    updateAxisAsKeys(SDL_GetGamepadAxis(s_padDevice,SDL_GAMEPAD_AXIS_LEFTY),s_mappedLeftY,lu.key,lu.scancode,ld.key,ld.scancode);
+    updateAxisAsKeys(SDL_GetGamepadAxis(s_padDevice,SDL_GAMEPAD_AXIS_RIGHTX),s_mappedRightX,rl.key,rl.scancode,rr.key,rr.scancode);
+    updateAxisAsKeys(SDL_GetGamepadAxis(s_padDevice,SDL_GAMEPAD_AXIS_RIGHTY),s_mappedRightY,ru.key,ru.scancode,rd.key,rd.scancode);
+    updateTriggerAsKey(SDL_GetGamepadAxis(s_padDevice,SDL_GAMEPAD_AXIS_LEFT_TRIGGER),s_mappedLT,axisKey(AXIS_LEFT_TRIGGER));
+    updateTriggerAsKey(SDL_GetGamepadAxis(s_padDevice,SDL_GAMEPAD_AXIS_RIGHT_TRIGGER),s_mappedRT,axisKey(AXIS_RIGHT_TRIGGER));
+
     /* D-pad and the left stick drive menu navigation, and in-race steering
      * when nothing has bound the pad as a DirectInput device.  Skipped once
      * the game *is* reading this pad as DirectInput, so a race does not see
@@ -345,11 +412,14 @@ static void pollMenuGamepad()
         }
     }
 
-    static int s_stickX = 0, s_stickY = 0;
-    updateAxisAsKeys(SDL_GetGamepadAxis(s_padDevice, SDL_GAMEPAD_AXIS_LEFTX), s_stickX,
-                      SDLK_LEFT, SDL_SCANCODE_LEFT, SDLK_RIGHT, SDL_SCANCODE_RIGHT);
-    updateAxisAsKeys(SDL_GetGamepadAxis(s_padDevice, SDL_GAMEPAD_AXIS_LEFTY), s_stickY,
-                      SDLK_UP, SDL_SCANCODE_UP, SDLK_DOWN, SDL_SCANCODE_DOWN);
+    if(!s_axisOverrideSet[AXIS_LEFT_LEFT]&&!s_axisOverrideSet[AXIS_LEFT_RIGHT]
+        &&!s_axisOverrideSet[AXIS_LEFT_UP]&&!s_axisOverrideSet[AXIS_LEFT_DOWN]) {
+        static int s_stickX = 0, s_stickY = 0;
+        updateAxisAsKeys(SDL_GetGamepadAxis(s_padDevice, SDL_GAMEPAD_AXIS_LEFTX), s_stickX,
+                          SDLK_LEFT, SDL_SCANCODE_LEFT, SDLK_RIGHT, SDL_SCANCODE_RIGHT);
+        updateAxisAsKeys(SDL_GetGamepadAxis(s_padDevice, SDL_GAMEPAD_AXIS_LEFTY), s_stickY,
+                          SDLK_UP, SDL_SCANCODE_UP, SDLK_DOWN, SDL_SCANCODE_DOWN);
+    }
 }
 
 void Gamepad::updateKeys()
@@ -636,7 +706,10 @@ void androidForceFeedback(float strength) {
 bool win32::Gamepad::hasForceFeedback() const {
 #ifdef __ANDROID__
     const char* phone=SDL_getenv("NFS_TOUCH_VIBRATION");const char* pad=SDL_getenv("NFS_GAMEPAD_VIBRATION");
-    return (phone&&phone[0]=='1')||(m_joystick&&pad&&pad[0]=='1');
+    /* The phone route needs a motor as well as a preference; the activity looks
+     * that up, since Vibrator.hasVibrator() has no native equivalent. */
+    const char* motor=SDL_getenv("NFS_HAS_VIBRATOR");
+    return (phone&&phone[0]=='1'&&motor&&motor[0]=='1')||(m_joystick&&pad&&pad[0]=='1');
 #else
     return m_joystick&&SDL_GetBooleanProperty(SDL_GetJoystickProperties(m_joystick),SDL_PROP_JOYSTICK_CAP_RUMBLE_BOOLEAN,false);
 #endif

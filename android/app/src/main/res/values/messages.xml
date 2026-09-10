@@ -1,0 +1,42 @@
+<resources>
+ <!-- Text that used to be written inline in the Java sources.  Everything here
+      is ordinary launcher wording and is meant to be translated.  Low-level
+      failures that only name a path stayed in the code: they tell a developer
+      what broke, not the player what to do. -->
+
+ <!-- Settings the launcher builds in code rather than in a layout. -->
+ <string name="pref_gamepad_vibration">Gamepad vibration (game effects)</string>
+ <string name="pref_phone_vibration">Phone vibration (game effects; restart game)</string>
+ <string name="pref_separate_layouts">Separate menu and race layouts</string>
+ <string name="pref_show_gears">Show gear − / + buttons</string>
+ <string name="pref_hide_full">Hide completely (otherwise faint silhouette)</string>
+ <string name="auto_hide_delay">Auto-hide delay: %1$d s</string>
+
+ <!-- Touch layout editor. -->
+ <string name="editor_button_size">Button: %1$d%%</string>
+ <string name="editor_touch_zone">Touch zone: %1$d%%</string>
+ <string name="editor_mode_race">Race</string>
+ <string name="editor_mode_menu">Menu</string>
+ <string name="editor_mode_shared">Shared</string>
+ <string name="editor_reset_title">Reset this layout?</string>
+ <string name="editor_reset_message">Restore default positions, button sizes and touch zones for this layout.</string>
+ <string name="edit_touch_layout">Edit positions &amp; touch zones</string>
+ <string name="editor_done">Done</string>
+ <string name="editor_reset">Reset layout</string>
+ <string name="editor_select_control">Select a control</string>
+ <string name="editor_drag_hint">Drag controls · Select to resize</string>
+
+ <!-- Game data: default names and the failures worth explaining to a player.
+      Messages that only reach Log.e stayed English in the code. -->
+ <string name="data_set_name_default">Imported data</string>
+ <string name="data_set_name_folder">Imported folder</string>
+ <string name="data_set_name_zip">Imported ZIP</string>
+ <string name="data_set_active_suffix"> (active)</string>
+ <string name="error_external_storage">External storage is not available</string>
+ <string name="error_import_incomplete">The imported data is missing the expected files</string>
+ <string name="error_data_set_incomplete">The selected data set is incomplete</string>
+ <string name="importer_open_folder_failed">Cannot open the selected folder</string>
+ <string name="importer_missing_subfolder">The selected folder has no \'%1$s\' subfolder — pick the folder that directly contains fedata and gamedata (e.g. the CD root).</string>
+ <string name="importer_open_zip_failed">Could not open the selected ZIP</string>
+ <string name="importer_zip_missing_files">The ZIP is missing the expected fedata/gamedata files</string>
+</resources>

@@ -25,9 +25,17 @@ final class GamePreferences
     static final String FILE_NAME = "launcher_settings";
 
     static final String ACTIVE_DATA_SET_ID = "active_data_set_id";
+    /* Launcher language. "system" follows the device; anything else is a BCP-47
+     * tag applied by LocaleHelper, written by the launcher's language picker. */
+    static final String UI_LANGUAGE = "ui_language";
+    static final String UI_LANGUAGE_SYSTEM = "system";
     static final String DATA_SET_NAMES = "data_set_names";
     static final String ORIENTATION = "screen_orientation";
     static final String FPS_CAP = "fps_cap";
+    /* Display gamma as a percentage: 100 leaves the picture exactly as the game
+     * drew it, higher lifts the dark end.  Stored as an int because that is
+     * what a SeekBar deals in. */
+    static final String GAMMA = "display_gamma";
     static final String TOUCH_MODE = "touch_mode";
     static final String TOUCH_LAYOUT = "touch_layout";
     static final String TOUCH_OPACITY = "touch_opacity";
@@ -36,16 +44,24 @@ final class GamePreferences
     static final String TOUCH_EDGE = "touch_edge_spacing";
     static final String TOUCH_RAISE = "touch_raise_controls";
     static final String TOUCH_SEPARATE = "touch_separate_layouts";
+    /* Whether the save archive carries the game's own settings.  Remembered
+     * rather than read off the checkbox: the data screen is rebuilt every time
+     * the system file picker returns, which used to blank the box and make a
+     * working export look like it had ignored the choice. */
+    static final String SAVES_INCLUDE_SETTINGS = "saves_include_settings";
     static final String TOUCH_VIBRATION = "touch_vibration";
     static final String GAMEPAD_VIBRATION = "gamepad_vibration";
     static final String TOUCH_VIBRATION_STRENGTH = "touch_vibration_strength";
     static final String GAMEPAD_VIBRATION_STRENGTH = "gamepad_vibration_strength";
-    static final String TOUCH_GEARS = "touch_show_gears";
     static final String TOUCH_HIDE_SECONDS = "touch_hide_seconds";
     static final String TOUCH_HIDE_FULL = "touch_hide_full";
 
     static final String ORIENTATION_AUTO = "auto";
     static final String ORIENTATION_LANDSCAPE = "landscape";
+    /* The other way round.  Both fixed choices have to be spelled out: which
+     * one is "right way up" depends on how the phone is held, and there is no
+     * way to guess it. */
+    static final String ORIENTATION_LANDSCAPE_REVERSE = "landscape_reverse";
     static final String TOUCH_MODE_BUTTONS = "buttons";
     static final String TOUCH_MODE_WHEEL = "wheel";
     static final String TOUCH_MODE_TILT = "tilt";
@@ -58,13 +74,8 @@ final class GamePreferences
         "handbrake", "camera", "look_behind", "horn", "spike_strip", "pause", "headlights", "recover", "gear_up", "gear_down",
     };
 
-    static final String[] ACTION_LABELS = {
-        "Steer left", "Steer right", "Accelerate / menu up", "Brake / menu down", "Confirm / OK",
-        "Handbrake", "Camera view", "Look behind", "Horn", "Spike strip", "Escape / pause", "Headlights", "Return to track", "Shift up", "Shift down",
-    };
-
     static final String[] DEFAULT_PHYSICAL_BUTTONS = {
-        "dpad_left", "dpad_right", "dpad_up", "dpad_down", "south",
+        "left_stick_left", "left_stick_right", "right_trigger", "left_trigger", "south",
         "west", "east", "left_shoulder", "right_shoulder", "none", "start", "none", "none", "none", "none",
     };
 
@@ -92,13 +103,9 @@ final class GamePreferences
         "none", "back", "start", "south", "east", "west", "north",
         "left_shoulder", "right_shoulder", "dpad_up", "dpad_down",
         "dpad_left", "dpad_right", "left_stick", "right_stick",
-    };
-
-    static final String[] PHYSICAL_BUTTON_LABELS = {
-        "Unassigned", "Back / View / Minus", "Start / Options / Plus",
-        "South (A / Cross)", "East (B / Circle)", "West (X / Square)",
-        "North (Y / Triangle)", "Left shoulder", "Right shoulder",
-        "D-pad up", "D-pad down", "D-pad left", "D-pad right", "Left stick click", "Right stick click",
+        "left_trigger", "right_trigger", "left_stick_up", "left_stick_down",
+        "left_stick_left", "left_stick_right", "right_stick_up", "right_stick_down",
+        "right_stick_left", "right_stick_right",
     };
 
     static final int[] KEY_VALUES = {
@@ -120,10 +127,23 @@ final class GamePreferences
         KeyEvent.KEYCODE_Z,
     };
 
-    static final String[] KEY_LABELS = {
-        "Unassigned", "Up arrow", "Down arrow", "Left arrow", "Right arrow",
-        "Return / Enter", "Escape", "Space", "C", "B", "H", "S", "L", "R", "A", "Z",
-    };
+    /* Display labels live in res/values/mapping_labels.xml, index-parallel to the
+     * id arrays above.  Only the ids are ever stored, so a translated label can
+     * never change or invalidate a saved mapping. */
+    static String[] actionLabels(Context context)
+    {
+        return context.getResources().getStringArray(R.array.action_labels);
+    }
+
+    static String[] keyLabels(Context context)
+    {
+        return context.getResources().getStringArray(R.array.key_labels);
+    }
+
+    static String[] physicalButtonLabels(Context context)
+    {
+        return context.getResources().getStringArray(R.array.physical_button_labels);
+    }
 
     private GamePreferences() {}
 
@@ -171,7 +191,8 @@ final class GamePreferences
     {
         Map<String, String> mappings = new LinkedHashMap<>();
         // Explicit unassignment must override native defaults too.
-        for(String button:PHYSICAL_BUTTON_VALUES) if(!"none".equals(button)) mappings.put(button,"unknown");
+        for(String button:PHYSICAL_BUTTON_VALUES)
+            if(!"none".equals(button)&&!button.startsWith("dpad_"))mappings.put(button,"unknown");
         for (int i = 0; i < ACTION_IDS.length; ++i)
         {
             String button = getPhysicalButton(preferences, i);

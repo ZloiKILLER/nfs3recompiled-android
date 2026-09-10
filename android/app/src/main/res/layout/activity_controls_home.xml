@@ -3,8 +3,8 @@
  android:orientation="vertical" android:padding="24dp" android:background="@color/ui_background">
  <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="@string/controls_hub" android:textSize="26sp" android:textColor="@color/ui_text" android:fontFamily="sans-serif-black"/>
  <LinearLayout android:layout_width="match_parent" android:layout_height="0dp" android:layout_weight="1" android:gravity="center_vertical" android:orientation="horizontal">
-  <Button android:id="@+id/touch_controls_button" android:layout_width="0dp" android:layout_weight="1" android:layout_height="100dp" android:text="@string/controls_touch"/>
-  <Button android:id="@+id/gamepad_controls_button" android:layout_width="0dp" android:layout_weight="1" android:layout_height="100dp" android:layout_marginStart="20dp" android:text="@string/controls_gamepad"/>
+  <Button android:id="@+id/touch_controls_button" android:layout_width="0dp" android:layout_weight="1" android:layout_height="100dp" android:text="@string/controls_touch" android:maxLines="1" android:ellipsize="end" android:autoSizeTextType="uniform" android:autoSizeMinTextSize="10sp" android:autoSizeMaxTextSize="14sp"/>
+  <Button android:id="@+id/gamepad_controls_button" android:layout_width="0dp" android:layout_weight="1" android:layout_height="100dp" android:layout_marginStart="20dp" android:text="@string/controls_gamepad" android:maxLines="1" android:ellipsize="end" android:autoSizeTextType="uniform" android:autoSizeMinTextSize="10sp" android:autoSizeMaxTextSize="14sp"/>
  </LinearLayout>
- <Button android:id="@+id/back_button" android:layout_width="120dp" android:layout_height="48dp" android:text="@string/back_to_launcher"/>
+ <Button android:id="@+id/back_button" android:layout_width="wrap_content" android:minWidth="120dp" android:layout_height="48dp" android:text="@string/back_to_launcher" android:maxLines="1" android:ellipsize="end"/>
 </LinearLayout>

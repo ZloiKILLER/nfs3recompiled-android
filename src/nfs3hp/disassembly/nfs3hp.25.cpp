@@ -46305,7 +46305,8 @@ void Application::sub_4b6020(WinApplication* app, x86::CPU& cpu)
     sub_4b5f10(app, cpu);
     if (cpu.terminate) return;
     // 004b6097  b800000001             -mov eax, 0x1000000
-    cpu.eax = 16777216 /*0x1000000*/;
+    // Port heap budget: 64 MiB (original instruction requests 16 MiB).
+    cpu.eax = 64u * 1024u * 1024u;
     // 004b609c  e80f320400             -call 0x4f92b0
     cpu.esp -= 4;
     sub_4f92b0(app, cpu);

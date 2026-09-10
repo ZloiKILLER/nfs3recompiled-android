@@ -1,0 +1,6 @@
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android" android:layout_width="match_parent" android:layout_height="match_parent" android:orientation="vertical" android:padding="24dp" android:background="@color/ui_background">
+ <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="@string/gamepad_settings_title" android:textSize="28sp" android:fontFamily="sans-serif-black" android:textColor="@color/ui_text"/>
+ <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp" android:text="@string/controls_explanation" android:textSize="13sp" android:textColor="@color/ui_muted"/>
+ <LinearLayout android:id="@+id/controller_options" android:layout_width="match_parent" android:layout_height="0dp" android:layout_weight="1" android:layout_marginTop="24dp" android:orientation="vertical"/>
+ <Button android:id="@+id/back_button" android:layout_width="wrap_content" android:minWidth="120dp" android:layout_height="48dp" android:text="@string/back_to_launcher"/>
+</LinearLayout>

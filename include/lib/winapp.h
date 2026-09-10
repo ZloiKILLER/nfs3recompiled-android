@@ -179,9 +179,26 @@ public:
     // the ~60 MB of generated code that includes this header.
     static bool traceApi();
 
+    /* Reports an indirect call whose target is in no table.  Out of line and
+     * cold on purpose: dynamic_call is inlined into tens of thousands of
+     * generated call sites, so the miss path must add no code of its own to
+     * any of them. */
+    void reportMissingMethod(x86::reg32 address);
+
     inline void dynamic_call(uint32_t address, x86::CPU& cpu)
     {
-        const win32::Method& m = m_methods.find(address-0x400000)->second;
+        std::unordered_map<x86::reg32, Method>::const_iterator it = m_methods.find(address-0x400000);
+        if (it == m_methods.end())
+        {
+            /* Running the miss used to read the method pointer straight out of
+             * end(), which libc++ represents as a null node -- a SIGSEGV at
+             * offset 0x30 naming neither the caller nor the address it wanted.
+             * Skipping the call leaves the guest registers as the caller left
+             * them, which is survivable; the crash was not. */
+            reportMissingMethod(x86::reg32(address));
+            return;
+        }
+        const win32::Method& m = it->second;
         if (traceApi())
         {
             SDL_Log("[API] t%u %s", unsigned(SDL_GetCurrentThreadID()), m.name.c_str());

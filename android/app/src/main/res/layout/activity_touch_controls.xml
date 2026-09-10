@@ -2,10 +2,10 @@
  <LinearLayout android:layout_width="0dp" android:layout_weight="1" android:layout_height="match_parent" android:orientation="vertical" android:layout_marginRight="20dp">
   <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="@string/touch_settings" android:textColor="@color/ui_text" android:textSize="24sp" android:fontFamily="sans-serif-medium"/>
   <FrameLayout android:id="@+id/touch_preview" android:layout_width="match_parent" android:layout_height="0dp" android:layout_weight="1" android:layout_marginTop="14dp" android:background="@drawable/ui_hero" android:clipToOutline="true"/>
-  <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp" android:text="@string/touch_digital_note" android:textColor="@color/ui_muted" android:textSize="12sp"/>
+  <TextView android:id="@+id/touch_layout_note" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp" android:textColor="@color/ui_muted" android:textSize="12sp"/>
   <LinearLayout android:layout_width="match_parent" android:layout_height="48dp" android:layout_marginTop="10dp" android:orientation="horizontal">
-   <Button android:id="@+id/back_button" android:layout_width="100dp" android:layout_height="match_parent" android:text="@string/back_to_launcher"/>
-   <Button android:id="@id/edit_touch_layout" android:layout_width="0dp" android:layout_weight="1" android:layout_height="match_parent" android:layout_marginLeft="10dp" android:text="Edit positions &amp; touch zones"/>
+   <Button android:id="@+id/back_button" android:layout_width="wrap_content" android:minWidth="96dp" android:layout_height="match_parent" android:text="@string/back_to_launcher" android:maxLines="1" android:ellipsize="end"/>
+   <Button android:id="@id/edit_touch_layout" android:layout_width="0dp" android:layout_weight="1" android:layout_height="match_parent" android:layout_marginLeft="10dp" android:text="@string/edit_touch_layout" android:maxLines="1" android:ellipsize="end" android:autoSizeTextType="uniform" android:autoSizeMinTextSize="10sp" android:autoSizeMaxTextSize="14sp"/>
   </LinearLayout>
  </LinearLayout>
  <ScrollView android:layout_width="230dp" android:layout_height="match_parent">

@@ -41,6 +41,15 @@ public class NFS3Activity extends SDLActivity
     private GameSurface gameSurface;
     private GameHaptics haptics;
 
+    /* Language of the launcher, chosen in the picker on the main screen.
+     * LocaleHelper returns the context unchanged while the setting is
+     * "system". */
+    @Override
+    protected void attachBaseContext(android.content.Context base)
+    {
+        super.attachBaseContext(LocaleHelper.wrap(base));
+    }
+
     @Override
     protected void onCreate(Bundle savedInstanceState)
     {
@@ -48,6 +57,12 @@ public class NFS3Activity extends SDLActivity
         SharedPreferences preferences = GamePreferences.get(this);
         setEnv("NFS_TOUCH_VIBRATION",preferences.getBoolean(GamePreferences.TOUCH_VIBRATION,false)?"1":"0");
         setEnv("NFS_GAMEPAD_VIBRATION",preferences.getBoolean(GamePreferences.GAMEPAD_VIBRATION,false)?"1":"0");
+        /* Whether the phone can vibrate at all is a hardware question, and the
+         * native side has no way to ask it.  Without this, a phone with no motor
+         * still reports force feedback to the game, which then creates effects
+         * that go nowhere. */
+        android.os.Vibrator motor=(android.os.Vibrator)getSystemService(Context.VIBRATOR_SERVICE);
+        setEnv("NFS_HAS_VIBRATOR",motor!=null&&motor.hasVibrator()?"1":"0");
         for(String action:new String[]{"steer_left","steer_right","accelerate","brake"})
             setEnv("NFS_TOUCH_"+action.toUpperCase(java.util.Locale.ROOT),
                 GamePreferences.keyName(GamePreferences.getTouchKey(preferences,action)));
@@ -56,12 +71,29 @@ public class NFS3Activity extends SDLActivity
         int fpsCap = preferences.getInt(GamePreferences.FPS_CAP, 30);
         setEnv("NFS_ORIENTATION", orientation);
         setEnv("NFS_FPS_CAP", Integer.toString(fpsCap));
+        /* Percent in the settings, a multiplier in the blit shader.  Formatted
+         * with the root locale on purpose: a comma decimal separator would not
+         * survive SDL_atof on the other side. */
+        setEnv("NFS_GAMMA", String.format(java.util.Locale.ROOT, "%.2f",
+            preferences.getInt(GamePreferences.GAMMA, 100) / 100f));
         setEnv("NFS_GAMEPAD_MAPPING",
             GamePreferences.gamepadMappingEnvironment(preferences));
 
-        setRequestedOrientation(GamePreferences.ORIENTATION_AUTO.equals(orientation)
-            ? ActivityInfo.SCREEN_ORIENTATION_FULL_USER
-            : ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE);
+        /* Landscape whatever happens -- portrait is not offered, the game
+         * cannot use it.  "auto" turns over with the phone; the two fixed
+         * choices pin one direction each, and which of them is the right way up
+         * depends only on how the player holds the device.
+         *
+         * This has to agree with the SDL_HINT_ORIENTATIONS set natively in
+         * nfs3hp_main.cpp: SDL applies the hint through setOrientationBis()
+         * afterwards, so a disagreement means the hint wins and the choice
+         * here is silently undone. */
+        setRequestedOrientation(
+            GamePreferences.ORIENTATION_AUTO.equals(orientation)
+                ? ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+            : GamePreferences.ORIENTATION_LANDSCAPE_REVERSE.equals(orientation)
+                ? ActivityInfo.SCREEN_ORIENTATION_REVERSE_LANDSCAPE
+                : ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE);
 
         if (getIntent() != null && getIntent().getBooleanExtra("trace_api", false))
         {
@@ -153,6 +185,21 @@ public class NFS3Activity extends SDLActivity
         runOnUiThread(()->{if(haptics!=null&&android.os.SystemClock.uptimeMillis()-sent<100)haptics.setLevel(level);});
     }
 
+    /** Invoked by the menu overlay. SDL's hidden edit view forwards committed
+     * text as SDL_TEXT_INPUT, which the Win32 bridge exposes as WM_CHAR. */
+    /* The same button opens and closes, and both ways go through SDL rather
+     * than SDLActivity.showTextInput(): raising the Android keyboard on its own
+     * leaves SDL's text input inactive, and SDL then drops every character while
+     * still passing backspace through as a key event.  Which way to go is asked
+     * of SDL too, not remembered here -- the system back key closes the keyboard
+     * as well, and a flag kept privately in Java would go stale exactly then,
+     * leaving a button that does nothing. */
+    void showTouchKeyboard() {
+        nativeToggleKeyboard();
+    }
+
+    private static native void nativeToggleKeyboard();
+
     private void setEnv(String name, String value)
     {
         try
@@ -172,7 +219,7 @@ public class NFS3Activity extends SDLActivity
         GameSurface(Context context)
         {
             super(context);
-            touchMouse = new TouchMouseInput(context, SDLActivity::onNativeMouse);
+            touchMouse = new TouchMouseInput(this, SDLActivity::onNativeMouse);
         }
 
         @Override public boolean onTouch(android.view.View v, android.view.MotionEvent event) {

@@ -1,0 +1,54 @@
+<resources>
+ <string name="language_label">Language</string>
+ <string name="language_system">System language</string>
+ <string name="language_note">Launcher only. The game\'s own menus come from the disc and stay in its language.</string>
+
+ <!-- Each language names itself, so the list reads the same whatever the
+      launcher is currently set to. Index-parallel to language_tags. -->
+ <string-array name="language_names" translatable="false">
+  <item>@string/language_system</item>
+  <item>English</item>
+  <item>Čeština</item>
+  <item>Deutsch</item>
+  <item>Español</item>
+  <item>Français</item>
+  <item>Hrvatski</item>
+  <item>Italiano</item>
+  <item>Magyar</item>
+  <item>Nederlands</item>
+  <item>Polski</item>
+  <item>Português</item>
+  <item>Română</item>
+  <item>Svenska</item>
+  <item>Türkçe</item>
+  <item>Ελληνικά</item>
+  <item>Русский</item>
+  <item>Српски</item>
+  <item>Українська</item>
+  <item>Қазақша</item>
+ </string-array>
+
+ <!-- BCP-47 tags passed to LocaleHelper; "system" follows the device. -->
+ <string-array name="language_tags" translatable="false">
+  <item>system</item>
+  <item>en</item>
+  <item>cs</item>
+  <item>de</item>
+  <item>es</item>
+  <item>fr</item>
+  <item>hr</item>
+  <item>it</item>
+  <item>hu</item>
+  <item>nl</item>
+  <item>pl</item>
+  <item>pt</item>
+  <item>ro</item>
+  <item>sv</item>
+  <item>tr</item>
+  <item>el</item>
+  <item>ru</item>
+  <item>sr</item>
+  <item>uk</item>
+  <item>kk</item>
+ </string-array>
+</resources>

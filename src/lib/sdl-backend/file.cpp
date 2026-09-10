@@ -5,6 +5,7 @@
 #ifdef _WIN32
 # include <windows.h>
 # include <io.h>
+# include <direct.h>
 #else
 # include <unistd.h>
 # include <dirent.h>
@@ -49,10 +50,28 @@ static std::string moveToRoot(const std::string& path)
         return "/dev/null";
     }
 #endif
+    else if (!path.empty() && (path[0] == '\\' || path[0] == '/'))
+    {
+        /* Rooted on the current drive: the install directory, not the cwd. */
+        return s_dataDirectory + std::string(path.begin() + 1, path.end());
+    }
     else
     {
-        /* Relative path - map to local install directory */
-        return s_dataDirectory + path;
+        /* Relative path -- resolved against the current directory first, the
+         * way Win32 does it.  The game lists its saves by moving into
+         * fedata\save\, asking for *.trn, and moving straight back out; without
+         * this the pattern was matched against the install root instead, so
+         * every save, ghost and replay list came back empty while saving itself
+         * worked -- saves are written through a path that carries its own
+         * directory.
+         *
+         * A drive-lettered current directory is the game's own name for the
+         * install root (it restores c:\nfs2se\ immediately afterwards), and
+         * that is where relative paths already land, so only a relative
+         * current directory contributes a prefix. */
+        const bool currentIsRoot = s_currentDirectory == "\\"
+                                || (s_currentDirectory.size() >= 2 && s_currentDirectory[1] == ':');
+        return s_dataDirectory + (currentIsRoot ? std::string() : s_currentDirectory) + path;
     }
 }
 
@@ -223,10 +242,17 @@ FileEnumerator::FileEnumerator(const char* filename)
             {
                 std::string fullPath = dirPath + "/" + entry->d_name;
                 struct stat buffer;
-                stat(fullPath.c_str(), &buffer);
+                /* An entry readdir just handed over can still fail to stat --
+                 * a dangling symlink, or a delete racing us.  Reporting
+                 * whatever the stack happened to hold as its size is worse
+                 * than leaving the entry out. */
+                if (stat(fullPath.c_str(), &buffer) != 0)
+                    continue;
                 WIN32_FIND_DATAA data;
                 memset(&data, 0, sizeof(data));
-                data.dwFileAttributes = (buffer.st_mode & S_IFDIR) ? 16 : 0;
+                /* S_IFDIR is a value of the S_IFMT field, not a standalone bit:
+                 * masking against it alone calls symlinks directories too. */
+                data.dwFileAttributes = S_ISDIR(buffer.st_mode) ? 16 : 0;
                 data.nFileSizeHigh = 0;
                 data.nFileSizeLow = buffer.st_size;
                 strncpy(data.cFileName, entry->d_name, sizeof(data.cFileName)-1);
@@ -234,6 +260,26 @@ FileEnumerator::FileEnumerator(const char* filename)
             }
         }
         closedir(d);
+        /* An empty result is normal for the optional file sets the game probes
+         * for at startup, but it is also exactly what a save list that refuses
+         * to show anything looks like -- and with the directory present there
+         * is otherwise nothing at all to go on.  Once per pattern, so the
+         * probing cannot flood the log. */
+        if (m_files.empty())
+        {
+            static std::unordered_set<std::string> s_emptyLogged;
+            if (s_emptyLogged.insert(m_pattern).second)
+                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "nothing matched %s in %s",
+                            filePattern.c_str(), dirPath.c_str());
+        }
+    }
+    else
+    {
+        /* A directory that is not there used to come back as an empty listing
+         * with nothing logged anywhere -- indistinguishable, from the outside,
+         * from a save folder that simply has no saves in it. */
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "unable to enumerate %s (errno %d)",
+                     dirPath.c_str(), errno);
     }
 #endif
 }
@@ -262,6 +308,36 @@ bool FileEnumerator::findNext(WIN32_FIND_DATAA *data)
  * the game reads as "file present but empty" instead of "file missing".  That
  * is how an empty filename turned into "showmad - no MAD chunks found": it
  * resolved to the data directory itself and opened successfully. */
+#ifndef _WIN32
+/* Makes every missing component of the path's parent, deepest last.  Reports
+ * whether anything was actually created, so the caller only retries an open
+ * that has a reason to succeed the second time. */
+static bool createParentDirectories(const std::string& path)
+{
+    const size_t leaf = path.rfind('/');
+    if (leaf == std::string::npos || leaf == 0)
+        return false;
+    bool created = false;
+    for (size_t at = path.find('/', 1); at != std::string::npos && at <= leaf;
+         at = path.find('/', at + 1))
+    {
+        const std::string parent = path.substr(0, at);
+        if (mkdir(parent.c_str(), 0775) == 0)
+        {
+            created = true;
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "created directory %s", parent.c_str());
+        }
+        else if (errno != EEXIST)
+        {
+            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "unable to create directory %s (errno %d)",
+                         parent.c_str(), errno);
+            return created;
+        }
+    }
+    return created;
+}
+#endif
+
 static bool isDirectory(int fd)
 {
 #ifdef _WIN32
@@ -353,6 +429,20 @@ File::File(const char* path, x86::reg32 mode, x86::reg32 flags, x86::reg32 creat
     }
 #endif
     m_file = _open(m_filename.c_str(), openFlags, 0664);
+#ifndef _WIN32
+    /* The original install had its directory tree laid down by the installer,
+     * and the game leans on that: it opens fedata\save\*.trn straight out
+     * without ever asking for the directory, and aborts outright when the open
+     * fails.  Importing game data cannot be relied on to carry an empty folder
+     * across, so a create that failed purely because a parent is missing gets
+     * one retry with the parents made. */
+    if (m_file == -1 && (openFlags & O_CREAT) && errno == ENOENT
+        && createParentDirectories(m_filename))
+    {
+        invalidateCaseInsensitiveCache();
+        m_file = _open(m_filename.c_str(), openFlags, 0664);
+    }
+#endif
     if (isDirectory(m_file))
     {
         _close(m_file);
@@ -480,8 +570,14 @@ const std::string& File::getCurrentDirectory()
 
 void File::setCurrentDirectory(const char* path)
 {
-    s_currentDirectory = path;
-    if (s_currentDirectory.back() != '\\')
+    /* An empty argument used to read back() off an empty string.  Win32 would
+     * reject it; treating it as "no change of directory" is the harmless
+     * reading, and it now actually matters because relative paths resolve
+     * against this. */
+    s_currentDirectory = path ? path : "";
+    if (s_currentDirectory.empty())
+        s_currentDirectory = "\\";
+    else if (s_currentDirectory.back() != '\\')
         s_currentDirectory.append("\\");
 }
 
@@ -519,6 +615,40 @@ x86::reg32 File::remove(const char *filename)
 #endif
         return 1;
     }
+}
+
+/* The game creates its save directory on first run; before this existed the
+ * call was a stub that only ever reported failure, so nothing was created and
+ * every later save into it failed to open.  Only the leaf is created, and an
+ * existing directory reports failure, both matching Win32 -- the game already
+ * copes with that, since on a normal install the directory is always there. */
+x86::reg32 File::createDirectory(const char* path)
+{
+    std::string f = moveToRoot(path);
+    std::transform(f.begin(), f.end(), f.begin(), ::tolower);
+    for (std::string::iterator it = f.begin(); it != f.end(); ++it)
+        if (*it == '\\') *it = '/';
+    /* Resolves the parents that do exist to their real casing and leaves the
+     * leaf alone, which is exactly what has to be created. */
+    f = resolvePathCaseInsensitive(f);
+#ifdef _WIN32
+    const int result = ::_mkdir(f.c_str());
+#else
+    const int result = ::mkdir(f.c_str(), 0775);
+#endif
+    if (result != 0)
+    {
+        if (errno != EEXIST)
+            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "unable to create directory %s (errno %d)",
+                         f.c_str(), errno);
+        return 0;
+    }
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "created directory %s", f.c_str());
+#ifndef _WIN32
+    /* The negative lookup cache may have recorded this path as missing. */
+    invalidateCaseInsensitiveCache();
+#endif
+    return 1;
 }
 
 }

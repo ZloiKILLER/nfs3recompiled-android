@@ -39,7 +39,7 @@ public:
      * so it is exposed here rather than kept private to present(). */
     void getViewportRect(int& x, int& y, int& w, int& h) const
     {
-        x = m_vpX; y = m_vpY; w = m_vpW; h = m_vpH;
+        x = m_vpX; y = m_vpY + m_keyboardShift; w = m_vpW; h = m_vpH;
     }
 
 private: // friend class GlideRenderer
@@ -67,6 +67,9 @@ private:
     void*           m_renderer;
     unsigned int    m_texture;
     unsigned int    m_blitProgram;
+    /* Where u_gamma lives in the blit program, or -1 if the driver optimised
+     * it away because the value never differs from one. */
+    int             m_blitGammaUniform;
     unsigned int    m_blitVertexArray;
     unsigned int    m_blitVertexBuffer;
     MemMap*         m_videoMemory;
@@ -91,6 +94,11 @@ private:
     int             m_lastWindowW;
     int             m_lastWindowH;
     int             m_vpX, m_vpY, m_vpW, m_vpH;
+    /* Pixels the picture is raised by while the on-screen keyboard is up, so
+     * the game's own text field clears it.  Kept apart from m_vpY because that
+     * one is cached until the window resizes, and a shift folded into it would
+     * outlive the keyboard. */
+    int             m_keyboardShift;
 };
 
 }

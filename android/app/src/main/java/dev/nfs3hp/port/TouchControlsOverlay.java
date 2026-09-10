@@ -76,7 +76,7 @@ final class TouchControlsOverlay extends View {
         editing=value;selectionChanged=listener;selected=null;releaseAll();invalidate();
     }
     String selectedAction() { return selected==null?null:selected.action; }
-    String selectedLabel() { return selected==null?"Select a control":selected.label; }
+    String selectedLabel() { return selected==null?getContext().getString(R.string.editor_select_control):selected.label; }
     int selectedVisualSize() { return selected==null?100:Math.round(selected.visualSize*100); }
     int selectedHitSize() { return selected==null?100:Math.round(selected.hitSize*100); }
     private String layoutPrefix() {
@@ -85,7 +85,7 @@ final class TouchControlsOverlay extends View {
     void resetLayout() {
         SharedPreferences.Editor edit=preferences.edit();
         for(String k:preferences.getAll().keySet()) if(k.startsWith(layoutPrefix())) edit.remove(k);
-        edit.apply();selected=null;rebuild();if(selectionChanged!=null)selectionChanged.accept("Select a control");
+        edit.apply();selected=null;rebuild();if(selectionChanged!=null)selectionChanged.accept(getContext().getString(R.string.editor_select_control));
     }
     void resizeSelected(int visual,int hit) {
         if(selected==null)return;
@@ -129,37 +129,65 @@ final class TouchControlsOverlay extends View {
         float w=width/scale-2*edge,h=height/scale-preferences.getInt(GamePreferences.TOUCH_RAISE,0);
         float size=Math.min(preferences.getInt(GamePreferences.TOUCH_SIZE,100)/100f,1.15f);
         float pad=140*size,pedal=62*size;
+        // These compact utility buttons deliberately share the fixed size of
+        // the layout-toggle button. Driving controls still follow TOUCH_SIZE.
+        float utilityWidth=58,utilityHeight=48;
         boolean separate=preferences.getBoolean(GamePreferences.TOUCH_SEPARATE,false);
         boolean menuLayout=separate&&menuMode;
         if(menuLayout) add("steering",R.string.control_navigation,20,h-20-pad,pad,pad,false);
         else {
             add("steer_left",R.string.control_left,20,h-20-76*size,68*size,76*size,false);
-            add("steer_right",R.string.control_right,28+68*size+14*pixelScale/scale,h-20-76*size,68*size,76*size,false);
+            add("steer_right",R.string.control_right,28+68*size+26*pixelScale/scale,h-20-76*size,68*size,76*size,false);
         }
         if(menuLayout) {
             add("confirm",R.string.control_confirm,w-100*size,h-20-84*size,80*size,84*size,true);
             add("back",R.string.control_back,w-188*size,h-20-64*size,72*size,64*size,true);
         } else {
-            add("accelerate",R.string.control_gas,w-20-pedal-5*pixelScale/scale,h-20-118*size,pedal,118*size,false);
-            add("brake",R.string.control_brake,w-32-2*pedal-12*pixelScale/scale,h-20-84*size,pedal,84*size,false);
-            add("handbrake",R.string.control_handbrake,w-32-2*pedal-12*pixelScale/scale,h-32-138*size,52*size,46*size,false);
-            add("look_behind",R.string.control_look_back,w-86,h-244,50,48,false);
-            add("camera",R.string.control_camera,w-146,h-244,50,48,true);
-            add("horn",R.string.control_horn,24,h-244,48,48,false);
-            add("spike_strip",R.string.control_spikes,82,h-244,48,48,true);
-            if(preferences.getBoolean(GamePreferences.TOUCH_GEARS,false)) {
-                add("gear_down",R.string.control_gear_down,w-208*size,h-20-52*size,48*size,52*size,true);
-                add("gear_up",R.string.control_gear_up,w-208*size,h-84-52*size,48*size,52*size,true);
-            }
+            // Brake is the outer pedal and throttle the inner one in both
+            // handed layouts; the mirroring pass below moves the whole group.
+            float outerPedalX=w-20-pedal-5*pixelScale/scale;
+            float gasWidth=pedal+8*pixelScale/scale;
+            float innerPedalRight=w-32-pedal-24*pixelScale/scale;
+            float innerPedalX=innerPedalRight-gasWidth;
+            add("brake",R.string.control_brake,outerPedalX,h-20-84*size,pedal,84*size,false);
+            add("accelerate",R.string.control_gas,innerPedalX,h-20-118*size,gasWidth,118*size,false);
+            add("handbrake",R.string.control_handbrake,outerPedalX,h-32-138*size,52*size,46*size,false);
+
+            // Icon-only auxiliary and gear rows. Keep the larger action buttons
+            // clear of each other while retaining compact shift controls.
+            float actionHeight=utilityHeight,gearHeight=32*size,steerTop=h-20-76*size;
+            float oldActionToSteeringGap=176-76*size;
+            float gearY=steerTop-oldActionToSteeringGap-gearHeight;
+            float originalActionY=gearY-10-gearHeight;
+            float minimumActionY=70;
+            if(originalActionY<minimumActionY) gearY+=minimumActionY-originalActionY;
+            float actionY=Math.max(minimumActionY,gearY-10-actionHeight);
+            float lookX=w-36-utilityWidth,cameraX=lookX-18-utilityWidth;
+            add("look_behind",R.string.control_look_back,lookX,actionY,utilityWidth,utilityHeight,false);
+            add("camera",R.string.control_camera,cameraX,actionY,utilityWidth,utilityHeight,true);
+            add("horn",R.string.control_horn,24,actionY,utilityWidth,utilityHeight,false);
+            add("spike_strip",R.string.control_spikes,24+utilityWidth+18,actionY,utilityWidth,utilityHeight,true);
+
+            float steerRight=28+136*size+26*pixelScale/scale;
+            float steerCenter=(20+steerRight)/2;
+            float gearWidth=48*size,gearGap=10;
+            float gearDownX=steerCenter-(gearWidth*2+gearGap)/2;
+            gearY+=30*pixelScale/scale;
+            add("gear_down",R.string.control_gear_down,gearDownX,gearY,gearWidth,gearHeight,true);
+            add("gear_up",R.string.control_gear_up,gearDownX+gearWidth+gearGap,gearY,gearWidth,gearHeight,true);
         }
         if(!separate) {
             add("confirm",R.string.control_confirm,150,18,54,48,true);
             add("back",R.string.control_back,214,18,54,48,true);
         }
-        add("pause",R.string.control_pause,20,18,48,48,true);
-        if(separate) add("mode",menuMode?R.string.control_race:R.string.control_menu,82,18,58,48,true);
-        add("headlights",R.string.control_lights,w-136,18,48,48,true);
-        add("recover",R.string.control_recover,w-74,18,54,48,true);
+        add("pause",R.string.control_pause,20,18,utilityWidth,utilityHeight,true);
+        if(separate) add("mode",menuMode?R.string.control_race:R.string.control_menu,38+utilityWidth,18,utilityWidth,utilityHeight,true);
+        if(menuMode) add("keyboard",R.string.control_keyboard,w-105,18,85,48,true);
+        else {
+            float recoverX=w-20-utilityWidth;
+            add("headlights",R.string.control_lights,recoverX-18-utilityWidth,18,utilityWidth,utilityHeight,true);
+            add("recover",R.string.control_recover,recoverX,18,utilityWidth,utilityHeight,true);
+        }
         if(GamePreferences.TOUCH_LAYOUT_MIRRORED.equals(preferences.getString(GamePreferences.TOUCH_LAYOUT,"standard")))
             for(Control c:controls) { float left=c.box.left;c.box.left=w-c.box.right;c.box.right=w-left; }
         for(Control c:controls) {
@@ -178,7 +206,10 @@ final class TouchControlsOverlay extends View {
         super.onDraw(canvas);canvas.save();canvas.translate(getPaddingLeft(),getPaddingTop());canvas.scale(scale,scale);
         if(preview) {
             canvas.drawColor(0xff0c1017);
-            text(canvas,editing?"Drag controls · Select to resize":getContext().getString(R.string.touch_preview_hint),getWidth()/scale/2,100,12,0xff8491a4);
+            if(editing) {
+                text(canvas,getContext().getString(R.string.editor_drag_title),getWidth()/scale/2,94,24,0xffaab5c6);
+                text(canvas,getContext().getString(R.string.editor_resize_hint),getWidth()/scale/2,124,20,0xff8491a4);
+            } else text(canvas,getContext().getString(R.string.touch_preview_hint),getWidth()/scale/2,118,24,0xff8491a4);
         }
         int opacity=preferences.getInt(GamePreferences.TOUCH_OPACITY,65);
         for(Control c:controls) {
@@ -200,13 +231,11 @@ final class TouchControlsOverlay extends View {
                 else if(down) canvas.drawCircle(x+knobX*r*.65f,y+knobY*r*.65f,r*.12f,paint);
             } else {
                 canvas.drawRoundRect(c.box,16,16,paint);
-                if(c.action.equals("accelerate")||c.action.equals("brake"))
-                    for(int i=0;i<4;i++) canvas.drawLine(c.box.left+13,c.box.top+15+i*9,c.box.right-13,c.box.top+15+i*9,paint);
-                else icon(canvas,c.action,c.box.centerX(),c.box.top+18);
+                if(c.action.equals("accelerate")||c.action.equals("brake")) {
+                    float firstLine=c.box.centerY()-13.5f;
+                    for(int i=0;i<4;i++) canvas.drawLine(c.box.left+13,firstLine+i*9,c.box.right-13,firstLine+i*9,paint);
+                } else icon(canvas,c.action,c.box.centerX(),c.box.centerY());
             }
-            paint.setTextSize(9);
-            float labelSize=Math.min(9,9*(c.box.width()-10)/Math.max(1,paint.measureText(c.label)));
-            if(!stick||!menuMode) text(canvas,c.label,c.box.centerX(),c.box.bottom-9,labelSize,down?0xffffcf89:0xffeff3fa);
             if(editing) {
                 paint.setStyle(Paint.Style.STROKE);paint.setStrokeWidth(c==selected?2:1);
                 paint.setColor(c==selected?0xffffbf69:0xff668f9a);
@@ -228,15 +257,24 @@ final class TouchControlsOverlay extends View {
         paint.setStyle(Paint.Style.FILL);paint.setColor(color);paint.setTextSize(size);
         paint.setTypeface(Typeface.create("sans-serif-medium",0));paint.setTextAlign(Paint.Align.CENTER);c.drawText(s,x,y,paint);
     }
+    private void centeredText(Canvas c,String s,float x,float y,float size,int color) {
+        paint.setTextSize(size);Paint.FontMetrics metrics=paint.getFontMetrics();
+        text(c,s,x,y-(metrics.ascent+metrics.descent)/2,size,color);
+    }
     private void arrow(Canvas c,float x,float y,int dx,int dy) {
         c.drawLine(x-dx*4-dy*5,y-dy*4+dx*5,x+dx*3,y+dy*3,paint);
         c.drawLine(x-dx*4+dy*5,y-dy*4-dx*5,x+dx*3,y+dy*3,paint);
     }
+    /* The caller has already put the opacity setting -- and the pressed
+     * highlight -- into the paint, so the glyphs drawn as text below take their
+     * colour from it rather than naming one.  Spelling out a literal here is
+     * what left "+", "-" and "P" fully opaque whatever the slider said, while
+     * every control drawn with the paint itself faded correctly. */
     private void icon(Canvas c,String a,float x,float y) {
         paint.setStyle(Paint.Style.STROKE);paint.setStrokeWidth(2);paint.setStrokeCap(Paint.Cap.ROUND);
         switch(a) {
-        case "gear_up": text(c,"+",x,y+7,24,0xffeff3fa);break;
-        case "gear_down": text(c,"−",x,y+7,24,0xffeff3fa);break;
+        case "gear_up": centeredText(c,"+",x,y,24,paint.getColor());break;
+        case "gear_down": centeredText(c,"−",x,y,24,paint.getColor());break;
         case "steer_left": arrow(c,x,y,-1,0);break;
         case "steer_right": arrow(c,x,y,1,0);break;
         case "back": arrow(c,x,y,-1,0);break;
@@ -244,8 +282,17 @@ final class TouchControlsOverlay extends View {
         case "headlights":
             c.drawArc(new RectF(x-10,y-7,x+3,y+7),90,180,false,paint);c.drawLine(x-4,y-7,x-4,y+7,paint);
             for(int i=-1;i<=1;i++) c.drawLine(x+1,y+i*5,x+10,y+i*5,paint);break;
-        case "recover": case "look_behind":
+        case "recover":
             c.drawArc(new RectF(x-9,y-7,x+9,y+7),35,280,false,paint);arrow(c,x+7,y-5,0,1);break;
+        case "look_behind":
+            RectF eye=new RectF(x-10,y-6,x+10,y+6);
+            c.drawArc(eye,200,140,false,paint);c.drawArc(eye,20,140,false,paint);
+            c.drawCircle(x,y,2.5f,paint);break;
+        case "keyboard":
+            c.drawRoundRect(new RectF(x-13,y-8,x+13,y+8),3,3,paint);
+            for(int row=0;row<2;row++)for(int col=0;col<5;col++)
+                c.drawPoint(x-9+col*4.5f,y-4+row*5,paint);
+            c.drawLine(x-8,y+5,x+8,y+5,paint);break;
         case "camera":
             c.drawRoundRect(new RectF(x-10,y-6,x+10,y+7),3,3,paint);c.drawCircle(x,y,4,paint);c.drawLine(x-4,y-9,x+3,y-9,paint);break;
         case "confirm": c.drawLine(x-8,y,x-2,y+6,paint);c.drawLine(x-2,y+6,x+9,y-6,paint);break;
@@ -259,7 +306,7 @@ final class TouchControlsOverlay extends View {
                 spike.moveTo(sx-3,y+5);spike.lineTo(sx,y-6);spike.lineTo(sx+3,y+5);spike.close();c.drawPath(spike,paint);
             }
             c.drawLine(x-12,y+6,x+12,y+6,paint);break;
-        case "handbrake": text(c,"P",x,y+6,18,0xffeff3fa);break;
+        case "handbrake": text(c,"P",x,y+6,18,paint.getColor());break;
         default: break;
         }
     }
@@ -277,6 +324,11 @@ final class TouchControlsOverlay extends View {
                 java.util.HashSet<Integer> active=new java.util.HashSet<>(pointers);
                 int fingers=screenFingers;
                 menuMode=!menuMode;rebuild();pointers.addAll(active);screenFingers=fingers;return true;
+            }
+            if(hit.action.equals("keyboard")) {
+                if(!preview&&getContext() instanceof NFS3Activity)
+                    ((NFS3Activity)getContext()).showTouchKeyboard();
+                return true;
             }
             if(hit.action.equals("steering")) for(Contact c:contacts.values()) if(c.control.action.equals("steering")) return true;
             Contact contact=new Contact(hit);contacts.put(id,contact);
@@ -312,7 +364,7 @@ final class TouchControlsOverlay extends View {
         if(action==MotionEvent.ACTION_DOWN) {
             selected=hitTest(x,y);editorPointer=e.getPointerId(0);
             if(selected!=null){dragX=x-selected.box.centerX();dragY=y-selected.box.centerY();}
-            if(selectionChanged!=null)selectionChanged.accept(selected==null?"Select a control":selected.label);
+            if(selectionChanged!=null)selectionChanged.accept(selected==null?getContext().getString(R.string.editor_select_control):selected.label);
             if(getParent()!=null)getParent().requestDisallowInterceptTouchEvent(true);invalidate();
         } else if(action==MotionEvent.ACTION_MOVE&&selected!=null) {
             int i=e.findPointerIndex(editorPointer);

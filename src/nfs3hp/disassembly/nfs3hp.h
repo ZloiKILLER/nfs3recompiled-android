@@ -1644,7 +1644,7 @@ private:
     static void sub_45c9d0(WinApplication* app, x86::CPU& cpu);
     static void sub_45ca90(WinApplication* app, x86::CPU& cpu);
     static void sub_45cb50(WinApplication* app, x86::CPU& cpu);
-    static void sub_45cdc0(WinApplication* app, x86::CPU& cpu);
+    static void sub_45cdd0(WinApplication* app, x86::CPU& cpu);
     static void sub_45ce60(WinApplication* app, x86::CPU& cpu);
     static void sub_45cef0(WinApplication* app, x86::CPU& cpu);
     static void sub_45cf70(WinApplication* app, x86::CPU& cpu);

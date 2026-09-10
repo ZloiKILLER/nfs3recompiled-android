@@ -81,6 +81,9 @@ public:
     static void setDataDirectory(const char* path);
     static void setCdDirectory(const char* path);
     static x86::reg32 remove(const char* filename);
+    /* Win32 CreateDirectory: creates the leaf only, and reports failure when
+     * the directory is already there, exactly as the original does. */
+    static x86::reg32 createDirectory(const char* path);
 
     operator void*() { return reinterpret_cast<void*>(static_cast<intptr_t>(m_file)+1); }
 private:

@@ -9,11 +9,13 @@
 #endif
 #include <lib/mutex.h>
 #include <cstdlib>
+#include <new>
+#include <algorithm>
 
 namespace win32
 {
 
-static const x86::reg32 s_simulatedMemory = 64*1024*1024;
+static const x86::reg32 s_simulatedMemory = 128*1024*1024;
 
 x86::reg8* MemMap::s_memory = nullptr;
 x86::reg8* MemMap::s_blocks = nullptr;
@@ -49,10 +51,12 @@ x86::reg32 MemMap::granularity()
 static void* alloc(x86::reg32 size)
 {
 #ifdef _WIN32
-    return VirtualAlloc(0, size, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+    void* p = VirtualAlloc(0, size, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+    if (!p) throw std::bad_alloc();
+    return p;
 #else
     void* p = mmap(nullptr, size, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, 0, 0);
-    NFS2_ASSERT(p != MAP_FAILED);
+    if (p == MAP_FAILED) throw std::bad_alloc();
     return p;
 #endif
 }
@@ -67,13 +71,14 @@ static void dealloc(void* mem, x86::reg32 size)
 #endif
 }
 
-static void protect(void* mem, x86::reg32 size, bool read, bool write)
+static bool protect(void* mem, x86::reg32 size, bool read, bool write)
 {
 #ifdef _WIN32
     NFS2_USE(mem);
     NFS2_USE(size);
     NFS2_USE(read);
     NFS2_USE(write);
+    return true;
 #else
     int protection = PROT_NONE;
     if (read)
@@ -85,7 +90,7 @@ static void protect(void* mem, x86::reg32 size, bool read, bool write)
     uintptr_t alignedAddr = addr & ~pageMask;
     x86::reg32 alignedSize = x86::reg32(((addr - alignedAddr) + size + pageMask) & ~pageMask);
     int ret = mprotect(reinterpret_cast<void*>(alignedAddr), alignedSize, protection);
-    NFS2_ASSERT(ret == 0);
+    return ret == 0;
 #endif
 }
 
@@ -94,35 +99,36 @@ MemMap::MemMap(x86::reg32 size)
     ,   m_blockCount(0)
 {
     const x86::reg32 g = granularity();
-    m_blockCount = ((size + g - 1) & ~(g - 1)) / g;
-    NFS2_ASSERT(m_blockCount >= 1);
+    // Validate before rounding or subtracting unsigned sizes.
+    if (!size || size > s_simulatedMemory) throw std::bad_alloc();
+    m_blockCount = (size - 1) / g + 1;
     s_lock->lock();
-    for (x86::reg32 b = 0; b < s_blockCount - m_blockCount; /* nothing */)
+    for (x86::reg32 b = 0; b <= s_blockCount - m_blockCount;)
     {
-        bool success = true;
-        for (x86::reg32 s = b; s < b + m_blockCount; ++s)
-        {
-            if (s_blocks[s])
-            {
-                success = false;
-                b = s + 2;
-                break;
-            }
-        }
-        if (success)
-        {
-            m_block = b;
-            break;
-        }
+        x86::reg32 end = b;
+        while (end < b + m_blockCount && !s_blocks[end]) ++end;
+        if (end == b + m_blockCount) { m_block = b; break; }
+        b = end + 1;
     }
-    for (x86::reg32 s = m_block; s < m_block + m_blockCount; ++s)
+    if (m_block == x86::reg32(-1))
     {
-        s_blocks[s] = 1;
+        s_lock->unlock();
+        throw std::bad_alloc();
     }
-    s_memMaps.push_back(this);
+    if (!protect(s_memory + getBlockStart(), getBlockSize(), true, true))
+    {
+        s_lock->unlock();
+        throw std::bad_alloc();
+    }
+    try { s_memMaps.push_back(this); }
+    catch (...)
+    {
+        protect(s_memory + getBlockStart(), getBlockSize(), false, false);
+        s_lock->unlock();
+        throw;
+    }
+    std::fill(s_blocks + m_block, s_blocks + m_block + m_blockCount, 1);
     s_lock->unlock();
-    protect(s_memory + s_sectionSize + s_blockSize + m_block * granularity(), m_blockCount * granularity(), true, true);
-    NFS2_ASSERT(m_block != x86::reg32(-1));
 }
 
 MemMap::~MemMap()
@@ -179,12 +185,19 @@ x86::reg8* MemMap::init(x86::reg32 baseAddress, const std::vector<Section>& sect
     s_memory = reinterpret_cast<x86::reg8*>(alloc(s_simulatedMemory+s_blockSize+s_sectionSize));
     s_blocks = s_memory + s_sectionSize;
     s_addressOffset = s_sectionSize + s_blockSize;
-    protect(s_blocks, s_blockCount, true, true);
+    auto enable = [](void* address, x86::reg32 size) {
+        if (!protect(address, size, true, true)) {
+            dealloc(s_memory, s_simulatedMemory+s_blockSize+s_sectionSize);
+            s_memory = nullptr;
+            throw std::bad_alloc();
+        }
+    };
+    enable(s_blocks, s_blockCount);
     for (std::vector<Section>::const_iterator it = sections.begin(); it != sections.end(); ++it)
     {
         NFS2_ASSERT(it->baseAddress >= baseAddress);
         NFS2_ASSERT(it->baseAddress + it->size <= s_sectionSize);
-        protect(s_memory + it->baseAddress, it->size, true, true);
+        enable(s_memory + it->baseAddress, it->size);
         if (it->data)
         {
             memcpy(s_memory + it->baseAddress, it->data, it->size);
@@ -218,7 +231,7 @@ void MemMap::fillDebugGraph(x86::reg16* graph)
     for (x86::reg32 b = 0; b < s_blockCount; b += blocksPerPixel)
     {
         x86::reg16 c = 0;
-        for (x86::reg32 b1 = b; b1 < b+blocksPerPixel; ++b1)
+        for (x86::reg32 b1 = b; b1 < (std::min)(b+blocksPerPixel, s_blockCount); ++b1)
         {
             if (s_blocks[b1])
                 c++;
@@ -239,7 +252,7 @@ void MemMap::fillDebugGraph(x86::reg32* graph)
     for (x86::reg32 b = 0; b < s_blockCount; b += blocksPerPixel)
     {
         x86::reg16 c = 0;
-        for (x86::reg32 b1 = b; b1 < b+blocksPerPixel; ++b1)
+        for (x86::reg32 b1 = b; b1 < (std::min)(b+blocksPerPixel, s_blockCount); ++b1)
         {
             if (s_blocks[b1])
                 c++;

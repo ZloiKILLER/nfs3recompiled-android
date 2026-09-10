@@ -1,9 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">Need For Speed III</string>
+    <string name="app_name" translatable="false">Need For Speed III</string>
     <string name="checking_game_data">Checking game data...</string>
     <string name="pick_data_folder">Select NFS3 data folder...</string>
-    <string name="importing_progress">Importing %1$s\n%2$d MB copied, %3$d files</string>
+    <plurals name="importing_progress">
+      <item quantity="one">Importing %1$s\n%2$d MB copied, %3$d file</item>
+      <item quantity="other">Importing %1$s\n%2$d MB copied, %3$d files</item>
+    </plurals>
     <string name="import_failed">Import failed: %1$s</string>
     <string name="import_hint">Pick the folder that directly contains \'fedata\' and \'gamedata\' (for example, the CD root or a copy of it).</string>
 
@@ -11,7 +14,17 @@
     <string name="play">Play</string>
     <string name="active_data_set">Active data: %1$s</string>
     <string name="no_active_data_set">No active data set. Import one before playing.</string>
-    <string name="data_settings">Game data</string>
+    <string name="data_settings">Data</string>
+    <string name="game_data_title">Game data</string>
+    <string name="launcher_settings_title">Launcher settings</string>
+    <string name="launcher_settings_hint">Export the launcher\'s own setup - touch layout, control mappings, vibration - to a file, or restore one. Import replaces the current setup and backs it up first.</string>
+    <string name="import_launcher">Import settings...</string>
+    <string name="export_launcher">Export settings...</string>
+    <string name="launcher_export_complete">Exported %1$d settings.</string>
+    <string name="launcher_import_complete">Settings imported. Previous ones backed up as %1$s.</string>
+    <string name="launcher_import_complete_no_backup">Settings imported. There were no previous settings to back up.</string>
+    <string name="launcher_nothing_to_export">There are no launcher settings to export yet.</string>
+    <string name="launcher_wrong_format">This is not a launcher settings file.</string>
     <string name="controls_settings">Controls mapping</string>
     <string name="touch_settings">Touch controls</string>
     <string name="screen_settings">Screen settings</string>
@@ -23,6 +36,18 @@
     <string name="import_zip">Import ZIP...</string>
     <string name="data_import_hint">Import a folder that directly contains \'fedata\' and \'gamedata\', or a ZIP containing those folders. Imports are copied into app storage.</string>
     <string name="import_complete">Data import complete</string>
+    <string name="saves_title">Game saves</string>
+    <string name="saves_hint">Export the active profile to a ZIP, or import one. Import creates a local backup before replacing existing saves.</string>
+    <string name="import_saves">Import saves...</string>
+    <string name="export_saves">Export saves...</string>
+    <string name="saves_not_found">No saves were found in the active data set.</string>
+    <string name="saves_no_active_data">Import and activate game data before managing saves.</string>
+    <string name="saves_open_failed">Could not open the selected save archive.</string>
+    <string name="saves_zip_empty">The ZIP contains no saves.</string>
+    <string name="saves_include_settings">Include game settings</string>
+    <string name="saves_export_complete">Exported %1$d save files.</string>
+    <string name="saves_import_complete">Saves imported. Previous saves backed up as %1$s.</string>
+    <string name="saves_import_complete_no_backup">Saves imported. There were no previous saves to back up.</string>
     <string name="data_error">Data operation failed: %1$s</string>
     <string name="delete_data_title">Delete data set?</string>
     <string name="delete_data_message">Delete %1$s from this device? This cannot be undone.</string>
@@ -41,9 +66,14 @@
     <string name="auto_hide_note">There is no Java-visible menu/race signal yet, so auto-hide currently uses idle time in both menus and races. Touch the overlay to reveal it.</string>
 
     <string name="orientation_label">Game orientation</string>
-    <string name="orientation_auto">Auto - follow system rotation (portrait and landscape)</string>
+    <string name="orientation_auto">Auto-rotate — both landscape directions</string>
     <string name="orientation_landscape">Fixed landscape</string>
-    <string name="fps_cap_label">FPS cap (1-240; default 30)</string>
+    <string name="orientation_landscape_reverse">Fixed landscape, flipped</string>
+    <string name="fps_30">30 FPS</string>
+    <string name="fps_60">60 FPS</string>
+    <string name="gamma_label">Gamma</string>
+    <string name="gamma_hint">Higher lifts dark areas. Takes effect the next time the game starts.</string>
+    <string name="fps_cap_label">Frame rate</string>
     <string name="fps_error">Enter a whole number from 1 to 240</string>
     <string name="save">Save</string>
     <string name="settings_saved">Settings saved</string>

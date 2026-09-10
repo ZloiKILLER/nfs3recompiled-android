@@ -1,0 +1,12 @@
+<!-- The recovery glyph: the overlay draws an arc plus a downward arrowhead
+     (case "recover"), scaled to 85% so the arrowhead stays inside the box. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp" android:height="24dp"
+    android:viewportWidth="24" android:viewportHeight="24">
+    <path android:strokeColor="#FFFFFFFF" android:strokeWidth="2"
+        android:strokeLineCap="round" android:fillColor="#00000000"
+        android:pathData="M18.27,15.41 A7.65,5.95 0 1 1 17.41,7.79" />
+    <path android:strokeColor="#FFFFFFFF" android:strokeWidth="2"
+        android:strokeLineCap="round" android:strokeLineJoin="round"
+        android:pathData="M13.7,4.35 L17.95,10.3 L22.2,4.35" />
+</vector>

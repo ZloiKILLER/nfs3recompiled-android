@@ -81,7 +81,9 @@ public final class TouchOverlayInstrumentation extends Instrumentation {
                     view.refreshSettings();
                     RectF mode=bounds(view,"mode");
                     touch(view,MotionEvent.ACTION_DOWN,new int[]{9},mode.centerX(),mode.centerY());
-                    bounds(view,"confirm");bounds(view,"headlights");bounds(view,"recover");
+                    bounds(view,"confirm");bounds(view,"keyboard");
+                    require(TouchRefinementChecks.bounds(view,"headlights","box")==null
+                        &&TouchRefinementChecks.bounds(view,"recover","box")==null,"menu hides race utilities");
                     require((boolean)field(view,"menuMode"),"explicit menu navigation available");
                     view.releaseAll();require(held(view).isEmpty(),"pause clears key state");
                     android.content.SharedPreferences prefs=GamePreferences.get(getTargetContext());
@@ -118,6 +120,11 @@ public final class TouchOverlayInstrumentation extends Instrumentation {
             });
             if(failure[0]!=null) throw new AssertionError(failure[0]);
             TouchRefinementChecks.run(this);
+            SaveGameChecks.run(this);
+            // The settings preview check below exercises the shared racing layout;
+            // do not inherit a tester's saved separate-menu preference.
+            GamePreferences.get(getTargetContext()).edit()
+                .putBoolean(GamePreferences.TOUCH_SEPARATE,false).commit();
             android.app.Activity activity=startActivitySync(new android.content.Intent(getTargetContext(),LauncherActivity.class)
                 .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK));
             waitForIdleSync();
@@ -126,15 +133,23 @@ public final class TouchOverlayInstrumentation extends Instrumentation {
             runOnMainSync(()->activity.findViewById(R.id.controls_button).performClick());
             waitForIdleSync();capture("ui-controls-home.png");
             runOnMainSync(()->activity.findViewById(R.id.touch_controls_button).performClick());
-            waitForIdleSync();
+            waitForIdleSync();Thread.sleep(500);waitForIdleSync();
             runOnMainSync(()->{
                 android.widget.FrameLayout host=activity.findViewById(R.id.touch_preview);
                 require(host.getChildCount()==1,"preview has one touch canvas");
                 TouchControlsOverlay canvas=(TouchControlsOverlay)host.getChildAt(0);
                 require(canvas.getWidth()==host.getWidth()&&canvas.getHeight()==host.getHeight(),"side areas belong to touch canvas");
                 try {
-                    RectF leftButton=bounds(canvas,"steer_left");
-                    touch(canvas,MotionEvent.ACTION_DOWN,new int[]{61},leftButton.centerX(),leftButton.centerY());
+                    RectF leftButton;
+                    float touchX;
+                    try {
+                        leftButton=bounds(canvas,"steer_left");
+                        touchX=leftButton.centerX();
+                    } catch(AssertionError separateMenuLayout) {
+                        leftButton=bounds(canvas,"steering");
+                        touchX=leftButton.left+leftButton.width()*.1f;
+                    }
+                    touch(canvas,MotionEvent.ACTION_DOWN,new int[]{61},touchX,leftButton.centerY());
                     int leftKey=GamePreferences.getTouchKey(GamePreferences.get(getTargetContext()),"steer_left");
                     require(held(canvas).containsKey(leftKey),"control in expanded side area is touchable");
                     canvas.releaseAll();
@@ -143,17 +158,39 @@ public final class TouchOverlayInstrumentation extends Instrumentation {
             capture("ui-touch-settings.png");
             runOnMainSync(()->activity.findViewById(R.id.edit_touch_layout).performClick());waitForIdleSync();
             capture("ui-touch-editor-race.png");
-            runOnMainSync(()->((android.widget.Spinner)activity.findViewById(R.id.editor_mode)).setSelection(1));waitForIdleSync();
+            runOnMainSync(()->{
+                android.widget.Spinner mode=activity.findViewById(R.id.editor_mode);
+                if(mode.getAdapter().getCount()>1)mode.setSelection(1);
+            });waitForIdleSync();
             capture("ui-touch-editor-menu.png");
             runOnMainSync(()->activity.findViewById(R.id.editor_done).performClick());waitForIdleSync();
             runOnMainSync(()->activity.onBackPressed());waitForIdleSync();
             runOnMainSync(()->activity.findViewById(R.id.gamepad_controls_button).performClick());waitForIdleSync();
             capture("ui-controller-mapping.png");
+            runOnMainSync(()->activity.findViewById(R.id.gamepad_settings_button).performClick());waitForIdleSync();
+            require(activity.findViewById(R.id.controller_options)!=null,"gamepad vibration has its own screen");
+            capture("ui-controller-settings.png");
+            runOnMainSync(()->activity.onBackPressed());waitForIdleSync();
+            runOnMainSync(()->activity.onBackPressed());waitForIdleSync();
+            runOnMainSync(()->activity.onBackPressed());waitForIdleSync();
+            /* Data is a menu now, so saves live one level down -- and back has
+             * to return to that menu rather than all the way out. */
+            runOnMainSync(()->activity.findViewById(R.id.data_button).performClick());waitForIdleSync();
+            require(activity.findViewById(R.id.game_data_button)!=null
+                &&activity.findViewById(R.id.game_saves_button)!=null
+                &&activity.findViewById(R.id.launcher_settings_button)!=null,"data menu lists its screens");
+            runOnMainSync(()->activity.findViewById(R.id.launcher_settings_button).performClick());waitForIdleSync();
+            require(activity.findViewById(R.id.export_launcher_button)!=null,"launcher settings can be exported");
+            runOnMainSync(()->activity.onBackPressed());waitForIdleSync();
+            require(activity.findViewById(R.id.game_saves_button)!=null,"back from a sub-screen returns to the data menu");
+            runOnMainSync(()->activity.findViewById(R.id.game_saves_button).performClick());waitForIdleSync();
+            require(activity.findViewById(R.id.import_saves_button)!=null&&activity.findViewById(R.id.export_saves_button)!=null,"save management actions visible");
+            capture("ui-data-saves.png");
             runOnMainSync(()->activity.onBackPressed());waitForIdleSync();
             runOnMainSync(()->activity.onBackPressed());waitForIdleSync();
             runOnMainSync(()->activity.findViewById(R.id.faq_button).performClick());waitForIdleSync();
             capture("ui-faq.png");
-            result.putString("stream","PASS: multitouch, layout bounds, tap vs drag, cancellation, long press, spike strip pulse, shared/separate layouts, drag persistence, independent touch zones, reset, D-pad directions, optional gears, gas offset, auto-hide hold/delay/silhouette/invisible activation, mapping export\n");
+            result.putString("stream","PASS: touch geometry/keyboard, multitouch, vibration cap, stick/trigger mappings, save ZIP backup/import/export, layout editor and auto-hide\n");
             finish(-1,result);
         } catch(Throwable e) { result.putString("stream","FAIL: "+android.util.Log.getStackTraceString(e));finish(0,result); }
     }

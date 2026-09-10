@@ -61,7 +61,7 @@ if (MSVC)
     #     finished; that function is rewritten for GLES, so drop this then.
     #   C4245 signed/unsigned in return -- the win32 layer returns -1 as the
     #     documented Win32 sentinel from functions with unsigned return types.
-    set(NFS_STRICT_FLAGS /WX /wd4201 /wd4458 /wd4127 /wd4702 /wd4245)
+    set(NFS_STRICT_FLAGS /EHsc /WX /wd4201 /wd4458 /wd4127 /wd4702 /wd4245)
     add_compile_definitions(_CRT_SECURE_NO_WARNINGS)
 else()
     add_compile_options(-Wall -Wextra -fno-strict-aliasing)
@@ -217,4 +217,14 @@ if(NFS_BUILD_FF_TESTS AND NOT ANDROID)
     add_executable(force_feedback_checks tools/force_feedback_checks.cpp)
     target_include_directories(force_feedback_checks PRIVATE ${NFS_ROOT_DIR}/include)
     target_link_libraries(force_feedback_checks PRIVATE nfs_core ${SDL3_LIB_TARGET} ${NFS_GL_LIBS})
+endif()
+
+option(NFS_BUILD_MEMORY_TESTS "Build guest memory allocator checks" OFF)
+if(NFS_BUILD_MEMORY_TESTS AND NOT ANDROID)
+    add_executable(memmap_checks tools/memmap_checks.cpp)
+    if(MSVC)
+        target_compile_options(memmap_checks PRIVATE /EHsc)
+    endif()
+    target_include_directories(memmap_checks PRIVATE ${NFS_ROOT_DIR}/include)
+    target_link_libraries(memmap_checks PRIVATE nfs_core ${SDL3_LIB_TARGET} ${NFS_GL_LIBS})
 endif()

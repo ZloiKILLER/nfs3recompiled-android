@@ -32,6 +32,15 @@ public class SplashActivity extends Activity
     private boolean folderPickerRunning = false;
     private Thread importThread;
 
+    /* Language of the launcher, chosen in the picker on the main screen.
+     * LocaleHelper returns the context unchanged while the setting is
+     * "system". */
+    @Override
+    protected void attachBaseContext(android.content.Context base)
+    {
+        super.attachBaseContext(LocaleHelper.wrap(base));
+    }
+
     @Override
     protected void onCreate(Bundle savedInstanceState)
     {
@@ -51,7 +60,7 @@ public class SplashActivity extends Activity
         if (dir == null)
         {
             // Only happens if external storage is unavailable, e.g. removed mid-run.
-            throw new IOException("External storage is not available");
+            throw new IOException(getString(R.string.error_external_storage));
         }
         return dir;
     }
@@ -157,7 +166,8 @@ public class SplashActivity extends Activity
                             return;
                         int mb = (int) (bytesCopied / (1024 * 1024));
                         String name = currentPath.substring(currentPath.lastIndexOf('/') + 1);
-                        statusText.setText(getString(R.string.importing_progress, name, mb, filesCopied));
+                        statusText.setText(getResources().getQuantityString(
+                            R.plurals.importing_progress, filesCopied, name, mb, filesCopied));
                     }));
 
                 runOnUiThread(() -> {
@@ -177,7 +187,7 @@ public class SplashActivity extends Activity
                         progressBar.setVisibility(View.GONE);
                         pickFolderButton.setVisibility(View.VISIBLE);
                         statusText.setText(getString(R.string.import_failed,
-                            "copied data is missing expected files"));
+                            getString(R.string.error_import_incomplete)));
                     }
                 });
             }

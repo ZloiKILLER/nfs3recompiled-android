@@ -15649,7 +15649,8 @@ void Application::sub_4f92d0(WinApplication* app, x86::CPU& cpu)
     app->getMemory<x86::reg32>(cpu.esp-4) = cpu.edx;
     cpu.esp -= 4;
     // 004f92d1  b800000001             -mov eax, 0x1000000
-    cpu.eax = 16777216 /*0x1000000*/;
+    // Port heap budget: 64 MiB (original instruction requests 16 MiB).
+    cpu.eax = 64u * 1024u * 1024u;
     // 004f92d6  31d2                   -xor edx, edx
     cpu.edx ^= x86::reg32(x86::sreg32(cpu.edx));
     // 004f92d8  e8d3ffffff             -call 0x4f92b0

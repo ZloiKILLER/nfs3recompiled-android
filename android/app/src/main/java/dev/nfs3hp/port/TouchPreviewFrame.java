@@ -19,6 +19,10 @@ final class TouchPreviewFrame {
             android.util.DisplayMetrics metrics=activity.getResources().getDisplayMetrics();
             width=metrics.widthPixels;height=metrics.heightPixels;
         }
+        // WindowMetrics can briefly expose the previous portrait bounds while
+        // this landscape-only activity starts. Normalise them before deriving
+        // the preview scale, otherwise 1080x2400 shrinks every control ~4x.
+        if(height>width) { float portraitWidth=width;width=height;height=portraitWidth; }
         overlay.setPreviewReference(width,height);
         // The whole card is the normalized touch canvas. This exposes the side space
         // to the layout editor instead of leaving untouchable letterbox pillars.

@@ -123,9 +123,10 @@ final class DataImporter
     static void importFromTree(Context context, Uri treeUri, File destRoot, ProgressListener listener)
         throws IOException
     {
+        Context strings = LocaleHelper.wrap(context);
         DocumentFile pickedRoot = DocumentFile.fromTreeUri(context, treeUri);
         if (pickedRoot == null || !pickedRoot.isDirectory())
-            throw new IOException("Cannot open the selected folder");
+            throw new IOException(strings.getString(R.string.importer_open_folder_failed));
 
         ContentResolver resolver = context.getContentResolver();
         long[] bytesCopied = { 0 };
@@ -141,9 +142,8 @@ final class DataImporter
             {
                 if (USER_DATA_REQUIRED[i])
                 {
-                    throw new IOException("The selected folder has no '" + name
-                        + "' subfolder -- pick the folder that directly contains "
-                        + "fedata and gamedata (e.g. the CD root).");
+                    throw new IOException(
+                        strings.getString(R.string.importer_missing_subfolder, name));
                 }
                 continue;
             }
@@ -157,6 +157,7 @@ final class DataImporter
     static void importFromZip(Context context, Uri zipUri, File destRoot, ProgressListener listener)
         throws IOException
     {
+        Context strings = LocaleHelper.wrap(context);
         ContentResolver resolver = context.getContentResolver();
         long[] bytesCopied = { 0 };
         int[] filesCopied = { 0 };
@@ -165,7 +166,7 @@ final class DataImporter
         try (InputStream raw = resolver.openInputStream(zipUri))
         {
             if (raw == null)
-                throw new IOException("Could not open the selected ZIP");
+                throw new IOException(strings.getString(R.string.importer_open_zip_failed));
             try (ZipInputStream zip = new ZipInputStream(raw))
             {
                 ZipEntry entry;
@@ -209,7 +210,7 @@ final class DataImporter
         if (!isUserDataPresent(destRoot))
         {
             removeCompletionMarker(destRoot, USER_DATA_COMPLETE);
-            throw new IOException("The ZIP is missing the expected fedata/gamedata files");
+            throw new IOException(strings.getString(R.string.importer_zip_missing_files));
         }
     }
 

@@ -11,6 +11,7 @@
 #include <winapi/ddraw.h>
 #include <winapi/glide2x.h>
 #include <algorithm>
+#include <set>
 
 namespace win32
 {
@@ -191,6 +192,26 @@ void WinApplication::registerMethod(x86::reg32 pointer, Method method)
 {
     NFS2_ASSERT(m_methods.find(pointer-0x400000) == m_methods.end());
     m_methods[pointer-0x400000] = method;
+}
+
+void WinApplication::reportMissingMethod(x86::reg32 address)
+{
+    /* One line per address, and never more.  A missed target usually sits in a
+     * path the game retries every frame, and the flood would push the first --
+     * the only interesting -- occurrence out of the log buffer.  Guest threads
+     * make these calls, so the seen set needs a lock of its own. */
+    static SDL_Mutex* const mutex = SDL_CreateMutex();
+    static std::set<x86::reg32> reported;
+
+    SDL_LockMutex(mutex);
+    const bool first = reported.insert(address).second;
+    SDL_UnlockMutex(mutex);
+
+    if (first)
+    {
+        SDL_Log("[API] no method registered for 0x%08x -- indirect call skipped",
+                unsigned(address));
+    }
 }
 
 int WinApplication::runThread(x86::CPU& cpu, x86::reg32 entryPoint, x86::reg32 parameter, bool threadLock)

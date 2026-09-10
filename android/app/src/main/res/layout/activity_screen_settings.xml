@@ -36,6 +36,12 @@
                 android:layout_height="wrap_content"
                 android:text="@string/orientation_landscape"
                 android:textColor="#FFFFFF" />
+            <RadioButton
+                android:id="@+id/orientation_landscape_reverse"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/orientation_landscape_reverse"
+                android:textColor="#FFFFFF" />
         </RadioGroup>
         <TextView
             android:layout_width="match_parent"
@@ -43,14 +49,43 @@
             android:layout_marginTop="12dp"
             android:text="@string/fps_cap_label"
             android:textColor="#FFFFFF" />
-        <EditText
-            android:id="@+id/fps_cap_edit"
-            android:layout_width="160dp"
+        <RadioGroup
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content">
+            <RadioButton
+                android:id="@+id/fps_cap_30"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/fps_30"
+                android:textColor="#FFFFFF" />
+            <RadioButton
+                android:id="@+id/fps_cap_60"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/fps_60"
+                android:textColor="#FFFFFF" />
+        </RadioGroup>
+        <TextView
+            android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:digits="0123456789"
-            android:hint="30"
-            android:textColor="#FFFFFF"
-            android:textColorHint="#999999" />
+            android:layout_marginTop="12dp"
+            android:text="@string/gamma_label"
+            android:textColor="#FFFFFF" />
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/gamma_hint"
+            android:textColor="#AAB5C6"
+            android:textSize="12sp" />
+        <TextView
+            android:id="@+id/gamma_value"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:textColor="#FFBF69" />
+        <SeekBar
+            android:id="@+id/gamma_seek"
+            android:layout_width="match_parent"
+            android:layout_height="48dp" />
         <Button
             android:id="@+id/save_screen_button"
             android:layout_width="wrap_content"

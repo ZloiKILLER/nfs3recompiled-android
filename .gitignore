@@ -32,5 +32,7 @@ APK/
 diagnostics/
 handoff.md
 PORT_AUDIT_FOR_CLAUDE.md
-CLAUDE_UI_HANDOFF.md
 plan.md
+# Notes handed between the assistants working on this port -- same category as
+# the above, and there is now more than one of them.
+*_HANDOFF.md

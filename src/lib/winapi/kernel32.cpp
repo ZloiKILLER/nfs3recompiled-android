@@ -10,6 +10,7 @@
 #include <lib/window.h>
 #include <lib/thread.h>
 #include <cstring>
+#include <new>
 #include <vector>
 #include <SDL3/SDL.h>
 #ifndef _WIN32
@@ -86,15 +87,21 @@ LONG CompareFileTime(WinApplication* app, x86::CPU& cpu,
     }
 }
 
+/* The game calls this once to make its save directory.  It used to be a stub
+ * that asserted and reported failure, so the directory was never created and
+ * every save written into it afterwards failed to open -- which is what a
+ * tournament that cannot be loaded looks like from the outside. */
 BOOL CreateDirectoryA(WinApplication* app, x86::CPU& cpu,
                       LPCSTR lpPathName, LPSECURITY_ATTRIBUTES lpSecurityAttributes)
 {
     NFS2_USE(app);
     NFS2_USE(cpu);
-    NFS2_USE(lpPathName);
+    /* Security attributes have no meaning here: the port owns the whole data
+     * directory and everything in it is created with the same permissions. */
     NFS2_USE(lpSecurityAttributes);
-    NFS2_ASSERT(false);
-    return 0;
+    if (!lpPathName)
+        return 0;
+    return File::createDirectory(lpPathName) ? 1 : 0;
 }
 
 HANDLE CreateEventA(WinApplication* app, x86::CPU& cpu,
@@ -998,7 +1005,9 @@ x86::reg32 MapViewOfFile(WinApplication* app, x86::CPU& cpu,
     NFS2_ASSERT(dwFileOffsetHigh == 0);
     app->unlockContext(cpu);
     File* file = dynamic_cast<File*>(app->getResource(hFileMappingObject));
-    MemMap* result = new MemMap(dwNumberOfBytesToMap);
+    MemMap* result = nullptr;
+    try { result = new MemMap(dwNumberOfBytesToMap); }
+    catch (const std::bad_alloc&) { app->lockContext(cpu); return 0; }
     void* data = &app->getMemory<void>(result->getBlockStart());
     file->seek(0, x86::sreg32(dwFileOffsetLow));
     x86::reg32 bytesRead = 0;
@@ -1233,6 +1242,11 @@ BOOL SetCurrentDirectoryA(WinApplication* app, x86::CPU& cpu,
 {
     NFS2_USE(app);
     NFS2_USE(cpu);
+    /* Worth a line: the value is remembered but relative paths do not resolve
+     * against it, so anything the game reaches by setting a directory and then
+     * using a bare name looks in the data root instead. */
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "SetCurrentDirectory %s",
+                lpPathName ? lpPathName : "(null)");
     File::setCurrentDirectory(lpPathName);
     return 1;
 }
@@ -1460,7 +1474,13 @@ x86::reg32 VirtualAlloc(WinApplication* app, x86::CPU& cpu,
     NFS2_USE(flAllocationType);
     NFS2_USE(flProtect);
     NFS2_ASSERT(lpAddress == nullptr);
-    MemMap* map = new MemMap(dwSize);
+    MemMap* map = nullptr;
+    try { map = new MemMap(dwSize); }
+    catch (const std::bad_alloc&)
+    {
+        SDL_Log("[API] VirtualAlloc failed: size=%u", unsigned(dwSize));
+        return 0;
+    }
     void* data = &app->getMemory<void>(map->getBlockStart());
     memset(data, 0, dwSize);
     if (WinApplication::traceApi())
@@ -1478,7 +1498,7 @@ BOOL VirtualFree(WinApplication* app, x86::CPU& cpu,
     NFS2_USE(app);
     NFS2_USE(cpu);
     NFS2_USE(dwSize);
-    NFS2_ASSERT(dwFreeType = 0x8000);
+    NFS2_ASSERT(dwFreeType == 0x8000);
     MemMap* memBlock = MemMap::findBlock(lpAddress);
     if (WinApplication::traceApi())
     {

@@ -17,8 +17,9 @@ android {
         // AndroidWindowCompat and the preview fallback uses DisplayMetrics.
         minSdk = 29
         targetSdk = 36
-        versionCode = 1
-        versionName = "1.0"
+        // Kept in step with versionName so the two can never disagree: 0.72 -> 72.
+        versionCode = 72
+        versionName = "0.72"
         testInstrumentationRunner "dev.nfs3hp.port.TouchOverlayInstrumentation"
         manifestPlaceholders = [launcherAppLabel: "@string/app_name"]
 
@@ -65,7 +66,9 @@ android {
             }
             if (providers.gradleProperty("android10").isPresent()) {
                 applicationIdSuffix ".android10"
-                manifestPlaceholders = [launcherAppLabel: "NFS III · Android 10 Test"]
+                // "D" in the launcher label: this variant sits next to the release
+                // build under its own package, and the two are easy to mix up.
+                manifestPlaceholders = [launcherAppLabel: "Need For Speed III D"]
             }
         }
         release {

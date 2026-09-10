@@ -16,8 +16,8 @@ final class TouchLayoutEditor {
             label.setText(overlay.selectedLabel());
             visual.setEnabled(overlay.selectedAction()!=null);hit.setEnabled(overlay.selectedAction()!=null);
             visual.setProgress(overlay.selectedVisualSize());hit.setProgress(overlay.selectedHitSize());
-            ((TextView)activity.findViewById(R.id.editor_visual_label)).setText("Button: "+visual.getProgress()+"%");
-            ((TextView)activity.findViewById(R.id.editor_hit_label)).setText("Touch zone: "+hit.getProgress()+"%");
+            ((TextView)activity.findViewById(R.id.editor_visual_label)).setText(activity.getString(R.string.editor_button_size,visual.getProgress()));
+            ((TextView)activity.findViewById(R.id.editor_hit_label)).setText(activity.getString(R.string.editor_touch_zone,hit.getProgress()));
         };
         overlay.setEditing(true,name->{label.setText(name);sync.run();});sync.run();
         SeekBar.OnSeekBarChangeListener listener=new SeekBar.OnSeekBarChangeListener(){
@@ -29,7 +29,9 @@ final class TouchLayoutEditor {
         };
         visual.setOnSeekBarChangeListener(listener);hit.setOnSeekBarChangeListener(listener);
         Spinner mode=activity.findViewById(R.id.editor_mode);
-        ArrayAdapter<String> adapter=new ArrayAdapter<>(activity,android.R.layout.simple_spinner_dropdown_item,GamePreferences.get(activity).getBoolean(GamePreferences.TOUCH_SEPARATE,false)?new String[]{"Race layout","Menu layout"}:new String[]{"Shared layout"});
+        ArrayAdapter<String> adapter=new ArrayAdapter<>(activity,android.R.layout.simple_spinner_dropdown_item,GamePreferences.get(activity).getBoolean(GamePreferences.TOUCH_SEPARATE,false)
+                ?new String[]{activity.getString(R.string.editor_mode_race),activity.getString(R.string.editor_mode_menu)}
+                :new String[]{activity.getString(R.string.editor_mode_shared)});
         mode.setAdapter(adapter);
         mode.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener(){
             public void onItemSelected(AdapterView<?> p,View v,int index,long id){overlay.setMenuMode(index==1);sync.run();}
@@ -37,8 +39,9 @@ final class TouchLayoutEditor {
         });
         activity.findViewById(R.id.editor_done).setOnClickListener(v->done.run());
         activity.findViewById(R.id.editor_reset).setOnClickListener(v->new AlertDialog.Builder(activity)
-            .setTitle("Reset this layout?").setMessage("Restore default positions, button sizes and touch zones for this layout.")
-            .setNegativeButton("Cancel",null).setPositiveButton("Reset",(d,w)->{overlay.resetLayout();sync.run();}).show());
+            .setTitle(R.string.editor_reset_title).setMessage(R.string.editor_reset_message)
+            .setNegativeButton(android.R.string.cancel,null)
+            .setPositiveButton(android.R.string.ok,(d,w)->{overlay.resetLayout();sync.run();}).show());
         return overlay;
     }
 }

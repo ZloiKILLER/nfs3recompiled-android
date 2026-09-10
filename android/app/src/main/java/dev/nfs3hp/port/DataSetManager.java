@@ -27,18 +27,20 @@ final class DataSetManager
         final String id;
         final String name;
         final boolean active;
+        private final String activeSuffix;
 
-        DataSet(String id, String name, boolean active)
+        DataSet(String id, String name, boolean active, String activeSuffix)
         {
             this.id = id;
             this.name = name;
             this.active = active;
+            this.activeSuffix = activeSuffix;
         }
 
         @Override
         public String toString()
         {
-            return active ? name + " (active)" : name;
+            return active ? name + activeSuffix : name;
         }
     }
 
@@ -47,9 +49,13 @@ final class DataSetManager
     private final File root;
     private final File storage;
     private final SharedPreferences preferences;
+    /* Held for its resources only.  The launcher owns this object for its own
+     * lifetime, so the reference outlives nothing. */
+    private final Context context;
 
     DataSetManager(Context context, File root) throws IOException
     {
+        this.context = LocaleHelper.wrap(context);
         this.root = root;
         storage = new File(root, STORAGE_DIR);
         if (!storage.isDirectory() && !storage.mkdirs())
@@ -70,7 +76,8 @@ final class DataSetManager
             boolean active = id.equals(activeId);
             File location = active ? root : new File(storage, id);
             if (DataImporter.isUserDataPresent(location))
-                result.add(new DataSet(id, names.optString(id, id), active));
+                result.add(new DataSet(id, names.optString(id, id), active,
+                    context.getString(R.string.data_set_active_suffix)));
         }
         result.sort((a, b) -> {
             if (a.active != b.active)
@@ -92,7 +99,7 @@ final class DataSetManager
 
     String importDataSet(String requestedName, ImportOperation operation) throws IOException
     {
-        String name = cleanDisplayName(requestedName);
+        String name = cleanDisplayName(requestedName, context.getString(R.string.data_set_name_default));
         String id = uniqueId(name);
         File temporary = new File(storage, "." + id + ".part");
         File destination = new File(storage, id);
@@ -104,7 +111,7 @@ final class DataSetManager
         {
             operation.run(temporary);
             if (!DataImporter.isUserDataPresent(temporary))
-                throw new IOException("imported data is missing expected files");
+                throw new IOException(context.getString(R.string.error_import_incomplete));
             Files.move(temporary.toPath(), destination.toPath(), StandardCopyOption.ATOMIC_MOVE);
         }
         finally
@@ -135,7 +142,7 @@ final class DataSetManager
 
         File selected = new File(storage, id);
         if (!DataImporter.isUserDataPresent(selected))
-            throw new IOException("The selected data set is incomplete");
+            throw new IOException(context.getString(R.string.error_data_set_incomplete));
 
         File parked = null;
         if (!oldId.isEmpty() && DataImporter.isUserDataPresent(root))
@@ -196,10 +203,12 @@ final class DataSetManager
         if (!DataImporter.isUserDataPresent(root) || !activeId().isEmpty())
             return;
         JSONObject names = readNames();
+        // Seed stays English: the id becomes a directory name and must not
+        // depend on the launcher language.
         String id = uniqueId("Imported data");
         try
         {
-            names.put(id, "Imported data");
+            names.put(id, context.getString(R.string.data_set_name_default));
         }
         catch (JSONException e)
         {
@@ -247,13 +256,13 @@ final class DataSetManager
         return id;
     }
 
-    private static String cleanDisplayName(String name)
+    private static String cleanDisplayName(String name, String fallback)
     {
         if (name == null)
-            return "Imported data";
+            return fallback;
         String result = name.trim();
         if (result.toLowerCase(Locale.ROOT).endsWith(".zip"))
             result = result.substring(0, result.length() - 4).trim();
-        return result.isEmpty() ? "Imported data" : result;
+        return result.isEmpty() ? fallback : result;
     }
 }

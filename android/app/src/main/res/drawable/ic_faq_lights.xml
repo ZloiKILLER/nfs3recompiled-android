@@ -1,0 +1,11 @@
+<!-- The headlight glyph: half-bowl plus three beams (case "headlights"). -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp" android:height="24dp"
+    android:viewportWidth="24" android:viewportHeight="24">
+    <path android:strokeColor="#FFFFFFFF" android:strokeWidth="2"
+        android:strokeLineCap="round" android:fillColor="#00000000"
+        android:pathData="M8.5,19 A6.5,7 0 1 1 8.5,5 M8,5 L8,19" />
+    <path android:strokeColor="#FFFFFFFF" android:strokeWidth="2"
+        android:strokeLineCap="round"
+        android:pathData="M13,7 L22,7 M13,12 L22,12 M13,17 L22,17" />
+</vector>
