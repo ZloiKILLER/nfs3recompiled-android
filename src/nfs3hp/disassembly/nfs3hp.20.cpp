@@ -3,6 +3,8 @@
 
 namespace nfs3hp
 {
+// Port (tools/apply_widescreen.py): defined in nfs3hp_main.cpp.
+void widescreenHudRect(win32::WinApplication* app, x86::reg32 slot);
 
 /* align: skip 0x8d 0x80 0x00 0x00 0x00 0x00 0x8d 0x54 0x22 0x00 */
 void Application::sub_47fcb0(WinApplication* app, x86::CPU& cpu)
@@ -3673,6 +3675,7 @@ L_0x0048094e:
     cpu.eax = app->getMemory<x86::reg32>(cpu.ebp + x86::reg32(-4) /* -0x4 */);
     // 004809eb  898264977400           -mov dword ptr [edx + 0x749764], eax
     app->getMemory<x86::reg32>(cpu.edx + x86::reg32(7640932) /* 0x749764 */) = cpu.eax;
+    widescreenHudRect(app, cpu.edx); /* port: pictures in the HUD keep their shape on a wide screen */
     // 004809f1  89ec                   -mov esp, ebp
     cpu.esp = cpu.ebp;
     // 004809f3  5d                     -pop ebp

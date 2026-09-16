@@ -70,6 +70,8 @@ private:
     /* Where u_gamma lives in the blit program, or -1 if the driver optimised
      * it away because the value never differs from one. */
     int             m_blitGammaUniform;
+    int             m_blitBrightnessUniform;
+    int             m_blitContrastUniform;
     unsigned int    m_blitVertexArray;
     unsigned int    m_blitVertexBuffer;
     MemMap*         m_videoMemory;

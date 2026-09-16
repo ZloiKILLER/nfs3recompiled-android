@@ -86,6 +86,25 @@ struct GamepadState
 class Gamepad : public Input
 {
 public:
+    /* How many devices the game is told about, always, from the first
+     * enumeration onwards.  The game asks for the device list exactly once at
+     * startup (confirmed on device: one EnumDevices call for the whole
+     * session) and stores what it binds by slot number, so a device that only
+     * appears when its hardware does could never be bound afterwards.  Two
+     * fixed slots cover what the game can actually use on a phone: slot 0 is
+     * player one, slot 1 is the second pad for split screen.  The game itself
+     * has room for sixteen (its device table at 0x5f1fb8 is indexed 0..15). */
+    static const x86::reg32 kSlotCount = 2;
+    /* A slot is two axes and nothing else: X steers, Y carries both pedals --
+     * up accelerates, down brakes -- the classic joystick layout the game binds
+     * on its own.  A pad's buttons never reach the game as buttons: each one
+     * sends a key, chosen per slot in the launcher, and the control profile the
+     * launcher writes into config.dat binds those keys.  Slot 0 also carries
+     * the touch overlay's steering and pedals, so the overlay and the first pad
+     * are one player as far as the game is concerned. */
+    static const x86::reg32 kAxisSteer = 0;
+    static const x86::reg32 kAxisPedals = 1;
+
     Gamepad(x86::reg32 gamepadIndex);
     ~Gamepad();
 
@@ -94,20 +113,54 @@ public:
 
     static x86::reg32 getCount();
 
+    /* Which physical pad goes in each slot, as the Android input-device
+     * descriptor the launcher resolved; an empty string leaves the slot
+     * empty.  Called from the Android UI thread whenever a pad comes or goes
+     * (NFS3Activity.nativeSetGamepadSlots) and applied on the next frame.
+     * Until it has been called at all -- the desktop build never calls it --
+     * slots fill in the order pads are found. */
+    static void setSlotDescriptors(const char* first, const char* second);
+
     bool hasForceFeedback() const;
-    void markInputRead() const;
+    /* The parts a device's force feedback is made of, beside the one level it
+     * mixes down to: the jolts, and the two textures the game keeps going --
+     * its sine, the engine, and its square, the road -- at full weight, each
+     * with the rate it runs at.  Only an Android pad uses them: its motor
+     * cannot vibrate gently, so GameHaptics plays the textures as taps. */
+    struct RumbleDetail
+    {
+        float impact;
+        float road;
+        float roadHz;
+        float engine;
+        float engineHz;
+        RumbleDetail() : impact(0), road(0), roadHz(0), engine(0), engineHz(0) {}
+        bool operator==(const RumbleDetail& other) const
+        {
+            return impact == other.impact && road == other.road && roadHz == other.roadHz
+                && engine == other.engine && engineHz == other.engineHz;
+        }
+        bool operator!=(const RumbleDetail& other) const { return !(*this == other); }
+    };
     void rumble(float strength);
+    void rumble(float strength, const RumbleDetail& detail);
     GamepadState getState() const;
-    static void updateKeys();
-    /* True while the game is actively reading this pad as a DirectInput
-     * device (i.e. it has been bound as the steering input in Controls and
-     * a race is running).  Gamepad::updateKeys() uses this to stop turning
-     * D-pad/stick motion into arrow keys once the game is already reading
-     * the same stick as a real analog axis, so the car is not driven by
-     * both at once. */
-    static bool isPolledByGame();
+    /* Once a frame, from the renderer: follows pads as they come and go, turns
+     * their buttons into the keys the launcher assigned, and runs the
+     * force-feedback mixer. */
+    static void update();
+    /* About every 40 ms while a race is drawn, from the game layer: how hard
+     * player one's car is cornering, 0 to 1, for the phone's own vibration
+     * (GameHaptics).  No pad plays it; the desktop build does nothing with it. */
+    static void phoneTick(float turn);
 private:
-    SDL_Joystick* m_joystick;
+    /* Which physical joystick backs this slot is resolved on every read, not
+     * captured here: SDL's device order shifts as pads come and go, and a
+     * handle taken once at construction would either go stale or, worse,
+     * silently start reporting a different pad. */
+    SDL_Joystick* joystick() const;
+
+    x86::reg32 m_slot;
 };
 
 }

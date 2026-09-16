@@ -10328,7 +10328,8 @@ L_0x00491200:
     app->getMemory<x86::reg32>(cpu.ebp + x86::reg32(98) /* 0x62 */) = cpu.edx;
     // 00491223  f6c440                 +test ah, 0x40
     cpu.clear_co();
-    cpu.set_szp(static_cast<x86::reg8>(cpu.ah & 64 /*0x40*/));
+    // Port: alpha intensity applies on this driver too (tools/apply_alpha_intensity.py).
+    cpu.set_szp(static_cast<x86::reg8>(64 /*0x40, port: was ah & 0x40, ah read from 0x7a3a58*/));
     // 00491226  7466                   -je 0x49128e
     if (cpu.flags.zf)
     {
@@ -14723,7 +14724,8 @@ L_0x004921f6:
 L_0x00492202:
     // 00492202  f605583a7a0040         +test byte ptr [0x7a3a58], 0x40
     cpu.clear_co();
-    cpu.set_szp(static_cast<x86::reg8>(app->getMemory<x86::reg8>(x86::reg32(8010328) /* 0x7a3a58 */) & 64 /*0x40*/));
+    // Port: alpha intensity applies on this driver too (tools/apply_alpha_intensity.py).
+    cpu.set_szp(static_cast<x86::reg8>(64 /*0x40, port: was the 0x7a3a58 probe*/));
     // 00492209  746c                   -je 0x492277
     if (cpu.flags.zf)
     {
@@ -15671,7 +15673,8 @@ L_0x00492590:
     }
     // 0049259c  f605583a7a0040         +test byte ptr [0x7a3a58], 0x40
     cpu.clear_co();
-    cpu.set_szp(static_cast<x86::reg8>(app->getMemory<x86::reg8>(x86::reg32(8010328) /* 0x7a3a58 */) & 64 /*0x40*/));
+    // Port: alpha intensity applies on this driver too (tools/apply_alpha_intensity.py).
+    cpu.set_szp(static_cast<x86::reg8>(64 /*0x40, port: was the 0x7a3a58 probe*/));
     // 004925a3  7466                   -je 0x49260b
     if (cpu.flags.zf)
     {
@@ -17402,7 +17405,8 @@ L_0x00492b34:
 L_0x00492c0f:
     // 00492c0f  f605583a7a0040         +test byte ptr [0x7a3a58], 0x40
     cpu.clear_co();
-    cpu.set_szp(static_cast<x86::reg8>(app->getMemory<x86::reg8>(x86::reg32(8010328) /* 0x7a3a58 */) & 64 /*0x40*/));
+    // Port: alpha intensity applies on this driver too (tools/apply_alpha_intensity.py).
+    cpu.set_szp(static_cast<x86::reg8>(64 /*0x40, port: was the 0x7a3a58 probe*/));
     // 00492c16  746c                   -je 0x492c84
     if (cpu.flags.zf)
     {

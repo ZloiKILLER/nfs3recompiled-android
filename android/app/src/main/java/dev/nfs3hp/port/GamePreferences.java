@@ -4,7 +4,6 @@ import android.content.Context;
 import android.content.SharedPreferences;
 import android.view.KeyEvent;
 
-import java.util.LinkedHashMap;
 import java.util.Map;
 
 final class GamePreferences
@@ -36,6 +35,16 @@ final class GamePreferences
      * drew it, higher lifts the dark end.  Stored as an int because that is
      * what a SeekBar deals in. */
     static final String GAMMA = "display_gamma";
+    /* Brightness and contrast join gamma on the Screen adjustment screen and
+     * are applied in the same final blit.  Percentages for the same reason
+     * gamma is one -- a SeekBar deals in ints -- with 100 meaning "leave the
+     * picture as the game drew it" for all three. */
+    static final String BRIGHTNESS = "display_brightness";
+    static final String CONTRAST = "display_contrast";
+    /* Off, touching the screen does nothing in the game: no on-screen controls
+     * and no touch mouse.  Gamepads and a real mouse are not touch and keep
+     * working. */
+    static final String TOUCH_ENABLED = "touch_enabled";
     static final String TOUCH_MODE = "touch_mode";
     static final String TOUCH_LAYOUT = "touch_layout";
     static final String TOUCH_OPACITY = "touch_opacity";
@@ -49,12 +58,20 @@ final class GamePreferences
      * the system file picker returns, which used to blank the box and make a
      * working export look like it had ignored the choice. */
     static final String SAVES_INCLUDE_SETTINGS = "saves_include_settings";
+    /* The phone's vibration, only on or off: what it plays, and how strong, is
+     * GameHaptics' own. */
     static final String TOUCH_VIBRATION = "touch_vibration";
-    static final String GAMEPAD_VIBRATION = "gamepad_vibration";
-    static final String TOUCH_VIBRATION_STRENGTH = "touch_vibration_strength";
-    static final String GAMEPAD_VIBRATION_STRENGTH = "gamepad_vibration_strength";
     static final String TOUCH_HIDE_SECONDS = "touch_hide_seconds";
     static final String TOUCH_HIDE_FULL = "touch_hide_full";
+    /* Whether a control dragged in the layout editor lands on its grid
+     * (TouchLayout.GRID).  On unless switched off. */
+    static final String TOUCH_SNAP = "touch_editor_snap";
+    /* Whether the first gamepad vibrates at all: off until the player turns it
+     * on in Controls -> Gamepads, while how strong stays the game's Force
+     * Feedback menu's to say.  A key of its own rather than 0.72's
+     * "gamepad_vibration", so a choice made for that old switch does not come
+     * back on. */
+    static final String GAMEPAD_VIBRATION = "gamepad_force_feedback";
 
     static final String ORIENTATION_AUTO = "auto";
     static final String ORIENTATION_LANDSCAPE = "landscape";
@@ -72,11 +89,6 @@ final class GamePreferences
     static final String[] ACTION_IDS = {
         "steer_left", "steer_right", "accelerate", "brake", "confirm",
         "handbrake", "camera", "look_behind", "horn", "spike_strip", "pause", "headlights", "recover", "gear_up", "gear_down",
-    };
-
-    static final String[] DEFAULT_PHYSICAL_BUTTONS = {
-        "left_stick_left", "left_stick_right", "right_trigger", "left_trigger", "south",
-        "west", "east", "left_shoulder", "right_shoulder", "none", "start", "none", "none", "none", "none",
     };
 
     static final int[] DEFAULT_KEYS = {
@@ -97,15 +109,6 @@ final class GamePreferences
         // Menu dispatch at 0x43c8c8 maps these slots to text entries 75 / 76 (Shift up / down).
         KeyEvent.KEYCODE_A,
         KeyEvent.KEYCODE_Z,
-    };
-
-    static final String[] PHYSICAL_BUTTON_VALUES = {
-        "none", "back", "start", "south", "east", "west", "north",
-        "left_shoulder", "right_shoulder", "dpad_up", "dpad_down",
-        "dpad_left", "dpad_right", "left_stick", "right_stick",
-        "left_trigger", "right_trigger", "left_stick_up", "left_stick_down",
-        "left_stick_left", "left_stick_right", "right_stick_up", "right_stick_down",
-        "right_stick_left", "right_stick_right",
     };
 
     static final int[] KEY_VALUES = {
@@ -140,21 +143,11 @@ final class GamePreferences
         return context.getResources().getStringArray(R.array.key_labels);
     }
 
-    static String[] physicalButtonLabels(Context context)
-    {
-        return context.getResources().getStringArray(R.array.physical_button_labels);
-    }
-
     private GamePreferences() {}
 
     static SharedPreferences get(Context context)
     {
         return context.getSharedPreferences(FILE_NAME, Context.MODE_PRIVATE);
-    }
-
-    static String physicalKey(String actionId)
-    {
-        return "mapping_physical_" + actionId;
     }
 
     static String touchKey(String actionId)
@@ -178,37 +171,6 @@ final class GamePreferences
         if (index < 0)
             return KeyEvent.KEYCODE_UNKNOWN;
         return preferences.getInt(touchKey(actionId), DEFAULT_KEYS[index]);
-    }
-
-    static String getPhysicalButton(SharedPreferences preferences, int actionIndex)
-    {
-        return preferences.getString(physicalKey(ACTION_IDS[actionIndex]),
-            DEFAULT_PHYSICAL_BUTTONS[actionIndex]);
-    }
-
-    /** Format consumed by the native gamepad translation layer: button=SDL-key pairs. */
-    static String gamepadMappingEnvironment(SharedPreferences preferences)
-    {
-        Map<String, String> mappings = new LinkedHashMap<>();
-        // Explicit unassignment must override native defaults too.
-        for(String button:PHYSICAL_BUTTON_VALUES)
-            if(!"none".equals(button)&&!button.startsWith("dpad_"))mappings.put(button,"unknown");
-        for (int i = 0; i < ACTION_IDS.length; ++i)
-        {
-            String button = getPhysicalButton(preferences, i);
-            int keyCode = getTouchKey(preferences, ACTION_IDS[i]);
-            if (!"none".equals(button) && keyCode != KeyEvent.KEYCODE_UNKNOWN)
-                mappings.put(button, keyName(keyCode));
-        }
-
-        StringBuilder result = new StringBuilder();
-        for (Map.Entry<String, String> entry : mappings.entrySet())
-        {
-            if (result.length() != 0)
-                result.append(',');
-            result.append(entry.getKey()).append('=').append(entry.getValue());
-        }
-        return result.toString();
     }
 
     static String keyName(int keyCode)

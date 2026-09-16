@@ -2,7 +2,6 @@
  <string name="launcher_eyebrow" translatable="false">NFS III · ANDROID</string>
  <string name="launcher_wordmark" translatable="false">NEED FOR SPEED III</string>
  <string name="launcher_subtitle" translatable="false">HOT PURSUIT</string>
- <string name="launcher_setup">SETTINGS</string>
  <string name="touch_preview_description">Interactive preview of digital driving controls</string>
  <string name="touch_preview_hint">Try the controls</string>
  <string name="touch_digital_note">Tap ☰ to switch menu and race layouts</string>
@@ -12,7 +11,7 @@
  <string name="touch_dim_note">Starts after all fingers lift. Hidden controls respond immediately.</string>
  <string name="control_gear_up" translatable="false">GEAR +</string>
  <string name="control_gear_down" translatable="false">GEAR −</string>
- <string name="faq_title">Help / FAQ</string>
+ <string name="faq_title">Help</string>
  <string name="control_steering" translatable="false">STEER</string>
  <string name="control_navigation" translatable="false">NAVIGATE</string>
  <string name="control_gas" translatable="false">GAS</string>

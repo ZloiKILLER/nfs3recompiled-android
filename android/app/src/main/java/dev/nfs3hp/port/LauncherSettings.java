@@ -39,21 +39,25 @@ final class LauncherSettings {
     private static final String TYPE = "type", VALUE = "value";
 
     /** Settings carried one by one. */
+    /* Gamepad slot assignments are left out on purpose, like the data-set
+     * keys: they name pads attached to this particular phone, and a
+     * descriptor from one device means nothing on another. */
     private static final String[] KEYS = {
         GamePreferences.ORIENTATION, GamePreferences.FPS_CAP, GamePreferences.GAMMA,
-        GamePreferences.TOUCH_MODE, GamePreferences.TOUCH_LAYOUT,
+        GamePreferences.BRIGHTNESS, GamePreferences.CONTRAST,
+        GamePreferences.TOUCH_ENABLED, GamePreferences.TOUCH_MODE, GamePreferences.TOUCH_LAYOUT,
         GamePreferences.TOUCH_OPACITY, GamePreferences.TOUCH_SIZE,
         GamePreferences.TOUCH_AUTO_HIDE, GamePreferences.TOUCH_EDGE,
         GamePreferences.TOUCH_RAISE, GamePreferences.TOUCH_SEPARATE,
         GamePreferences.TOUCH_HIDE_SECONDS, GamePreferences.TOUCH_HIDE_FULL,
-        GamePreferences.TOUCH_VIBRATION, GamePreferences.GAMEPAD_VIBRATION,
-        GamePreferences.TOUCH_VIBRATION_STRENGTH, GamePreferences.GAMEPAD_VIBRATION_STRENGTH,
+        GamePreferences.TOUCH_VIBRATION,
         GamePreferences.SAVES_INCLUDE_SETTINGS,
     };
 
-    /** Families whose every member travels: control geometry and mappings. */
+    /** Families whose every member travels: control geometry and mappings.
+     *  What a pad's buttons do travels; which pad is which does not. */
     private static final String[] PREFIXES = {
-        "touch_position_", "mapping_physical_", "mapping_touch_key_",
+        "touch_position_", "mapping_touch_key_", "gamepad1_button_", "gamepad2_button_",
     };
 
     private static boolean carried(String key) {

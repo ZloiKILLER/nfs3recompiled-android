@@ -3,6 +3,8 @@
 
 namespace nfs3hp
 {
+// Port (tools/apply_widescreen.py): defined in nfs3hp_main.cpp.
+bool widescreenMode(x86::reg32 width, x86::reg32 height);
 
 /* align: skip 0x8d 0x80 0x00 0x00 0x00 0x00 0x8b 0xd2 */
 void Application::sub_4be970(WinApplication* app, x86::CPU& cpu)
@@ -1219,7 +1221,7 @@ L_0x004bedac:
         cpu.set_szp(result);
     }
     // 004bedf8  0f8565000000           -jne 0x4bee63
-    if (!cpu.flags.zf)
+    if (!cpu.flags.zf && !widescreenMode(cpu.edi, cpu.ebx)) /* port: 16:9 listed as well as 4:3 */
     {
         goto L_0x004bee63;
     }

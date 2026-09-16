@@ -13,6 +13,26 @@ namespace win32 { namespace glide2x
 
 static Renderer* s_renderer;
 static GlideRenderer* s_glideRenderer;
+static SwapObserver s_swapObserver;
+static x86::reg32 s_preferredAtlasSize = 2048;
+
+void setPreferredAtlasSize(x86::reg32 size)
+{
+    s_preferredAtlasSize = size;
+}
+
+void setSwapObserver(SwapObserver observer)
+{
+    s_swapObserver = observer;
+}
+
+bool atlasFreeSpace(x86::reg32& freeTexels, x86::reg32& freeTiles, x86::reg32& totalTexels)
+{
+    if (!s_glideRenderer)
+        return false;
+    s_glideRenderer->atlasFreeSpace(freeTexels, freeTiles, totalTexels);
+    return true;
+}
 
 static const x86::reg32 GR_FOG_TABLE_SIZE   = 64;
 static const x86::reg32 MAX_NUM_SST         = 4;
@@ -468,6 +488,10 @@ static x86::reg32 grSstWinOpen(WinApplication* app, x86::CPU& cpu, HWND hWnd,
         width = 1024;
         height = 768;
         break;
+    case win32::glide2x::kResolution1280x720:
+        width = 1280;
+        height = 720;
+        break;
     default:
         SDL_LogError(SDL_LOG_CATEGORY_RENDER, "Unsupported resolution: %d", resolution);
         width = 640;
@@ -477,7 +501,7 @@ static x86::reg32 grSstWinOpen(WinApplication* app, x86::CPU& cpu, HWND hWnd,
     s_renderer = new Renderer(app, dynamic_cast<Window*>(app->getResource(hWnd)));
     s_renderer->setVideoMode(width, height, 16);
     app->allocateResource(s_renderer);
-    s_glideRenderer = new GlideRenderer(s_renderer);
+    s_glideRenderer = new GlideRenderer(s_renderer, s_preferredAtlasSize);
     app->allocateResource(s_glideRenderer);
     x86::reg16 data = 0xff;
     s_glideRenderer->setTextureData(0, 0, &data, 8, 8, TF_ARGB_4444);
@@ -581,6 +605,8 @@ static void grBufferSwap(WinApplication* app, x86::CPU& cpu, x86::reg32 swapInte
     app->unlockContext(cpu);
     s_glideRenderer->swap();
     app->lockContext(cpu);
+    if (s_swapObserver)
+        s_swapObserver(app);
 }
 
 static void grSstIsBusy(WinApplication* app, x86::CPU& cpu)

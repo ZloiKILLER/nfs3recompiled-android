@@ -70,7 +70,8 @@ struct DrawCall
 class GlideRenderer: public GenericResource
 {
 public:
-    GlideRenderer(Renderer* renderer);
+    /* preferredAtlasSize: 2048 or 4096, see glide2x::setPreferredAtlasSize. */
+    GlideRenderer(Renderer* renderer, x86::reg32 preferredAtlasSize);
     ~GlideRenderer();
 
     void clear(x86::reg32 color);
@@ -78,6 +79,9 @@ public:
     void render(x86::reg32 buffer);
     x86::reg32 textureMemStart(x86::reg32 tmu);
     x86::reg32 textureMemEnd(x86::reg32 tmu);
+    /* Free texels and whole free 256x256 tiles in the texture atlas, and its
+     * size in texels -- see GlideTMU::freeSpace. */
+    void atlasFreeSpace(x86::reg32& texels, x86::reg32& wholeTiles, x86::reg32& total) const;
     x86::reg32 getTextureMemSize(x86::reg32 tmu, x86::reg32 largeMipmapSize, TextureFormat format);
     void setZWrite(bool enable);
     void setZTest(bool enable);
@@ -136,6 +140,7 @@ private:
     unsigned int            m_vertexArray;
     unsigned int            m_shaderProgram;
     unsigned int            m_atlas;
+    x86::reg32              m_atlasSize;
     int                     m_attributes[6];
     int                     m_transform;
     //int                     m_textureBind;

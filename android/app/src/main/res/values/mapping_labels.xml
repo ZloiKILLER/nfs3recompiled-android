@@ -1,5 +1,5 @@
 <resources xmlns:tools="http://schemas.android.com/tools">
- <!-- Labels of the controls-mapping screen.  These stay English for now: the
+ <!-- Labels of the touch keys screen.  These stay English for now: the
       screen is where the player matches the port's assignments against NFS3's
       own settings, and the game itself is English.  Only these labels: the
       prose around them is translated like the rest of the launcher.  They stay
@@ -46,45 +46,49 @@
   <item>Z</item>
  </string-array>
 
- <!-- Parallel to GamePreferences.PHYSICAL_BUTTON_VALUES. -->
- <string-array name="physical_button_labels" tools:ignore="MissingTranslation">
-  <item>@string/label_unassigned</item>
-  <item>Back / View / Minus</item>
-  <item>Start / Options / Plus</item>
-  <item>South (A / Cross)</item>
-  <item>East (B / Circle)</item>
-  <item>West (X / Square)</item>
-  <item>North (Y / Triangle)</item>
-  <item>Left shoulder</item>
-  <item>Right shoulder</item>
+ <string name="label_unassigned" tools:ignore="MissingTranslation">Unassigned</string>
+
+ <!-- The gamepad buttons screen, English for the same reason: buttons carry
+      their printed names, and actions carry the game's own names for them.
+      Parallel to GamepadButtons.BUTTON_IDS. -->
+ <string-array name="pad_button_labels" tools:ignore="MissingTranslation">
+  <item>Cross / A</item>
+  <item>Circle / B</item>
+  <item>Square / X</item>
+  <item>Triangle / Y</item>
+  <item>L1 / LB</item>
+  <item>R1 / RB</item>
+  <item>L3 (left stick click)</item>
+  <item>R3 (right stick click)</item>
+  <item>Create / View</item>
+  <item>Options / Menu</item>
   <item>D-pad up</item>
   <item>D-pad down</item>
   <item>D-pad left</item>
   <item>D-pad right</item>
-  <item>Left stick click</item>
-  <item>Right stick click</item>
-  <item>Left trigger (LT / L2)</item>
-  <item>Right trigger (RT / R2)</item>
-  <item>Left stick up</item>
-  <item>Left stick down</item>
-  <item>Left stick left</item>
-  <item>Left stick right</item>
-  <item>Right stick up</item>
-  <item>Right stick down</item>
-  <item>Right stick left</item>
-  <item>Right stick right</item>
  </string-array>
 
- <string name="label_unassigned" tools:ignore="MissingTranslation">Unassigned</string>
- <string name="assign_button_title">Assign %1$s</string>
-
- <!-- Drawn on the diagram canvas at a fixed size; keep these short. -->
- <string name="diagram_title" tools:ignore="MissingTranslation">PLAYER 1</string>
- <string name="diagram_hint">Tap any button, stick direction or trigger to remap</string>
- <string name="diagram_description">Player 1 controller diagram. Tap a control or its assignment to remap it.</string>
- <string name="mapping_hint">Tap a controller button to assign an action. Restart the game to apply changes.</string>
- <string name="mapping_show_diagram">Controller diagram</string>
- <string name="mapping_show_list">All actions &amp; keyboard keys</string>
- <string name="gamepad_settings">Vibration settings</string>
- <string name="gamepad_settings_title">Player 1 · vibration</string>
+ <!-- Parallel to GamepadButtons.ACTION_IDS. -->
+ <string-array name="pad_action_labels" tools:ignore="MissingTranslation">
+  <item>@string/label_unassigned</item>
+  <item>Steer left</item>
+  <item>Steer right</item>
+  <item>Accelerate</item>
+  <item>Brake</item>
+  <item>Handbrake</item>
+  <item>Shift up</item>
+  <item>Shift down</item>
+  <item>Camera view</item>
+  <item>Horn</item>
+  <item>Look behind</item>
+  <item>Return to track</item>
+  <item>Spike strip</item>
+  <item>Headlights</item>
+  <item>Menu up</item>
+  <item>Menu down</item>
+  <item>Menu left</item>
+  <item>Menu right</item>
+  <item>Confirm / OK</item>
+  <item>Escape / pause</item>
+ </string-array>
 </resources>

@@ -5,6 +5,7 @@ import android.content.SharedPreferences;
 import android.graphics.*;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.SystemClock;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.WindowInsets;
@@ -15,6 +16,17 @@ import java.util.Map;
 
 /** Digital controls: movement changes held keys; touches starting outside controls pass to SDL. */
 final class TouchControlsOverlay extends View {
+    /* Marks the keys the D-pad's up and down arms send to move through menus.
+     * They reach the game past SDL's keyboard state (NFS3Activity.sendTouchMenuKey),
+     * which is where the native side reads the pedals from, so those arms never
+     * accelerate or brake; the mark also keeps an arm and a pedal holding the
+     * same key counted apart. */
+    static final int MENU_KEY = 0x40000000;
+    /* What the short presses of tap controls are released under, so releasing
+     * everything drops those and nothing else.  It used to drop every pending
+     * callback, the idle timer too, and a layout rebuilt for new window insets
+     * right after the game started left the controls on screen for good. */
+    private static final Object PULSES = new Object();
     private final SharedPreferences preferences;
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -25,10 +37,16 @@ final class TouchControlsOverlay extends View {
     private final Runnable dim = this::fadeIdle;
     private float scale=1, knobX, knobY;
     private float referenceWidth,referenceHeight;
+    /* The area controls are laid out in, in layout units, and where it starts
+     * inside the view, in pixels: the whole view in the game, the real screen
+     * fitted and centred in a preview (rebuild). */
+    private float areaW=1,areaH=1,originX,originY;
     private boolean menuMode;
     private int screenFingers;
     private final java.util.HashSet<Integer> pointers=new java.util.HashSet<>();
     private boolean editing;
+    /* Hidden by a press on a gamepad, until the screen is touched again. */
+    private boolean gamepadHidden;
     private Control selected;
     private float dragX,dragY;
     private int editorPointer=-1;
@@ -51,7 +69,9 @@ final class TouchControlsOverlay extends View {
         super(c);this.preview=preview;preferences=GamePreferences.get(c);
         menuMode=!preview; // The game starts in its menus; preview opens on the racing layout.
         keys=new TouchKeyState(output!=null?output:(key,down)->{
-            if(!preview) { if(down) SDLActivity.onNativeKeyDown(key);else SDLActivity.onNativeKeyUp(key); }
+            if(preview) return;
+            if((key&MENU_KEY)!=0) NFS3Activity.sendTouchMenuKey(key&~MENU_KEY,down);
+            else if(down) SDLActivity.onNativeKeyDown(key);else SDLActivity.onNativeKeyUp(key);
         });
         setFocusable(false);setContentDescription(c.getString(R.string.touch_preview_description));
         setOnApplyWindowInsetsListener((v,insets)->{
@@ -95,8 +115,8 @@ final class TouchControlsOverlay extends View {
         selected.box.set(x-w/2,y-h/2,x+w/2,y+h/2);
         constrain(selected);savePosition(selected);invalidate();
     }
-    private float areaWidth() { return (getWidth()-getPaddingLeft()-getPaddingRight())/scale; }
-    private float areaHeight() { return (getHeight()-getPaddingTop()-getPaddingBottom())/scale; }
+    private float areaWidth() { return areaW; }
+    private float areaHeight() { return areaH; }
     private void constrain(Control c) {
         float w=Math.min(c.box.width(),areaWidth()),h=Math.min(c.box.height(),areaHeight());
         float x=Math.max(w/2,Math.min(areaWidth()-w/2,c.box.centerX()));
@@ -112,86 +132,34 @@ final class TouchControlsOverlay extends View {
             .putFloat(k+"_size",c.visualSize).putFloat(k+"_hit",c.hitSize).apply();
     }
     @Override protected void onSizeChanged(int w,int h,int ow,int oh) { rebuild(); }
-    private void add(String a,int label,float x,float y,float w,float h,boolean pulse) {
-        controls.add(new Control(a,getContext().getString(label),new RectF(x,y,x+w,y+h),pulse));
-    }
     private void rebuild() {
         String selection=selectedAction();releaseAll();controls.clear();selected=null;
         float width=getWidth()-getPaddingLeft()-getPaddingRight(),height=getHeight()-getPaddingTop()-getPaddingBottom();
         if(width<=0||height<=0) return;
         scale=Math.min(getResources().getDisplayMetrics().density,Math.min(width/640f,height/340f));
         float pixelScale=1;
+        areaW=width/scale;areaH=height/scale;originX=originY=0;
         if(preview&&referenceWidth>0&&referenceHeight>0){
+            /* The real screen, fitted into the card and centred.  The layout
+             * editor and the settings preview used to lay controls out across
+             * their whole card instead, and two cards of different shapes put
+             * the same control in two different places -- neither of them the
+             * place the game puts it. */
             pixelScale=Math.min(width/referenceWidth,height/referenceHeight);
-            scale=Math.min(getResources().getDisplayMetrics().density,Math.min(referenceWidth/640f,referenceHeight/340f))*pixelScale;
+            float base=Math.min(getResources().getDisplayMetrics().density,Math.min(referenceWidth/640f,referenceHeight/340f));
+            scale=base*pixelScale;
+            areaW=referenceWidth/base;areaH=referenceHeight/base;
+            originX=(width-areaW*scale)/2;originY=(height-areaH*scale)/2;
         }
-        float edge=preferences.getInt(GamePreferences.TOUCH_EDGE,0);
-        float w=width/scale-2*edge,h=height/scale-preferences.getInt(GamePreferences.TOUCH_RAISE,0);
+        // Where everything goes by default, on the editor's grid: TouchLayout.
         float size=Math.min(preferences.getInt(GamePreferences.TOUCH_SIZE,100)/100f,1.15f);
-        float pad=140*size,pedal=62*size;
-        // These compact utility buttons deliberately share the fixed size of
-        // the layout-toggle button. Driving controls still follow TOUCH_SIZE.
-        float utilityWidth=58,utilityHeight=48;
-        boolean separate=preferences.getBoolean(GamePreferences.TOUCH_SEPARATE,false);
-        boolean menuLayout=separate&&menuMode;
-        if(menuLayout) add("steering",R.string.control_navigation,20,h-20-pad,pad,pad,false);
-        else {
-            add("steer_left",R.string.control_left,20,h-20-76*size,68*size,76*size,false);
-            add("steer_right",R.string.control_right,28+68*size+26*pixelScale/scale,h-20-76*size,68*size,76*size,false);
-        }
-        if(menuLayout) {
-            add("confirm",R.string.control_confirm,w-100*size,h-20-84*size,80*size,84*size,true);
-            add("back",R.string.control_back,w-188*size,h-20-64*size,72*size,64*size,true);
-        } else {
-            // Brake is the outer pedal and throttle the inner one in both
-            // handed layouts; the mirroring pass below moves the whole group.
-            float outerPedalX=w-20-pedal-5*pixelScale/scale;
-            float gasWidth=pedal+8*pixelScale/scale;
-            float innerPedalRight=w-32-pedal-24*pixelScale/scale;
-            float innerPedalX=innerPedalRight-gasWidth;
-            add("brake",R.string.control_brake,outerPedalX,h-20-84*size,pedal,84*size,false);
-            add("accelerate",R.string.control_gas,innerPedalX,h-20-118*size,gasWidth,118*size,false);
-            add("handbrake",R.string.control_handbrake,outerPedalX,h-32-138*size,52*size,46*size,false);
-
-            // Icon-only auxiliary and gear rows. Keep the larger action buttons
-            // clear of each other while retaining compact shift controls.
-            float actionHeight=utilityHeight,gearHeight=32*size,steerTop=h-20-76*size;
-            float oldActionToSteeringGap=176-76*size;
-            float gearY=steerTop-oldActionToSteeringGap-gearHeight;
-            float originalActionY=gearY-10-gearHeight;
-            float minimumActionY=70;
-            if(originalActionY<minimumActionY) gearY+=minimumActionY-originalActionY;
-            float actionY=Math.max(minimumActionY,gearY-10-actionHeight);
-            float lookX=w-36-utilityWidth,cameraX=lookX-18-utilityWidth;
-            add("look_behind",R.string.control_look_back,lookX,actionY,utilityWidth,utilityHeight,false);
-            add("camera",R.string.control_camera,cameraX,actionY,utilityWidth,utilityHeight,true);
-            add("horn",R.string.control_horn,24,actionY,utilityWidth,utilityHeight,false);
-            add("spike_strip",R.string.control_spikes,24+utilityWidth+18,actionY,utilityWidth,utilityHeight,true);
-
-            float steerRight=28+136*size+26*pixelScale/scale;
-            float steerCenter=(20+steerRight)/2;
-            float gearWidth=48*size,gearGap=10;
-            float gearDownX=steerCenter-(gearWidth*2+gearGap)/2;
-            gearY+=30*pixelScale/scale;
-            add("gear_down",R.string.control_gear_down,gearDownX,gearY,gearWidth,gearHeight,true);
-            add("gear_up",R.string.control_gear_up,gearDownX+gearWidth+gearGap,gearY,gearWidth,gearHeight,true);
-        }
-        if(!separate) {
-            add("confirm",R.string.control_confirm,150,18,54,48,true);
-            add("back",R.string.control_back,214,18,54,48,true);
-        }
-        add("pause",R.string.control_pause,20,18,utilityWidth,utilityHeight,true);
-        if(separate) add("mode",menuMode?R.string.control_race:R.string.control_menu,38+utilityWidth,18,utilityWidth,utilityHeight,true);
-        if(menuMode) add("keyboard",R.string.control_keyboard,w-105,18,85,48,true);
-        else {
-            float recoverX=w-20-utilityWidth;
-            add("headlights",R.string.control_lights,recoverX-18-utilityWidth,18,utilityWidth,utilityHeight,true);
-            add("recover",R.string.control_recover,recoverX,18,utilityWidth,utilityHeight,true);
-        }
-        if(GamePreferences.TOUCH_LAYOUT_MIRRORED.equals(preferences.getString(GamePreferences.TOUCH_LAYOUT,"standard")))
-            for(Control c:controls) { float left=c.box.left;c.box.left=w-c.box.right;c.box.right=w-left; }
+        boolean mirrored=GamePreferences.TOUCH_LAYOUT_MIRRORED.equals(preferences.getString(GamePreferences.TOUCH_LAYOUT,"standard"));
+        for(TouchLayout.Box b:TouchLayout.defaults(areaWidth(),areaHeight(),preferences.getInt(GamePreferences.TOUCH_EDGE,0),
+                preferences.getInt(GamePreferences.TOUCH_RAISE,0),size,pixelScale/scale,
+                preferences.getBoolean(GamePreferences.TOUCH_SEPARATE,false),menuMode,mirrored))
+            controls.add(new Control(b.action,getContext().getString(label(b.action)),
+                new RectF(b.left(),b.top(),b.right(),b.bottom()),pulse(b.action)));
         for(Control c:controls) {
-            c.box.offset(edge,0);
             String k=layoutPrefix()+c.action;
             float x=preferences.getFloat(k+"_x",c.box.centerX()/areaWidth())*areaWidth();
             float y=preferences.getFloat(k+"_y",c.box.centerY()/areaHeight())*areaHeight();
@@ -201,34 +169,69 @@ final class TouchControlsOverlay extends View {
             if(c.action.equals(selection))selected=c;
         }
         invalidate();
+        // A rebuilt layout starts the idle countdown over rather than losing it.
+        scheduleHide();
+    }
+    private int label(String action) {
+        switch(action) {
+        case "steering": return R.string.control_navigation;
+        case "steer_left": return R.string.control_left;
+        case "steer_right": return R.string.control_right;
+        case "confirm": return R.string.control_confirm;
+        case "back": return R.string.control_back;
+        case "brake": return R.string.control_brake;
+        case "accelerate": return R.string.control_gas;
+        case "handbrake": return R.string.control_handbrake;
+        case "look_behind": return R.string.control_look_back;
+        case "camera": return R.string.control_camera;
+        case "horn": return R.string.control_horn;
+        case "spike_strip": return R.string.control_spikes;
+        case "gear_down": return R.string.control_gear_down;
+        case "gear_up": return R.string.control_gear_up;
+        case "pause": return R.string.control_pause;
+        case "mode": return menuMode?R.string.control_race:R.string.control_menu;
+        case "keyboard": return R.string.control_keyboard;
+        case "headlights": return R.string.control_lights;
+        default: return R.string.control_recover;
+        }
+    }
+    /* Held for as long as a finger stays on them; the rest press briefly on touch. */
+    private static boolean pulse(String action) {
+        switch(action) {
+        case "steering": case "steer_left": case "steer_right": case "brake": case "accelerate":
+        case "handbrake": case "look_behind": case "horn": return false;
+        default: return true;
+        }
     }
     @Override protected void onDraw(Canvas canvas) {
-        super.onDraw(canvas);canvas.save();canvas.translate(getPaddingLeft(),getPaddingTop());canvas.scale(scale,scale);
+        super.onDraw(canvas);canvas.save();canvas.translate(getPaddingLeft()+originX,getPaddingTop()+originY);canvas.scale(scale,scale);
         if(preview) {
-            canvas.drawColor(0xff0c1017);
+            // Darker around the screen area, so the card shows where the game's edges are.
+            canvas.drawColor(0xff06080c);
+            paint.setStyle(Paint.Style.FILL);paint.setColor(0xff0c1017);canvas.drawRect(0,0,areaWidth(),areaHeight(),paint);
             if(editing) {
-                text(canvas,getContext().getString(R.string.editor_drag_title),getWidth()/scale/2,94,24,0xffaab5c6);
-                text(canvas,getContext().getString(R.string.editor_resize_hint),getWidth()/scale/2,124,20,0xff8491a4);
-            } else text(canvas,getContext().getString(R.string.touch_preview_hint),getWidth()/scale/2,118,24,0xff8491a4);
+                drawGrid(canvas);
+                text(canvas,getContext().getString(R.string.editor_drag_title),areaWidth()/2,94,24,0xffaab5c6);
+                text(canvas,getContext().getString(R.string.editor_resize_hint),areaWidth()/2,124,20,0xff8491a4);
+            } else text(canvas,getContext().getString(R.string.touch_preview_hint),areaWidth()/2,118,24,0xff8491a4);
         }
         int opacity=preferences.getInt(GamePreferences.TOUCH_OPACITY,65);
         for(Control c:controls) {
             boolean down=false;
             for(Contact contact:contacts.values()) if(contact.control==c&&contact.inside) down=true;
             paint.setStyle(Paint.Style.FILL);paint.setColor(Color.argb(Math.round(opacity*2.1f),down?88:18,down?64:24,down?30:34));
+            // The steering control, wherever a layout has one, is the four-way D-pad.
             boolean stick=c.action.equals("steering");
-            if(stick&&menuMode) canvas.drawPath(dpad(c.box),paint);
-            else if(stick) canvas.drawOval(c.box,paint);else canvas.drawRoundRect(c.box,16,16,paint);
+            if(stick) canvas.drawPath(dpad(c.box),paint);else canvas.drawRoundRect(c.box,16,16,paint);
             paint.setStyle(Paint.Style.STROKE);paint.setStrokeWidth(down?2.2f:1.4f);
             paint.setColor(down?0xffffbf69:Color.argb(Math.round(opacity*2.55f),203,216,232));
             if(stick) {
-                if(menuMode) canvas.drawPath(dpad(c.box),paint);else canvas.drawOval(c.box,paint);
+                canvas.drawPath(dpad(c.box),paint);
                 float x=c.box.centerX(),y=c.box.centerY(),r=c.box.width()/2;
                 arrow(canvas,x-r*.68f,y,-1,0);arrow(canvas,x+r*.68f,y,1,0);
-                if(menuMode) { arrow(canvas,x,y-r*.68f,0,-1);arrow(canvas,x,y+r*.68f,0,1); }
+                arrow(canvas,x,y-r*.68f,0,-1);arrow(canvas,x,y+r*.68f,0,1);
                 paint.setStyle(Paint.Style.FILL);paint.setColor(down?0xffad8148:0xff3b4555);
-                if(!menuMode) canvas.drawCircle(x+knobX*r*.38f,y+knobY*r*.38f,r*.35f,paint);
-                else if(down) canvas.drawCircle(x+knobX*r*.65f,y+knobY*r*.65f,r*.12f,paint);
+                if(down) canvas.drawCircle(x+knobX*r*.65f,y+knobY*r*.65f,r*.12f,paint);
             } else {
                 canvas.drawRoundRect(c.box,16,16,paint);
                 if(c.action.equals("accelerate")||c.action.equals("brake")) {
@@ -245,6 +248,19 @@ final class TouchControlsOverlay extends View {
             }
         }
         canvas.restore();
+    }
+    /* The editor's grid over the area controls can be placed in: a hairline every
+     * cell and a brighter line every fourth.  Default positions stand on it, and
+     * with Snap to grid a dragged control lands on it. */
+    private void drawGrid(Canvas canvas) {
+        float w=areaWidth(),h=areaHeight();
+        paint.setStyle(Paint.Style.STROKE);paint.setPathEffect(null);
+        for(int i=0;i*TouchLayout.GRID<=w;i++) { gridLine(i);canvas.drawLine(i*TouchLayout.GRID,0,i*TouchLayout.GRID,h,paint); }
+        for(int i=0;i*TouchLayout.GRID<=h;i++) { gridLine(i);canvas.drawLine(0,i*TouchLayout.GRID,w,i*TouchLayout.GRID,paint); }
+    }
+    private void gridLine(int index) {
+        boolean major=index%4==0;
+        paint.setStrokeWidth(major?1.5f/scale:0);paint.setColor(major?0x40aab5c6:0x1caab5c6);
     }
     private Path dpad(RectF b) {
         float x=b.centerX(),y=b.centerY(),t=b.width()*.17f;
@@ -312,7 +328,7 @@ final class TouchControlsOverlay extends View {
     }
     @Override public boolean onTouchEvent(MotionEvent e) {
         int action=e.getActionMasked(),index=e.getActionIndex(),id=e.getPointerId(index);
-        float x=(e.getX(index)-getPaddingLeft())/scale,y=(e.getY(index)-getPaddingTop())/scale;
+        float x=(e.getX(index)-getPaddingLeft()-originX)/scale,y=(e.getY(index)-getPaddingTop()-originY)/scale;
         if(editing) return editTouch(e,x,y);
         if(action==MotionEvent.ACTION_DOWN||action==MotionEvent.ACTION_POINTER_DOWN) {
             Control hit=hitTest(x,y);
@@ -332,14 +348,14 @@ final class TouchControlsOverlay extends View {
             }
             if(hit.action.equals("steering")) for(Contact c:contacts.values()) if(c.control.action.equals("steering")) return true;
             Contact contact=new Contact(hit);contacts.put(id,contact);
-            if(hit.pulse) { int key=key(hit.action);keys.press(key);handler.postDelayed(()->keys.release(key),90); }
+            if(hit.pulse) { int key=key(hit.action);keys.press(key);handler.postAtTime(()->keys.release(key),PULSES,SystemClock.uptimeMillis()+90); }
             else update(contact,x,y);
             invalidate();return true;
         }
         if(action==MotionEvent.ACTION_MOVE) {
             for(int i=0;i<e.getPointerCount();i++) {
                 Contact c=contacts.get(e.getPointerId(i));
-                if(c!=null&&!c.control.pulse) update(c,(e.getX(i)-getPaddingLeft())/scale,(e.getY(i)-getPaddingTop())/scale);
+                if(c!=null&&!c.control.pulse) update(c,(e.getX(i)-getPaddingLeft()-originX)/scale,(e.getY(i)-getPaddingTop()-originY)/scale);
             }
             invalidate();return true;
         }
@@ -368,8 +384,13 @@ final class TouchControlsOverlay extends View {
             if(getParent()!=null)getParent().requestDisallowInterceptTouchEvent(true);invalidate();
         } else if(action==MotionEvent.ACTION_MOVE&&selected!=null) {
             int i=e.findPointerIndex(editorPointer);
-            if(i>=0){x=(e.getX(i)-getPaddingLeft())/scale;y=(e.getY(i)-getPaddingTop())/scale;
-                selected.box.offset(x-dragX-selected.box.centerX(),y-dragY-selected.box.centerY());constrain(selected);invalidate();}
+            if(i>=0){x=(e.getX(i)-getPaddingLeft()-originX)/scale;y=(e.getY(i)-getPaddingTop()-originY)/scale;
+                selected.box.offset(x-dragX-selected.box.centerX(),y-dragY-selected.box.centerY());
+                // The centre onto the nearest grid point, while dragging, so it shows where the control lands.
+                if(preferences.getBoolean(GamePreferences.TOUCH_SNAP,true))
+                    selected.box.offset(TouchLayout.snap(selected.box.centerX())-selected.box.centerX(),
+                                        TouchLayout.snap(selected.box.centerY())-selected.box.centerY());
+                constrain(selected);invalidate();}
         } else if(action==MotionEvent.ACTION_UP||action==MotionEvent.ACTION_CANCEL) {
             if(selected!=null)savePosition(selected);editorPointer=-1;
             if(getParent()!=null)getParent().requestDisallowInterceptTouchEvent(false);
@@ -380,31 +401,39 @@ final class TouchControlsOverlay extends View {
     private void update(Contact c,float x,float y) {
         ArrayList<Integer> wanted=new ArrayList<>();
         if(c.control.action.equals("steering")) {
+            /* One direction at a time, in every layout.  Left and right steer; up
+             * and down move through menus -- on the pedals' keys, but past the
+             * pedals themselves (MENU_KEY), so a race is driven with the pedals. */
             float r=c.control.box.width()/2;
             knobX=Math.max(-1,Math.min(1,(x-c.control.box.centerX())/r));
-            knobY=menuMode?Math.max(-1,Math.min(1,(y-c.control.box.centerY())/r)):0;
+            knobY=Math.max(-1,Math.min(1,(y-c.control.box.centerY())/r));
             c.inside=c.control.hitBox.contains(x,y);
             if(!c.inside)knobX=knobY=0;
-            if(menuMode) {
-                if(Math.abs(knobX)>Math.abs(knobY))knobY=0;else knobX=0;
-            }
+            if(Math.abs(knobX)>Math.abs(knobY))knobY=0;else knobX=0;
             if(knobX<-.22f) wanted.add(key("steer_left"));if(knobX>.22f) wanted.add(key("steer_right"));
-            if(menuMode&&knobY<-.22f) wanted.add(key("accelerate"));if(menuMode&&knobY>.22f) wanted.add(key("brake"));
+            if(knobY<-.22f) menuKey(wanted,key("accelerate"));if(knobY>.22f) menuKey(wanted,key("brake"));
         } else { c.inside=c.control.hitBox.contains(x,y);if(c.inside) wanted.add(key(c.control.action)); }
         for(Integer k:c.held) if(!wanted.contains(k)) keys.release(k);
         for(Integer k:wanted) if(!c.held.contains(k)) keys.press(k);
         c.held.clear();c.held.addAll(wanted);
     }
+    private static void menuKey(ArrayList<Integer> wanted,int key) { if(key!=0) wanted.add(MENU_KEY|key); }
     private void release(Contact c) { for(Integer k:c.held) keys.release(k);c.held.clear(); }
-    void releaseAll() { handler.removeCallbacksAndMessages(null);animate().cancel();keys.releaseAll();contacts.clear();pointers.clear();screenFingers=0;knobX=knobY=0;invalidate(); }
-    private void fadeIdle() { if(screenFingers==0&&pointers.isEmpty()&&contacts.isEmpty())animate().alpha(preferences.getBoolean(GamePreferences.TOUCH_HIDE_FULL,false)?0f:.12f).setDuration(350).start(); }
-    void resumeIdleTimer() { reveal();scheduleHide(); }
-    private void reveal() { handler.removeCallbacks(dim);animate().cancel();setAlpha(1); }
+    void releaseAll() { handler.removeCallbacksAndMessages(PULSES);keys.releaseAll();contacts.clear();pointers.clear();screenFingers=0;knobX=knobY=0;invalidate(); }
+    private void fadeIdle() { if(!gamepadHidden&&screenFingers==0&&pointers.isEmpty()&&contacts.isEmpty())animate().alpha(preferences.getBoolean(GamePreferences.TOUCH_HIDE_FULL,false)?0f:.12f).setDuration(350).start(); }
+    void resumeIdleTimer() { if(gamepadHidden)return;reveal();scheduleHide(); }
+    private void reveal() { gamepadHidden=false;handler.removeCallbacks(dim);animate().cancel();setAlpha(1); }
     private void scheduleHide() {
         handler.removeCallbacks(dim);
-        if(!preview&&screenFingers==0&&contacts.isEmpty()&&pointers.isEmpty()&&preferences.getBoolean(GamePreferences.TOUCH_AUTO_HIDE,false))
+        if(!preview&&!gamepadHidden&&screenFingers==0&&contacts.isEmpty()&&pointers.isEmpty()&&preferences.getBoolean(GamePreferences.TOUCH_AUTO_HIDE,false))
             handler.postDelayed(dim,Math.max(1,preferences.getInt(GamePreferences.TOUCH_HIDE_SECONDS,4))*1000L);
     }
-    @Override public void onWindowFocusChanged(boolean focus) { super.onWindowFocusChanged(focus);if(!focus) releaseAll(); }
-    @Override protected void onDetachedFromWindow() { releaseAll();super.onDetachedFromWindow(); }
+    /* A press on a gamepad: the controls get out of the way at once, whatever the
+     * auto-hide setting says, and stay away until the screen is touched again. */
+    void hideForGamepad() {
+        if(preview||gamepadHidden||screenFingers>0||!contacts.isEmpty()||!pointers.isEmpty())return;
+        gamepadHidden=true;handler.removeCallbacks(dim);animate().cancel();animate().alpha(0f).setDuration(120).start();
+    }
+    @Override public void onWindowFocusChanged(boolean focus) { super.onWindowFocusChanged(focus);if(!focus) releaseAll();else scheduleHide(); }
+    @Override protected void onDetachedFromWindow() { releaseAll();handler.removeCallbacks(dim);super.onDetachedFromWindow(); }
 }

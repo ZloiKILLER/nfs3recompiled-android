@@ -6012,7 +6012,8 @@ L_0x0041a16d:
     }
     // 0041a1c6  f6c440                 +test ah, 0x40
     cpu.clear_co();
-    cpu.set_szp(static_cast<x86::reg8>(cpu.ah & 64 /*0x40*/));
+    // Port: alpha intensity applies on this driver too (tools/apply_alpha_intensity.py).
+    cpu.set_szp(static_cast<x86::reg8>(64 /*0x40, port: was ah & 0x40, ah read from 0x7a3a58*/));
     // 0041a1c9  0f84f2000000           -je 0x41a2c1
     if (cpu.flags.zf)
     {
@@ -12445,7 +12446,8 @@ void Application::sub_41b9b0(WinApplication* app, x86::CPU& cpu)
     app->getMemory<x86::reg32>(x86::reg32(5582364) /* 0x552e1c */) = cpu.edx;
     // 0041b9cd  f6c440                 +test ah, 0x40
     cpu.clear_co();
-    cpu.set_szp(static_cast<x86::reg8>(cpu.ah & 64 /*0x40*/));
+    // Port: alpha intensity applies on this driver too (tools/apply_alpha_intensity.py).
+    cpu.set_szp(static_cast<x86::reg8>(64 /*0x40, port: was ah & 0x40, ah read from 0x7a3a58*/));
     // 0041b9d0  746d                   -je 0x41ba3f
     if (cpu.flags.zf)
     {

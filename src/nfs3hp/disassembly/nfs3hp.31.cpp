@@ -3,6 +3,8 @@
 
 namespace nfs3hp
 {
+// Port (tools/apply_widescreen.py): defined in nfs3hp_main.cpp.
+x86::reg32 widescreenHalfAngle(win32::WinApplication* app, x86::reg32 half);
 
 /* align: skip 0x8d 0x80 0x00 0x00 0x00 0x00 */
 void Application::sub_4d66f0(WinApplication* app, x86::CPU& cpu)
@@ -22837,6 +22839,7 @@ void Application::sub_4dbce0(WinApplication* app, x86::CPU& cpu)
     cpu.eax = x86::reg32(x86::sreg32(cpu.eax) >> (4 /*0x4*/ % 32));
     // 004dbd1b  8945e8                 -mov dword ptr [ebp - 0x18], eax
     app->getMemory<x86::reg32>(cpu.ebp + x86::reg32(-24) /* -0x18 */) = cpu.eax;
+    cpu.esi = widescreenHalfAngle(app, cpu.esi); /* port: Hor+ on a wide screen, the vertical angle as it was */
     // 004dbd1e  89fa                   -mov edx, edi
     cpu.edx = cpu.edi;
     // 004dbd20  8b45ec                 -mov eax, dword ptr [ebp - 0x14]
@@ -32526,7 +32529,8 @@ L_0x004ddc00:
     cpu.ah = app->getMemory<x86::reg8>(x86::reg32(8010328) /* 0x7a3a58 */);
     // 004ddd57  f6c440                 +test ah, 0x40
     cpu.clear_co();
-    cpu.set_szp(static_cast<x86::reg8>(cpu.ah & 64 /*0x40*/));
+    // Port: alpha intensity applies on this driver too (tools/apply_alpha_intensity.py).
+    cpu.set_szp(static_cast<x86::reg8>(64 /*0x40, port: was ah & 0x40, ah read from 0x7a3a58*/));
     // 004ddd5a  7453                   -je 0x4dddaf
     if (cpu.flags.zf)
     {
@@ -33443,7 +33447,8 @@ void Application::sub_4de070(WinApplication* app, x86::CPU& cpu)
     app->getMemory<x86::reg32>(cpu.ebp + x86::reg32(-36) /* -0x24 */) = cpu.edx;
     // 004de0bc  f6c440                 +test ah, 0x40
     cpu.clear_co();
-    cpu.set_szp(static_cast<x86::reg8>(cpu.ah & 64 /*0x40*/));
+    // Port: alpha intensity applies on this driver too (tools/apply_alpha_intensity.py).
+    cpu.set_szp(static_cast<x86::reg8>(64 /*0x40, port: was ah & 0x40, ah read from 0x7a3a58*/));
     // 004de0bf  7465                   -je 0x4de126
     if (cpu.flags.zf)
     {
@@ -35095,7 +35100,8 @@ void Application::sub_4de700(WinApplication* app, x86::CPU& cpu)
     app->getMemory<x86::reg32>(cpu.ebp + x86::reg32(-4) /* -0x4 */) = cpu.eax;
     // 004de76a  f605583a7a0040         +test byte ptr [0x7a3a58], 0x40
     cpu.clear_co();
-    cpu.set_szp(static_cast<x86::reg8>(app->getMemory<x86::reg8>(x86::reg32(8010328) /* 0x7a3a58 */) & 64 /*0x40*/));
+    // Port: alpha intensity applies on this driver too (tools/apply_alpha_intensity.py).
+    cpu.set_szp(static_cast<x86::reg8>(64 /*0x40, port: was the 0x7a3a58 probe*/));
     // 004de771  7466                   -je 0x4de7d9
     if (cpu.flags.zf)
     {

@@ -3,6 +3,9 @@
 
 namespace nfs3hp
 {
+// Port (tools/apply_car_detail.py): defined in nfs3hp_main.cpp.
+bool fullCarDetail();
+x86::reg32 carWheelStamp(win32::WinApplication* app, x86::reg32 car, x86::reg32 which);
 
 /* align: skip  */
 void Application::sub_4aa79f(WinApplication* app, x86::CPU& cpu)
@@ -43599,9 +43602,9 @@ void Application::sub_4b56e0(WinApplication* app, x86::CPU& cpu)
     // 004b56e3  89e5                   -mov ebp, esp
     cpu.ebp = cpu.esp;
     // 004b56e5  ba00340c00             -mov edx, 0xc3400
-    cpu.edx = 799744 /*0xc3400*/;
+    cpu.edx = 4u * 799744u; /* port: four times the transform buffer */
     // 004b56ea  c70000340c00           -mov dword ptr [eax], 0xc3400
-    app->getMemory<x86::reg32>(cpu.eax) = 799744 /*0xc3400*/;
+    app->getMemory<x86::reg32>(cpu.eax) = 4u * 799744u; /* port: four times the transform buffer */
     // 004b56f0  31db                   -xor ebx, ebx
     cpu.ebx ^= x86::reg32(x86::sreg32(cpu.ebx));
     // 004b56f2  b828ec5300             -mov eax, 0x53ec28
@@ -54500,7 +54503,7 @@ void Application::sub_4b7d30(WinApplication* app, x86::CPU& cpu)
     goto L_0x004b7d60;
 L_0x004b7d5b:
     // 004b7d5b  bb80000000             -mov ebx, 0x80
-    cpu.ebx = 128 /*0x80*/;
+    cpu.ebx = fullCarDetail() ? 256u : 128u; /* port: every car at the player's texture size */
 L_0x004b7d60:
     // 004b7d60  8b55fc                 -mov edx, dword ptr [ebp - 4]
     cpu.edx = app->getMemory<x86::reg32>(cpu.ebp + x86::reg32(-4) /* -0x4 */);

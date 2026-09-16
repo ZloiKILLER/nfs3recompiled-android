@@ -2,6 +2,7 @@ package dev.nfs3hp.port;
 
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.content.SharedPreferences;
 import android.view.View;
 import android.widget.*;
 
@@ -28,8 +29,13 @@ final class TouchLayoutEditor {
             public void onStopTrackingTouch(SeekBar bar){}
         };
         visual.setOnSeekBarChangeListener(listener);hit.setOnSeekBarChangeListener(listener);
+        // Whether a dragged control lands on the grid the editor draws; on unless switched off.
+        SharedPreferences preferences=GamePreferences.get(activity);
+        CheckBox snap=activity.findViewById(R.id.editor_snap);
+        snap.setChecked(preferences.getBoolean(GamePreferences.TOUCH_SNAP,true));
+        snap.setOnCheckedChangeListener((box,on)->preferences.edit().putBoolean(GamePreferences.TOUCH_SNAP,on).apply());
         Spinner mode=activity.findViewById(R.id.editor_mode);
-        ArrayAdapter<String> adapter=new ArrayAdapter<>(activity,android.R.layout.simple_spinner_dropdown_item,GamePreferences.get(activity).getBoolean(GamePreferences.TOUCH_SEPARATE,false)
+        ArrayAdapter<String> adapter=new ArrayAdapter<>(activity,android.R.layout.simple_spinner_dropdown_item,preferences.getBoolean(GamePreferences.TOUCH_SEPARATE,false)
                 ?new String[]{activity.getString(R.string.editor_mode_race),activity.getString(R.string.editor_mode_menu)}
                 :new String[]{activity.getString(R.string.editor_mode_shared)});
         mode.setAdapter(adapter);

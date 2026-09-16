@@ -17,10 +17,10 @@ int main(){
         auto id=SDL_AttachVirtualJoystick(&v);check(id!=0,"virtual joystick");
         {
             App app;com::InitialiseComMemory(&app);Gamepad pad(0);check(pad.hasForceFeedback(),"rumble capability");
-            check(!Gamepad::isPolledByGame(),"opening FF device is not an input read");
-            Input::poll();check(!Gamepad::isPolledByGame(),"generic polling must not suppress keys");
-            { Gamepad outputOnly(999);outputOnly.markInputRead();check(!Gamepad::isPolledByGame(),"output-only device must not suppress keys"); }
-            pad.markInputRead();check(Gamepad::isPolledByGame(),"real device state read suppresses duplicate input");
+            /* The checks that used to follow here were about the pad-to-keyboard
+             * layer standing aside once the game read a pad.  That layer is gone:
+             * a pad reaches the game only as a DirectInput device. */
+            Input::poll();
             MemMap memory(8192);auto base=memory.getBlockStart();x86::CPU cpu{};
             auto call=[&](DWORD object,unsigned slot,std::initializer_list<DWORD> args){
                 cpu.esp=base+7000;auto sp=cpu.esp;
@@ -62,8 +62,36 @@ int main(){
                 check(IDirectInputEffect::create(&app,cpu,&pad,&guid,p,&object)==0,"periodic/spring creation");
                 check(call(object,7,{1,0})==0&&amplitude==0,"zero gain silent");call(object,2,{});
             }
+            /* What the game's effects feel like on a motor.  A spring pulls
+             * against the player's hand and has no rumble; the periodic effects
+             * that run all race are texture underneath the jolts; a jolt is a
+             * hit that fades; and the game's later jolts arrive as updates to
+             * an effect it started once and never starts again. */
+            IDirectInputEffect::gain(&pad,10000);
+            auto* data=&app.getMemory<LONG>(base+144);
+            auto make=[&](DWORD kind,DWORD duration){
+                guid.Data1=0x13541c20+kind;p->dwGain=10000;p->dwDuration=duration;p->cbTypeSpecificParams=kind==0?4:kind==7?24:16;
+                check(IDirectInputEffect::create(&app,cpu,&pad,&guid,p,&object)==0,"effect creation");return DWORD(object);
+            };
+            // Spring centred at full right: the stick at rest is as far from it as it gets.
+            std::memset(data,0,48);data[0]=10000;data[1]=data[2]=data[3]=data[4]=10000;
+            DWORD effect=make(7,0xffffffff);
+            check(call(effect,7,{1,0})==0&&amplitude==0,"a spring never rumbles");call(effect,2,{});
+            std::memset(data,0,48);data[0]=10000;data[3]=30000;
+            effect=make(2,0xffffffff);
+            check(call(effect,7,{1,0})==0&&amplitude>19000&&amplitude<20500,"a periodic effect is texture");call(effect,2,{});
+            std::memset(data,0,48);data[0]=10000;
+            effect=make(0,800000);
+            check(call(effect,7,{1,0})==0&&amplitude>60000,"a jolt hits at full strength");
+            SDL_Delay(90);IDirectInputEffect::update();check(amplitude>0&&amplitude<60000,"a jolt fades");call(effect,2,{});
+            effect=make(0,100000);
+            check(call(effect,7,{1,0})==0&&amplitude>60000,"a short jolt hits");
+            SDL_Delay(130);IDirectInputEffect::update();check(amplitude==0,"a jolt ends with its duration");
+            data[0]=8000;check(call(effect,6,{base,0x100})==0&&amplitude>50000&&amplitude<55000,"an update after a jolt is the game's next jolt");
+            check(call(effect,8,{})==0&&amplitude==0,"stop the jolt");
+            data[0]=9000;check(call(effect,6,{base,0x100})==0&&amplitude==0,"a stopped jolt waits for Start");call(effect,2,{});
         }
         SDL_DetachVirtualJoystick(id);SDL_Quit();
-        std::puts("PASS: guest COM ABI, DX5 size, create/start/update/stop, duration, gain, pause, actuators, unload/release, deep copy, unsupported types, zero-gain effects");return 0;
+        std::puts("PASS: guest COM ABI, DX5 size, create/start/update/stop, duration, gain, pause, actuators, unload/release, deep copy, unsupported types, zero-gain effects, silent spring, periodic texture, fading jolts, jolts restarted by updates");return 0;
     }catch(const std::exception& e){std::fprintf(stderr,"FAIL: %s\n",e.what());return 1;}
 }

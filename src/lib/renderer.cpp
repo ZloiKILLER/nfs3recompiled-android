@@ -169,34 +169,60 @@ static const char g_blitVertexShader[] =
 "    gl_Position = vec4(a_position, 0.0, 1.0);"
 "}";
 
-/* Gamma is applied here, on the finished frame, rather than inside the Glide
- * renderer: one pass over the screen instead of work on every fragment of every
- * triangle, and it covers the 2D menus and the movies as well as a race.  The
- * game has a gamma of its own that reaches the Glide shader; the two simply
- * compose.  Above 1 this lifts the dark end hardest, which is the point -- the
- * night tracks are lit almost entirely by the car's own headlights. */
+/* Picture adjustment is applied here, on the finished frame, rather than inside
+ * the Glide renderer: one pass over the screen instead of work on every
+ * fragment of every triangle, and it covers the 2D menus and the movies as well
+ * as a race.  The game has a gamma of its own that reaches the Glide shader;
+ * the two simply compose.  Above 1 gamma lifts the dark end hardest, which is
+ * the point -- the night tracks are lit almost entirely by the car's own
+ * headlights.
+ *
+ * Order matters and is mirrored exactly by the launcher's preview (see
+ * ScreenAdjustment.transfer in the Java side), so what the player sees while
+ * dragging a slider is what the game will draw: gamma first, then contrast
+ * around mid grey, then brightness as an offset. */
 static const char g_blitFragmentShader[] =
 "in vec2 v_texCoord;"
 "layout (location=0) out vec4 o_color;"
 "uniform sampler2D u_texture;"
 "uniform float u_gamma;"
+"uniform float u_brightness;"
+"uniform float u_contrast;"
 "void main()"
 "{"
 "    vec4 texel = texture(u_texture, v_texCoord);"
-"    o_color = vec4(pow(max(texel.rgb, vec3(0.0)), vec3(1.0 / max(u_gamma, 0.001))), texel.a);"
+"    vec3 c = pow(max(texel.rgb, vec3(0.0)), vec3(1.0 / max(u_gamma, 0.001)));"
+"    c = (c - vec3(0.5)) * u_contrast + vec3(0.5) + vec3(u_brightness);"
+"    o_color = vec4(clamp(c, vec3(0.0), vec3(1.0)), texel.a);"
 "}";
 
-/* Read once: the launcher sets it before the game starts, the way it does the
- * frame cap and the orientation.  1.0 leaves the picture exactly as the game
- * drew it, and is what an unset variable means. */
+/* Read once each: the launcher sets them before the game starts, the way it
+ * does the frame cap and the orientation.  The neutral value is what an unset
+ * or unparseable variable means, so a missing launcher leaves the picture
+ * exactly as the game drew it. */
+static float envFloat(const char* name, float neutral, float low, float high)
+{
+    const char* value = SDL_getenv(name);
+    const float parsed = value && *value ? float(SDL_atof(value)) : neutral;
+    return (parsed >= low && parsed <= high) ? parsed : neutral;
+}
+
 static float displayGamma()
 {
-    static const float s_gamma = []() {
-        const char* value = SDL_getenv("NFS_GAMMA");
-        const float parsed = value ? float(SDL_atof(value)) : 1.f;
-        return (parsed > 0.05f && parsed < 10.f) ? parsed : 1.f;
-    }();
+    static const float s_gamma = envFloat("NFS_GAMMA", 1.f, 0.05f, 10.f);
     return s_gamma;
+}
+
+static float displayBrightness()
+{
+    static const float s_brightness = envFloat("NFS_BRIGHTNESS", 0.f, -1.f, 1.f);
+    return s_brightness;
+}
+
+static float displayContrast()
+{
+    static const float s_contrast = envFloat("NFS_CONTRAST", 1.f, 0.05f, 10.f);
+    return s_contrast;
 }
 
 Renderer::Renderer(WinApplication* application, Window *window)
@@ -205,6 +231,8 @@ Renderer::Renderer(WinApplication* application, Window *window)
     ,   m_renderer(SDL_GL_CreateContext(m_window->m_window))
     ,   m_blitProgram(0)
     ,   m_blitGammaUniform(-1)
+    ,   m_blitBrightnessUniform(-1)
+    ,   m_blitContrastUniform(-1)
     ,   m_blitVertexArray(0)
     ,   m_blitVertexBuffer(0)
     ,   m_videoMemory(new MemMap(800*600*2*2)) // double buffer 16 bits 800x600
@@ -336,6 +364,8 @@ void Renderer::initBlit()
     if (texLoc >= 0)
         glUniform1i(texLoc, 0);
     m_blitGammaUniform = glGetUniformLocation(m_blitProgram, "u_gamma");
+    m_blitBrightnessUniform = glGetUniformLocation(m_blitProgram, "u_brightness");
+    m_blitContrastUniform = glGetUniformLocation(m_blitProgram, "u_contrast");
     glUseProgram(0);
     glBindVertexArray(0);
 }
@@ -421,7 +451,7 @@ x86::reg32 Renderer::getBackBuffer() const
 void Renderer::present()
 {
     tick("present");
-    Gamepad::updateKeys();
+    Gamepad::update();
     glBindTexture(GL_TEXTURE_2D, m_texture);
     int w, h;
     SDL_GetWindowSizeInPixels(m_window->m_window, &w, &h);
@@ -476,6 +506,10 @@ void Renderer::present()
     glUseProgram(m_blitProgram);
     if (m_blitGammaUniform >= 0)
         glUniform1f(m_blitGammaUniform, displayGamma());
+    if (m_blitBrightnessUniform >= 0)
+        glUniform1f(m_blitBrightnessUniform, displayBrightness());
+    if (m_blitContrastUniform >= 0)
+        glUniform1f(m_blitContrastUniform, displayContrast());
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, m_texture);
     glBindVertexArray(m_blitVertexArray);

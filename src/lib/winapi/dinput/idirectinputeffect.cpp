@@ -16,7 +16,7 @@ GUID effectID(unsigned kind) { return {0x13541c20u+kind,0x8e33,0x11d0,{0x9a,0xd0
 const unsigned kinds[] = {0,1,2,3,4,5,6,7};
 const char* names[] = {"Constant","Ramp","Square","Sine","Triangle","Saw up","Saw down","Spring"};
 std::recursive_mutex mutex;
-struct Device { DWORD gain=10000; bool enabled=true,paused=false; Uint64 pausedAt=0; float lastLevel=-1; Uint64 lastOutput=0; };
+struct Device { DWORD gain=10000; bool enabled=true,paused=false; Uint64 pausedAt=0; float lastLevel=-1; Uint64 lastOutput=0; Gamepad::RumbleDetail lastDetail; };
 std::map<Gamepad*,Device> devices;
 struct Effect : GenericResource {
     Gamepad* pad; GUID guid; unsigned kind;
@@ -24,6 +24,8 @@ struct Effect : GenericResource {
     IDirectInputDevice::DIENVELOPE envelope{};
     DWORD axes[2]{}; LONG direction[2]{}; LONG data[12]{};
     bool playing=false,downloaded=false,hasEnvelope=false;
+    // Started by the game and not stopped since, see setParameters().
+    bool armed=false;
     Uint64 began=0; DWORD iterations=1;
     // Edge state for an effect the device fires itself, see pollTriggers().
     bool triggerDown=false; Uint64 triggerFired=0;
@@ -46,24 +48,36 @@ bool running(Effect& e,Uint64 now) {
        elapsed-e.params.dwStartDelay>=Uint64(e.params.dwDuration)*e.iterations)e.playing=false;
     return e.playing;
 }
+/* A periodic effect's share of a rumble motor.  The game keeps two going for
+ * the whole race -- a road rumble that follows speed and surface, an engine hum
+ * that follows the revs -- and at full weight they drowned everything else out:
+ * the motors hummed from the start line on and a collision barely rose above
+ * them.  As texture they stay underneath, strongest off the road and at the rev
+ * limiter, and the top of the range is left to the jolts. */
+constexpr float texture=0.3f;
+/* A jolt -- a finite constant force, which the game plays for collisions,
+ * landings and gear changes -- is felt as a hit that dies away.  Held at full
+ * strength for its whole duration, up to a second after a crash, it came out
+ * as a drone.  The game gives harder hits longer durations, so they also fade
+ * for longer. */
+float impact(const Effect& e,Uint64 t) {
+    const float fade=std::clamp(e.params.dwDuration/2.f,80000.f,400000.f);
+    return std::max(0.f,1.f-float(t)/fade);
+}
 float strength(Effect& e,Uint64 now) {
-    if(!running(e,now)||now-e.began<e.params.dwStartDelay)return 0;
+    /* A condition effect such as the spring is a force against the player's
+     * hand, pulling a wheel back toward the centre, and a rumble motor has
+     * nothing to pull with.  Played as vibration that grew with the distance
+     * from that centre, it buzzed on every turn and every pedal press, through
+     * the spring the game keeps running all race. */
+    if(e.kind==7||!running(e,now)||now-e.began<e.params.dwStartDelay)return 0;
     Uint64 t=now-e.began-e.params.dwStartDelay;
-    if(e.params.dwDuration && e.params.dwDuration!=0xffffffffu)t%=e.params.dwDuration;
+    const bool finite=e.params.dwDuration&&e.params.dwDuration!=0xffffffffu;
+    if(finite)t%=e.params.dwDuration;
     float value=0;
     if(e.kind==0)value=float(e.data[0]);
     else if(e.kind==1) { float f=e.params.dwDuration?float(t)/e.params.dwDuration:0;value=e.data[0]+(float(e.data[1])-e.data[0])*f; }
-    else if(e.kind==7) {
-        // A centering spring is based on axis displacement, not on button presses.
-        auto state=e.pad->getState();
-        for(DWORD i=0;i<e.params.cAxes;i++) {
-            unsigned axis=(e.params.dwFlags&2)?e.axes[i]/4:(e.axes[i]>>8)&0xffff;
-            float position=axis<10?state.axes[axis]*10000.f/32768.f:0;
-            const LONG* c=e.data+6*i;float delta=position-c[0];
-            float amount=std::max(0.f,std::abs(delta)-float(c[5]));
-            value=std::max(value,std::min(amount*std::abs(float(c[delta>=0?1:2]))/10000.f,float(c[delta>=0?3:4])));
-        }
-    } else {
+    else {
         /* Periodic effects report how hard they shake, not where their waveform
          * happens to be right now.  The mixer runs once per frame -- about 33 ms
          * at the frame cap -- while a periodic effect's period is tens of
@@ -73,10 +87,10 @@ float strength(Effect& e,Uint64 now) {
          * was the only thing that could be felt.  A rumble motor has its own
          * resonance and cannot reproduce the shape anyway; the peak excursion is
          * what it can reproduce, and the envelope below still shapes it. */
-        value=std::abs(float(e.data[1]))+std::abs(float(e.data[0]));
+        value=(std::abs(float(e.data[1]))+std::abs(float(e.data[0])))*texture;
     }
     float amplitude=std::min(10000.f,std::abs(value));
-    if(e.hasEnvelope&&e.kind!=7) {
+    if(e.hasEnvelope) {
         float nominal=e.kind==0?std::abs(float(e.data[0])):e.kind==1?std::max(std::abs(float(e.data[0])),std::abs(float(e.data[1]))):std::abs(float(e.data[0]));
         float level=nominal;
         if(e.envelope.dwAttackTime&&t<e.envelope.dwAttackTime)
@@ -85,6 +99,7 @@ float strength(Effect& e,Uint64 now) {
             level=e.envelope.dwFadeLevel+(nominal-e.envelope.dwFadeLevel)*float(e.params.dwDuration-t)/e.envelope.dwFadeTime;
         if(nominal>0)amplitude*=level/nominal;
     }
+    if(e.kind==0&&finite)amplitude*=impact(e,t);
     return std::clamp(amplitude/10000.f*e.params.dwGain/10000.f,0.f,1.f);
 }
 #ifdef __ANDROID__
@@ -121,39 +136,57 @@ void pollTriggers(Uint64 now) {
         e->triggerDown=down;
     }
 }
+// DIPERIODIC.dwPeriod, in microseconds, as a rate.
+float hertz(const Effect& e) { return e.data[3]>0?1e6f/float(e.data[3]):0; }
+float quantize(float value,float step) { return std::round(value/step)*step; }
+/* Each device now drives its own motors -- slot 0 the phone and the first pad,
+ * slot 1 the second pad -- so each is mixed and limited on its own.  This used
+ * to sum every device into one number and send it to whichever device happened
+ * to sort first, which was harmless while there was only ever one, and would
+ * have played player two's collisions through player one's phone the moment
+ * split screen worked.
+ * Beside that level the parts it is made of go out too (Gamepad::RumbleDetail):
+ * the jolts, and the game's two textures at full weight with the rate each runs
+ * at -- its sine is the engine, its square the road.  A pad's motor cannot
+ * vibrate gently, so GameHaptics plays those textures as taps. */
 void mix() {
     Uint64 now=SDL_GetTicksNS()/1000;
-#ifdef __ANDROID__
-    float combined=0;
-#endif
     for(auto& pair:devices) {
-        float level=0;
+        float level=0,roadPeak=0,enginePeak=0;
+        Gamepad::RumbleDetail detail;
         // A silenced or paused device cannot contribute, so do not evaluate its
         // waveforms only to throw the result away.
         if(pair.second.enabled&&!pair.second.paused)
-            for(auto* e:effects)if(e->pad==pair.first)level+=strength(*e,now);
-        level=level*pair.second.gain/10000.f;
+            for(auto* e:effects) {
+                if(e->pad!=pair.first)continue;
+                const float s=strength(*e,now);
+                if(!(s>0))continue;
+                level+=s;
+                if(e->kind<=1)detail.impact+=s;
+                // Any other waveform -- the game plays none -- counts as road.
+                else if(e->kind==3){detail.engine+=s/texture;if(s>enginePeak){enginePeak=s;detail.engineHz=hertz(*e);}}
+                else {detail.road+=s/texture;if(s>roadPeak){roadPeak=s;detail.roadHz=hertz(*e);}}
+            }
+        const float gain=pair.second.gain/10000.f;
+        level*=gain;
+        detail.impact*=gain;detail.road*=gain;detail.engine*=gain;
 #ifdef __ANDROID__
-        combined+=level;
+        level=softLimit(level);
+        detail.impact=softLimit(detail.impact);
 #else
         level=std::clamp(level,0.f,1.f);
+#endif
+        // Quantized, so revs creeping up do not cross JNI on every frame.
+        detail.impact=quantize(std::min(1.f,detail.impact),1/255.f);
+        detail.road=quantize(std::min(1.f,detail.road),1/255.f);
+        detail.engine=quantize(std::min(1.f,detail.engine),1/255.f);
+        detail.roadHz=quantize(detail.roadHz,.25f);
+        detail.engineHz=quantize(detail.engineHz,.25f);
         auto& d=pair.second;
-        if(level!=d.lastLevel||(level>0&&now-d.lastOutput>=40000)){
-            pair.first->rumble(level);d.lastLevel=level;d.lastOutput=now;
-        }
-#endif
-    }
-#ifdef __ANDROID__
-    /* Every device drives the one motor here, so the sums are added before the
-     * limiter rather than after -- softening twice would quietly change what a
-     * single device already sounded like. */
-    if(!devices.empty()) {
-        auto& d=devices.begin()->second;combined=softLimit(combined);
-        if(combined!=d.lastLevel||(combined>0&&now-d.lastOutput>=40000)){
-            devices.begin()->first->rumble(combined);d.lastLevel=combined;d.lastOutput=now;
+        if(level!=d.lastLevel||detail!=d.lastDetail||(level>0&&now-d.lastOutput>=40000)){
+            pair.first->rumble(level,detail);d.lastLevel=level;d.lastDetail=detail;d.lastOutput=now;
         }
     }
-#endif
 }
 }
 x86::reg32 IDirectInputEffect::table=0;
@@ -202,6 +235,16 @@ HRESULT IDirectInputEffect::setParameters(WinApplication* app,x86::CPU& cpu,cons
     if(flags&0x100){std::memcpy(e.data,&app->getMemory<LONG>(p->lpvTypeSpecificParams),bytes);e.params.cbTypeSpecificParams=bytes;}
     if((flags&0x200)&&p->dwSize>=56)e.params.dwStartDelay=p->dwStartDelay;
     if(!(flags&0x80000000))e.downloaded=true;
+    /* The game starts its jolt effect once and from then on only rewrites it:
+     * its own bookkeeping marks an effect playing on Start and clears the mark
+     * only on Stop, so every later collision, landing and gear change arrives as
+     * new parameters on an effect whose duration ran out long ago.  Following
+     * DirectInput to the letter, this played the first jolt and then nothing
+     * until the game next stopped its effects.  The update is the only sign of
+     * the new jolt, so a finite constant force that was started and not stopped
+     * plays again from the top. */
+    if(e.kind==0&&e.armed&&e.params.dwDuration&&e.params.dwDuration!=0xffffffffu&&(flags&(1|0x40|0x100)))
+        {e.playing=true;e.iterations=1;e.began=SDL_GetTicksNS()/1000;}
     if(flags&0x20000000)return start(app,cpu,1,0);
     mix();return 0;
 }
@@ -229,14 +272,14 @@ HRESULT IDirectInputEffect::start(WinApplication*,x86::CPU&,DWORD iterations,DWO
     /* An effect that names a trigger button is still startable by hand -- the
      * button only adds a second way to fire it.  This used to refuse them
      * outright, which made every such effect silent forever. */
-    if(flags&1)for(auto* other:effects)if(other->pad==e.pad)other->playing=false;
+    if(flags&1)for(auto* other:effects)if(other->pad==e.pad)other->playing=other->armed=false;
     if(!e.params.cbTypeSpecificParams)return invalid;
-    e.downloaded=true;e.playing=true;e.iterations=iterations;e.began=SDL_GetTicksNS()/1000;
+    e.downloaded=true;e.playing=e.armed=true;e.iterations=iterations;e.began=SDL_GetTicksNS()/1000;
     if(WinApplication::traceApi())
         SDL_Log("ForceFeedback Start kind=%u iterations=%u",e.kind,iterations);
     mix();return 0;
 }
-HRESULT IDirectInputEffect::stop(WinApplication*,x86::CPU&){std::lock_guard<std::recursive_mutex> lock(mutex);static_cast<Effect*>(m_resource)->playing=false;mix();return 0;}
+HRESULT IDirectInputEffect::stop(WinApplication*,x86::CPU&){std::lock_guard<std::recursive_mutex> lock(mutex);auto* e=static_cast<Effect*>(m_resource);e->playing=e->armed=false;mix();return 0;}
 HRESULT IDirectInputEffect::status(WinApplication*,x86::CPU&,DWORD* out){if(!out)return invalid;std::lock_guard<std::recursive_mutex> lock(mutex);*out=running(*static_cast<Effect*>(m_resource),SDL_GetTicksNS()/1000)?1:0;return 0;}
 HRESULT IDirectInputEffect::download(WinApplication*,x86::CPU&){std::lock_guard<std::recursive_mutex> lock(mutex);static_cast<Effect*>(m_resource)->downloaded=true;return 0;}
 HRESULT IDirectInputEffect::unload(WinApplication* app,x86::CPU& cpu){stop(app,cpu);std::lock_guard<std::recursive_mutex> lock(mutex);static_cast<Effect*>(m_resource)->downloaded=false;return 0;}
@@ -249,7 +292,7 @@ void IDirectInputEffect::update(){
 }
 void IDirectInputEffect::command(Gamepad* pad,DWORD flags){
     if(!pad)return;std::lock_guard<std::recursive_mutex> lock(mutex);auto& d=devices[pad];auto now=SDL_GetTicksNS()/1000;
-    if(flags==1||flags==2)for(auto* e:effects)if(e->pad==pad){e->playing=false;if(flags==1)e->downloaded=false;}
+    if(flags==1||flags==2)for(auto* e:effects)if(e->pad==pad){e->playing=e->armed=false;if(flags==1)e->downloaded=false;}
     if(flags==1)d=Device{};
     if(flags==4&&!d.paused){d.paused=true;d.pausedAt=now;}
     if(flags==8&&d.paused){for(auto* e:effects)if(e->pad==pad&&e->playing)e->began+=now-d.pausedAt;d.paused=false;}

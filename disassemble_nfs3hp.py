@@ -107,3 +107,8 @@ if __name__ == '__main__':
 
     from tools.apply_menu_unlock import apply as apply_menu_unlock
     apply_menu_unlock(Path(__file__).resolve().parent)
+
+    # Car detail: every car's texture at the player's size, a larger transform
+    # buffer and wheel spin kept per car, so split screen and the mirror match.
+    from tools.apply_car_detail import apply as apply_car_detail
+    apply_car_detail(Path(__file__).resolve().parent)

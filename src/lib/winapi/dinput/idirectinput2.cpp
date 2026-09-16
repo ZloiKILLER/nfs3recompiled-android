@@ -92,8 +92,15 @@ HRESULT IDirectInput2::EnumDevices(WinApplication* app, x86::CPU& cpu,
             device->guidInstance.Data3 = deviceIndex;
             device->guidProduct = s_joystickGUID;
             device->guidProduct.Data3 = 0x1f1f;
-            strcpy(device->tszInstanceName, "NFS Gamepad");
-            strcpy(device->tszProductName, "NFS Gamepad");
+            /* Numbered, because the game shows this list to the player: the
+             * Dead Zone screen has a joystick selector (dzjoylist) and two
+             * entries both called "NFS Gamepad" would be a coin toss.  Slot 1
+             * is player one -- the touch overlay and the first pad together --
+             * and slot 2 is the second pad. */
+            SDL_snprintf(device->tszInstanceName, sizeof(device->tszInstanceName),
+                         "NFS Gamepad %u", unsigned(deviceIndex) + 1);
+            SDL_snprintf(device->tszProductName, sizeof(device->tszProductName),
+                         "NFS Gamepad %u", unsigned(deviceIndex) + 1);
             device->guidFFDriver = s_driverGUID;
             device->wUsagePage = 0;
             device->wUsage = 0;

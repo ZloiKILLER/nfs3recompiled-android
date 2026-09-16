@@ -6,10 +6,13 @@
   <LinearLayout android:layout_width="match_parent" android:layout_height="48dp" android:layout_marginTop="10dp" android:orientation="horizontal">
    <Button android:id="@+id/back_button" android:layout_width="wrap_content" android:minWidth="96dp" android:layout_height="match_parent" android:text="@string/back_to_launcher" android:maxLines="1" android:ellipsize="end"/>
    <Button android:id="@id/edit_touch_layout" android:layout_width="0dp" android:layout_weight="1" android:layout_height="match_parent" android:layout_marginLeft="10dp" android:text="@string/edit_touch_layout" android:maxLines="1" android:ellipsize="end" android:autoSizeTextType="uniform" android:autoSizeMinTextSize="10sp" android:autoSizeMaxTextSize="14sp"/>
+   <Button android:id="@+id/touch_keys_button" android:layout_width="0dp" android:layout_weight="1" android:layout_height="match_parent" android:layout_marginLeft="10dp" android:text="@string/touch_keys_button" android:maxLines="1" android:ellipsize="end" android:autoSizeTextType="uniform" android:autoSizeMinTextSize="10sp" android:autoSizeMaxTextSize="14sp"/>
   </LinearLayout>
  </LinearLayout>
  <ScrollView android:layout_width="230dp" android:layout_height="match_parent">
   <LinearLayout android:id="@+id/touch_options" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical">
+   <CheckBox android:id="@+id/touch_enabled_check" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="@string/pref_touch_enabled" android:textColor="@color/ui_text"/>
+   <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginBottom="12dp" android:text="@string/touch_enabled_note" android:textColor="@color/ui_muted" android:textSize="12sp"/>
    <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="@string/touch_layout_label" android:textColor="@color/ui_text"/>
    <Spinner android:id="@+id/touch_layout_spinner" android:layout_width="match_parent" android:layout_height="48dp"/>
    <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="12dp" android:text="@string/opacity_label" android:textColor="@color/ui_text"/>

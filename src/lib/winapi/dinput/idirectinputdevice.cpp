@@ -227,21 +227,18 @@ HRESULT IDirectInputDevice::GetDeviceState(WinApplication* app, x86::CPU& cpu,
     {
         NFS2_ASSERT(cbData == sizeof(DIJOYSTATE));
         DIJOYSTATE* state = reinterpret_cast<DIJOYSTATE*>(lpvData);
-        GamepadState gpState = gamepad->getState();
-        gamepad->markInputRead();
-        state->lX = 0x7fff + gpState.axes[0];
-        state->lY = 0x7fff + gpState.axes[1];
-        state->lZ = 0x7fff + gpState.axes[4];
-        state->lRx = 0x7fff + gpState.axes[2];
-        state->lRy = 0x7fff + gpState.axes[3];
-        state->lRz = 0x7fff + gpState.axes[5];
-        state->rgdwPOV[0] = -1;
-        state->rgdwPOV[1] = -1;
-        state->rgdwPOV[2] = -1;
-        state->rgdwPOV[3] = -1;
-        for (int button = 0; button < 16; ++button)
+        const GamepadState gpState = gamepad->getState();
+        /* X and Y are all a slot has (Gamepad::getAxesCount): X steers, Y is
+         * both pedals.  The axes it does not have are left centred rather than
+         * at zero, and every hat centred, so nothing that reads the whole
+         * structure sees a stick pinned to a corner.  No buttons either -- a
+         * pad's buttons reach the game as keys (sdl-backend/gamepad.cpp). */
+        state->lX = 0x7fff + gpState.axes[Gamepad::kAxisSteer];
+        state->lY = 0x7fff + gpState.axes[Gamepad::kAxisPedals];
+        state->lZ = state->lRx = state->lRy = state->lRz = 0x7fff;
+        for (int pov = 0; pov < 4; ++pov)
         {
-            state->rgbButtons[button] = (gpState.buttons & (1ll<<button)) ? 0x80 : 0x00;
+            state->rgdwPOV[pov] = DWORD(-1);
         }
     }
     else if (mouse)

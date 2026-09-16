@@ -3,6 +3,9 @@
 
 namespace nfs3hp
 {
+// Port (tools/apply_car_detail.py): defined in nfs3hp_main.cpp.
+bool fullCarDetail();
+x86::reg32 carWheelStamp(win32::WinApplication* app, x86::reg32 car, x86::reg32 which);
 
 /* align: skip 0x8d 0x40 0x00 */
 void Application::sub_4b8740(WinApplication* app, x86::CPU& cpu)
@@ -2300,7 +2303,7 @@ void Application::sub_4b90e0(WinApplication* app, x86::CPU& cpu)
     // 004b90e5  89c1                   -mov ecx, eax
     cpu.ecx = cpu.eax;
     // 004b90e7  8b1d28fe5500           -mov ebx, dword ptr [0x55fe28]
-    cpu.ebx = app->getMemory<x86::reg32>(x86::reg32(5635624) /* 0x55fe28 */);
+    cpu.ebx = carWheelStamp(app, cpu.ecx, cpu.edx ? 3u : 2u); /* port: per-car stamp, was [0x55fe28] */
     // 004b90ed  3b1d84367d00           +cmp ebx, dword ptr [0x7d3684]
     {
         x86::reg32 tmp1 = cpu.ebx;
@@ -2413,7 +2416,7 @@ void Application::sub_4b9140(WinApplication* app, x86::CPU& cpu)
     // 004b9151  d80d4c005400           -fmul dword ptr [0x54004c]
     cpu.fpu.st(0) *= x86::Float(app->getMemory<float>(x86::reg32(5505100) /* 0x54004c */));
     // 004b9157  8b3528fe5500           -mov esi, dword ptr [0x55fe28]
-    cpu.esi = app->getMemory<x86::reg32>(x86::reg32(5635624) /* 0x55fe28 */);
+    cpu.esi = carWheelStamp(app, cpu.ecx, 0u); /* port: per-car stamp, was [0x55fe28] */
     // 004b915d  a184367d00             -mov eax, dword ptr [0x7d3684]
     cpu.eax = app->getMemory<x86::reg32>(x86::reg32(8205956) /* 0x7d3684 */);
     // 004b9162  db8198050000           -fild dword ptr [ecx + 0x598]
@@ -2718,7 +2721,7 @@ void Application::sub_4b9280(WinApplication* app, x86::CPU& cpu)
     // 004b9290  d80d80005400           -fmul dword ptr [0x540080]
     cpu.fpu.st(0) *= x86::Float(app->getMemory<float>(x86::reg32(5505152) /* 0x540080 */));
     // 004b9296  8b1d28fe5500           -mov ebx, dword ptr [0x55fe28]
-    cpu.ebx = app->getMemory<x86::reg32>(x86::reg32(5635624) /* 0x55fe28 */);
+    cpu.ebx = carWheelStamp(app, cpu.ecx, 1u); /* port: per-car stamp, was [0x55fe28] */
     // 004b929c  a184367d00             -mov eax, dword ptr [0x7d3684]
     cpu.eax = app->getMemory<x86::reg32>(x86::reg32(8205956) /* 0x7d3684 */);
     // 004b92a1  db8194050000           -fild dword ptr [ecx + 0x594]

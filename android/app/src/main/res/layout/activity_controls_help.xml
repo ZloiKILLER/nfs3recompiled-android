@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Controls -> Help: split screen with two gamepads in a few short steps.
+     Built like the FAQ page, one resource per section, joined in
+     LauncherActivity.showControlsHelp. -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/ui_background"
+    android:orientation="vertical"
+    android:padding="24dp">
+
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:fontFamily="sans-serif-black"
+        android:text="@string/controls_help_title"
+        android:textColor="@color/ui_text"
+        android:textSize="26sp" />
+
+    <ScrollView
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_marginTop="16dp"
+        android:layout_weight="1">
+        <TextView
+            android:id="@+id/controls_help_body"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:background="@drawable/ui_hero"
+            android:lineSpacingExtra="5dp"
+            android:padding="20dp"
+            android:textColor="@color/ui_text"
+            android:textSize="16sp" />
+    </ScrollView>
+
+    <Button
+        android:id="@+id/back_button"
+        android:layout_width="wrap_content"
+        android:layout_height="48dp"
+        android:layout_marginTop="12dp"
+        android:minWidth="120dp"
+        android:text="@string/back_to_launcher" />
+</LinearLayout>

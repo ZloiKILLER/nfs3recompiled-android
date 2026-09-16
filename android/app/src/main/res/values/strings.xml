@@ -28,6 +28,14 @@
     <string name="controls_settings">Controls mapping</string>
     <string name="touch_settings">Touch controls</string>
     <string name="screen_settings">Screen settings</string>
+    <string name="display_settings">Display</string>
+    <string name="screen_adjustment">Screen adjustment</string>
+    <string name="brightness_label">Brightness</string>
+    <string name="contrast_label">Contrast</string>
+    <string name="adjust_hint">The samples show the result. Takes effect the next time the game starts.</string>
+    <string name="adjust_reset">Reset</string>
+    <string name="sample_dark">Night</string>
+    <string name="sample_bright">Daylight</string>
     <string name="back_to_launcher">Back</string>
 
     <string name="switch_data">Make active</string>
@@ -72,7 +80,6 @@
     <string name="fps_30">30 FPS</string>
     <string name="fps_60">60 FPS</string>
     <string name="gamma_label">Gamma</string>
-    <string name="gamma_hint">Higher lifts dark areas. Takes effect the next time the game starts.</string>
     <string name="fps_cap_label">Frame rate</string>
     <string name="fps_error">Enter a whole number from 1 to 240</string>
     <string name="save">Save</string>

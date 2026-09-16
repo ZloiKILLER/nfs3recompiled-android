@@ -13043,7 +13043,8 @@ L_0x0044d35d:
     }
     // 0044d36d  f605583a7a0040         +test byte ptr [0x7a3a58], 0x40
     cpu.clear_co();
-    cpu.set_szp(static_cast<x86::reg8>(app->getMemory<x86::reg8>(x86::reg32(8010328) /* 0x7a3a58 */) & 64 /*0x40*/));
+    // Port: alpha intensity capability reported present.
+    cpu.set_szp(static_cast<x86::reg8>(64 /*0x40, port: was the 0x7a3a58 probe*/));
     // 0044d374  7506                   -jne 0x44d37c
     if (!cpu.flags.zf)
     {

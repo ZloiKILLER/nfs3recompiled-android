@@ -9,7 +9,9 @@ import java.util.*;
 
 /** Device checks using real MotionEvents; preview mode never sends keys to the game. */
 public final class TouchOverlayInstrumentation extends Instrumentation {
-    @Override public void onCreate(Bundle arguments) { super.onCreate(arguments);start(); }
+    /* -e probe pad_vibration runs PadVibrationProbe instead of the checks. */
+    private String probe;
+    @Override public void onCreate(Bundle arguments) { super.onCreate(arguments);probe=arguments==null?null:arguments.getString("probe");PadVibrationProbe.pattern=arguments==null?null:arguments.getString("pattern");PadVibrationProbe.context=getTargetContext();start(); }
     private static Object field(Object object,String name) throws Exception {
         Field f=object.getClass().getDeclaredField(name);f.setAccessible(true);return f.get(object);
     }
@@ -21,7 +23,8 @@ public final class TouchOverlayInstrumentation extends Instrumentation {
     private static RectF bounds(TouchControlsOverlay view,String action) throws Exception {
         for(Object c:(Iterable<?>)field(view,"controls")) if(action.equals(field(c,"action"))) {
             RectF b=new RectF((RectF)field(c,"box"));float s=(float)field(view,"scale");
-            return new RectF(b.left*s,b.top*s,b.right*s,b.bottom*s);
+            float ox=(float)field(view,"originX"),oy=(float)field(view,"originY");
+            return new RectF(ox+b.left*s,oy+b.top*s,ox+b.right*s,oy+b.bottom*s);
         }
         throw new AssertionError("Missing control: "+action);
     }
@@ -37,6 +40,11 @@ public final class TouchOverlayInstrumentation extends Instrumentation {
     }
     @Override public void onStart() {
         Bundle result=new Bundle();
+        if("pad_vibration".equals(probe)) {
+            try { result.putString("stream",PadVibrationProbe.run());finish(-1,result); }
+            catch(Throwable e) { result.putString("stream","FAIL: "+android.util.Log.getStackTraceString(e));finish(0,result); }
+            return;
+        }
         try {
             ArrayList<String> events=new ArrayList<>();
             TouchKeyState state=new TouchKeyState((key,down)->events.add(key+":"+down));
@@ -56,8 +64,13 @@ public final class TouchOverlayInstrumentation extends Instrumentation {
                         shot.compress(android.graphics.Bitmap.CompressFormat.PNG,100,out);
                     }
                     shot.recycle();
-                    RectF gas=bounds(view,"accelerate"),stick=bounds(view,"steer_left"),spikes=bounds(view,"spike_strip");
-                    float sx=stick.left+stick.width()*.18f,sy=stick.centerY(),gx=gas.centerX(),gy=gas.centerY();
+                    RectF gas=bounds(view,"accelerate"),spikes=bounds(view,"spike_strip");
+                    /* Steering left is a button in the separate race layout and the
+                     * D-pad's left arm in the shared one -- whichever the tester set. */
+                    RectF stick;float sx;
+                    try { stick=bounds(view,"steer_left");sx=stick.left+stick.width()*.18f; }
+                    catch(AssertionError sharedLayout) { stick=bounds(view,"steering");sx=stick.left+stick.width()*.1f; }
+                    float sy=stick.centerY(),gx=gas.centerX(),gy=gas.centerY();
                     int left=GamePreferences.getTouchKey(GamePreferences.get(getTargetContext()),"steer_left");
                     int up=GamePreferences.getTouchKey(GamePreferences.get(getTargetContext()),"accelerate");
                     require(!touch(view,MotionEvent.ACTION_DOWN,new int[]{7},640,360),"blank area must pass through");
@@ -88,14 +101,23 @@ public final class TouchOverlayInstrumentation extends Instrumentation {
                     view.releaseAll();require(held(view).isEmpty(),"pause clears key state");
                     android.content.SharedPreferences prefs=GamePreferences.get(getTargetContext());
                     Map<String,?> saved=prefs.getAll();
-                    String[] changed={GamePreferences.TOUCH_SIZE,GamePreferences.TOUCH_EDGE,GamePreferences.TOUCH_RAISE,GamePreferences.TOUCH_LAYOUT};
+                    ArrayList<String> changed=new ArrayList<>(Arrays.asList(GamePreferences.TOUCH_SIZE,GamePreferences.TOUCH_EDGE,GamePreferences.TOUCH_RAISE,GamePreferences.TOUCH_LAYOUT,GamePreferences.TOUCH_SEPARATE));
+                    /* What is checked here is the default arrangement: controls a tester
+                     * dragged in the layout editor are set aside for the check and put
+                     * back afterwards exactly as they were. */
+                    android.content.SharedPreferences.Editor setAside=prefs.edit();
+                    for(String k:saved.keySet()) if(k.startsWith("touch_position_")) { changed.add(k);setAside.remove(k); }
+                    setAside.commit();
                     try {
                         prefs.edit().putInt(GamePreferences.TOUCH_SIZE,115).putInt(GamePreferences.TOUCH_EDGE,32)
                             .putInt(GamePreferences.TOUCH_RAISE,24).apply();
                         Field modeField=view.getClass().getDeclaredField("menuMode");
-                        modeField.setAccessible(true);modeField.setBoolean(view,false);
+                        modeField.setAccessible(true);
+                        // The separate race layout, and the shared layout as the game shows it: in its menus.
+                        for(boolean separate:new boolean[]{true,false})
                         for(String layout:new String[]{GamePreferences.TOUCH_LAYOUT_STANDARD,GamePreferences.TOUCH_LAYOUT_MIRRORED}) {
-                            prefs.edit().putString(GamePreferences.TOUCH_LAYOUT,layout).apply();
+                            prefs.edit().putBoolean(GamePreferences.TOUCH_SEPARATE,separate).putString(GamePreferences.TOUCH_LAYOUT,layout).apply();
+                            modeField.setBoolean(view,!separate);
                             view.layout(0,0,640,340);view.refreshSettings();
                             ArrayList<RectF> boxes=new ArrayList<>();
                             for(Object control:(Iterable<?>)field(view,"controls")) {
@@ -111,6 +133,8 @@ public final class TouchOverlayInstrumentation extends Instrumentation {
                             Object value=saved.get(k);
                             if(value instanceof Integer) edit.putInt(k,(Integer)value);
                             else if(value instanceof String) edit.putString(k,(String)value);
+                            else if(value instanceof Boolean) edit.putBoolean(k,(Boolean)value);
+                            else if(value instanceof Float) edit.putFloat(k,(Float)value);
                             else edit.remove(k);
                         }
                         edit.commit();
@@ -130,15 +154,35 @@ public final class TouchOverlayInstrumentation extends Instrumentation {
             waitForIdleSync();
             HapticsChecks.run(this);
             capture("ui-launcher.png");
+            /* The main screen: the build's version under the settings column, and
+             * that column spanning exactly the height of the title card. */
+            String version=((android.widget.TextView)activity.findViewById(R.id.version_text)).getText().toString();
+            require(version.startsWith("v0.")&&version.endsWith(" DEBUG"),"the launcher names a debug build's version: "+version);
+            runOnMainSync(()->{
+                android.view.View card=(android.view.View)activity.findViewById(R.id.play_button).getParent();
+                android.view.View first=activity.findViewById(R.id.controls_button),last=activity.findViewById(R.id.faq_button);
+                int[] c=new int[2],f=new int[2],l=new int[2];
+                card.getLocationOnScreen(c);first.getLocationOnScreen(f);last.getLocationOnScreen(l);
+                require(Math.abs(c[1]-f[1])<=1&&Math.abs(c[1]+card.getHeight()-l[1]-last.getHeight())<=1,
+                    "the settings column spans the title card, top to bottom");
+            });
             runOnMainSync(()->activity.findViewById(R.id.controls_button).performClick());
             waitForIdleSync();capture("ui-controls-home.png");
+            require(activity.findViewById(R.id.controls_help_button)==null,"split screen help lives on the gamepads screen");
             runOnMainSync(()->activity.findViewById(R.id.touch_controls_button).performClick());
             waitForIdleSync();Thread.sleep(500);waitForIdleSync();
             runOnMainSync(()->{
                 android.widget.FrameLayout host=activity.findViewById(R.id.touch_preview);
                 require(host.getChildCount()==1,"preview has one touch canvas");
                 TouchControlsOverlay canvas=(TouchControlsOverlay)host.getChildAt(0);
-                require(canvas.getWidth()==host.getWidth()&&canvas.getHeight()==host.getHeight(),"side areas belong to touch canvas");
+                require(canvas.getWidth()==host.getWidth()&&canvas.getHeight()==host.getHeight(),"the touch canvas fills its card");
+                try {
+                    /* Controls are laid out on the real screen's shape, fitted into the
+                     * card, so the preview, the editor and the game agree. */
+                    float areaW=(float)field(canvas,"areaW"),areaH=(float)field(canvas,"areaH");
+                    float refW=(float)field(canvas,"referenceWidth"),refH=(float)field(canvas,"referenceHeight");
+                    require(Math.abs(areaW/areaH-refW/refH)<.01f,"the preview lays controls out on the screen's own shape");
+                } catch(Exception e) { throw new RuntimeException(e); }
                 try {
                     RectF leftButton;
                     float touchX;
@@ -151,11 +195,16 @@ public final class TouchOverlayInstrumentation extends Instrumentation {
                     }
                     touch(canvas,MotionEvent.ACTION_DOWN,new int[]{61},touchX,leftButton.centerY());
                     int leftKey=GamePreferences.getTouchKey(GamePreferences.get(getTargetContext()),"steer_left");
-                    require(held(canvas).containsKey(leftKey),"control in expanded side area is touchable");
+                    require(held(canvas).containsKey(leftKey),"a control in the fitted preview is touchable");
                     canvas.releaseAll();
                 } catch(Exception e) { throw new RuntimeException(e); }
             });
             capture("ui-touch-settings.png");
+            runOnMainSync(()->activity.findViewById(R.id.touch_keys_button).performClick());waitForIdleSync();
+            require(((android.view.ViewGroup)activity.findViewById(R.id.touch_keys_container)).getChildCount()==GamePreferences.ACTION_IDS.length,"every touch control has a key to choose");
+            capture("ui-touch-keys.png");
+            runOnMainSync(()->activity.onBackPressed());waitForIdleSync();
+            require(activity.findViewById(R.id.edit_touch_layout)!=null,"back from touch keys returns to touch settings");
             runOnMainSync(()->activity.findViewById(R.id.edit_touch_layout).performClick());waitForIdleSync();
             capture("ui-touch-editor-race.png");
             runOnMainSync(()->{
@@ -166,11 +215,41 @@ public final class TouchOverlayInstrumentation extends Instrumentation {
             runOnMainSync(()->activity.findViewById(R.id.editor_done).performClick());waitForIdleSync();
             runOnMainSync(()->activity.onBackPressed());waitForIdleSync();
             runOnMainSync(()->activity.findViewById(R.id.gamepad_controls_button).performClick());waitForIdleSync();
-            capture("ui-controller-mapping.png");
-            runOnMainSync(()->activity.findViewById(R.id.gamepad_settings_button).performClick());waitForIdleSync();
-            require(activity.findViewById(R.id.controller_options)!=null,"gamepad vibration has its own screen");
-            capture("ui-controller-settings.png");
+            require(activity.findViewById(R.id.gamepad1_assign)!=null&&activity.findViewById(R.id.gamepad2_assign)!=null,"gamepads screen offers both slots");
+            runOnMainSync(()->activity.findViewById(R.id.gamepad1_assign).performClick());waitForIdleSync();
+            require(((android.widget.TextView)activity.findViewById(R.id.gamepad1_status)).getText().toString()
+                .equals(activity.getString(R.string.gamepad_assign_prompt,1)),"assigning waits for a button press");
             runOnMainSync(()->activity.onBackPressed());waitForIdleSync();
+            require(activity.findViewById(R.id.gamepad1_assign)!=null,"back cancels the wait without leaving the screen");
+            capture("ui-gamepads.png");
+            require(activity.findViewById(R.id.write_gamepad_controls)!=null
+                &&activity.findViewById(R.id.write_keyboard_controls)!=null,"both control sets can be written to the game");
+            require(((android.widget.CheckBox)activity.findViewById(R.id.gamepad_vibration_check)).isChecked()
+                ==GamePreferences.get(getTargetContext()).getBoolean(GamePreferences.GAMEPAD_VIBRATION,false),
+                "the gamepad vibration switch shows its setting");
+            runOnMainSync(()->activity.findViewById(R.id.controls_help_button).performClick());waitForIdleSync();
+            require(((android.widget.TextView)activity.findViewById(R.id.controls_help_body)).getText().length()>200,
+                "controls help explains split screen");
+            capture("ui-controls-help.png");
+            runOnMainSync(()->activity.onBackPressed());waitForIdleSync();
+            require(activity.findViewById(R.id.gamepad1_assign)!=null,"back from help returns to the gamepads screen");
+            runOnMainSync(()->activity.findViewById(R.id.gamepad2_buttons).performClick());waitForIdleSync();
+            require(((android.view.ViewGroup)activity.findViewById(R.id.gamepad_buttons_container)).getChildCount()
+                ==GamepadButtons.BUTTON_IDS.length,"every pad button has an action to choose");
+            capture("ui-gamepad-buttons.png");
+            runOnMainSync(()->activity.onBackPressed());waitForIdleSync();
+            require(activity.findViewById(R.id.gamepad2_buttons)!=null,"back from the buttons returns to the gamepads screen");
+            runOnMainSync(()->activity.onBackPressed());waitForIdleSync();
+            runOnMainSync(()->activity.onBackPressed());waitForIdleSync();
+            /* Display, saved as it is chosen with no Save button, and Screen
+             * adjustment underneath it. */
+            runOnMainSync(()->activity.findViewById(R.id.screen_settings_button).performClick());waitForIdleSync();
+            require(activity.findViewById(R.id.orientation_group)!=null&&activity.findViewById(R.id.fps_cap_group)!=null,
+                "display settings list their choices");
+            capture("ui-display.png");
+            runOnMainSync(()->activity.findViewById(R.id.screen_adjustment_button).performClick());waitForIdleSync();
+            require(activity.findViewById(R.id.reset_adjust_button)!=null,"screen adjustment opens from display settings");
+            capture("ui-screen-adjustment.png");
             runOnMainSync(()->activity.onBackPressed());waitForIdleSync();
             runOnMainSync(()->activity.onBackPressed());waitForIdleSync();
             /* Data is a menu now, so saves live one level down -- and back has
@@ -190,7 +269,7 @@ public final class TouchOverlayInstrumentation extends Instrumentation {
             runOnMainSync(()->activity.onBackPressed());waitForIdleSync();
             runOnMainSync(()->activity.findViewById(R.id.faq_button).performClick());waitForIdleSync();
             capture("ui-faq.png");
-            result.putString("stream","PASS: touch geometry/keyboard, multitouch, vibration cap, stick/trigger mappings, save ZIP backup/import/export, layout editor and auto-hide\n");
+            result.putString("stream","PASS: touch geometry/keyboard, multitouch, vibration cap, gamepad slots, touch keys, save ZIP backup/import/export, layout editor and auto-hide\n");
             finish(-1,result);
         } catch(Throwable e) { result.putString("stream","FAIL: "+android.util.Log.getStackTraceString(e));finish(0,result); }
     }

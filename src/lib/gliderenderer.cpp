@@ -193,10 +193,13 @@ static void initFogW()
     s_fogWReady = true;
 }
 
-static const x86::reg32 s_maxVertexCount = 32000;
-static const x86::reg32 s_atlasSize = 2048;
+/* Vertices queued between two draws of a frame, sixty bytes each.  32000 held
+ * a single-player race; split screen with every car on its detailed model
+ * (NFS_CAR_DETAIL_FULL) queued more and wrote past the end of the array,
+ * crashing a second or two into every split-screen race. */
+static const x86::reg32 s_maxVertexCount = 128000;
 
-GlideRenderer::GlideRenderer(Renderer* renderer)
+GlideRenderer::GlideRenderer(Renderer* renderer, x86::reg32 preferredAtlasSize)
     :   m_renderer(renderer)
     ,   m_vertices(new GlVertex[s_maxVertexCount])
     ,   m_vertexCount(0)
@@ -235,10 +238,19 @@ GlideRenderer::GlideRenderer(Renderer* renderer)
     {
         m_fogTable[i] = 0.f;
     }
-    m_tmus[0] = new GlideTMU(s_atlasSize);
-    //m_tmus[1] = new GlideTMU(s_atlasSize);
     m_renderer->setCurrent();
     loadGlFunctions();
+    /* Every texture the game uploads lives in this one atlas.  2048 is 64 whole
+     * 256x256 tiles, what the game's own texture sizes were made for; asked for
+     * more (every car at the player's texture size), take 4096 wherever the GPU
+     * allows it -- GLES 3 only promises 2048. */
+    GLint maxTextureSize = 0;
+    glGetIntegerv(GL_MAX_TEXTURE_SIZE, &maxTextureSize);
+    m_atlasSize = preferredAtlasSize >= 4096 && maxTextureSize >= 4096 ? 4096 : 2048;
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "[GFX] texture atlas %ux%u (asked for %u, GPU limit %d)",
+                unsigned(m_atlasSize), unsigned(m_atlasSize), unsigned(preferredAtlasSize), int(maxTextureSize));
+    m_tmus[0] = new GlideTMU(m_atlasSize);
+    //m_tmus[1] = new GlideTMU(m_atlasSize);
 
     compileShaders();
     glGenTextures(1, &m_atlas);
@@ -252,7 +264,7 @@ GlideRenderer::GlideRenderer(Renderer* renderer)
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    glTexStorage2D(GL_TEXTURE_2D, 9, GL_RGBA8, s_atlasSize, s_atlasSize);
+    glTexStorage2D(GL_TEXTURE_2D, 9, GL_RGBA8, GLsizei(m_atlasSize), GLsizei(m_atlasSize));
     glEnable(GL_DEPTH_TEST);
     glDepthFunc(GL_LEQUAL);
     glEnable(GL_BLEND);
@@ -683,6 +695,12 @@ x86::reg32 GlideRenderer::textureMemEnd(x86::reg32 tmu)
     return m_tmus[tmu]->textureMemEnd();
 }
 
+void GlideRenderer::atlasFreeSpace(x86::reg32& texels, x86::reg32& wholeTiles, x86::reg32& total) const
+{
+    m_tmus[0]->freeSpace(texels, wholeTiles);
+    total = m_tmus[0]->atlasTexels();
+}
+
 x86::reg32 GlideRenderer::getTextureMemSize(x86::reg32 /*largeMipmapSize*/, x86::reg32 /*smallMipmapSize*/, TextureFormat /*format*/)
 {
     return sizeof(GlTextureSlot*);
@@ -746,6 +764,13 @@ void GlideRenderer::setTexture(x86::reg32 tmu, x86::reg32 address)
 {
     NFS2_ASSERT(tmu == 0);
     GlTextureSlot** info = m_tmus[tmu]->getTextureInfo(address);
+    /* A texture the atlas had no room for at any size (setTextureData) has no
+     * slot: sample the one-texel texture uploaded when the window opened rather
+     * than follow a null pointer. */
+    if (!*info)
+        info = m_tmus[tmu]->getTextureInfo(0);
+    if (!*info)
+        return;
     m_textureOffsetW = 256 >> (*info)->lod;
     m_textureOffsetX = (*info)->x;
     m_textureOffsetY = (*info)->y;
@@ -782,6 +807,37 @@ void GlideRenderer::setTextureData(x86::reg32 tmu, x86::reg32 address, const voi
         m_tmus[tmu]->returnTextureSlot(*info);
     }
     *info = m_tmus[tmu]->reserveTextureSlot(largeMipmap);
+    /* No room at this size: keep the texture from a smaller level of its own
+     * mipmap chain instead, a little softer.  This used to take the null slot
+     * straight to the next line and crash the game. */
+    const x86::reg32 askedSize = largeMipmapSize;
+    while (!*info && largeMipmapSize > smallMipmapSize)
+    {
+        data = reinterpret_cast<const x86::reg16*>(data) + largeMipmapSize * largeMipmapSize;
+        largeMipmapSize >>= 1;
+        *info = m_tmus[tmu]->reserveTextureSlot(++largeMipmap);
+    }
+    if (!*info || largeMipmapSize != askedSize)
+    {
+        static unsigned shortfalls = 0;
+        if (++shortfalls <= 8u || (shortfalls % 256u) == 0u)
+        {
+            if (*info)
+                SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                            "[GFX] texture atlas full: %ux%u texture stored at %ux%u (case %u)",
+                            unsigned(askedSize), unsigned(askedSize),
+                            unsigned(largeMipmapSize), unsigned(largeMipmapSize), shortfalls);
+            else
+                SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                            "[GFX] texture atlas full: %ux%u texture dropped (case %u)",
+                            unsigned(askedSize), unsigned(askedSize), shortfalls);
+        }
+        if (!*info)
+        {
+            m_renderer->clearCurrent();
+            return;
+        }
+    }
 
     x86::reg32 x = (*info)->x;
     x86::reg32 y = (*info)->y;
@@ -1054,6 +1110,20 @@ void GlideRenderer::drawTriangle(const GrVertex* a, const GrVertex* b, const GrV
     NFS2_ASSERT(65535.f - a->ooz <= 65535.f);
     NFS2_ASSERT(65535.f - b->ooz <= 65535.f);
     NFS2_ASSERT(65535.f - c->ooz <= 65535.f);
+    /* Nothing used to check the room: the assert at the end runs after the
+     * writes and is compiled out of every build that ships.  Should a frame
+     * ever fill even the larger queue, draw what is queued now -- a texture
+     * upload already does that mid-frame -- rather than write past it. */
+    if (m_vertexCount + 3 > s_maxVertexCount)
+    {
+        static unsigned fullQueues = 0;
+        if (++fullQueues <= 4u || (fullQueues % 512u) == 0u)
+            SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                        "[GFX] vertex queue full at %u vertices, drawn early (case %u)",
+                        unsigned(m_vertexCount), fullQueues);
+        renderPending();
+        m_renderer->clearCurrent();
+    }
     m_vertices[m_vertexCount].x = a->x;
     m_vertices[m_vertexCount].y = a->y;
     m_vertices[m_vertexCount].z = a->ooz;
@@ -1065,7 +1135,7 @@ void GlideRenderer::drawTriangle(const GrVertex* a, const GrVertex* b, const GrV
     m_vertices[m_vertexCount].v = a->tmuvtx[0].tow;
     m_vertices[m_vertexCount].colorCombine = m_colorFactor;
     m_vertices[m_vertexCount].alphaCombine = m_alphaFactor;
-    m_vertices[m_vertexCount].atlasSize = s_atlasSize;
+    m_vertices[m_vertexCount].atlasSize = float(m_atlasSize);
     m_vertices[m_vertexCount].texWrap = texWrapAttribute();
     m_vertices[m_vertexCount].u2 = a->oow;
     m_vertices[m_vertexCount].width = float(m_textureOffsetW);
@@ -1085,7 +1155,7 @@ void GlideRenderer::drawTriangle(const GrVertex* a, const GrVertex* b, const GrV
     m_vertices[m_vertexCount].v = b->tmuvtx[0].tow;
     m_vertices[m_vertexCount].colorCombine = m_colorFactor;
     m_vertices[m_vertexCount].alphaCombine = m_alphaFactor;
-    m_vertices[m_vertexCount].atlasSize = s_atlasSize;
+    m_vertices[m_vertexCount].atlasSize = float(m_atlasSize);
     m_vertices[m_vertexCount].texWrap = texWrapAttribute();
     m_vertices[m_vertexCount].u2 = b->oow;
     m_vertices[m_vertexCount].width = float(m_textureOffsetW);
@@ -1107,14 +1177,14 @@ void GlideRenderer::drawTriangle(const GrVertex* a, const GrVertex* b, const GrV
     m_vertices[m_vertexCount].alphaCombine = m_alphaFactor;
     m_vertices[m_vertexCount].texWrap = texWrapAttribute();
     m_vertices[m_vertexCount].u2 = c->oow;
-    m_vertices[m_vertexCount].atlasSize = s_atlasSize;
+    m_vertices[m_vertexCount].atlasSize = float(m_atlasSize);
     m_vertices[m_vertexCount].width = float(m_textureOffsetW);
     m_vertices[m_vertexCount].offX = float(m_textureOffsetX);
     m_vertices[m_vertexCount].offY = float(m_textureOffsetY);
     m_vertices[m_vertexCount].fog = fogFactor(c->oow);
     m_vertexCount++;
 
-    NFS2_ASSERT(m_vertexCount < s_maxVertexCount);
+    NFS2_ASSERT(m_vertexCount <= s_maxVertexCount);
 }
 
 }

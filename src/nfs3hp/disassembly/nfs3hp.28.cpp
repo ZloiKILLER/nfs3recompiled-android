@@ -18044,7 +18044,8 @@ L_0x004cb824:
     cpu.ah = app->getMemory<x86::reg8>(x86::reg32(8010328) /* 0x7a3a58 */);
     // 004cb86e  f6c440                 +test ah, 0x40
     cpu.clear_co();
-    cpu.set_szp(static_cast<x86::reg8>(cpu.ah & 64 /*0x40*/));
+    // Port: alpha intensity applies on this driver too (tools/apply_alpha_intensity.py).
+    cpu.set_szp(static_cast<x86::reg8>(64 /*0x40, port: was ah & 0x40, ah read from 0x7a3a58*/));
     // 004cb871  0f848f000000           -je 0x4cb906
     if (cpu.flags.zf)
     {
@@ -19766,7 +19767,8 @@ L_0x004cbf00:
     app->getMemory<x86::reg32>(cpu.ebp + x86::reg32(102) /* 0x66 */) = cpu.eax;
     // 004cbf2f  f6c340                 +test bl, 0x40
     cpu.clear_co();
-    cpu.set_szp(static_cast<x86::reg8>(cpu.bl & 64 /*0x40*/));
+    // Port: alpha intensity applies on this driver too (tools/apply_alpha_intensity.py).
+    cpu.set_szp(static_cast<x86::reg8>(64 /*0x40, port: was bl & 0x40, bl read from 0x7a3a58*/));
     // 004cbf32  0f8492000000           -je 0x4cbfca
     if (cpu.flags.zf)
     {

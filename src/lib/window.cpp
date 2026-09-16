@@ -360,17 +360,14 @@ x86::reg32 Window::getMessageImpl(const x86::CPU& cpu, MSG* result, Window *wind
                             s_keyDown[result->wParam] = (event.type == SDL_EVENT_KEY_DOWN);
                     }
                     return 1;
-                /* Gamepad -> keyboard translation lives entirely in
-                 * Gamepad::updateKeys() (sdl-backend/gamepad.cpp) now: it polls
-                 * SDL_GetGamepadButton/Axis directly and pushes real
-                 * SDL_EVENT_KEY_DOWN/UP, handled by the case above like any other
-                 * key.  Nothing here needs SDL_EVENT_JOYSTICK_* or
-                 * SDL_EVENT_GAMEPAD_* -- see the comment above pollMenuGamepad()
-                 * in gamepad.cpp for why those event types cannot be used: the
-                 * game's own DirectInput device enumeration calls
-                 * SDL_SetJoystickEventsEnabled(false) during startup, which starves
-                 * SDL3's joystick-to-gamepad event watcher before a single frame is
-                 * ever drawn. */
+                /* No gamepad case here, and none is wanted: sdl-backend/gamepad.cpp
+                 * polls the pads, pushes their buttons as the key events above
+                 * and hands their sticks and triggers to the game as DirectInput
+                 * axes.  Joystick and gamepad events could not be used anyway --
+                 * the game's own DirectInput device enumeration calls
+                 * SDL_SetJoystickEventsEnabled(false) during startup, which
+                 * starves SDL3's joystick-to-gamepad event watcher before a single
+                 * frame is drawn. */
                 case SDL_EVENT_TEXT_INPUT:
                     {
                         result->message = WM_CHAR;

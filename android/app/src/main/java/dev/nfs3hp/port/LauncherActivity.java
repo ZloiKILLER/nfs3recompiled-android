@@ -5,8 +5,11 @@ import android.app.AlertDialog;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.database.Cursor;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
 import android.graphics.Color;
 import android.graphics.drawable.Drawable;
+import android.hardware.input.InputManager;
 import android.net.Uri;
 import android.os.Bundle;
 import android.provider.OpenableColumns;
@@ -15,11 +18,14 @@ import android.text.Spannable;
 import android.text.SpannableStringBuilder;
 import android.text.style.ImageSpan;
 import android.util.Log;
+import android.view.InputDevice;
+import android.view.KeyEvent;
 import android.view.View;
 import android.widget.ArrayAdapter;
 import android.widget.Button;
 import android.widget.CheckBox;
 import android.widget.EditText;
+import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ProgressBar;
 import android.widget.RadioButton;
@@ -46,6 +52,22 @@ public class LauncherActivity extends Activity
     private static final int REQUEST_EXPORT_LAUNCHER = 15;
 
     private String currentScreen = "main";
+    /* The Gamepads slot waiting for a button press, or -1.  While it waits, the
+     * next press on any gamepad answers it (dispatchKeyEvent). */
+    private int capturingSlot = -1;
+    /* The press that answered is swallowed on its way back up as well:
+     * otherwise its key-up would click whatever button had focus -- typically
+     * Assign itself, which would start waiting all over again. */
+    private int swallowKeyUp = KeyEvent.KEYCODE_UNKNOWN;
+    /* Keeps the Gamepads screen honest while it is open: a pad switched on, or
+     * one whose battery runs out, shows at once rather than on the next visit. */
+    private final InputManager.InputDeviceListener gamepadListener =
+        new InputManager.InputDeviceListener()
+    {
+        @Override public void onInputDeviceAdded(int deviceId) { refreshGamepadsScreen(); }
+        @Override public void onInputDeviceRemoved(int deviceId) { refreshGamepadsScreen(); }
+        @Override public void onInputDeviceChanged(int deviceId) { refreshGamepadsScreen(); }
+    };
     private Thread importThread;
     private DataSetManager dataSetManager;
     private TouchControlsOverlay touchPreview;
@@ -79,6 +101,8 @@ public class LauncherActivity extends Activity
     protected void onCreate(Bundle savedInstanceState)
     {
         super.onCreate(savedInstanceState);
+        ((InputManager) getSystemService(INPUT_SERVICE))
+            .registerInputDeviceListener(gamepadListener, null);
         try
         {
             dataSetManager = new DataSetManager(this, dataRoot());
@@ -121,6 +145,23 @@ public class LauncherActivity extends Activity
         findViewById(R.id.screen_settings_button).setOnClickListener(v -> showScreenScreen());
         findViewById(R.id.language_button).setOnClickListener(v -> showLanguageScreen());
         findViewById(R.id.faq_button).setOnClickListener(v -> showFaq());
+        ((TextView) findViewById(R.id.version_text)).setText(versionLabel());
+    }
+
+    /* Which build this is, under the menu: v0.73, or v0.73 DEBUG for a debug
+     * build, which installs beside a release one under a package of its own. */
+    private String versionLabel()
+    {
+        String name = "";
+        try
+        {
+            name = getPackageManager().getPackageInfo(getPackageName(), 0).versionName;
+        }
+        catch (android.content.pm.PackageManager.NameNotFoundException ignored)
+        {
+        }
+        boolean debug = (getApplicationInfo().flags & android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0;
+        return "v" + name + (debug ? " DEBUG" : "");
     }
 
     /** Language of the launcher only: the game's own menus come from FEDATA and
@@ -255,88 +296,208 @@ public class LauncherActivity extends Activity
         currentScreen="controls_home";
         setContentView(R.layout.activity_controls_home);
         findViewById(R.id.touch_controls_button).setOnClickListener(v->showTouchScreen());
-        findViewById(R.id.gamepad_controls_button).setOnClickListener(v->showControlsScreen());
+        findViewById(R.id.gamepad_controls_button).setOnClickListener(v->showGamepadsScreen());
         findViewById(R.id.back_button).setOnClickListener(v->showMainScreen());
     }
 
-    private void addVibrationStrength(LinearLayout parent,String key) {
-        SharedPreferences prefs=GamePreferences.get(this);
-        TextView label=new TextView(this);label.setTextColor(getColor(R.color.ui_text));
-        SeekBar slider=new SeekBar(this);slider.setMax(100);slider.setProgress(prefs.getInt(key,100));
-        label.setText(getString(R.string.vibration_strength,slider.getProgress()));
-        parent.addView(label);parent.addView(slider,new LinearLayout.LayoutParams(-1,dp(48)));
-        slider.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener(){
-            public void onProgressChanged(SeekBar bar,int value,boolean user){
-                label.setText(getString(R.string.vibration_strength,value));
-                if(user)prefs.edit().putInt(key,value).apply();
-            }
-            public void onStartTrackingTouch(SeekBar bar){}
-            public void onStopTrackingTouch(SeekBar bar){}
+    /** Order of the split-screen help page: one resource per step, like the FAQ. */
+    private static final int[] CONTROLS_HELP_SECTIONS = {
+        R.string.help_split_setup, R.string.help_split_write, R.string.help_split_race,
+        R.string.help_split_driving, R.string.help_split_notes,
+    };
+
+    /* Split screen in a few steps, found where a player looks for it: on the
+     * Gamepads screen the steps walk through. */
+    private void showControlsHelp() {
+        currentScreen="controls_help";
+        setContentView(R.layout.activity_controls_help);
+        findViewById(R.id.back_button).setOnClickListener(v->showGamepadsScreen());
+        // getText, not getString: the <b> markup in each section is a span.
+        CharSequence[] parts=new CharSequence[CONTROLS_HELP_SECTIONS.length*2-1];
+        for(int i=0;i<CONTROLS_HELP_SECTIONS.length;i++) {
+            parts[2*i]=getText(CONTROLS_HELP_SECTIONS[i]);
+            if(i+1<CONTROLS_HELP_SECTIONS.length)parts[2*i+1]=SECTION_GAP;
+        }
+        ((TextView)findViewById(R.id.controls_help_body)).setText(android.text.TextUtils.concat(parts));
+    }
+
+    /* Which physical pad is Gamepad 1 and which is Gamepad 2, what their
+     * buttons do, and writing the port's controls into the game.  A pad is
+     * picked by pressing a button on it rather than from a list, because two
+     * pads of the same model share a name and a list could not tell them
+     * apart. */
+    private void showGamepadsScreen()
+    {
+        currentScreen = "gamepads";
+        capturingSlot = -1;
+        setContentView(R.layout.activity_gamepads);
+        findViewById(R.id.back_button).setOnClickListener(v -> showControlsHome());
+        findViewById(R.id.controls_help_button).setOnClickListener(v -> showControlsHelp());
+        SharedPreferences preferences = GamePreferences.get(this);
+        CheckBox vibration = findViewById(R.id.gamepad_vibration_check);
+        vibration.setChecked(preferences.getBoolean(GamePreferences.GAMEPAD_VIBRATION, false));
+        vibration.setOnCheckedChangeListener((box, on) ->
+            preferences.edit().putBoolean(GamePreferences.GAMEPAD_VIBRATION, on).apply());
+        int[][] ids = {
+            { R.id.gamepad1_label, R.id.gamepad1_assign, R.id.gamepad1_auto, R.id.gamepad1_buttons },
+            { R.id.gamepad2_label, R.id.gamepad2_assign, R.id.gamepad2_auto, R.id.gamepad2_buttons },
+        };
+        for (int slot = 0; slot < GamepadSlots.COUNT; ++slot)
+        {
+            final int index = slot;
+            ((TextView) findViewById(ids[slot][0])).setText(getString(R.string.gamepad_slot_label, slot + 1));
+            findViewById(ids[slot][1]).setOnClickListener(v -> {
+                capturingSlot = index;
+                refreshGamepadsScreen();
+            });
+            findViewById(ids[slot][2]).setOnClickListener(v -> {
+                capturingSlot = -1;
+                GamepadSlots.useAutomatic(preferences, index);
+                refreshGamepadsScreen();
+            });
+            findViewById(ids[slot][3]).setOnClickListener(v -> showGamepadButtonsScreen(index));
+        }
+        findViewById(R.id.write_gamepad_controls)
+            .setOnClickListener(v -> confirmWriteControls(ControlProfile.Kind.GAMEPADS));
+        findViewById(R.id.write_keyboard_controls)
+            .setOnClickListener(v -> confirmWriteControls(ControlProfile.Kind.KEYBOARD));
+        refreshGamepadsScreen();
+    }
+
+    /* What each button of one pad does.  Stored as it is chosen, like the touch
+     * keys; NFS3Activity hands it all to the native side when the game starts. */
+    private void showGamepadButtonsScreen(int slot)
+    {
+        currentScreen = "gamepad_buttons";
+        capturingSlot = -1;
+        setContentView(R.layout.activity_gamepad_buttons);
+        ((TextView) findViewById(R.id.gamepad_buttons_title))
+            .setText(getString(R.string.gamepad_buttons_title, slot + 1));
+        findViewById(R.id.back_button).setOnClickListener(v -> showGamepadsScreen());
+        SharedPreferences preferences = GamePreferences.get(this);
+        LinearLayout container = findViewById(R.id.gamepad_buttons_container);
+        String[] buttonLabels = GamepadButtons.buttonLabels(this);
+        String[] actionLabels = GamepadButtons.actionLabels(this);
+        Spinner[] choices = new Spinner[GamepadButtons.BUTTON_IDS.length];
+        for (int i = 0; i < GamepadButtons.BUTTON_IDS.length; ++i)
+        {
+            final int button = i;
+            LinearLayout row = new LinearLayout(this);
+            row.setOrientation(LinearLayout.HORIZONTAL);
+            row.setGravity(android.view.Gravity.CENTER_VERTICAL);
+            row.setPadding(0, dp(2), 0, dp(2));
+
+            TextView label = new TextView(this);
+            label.setText(buttonLabels[i]);
+            label.setTextColor(getColor(R.color.ui_text));
+            label.setTextSize(16);
+            row.addView(label, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+
+            Spinner action = new Spinner(this);
+            action.setAdapter(stringAdapter(actionLabels));
+            action.setSelection(GamePreferences.indexOf(GamepadButtons.ACTION_IDS,
+                GamepadButtons.action(preferences, slot, i)));
+            action.setOnItemSelectedListener(new SimpleItemSelectedListener(position ->
+                GamepadButtons.setAction(preferences, slot, button, GamepadButtons.ACTION_IDS[position])));
+            row.addView(action, new LinearLayout.LayoutParams(dp(240), dp(48)));
+            container.addView(row);
+            choices[i] = action;
+        }
+        findViewById(R.id.gamepad_buttons_reset).setOnClickListener(v -> {
+            GamepadButtons.reset(preferences, slot);
+            for (int button = 0; button < choices.length; ++button)
+                choices[button].setSelection(GamePreferences.indexOf(GamepadButtons.ACTION_IDS,
+                    GamepadButtons.DEFAULT_ACTIONS[button]));
         });
     }
 
-    private void showControlsScreen()
+    private void confirmWriteControls(ControlProfile.Kind kind)
     {
-        currentScreen = "controls";
-        setContentView(R.layout.activity_controller_mapping);
-        findViewById(R.id.back_button).setOnClickListener(v -> showControlsHome());
-        findViewById(R.id.gamepad_settings_button).setOnClickListener(v -> showGamepadSettings());
-        LinearLayout container = findViewById(R.id.mapping_container);
-        SharedPreferences preferences = GamePreferences.get(this);
-        String[] actionLabels=GamePreferences.actionLabels(this);
-        String[] buttonLabels=GamePreferences.physicalButtonLabels(this);
-        ControllerDiagramView diagram=new ControllerDiagramView(this,button->{
-            String[] choices=new String[actionLabels.length+1];choices[0]=getString(R.string.label_unassigned);
-            System.arraycopy(actionLabels,0,choices,1,actionLabels.length);
-            new AlertDialog.Builder(this).setTitle(getString(R.string.assign_button_title,buttonLabels[GamePreferences.indexOf(GamePreferences.PHYSICAL_BUTTON_VALUES,button)]))
-                .setItems(choices,(dialog,which)->{
-                    SharedPreferences.Editor edit=preferences.edit();
-                    for(int i=0;i<GamePreferences.ACTION_IDS.length;i++)if(button.equals(GamePreferences.getPhysicalButton(preferences,i)))
-                        edit.putString(GamePreferences.physicalKey(GamePreferences.ACTION_IDS[i]),"none");
-                    if(which>0)edit.putString(GamePreferences.physicalKey(GamePreferences.ACTION_IDS[which-1]),button);
-                    edit.apply();showControlsScreen();
-                }).show();
-        });
-        ((android.widget.FrameLayout)findViewById(R.id.controller_diagram)).addView(diagram,new android.widget.FrameLayout.LayoutParams(-1,-1));
-        findViewById(R.id.mappings_toggle).setOnClickListener(v->{
-            boolean list=findViewById(R.id.mapping_scroll).getVisibility()!=View.VISIBLE;
-            findViewById(R.id.mapping_scroll).setVisibility(list?View.VISIBLE:View.GONE);
-            findViewById(R.id.controller_diagram).setVisibility(list?View.GONE:View.VISIBLE);
-            ((Button)v).setText(list?R.string.mapping_show_diagram:R.string.mapping_show_list);
-        });
+        boolean gamepads = kind == ControlProfile.Kind.GAMEPADS;
+        new AlertDialog.Builder(this)
+            .setTitle(gamepads ? R.string.controls_write_gamepads : R.string.controls_write_keyboard)
+            .setMessage(gamepads ? R.string.controls_write_gamepads_message
+                                 : R.string.controls_write_keyboard_message)
+            .setNegativeButton(android.R.string.cancel, null)
+            .setPositiveButton(android.R.string.ok, (dialog, which) -> writeControls(kind))
+            .show();
+    }
 
+    /* Only while the game is not running: the game keeps config.dat in memory
+     * and writes the whole file back, which would quietly undo this. */
+    private void writeControls(ControlProfile.Kind kind)
+    {
+        if (NFS3Activity.isRunning())
+        {
+            Toast.makeText(this, R.string.controls_write_game_running, Toast.LENGTH_LONG).show();
+            return;
+        }
+        try
+        {
+            String backup = ControlProfile.writeToGame(dataRoot(), kind);
+            Toast.makeText(this, getString(R.string.controls_write_done, backup), Toast.LENGTH_LONG).show();
+        }
+        catch (ControlProfile.NoSettingsException missing)
+        {
+            Toast.makeText(this, R.string.controls_write_no_config, Toast.LENGTH_LONG).show();
+        }
+        catch (IOException e)
+        {
+            Log.e(TAG, "Writing controls failed", e);
+            Toast.makeText(this, getString(R.string.controls_write_failed, e.getMessage()),
+                Toast.LENGTH_LONG).show();
+        }
+    }
+
+    private void refreshGamepadsScreen()
+    {
+        if (!"gamepads".equals(currentScreen))
+            return;
+        SharedPreferences preferences = GamePreferences.get(this);
+        GamepadSlots.Pad[] pads = GamepadSlots.resolve(preferences);
+        int[] statusIds = { R.id.gamepad1_status, R.id.gamepad2_status };
+        for (int slot = 0; slot < GamepadSlots.COUNT; ++slot)
+        {
+            boolean pinned = !GamepadSlots.assigned(preferences, slot).isEmpty();
+            String text;
+            if (capturingSlot == slot)
+                text = getString(R.string.gamepad_assign_prompt, slot + 1);
+            else if (pinned && pads[slot] != null)
+                text = pads[slot].name;
+            else if (pinned)
+                text = getString(R.string.gamepad_slot_absent, GamepadSlots.assignedName(preferences, slot));
+            else if (pads[slot] != null)
+                text = getString(R.string.gamepad_slot_auto_now, pads[slot].name);
+            else
+                text = getString(R.string.gamepad_slot_auto_none);
+            ((TextView) findViewById(statusIds[slot])).setText(text);
+        }
+    }
+
+    /* The key each on-screen control sends.  The overlay speaks to the game
+     * through keys, so these have to match the game's settings -- which the
+     * gamepad control set written from Controls -> Gamepads does out of the box. */
+    private void showTouchKeysScreen()
+    {
+        currentScreen = "touch_keys";
+        setContentView(R.layout.activity_touch_keys);
+        findViewById(R.id.back_button).setOnClickListener(v -> showTouchScreen());
+        LinearLayout container = findViewById(R.id.touch_keys_container);
+        SharedPreferences preferences = GamePreferences.get(this);
+        String[] actionLabels = GamePreferences.actionLabels(this);
         for (int i = 0; i < GamePreferences.ACTION_IDS.length; ++i)
         {
             final int actionIndex = i;
             LinearLayout row = new LinearLayout(this);
-            row.setOrientation(LinearLayout.VERTICAL);
-            row.setPadding(0, dp(8), 0, dp(8));
+            row.setOrientation(LinearLayout.HORIZONTAL);
+            row.setGravity(android.view.Gravity.CENTER_VERTICAL);
+            row.setPadding(0, dp(2), 0, dp(2));
 
             TextView label = new TextView(this);
             label.setText(actionLabels[i]);
-            label.setTextColor(Color.WHITE);
+            label.setTextColor(getColor(R.color.ui_text));
             label.setTextSize(16);
-            row.addView(label);
-
-            Spinner physical = new Spinner(this);
-            ArrayAdapter<String> physicalAdapter = new ArrayAdapter<>(this,
-                android.R.layout.simple_spinner_item, buttonLabels);
-            physicalAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
-            physical.setAdapter(physicalAdapter);
-            physical.setSelection(GamePreferences.indexOf(GamePreferences.PHYSICAL_BUTTON_VALUES,
-                GamePreferences.getPhysicalButton(preferences, i)));
-            physical.setOnItemSelectedListener(new SimpleItemSelectedListener(position -> {
-                String button=GamePreferences.PHYSICAL_BUTTON_VALUES[position];
-                if(button.equals(GamePreferences.getPhysicalButton(preferences,actionIndex)))return;
-                SharedPreferences.Editor edit=preferences.edit();boolean conflict=false;
-                if(!"none".equals(button))for(int j=0;j<GamePreferences.ACTION_IDS.length;j++)
-                    if(j!=actionIndex&&button.equals(GamePreferences.getPhysicalButton(preferences,j))){
-                        edit.putString(GamePreferences.physicalKey(GamePreferences.ACTION_IDS[j]),"none");conflict=true;
-                    }
-                edit.putString(GamePreferences.physicalKey(GamePreferences.ACTION_IDS[actionIndex]),button).apply();
-                diagram.invalidate();if(conflict)showControlsScreen();
-            }));
-            row.addView(physical);
+            row.addView(label, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
 
             Spinner key = new Spinner(this);
             ArrayAdapter<String> keyAdapter = new ArrayAdapter<>(this,
@@ -349,19 +510,9 @@ public class LauncherActivity extends Activity
                 preferences.edit().putInt(GamePreferences.touchKey(
                     GamePreferences.ACTION_IDS[actionIndex]),
                     GamePreferences.KEY_VALUES[position]).apply()));
-            row.addView(key);
+            row.addView(key, new LinearLayout.LayoutParams(dp(240), dp(48)));
             container.addView(row);
         }
-    }
-
-    private void showGamepadSettings()
-    {
-        currentScreen="gamepad_settings";
-        setContentView(R.layout.activity_controller_settings);
-        findViewById(R.id.back_button).setOnClickListener(v -> showControlsScreen());
-        LinearLayout options=findViewById(R.id.controller_options);
-        addPreferenceCheck(options,getString(R.string.pref_gamepad_vibration),GamePreferences.GAMEPAD_VIBRATION,false);
-        addVibrationStrength(options,GamePreferences.GAMEPAD_VIBRATION_STRENGTH);
     }
 
     private void showTouchScreen()
@@ -397,13 +548,17 @@ public class LauncherActivity extends Activity
         bindSeekBar(R.id.edge_seek, R.id.edge_value, GamePreferences.TOUCH_EDGE,0,32,0," dp");
         bindSeekBar(R.id.raise_seek, R.id.raise_value, GamePreferences.TOUCH_RAISE,0,24,0," dp");
 
+        CheckBox enabled = findViewById(R.id.touch_enabled_check);
+        enabled.setChecked(preferences.getBoolean(GamePreferences.TOUCH_ENABLED, true));
+        enabled.setOnCheckedChangeListener((button, checked) ->
+            preferences.edit().putBoolean(GamePreferences.TOUCH_ENABLED, checked).apply());
+
         CheckBox autoHide = findViewById(R.id.auto_hide_check);
         autoHide.setChecked(preferences.getBoolean(GamePreferences.TOUCH_AUTO_HIDE, false));
         autoHide.setOnCheckedChangeListener((button, checked) ->
             preferences.edit().putBoolean(GamePreferences.TOUCH_AUTO_HIDE, checked).apply());
         LinearLayout options=findViewById(R.id.touch_options);
         addPreferenceCheck(options,getString(R.string.pref_phone_vibration),GamePreferences.TOUCH_VIBRATION,false);
-        addVibrationStrength(options,GamePreferences.TOUCH_VIBRATION_STRENGTH);
         addPreferenceCheck(options,getString(R.string.pref_separate_layouts),GamePreferences.TOUCH_SEPARATE,false);
         addPreferenceCheck(options,getString(R.string.pref_hide_full),GamePreferences.TOUCH_HIDE_FULL,false);
         refreshTouchLayoutNote();
@@ -419,6 +574,7 @@ public class LauncherActivity extends Activity
         });
         Button editor=findViewById(R.id.edit_touch_layout);
         editor.setOnClickListener(v->{currentScreen="editor";setContentView(R.layout.activity_touch_editor);touchPreview=TouchLayoutEditor.attach(this,this::showTouchScreen);});
+        findViewById(R.id.touch_keys_button).setOnClickListener(v->showTouchKeysScreen());
     }
 
     private void addPreferenceCheck(LinearLayout parent,String label,String key,boolean defaultValue) {
@@ -535,33 +691,98 @@ public class LauncherActivity extends Activity
         fps60.setChecked(sixty);
         fps30.setChecked(!sixty);
 
-        /* Percent on the bar, a multiplier in the shader: 100 is the picture
-         * exactly as the game drew it.  Saved with the rest on Save rather than
-         * applied live, so the whole screen behaves the one way. */
+        findViewById(R.id.screen_adjustment_button)
+            .setOnClickListener(v -> showScreenAdjustmentScreen());
+
+        /* Written the moment a choice is made, like every other launcher
+         * setting; the game picks both up when it next starts. */
+        ((RadioGroup) findViewById(R.id.orientation_group)).setOnCheckedChangeListener((group, id) ->
+            preferences.edit().putString(GamePreferences.ORIENTATION,
+                id == R.id.orientation_auto ? GamePreferences.ORIENTATION_AUTO
+                : id == R.id.orientation_landscape_reverse ? GamePreferences.ORIENTATION_LANDSCAPE_REVERSE
+                : GamePreferences.ORIENTATION_LANDSCAPE).apply());
+        ((RadioGroup) findViewById(R.id.fps_cap_group)).setOnCheckedChangeListener((group, id) ->
+            preferences.edit().putInt(GamePreferences.FPS_CAP, id == R.id.fps_cap_60 ? 60 : 30).apply());
+    }
+
+    /* Gamma, brightness and contrast over two sample frames -- one night, one
+     * daylight.  Two samples because the three pull the ends of the range in
+     * opposite directions: what rescues a night track washes out a daylit one,
+     * and only seeing both at once shows the trade.  The samples run through
+     * the same curve the game's final blit uses (ScreenAdjustment mirrors the
+     * shader), so what moves here is what a race will look like.  Written as
+     * it changes, like every other launcher setting; Reset goes back to the
+     * picture as the game drew it. */
+    private void showScreenAdjustmentScreen()
+    {
+        currentScreen = "screen_adjustment";
+        setContentView(R.layout.activity_screen_adjustment);
+        findViewById(R.id.back_button).setOnClickListener(v -> showScreenScreen());
+        SharedPreferences preferences = GamePreferences.get(this);
+
+        ImageView darkView = findViewById(R.id.sample_dark);
+        ImageView brightView = findViewById(R.id.sample_bright);
+        Bitmap darkSource = BitmapFactory.decodeResource(getResources(), R.drawable.adjust_sample_dark);
+        Bitmap brightSource = BitmapFactory.decodeResource(getResources(), R.drawable.adjust_sample_bright);
+        Bitmap darkShown = darkSource.copy(Bitmap.Config.ARGB_8888, true);
+        Bitmap brightShown = brightSource.copy(Bitmap.Config.ARGB_8888, true);
+        darkView.setImageBitmap(darkShown);
+        brightView.setImageBitmap(brightShown);
+        /* One buffer for both, reused on every slider step: a preview that
+         * allocated a megabyte per frame would stutter exactly while being
+         * judged. */
+        int[] scratch = new int[Math.max(darkSource.getWidth() * darkSource.getHeight(),
+                                         brightSource.getWidth() * brightSource.getHeight())];
+
         SeekBar gamma = findViewById(R.id.gamma_seek);
+        SeekBar brightness = findViewById(R.id.brightness_seek);
+        SeekBar contrast = findViewById(R.id.contrast_seek);
         TextView gammaValue = findViewById(R.id.gamma_value);
-        gamma.setMax(150);
-        gamma.setProgress(Math.max(0, Math.min(150,
-            preferences.getInt(GamePreferences.GAMMA, 100) - 100)));
-        gammaValue.setText((gamma.getProgress() + 100) + "%");
-        gamma.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
-            @Override public void onProgressChanged(SeekBar bar, int value, boolean byUser) {
-                gammaValue.setText((value + 100) + "%");
-            }
+        TextView brightnessValue = findViewById(R.id.brightness_value);
+        TextView contrastValue = findViewById(R.id.contrast_value);
+
+        gamma.setMax(ScreenAdjustment.GAMMA_MAX - ScreenAdjustment.GAMMA_MIN);
+        brightness.setMax(ScreenAdjustment.BRIGHTNESS_MAX - ScreenAdjustment.BRIGHTNESS_MIN);
+        contrast.setMax(ScreenAdjustment.CONTRAST_MAX - ScreenAdjustment.CONTRAST_MIN);
+
+        Runnable refresh = () -> {
+            int g = gamma.getProgress() + ScreenAdjustment.GAMMA_MIN;
+            int b = brightness.getProgress() + ScreenAdjustment.BRIGHTNESS_MIN;
+            int c = contrast.getProgress() + ScreenAdjustment.CONTRAST_MIN;
+            gammaValue.setText(g + "%");
+            brightnessValue.setText(b + "%");
+            contrastValue.setText(c + "%");
+            int[] curve = ScreenAdjustment.curve(g, b, c);
+            ScreenAdjustment.apply(darkSource, darkShown, curve, scratch);
+            ScreenAdjustment.apply(brightSource, brightShown, curve, scratch);
+            darkView.invalidate();
+            brightView.invalidate();
+        };
+        Runnable save = () -> preferences.edit()
+            .putInt(GamePreferences.GAMMA, gamma.getProgress() + ScreenAdjustment.GAMMA_MIN)
+            .putInt(GamePreferences.BRIGHTNESS, brightness.getProgress() + ScreenAdjustment.BRIGHTNESS_MIN)
+            .putInt(GamePreferences.CONTRAST, contrast.getProgress() + ScreenAdjustment.CONTRAST_MIN)
+            .apply();
+        SeekBar.OnSeekBarChangeListener listener = new SeekBar.OnSeekBarChangeListener() {
+            @Override public void onProgressChanged(SeekBar bar, int value, boolean byUser) { refresh.run(); if (byUser) save.run(); }
             @Override public void onStartTrackingTouch(SeekBar bar) {}
             @Override public void onStopTrackingTouch(SeekBar bar) {}
-        });
+        };
+        gamma.setOnSeekBarChangeListener(listener);
+        brightness.setOnSeekBarChangeListener(listener);
+        contrast.setOnSeekBarChangeListener(listener);
 
-        findViewById(R.id.save_screen_button).setOnClickListener(v -> {
-            preferences.edit()
-                .putInt(GamePreferences.GAMMA, gamma.getProgress() + 100)
-                .putString(GamePreferences.ORIENTATION,
-                    auto.isChecked() ? GamePreferences.ORIENTATION_AUTO
-                    : reversed.isChecked() ? GamePreferences.ORIENTATION_LANDSCAPE_REVERSE
-                    : GamePreferences.ORIENTATION_LANDSCAPE)
-                .putInt(GamePreferences.FPS_CAP, fps60.isChecked() ? 60 : 30)
-                .apply();
-            Toast.makeText(this, R.string.settings_saved, Toast.LENGTH_SHORT).show();
+        gamma.setProgress(ScreenAdjustment.gammaPercent(preferences) - ScreenAdjustment.GAMMA_MIN);
+        brightness.setProgress(ScreenAdjustment.brightnessPercent(preferences) - ScreenAdjustment.BRIGHTNESS_MIN);
+        contrast.setProgress(ScreenAdjustment.contrastPercent(preferences) - ScreenAdjustment.CONTRAST_MIN);
+        refresh.run();
+
+        findViewById(R.id.reset_adjust_button).setOnClickListener(v -> {
+            gamma.setProgress(ScreenAdjustment.NEUTRAL - ScreenAdjustment.GAMMA_MIN);
+            brightness.setProgress(ScreenAdjustment.NEUTRAL - ScreenAdjustment.BRIGHTNESS_MIN);
+            contrast.setProgress(ScreenAdjustment.NEUTRAL - ScreenAdjustment.CONTRAST_MIN);
+            refresh.run();
+            save.run();
         });
     }
 
@@ -896,22 +1117,62 @@ public class LauncherActivity extends Activity
         startActivity(intent);
     }
 
+    /* While a Gamepads slot waits for its pad, the next button pressed on any
+     * gamepad answers it.  Only gamepad presses count, and only then; the rest
+     * of the time the launcher stays navigable with a pad as usual. */
+    @Override
+    public boolean dispatchKeyEvent(KeyEvent event)
+    {
+        if (event.getAction() == KeyEvent.ACTION_UP && event.getKeyCode() == swallowKeyUp)
+        {
+            swallowKeyUp = KeyEvent.KEYCODE_UNKNOWN;
+            return true;
+        }
+        if (capturingSlot >= 0 && event.getAction() == KeyEvent.ACTION_DOWN)
+        {
+            InputDevice device = event.getDevice();
+            if (GamepadSlots.isGamepad(device))
+            {
+                GamepadSlots.assign(GamePreferences.get(this), capturingSlot,
+                    device.getDescriptor(), device.getName());
+                capturingSlot = -1;
+                swallowKeyUp = event.getKeyCode();
+                refreshGamepadsScreen();
+                return true;
+            }
+        }
+        return super.dispatchKeyEvent(event);
+    }
+
     @Override
     public void onBackPressed()
     {
         if (importThread != null)
             return;
+        // Waiting for a pad is cancelled, not the screen it waits on.
+        if (capturingSlot >= 0)
+        {
+            capturingSlot = -1;
+            refreshGamepadsScreen();
+            return;
+        }
         if ("editor".equals(currentScreen))
             showTouchScreen();
-        else if ("gamepad_settings".equals(currentScreen))
-            showControlsScreen();
-        else if ("touch".equals(currentScreen)||"controls".equals(currentScreen))
+        else if ("touch_keys".equals(currentScreen))
+            showTouchScreen();
+        else if ("touch".equals(currentScreen)||"gamepads".equals(currentScreen))
             showControlsHome();
+        // Split screen help and a pad's buttons both open from the Gamepads screen.
+        else if ("gamepad_buttons".equals(currentScreen)||"controls_help".equals(currentScreen))
+            showGamepadsScreen();
         // The Data screens are a level deeper than the rest, so back goes to
         // their menu rather than all the way out to the launcher.
         else if ("game_data".equals(currentScreen)||"game_saves".equals(currentScreen)
                  ||"launcher_settings".equals(currentScreen))
             showDataScreen();
+        // Screen adjustment sits under Display, so back returns there.
+        else if ("screen_adjustment".equals(currentScreen))
+            showScreenScreen();
         else if (!"main".equals(currentScreen))
             showMainScreen();
         else
@@ -921,6 +1182,7 @@ public class LauncherActivity extends Activity
     @Override
     protected void onDestroy()
     {
+        ((InputManager) getSystemService(INPUT_SERVICE)).unregisterInputDeviceListener(gamepadListener);
         Thread worker = importThread;
         importThread = null;
         if (worker != null)

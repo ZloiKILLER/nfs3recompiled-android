@@ -6350,7 +6350,8 @@ void Application::sub_49d800(WinApplication* app, x86::CPU& cpu)
     cpu.esi = cpu.edx;
     // 0049d80e  f605583a7a0040         +test byte ptr [0x7a3a58], 0x40
     cpu.clear_co();
-    cpu.set_szp(static_cast<x86::reg8>(app->getMemory<x86::reg8>(x86::reg32(8010328) /* 0x7a3a58 */) & 64 /*0x40*/));
+    // Port: alpha intensity applies on this driver too (tools/apply_alpha_intensity.py).
+    cpu.set_szp(static_cast<x86::reg8>(64 /*0x40, port: was the 0x7a3a58 probe*/));
     // 0049d815  0f84bc000000           -je 0x49d8d7
     if (cpu.flags.zf)
     {

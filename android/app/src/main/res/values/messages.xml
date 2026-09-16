@@ -5,7 +5,6 @@
       what broke, not the player what to do. -->
 
  <!-- Settings the launcher builds in code rather than in a layout. -->
- <string name="pref_gamepad_vibration">Gamepad vibration (game effects)</string>
  <string name="pref_phone_vibration">Phone vibration (game effects; restart game)</string>
  <string name="pref_separate_layouts">Separate menu and race layouts</string>
  <string name="pref_show_gears">Show gear − / + buttons</string>
@@ -39,4 +38,7 @@
  <string name="importer_missing_subfolder">The selected folder has no \'%1$s\' subfolder — pick the folder that directly contains fedata and gamedata (e.g. the CD root).</string>
  <string name="importer_open_zip_failed">Could not open the selected ZIP</string>
  <string name="importer_zip_missing_files">The ZIP is missing the expected fedata/gamedata files</string>
+ <string name="pref_touch_enabled">Use touch controls</string>
+ <string name="touch_enabled_note">Off: touching the screen does nothing in the game, neither buttons nor the touch mouse. Gamepads and a real mouse keep working.</string>
+ <string name="editor_snap_grid">Snap to grid</string>
 </resources>
