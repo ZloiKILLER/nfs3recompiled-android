@@ -7,36 +7,96 @@ Glide 2x calls it makes reimplemented on top of SDL3 and OpenGL ES.
 
 Based on [motor-dev/nfs-recompiled](https://github.com/motor-dev/nfs-recompiled),
 which does the recompilation itself and targets desktop. This fork adds the
-Android target: a launcher, touch controls, gamepad handling, and a number of
-fixes in the Glide layer that only showed up once the game ran on a phone.
+Android target: a launcher, touch controls, gamepad handling, widescreen races,
+and a number of fixes in the Glide layer that only showed up once the game ran
+on a phone.
 
 <img src="screenshots/race-city.jpg" alt="racing through the city" width="49%">
 <img src="screenshots/race-boardwalk.jpg" alt="racing on the boardwalk" width="49%">
 <img src="screenshots/car-select-front.jpg" alt="car selection" width="49%">
 <img src="screenshots/car-select-rear.jpg" alt="car selection, rear view" width="49%">
 
-## What you need to supply
+## Game data you supply
 
-The original executables are in the repository, as in the upstream project, so a
-clone builds and runs as-is. What is **not** here is the game content: you need
-`FEDATA` and `GAMEDATA` from a retail disc of the 1998 release. The Europe
-"Sold Out Software" disc is known to match; a CD image works.
+The executables are in the repository, as upstream, so a clone builds and runs
+as-is. The game content is not: bring `FEDATA` and `GAMEDATA` from a retail disc
+of the 1998 release — the Europe "Sold Out Software" disc is known to match, and
+a CD image works. Copy both folders somewhere writable and clear the read-only
+attribute, or the game cannot write its settings and saves. That folder is what
+you import in the launcher.
 
-Copy those two folders somewhere and clear the read-only attribute afterwards,
-or the game cannot write its settings and saves. That folder is what you import
-in the launcher.
+`install.win`, the table of data paths the game reads before anything else,
+comes from the installer rather than the disc. The Android build packages the
+copy at `android/app/src/main/assets/gamefiles/install.win`; for a desktop run
+put it next to the game data. `tools/make_install_win.py` regenerates it and
+documents the format, reverse-engineered from the executable. So a complete
+desktop game folder is `fedata/`, `gamedata/`, `install.win` and the four
+executables from `nfs3hp/`.
 
-Use data from the **same 1998 release**.
+## Playing on a phone
 
-`install.win` is the table of data paths the game reads before anything else,
-and the installer -- not the disc -- produces it. A working copy is in this
-repository at `android/app/src/main/assets/gamefiles/install.win`; the Android
-build packages it automatically, and for a desktop run copy it next to the game
-data. `tools/make_install_win.py` regenerates it and documents the format, which
-was reverse-engineered from the executable.
+1. Put the game data folder on the device, e.g. `/sdcard/nfs3-og`.
+2. Launch the app, import that folder, make it the active data set.
+3. Play.
 
-So a complete desktop game folder is: `fedata/`, `gamedata/`, `install.win`, and
-the four executables from `nfs3hp/`.
+The launcher holds what the game cannot ask for itself: **Controls → Touch** (the
+on-screen controls, their layout editor, the key each one sends, the phone's
+vibration switch), **Controls → Gamepads** (which pad is which player, the key
+each button sends, the pad vibration switch) and **Display** with **Screen
+adjustment** (orientation, frame rate cap, gamma, brightness, contrast).
+
+### Controls
+
+The game always sees two DirectInput joysticks, `NFS Gamepad 1` and
+`NFS Gamepad 2`, each with two axes: X steers, Y carries both pedals — the right
+trigger pulls it up to accelerate, the left one down to brake. Gamepad 1 is
+where the touch controls steer and accelerate too. Every other button arrives as
+a keyboard key, chosen per button under Controls → Gamepads → Buttons: player
+1's from the first pad, player 2's from the second.
+
+*Gamepad ON* writes a matching control set into the game's
+`fedata/config/config.dat`, backing the file up first, and the description of
+both devices with it — the game regenerates every binding whenever the saved
+device list differs from what it finds. *Default in game* writes the game's own
+keyboard defaults instead.
+
+### Vibration
+
+The game's own force-feedback effects are implemented
+(`src/lib/winapi/dinput/idirectinputeffect.cpp`) and translated to rumble. Only
+the first force-feedback device gets them — Gamepad 1 and the phone — so Gamepad
+2 never vibrates. A pad plays the game's jolts, road and engine; the phone plays
+jolts, the engine by its revs, and how hard the car corners. Phone vibration is
+switched on under Controls → Touch, a pad's under Controls → Gamepads, and how
+strong a pad plays is set in the game's own Force Feedback menu. Nothing
+vibrates on a button press.
+
+### Widescreen races
+
+Options → Graphics → Screen Size offers `1280 x 720 x 16 (z)` beside the
+original 4:3 modes. A race then opens the view sideways instead of stretching
+it: the vertical angle stays what the game draws and the horizontal one widens
+with the screen, in every view — chase and in-car, the mirror, both halves of
+split screen. HUD elements drawn as pictures keep their shape, and the layout
+saved in `config.dat` is never touched, so a 4:3 mode looks exactly as it did.
+The menus stay 4:3; only the race switches mode. This part is unfinished, see
+Known issues, and `NFS_WIDESCREEN=0` takes the mode back out wherever an
+environment variable can be set — the launcher does not set this one.
+
+Alpha intensity in Advanced Graphics works here as well. The original applies it
+only on its Direct3D driver, so on this one the slider used to move and change
+nothing.
+
+## Known issues
+
+- **Mosaic artefacts in the headlight-lit area on Mali GPUs.** Blocky patches
+  appear where the projected headlight texture falls on the road, only while
+  moving. Not reproducible on Adreno with the same build, with or without
+  mipmapping, so it looks like a driver difference rather than a bug in the
+  Glide layer. Unresolved.
+- **Widescreen is unfinished.** Font size, HUD border thickness and the points on
+  the map still follow the screen width, the cabin image in the in-car view is
+  stretched to it, and the HUD editor still previews a 4:3 screen.
 
 ## Building
 
@@ -59,12 +119,8 @@ cd android
 ./gradlew assembleDebug
 ```
 
-`android/build.bat` does the same on Windows but hardcodes the JDK and SDK
-paths of the machine it was written on — edit them or use `gradlew` directly.
-
-The APK lands in `android/app/build/outputs/apk/debug/`. For a release build use
-`assembleRelease`; it is unsigned, so align and sign it yourself with
-`zipalign` and `apksigner`.
+The APK lands in `android/app/build/outputs/apk/debug/`. `assembleRelease`
+builds unsigned, so align and sign it yourself with `zipalign` and `apksigner`.
 
 ### Desktop (Windows)
 
@@ -81,85 +137,36 @@ Run it with the path to your game folder:
 ./build/nfs3hp /path/to/game
 ```
 
-With two arguments the second is the CD path, for a setup where the data is
-split between an install directory and the disc.
+With two arguments the second is the CD path, for data split between an install
+directory and the disc.
 
 ### CMake options
 
 | Option | Default | Description |
 |---|---|---|
-| `WITH_MMX` | `ON` | MMX bit in the emulated CPUID. Leave it on: with MMX reported absent the game picks a different set of copy/decode routines and the movie streamer breaks. |
+| `WITH_MMX` | `ON` | MMX bit in the emulated CPUID. Leave it on: reported absent, the game picks different copy routines and the movie streamer breaks. |
 | `WITH_PEDANTIC_FPU` | `OFF` | Strict 80-bit x87 emulation through NASM helpers. Linux only. |
-| `NFS_TRACE_MSG` | `OFF` | Message-pump and Glide state tracing. Very verbose, desktop diagnostics only. |
-| `NFS2_ASSERT_TRAP` | `OFF` | Turn the unsupported-path assert into a debugger break instead of a log line. |
-| `NFS_BUILD_FF_TESTS` | `OFF` | Build `force_feedback_checks`, a desktop regression test for the DirectInput force-feedback layer. Runs against an SDL virtual joystick; desktop only. |
+| `NFS_TRACE_MSG` | `OFF` | Message-pump and Glide state tracing. Very verbose. |
+| `NFS2_ASSERT_TRAP` | `OFF` | Unsupported-path asserts break into the debugger instead of logging. |
+| `NFS_BUILD_FF_TESTS` | `OFF` | Build `force_feedback_checks`, the DirectInput force-feedback regression test, against an SDL virtual joystick. |
+| `NFS_BUILD_MEMORY_TESTS` | `OFF` | Build the guest memory allocator checks and `glidetmu_checks`, the texture atlas regression test. |
 
-## Running on a phone
+## Environment variables
 
-1. Put the game data folder somewhere on the device, e.g. `/sdcard/nfs3-og`.
-2. Launch the app, import that folder, make it the active data set.
-3. Play.
-
-The launcher also has a controls hub (Controls → Touch / Gamepad) with a
-touch layout editor, the keys the touch controls send, gamepad assignment and
-button mapping, and screen settings.
-
-### Gamepads and the game's controls
-
-The game always sees two DirectInput joysticks, `NFS Gamepad 1` and
-`NFS Gamepad 2`, each with just two axes: X steers, and Y carries both pedals —
-the right trigger pulls it up to accelerate, the left one down to brake.
-Gamepad 1 is also where the touch controls steer and accelerate. Every other
-button reaches the game as a keyboard key: player 1's keys from the first pad,
-player 2's from the second, chosen per button under Controls → Gamepads →
-Buttons.
-
-*Gamepad ON* on the same screen writes a matching control set into
-the game's `fedata/config/config.dat`, after backing the file up: the same set
-for one player and for player 1 in split screen, and player 2 on the second
-pad. It writes the description of both devices as well, because the game
-regenerates all its bindings whenever the saved device list differs from what
-it finds. *Default in game* writes the game's own keyboard defaults
-instead.
-
-### Vibration
-
-The game's own DirectInput force-feedback effects are implemented
-(`src/lib/winapi/dinput/idirectinputeffect.cpp`) and translated to rumble,
-with envelopes and gain. The game plays a constant force for jolts
-(collisions, landings, gear changes), which come out as hits that fade; a
-square and a sine wave for the road and the engine, which run all race and
-come out as light texture; and a centering spring, which pushes against the
-player's hand and is not played at all. A gamepad's motor has no gentle
-range — even a DualSense's weakest steady rumble is strong — so on a pad the
-road and the engine come out as short, faint taps at the rates the game runs
-them at (the road at twice its rate), longer where the effect is stronger,
-and only jolts rumble steadily. The game drives a single
-force-feedback device, the first one it finds, and computes effects only for
-the car driven with it, so effects reach Gamepad 1 and the phone; Gamepad 2
-never vibrates. The phone plays its own selection, apart from any pad: jolts
-as hits, the engine as light ticks that follow the revs above idle, and
-cornering, read from how hard the car leans into a turn. The road rumble is
-left to a pad, where it does not turn the whole race into one buzz. Phone
-vibration is switched on or off under Controls → Touch. Gamepad vibration
-is off until switched on under Controls → Gamepads, and its strength is set in
-the game's own Force Feedback menu. Nothing vibrates on a button
-press; every effect comes from the game.
-
-### Environment variables
-
-Read once at startup, set from `NFS3Activity.onCreate()` on Android:
+Read once at startup. On Android the launcher sets `NFS_ORIENTATION`,
+`NFS_FPS_CAP`, `NFS_GAMMA`, `NFS_BRIGHTNESS`, `NFS_CONTRAST`, the `NFS_TOUCH_*`
+keys and one variable per pad button from its own screens; the rest matter for a
+desktop run.
 
 | Variable | Default | Description |
 |---|---|---|
 | `NFS_FPS_CAP` | `30` | Frame rate the renderer paces presents to. The game's logic is tuned for 30 Hz. |
-| `NFS_CAR_DETAIL_FULL` | on | With Car Detail at High, every car (opponents, traffic, cops and the second player) keeps its detailed model out to the draw distance in every view, split screen and the rear-view mirror included, and the game's budget on how many detailed cars it draws at once is lifted. Every car also loads the player's 256×256 texture, and on devices with 3 GB of RAM or more the texture atlas grows to 4096×4096 to hold them. `0` restores the original. Wheels turning in the second split-screen view and in the mirror do not depend on this setting. |
-| `NFS_CAR_DETAIL_TRACE` | unset; `1` in debug APKs | Once a second during a race, log a `[CARDETAIL]` line: the level each car was drawn at, their cost against the game's budget, how full the transform buffer got and how much of the texture atlas is free. |
-| `NFS_ORIENTATION` | unset | `auto` allows portrait; anything else pins landscape. Must be set before `SDL_Init`. |
-| `NFS_TRACE_API` | unset | Log every intercepted Win32/DirectX call. Pair with `SDL_LOGGING=app=verbose` and filter logcat to `SDL/APP`. |
-| `NFS_SCREENSHOT` | unset | Path to write a `.bmp` of the framebuffer to, every `NFS_SCREENSHOT_MS` (default 2000). |
-| `NFS_TOUCH_STEER_LEFT` etc. | unset | The keys the touch overlay sends for steering and the pedals, so that endpoint can report them as axes. Set from the touch mapping. |
-| `NFS_GAMEPAD1_SOUTH` etc. | built-in defaults | What a button of Gamepad 1 or 2 sends: an SDL key name (`Space`, `Return`, `Up`), `axis:steer_left`, `axis:steer_right`, `axis:accelerate` or `axis:brake`, or empty for nothing. Buttons are `SOUTH`, `EAST`, `WEST`, `NORTH`, `LEFT_SHOULDER`, `RIGHT_SHOULDER`, `LEFT_STICK`, `RIGHT_STICK`, `BACK`, `START` and `DPAD_UP` / `DOWN` / `LEFT` / `RIGHT`. Set from Controls → Gamepad → Buttons. |
+| `NFS_GAMMA`, `NFS_BRIGHTNESS`, `NFS_CONTRAST` | `1.0` | Applied to the finished frame in the final blit, so menus and movies are covered as well as a race. |
+| `NFS_ORIENTATION` | unset | `auto` allows both landscape directions; anything else pins one. Must be set before `SDL_Init`. |
+| `NFS_CAR_DETAIL_FULL` | on | With Car Detail at High, every car keeps its detailed model and the player's texture size out to the draw distance, in every view, and the limit on how many are drawn at once is lifted. `0` restores the original. |
+| `NFS_WIDESCREEN` | on | `0` takes the 1280x720 mode back out of the Screen Size list. |
+| `NFS_TOUCH_STEER_LEFT` etc. | unset | Keys the touch overlay sends for steering and the pedals, so that endpoint can report them as axes. |
+| `NFS_GAMEPAD1_SOUTH` etc. | built-in defaults | What a pad button sends, as `NFS_GAMEPAD<n>_<BUTTON>`: an SDL key name (`Space`, `Return`), `axis:steer_left`, `axis:steer_right`, `axis:accelerate`, `axis:brake`, or empty for nothing. |
 
 ## Regenerating the recompilation
 
@@ -174,27 +181,6 @@ python3 disassemble_nfs3hp.py
 It reads `nfs3hp/nfs3.exe` and the three DLLs and rewrites
 `src/nfs3hp/disassembly`.
 
-## Known issues
-
-- **Mosaic artefacts in the headlight-lit area on Mali GPUs.** Blocky patches
-  appear where the projected headlight texture falls on the road, only while
-  moving. Not reproducible on Adreno with the same build, with or without
-  mipmapping, so it looks like a driver difference rather than a bug in the
-  Glide layer. Unresolved.
-
-## How it works
-
-1. **Python disassembler** (`disasm/`) — Capstone-based, turns the original
-   `.exe` and `.dll` into C++ that reproduces the program as operations on a
-   virtual CPU.
-2. **Virtual x86 CPU** (`include/cpu.h`, `include/fpu.h`, `include/mmx.h`) —
-   registers, flags, a full x87 FPU with optional 80-bit precision, MMX.
-3. **Win32 layer** (`src/lib/winapi/`) — native reimplementations of the API
-   modules the game uses, including Glide 2x.
-4. **SDL3 + OpenGL backend** (`src/lib/sdl-backend/`, `src/lib/gliderenderer.cpp`)
-   — windowing, audio, input, files, timers, and the translation of 3Dfx draw
-   calls into OpenGL ES.
-
 ## Credits
 
 - [motor-dev/nfs-recompiled](https://github.com/motor-dev/nfs-recompiled) — the
@@ -204,4 +190,5 @@ It reads `nfs3hp/nfs3.exe` and the three DLLs and rewrites
   MIT licence, vendored as `third_party/sse2neon.h`.
 
 Need for Speed III: Hot Pursuit is the property of Electronic Arts. This
-repository contains no game content -- no tracks, cars, audio or video. Those you bring from your own disc.
+repository contains no game content — no tracks, cars, audio or video. Those you
+bring from your own disc.
