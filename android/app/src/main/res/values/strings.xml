@@ -32,10 +32,10 @@
     <string name="screen_adjustment">Screen adjustment</string>
     <string name="brightness_label">Brightness</string>
     <string name="contrast_label">Contrast</string>
-    <string name="adjust_hint">The samples show the result. Takes effect the next time the game starts.</string>
+    <string name="adjust_hint">The sample shows the result: swipe it to see day and night. Takes effect the next time the game starts.</string>
     <string name="adjust_reset">Reset</string>
     <string name="sample_dark">Night</string>
-    <string name="sample_bright">Daylight</string>
+    <string name="sample_bright">Day</string>
     <string name="back_to_launcher">Back</string>
 
     <string name="switch_data">Make active</string>

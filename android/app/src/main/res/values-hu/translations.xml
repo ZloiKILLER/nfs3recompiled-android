@@ -76,7 +76,6 @@
 
  <string name="touch_preview_description">A digitális vezérlés interaktív előnézete</string>
  <string name="touch_preview_hint">Próbáld ki a vezérlést</string>
- <string name="touch_digital_note">Érintsd meg a ☰ gombot a menü- és versenyelrendezés váltásához</string>
  <string name="touch_dim_label">Gombok elrejtése</string>
  <string name="touch_edge_label">Távolság a szélektől</string>
  <string name="touch_raise_label">Vezérlők feljebb</string>
@@ -116,7 +115,6 @@
  <string name="touch_keys_hint">A billentyű, amelyet az egyes képernyős gombok küldenek. Egyeznie kell a játékban beállított billentyűvel.</string>
 
  <string name="pref_phone_vibration">Telefon rezgése (játékeffektek; indítsd újra a játékot)</string>
- <string name="pref_separate_layouts">Külön elrendezés menühöz és versenyhez</string>
  <string name="pref_show_gears">Váltógombok − / + megjelenítése</string>
  <string name="pref_hide_full">Teljes elrejtés (különben halvány körvonal)</string>
  <string name="auto_hide_delay">Késleltetés: %1$d mp</string>
@@ -124,7 +122,6 @@
  <string name="editor_touch_zone">Érintési zóna: %1$d%%</string>
  <string name="editor_mode_race">Verseny</string>
  <string name="editor_mode_menu">Menü</string>
- <string name="editor_mode_shared">Közös</string>
  <string name="editor_reset_title">Visszaállítod ezt az elrendezést?</string>
  <string name="editor_reset_message">Az elrendezés alapértelmezett pozícióinak, gombméreteinek és érintési zónáinak visszaállítása.</string>
  <string name="edit_touch_layout">Pozíciók és érintési zónák</string>
@@ -144,10 +141,7 @@
  <string name="importer_open_zip_failed">A kiválasztott ZIP nem nyitható meg</string>
  <string name="importer_zip_missing_files">A ZIP-ből hiányoznak a várt fedata/gamedata mappák</string>
 
- <string name="faq_layout_modes"><b>Menü vagy verseny?</b>\nKülön elrendezéseknél egyetlen ☰ gomb vált közöttük: a menüelrendezés négyirányú keresztet ad ✓ és ← gombokkal, a versenyelrendezés a bal / jobb gombokat és a pedálokat. Magától soha nem vált. Egyetlen közös elrendezésnél minden gomb látszik: egy négyirányú kereszt kormányoz és navigál a menükben, a ✓ / ← pedig működik a menükben.</string>
- <string name="faq_mouse"><b>Hogyan működik az egér?</b>\nHúzd az ujjad a képernyő üres részén a kurzor mozgatásához. Ha húzás után emeled fel az ujjad, nincs kattintás. A rövid, mozdulatlan koppintás a kurzor helyén kattint. Tartsd az ujjad mozdulatlanul: a gomb lenyomva marad és húzhatsz; az ujjad felemelése elengedi. A többujjas mozdulatok nem kattintanak.</string>
  <string name="faq_size"><b>Mit változtat a méret?</b>\nAz általános méret az alapértelmezett elemeket skálázza. A «Pozíciók és érintési zónák» részben húzd el az elemet, és a «Gomb» értékkel a megjelenését, az «Érintési zóna» értékkel csak a reagálási területét módosítod. A szaggatott vonal az érintési zónát mutatja; a százalék az alapértelmezett elemhez viszonyul. A változások maguktól mentődnek. A szerkesztő rácsot mutat; a „Rácshoz igazítás” bekapcsolásával a húzott elem a rácsra kerül.</string>
- <string name="faq_shared_layouts"><b>Egy elrendezés vagy kettő?</b>\nHa a «Külön elrendezés menühöz és versenyhez» ki van kapcsolva, a menükben és a versenyeken ugyanazok az elemek, pozíciók és méretek érvényesek. Kapcsold be, hogy külön állíthasd be mindkét módot. A váltás mindkét mentett elrendezést megőrzi. A visszaállítás csak a kiválasztottat érinti. A «Kormányzás balra / jobbra» az alapértelmezett és a kézzel mentett pozíciókat is tükrözi.</string>
  <string name="faq_edges"><b>Szélek és magasság</b>\nA szélektől mért távolság befelé tolja az alapértelmezett elemeket. A «Vezérlők feljebb» megemeli az alsó alapértelmezett elemeket. A rendszerkivágásokat figyelembe veszi. A kézzel elhelyezett elemek megtartják mentett helyüket.</string>
  <string name="faq_hiding"><b>Átlátszatlanság és automatikus elrejtés</b>\nAz átlátszatlanság a szokásos láthatóságot állítja be. Az elrejtés akkor indul, amikor minden ujjat felemeltél, 1–30 másodperc késleltetéssel. Válassz halvány körvonalat vagy teljes láthatatlanságot. A rejtett gombok már az első érintésre reagálnak, és újra láthatóvá válnak. Egy elem nyomva tartása megakadályozza az elrejtést. Egy gombnyomás a kontrolleren azonnal elrejti a gombokat; a következő érintés visszahozza őket.</string>
  <string name="faq_gears"><b>Kézi váltó</b>\nA «Váltógombok − / + megjelenítése» két opcionális gombot ad a versenyelrendezéshez. Kapcsold be a játékban a kézi váltót. A billentyűiket a Vezérlés → Érintés → Billentyűk alatt állíthatod be; egyezniük kell a játék beállításaival.</string>

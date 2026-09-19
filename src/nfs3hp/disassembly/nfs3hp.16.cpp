@@ -3,6 +3,12 @@
 
 namespace nfs3hp
 {
+// Port (tools/apply_hud_editor.py): defined in nfs3hp_main.cpp.
+void hudLayoutDesigned(win32::WinApplication* app, x86::reg32 rect, x86::reg32 element);
+void hudLayoutsDrawn(win32::WinApplication* app, x86::CPU& cpu, bool drawn);
+x86::sreg32 hudDragSlack(win32::WinApplication* app, x86::reg32 object, x86::reg32 side);
+void hudEditorDraw(win32::WinApplication* app, x86::reg32 object, bool begin);
+void hudEditorFrame(win32::WinApplication* app, x86::reg32 object, bool drawn);
 
 /* align: skip 0x8d 0x80 0x00 0x00 0x00 0x00 0x8d 0x92 0x00 0x00 0x00 0x00 0x8b 0xc0 */
 void Application::sub_458b80(WinApplication* app, x86::CPU& cpu)
@@ -5551,6 +5557,7 @@ L_0x00459eb8:
         cpu.edi += 4;
         cpu.esi += 4;
     }
+    hudLayoutDesigned(app, cpu.edi - 16, cpu.ebx); /* port: the layout as laid out, not as drawn */
     // 00459ece  8b45f8                 -mov eax, dword ptr [ebp - 8]
     cpu.eax = app->getMemory<x86::reg32>(cpu.ebp + x86::reg32(-8) /* -0x8 */);
     // 00459ed1  89da                   -mov edx, ebx
@@ -5762,7 +5769,9 @@ L_0x00459f63:
     (cpu.eax) += x86::reg32(x86::sreg32(64 /*0x40*/));
     // 00459f7a  e8f1f6ffff             -call 0x459670
     cpu.esp -= 4;
+    hudLayoutsDrawn(app, cpu, true); /* port: measured against what is drawn */
     sub_459670(app, cpu);
+    hudLayoutsDrawn(app, cpu, false);
     if (cpu.terminate) return;
     // 00459f7f  85c0                   +test eax, eax
     cpu.clear_co();
@@ -6027,6 +6036,7 @@ L_0x0045a017:
         cpu.edi += 4;
         cpu.esi += 4;
     }
+    hudLayoutDesigned(app, cpu.edi - 16, cpu.edx); /* port: the layout as laid out, not as drawn */
     // 0045a032  e889b30200             -call 0x4853c0
     cpu.esp -= 4;
     sub_4853c0(app, cpu);
@@ -7376,6 +7386,7 @@ L_0x0045a508:
     cpu.eax = cpu.edi;
     // 0045a581  29d0                   -sub eax, edx
     (cpu.eax) -= x86::reg32(x86::sreg32(cpu.edx));
+    cpu.eax += x86::reg32(hudDragSlack(app, app->getMemory<x86::reg32>(cpu.ebp + x86::reg32(-12)), 1)); /* port: what is drawn stays on the screen */
     // 0045a583  8b55f4                 -mov edx, dword ptr [ebp - 0xc]
     cpu.edx = app->getMemory<x86::reg32>(cpu.ebp + x86::reg32(-12) /* -0xc */);
     // 0045a586  8b5204                 -mov edx, dword ptr [edx + 4]
@@ -7406,6 +7417,7 @@ L_0x0045a508:
     cpu.edx = app->getMemory<x86::reg32>(cpu.ebp + x86::reg32(-12) /* -0xc */);
     // 0045a59c  29d8                   -sub eax, ebx
     (cpu.eax) -= x86::reg32(x86::sreg32(cpu.ebx));
+    cpu.eax += x86::reg32(hudDragSlack(app, cpu.edx, 1)); /* port: what is drawn stays on the screen */
     // 0045a59e  66894206               -mov word ptr [edx + 6], ax
     app->getMemory<x86::reg16>(cpu.edx + x86::reg32(6) /* 0x6 */) = cpu.ax;
 L_0x0045a5a2:
@@ -7414,7 +7426,7 @@ L_0x0045a5a2:
     // 0045a5a5  6683780600             +cmp word ptr [eax + 6], 0
     {
         x86::reg16 tmp1 = app->getMemory<x86::reg16>(cpu.eax + x86::reg32(6) /* 0x6 */);
-        x86::reg16 tmp2 = x86::reg16(x86::sreg16(0 /*0x0*/));
+        x86::reg16 tmp2 = x86::reg16(x86::sreg16(-hudDragSlack(app, cpu.eax, 0))); /* port: was 0 */
         x86::reg16 result = tmp1 - tmp2;
         cpu.flags.cf = tmp1 < tmp2;
         cpu.flags.of = 1 & (tmp1 >> 15);
@@ -7428,7 +7440,7 @@ L_0x0045a5a2:
         goto L_0x0045a5b2;
     }
     // 0045a5ac  66c740060000           -mov word ptr [eax + 6], 0
-    app->getMemory<x86::reg16>(cpu.eax + x86::reg32(6) /* 0x6 */) = 0 /*0x0*/;
+    app->getMemory<x86::reg16>(cpu.eax + x86::reg32(6) /* 0x6 */) = x86::reg16(x86::sreg16(-hudDragSlack(app, cpu.eax, 0))); /* port: was 0 */
 L_0x0045a5b2:
     // 0045a5b2  8b45f4                 -mov eax, dword ptr [ebp - 0xc]
     cpu.eax = app->getMemory<x86::reg32>(cpu.ebp + x86::reg32(-12) /* -0xc */);
@@ -7440,6 +7452,7 @@ L_0x0045a5b2:
     cpu.eax = app->getMemory<x86::reg32>(cpu.eax + x86::reg32(6) /* 0x6 */);
     // 0045a5c1  29ca                   -sub edx, ecx
     (cpu.edx) -= x86::reg32(x86::sreg32(cpu.ecx));
+    cpu.edx += x86::reg32(hudDragSlack(app, app->getMemory<x86::reg32>(cpu.ebp + x86::reg32(-12)), 3)); /* port: what is drawn stays on the screen */
     // 0045a5c3  c1f810                 -sar eax, 0x10
     cpu.eax = x86::reg32(x86::sreg32(cpu.eax) >> (16 /*0x10*/ % 32));
     // 0045a5c6  39d0                   +cmp eax, edx
@@ -7466,6 +7479,7 @@ L_0x0045a5b2:
     cpu.edx = app->getMemory<x86::reg32>(cpu.ebp + x86::reg32(-12) /* -0xc */);
     // 0045a5d6  29f0                   -sub eax, esi
     (cpu.eax) -= x86::reg32(x86::sreg32(cpu.esi));
+    cpu.eax += x86::reg32(hudDragSlack(app, cpu.edx, 3)); /* port: what is drawn stays on the screen */
     // 0045a5d8  66894208               -mov word ptr [edx + 8], ax
     app->getMemory<x86::reg16>(cpu.edx + x86::reg32(8) /* 0x8 */) = cpu.ax;
 L_0x0045a5dc:
@@ -7474,7 +7488,7 @@ L_0x0045a5dc:
     // 0045a5df  6683780800             +cmp word ptr [eax + 8], 0
     {
         x86::reg16 tmp1 = app->getMemory<x86::reg16>(cpu.eax + x86::reg32(8) /* 0x8 */);
-        x86::reg16 tmp2 = x86::reg16(x86::sreg16(0 /*0x0*/));
+        x86::reg16 tmp2 = x86::reg16(x86::sreg16(-hudDragSlack(app, cpu.eax, 2))); /* port: was 0 */
         x86::reg16 result = tmp1 - tmp2;
         cpu.flags.cf = tmp1 < tmp2;
         cpu.flags.of = 1 & (tmp1 >> 15);
@@ -7488,7 +7502,7 @@ L_0x0045a5dc:
         goto L_0x0045a5ec;
     }
     // 0045a5e6  66c740080000           -mov word ptr [eax + 8], 0
-    app->getMemory<x86::reg16>(cpu.eax + x86::reg32(8) /* 0x8 */) = 0 /*0x0*/;
+    app->getMemory<x86::reg16>(cpu.eax + x86::reg32(8) /* 0x8 */) = x86::reg16(x86::sreg16(-hudDragSlack(app, cpu.eax, 2))); /* port: was 0 */
 L_0x0045a5ec:
     // 0045a5ec  8b45f4                 -mov eax, dword ptr [ebp - 0xc]
     cpu.eax = app->getMemory<x86::reg32>(cpu.ebp + x86::reg32(-12) /* -0xc */);
@@ -12838,7 +12852,9 @@ L_0x0045bcc1:
     cpu.eax = cpu.ecx;
     // 0045bcc3  e868eeffff             -call 0x45ab30
     cpu.esp -= 4;
+    hudEditorDraw(app, cpu.ecx, true); /* port: measure what the element draws */
     sub_45ab30(app, cpu);
+    hudEditorDraw(app, cpu.ecx, false);
     if (cpu.terminate) return;
     // 0045bcc8  8b413c                 -mov eax, dword ptr [ecx + 0x3c]
     cpu.eax = app->getMemory<x86::reg32>(cpu.ecx + x86::reg32(60) /* 0x3c */);
@@ -12964,7 +12980,9 @@ L_0x0045bd0a:
     cpu.eax = cpu.ebx;
     // 0045bd0c  e82fd7ffff             -call 0x459440
     cpu.esp -= 4;
+    hudEditorFrame(app, cpu.eax, true); /* port: the frame about what is drawn */
     sub_459440(app, cpu);
+    hudEditorFrame(app, cpu.ebx, false);
     if (cpu.terminate) return;
 L_0x0045bd11:
     // 0045bd11  31c0                   -xor eax, eax

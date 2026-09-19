@@ -4,7 +4,6 @@
  <string name="launcher_subtitle" translatable="false">HOT PURSUIT</string>
  <string name="touch_preview_description">Interactive preview of digital driving controls</string>
  <string name="touch_preview_hint">Try the controls</string>
- <string name="touch_digital_note">Tap ☰ to switch menu and race layouts</string>
  <string name="touch_dim_label">Auto-hide buttons</string>
  <string name="touch_edge_label">Distance from edges</string>
  <string name="touch_raise_label">Raise driving controls</string>
@@ -13,7 +12,6 @@
  <string name="control_gear_down" translatable="false">GEAR −</string>
  <string name="faq_title">Help</string>
  <string name="control_steering" translatable="false">STEER</string>
- <string name="control_navigation" translatable="false">NAVIGATE</string>
  <string name="control_gas" translatable="false">GAS</string>
  <string name="control_brake" translatable="false">BRAKE</string>
  <string name="control_handbrake" translatable="false">HANDBRAKE</string>
@@ -21,11 +19,8 @@
  <string name="control_camera" translatable="false">CAMERA</string>
  <string name="control_horn" translatable="false">HORN</string>
  <string name="control_spikes" translatable="false">SPIKES</string>
- <string name="control_confirm" translatable="false">OK</string>
  <string name="control_back" translatable="false">BACK</string>
  <string name="control_pause" translatable="false">PAUSE</string>
- <string name="control_menu" translatable="false">MENU</string>
- <string name="control_race" translatable="false">DRIVE</string>
  <string name="control_lights" translatable="false">LIGHTS</string>
  <string name="control_recover" translatable="false">RESET</string>
  <string name="control_keyboard" translatable="false">KEYBOARD</string>

@@ -76,7 +76,6 @@
 
  <string name="touch_preview_description">Interaktiv förhandsvisning av de digitala körkontrollerna</string>
  <string name="touch_preview_hint">Prova kontrollerna</string>
- <string name="touch_digital_note">Tryck ☰ för att växla mellan meny- och lopplayout</string>
  <string name="touch_dim_label">Dölj knapparna</string>
  <string name="touch_edge_label">Avstånd från kanterna</string>
  <string name="touch_raise_label">Höj körkontrollerna</string>
@@ -116,7 +115,6 @@
  <string name="touch_keys_hint">Tangenten som varje kontroll på skärmen skickar. Den måste stämma med tangenten som är inställd i spelet.</string>
 
  <string name="pref_phone_vibration">Telefonens vibration (speleffekter; starta om spelet)</string>
- <string name="pref_separate_layouts">Separata layouter för meny och lopp</string>
  <string name="pref_show_gears">Visa växelknappar − / +</string>
  <string name="pref_hide_full">Dölj helt (annars svag siluett)</string>
  <string name="auto_hide_delay">Fördröjning: %1$d s</string>
@@ -124,7 +122,6 @@
  <string name="editor_touch_zone">Pekzon: %1$d%%</string>
  <string name="editor_mode_race">Lopp</string>
  <string name="editor_mode_menu">Meny</string>
- <string name="editor_mode_shared">Gemensam</string>
  <string name="editor_reset_title">Återställa den här layouten?</string>
  <string name="editor_reset_message">Återställ layoutens standardpositioner, knappstorlekar och pekzoner.</string>
  <string name="edit_touch_layout">Redigera positioner och pekzoner</string>
@@ -144,10 +141,7 @@
  <string name="importer_open_zip_failed">Det gick inte att öppna den valda ZIP-filen</string>
  <string name="importer_zip_missing_files">ZIP-filen saknar de förväntade mapparna fedata/gamedata</string>
 
- <string name="faq_layout_modes"><b>Meny eller lopp?</b>\nMed separata layouter växlar en enda ☰-knapp mellan dem: menylayouten ger ett fyrvägskors med ✓ och ←, lopplayouten knapparna vänster / höger och pedalerna. Den växlar aldrig av sig själv. Med en gemensam layout syns alla knappar: ett fyrvägskors styr och navigerar i menyerna, och ✓ / ← fungerar i menyerna.</string>
- <string name="faq_mouse"><b>Hur fungerar musen?</b>\nDra på en tom del av skärmen för att flytta pekaren. Lyfter du fingret efter ett drag blir det ingen klickning. En kort, stillastående tryckning klickar på pekarens position. Håll fingret stilla: knappen förblir nedtryckt och du kan dra; lyft fingret för att släppa. Gester med flera fingrar klickar inte.</string>
  <string name="faq_size"><b>Vad ändrar storleken?</b>\nDen globala storleken skalar standardknapparna. I «Redigera positioner och pekzoner» drar du en knapp och ändrar «Knapp» för att ändra utseendet, eller «Pekzon» för att bara ändra var den svarar. Streckade linjer visar pekzonerna; procenten är relativ till standardknappen. Ändringar sparas automatiskt. Redigeraren visar ett rutnät; med ”Fäst mot rutnät” hamnar en dragen kontroll på det.</string>
- <string name="faq_shared_layouts"><b>En layout eller två?</b>\nMed «Separata layouter för meny och lopp» avstängt gäller samma knappar, positioner och storlekar i menyer och lopp. Slå på det för att anpassa varje läge för sig. Att växla behåller båda sparade layouterna. Återställning gäller bara den valda. «Styrning till vänster / höger» speglar både standardpositioner och manuellt sparade positioner.</string>
  <string name="faq_edges"><b>Kanter och höjd</b>\nAvståndet från kanterna flyttar standardknapparna inåt. «Höj körkontrollerna» lyfter de nedre standardknapparna. Systemets urtag respekteras. Manuellt placerade knappar behåller sina sparade positioner.</string>
  <string name="faq_hiding"><b>Opacitet och automatisk döljning</b>\nOpaciteten anger den vanliga synligheten. Döljningen börjar när alla fingrar lyfts, efter 1–30 sekunder. Välj en svag siluett eller full osynlighet. Dolda knappar svarar redan vid första beröringen och blir synliga igen. Att hålla en knapp nedtryckt hindrar döljningen. Ett tryck på handkontrollen döljer knapparna direkt; nästa beröring tar tillbaka dem.</string>
  <string name="faq_gears"><b>Manuell växling</b>\n«Visa växelknappar − / +» lägger till två valfria knappar i lopplayouten. Slå på manuell växellåda i spelet. Deras tangenter ställs in under Kontroller → Pek → Tangenter och måste stämma med spelets inställningar.</string>

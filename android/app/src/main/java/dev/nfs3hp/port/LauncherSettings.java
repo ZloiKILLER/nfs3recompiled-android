@@ -48,7 +48,7 @@ final class LauncherSettings {
         GamePreferences.TOUCH_ENABLED, GamePreferences.TOUCH_MODE, GamePreferences.TOUCH_LAYOUT,
         GamePreferences.TOUCH_OPACITY, GamePreferences.TOUCH_SIZE,
         GamePreferences.TOUCH_AUTO_HIDE, GamePreferences.TOUCH_EDGE,
-        GamePreferences.TOUCH_RAISE, GamePreferences.TOUCH_SEPARATE,
+        GamePreferences.TOUCH_RAISE,
         GamePreferences.TOUCH_HIDE_SECONDS, GamePreferences.TOUCH_HIDE_FULL,
         GamePreferences.TOUCH_VIBRATION,
         GamePreferences.SAVES_INCLUDE_SETTINGS,
@@ -168,12 +168,15 @@ final class LauncherSettings {
         }
     }
 
-    /** Control geometry is bounded by construction -- positions are fractions of
-     *  the play area and sizes are multipliers -- so a file claiming otherwise is
-     *  corrected rather than allowed to put a control off screen. */
+    /** Control geometry is bounded by construction -- positions are distances
+     *  from the edges in layout units (fractions of the play area in older
+     *  files) and sizes are multipliers -- so a file claiming otherwise is
+     *  corrected rather than allowed to put a control off screen; the overlay
+     *  keeps a control inside the area whatever its distance says. */
     private static float clamp(String key, float value) {
         if (Float.isNaN(value)) return 0;
         if (key.endsWith("_x") || key.endsWith("_y")) return Math.max(0f, Math.min(1f, value));
+        if (key.endsWith("_dx") || key.endsWith("_dy")) return Math.max(0f, Math.min(4096f, value));
         if (key.endsWith("_size") || key.endsWith("_hit")) return Math.max(.1f, Math.min(10f, value));
         return value;
     }

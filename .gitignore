@@ -3,6 +3,7 @@ build
 **/*.pyc
 __pycache__/
 build-win/
+build-win-opt/
 build-probe/
 *.log
 *.err

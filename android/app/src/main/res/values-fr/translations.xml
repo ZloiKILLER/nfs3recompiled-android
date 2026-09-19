@@ -78,7 +78,6 @@
 
  <string name="touch_preview_description">Aperçu interactif des commandes de conduite numériques</string>
  <string name="touch_preview_hint">Essayez les commandes</string>
- <string name="touch_digital_note">Appuyez sur ☰ pour basculer entre les dispositions menu et course</string>
  <string name="touch_dim_label">Masquer les boutons automatiquement</string>
  <string name="touch_edge_label">Distance aux bords</string>
  <string name="touch_raise_label">Remonter les commandes de conduite</string>
@@ -118,7 +117,6 @@
  <string name="touch_keys_hint">La touche du clavier envoyée par chaque commande à l\'écran. Elle doit correspondre à la touche réglée dans le jeu.</string>
 
  <string name="pref_phone_vibration">Vibration du téléphone (effets du jeu ; redémarrez le jeu)</string>
- <string name="pref_separate_layouts">Dispositions distinctes pour les menus et la course</string>
  <string name="pref_show_gears">Afficher les boutons de vitesse − / +</string>
  <string name="pref_hide_full">Masquer complètement (sinon silhouette discrète)</string>
  <string name="auto_hide_delay">Délai de masquage : %1$d s</string>
@@ -126,7 +124,6 @@
  <string name="editor_touch_zone">Zone tactile : %1$d%%</string>
  <string name="editor_mode_race">Course</string>
  <string name="editor_mode_menu">Menu</string>
- <string name="editor_mode_shared">Commune</string>
  <string name="editor_reset_title">Réinitialiser cette disposition ?</string>
  <string name="editor_reset_message">Restaurer les positions, tailles de boutons et zones tactiles par défaut de cette disposition.</string>
  <string name="edit_touch_layout">Modifier les positions et zones tactiles</string>
@@ -146,10 +143,7 @@
  <string name="importer_open_zip_failed">Impossible d\'ouvrir le ZIP sélectionné</string>
  <string name="importer_zip_missing_files">Le ZIP ne contient pas les dossiers fedata/gamedata attendus</string>
 
- <string name="faq_layout_modes"><b>Menu ou course ?</b>\nAvec les dispositions distinctes activées, un seul bouton ☰ bascule de l\'une à l\'autre : la disposition menu donne une croix directionnelle avec ✓ et ←, la disposition course donne les boutons gauche / droite et les pédales. Elle ne bascule jamais toute seule. Avec une disposition commune, tous les boutons restent visibles : une croix directionnelle à quatre directions dirige et parcourt les menus, et ✓ / ← fonctionnent dans les menus.</string>
- <string name="faq_mouse"><b>Comment fonctionne la souris ?</b>\nFaites glisser le doigt sur une zone vide de l\'écran pour déplacer le curseur. Levez le doigt après un glissement : aucun clic. Une pression brève et immobile clique à la position du curseur. Maintenez le doigt immobile : le bouton s\'enfonce et reste enfoncé, vous pouvez alors glisser ; levez le doigt pour le relâcher. Les gestes à plusieurs doigts ne cliquent pas.</string>
  <string name="faq_size"><b>Que change la taille ?</b>\nLa taille globale met à l\'échelle les commandes par défaut. Dans « Modifier les positions et zones tactiles », faites glisser une commande et ajustez « Bouton » pour changer son apparence, ou « Zone tactile » pour changer seulement l\'endroit où elle répond. Les pointillés montrent les zones tactiles ; les pourcentages sont relatifs à la commande par défaut. Les modifications sont enregistrées automatiquement. L\'éditeur affiche une grille ; avec « Aligner sur la grille », un élément déplacé s\'y cale.</string>
- <string name="faq_shared_layouts"><b>Une disposition ou deux ?</b>\nAvec « Dispositions distinctes pour les menus et la course » désactivé, les mêmes commandes, positions et tailles servent dans les menus et en course. Activez l\'option pour personnaliser chaque mode séparément. La bascule conserve les deux jeux enregistrés. Réinitialiser ne restaure que le jeu sélectionné. « Direction à gauche / droite » reflète aussi bien les positions par défaut que celles enregistrées à la main.</string>
  <string name="faq_edges"><b>Bords et position verticale</b>\nLa distance aux bords rapproche les commandes par défaut du centre. « Remonter les commandes de conduite » relève les commandes basses par défaut. Les découpes système sont respectées. Les commandes placées à la main gardent leurs positions enregistrées.</string>
  <string name="faq_hiding"><b>Opacité et masquage automatique</b>\nL\'opacité fixe la visibilité normale. Le masquage automatique démarre une fois tous les doigts levés, après un délai de 1 à 30 secondes. Choisissez une silhouette discrète ou l\'invisibilité complète. Les boutons masqués répondent dès le premier contact et redeviennent visibles. Maintenir une commande empêche le masquage. Un appui sur la manette masque aussitôt les commandes ; le toucher suivant les fait revenir.</string>
  <string name="faq_gears"><b>Boîte manuelle</b>\n« Afficher les boutons de vitesse − / + » ajoute deux boutons facultatifs à la disposition course. Activez la boîte manuelle dans le jeu. Leurs touches se règlent dans Commandes → Tactile → Touches et doivent correspondre aux réglages du jeu.</string>

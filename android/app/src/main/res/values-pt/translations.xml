@@ -78,7 +78,6 @@
 
  <string name="touch_preview_description">Pré-visualização interativa dos comandos digitais de condução</string>
  <string name="touch_preview_hint">Experimenta os comandos</string>
- <string name="touch_digital_note">Toca em ☰ para alternar entre a disposição de menu e a de corrida</string>
  <string name="touch_dim_label">Ocultar botões automaticamente</string>
  <string name="touch_edge_label">Distância às margens</string>
  <string name="touch_raise_label">Subir os comandos de condução</string>
@@ -118,7 +117,6 @@
  <string name="touch_keys_hint">A tecla que cada controlo no ecrã envia. Tem de corresponder à tecla definida no jogo.</string>
 
  <string name="pref_phone_vibration">Vibração do telemóvel (efeitos do jogo; reinicia o jogo)</string>
- <string name="pref_separate_layouts">Disposições separadas para menu e corrida</string>
  <string name="pref_show_gears">Mostrar os botões de mudança − / +</string>
  <string name="pref_hide_full">Ocultar por completo (caso contrário, silhueta ténue)</string>
  <string name="auto_hide_delay">Atraso da ocultação: %1$d s</string>
@@ -126,7 +124,6 @@
  <string name="editor_touch_zone">Zona tátil: %1$d%%</string>
  <string name="editor_mode_race">Corrida</string>
  <string name="editor_mode_menu">Menu</string>
- <string name="editor_mode_shared">Comum</string>
  <string name="editor_reset_title">Repor esta disposição?</string>
  <string name="editor_reset_message">Restaurar as posições, os tamanhos de botão e as zonas táteis predefinidos desta disposição.</string>
  <string name="edit_touch_layout">Editar posições e zonas táteis</string>
@@ -146,10 +143,7 @@
  <string name="importer_open_zip_failed">Não foi possível abrir o ZIP selecionado</string>
  <string name="importer_zip_missing_files">Faltam ao ZIP as pastas fedata/gamedata esperadas</string>
 
- <string name="faq_layout_modes"><b>Menu ou corrida?</b>\nCom as disposições separadas ativadas, um único botão ☰ alterna entre elas: a disposição de menu dá um direcional de quatro sentidos com ✓ e ←, a de corrida dá os botões esquerda / direita e os pedais. Nunca muda sozinha. Com uma disposição partilhada todos os botões ficam visíveis: um direcional de quatro sentidos vira e navega pelos menus, e ✓ / ← funcionam nos menus.</string>
- <string name="faq_mouse"><b>Como funciona o rato?</b>\nDesliza numa zona vazia do ecrã para mover o cursor. Se levantares o dedo depois de deslizar, não há clique. Um toque breve e parado clica na posição do cursor. Mantém o dedo parado: o botão fica premido e podes arrastar; levanta o dedo para o soltar. Gestos com vários dedos não clicam.</string>
  <string name="faq_size"><b>O que muda o tamanho?</b>\nO tamanho global escala os comandos predefinidos. Em «Editar posições e zonas táteis», arrasta um comando e ajusta «Botão» para mudar o aspeto, ou «Zona tátil» para mudar apenas onde responde. Os tracejados mostram as zonas táteis; as percentagens são relativas ao comando predefinido. As alterações são guardadas automaticamente. O editor mostra uma grelha; com «Ajustar à grelha», o controlo arrastado encaixa nela.</string>
- <string name="faq_shared_layouts"><b>Uma disposição ou duas?</b>\nCom «Disposições separadas para menu e corrida» desativado, são usados os mesmos comandos, posições e tamanhos nos menus e nas corridas. Ativa para personalizar cada modo em separado. Alternar esta opção mantém os dois conjuntos guardados. Repor a disposição restaura apenas o conjunto selecionado. «Direção à esquerda / direita» espelha tanto as posições predefinidas como as guardadas à mão.</string>
  <string name="faq_edges"><b>Margens e posição vertical</b>\nA distância às margens desloca os comandos predefinidos para dentro. «Subir os comandos de condução» eleva os comandos inferiores predefinidos. Os recortes do sistema são respeitados. Os comandos colocados à mão mantêm as posições guardadas.</string>
  <string name="faq_hiding"><b>Opacidade e ocultação automática</b>\nA opacidade define a visibilidade normal. A ocultação automática começa depois de levantares todos os dedos, após um atraso de 1 a 30 segundos. Escolhe uma silhueta ténue ou a invisibilidade total. Os botões ocultos respondem logo ao primeiro toque e voltam a ficar visíveis. Manter um comando premido impede a ocultação. Premir o comando esconde logo os controlos; o toque seguinte trá-los de volta.</string>
  <string name="faq_gears"><b>Mudanças manuais</b>\n«Mostrar os botões de mudança − / +» acrescenta dois botões opcionais à disposição de corrida. Ativa a caixa manual no jogo. As teclas que enviam definem-se em Comandos → Toque → Teclas e têm de corresponder às definições do jogo.</string>

@@ -78,7 +78,6 @@
 
  <string name="touch_preview_description">Interaktivní náhled digitálního ovládání</string>
  <string name="touch_preview_hint">Vyzkoušej ovládání</string>
- <string name="touch_digital_note">Stiskni ☰ pro přepnutí rozložení nabídky a závodu</string>
  <string name="touch_dim_label">Skrývat tlačítka</string>
  <string name="touch_edge_label">Odstup od okrajů</string>
  <string name="touch_raise_label">Zvednout jízdní tlačítka</string>
@@ -118,7 +117,6 @@
  <string name="touch_keys_hint">Klávesa, kterou posílá každé tlačítko na obrazovce. Musí odpovídat klávese nastavené ve hře.</string>
 
  <string name="pref_phone_vibration">Vibrace telefonu (herní efekty; restartuj hru)</string>
- <string name="pref_separate_layouts">Oddělená rozložení pro nabídku a závod</string>
  <string name="pref_show_gears">Zobrazit tlačítka převodů − / +</string>
  <string name="pref_hide_full">Skrýt úplně (jinak bledá silueta)</string>
  <string name="auto_hide_delay">Prodleva: %1$d s</string>
@@ -126,7 +124,6 @@
  <string name="editor_touch_zone">Dotyková zóna: %1$d%%</string>
  <string name="editor_mode_race">Závod</string>
  <string name="editor_mode_menu">Nabídka</string>
- <string name="editor_mode_shared">Společné</string>
  <string name="editor_reset_title">Obnovit toto rozložení?</string>
  <string name="editor_reset_message">Obnovit výchozí pozice, velikosti tlačítek a dotykové zóny tohoto rozložení.</string>
  <string name="edit_touch_layout">Upravit pozice a dotykové zóny</string>
@@ -146,10 +143,7 @@
  <string name="importer_open_zip_failed">Vybraný ZIP nelze otevřít</string>
  <string name="importer_zip_missing_files">V ZIPu chybí očekávané složky fedata/gamedata</string>
 
- <string name="faq_layout_modes"><b>Nabídka, nebo závod?</b>\nS oddělenými rozloženími mezi nimi přepíná jediné tlačítko ☰: rozložení nabídky dá čtyřsměrný kříž s ✓ a ←, závodní tlačítka vlevo / vpravo a pedály. Samo se nikdy nepřepne. Při jednom společném rozložení zůstávají viditelná všechna tlačítka: čtyřsměrný kříž zatáčí i slouží k pohybu v nabídkách a ✓ / ← fungují v nabídkách.</string>
- <string name="faq_mouse"><b>Jak funguje myš?</b>\nPosuň prstem po prázdné části obrazovky, abys pohnul kurzorem. Zvednutí prstu po posunu neklikne. Krátké nehybné klepnutí klikne na pozici kurzoru. Podrž prst bez pohybu: tlačítko zůstane stisknuté a můžeš táhnout; zvednutím prstu ho uvolníš. Gesta více prsty neklikají.</string>
  <string name="faq_size"><b>Co mění velikost?</b>\nCelková velikost škáluje výchozí prvky. V «Upravit pozice a dotykové zóny» táhni prvek a uprav «Tlačítko», abys změnil jeho vzhled, nebo «Dotyková zóna», abys změnil jen místo, kde reaguje. Čárkované obrysy ukazují dotykové zóny; procenta se počítají vůči výchozímu prvku. Změny se ukládají samy. Editor zobrazuje mřížku; se zapnutým „Přichytit k mřížce“ se přetažený prvek usadí na ni.</string>
- <string name="faq_shared_layouts"><b>Jedno rozložení, nebo dvě?</b>\nKdyž je «Oddělená rozložení pro nabídku a závod» vypnuté, v nabídkách i v závodě platí stejné prvky, pozice a velikosti. Zapni to, abys nastavil každý režim zvlášť. Přepnutí zachová obě uložená rozložení. Obnovení se týká jen vybraného. «Řízení vlevo / vpravo» zrcadlí výchozí i ručně uložené pozice.</string>
  <string name="faq_edges"><b>Okraje a výška</b>\nOdstup od okrajů posouvá výchozí prvky dovnitř. «Zvednout jízdní tlačítka» zvedne spodní výchozí prvky. Systémové výřezy se respektují. Ručně umístěné prvky si drží uložené pozice.</string>
  <string name="faq_hiding"><b>Krytí a automatické skrývání</b>\nKrytí určuje běžnou viditelnost. Skrývání začne po zvednutí všech prstů, po 1–30 sekundách. Vyber bledou siluetu, nebo úplnou neviditelnost. Skrytá tlačítka reagují už na první dotek a znovu se zobrazí. Podržení prvku skrývání zabrání. Stisk na gamepadu ovládání okamžitě skryje; další dotyk ho vrátí.</string>
  <string name="faq_gears"><b>Ruční řazení</b>\n«Zobrazit tlačítka převodů − / +» přidá do závodního rozložení dvě volitelná tlačítka. Zapni ve hře ruční převodovku. Jejich klávesy se nastavují v Ovládání → Dotyk → Klávesy a musí odpovídat nastavení hry.</string>

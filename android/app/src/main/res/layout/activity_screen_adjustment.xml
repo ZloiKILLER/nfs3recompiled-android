@@ -1,10 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Controls on the left, the two samples on the right, so the effect of a
-     slider is visible while it is being dragged.  Two samples rather than one
-     because gamma, brightness and contrast pull the ends of the range in
-     opposite directions: what rescues a night track can wash out a daylit one,
-     and only seeing both at once shows the trade.  The samples keep to the
-     right-hand edge, the space between them and the sliders in the middle. -->
+<!-- Controls on the left, a sample on the right, so the effect of a slider is
+     visible while it is being dragged.  Gamma, brightness and contrast pull
+     the ends of the range in opposite directions: what rescues a night track
+     can wash out a daylit one.  So the sample is a day and a night picture,
+     one at a time and big enough to judge; a swipe, or a dot, turns to the
+     other. -->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
@@ -131,39 +131,44 @@
         android:layout_height="match_parent"
         android:layout_marginStart="20dp"
         android:layout_weight="1"
+        android:gravity="center"
         android:orientation="vertical">
 
         <TextView
+            android:id="@+id/sample_caption"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:gravity="end"
-            android:text="@string/sample_dark"
-            android:textColor="@color/ui_muted"
-            android:textSize="12sp" />
-        <ImageView
-            android:id="@+id/sample_dark"
+            android:gravity="center"
+            android:textColor="@color/ui_text"
+            android:textSize="15sp" />
+        <FrameLayout
             android:layout_width="match_parent"
             android:layout_height="0dp"
-            android:layout_weight="1"
-            android:adjustViewBounds="true"
-            android:contentDescription="@string/sample_dark"
-            android:scaleType="fitEnd" />
-
-        <TextView
-            android:layout_width="match_parent"
+            android:layout_marginTop="6dp"
+            android:layout_weight="1">
+            <ImageView
+                android:id="@+id/sample_image"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:scaleType="fitCenter" />
+        </FrameLayout>
+        <LinearLayout
+            android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_marginTop="8dp"
-            android:gravity="end"
-            android:text="@string/sample_bright"
-            android:textColor="@color/ui_muted"
-            android:textSize="12sp" />
-        <ImageView
-            android:id="@+id/sample_bright"
-            android:layout_width="match_parent"
-            android:layout_height="0dp"
-            android:layout_weight="1"
-            android:adjustViewBounds="true"
-            android:contentDescription="@string/sample_bright"
-            android:scaleType="fitEnd" />
+            android:orientation="horizontal">
+            <View
+                android:id="@+id/sample_dot_day"
+                android:layout_width="10dp"
+                android:layout_height="10dp"
+                android:layout_margin="6dp"
+                android:contentDescription="@string/sample_bright" />
+            <View
+                android:id="@+id/sample_dot_night"
+                android:layout_width="10dp"
+                android:layout_height="10dp"
+                android:layout_margin="6dp"
+                android:contentDescription="@string/sample_dark" />
+        </LinearLayout>
     </LinearLayout>
 </LinearLayout>

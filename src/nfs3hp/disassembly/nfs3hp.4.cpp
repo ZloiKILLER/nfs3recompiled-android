@@ -3,6 +3,9 @@
 
 namespace nfs3hp
 {
+// Port (tools/apply_track_detail.py): defined in nfs3hp_main.cpp.
+x86::reg32 viewDistanceReduced(win32::WinApplication* app, x86::reg32 reduced);
+x86::reg32 splitFarDistance(win32::WinApplication* app, x86::reg32 distance);
 
 /* align: skip 0x00 0x00 0x00 0x00 0x00 0x00 0x00 0x00 0x00 0x00 0x00 */
 void Application::sub_418d00(WinApplication* app, x86::CPU& cpu)
@@ -19893,7 +19896,7 @@ void Application::sub_41d620(WinApplication* app, x86::CPU& cpu)
     cpu.eax ^= x86::reg32(x86::sreg32(cpu.eax));
 L_0x0041d637:
     // 0041d637  8b15c8d46f00           -mov edx, dword ptr [0x6fd4c8]
-    cpu.edx = app->getMemory<x86::reg32>(x86::reg32(7328968) /* 0x6fd4c8 */);
+    cpu.edx = viewDistanceReduced(app, app->getMemory<x86::reg32>(x86::reg32(7328968) /* 0x6fd4c8 */)); /* port: Full leaves the far distance whole */
     // 0041d63d  8d0c8500000000         -lea ecx, [eax*4]
     cpu.ecx = x86::reg32(cpu.eax * 4);
     // 0041d644  85d2                   +test edx, edx
@@ -20192,7 +20195,7 @@ L_0x0041d703:
         goto L_0x0041d76d;
     }
     // 0041d719  b80000b801             -mov eax, 0x1b80000
-    cpu.eax = 28835840 /*0x1b80000*/;
+    cpu.eax = splitFarDistance(app, 28835840 /*0x1b80000*/); /* port: Full reaches 500 in split screen too */
     // 0041d71e  8b5429f4               -mov edx, dword ptr [ecx + ebp - 0xc]
     cpu.edx = app->getMemory<x86::reg32>(cpu.ecx + x86::reg32(-12) /* -0xc */ + cpu.ebp * 1);
     // 0041d722  f7ea                   -imul edx
@@ -22408,7 +22411,7 @@ start:
     goto L_0x0041e00a;
   case 0x0041df99:
     // 0041df99  c7402400009001         -mov dword ptr [eax + 0x24], 0x1900000
-    app->getMemory<x86::reg32>(cpu.eax + x86::reg32(36) /* 0x24 */) = 26214400 /*0x1900000*/;
+    app->getMemory<x86::reg32>(cpu.eax + x86::reg32(36) /* 0x24 */) = 32768000 /*0x1f40000*/; /* port: split screen culls at 500, as a single view does */
     // 0041dfa0  c740280000b801         -mov dword ptr [eax + 0x28], 0x1b80000
     app->getMemory<x86::reg32>(cpu.eax + x86::reg32(40) /* 0x28 */) = 28835840 /*0x1b80000*/;
     // 0041dfa7  c7403800003c00         -mov dword ptr [eax + 0x38], 0x3c0000

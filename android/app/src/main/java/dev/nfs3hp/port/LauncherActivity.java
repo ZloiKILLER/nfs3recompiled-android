@@ -101,6 +101,7 @@ public class LauncherActivity extends Activity
     protected void onCreate(Bundle savedInstanceState)
     {
         super.onCreate(savedInstanceState);
+        TouchControlsOverlay.anchorLegacyPositions(this);
         ((InputManager) getSystemService(INPUT_SERVICE))
             .registerInputDeviceListener(gamepadListener, null);
         try
@@ -436,6 +437,7 @@ public class LauncherActivity extends Activity
         {
             String backup = ControlProfile.writeToGame(dataRoot(), kind);
             Toast.makeText(this, getString(R.string.controls_write_done, backup), Toast.LENGTH_LONG).show();
+            refreshGamepadsScreen();
         }
         catch (ControlProfile.NoSettingsException missing)
         {
@@ -472,6 +474,14 @@ public class LauncherActivity extends Activity
                 text = getString(R.string.gamepad_slot_auto_none);
             ((TextView) findViewById(statusIds[slot])).setText(text);
         }
+        /* The game's own keyboard controls keep the pads quiet in a split-screen
+         * race, where their keys would work the other player's car
+         * (nfs3hp_main.cpp) -- said here, where Gamepad ON is. */
+        File root = null;
+        try { root = dataRoot(); } catch (IOException ignored) { }
+        findViewById(R.id.gamepads_keyboard_note).setVisibility(
+            root != null && ControlProfile.installedKind(root) == ControlProfile.Kind.KEYBOARD
+                ? View.VISIBLE : View.GONE);
     }
 
     /* The key each on-screen control sends.  The overlay speaks to the game
@@ -559,9 +569,7 @@ public class LauncherActivity extends Activity
             preferences.edit().putBoolean(GamePreferences.TOUCH_AUTO_HIDE, checked).apply());
         LinearLayout options=findViewById(R.id.touch_options);
         addPreferenceCheck(options,getString(R.string.pref_phone_vibration),GamePreferences.TOUCH_VIBRATION,false);
-        addPreferenceCheck(options,getString(R.string.pref_separate_layouts),GamePreferences.TOUCH_SEPARATE,false);
         addPreferenceCheck(options,getString(R.string.pref_hide_full),GamePreferences.TOUCH_HIDE_FULL,false);
-        refreshTouchLayoutNote();
         TextView delay=new TextView(this);delay.setTextColor(getColor(R.color.ui_text));options.addView(delay);
         SeekBar seconds=new SeekBar(this);seconds.setMin(1);seconds.setMax(30);
         seconds.setProgress(preferences.getInt(GamePreferences.TOUCH_HIDE_SECONDS,4));
@@ -581,26 +589,8 @@ public class LauncherActivity extends Activity
         SharedPreferences prefs=GamePreferences.get(this);CheckBox check=new CheckBox(this);
         check.setText(label);check.setTextColor(getColor(R.color.ui_text));check.setChecked(prefs.getBoolean(key,defaultValue));
         check.setOnCheckedChangeListener((v,on)->{prefs.edit().putBoolean(key,on).apply();
-            if(touchPreview!=null)touchPreview.refreshSettings();refreshTouchLayoutNote();});
+            if(touchPreview!=null)touchPreview.refreshSettings();});
         parent.addView(check);
-    }
-
-    /** The note names the overlay's mode button, which only exists while menu and
-     *  race layouts are separate -- with one shared layout there is nothing to
-     *  switch, so the note goes away rather than pointing at a missing button. */
-    private void refreshTouchLayoutNote()
-    {
-        TextView note = findViewById(R.id.touch_layout_note);
-        if (note == null)
-            return;
-        if (!GamePreferences.get(this).getBoolean(GamePreferences.TOUCH_SEPARATE, false))
-        {
-            note.setVisibility(View.GONE);
-            return;
-        }
-        note.setText(withControlIcons(getText(R.string.touch_digital_note),
-            note.getTextSize(), note.getCurrentTextColor()));
-        note.setVisibility(View.VISIBLE);
     }
 
     /** The overlay buttons carry no captions, so help text cannot name them.
@@ -632,7 +622,6 @@ public class LauncherActivity extends Activity
     {
         switch (marker)
         {
-        case '☰': return R.drawable.ic_touch_mode;     // MENU / DRIVE
         case '✓': return R.drawable.ic_faq_confirm;    // OK
         case '←': return R.drawable.ic_faq_back;       // BACK
         case '↻': return R.drawable.ic_faq_reset;      // RESET
@@ -645,7 +634,7 @@ public class LauncherActivity extends Activity
      *  answer does not invalidate a whole translated page. */
     private static final int[] FAQ_SECTIONS = {
         R.string.faq_layout_modes, R.string.faq_mouse, R.string.faq_size,
-        R.string.faq_shared_layouts, R.string.faq_edges, R.string.faq_hiding,
+        R.string.faq_edges, R.string.faq_hiding,
         R.string.faq_vibration, R.string.faq_mapping,
         R.string.faq_lights, R.string.faq_screen_data,
     };
@@ -720,19 +709,41 @@ public class LauncherActivity extends Activity
         findViewById(R.id.back_button).setOnClickListener(v -> showScreenScreen());
         SharedPreferences preferences = GamePreferences.get(this);
 
-        ImageView darkView = findViewById(R.id.sample_dark);
-        ImageView brightView = findViewById(R.id.sample_bright);
-        Bitmap darkSource = BitmapFactory.decodeResource(getResources(), R.drawable.adjust_sample_dark);
-        Bitmap brightSource = BitmapFactory.decodeResource(getResources(), R.drawable.adjust_sample_bright);
-        Bitmap darkShown = darkSource.copy(Bitmap.Config.ARGB_8888, true);
-        Bitmap brightShown = brightSource.copy(Bitmap.Config.ARGB_8888, true);
-        darkView.setImageBitmap(darkShown);
-        brightView.setImageBitmap(brightShown);
+        /* Day first, then night: the second is a swipe away, and the dots under
+         * the picture say which of the two is up. */
+        ImageView sampleView = findViewById(R.id.sample_image);
+        TextView sampleCaption = findViewById(R.id.sample_caption);
+        View[] dots = { findViewById(R.id.sample_dot_day), findViewById(R.id.sample_dot_night) };
+        int[] captions = { R.string.sample_bright, R.string.sample_dark };
+        Bitmap[] sources = {
+            BitmapFactory.decodeResource(getResources(), R.drawable.adjust_sample_bright),
+            BitmapFactory.decodeResource(getResources(), R.drawable.adjust_sample_dark),
+        };
+        Bitmap[] shown = {
+            sources[0].copy(Bitmap.Config.ARGB_8888, true),
+            sources[1].copy(Bitmap.Config.ARGB_8888, true),
+        };
+        int[] current = { 0 };
+        Runnable showSample = () -> {
+            int index = current[0];
+            sampleView.setImageBitmap(shown[index]);
+            sampleCaption.setText(captions[index]);
+            sampleView.setContentDescription(getString(captions[index]));
+            for (int i = 0; i < dots.length; ++i)
+            {
+                android.graphics.drawable.GradientDrawable dot = new android.graphics.drawable.GradientDrawable();
+                dot.setShape(android.graphics.drawable.GradientDrawable.OVAL);
+                dot.setColor(getColor(i == index ? R.color.ui_accent : R.color.ui_border));
+                dots[i].setBackground(dot);
+            }
+        };
+        showSample.run();
+        attachSampleSwipe(sampleView, dots, current, showSample);
         /* One buffer for both, reused on every slider step: a preview that
          * allocated a megabyte per frame would stutter exactly while being
          * judged. */
-        int[] scratch = new int[Math.max(darkSource.getWidth() * darkSource.getHeight(),
-                                         brightSource.getWidth() * brightSource.getHeight())];
+        int[] scratch = new int[Math.max(sources[0].getWidth() * sources[0].getHeight(),
+                                         sources[1].getWidth() * sources[1].getHeight())];
 
         SeekBar gamma = findViewById(R.id.gamma_seek);
         SeekBar brightness = findViewById(R.id.brightness_seek);
@@ -753,10 +764,9 @@ public class LauncherActivity extends Activity
             brightnessValue.setText(b + "%");
             contrastValue.setText(c + "%");
             int[] curve = ScreenAdjustment.curve(g, b, c);
-            ScreenAdjustment.apply(darkSource, darkShown, curve, scratch);
-            ScreenAdjustment.apply(brightSource, brightShown, curve, scratch);
-            darkView.invalidate();
-            brightView.invalidate();
+            for (int i = 0; i < sources.length; ++i)
+                ScreenAdjustment.apply(sources[i], shown[i], curve, scratch);
+            sampleView.invalidate();
         };
         Runnable save = () -> preferences.edit()
             .putInt(GamePreferences.GAMMA, gamma.getProgress() + ScreenAdjustment.GAMMA_MIN)
@@ -783,6 +793,64 @@ public class LauncherActivity extends Activity
             contrast.setProgress(ScreenAdjustment.NEUTRAL - ScreenAdjustment.CONTRAST_MIN);
             refresh.run();
             save.run();
+        });
+    }
+
+    /* The sample follows a finger sideways and, let go past a fifth of its width,
+     * slides out and comes back as the other one; a shorter move springs back.
+     * A tap on a dot turns to its sample as well. */
+    private void attachSampleSwipe(ImageView sampleView, View[] dots, int[] current, Runnable showSample)
+    {
+        /* Out to the left for the next sample, to the right for the one before,
+         * and in again from the other side. */
+        java.util.function.BiConsumer<Integer, Boolean> slideTo = (index, leftwards) -> {
+            float out = Math.max(1, sampleView.getWidth()) * (leftwards ? -1 : 1);
+            sampleView.animate().cancel();
+            sampleView.animate().translationX(out).alpha(0).setDuration(120).withEndAction(() -> {
+                current[0] = index;
+                showSample.run();
+                sampleView.setTranslationX(-out);
+                sampleView.animate().translationX(0).alpha(1).setDuration(160).start();
+            }).start();
+        };
+        for (int i = 0; i < dots.length; ++i)
+        {
+            final int index = i;
+            dots[i].setOnClickListener(v -> {
+                if (index != current[0])
+                    slideTo.accept(index, index > current[0]);
+            });
+        }
+        float[] downX = { 0 };
+        sampleView.setOnTouchListener((v, event) -> {
+            switch (event.getActionMasked())
+            {
+            case android.view.MotionEvent.ACTION_DOWN:
+                downX[0] = event.getRawX();
+                v.animate().cancel();
+                v.setAlpha(1);
+                return true;
+            case android.view.MotionEvent.ACTION_MOVE:
+                v.setTranslationX(event.getRawX() - downX[0]);
+                return true;
+            case android.view.MotionEvent.ACTION_UP:
+            {
+                float moved = event.getRawX() - downX[0];
+                if (Math.abs(moved) > v.getWidth() / 5f)
+                    slideTo.accept((current[0] + (moved < 0 ? 1 : dots.length - 1)) % dots.length, moved < 0);
+                else
+                {
+                    v.animate().translationX(0).setDuration(150).start();
+                    v.performClick();
+                }
+                return true;
+            }
+            case android.view.MotionEvent.ACTION_CANCEL:
+                v.animate().translationX(0).alpha(1).setDuration(150).start();
+                return true;
+            default:
+                return false;
+            }
         });
     }
 
@@ -937,6 +1005,8 @@ public class LauncherActivity extends Activity
              * nothing already on screen can go stale. */
             startSaveOperation(()->{
                 String backup=LauncherSettings.importFrom(getApplicationContext(),uri,dataRoot());
+                // A file from before may carry control positions the old way.
+                TouchControlsOverlay.anchorLegacyPositions(this);
                 return backup.isEmpty()?getString(R.string.launcher_import_complete_no_backup)
                     :getString(R.string.launcher_import_complete,backup);
             });

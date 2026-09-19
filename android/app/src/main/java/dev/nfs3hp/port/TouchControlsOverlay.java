@@ -16,12 +16,6 @@ import java.util.Map;
 
 /** Digital controls: movement changes held keys; touches starting outside controls pass to SDL. */
 final class TouchControlsOverlay extends View {
-    /* Marks the keys the D-pad's up and down arms send to move through menus.
-     * They reach the game past SDL's keyboard state (NFS3Activity.sendTouchMenuKey),
-     * which is where the native side reads the pedals from, so those arms never
-     * accelerate or brake; the mark also keeps an arm and a pedal holding the
-     * same key counted apart. */
-    static final int MENU_KEY = 0x40000000;
     /* What the short presses of tap controls are released under, so releasing
      * everything drops those and nothing else.  It used to drop every pending
      * callback, the idle timer too, and a layout rebuilt for new window insets
@@ -35,7 +29,7 @@ final class TouchControlsOverlay extends View {
     private final TouchKeyState keys;
     private final boolean preview;
     private final Runnable dim = this::fadeIdle;
-    private float scale=1, knobX, knobY;
+    private float scale=1;
     private float referenceWidth,referenceHeight;
     /* The area controls are laid out in, in layout units, and where it starts
      * inside the view, in pixels: the whole view in the game, the real screen
@@ -70,8 +64,7 @@ final class TouchControlsOverlay extends View {
         menuMode=!preview; // The game starts in its menus; preview opens on the racing layout.
         keys=new TouchKeyState(output!=null?output:(key,down)->{
             if(preview) return;
-            if((key&MENU_KEY)!=0) NFS3Activity.sendTouchMenuKey(key&~MENU_KEY,down);
-            else if(down) SDLActivity.onNativeKeyDown(key);else SDLActivity.onNativeKeyUp(key);
+            if(down) SDLActivity.onNativeKeyDown(key);else SDLActivity.onNativeKeyUp(key);
         });
         setFocusable(false);setContentDescription(c.getString(R.string.touch_preview_description));
         setOnApplyWindowInsetsListener((v,insets)->{
@@ -90,17 +83,21 @@ final class TouchControlsOverlay extends View {
             e.getPointerCount()-(action==MotionEvent.ACTION_POINTER_UP?1:0);
         if(screenFingers>0)reveal();else scheduleHide();
     }
-    void setMenuMode(boolean menu) { menuMode=menu;rebuild(); }
+    /* Which layout is up.  The game answers it -- a race is on or it is not
+     * (nfs3hp_main.cpp) -- so there is no button for it to be wrong about. */
+    void setMenuMode(boolean menu) { if(menuMode==menu)return;menuMode=menu;rebuild(); }
     boolean isMenuMode() { return menuMode; }
     void setEditing(boolean value,java.util.function.Consumer<String> listener) {
-        editing=value;selectionChanged=listener;selected=null;releaseAll();invalidate();
+        editing=value;selectionChanged=listener;selected=null;releaseAll();
+        if(editing)keepLegacyPositions();
+        invalidate();
     }
     String selectedAction() { return selected==null?null:selected.action; }
     String selectedLabel() { return selected==null?getContext().getString(R.string.editor_select_control):selected.label; }
     int selectedVisualSize() { return selected==null?100:Math.round(selected.visualSize*100); }
     int selectedHitSize() { return selected==null?100:Math.round(selected.hitSize*100); }
     private String layoutPrefix() {
-        return "touch_position_"+(preferences.getBoolean(GamePreferences.TOUCH_SEPARATE,false)?(menuMode?"menu_":"race_"):"shared_");
+        return "touch_position_"+(menuMode?"menu_":"race_");
     }
     void resetLayout() {
         SharedPreferences.Editor edit=preferences.edit();
@@ -126,17 +123,93 @@ final class TouchControlsOverlay extends View {
         float hw=c.baseWidth*c.hitSize,hh=c.baseHeight*c.hitSize;
         c.hitBox.set(Math.max(0,x-hw/2),Math.max(0,y-hh/2),Math.min(areaWidth(),x+hw/2),Math.min(areaHeight(),y+hh/2));
     }
+    /* Where a control was put is kept as the distance of its centre from the
+     * nearer side edge and from the nearer of top and bottom, in layout units,
+     * so the controls along an edge keep their spacing on an area of another
+     * size.  It used to be kept as a fraction of the area, and the area a
+     * preview showed was not quite the game's: two controls side by side in
+     * the editor came closer in the game, and overlapped.  A fraction saved
+     * before is still read, and replaced as soon as the editor shows it. */
     private void savePosition(Control c) {
         String k=layoutPrefix()+c.action;
-        preferences.edit().putFloat(k+"_x",c.box.centerX()/areaWidth()).putFloat(k+"_y",c.box.centerY()/areaHeight())
+        float x=c.box.centerX(),y=c.box.centerY();
+        boolean right=x>areaWidth()/2,bottom=y>areaHeight()/2;
+        preferences.edit().remove(k+"_x").remove(k+"_y")
+            .putFloat(k+"_dx",right?areaWidth()-x:x).putBoolean(k+"_from_right",right)
+            .putFloat(k+"_dy",bottom?areaHeight()-y:y).putBoolean(k+"_from_bottom",bottom)
             .putFloat(k+"_size",c.visualSize).putFloat(k+"_hit",c.hitSize).apply();
+    }
+    private float savedX(String k,float fallback) {
+        if(preferences.contains(k+"_dx")) {
+            float distance=preferences.getFloat(k+"_dx",0);
+            return preferences.getBoolean(k+"_from_right",false)?areaWidth()-distance:distance;
+        }
+        return preferences.contains(k+"_x")?preferences.getFloat(k+"_x",0)*areaWidth():fallback;
+    }
+    private float savedY(String k,float fallback) {
+        if(preferences.contains(k+"_dy")) {
+            float distance=preferences.getFloat(k+"_dy",0);
+            return preferences.getBoolean(k+"_from_bottom",false)?areaHeight()-distance:distance;
+        }
+        return preferences.contains(k+"_y")?preferences.getFloat(k+"_y",0)*areaHeight():fallback;
+    }
+    /* One layout unit, in pixels, on an area that many pixels across: a dp,
+     * unless 640 x 340 units would then not fit. */
+    static float layoutScale(float density,float width,float height) {
+        return Math.min(density,Math.min(width/640f,height/340f));
+    }
+    /* Positions saved as fractions of the area, as layouts were kept before,
+     * made distances from the edges once, as the launcher starts and before
+     * the game reads them.  The area they were fractions of is the one the
+     * layout editor and every preview showed until then -- the launcher's own
+     * window (TouchPreviewFrame.windowArea) -- so the game puts each control
+     * where the editor showed it, instead of where that fraction of its own,
+     * other area falls. */
+    static void anchorLegacyPositions(android.app.Activity activity) {
+        float[] window=TouchPreviewFrame.windowArea(activity);
+        if(window[0]<=0||window[1]<=0) return;
+        float unit=layoutScale(activity.getResources().getDisplayMetrics().density,window[0],window[1]);
+        anchorLegacyPositions(GamePreferences.get(activity),window[0]/unit,window[1]/unit);
+    }
+    static void anchorLegacyPositions(SharedPreferences preferences,float areaWidth,float areaHeight) {
+        SharedPreferences.Editor edit=null;
+        for(Map.Entry<String,?> entry:preferences.getAll().entrySet()) {
+            String key=entry.getKey();
+            if(!key.startsWith("touch_position_")||!key.endsWith("_x")||!(entry.getValue() instanceof Float)) continue;
+            String k=key.substring(0,key.length()-2);
+            if(edit==null) edit=preferences.edit();
+            edit.remove(k+"_x").remove(k+"_y");
+            if(preferences.contains(k+"_dx")) continue;
+            float x=(Float)entry.getValue()*areaWidth,y=preferences.getFloat(k+"_y",.5f)*areaHeight;
+            boolean right=x>areaWidth/2,bottom=y>areaHeight/2;
+            edit.putFloat(k+"_dx",right?areaWidth-x:x).putBoolean(k+"_from_right",right)
+                .putFloat(k+"_dy",bottom?areaHeight-y:y).putBoolean(k+"_from_bottom",bottom);
+        }
+        if(edit!=null) edit.apply();
+    }
+    /* The editor saves what it shows: a control still placed by a fraction is
+     * saved the new way, where it stands on the screen, once the editor is up. */
+    private void keepLegacyPositions() {
+        for(Control c:controls) {
+            String k=layoutPrefix()+c.action;
+            if(preferences.contains(k+"_x")&&!preferences.contains(k+"_dx")) savePosition(c);
+        }
+    }
+    /* The game's own area, in pixels, for the previews to lay the controls out
+     * in (TouchPreviewFrame): the launcher's window is not the game's -- it
+     * keeps the navigation bar, the game hides it and draws beside the cutout. */
+    private void rememberGameArea(float width,float height) {
+        int w=Math.round(width),h=Math.round(height);
+        if(preferences.getInt(GamePreferences.TOUCH_GAME_WIDTH,0)!=w||preferences.getInt(GamePreferences.TOUCH_GAME_HEIGHT,0)!=h)
+            preferences.edit().putInt(GamePreferences.TOUCH_GAME_WIDTH,w).putInt(GamePreferences.TOUCH_GAME_HEIGHT,h).apply();
     }
     @Override protected void onSizeChanged(int w,int h,int ow,int oh) { rebuild(); }
     private void rebuild() {
         String selection=selectedAction();releaseAll();controls.clear();selected=null;
         float width=getWidth()-getPaddingLeft()-getPaddingRight(),height=getHeight()-getPaddingTop()-getPaddingBottom();
         if(width<=0||height<=0) return;
-        scale=Math.min(getResources().getDisplayMetrics().density,Math.min(width/640f,height/340f));
+        if(!preview) rememberGameArea(width,height);
+        scale=layoutScale(getResources().getDisplayMetrics().density,width,height);
         float pixelScale=1;
         areaW=width/scale;areaH=height/scale;originX=originY=0;
         if(preview&&referenceWidth>0&&referenceHeight>0){
@@ -146,7 +219,7 @@ final class TouchControlsOverlay extends View {
              * the same control in two different places -- neither of them the
              * place the game puts it. */
             pixelScale=Math.min(width/referenceWidth,height/referenceHeight);
-            float base=Math.min(getResources().getDisplayMetrics().density,Math.min(referenceWidth/640f,referenceHeight/340f));
+            float base=layoutScale(getResources().getDisplayMetrics().density,referenceWidth,referenceHeight);
             scale=base*pixelScale;
             areaW=referenceWidth/base;areaH=referenceHeight/base;
             originX=(width-areaW*scale)/2;originY=(height-areaH*scale)/2;
@@ -155,29 +228,28 @@ final class TouchControlsOverlay extends View {
         float size=Math.min(preferences.getInt(GamePreferences.TOUCH_SIZE,100)/100f,1.15f);
         boolean mirrored=GamePreferences.TOUCH_LAYOUT_MIRRORED.equals(preferences.getString(GamePreferences.TOUCH_LAYOUT,"standard"));
         for(TouchLayout.Box b:TouchLayout.defaults(areaWidth(),areaHeight(),preferences.getInt(GamePreferences.TOUCH_EDGE,0),
-                preferences.getInt(GamePreferences.TOUCH_RAISE,0),size,pixelScale/scale,
-                preferences.getBoolean(GamePreferences.TOUCH_SEPARATE,false),menuMode,mirrored))
+                preferences.getInt(GamePreferences.TOUCH_RAISE,0),size,pixelScale/scale,menuMode,mirrored))
             controls.add(new Control(b.action,getContext().getString(label(b.action)),
                 new RectF(b.left(),b.top(),b.right(),b.bottom()),pulse(b.action)));
         for(Control c:controls) {
             String k=layoutPrefix()+c.action;
-            float x=preferences.getFloat(k+"_x",c.box.centerX()/areaWidth())*areaWidth();
-            float y=preferences.getFloat(k+"_y",c.box.centerY()/areaHeight())*areaHeight();
+            float x=savedX(k,c.box.centerX()),y=savedY(k,c.box.centerY());
             c.visualSize=preferences.getFloat(k+"_size",1);c.hitSize=preferences.getFloat(k+"_hit",1);
             float cw=c.baseWidth*c.visualSize,ch=c.baseHeight*c.visualSize;
             c.box.set(x-cw/2,y-ch/2,x+cw/2,y+ch/2);constrain(c);
             if(c.action.equals(selection))selected=c;
         }
+        if(editing)keepLegacyPositions();
+        android.util.Log.i("TouchOverlay",(preview?"preview":"game")+" area "+Math.round(width)+"x"+Math.round(height)
+            +" px, "+Math.round(areaW)+"x"+Math.round(areaH)+" units, "+(menuMode?"menu":"race"));
         invalidate();
         // A rebuilt layout starts the idle countdown over rather than losing it.
         scheduleHide();
     }
     private int label(String action) {
         switch(action) {
-        case "steering": return R.string.control_navigation;
         case "steer_left": return R.string.control_left;
         case "steer_right": return R.string.control_right;
-        case "confirm": return R.string.control_confirm;
         case "back": return R.string.control_back;
         case "brake": return R.string.control_brake;
         case "accelerate": return R.string.control_gas;
@@ -189,7 +261,6 @@ final class TouchControlsOverlay extends View {
         case "gear_down": return R.string.control_gear_down;
         case "gear_up": return R.string.control_gear_up;
         case "pause": return R.string.control_pause;
-        case "mode": return menuMode?R.string.control_race:R.string.control_menu;
         case "keyboard": return R.string.control_keyboard;
         case "headlights": return R.string.control_lights;
         default: return R.string.control_recover;
@@ -198,7 +269,7 @@ final class TouchControlsOverlay extends View {
     /* Held for as long as a finger stays on them; the rest press briefly on touch. */
     private static boolean pulse(String action) {
         switch(action) {
-        case "steering": case "steer_left": case "steer_right": case "brake": case "accelerate":
+        case "steer_left": case "steer_right": case "brake": case "accelerate":
         case "handbrake": case "look_behind": case "horn": return false;
         default: return true;
         }
@@ -220,25 +291,14 @@ final class TouchControlsOverlay extends View {
             boolean down=false;
             for(Contact contact:contacts.values()) if(contact.control==c&&contact.inside) down=true;
             paint.setStyle(Paint.Style.FILL);paint.setColor(Color.argb(Math.round(opacity*2.1f),down?88:18,down?64:24,down?30:34));
-            // The steering control, wherever a layout has one, is the four-way D-pad.
-            boolean stick=c.action.equals("steering");
-            if(stick) canvas.drawPath(dpad(c.box),paint);else canvas.drawRoundRect(c.box,16,16,paint);
+            canvas.drawRoundRect(c.box,16,16,paint);
             paint.setStyle(Paint.Style.STROKE);paint.setStrokeWidth(down?2.2f:1.4f);
             paint.setColor(down?0xffffbf69:Color.argb(Math.round(opacity*2.55f),203,216,232));
-            if(stick) {
-                canvas.drawPath(dpad(c.box),paint);
-                float x=c.box.centerX(),y=c.box.centerY(),r=c.box.width()/2;
-                arrow(canvas,x-r*.68f,y,-1,0);arrow(canvas,x+r*.68f,y,1,0);
-                arrow(canvas,x,y-r*.68f,0,-1);arrow(canvas,x,y+r*.68f,0,1);
-                paint.setStyle(Paint.Style.FILL);paint.setColor(down?0xffad8148:0xff3b4555);
-                if(down) canvas.drawCircle(x+knobX*r*.65f,y+knobY*r*.65f,r*.12f,paint);
-            } else {
-                canvas.drawRoundRect(c.box,16,16,paint);
-                if(c.action.equals("accelerate")||c.action.equals("brake")) {
-                    float firstLine=c.box.centerY()-13.5f;
-                    for(int i=0;i<4;i++) canvas.drawLine(c.box.left+13,firstLine+i*9,c.box.right-13,firstLine+i*9,paint);
-                } else icon(canvas,c.action,c.box.centerX(),c.box.centerY());
-            }
+            canvas.drawRoundRect(c.box,16,16,paint);
+            if(c.action.equals("accelerate")||c.action.equals("brake")) {
+                float firstLine=c.box.centerY()-13.5f;
+                for(int i=0;i<4;i++) canvas.drawLine(c.box.left+13,firstLine+i*9,c.box.right-13,firstLine+i*9,paint);
+            } else icon(canvas,c.action,c.box.centerX(),c.box.centerY());
             if(editing) {
                 paint.setStyle(Paint.Style.STROKE);paint.setStrokeWidth(c==selected?2:1);
                 paint.setColor(c==selected?0xffffbf69:0xff668f9a);
@@ -261,13 +321,6 @@ final class TouchControlsOverlay extends View {
     private void gridLine(int index) {
         boolean major=index%4==0;
         paint.setStrokeWidth(major?1.5f/scale:0);paint.setColor(major?0x40aab5c6:0x1caab5c6);
-    }
-    private Path dpad(RectF b) {
-        float x=b.centerX(),y=b.centerY(),t=b.width()*.17f;
-        Path p=new Path();p.moveTo(x-t,b.top);p.lineTo(x+t,b.top);p.lineTo(x+t,y-t);
-        p.lineTo(b.right,y-t);p.lineTo(b.right,y+t);p.lineTo(x+t,y+t);p.lineTo(x+t,b.bottom);
-        p.lineTo(x-t,b.bottom);p.lineTo(x-t,y+t);p.lineTo(b.left,y+t);p.lineTo(b.left,y-t);
-        p.lineTo(x-t,y-t);p.close();return p;
     }
     private void text(Canvas c,String s,float x,float y,float size,int color) {
         paint.setStyle(Paint.Style.FILL);paint.setColor(color);paint.setTextSize(size);
@@ -311,8 +364,6 @@ final class TouchControlsOverlay extends View {
             c.drawLine(x-8,y+5,x+8,y+5,paint);break;
         case "camera":
             c.drawRoundRect(new RectF(x-10,y-6,x+10,y+7),3,3,paint);c.drawCircle(x,y,4,paint);c.drawLine(x-4,y-9,x+3,y-9,paint);break;
-        case "confirm": c.drawLine(x-8,y,x-2,y+6,paint);c.drawLine(x-2,y+6,x+9,y-6,paint);break;
-        case "mode": for(int i=-1;i<=1;i++) c.drawLine(x-9,y+i*5,x+9,y+i*5,paint);break;
         case "horn":
             Path p=new Path();p.moveTo(x-9,y-3);p.lineTo(x-3,y-3);p.lineTo(x+3,y-8);p.lineTo(x+3,y+8);p.lineTo(x-3,y+3);p.lineTo(x-9,y+3);p.close();c.drawPath(p,paint);
             c.drawArc(new RectF(x+1,y-7,x+13,y+7),-60,120,false,paint);break;
@@ -336,17 +387,11 @@ final class TouchControlsOverlay extends View {
             pointers.add(id);reveal();
             if(hit==null) return true;
             reveal();
-            if(hit.action.equals("mode")) {
-                java.util.HashSet<Integer> active=new java.util.HashSet<>(pointers);
-                int fingers=screenFingers;
-                menuMode=!menuMode;rebuild();pointers.addAll(active);screenFingers=fingers;return true;
-            }
             if(hit.action.equals("keyboard")) {
                 if(!preview&&getContext() instanceof NFS3Activity)
                     ((NFS3Activity)getContext()).showTouchKeyboard();
                 return true;
             }
-            if(hit.action.equals("steering")) for(Contact c:contacts.values()) if(c.control.action.equals("steering")) return true;
             Contact contact=new Contact(hit);contacts.put(id,contact);
             if(hit.pulse) { int key=key(hit.action);keys.press(key);handler.postAtTime(()->keys.release(key),PULSES,SystemClock.uptimeMillis()+90); }
             else update(contact,x,y);
@@ -362,7 +407,7 @@ final class TouchControlsOverlay extends View {
         if(action==MotionEvent.ACTION_CANCEL) { releaseAll();scheduleHide();return true; }
         if(action==MotionEvent.ACTION_UP||action==MotionEvent.ACTION_POINTER_UP) {
             pointers.remove(id);
-            Contact c=contacts.remove(id);if(c!=null) { release(c);if(c.control.action.equals("steering")) knobX=knobY=0; }
+            Contact c=contacts.remove(id);if(c!=null) release(c);
             scheduleHide();invalidate();return true;
         }
         return !contacts.isEmpty();
@@ -400,26 +445,14 @@ final class TouchControlsOverlay extends View {
     private int key(String action) { return GamePreferences.getTouchKey(preferences,action.equals("back")?"pause":action); }
     private void update(Contact c,float x,float y) {
         ArrayList<Integer> wanted=new ArrayList<>();
-        if(c.control.action.equals("steering")) {
-            /* One direction at a time, in every layout.  Left and right steer; up
-             * and down move through menus -- on the pedals' keys, but past the
-             * pedals themselves (MENU_KEY), so a race is driven with the pedals. */
-            float r=c.control.box.width()/2;
-            knobX=Math.max(-1,Math.min(1,(x-c.control.box.centerX())/r));
-            knobY=Math.max(-1,Math.min(1,(y-c.control.box.centerY())/r));
-            c.inside=c.control.hitBox.contains(x,y);
-            if(!c.inside)knobX=knobY=0;
-            if(Math.abs(knobX)>Math.abs(knobY))knobY=0;else knobX=0;
-            if(knobX<-.22f) wanted.add(key("steer_left"));if(knobX>.22f) wanted.add(key("steer_right"));
-            if(knobY<-.22f) menuKey(wanted,key("accelerate"));if(knobY>.22f) menuKey(wanted,key("brake"));
-        } else { c.inside=c.control.hitBox.contains(x,y);if(c.inside) wanted.add(key(c.control.action)); }
+        c.inside=c.control.hitBox.contains(x,y);
+        if(c.inside) wanted.add(key(c.control.action));
         for(Integer k:c.held) if(!wanted.contains(k)) keys.release(k);
         for(Integer k:wanted) if(!c.held.contains(k)) keys.press(k);
         c.held.clear();c.held.addAll(wanted);
     }
-    private static void menuKey(ArrayList<Integer> wanted,int key) { if(key!=0) wanted.add(MENU_KEY|key); }
     private void release(Contact c) { for(Integer k:c.held) keys.release(k);c.held.clear(); }
-    void releaseAll() { handler.removeCallbacksAndMessages(PULSES);keys.releaseAll();contacts.clear();pointers.clear();screenFingers=0;knobX=knobY=0;invalidate(); }
+    void releaseAll() { handler.removeCallbacksAndMessages(PULSES);keys.releaseAll();contacts.clear();pointers.clear();screenFingers=0;invalidate(); }
     private void fadeIdle() { if(!gamepadHidden&&screenFingers==0&&pointers.isEmpty()&&contacts.isEmpty())animate().alpha(preferences.getBoolean(GamePreferences.TOUCH_HIDE_FULL,false)?0f:.12f).setDuration(350).start(); }
     void resumeIdleTimer() { if(gamepadHidden)return;reveal();scheduleHide(); }
     private void reveal() { gamepadHidden=false;handler.removeCallbacks(dim);animate().cancel();setAlpha(1); }

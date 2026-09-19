@@ -39,6 +39,10 @@ executables from `nfs3hp/`.
 2. Launch the app, import that folder, make it the active data set.
 3. Play.
 
+An import leaves the game ready for a phone: the gamepad control set (see
+Controls), View Distance at Full and races at 1280x720 are written into its
+`config.dat` once, as the last step. From then on the file is the player's.
+
 The launcher holds what the game cannot ask for itself: **Controls → Touch** (the
 on-screen controls, their layout editor, the key each one sends, the phone's
 vibration switch), **Controls → Gamepads** (which pad is which player, the key
@@ -58,7 +62,22 @@ a keyboard key, chosen per button under Controls → Gamepads → Buttons: playe
 `fedata/config/config.dat`, backing the file up first, and the description of
 both devices with it — the game regenerates every binding whenever the saved
 device list differs from what it finds. *Default in game* writes the game's own
-keyboard defaults instead.
+keyboard defaults instead. Those put split screen's second player on keys the
+first pad's buttons send, so while a split-screen race runs on them the pads
+send nothing but Escape.
+
+On screen, the game decides which controls are up. In a race: two steering
+buttons, the pedals and the rest, and the steering buttons turn the wheel the
+way the game's keyboard steering does, easing to full lock and back, while a
+pad's stick stays analog. In the menus a finger is the game's own pointer: a tap
+clicks where it lands, resting still for a quarter of a second presses and
+drags, and a swipe clicks nothing; only back and the keyboard stay on screen,
+top right. The layout editor shows the controls exactly where the game puts
+them.
+
+The phone's back button or gesture is Escape, in the menus and in a race; with
+the on-screen keyboard open it closes the keyboard. A real mouse moves the
+game's cursor to its own pointer and clicks with its buttons, races included.
 
 ### Vibration
 
@@ -73,15 +92,28 @@ vibrates on a button press.
 
 ### Widescreen races
 
-Options → Graphics → Screen Size offers `1280 x 720 x 16 (z)` beside the
-original 4:3 modes. A race then opens the view sideways instead of stretching
-it: the vertical angle stays what the game draws and the horizontal one widens
-with the screen, in every view — chase and in-car, the mirror, both halves of
-split screen. HUD elements drawn as pictures keep their shape, and the layout
-saved in `config.dat` is never touched, so a 4:3 mode looks exactly as it did.
-The menus stay 4:3; only the race switches mode. This part is unfinished, see
-Known issues, and `NFS_WIDESCREEN=0` takes the mode back out wherever an
-environment variable can be set — the launcher does not set this one.
+Options → Graphics → Screen Size offers 1280x720, 1600x900 and 1920x1080
+beside the original 4:3 modes, and the choice survives a restart. A race then
+opens the view sideways instead of stretching it: the vertical angle stays what
+the game draws and the horizontal one widens with the screen, in every view —
+chase and in-car, the mirror, both halves of split screen. The menus stay 4:3;
+only the race switches mode, and its loading screen is shown at 4:3 in the
+middle, between black bars.
+
+The HUD keeps the proportions it was drawn with: frames, text and the points on
+the map are sized as on the 4:3 screen that fits, and the gauges drawn as
+pictures keep their shape. The layout saved in `config.dat` is never touched, so
+a 4:3 mode looks exactly as it did. The HUD editor frames each element by what
+it draws, so a line of text can stand next to a gauge or at the edge of the
+screen. The in-car cabin fills the width at its own proportions, centred, with a
+little of the roof and the dashboard's lower edge cut off.
+
+`NFS_WIDESCREEN=0` takes the wide modes back out wherever an environment
+variable can be set — the launcher does not set this one.
+
+View Distance at Full draws the whole track out to the far distance in every
+mode, split screen and night included, as the Modern Patch does; the other
+settings keep the original distances.
 
 Alpha intensity in Advanced Graphics works here as well. The original applies it
 only on its Direct3D driver, so on this one the slider used to move and change
@@ -94,9 +126,6 @@ nothing.
   moving. Not reproducible on Adreno with the same build, with or without
   mipmapping, so it looks like a driver difference rather than a bug in the
   Glide layer. Unresolved.
-- **Widescreen is unfinished.** Font size, HUD border thickness and the points on
-  the map still follow the screen width, the cabin image in the in-car view is
-  stretched to it, and the HUD editor still previews a 4:3 screen.
 
 ## Building
 
@@ -164,7 +193,7 @@ desktop run.
 | `NFS_GAMMA`, `NFS_BRIGHTNESS`, `NFS_CONTRAST` | `1.0` | Applied to the finished frame in the final blit, so menus and movies are covered as well as a race. |
 | `NFS_ORIENTATION` | unset | `auto` allows both landscape directions; anything else pins one. Must be set before `SDL_Init`. |
 | `NFS_CAR_DETAIL_FULL` | on | With Car Detail at High, every car keeps its detailed model and the player's texture size out to the draw distance, in every view, and the limit on how many are drawn at once is lifted. `0` restores the original. |
-| `NFS_WIDESCREEN` | on | `0` takes the 1280x720 mode back out of the Screen Size list. |
+| `NFS_WIDESCREEN` | on | `0` takes the 1280x720, 1600x900 and 1920x1080 modes back out of the Screen Size list. |
 | `NFS_TOUCH_STEER_LEFT` etc. | unset | Keys the touch overlay sends for steering and the pedals, so that endpoint can report them as axes. |
 | `NFS_GAMEPAD1_SOUTH` etc. | built-in defaults | What a pad button sends, as `NFS_GAMEPAD<n>_<BUTTON>`: an SDL key name (`Space`, `Return`), `axis:steer_left`, `axis:steer_right`, `axis:accelerate`, `axis:brake`, or empty for nothing. |
 

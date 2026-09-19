@@ -76,7 +76,6 @@
 
  <string name="touch_preview_description">Sayısal sürüş kontrollerinin etkileşimli önizlemesi</string>
  <string name="touch_preview_hint">Kontrolleri dene</string>
- <string name="touch_digital_note">Menü ve yarış yerleşimi arasında geçmek için ☰ düğmesine dokun</string>
  <string name="touch_dim_label">Düğmeleri gizle</string>
  <string name="touch_edge_label">Kenarlardan uzaklık</string>
  <string name="touch_raise_label">Sürüş düğmelerini yükselt</string>
@@ -116,7 +115,6 @@
  <string name="touch_keys_hint">Her ekran kontrolünün gönderdiği klavye tuşu. Oyunda ayarlanan tuşla eşleşmelidir.</string>
 
  <string name="pref_phone_vibration">Telefon titreşimi (oyun efektleri; oyunu yeniden başlat)</string>
- <string name="pref_separate_layouts">Menü ve yarış için ayrı yerleşim</string>
  <string name="pref_show_gears">Vites düğmelerini − / + göster</string>
  <string name="pref_hide_full">Tamamen gizle (yoksa soluk siluet)</string>
  <string name="auto_hide_delay">Gecikme: %1$d sn</string>
@@ -124,7 +122,6 @@
  <string name="editor_touch_zone">Dokunma alanı: %1$d%%</string>
  <string name="editor_mode_race">Yarış</string>
  <string name="editor_mode_menu">Menü</string>
- <string name="editor_mode_shared">Ortak</string>
  <string name="editor_reset_title">Bu yerleşim sıfırlansın mı?</string>
  <string name="editor_reset_message">Bu yerleşimin varsayılan konumlarını, düğme boyutlarını ve dokunma alanlarını geri yükle.</string>
  <string name="edit_touch_layout">Konumları ve dokunma alanlarını düzenle</string>
@@ -144,10 +141,7 @@
  <string name="importer_open_zip_failed">Seçilen ZIP açılamadı</string>
  <string name="importer_zip_missing_files">ZIP içinde beklenen fedata/gamedata klasörleri yok</string>
 
- <string name="faq_layout_modes"><b>Menü mü, yarış mı?</b>\nAyrı yerleşimler açıkken aralarında tek bir ☰ düğmesi geçiş yapar: menü yerleşimi ✓ ve ← ile dört yönlü tuş takımı, yarış yerleşimi sol / sağ düğmeleri ve pedaller verir. Kendiliğinden asla değişmez. Tek ortak yerleşimde tüm düğmeler görünür kalır: dört yönlü tuş takımı direksiyonu çevirir ve menülerde gezinir, ✓ / ← ise menülerde çalışır.</string>
- <string name="faq_mouse"><b>Fare nasıl çalışır?</b>\nİmleci hareket ettirmek için ekranın boş bir yerinde kaydır. Kaydırdıktan sonra parmağını kaldırırsan tıklama olmaz. Kısa ve hareketsiz bir dokunuş imlecin bulunduğu yere tıklar. Parmağını kıpırdatmadan tut: düğme basılı kalır ve sürükleyebilirsin; parmağını kaldırınca bırakılır. Çok parmaklı hareketler tıklamaz.</string>
  <string name="faq_size"><b>Boyut neyi değiştirir?</b>\nGenel boyut varsayılan düğmeleri ölçekler. «Konumları ve dokunma alanlarını düzenle» bölümünde bir düğmeyi sürükle; görünümünü değiştirmek için «Düğme», yalnızca tepki verdiği alanı değiştirmek için «Dokunma alanı» ayarını kullan. Kesik çizgiler dokunma alanlarını gösterir; yüzdeler varsayılan düğmeye göredir. Değişiklikler kendiliğinden kaydedilir. Düzenleyici bir ızgara gösterir; «Izgaraya hizala» açıkken sürüklenen öğe ızgaraya oturur.</string>
- <string name="faq_shared_layouts"><b>Tek yerleşim mi, iki mi?</b>\n«Menü ve yarış için ayrı yerleşim» kapalıyken menülerde ve yarışlarda aynı düğmeler, konumlar ve boyutlar geçerlidir. Her kipi ayrı ayarlamak için aç. Bu seçeneği değiştirmek kayıtlı iki yerleşimi de korur. Sıfırlama yalnızca seçili yerleşimi etkiler. «Direksiyon solda / sağda» hem varsayılan hem elle kaydedilmiş konumları aynalar.</string>
  <string name="faq_edges"><b>Kenarlar ve yükseklik</b>\nKenarlardan uzaklık varsayılan düğmeleri içe kaydırır. «Sürüş düğmelerini yükselt» alttaki varsayılan düğmeleri yukarı taşır. Sistem çentikleri gözetilir. Elle yerleştirilen düğmeler kayıtlı konumlarını korur.</string>
  <string name="faq_hiding"><b>Saydamlık ve otomatik gizleme</b>\nSaydamlık normal görünürlüğü belirler. Otomatik gizleme tüm parmaklar kaldırıldıktan sonra, 1–30 saniyelik gecikmeyle başlar. Soluk bir siluet ya da tam görünmezlik seç. Gizli düğmeler ilk dokunuşta zaten tepki verir ve yeniden görünür olur. Bir düğmeyi basılı tutmak gizlemeyi engeller. Kumandada bir tuşa basmak düğmeleri hemen gizler; bir sonraki dokunuş onları geri getirir.</string>
  <string name="faq_gears"><b>Elle vites</b>\n«Vites düğmelerini − / + göster» yarış yerleşimine iki isteğe bağlı düğme ekler. Oyunda elle vitesi etkinleştir. Gönderdikleri tuşlar Kontroller → Dokunma → Tuşlar bölümünde ayarlanır ve oyun ayarlarıyla eşleşmelidir.</string>

@@ -45,6 +45,18 @@
         android:textColor="@color/ui_muted"
         android:textSize="13sp" />
 
+    <!-- Shown while the game's settings hold its own keyboard controls, which
+         keep the pads quiet in split-screen races. -->
+    <TextView
+        android:id="@+id/gamepads_keyboard_note"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="4dp"
+        android:text="@string/gamepads_keyboard_note"
+        android:textColor="@color/ui_accent"
+        android:textSize="13sp"
+        android:visibility="gone" />
+
     <ScrollView
         android:layout_width="match_parent"
         android:layout_height="0dp"

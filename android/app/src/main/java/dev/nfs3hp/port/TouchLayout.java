@@ -7,13 +7,17 @@ import java.util.ArrayList;
  *  Android in it, so every size, edge distance and screen shape can be checked
  *  off the device.
  *
+ *  There are two layouts and the game says which one is up: one to drive with,
+ *  and one for its menus, where a finger works the screen itself and only the
+ *  two things a screen cannot offer are left -- back, and the keyboard.
+ *
  *  Everything stands on the grid the layout editor draws and snaps to, GRID
  *  units a cell.  Rows and columns are whole cells apart, and once mirroring
  *  and the distance from the edges have been applied each group of controls
  *  moves onto the grid as one, so a group keeps its own spacing exactly.  The
  *  small buttons share one size, 58 x 48 at 100%, and follow the size setting
- *  like everything else; the D-pad, the steering buttons, the pedals and the
- *  menu layout's confirm and back keep shapes of their own. */
+ *  like everything else; the steering buttons and the pedals keep shapes of
+ *  their own. */
 final class TouchLayout
 {
     static final float GRID = 8;
@@ -44,8 +48,8 @@ final class TouchLayout
 
     /* Groups that move onto the grid together, sideways.  Heights are placed on
      * it as they are worked out. */
-    private static final int TOP_LEFT = 0, TOP_RIGHT = 1, STEERING = 2, ROWS = 3, PEDALS = 4, MENU_KEYS = 5;
-    private static final int GROUPS = 6;
+    private static final int TOP_LEFT = 0, TOP_RIGHT = 1, STEERING = 2, ROWS = 3, PEDALS = 4;
+    private static final int GROUPS = 5;
 
     private TouchLayout() {}
 
@@ -68,77 +72,47 @@ final class TouchLayout
      * @param raise    how far the lower controls are raised, likewise
      * @param size     the size setting, as a factor
      * @param physical one physical pixel, in layout units
-     * @param separate menus and races have layouts of their own
-     * @param menu     the menu layout, when they do
+     * @param menu     the game is showing a menu rather than a race
      * @param mirrored steering on the right
      */
     static ArrayList<Box> defaults(float width, float height, float edge, float raise, float size,
-                                   float physical, boolean separate, boolean menu, boolean mirrored)
+                                   float physical, boolean menu, boolean mirrored)
     {
         final float w = width - 2 * edge, h = height - raise;
         final float buttonWidth = 58 * size, buttonHeight = 48 * size;
         final float column = cells(buttonWidth + 6), row = cells(buttonHeight + 8);
-        final boolean menuLayout = separate && menu;
         final ArrayList<Box> boxes = new ArrayList<>();
 
-        /* The top rows: pause and its neighbours on the left; lights and
-         * recovery on the right, or the keyboard in the menu layout. */
+        /* The top row: pause on the left of a race, and on the right the lights
+         * and recovery a race needs, or the back and keyboard a menu does. */
         final float topY = snap(18 + buttonHeight / 2);
         final float topBottom = topY + buttonHeight / 2;
-        final String[] topLeft = separate ? new String[] { "pause", "mode" }
-                                          : new String[] { "pause", "keyboard", "confirm", "back" };
-        for (int i = 0; i < topLeft.length; ++i)
-            boxes.add(new Box(topLeft[i], TOP_LEFT, 20 + buttonWidth / 2 + i * column, topY,
-                              buttonWidth, buttonHeight));
         final float rightX = w - 20 - buttonWidth / 2;
-        if (menuLayout)
-            boxes.add(new Box("keyboard", TOP_RIGHT, rightX, topY, buttonWidth, buttonHeight));
-        else
+        if (menu)
         {
-            boxes.add(new Box("headlights", TOP_RIGHT, rightX - column, topY, buttonWidth, buttonHeight));
-            boxes.add(new Box("recover", TOP_RIGHT, rightX, topY, buttonWidth, buttonHeight));
-        }
-
-        final float steerY, steerHalf;
-        if (separate && !menu)
-        {
-            final float steerWidth = 68 * size, steerHeight = 76 * size;
-            steerY = snap(h - 20 - steerHeight / 2);
-            steerHalf = steerHeight / 2;
-            final float leftX = 20 + steerWidth / 2;
-            boxes.add(new Box("steer_left", STEERING, leftX, steerY, steerWidth, steerHeight));
-            boxes.add(new Box("steer_right", STEERING, leftX + cells(steerWidth + 8 + 26 * physical), steerY,
-                              steerWidth, steerHeight));
-        }
-        else
-        {
-            /* The shared layout stacks two rows above its D-pad, and on a short
-             * screen or at a large size the D-pad gives up size rather than run
-             * those rows into the top one. */
-            float pad = 140 * size, y = snap(h - 20 - pad / 2);
-            if (!separate)
-                while (pad > 60 * size
-                       && y - cells(pad / 2 + 8 + buttonHeight / 2) - row - buttonHeight / 2 < topBottom + 8)
-                {
-                    pad -= 2;
-                    y = snap(h - 20 - pad / 2);
-                }
-            steerY = y;
-            steerHalf = pad / 2;
-            boxes.add(new Box("steering", STEERING, 20 + pad / 2, y, pad, pad));
-        }
-
-        if (menuLayout)
-        {
-            final float confirmWidth = 80 * size, confirmHeight = 84 * size;
-            final float backWidth = 72 * size, backHeight = 64 * size;
-            final float confirmX = w - 20 - confirmWidth / 2, confirmY = snap(h - 20 - confirmHeight / 2);
-            boxes.add(new Box("confirm", MENU_KEYS, confirmX, confirmY, confirmWidth, confirmHeight));
-            // Bottoms level with the confirm button's.
-            boxes.add(new Box("back", MENU_KEYS, confirmX - confirmWidth / 2 - 16 * size - backWidth / 2,
-                              confirmY + confirmHeight / 2 - backHeight / 2, backWidth, backHeight));
+            /* The whole of the menu layout: every other key a menu needs is the
+             * screen itself.  Back takes the corner and the keyboard stands
+             * under it, both out of the way of the menu's own buttons, which
+             * the game keeps along the bottom. */
+            boxes.add(new Box("back", TOP_RIGHT, rightX, topY, buttonWidth, buttonHeight));
+            boxes.add(new Box("keyboard", TOP_RIGHT, rightX, topY + row, buttonWidth, buttonHeight));
             return placed(boxes, w, edge, mirrored);
         }
+        boxes.add(new Box("pause", TOP_LEFT, 20 + buttonWidth / 2, topY, buttonWidth, buttonHeight));
+        boxes.add(new Box("headlights", TOP_RIGHT, rightX - column, topY, buttonWidth, buttonHeight));
+        boxes.add(new Box("recover", TOP_RIGHT, rightX, topY, buttonWidth, buttonHeight));
+
+        /* Steering: two buttons, one for each way.  They used to share the
+         * layout with a D-pad whose other two arms walked through menus; the
+         * menus take a finger where it points now, so there is nothing left for
+         * a D-pad to do. */
+        final float steerWidth = 68 * size, steerHeight = 76 * size;
+        final float steerY = snap(h - 20 - steerHeight / 2);
+        final float steerHalf = steerHeight / 2;
+        final float leftX = 20 + steerWidth / 2;
+        boxes.add(new Box("steer_left", STEERING, leftX, steerY, steerWidth, steerHeight));
+        boxes.add(new Box("steer_right", STEERING, leftX + cells(steerWidth + 8 + 26 * physical), steerY,
+                          steerWidth, steerHeight));
 
         /* Horn and spikes right above the steering, the gears above them in the
          * same two columns.  Only a screen too short for that puts the gears

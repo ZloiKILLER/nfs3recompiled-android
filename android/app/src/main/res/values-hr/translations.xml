@@ -77,7 +77,6 @@
 
  <string name="touch_preview_description">Interaktivni pregled digitalnog upravljanja</string>
  <string name="touch_preview_hint">Isprobaj upravljanje</string>
- <string name="touch_digital_note">Pritisni ☰ za prebacivanje između rasporeda izbornika i utrke</string>
  <string name="touch_dim_label">Sakrij gumbe</string>
  <string name="touch_edge_label">Udaljenost od rubova</string>
  <string name="touch_raise_label">Podigni vozačke gumbe</string>
@@ -117,7 +116,6 @@
  <string name="touch_keys_hint">Tipka tipkovnice koju šalje svaka kontrola na zaslonu. Mora odgovarati tipki postavljenoj u igri.</string>
 
  <string name="pref_phone_vibration">Vibracija telefona (efekti igre; ponovno pokreni igru)</string>
- <string name="pref_separate_layouts">Odvojeni rasporedi za izbornik i utrku</string>
  <string name="pref_show_gears">Prikaži gumbe stupnjeva − / +</string>
  <string name="pref_hide_full">Sakrij potpuno (inače blijeda silueta)</string>
  <string name="auto_hide_delay">Odgoda: %1$d s</string>
@@ -125,7 +123,6 @@
  <string name="editor_touch_zone">Zona dodira: %1$d%%</string>
  <string name="editor_mode_race">Utrka</string>
  <string name="editor_mode_menu">Izbornik</string>
- <string name="editor_mode_shared">Zajednički</string>
  <string name="editor_reset_title">Vratiti ovaj raspored?</string>
  <string name="editor_reset_message">Vrati zadane položaje, veličine gumba i zone dodira ovog rasporeda.</string>
  <string name="edit_touch_layout">Uredi položaje i zone dodira</string>
@@ -145,10 +142,7 @@
  <string name="importer_open_zip_failed">Odabrani ZIP nije moguće otvoriti</string>
  <string name="importer_zip_missing_files">U ZIP-u nedostaju očekivane mape fedata/gamedata</string>
 
- <string name="faq_layout_modes"><b>Izbornik ili utrka?</b>\nS uključenim odvojenim rasporedima između njih prebacuje jedan gumb ☰: raspored izbornika daje četverosmjerni križ s ✓ i ←, a utrke gumbe lijevo / desno i papučice. Sam se nikada ne prebacuje. Uz jedan zajednički raspored svi gumbi ostaju vidljivi: četverosmjerni križ skreće i služi za kretanje po izbornicima, a ✓ / ← rade u izbornicima.</string>
- <string name="faq_mouse"><b>Kako radi miš?</b>\nPovuci prstom po praznom dijelu zaslona da pomakneš pokazivač. Ako nakon povlačenja podigneš prst, klika nema. Kratak dodir bez pomaka klikne na položaju pokazivača. Drži prst mirno: tipka ostaje pritisnuta i možeš povlačiti; podigni prst da je otpustiš. Geste s više prstiju ne kliknu.</string>
  <string name="faq_size"><b>Što mijenja veličina?</b>\nUkupna veličina skalira zadane gumbe. U «Uredi položaje i zone dodira» povuci gumb i podesi «Gumb» da promijeniš njegov izgled, ili «Zona dodira» da promijeniš samo gdje reagira. Crtkane linije prikazuju zone dodira; postoci se odnose na zadani gumb. Promjene se spremaju same. Uređivač prikazuje mrežu; uz „Poravnaj s mrežom” povučeni element sjeda na nju.</string>
- <string name="faq_shared_layouts"><b>Jedan raspored ili dva?</b>\nAko je «Odvojeni rasporedi za izbornik i utrku» isključeno, u izbornicima i utrkama vrijede isti gumbi, položaji i veličine. Uključi da svaki način podesiš zasebno. Prebacivanje čuva oba spremljena rasporeda. Vraćanje se odnosi samo na odabrani. «Upravljanje lijevo / desno» zrcali i zadane i ručno spremljene položaje.</string>
  <string name="faq_edges"><b>Rubovi i visina</b>\nUdaljenost od rubova pomiče zadane gumbe prema unutra. «Podigni vozačke gumbe» podiže donje zadane gumbe. Sistemski izrezi se poštuju. Ručno postavljeni gumbi zadržavaju spremljene položaje.</string>
  <string name="faq_hiding"><b>Neprozirnost i automatsko skrivanje</b>\nNeprozirnost određuje uobičajenu vidljivost. Skrivanje počinje kad podigneš sve prste, nakon 1–30 sekundi. Odaberi blijedu siluetu ili potpunu nevidljivost. Skriveni gumbi reagiraju već na prvi dodir i ponovno postaju vidljivi. Držanje gumba sprječava skrivanje. Pritisak na kontroleru odmah skriva gumbe; sljedeći dodir ih vraća.</string>
  <string name="faq_gears"><b>Ručni mjenjač</b>\n«Prikaži gumbe stupnjeva − / +» dodaje dva neobavezna gumba u raspored utrke. Uključi ručni mjenjač u igri. Njihove tipke postavljaju se u Upravljanje → Dodir → Tipke i moraju odgovarati postavkama igre.</string>

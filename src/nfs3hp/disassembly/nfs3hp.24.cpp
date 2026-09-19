@@ -3,6 +3,10 @@
 
 namespace nfs3hp
 {
+// Port (tools/apply_loading_screen.py): defined in nfs3hp_main.cpp.
+void loadingScreenFit(win32::WinApplication* app, x86::CPU& cpu, bool on);
+// Port (tools/apply_race_state.py): defined in nfs3hp_main.cpp.
+void raceRunning(bool running);
 
 /* align: skip 0x8d 0x40 0x00 0x8b 0xc9 */
 void Application::sub_4a1090(WinApplication* app, x86::CPU& cpu)
@@ -9329,6 +9333,7 @@ void Application::sub_4a3400(WinApplication* app, x86::CPU& cpu)
     (cpu.esp) -= x86::reg32(x86::sreg32(16 /*0x10*/));
     // 004a3409  ba01000000             -mov edx, 1
     cpu.edx = 1 /*0x1*/;
+    raceRunning(true); /* port: sub_4a3400 sets a race up */
     // 004a340e  b80d000000             -mov eax, 0xd
     cpu.eax = 13 /*0xd*/;
     // 004a3413  e8e8e4f8ff             -call 0x431900
@@ -9794,6 +9799,7 @@ L_0x004a35b8:
     cpu.eax ^= x86::reg32(x86::sreg32(cpu.eax));
 L_0x004a35c4:
     // 004a35c4  89ec                   -mov esp, ebp
+    loadingScreenFit(app, cpu, false); /* port: loaded, the whole screen again */
     cpu.esp = cpu.ebp;
     // 004a35c6  5d                     -pop ebp
     cpu.ebp = app->getMemory<x86::reg32>(cpu.esp);
@@ -9836,6 +9842,7 @@ void Application::sub_4a35d0(WinApplication* app, x86::CPU& cpu)
     cpu.ebp = cpu.esp;
     // 004a35d7  89c6                   -mov esi, eax
     cpu.esi = cpu.eax;
+    raceRunning(false); /* port: sub_4a35d0 takes it down again */
     // 004a35d9  a1c8fe5500             -mov eax, dword ptr [0x55fec8]
     cpu.eax = app->getMemory<x86::reg32>(x86::reg32(5635784) /* 0x55fec8 */);
     // 004a35de  31d2                   -xor edx, edx

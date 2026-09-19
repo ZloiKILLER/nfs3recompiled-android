@@ -198,7 +198,7 @@ public class NFS3Activity extends SDLActivity
     {
         if (touchControlsOverlay != null)
             touchControlsOverlay.releaseAll();
-        if (gameSurface != null) gameSurface.touchMouse.cancel();
+        if (gameSurface != null) gameSurface.pointer.cancel();
         if(haptics!=null)haptics.pause();
         super.onPause();
     }
@@ -232,9 +232,12 @@ public class NFS3Activity extends SDLActivity
      * needed and these handlers no longer steer the output. */
     @Override public boolean dispatchTouchEvent(android.view.MotionEvent event) {
         /* Only the screen presses the on-screen controls.  A pointer driven from
-         * elsewhere -- the DualSense touchpad, which Android turns into a mouse
-         * pointer but reports with a finger tool type -- would otherwise press
-         * whichever control the pointer happened to be over. */
+         * elsewhere -- a mouse, or the DualSense touchpad, which Android turns
+         * into a mouse pointer but reports with a finger tool type -- goes
+         * straight to the game, or it would press whichever control the pointer
+         * happened to be over. */
+        if(isExternalPointer(event))
+            return forwardPointer(event);
         if(touchControlsOverlay!=null&&isScreenTouch(event))
             touchControlsOverlay.onScreenTouch(event);
         return super.dispatchTouchEvent(event);
@@ -252,30 +255,45 @@ public class NFS3Activity extends SDLActivity
                ||event.isFromSource(android.view.InputDevice.SOURCE_TOUCHPAD));
     }
 
-    /* A real pointer goes to SDL as a mouse, which the game's DirectInput mouse
-     * then reads.  SDLSurface does this only for a mouse tool type, so a
-     * touchpad pointer -- a finger tool type -- used to be taken for a touch on
-     * the screen and drove the on-screen mouse emulation instead. */
+    /* A real pointer -- a mouse, or a touchpad Android drives as one -- is the
+     * game's pointer the way a finger is: where it is on the screen, and which
+     * buttons are down (nativeMousePointer).  It used to go to SDL as a mouse
+     * and reach the game as the distance it moved, which counts in pixels of the
+     * phone's screen while the game's cursor counts in the 640 across a menu, so
+     * the two parted company at once.  It is not the finger's pointer either:
+     * its buttons are real, so a press is a press, and it keeps working in a
+     * race, where a finger does not. */
+    private boolean implicitPrimary;
     boolean forwardPointer(android.view.MotionEvent event) {
         tracePointer(event);
-        int action=event.getActionMasked();
-        int buttons=event.getButtonState();
-        switch(action) {
+        int buttons=mouseButtons(event.getButtonState());
+        switch(event.getActionMasked()) {
         case android.view.MotionEvent.ACTION_DOWN:
             // A tap on a touchpad is a click that reports no button; it means the primary one.
-            if(buttons==0)buttons=android.view.MotionEvent.BUTTON_PRIMARY;
+            implicitPrimary=buttons==0;
             break;
-        case android.view.MotionEvent.ACTION_CANCEL:
-            action=android.view.MotionEvent.ACTION_UP;buttons=0;
-            break;
-        case android.view.MotionEvent.ACTION_UP:
         case android.view.MotionEvent.ACTION_MOVE:
             break;
+        case android.view.MotionEvent.ACTION_UP:
+        case android.view.MotionEvent.ACTION_CANCEL:
+            implicitPrimary=false;buttons=0;
+            break;
         default:
-            return false;
+            return true;
         }
-        SDLActivity.onNativeMouse(buttons,action,event.getX(),event.getY(),false);
+        if(implicitPrimary)buttons|=1;
+        nativeMousePointer(event.getX(),event.getY(),buttons);
         return true;
+    }
+
+    /* Android's button state as the native side counts buttons: bit 0 left,
+     * 1 right, 2 middle. */
+    private static int mouseButtons(int state) {
+        int buttons=0;
+        if((state&android.view.MotionEvent.BUTTON_PRIMARY)!=0)buttons|=1;
+        if((state&android.view.MotionEvent.BUTTON_SECONDARY)!=0)buttons|=2;
+        if((state&android.view.MotionEvent.BUTTON_TERTIARY)!=0)buttons|=4;
+        return buttons;
     }
 
     /* A gamepad in the player's hands: the on-screen controls get out of the way
@@ -284,7 +302,62 @@ public class NFS3Activity extends SDLActivity
         if(touchControlsOverlay!=null&&event.getAction()==android.view.KeyEvent.ACTION_DOWN
            &&GamepadSlots.isGamepad(event.getDevice()))
             touchControlsOverlay.hideForGamepad();
+        if(isSystemBack(event)) {
+            systemBack(event);
+            return true;
+        }
         return super.dispatchKeyEvent(event);
+    }
+
+    /* The system's back -- the gesture, or the navigation bar's button -- is the
+     * game's Esc, in its menus and in a race alike: it leaves a screen, and in a
+     * race it opens the pause menu.  SDL used to take the key for a key of its
+     * own, AC_BACK, which the game knows nothing of, so back did nothing at all.
+     * A back button on a gamepad stays the pad's, which the player maps
+     * themselves, and a mouse's stays out of it as SDL keeps it. */
+    private static boolean isSystemBack(android.view.KeyEvent event) {
+        return event.getKeyCode()==android.view.KeyEvent.KEYCODE_BACK
+            &&!GamepadSlots.isGamepad(event.getDevice())
+            &&!event.isFromSource(android.view.InputDevice.SOURCE_MOUSE);
+    }
+
+    /* With the keyboard up, back puts it away, as it does everywhere else, and
+     * leaves the screen being typed into where it is.
+     *
+     * Esc stays down for ESCAPE_HOLD_MS at least.  The back gesture reports its
+     * key going down and up together, once the gesture is over, and a race does
+     * not wait for key messages: it looks at which keys are down once a frame,
+     * so an Esc let go before the next frame never paused it, while the menus,
+     * which read the messages, took it.  The overlay's pause button holds its
+     * key as long for the same reason. */
+    private static final long ESCAPE_HOLD_MS=100;
+    private final android.os.Handler backHandler=new android.os.Handler(android.os.Looper.getMainLooper());
+    private final Runnable escapeUp=()->SDLActivity.onNativeKeyUp(android.view.KeyEvent.KEYCODE_ESCAPE);
+    private boolean backClosesKeyboard;
+    private long escapeDownAt;
+    private void systemBack(android.view.KeyEvent event) {
+        switch(event.getAction()) {
+        case android.view.KeyEvent.ACTION_DOWN:
+            if(event.getRepeatCount()>0)return;
+            backClosesKeyboard=nativeKeyboardActive();
+            if(!backClosesKeyboard) {
+                backHandler.removeCallbacks(escapeUp);
+                escapeDownAt=android.os.SystemClock.uptimeMillis();
+                SDLActivity.onNativeKeyDown(android.view.KeyEvent.KEYCODE_ESCAPE);
+            }
+            break;
+        case android.view.KeyEvent.ACTION_UP:
+            if(backClosesKeyboard) {
+                if(nativeKeyboardActive())nativeToggleKeyboard();
+            } else {
+                long held=android.os.SystemClock.uptimeMillis()-escapeDownAt;
+                backHandler.postDelayed(escapeUp,Math.max(0,ESCAPE_HOLD_MS-held));
+            }
+            backClosesKeyboard=false;
+            break;
+        default:
+            break;
+        }
     }
 
     private static final int[] GAMEPAD_AXES={
@@ -304,18 +377,27 @@ public class NFS3Activity extends SDLActivity
 
     @Override public boolean dispatchGenericMotionEvent(android.view.MotionEvent event) {
         if(touchControlsOverlay!=null&&isGamepadMotion(event))touchControlsOverlay.hideForGamepad();
-        // Hover and scroll from a pointer SDL would ignore for its finger tool type.
-        if(isExternalPointer(event)&&event.getToolType(0)!=android.view.MotionEvent.TOOL_TYPE_MOUSE) {
+        /* The rest of a real pointer: moving with no button down, and buttons
+         * pressed while another is held, which Android reports here rather than
+         * as a touch.  The wheel still goes to SDL, which the game's DirectInput
+         * mouse reads as its own. */
+        if(isExternalPointer(event)) {
             int action=event.getActionMasked();
-            if(action==android.view.MotionEvent.ACTION_HOVER_MOVE) {
+            switch(action) {
+            case android.view.MotionEvent.ACTION_HOVER_ENTER:
+            case android.view.MotionEvent.ACTION_HOVER_MOVE:
+            case android.view.MotionEvent.ACTION_BUTTON_PRESS:
+            case android.view.MotionEvent.ACTION_BUTTON_RELEASE:
                 tracePointer(event);
-                SDLActivity.onNativeMouse(0,action,event.getX(),event.getY(),false);
+                nativeMousePointer(event.getX(),event.getY(),
+                    mouseButtons(event.getButtonState())|(implicitPrimary?1:0));
                 return true;
-            }
-            if(action==android.view.MotionEvent.ACTION_SCROLL) {
+            case android.view.MotionEvent.ACTION_SCROLL:
                 tracePointer(event);
                 SDLActivity.onNativeMouse(0,action,event.getAxisValue(android.view.MotionEvent.AXIS_HSCROLL),
                     event.getAxisValue(android.view.MotionEvent.AXIS_VSCROLL),false);
+                return true;
+            default:
                 return true;
             }
         }
@@ -362,6 +444,14 @@ public class NFS3Activity extends SDLActivity
         runOnUiThread(()->{if(haptics!=null&&android.os.SystemClock.uptimeMillis()-sent<100)haptics.setTurn(turn);});
     }
 
+    /** Whether the player is driving, from the game itself (nfs3hp_main.cpp):
+     *  the on-screen controls carry the racing layout while a race is running
+     *  with nothing over it, and the menu layout the rest of the time -- in the
+     *  front end, and while a menu stands over a race. */
+    public void onGameDriving(boolean driving) {
+        runOnUiThread(()->{if(touchControlsOverlay!=null)touchControlsOverlay.setMenuMode(!driving);});
+    }
+
     /** Invoked by the menu overlay. SDL's hidden edit view forwards committed
      * text as SDL_TEXT_INPUT, which the Win32 bridge exposes as WM_CHAR. */
     /* The same button opens and closes, and both ways go through SDL rather
@@ -375,20 +465,17 @@ public class NFS3Activity extends SDLActivity
         nativeToggleKeyboard();
     }
 
-    /* The touch D-pad's up and down arms (TouchControlsOverlay.MENU_KEY): keys
-     * for moving through menus, handed to the native side apart from SDL's
-     * keyboard state, which is where it reads the pedals from.  They reach the
-     * game on the next frame. */
-    static void sendTouchMenuKey(int keyCode, boolean down) {
-        String name=GamePreferences.keyName(keyCode);
-        if(!running||"unknown".equals(name))return;
-        try { nativeTouchMenuKey(name,down); }
-        catch(UnsatisfiedLinkError notLoaded) { }
-    }
-
+    /* A finger on the game's picture, in window pixels: TouchPointer.DOWN, MOVE
+     * or UP.  The game reads it as its own pointer -- see nfs3hp_main.cpp, which
+     * turns the place the finger reached into the movement the game's cursor
+     * needs to get there. */
+    private static native void nativeScreenTouch(int action, float x, float y);
+    /* A real mouse, in window pixels, with its buttons: bit 0 left, 1 right,
+     * 2 middle. */
+    private static native void nativeMousePointer(float x, float y, int buttons);
     private static native void nativeToggleKeyboard();
+    private static native boolean nativeKeyboardActive();
     private static native void nativeSetGamepadSlots(String first, String second);
-    private static native void nativeTouchMenuKey(String key, boolean down);
 
     private void setEnv(String name, String value)
     {
@@ -405,37 +492,34 @@ public class NFS3Activity extends SDLActivity
 
     private final class GameSurface extends SDLSurface
     {
-        final TouchMouseInput touchMouse;
+        final TouchPointer pointer;
         GameSurface(Context context)
         {
             super(context);
-            touchMouse = new TouchMouseInput(this, SDLActivity::onNativeMouse);
+            pointer = new TouchPointer(this, NFS3Activity::nativeScreenTouch);
         }
 
-        /* No system arrow over the game.  The game draws its own cursor and
-         * moves it from the mouse deltas SDL passes on, so Android's pointer
-         * would be a second cursor that does not even agree with the first --
-         * the two drift apart as soon as the game's own sensitivity or the
-         * letterboxed 4:3 picture comes into it. */
+        /* No system arrow over the game.  The game draws its own cursor, and a
+         * finger puts it exactly where it touched, so Android's pointer would be
+         * a second cursor sitting somewhere else. */
         @Override public android.view.PointerIcon onResolvePointerIcon(android.view.MotionEvent event, int pointerIndex) {
             return android.view.PointerIcon.getSystemIcon(getContext(), android.view.PointerIcon.TYPE_NULL);
         }
 
         @Override public boolean onTouch(android.view.View v, android.view.MotionEvent event) {
-            if(isExternalPointer(event))
-                return forwardPointer(event);
-            /* Touch switched off: the finger is taken here, so SDL does not
-             * turn it into a mouse of its own either. */
+            /* A real pointer never gets this far: dispatchTouchEvent hands it
+             * to the game first.  Touch switched off: the finger is taken here,
+             * so SDL does not turn it into a mouse of its own either. */
             if(!touchEnabled)
                 return true;
             int tool=event.getToolType(0);
             if(tool==android.view.MotionEvent.TOOL_TYPE_FINGER||tool==android.view.MotionEvent.TOOL_TYPE_UNKNOWN)
-                return touchMouse.onTouch(event);
+                return pointer.onTouch(event);
             return super.onTouch(v,event);
         }
 
         @Override public void onWindowFocusChanged(boolean focus) {
-            super.onWindowFocusChanged(focus);if(!focus)touchMouse.cancel();
+            super.onWindowFocusChanged(focus);if(!focus)pointer.cancel();
         }
 
         @Override

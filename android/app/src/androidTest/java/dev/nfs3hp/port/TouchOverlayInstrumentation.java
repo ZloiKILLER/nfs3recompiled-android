@@ -65,11 +65,8 @@ public final class TouchOverlayInstrumentation extends Instrumentation {
                     }
                     shot.recycle();
                     RectF gas=bounds(view,"accelerate"),spikes=bounds(view,"spike_strip");
-                    /* Steering left is a button in the separate race layout and the
-                     * D-pad's left arm in the shared one -- whichever the tester set. */
-                    RectF stick;float sx;
-                    try { stick=bounds(view,"steer_left");sx=stick.left+stick.width()*.18f; }
-                    catch(AssertionError sharedLayout) { stick=bounds(view,"steering");sx=stick.left+stick.width()*.1f; }
+                    RectF stick=bounds(view,"steer_left");
+                    float sx=stick.left+stick.width()*.18f;
                     float sy=stick.centerY(),gx=gas.centerX(),gy=gas.centerY();
                     int left=GamePreferences.getTouchKey(GamePreferences.get(getTargetContext()),"steer_left");
                     int up=GamePreferences.getTouchKey(GamePreferences.get(getTargetContext()),"accelerate");
@@ -90,18 +87,20 @@ public final class TouchOverlayInstrumentation extends Instrumentation {
                     touch(view,MotionEvent.ACTION_DOWN,new int[]{51},spikes.centerX(),spikes.centerY());
                     require(held(view).containsKey(spikeKey),"spike strip emits its configured key");
                     view.releaseAll();
-                    GamePreferences.get(getTargetContext()).edit().putBoolean(GamePreferences.TOUCH_SEPARATE,true).apply();
-                    view.refreshSettings();
-                    RectF mode=bounds(view,"mode");
-                    touch(view,MotionEvent.ACTION_DOWN,new int[]{9},mode.centerX(),mode.centerY());
-                    bounds(view,"confirm");bounds(view,"keyboard");
+                    /* The menu layout is what the game asks for when it is not racing:
+                     * back and the keyboard, and nothing a race needs. */
+                    view.setMenuMode(true);
+                    bounds(view,"back");bounds(view,"keyboard");
                     require(TouchRefinementChecks.bounds(view,"headlights","box")==null
-                        &&TouchRefinementChecks.bounds(view,"recover","box")==null,"menu hides race utilities");
-                    require((boolean)field(view,"menuMode"),"explicit menu navigation available");
+                        &&TouchRefinementChecks.bounds(view,"recover","box")==null
+                        &&TouchRefinementChecks.bounds(view,"steer_left","box")==null
+                        &&TouchRefinementChecks.bounds(view,"accelerate","box")==null,"the menu layout leaves the race behind");
+                    require((boolean)field(view,"menuMode"),"the game decides which layout is up");
+                    view.setMenuMode(false);
                     view.releaseAll();require(held(view).isEmpty(),"pause clears key state");
                     android.content.SharedPreferences prefs=GamePreferences.get(getTargetContext());
                     Map<String,?> saved=prefs.getAll();
-                    ArrayList<String> changed=new ArrayList<>(Arrays.asList(GamePreferences.TOUCH_SIZE,GamePreferences.TOUCH_EDGE,GamePreferences.TOUCH_RAISE,GamePreferences.TOUCH_LAYOUT,GamePreferences.TOUCH_SEPARATE));
+                    ArrayList<String> changed=new ArrayList<>(Arrays.asList(GamePreferences.TOUCH_SIZE,GamePreferences.TOUCH_EDGE,GamePreferences.TOUCH_RAISE,GamePreferences.TOUCH_LAYOUT));
                     /* What is checked here is the default arrangement: controls a tester
                      * dragged in the layout editor are set aside for the check and put
                      * back afterwards exactly as they were. */
@@ -111,13 +110,11 @@ public final class TouchOverlayInstrumentation extends Instrumentation {
                     try {
                         prefs.edit().putInt(GamePreferences.TOUCH_SIZE,115).putInt(GamePreferences.TOUCH_EDGE,32)
                             .putInt(GamePreferences.TOUCH_RAISE,24).apply();
-                        Field modeField=view.getClass().getDeclaredField("menuMode");
-                        modeField.setAccessible(true);
-                        // The separate race layout, and the shared layout as the game shows it: in its menus.
-                        for(boolean separate:new boolean[]{true,false})
+                        // Both layouts, both ways round.
+                        for(boolean menu:new boolean[]{false,true})
                         for(String layout:new String[]{GamePreferences.TOUCH_LAYOUT_STANDARD,GamePreferences.TOUCH_LAYOUT_MIRRORED}) {
-                            prefs.edit().putBoolean(GamePreferences.TOUCH_SEPARATE,separate).putString(GamePreferences.TOUCH_LAYOUT,layout).apply();
-                            modeField.setBoolean(view,!separate);
+                            prefs.edit().putString(GamePreferences.TOUCH_LAYOUT,layout).apply();
+                            view.setMenuMode(menu);
                             view.layout(0,0,640,340);view.refreshSettings();
                             ArrayList<RectF> boxes=new ArrayList<>();
                             for(Object control:(Iterable<?>)field(view,"controls")) {
@@ -145,10 +142,6 @@ public final class TouchOverlayInstrumentation extends Instrumentation {
             if(failure[0]!=null) throw new AssertionError(failure[0]);
             TouchRefinementChecks.run(this);
             SaveGameChecks.run(this);
-            // The settings preview check below exercises the shared racing layout;
-            // do not inherit a tester's saved separate-menu preference.
-            GamePreferences.get(getTargetContext()).edit()
-                .putBoolean(GamePreferences.TOUCH_SEPARATE,false).commit();
             android.app.Activity activity=startActivitySync(new android.content.Intent(getTargetContext(),LauncherActivity.class)
                 .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK));
             waitForIdleSync();
@@ -181,19 +174,11 @@ public final class TouchOverlayInstrumentation extends Instrumentation {
                      * card, so the preview, the editor and the game agree. */
                     float areaW=(float)field(canvas,"areaW"),areaH=(float)field(canvas,"areaH");
                     float refW=(float)field(canvas,"referenceWidth"),refH=(float)field(canvas,"referenceHeight");
-                    require(Math.abs(areaW/areaH-refW/refH)<.01f,"the preview lays controls out on the screen's own shape");
+                    require(Math.abs(areaW/areaH-refW/refH)<.01f,"the preview lays controls out on the screen's own shape: area "+areaW+"x"+areaH+" ref "+refW+"x"+refH+" view "+canvas.getWidth()+"x"+canvas.getHeight());
                 } catch(Exception e) { throw new RuntimeException(e); }
                 try {
-                    RectF leftButton;
-                    float touchX;
-                    try {
-                        leftButton=bounds(canvas,"steer_left");
-                        touchX=leftButton.centerX();
-                    } catch(AssertionError separateMenuLayout) {
-                        leftButton=bounds(canvas,"steering");
-                        touchX=leftButton.left+leftButton.width()*.1f;
-                    }
-                    touch(canvas,MotionEvent.ACTION_DOWN,new int[]{61},touchX,leftButton.centerY());
+                    RectF leftButton=bounds(canvas,"steer_left");
+                    touch(canvas,MotionEvent.ACTION_DOWN,new int[]{61},leftButton.centerX(),leftButton.centerY());
                     int leftKey=GamePreferences.getTouchKey(GamePreferences.get(getTargetContext()),"steer_left");
                     require(held(canvas).containsKey(leftKey),"a control in the fitted preview is touchable");
                     canvas.releaseAll();

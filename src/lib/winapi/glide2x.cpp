@@ -21,6 +21,56 @@ void setPreferredAtlasSize(x86::reg32 size)
     s_preferredAtlasSize = size;
 }
 
+/* fitFourThree: x becomes s_fitOffset + x * s_fitScale for everything drawn. */
+static float s_fitScale = 1.0f, s_fitOffset = 0.0f;
+/* The clip window as grClipWindow last set it, put back after clearPicture. */
+static x86::reg32 s_clipWindow[4];
+static bool s_clipWindowSet = false;
+
+void fitFourThree(bool on)
+{
+    s_fitScale = 1.0f;
+    s_fitOffset = 0.0f;
+    if (!on || !s_renderer)
+        return;
+    const float width = float(s_renderer->getWidth()), height = float(s_renderer->getHeight());
+    if (height <= 0 || width * 3 <= height * 4)
+        return;
+    s_fitScale = height * 4 / (width * 3);
+    s_fitOffset = (width - height * 4 / 3) / 2;
+}
+
+void clearPicture(WinApplication* app, x86::CPU& cpu)
+{
+    if (!s_renderer || !s_glideRenderer)
+        return;
+    app->unlockContext(cpu);
+    s_glideRenderer->setClipWindow(0, 0, s_renderer->getWidth(), s_renderer->getHeight());
+    s_glideRenderer->clear(0);
+    if (s_clipWindowSet)
+        s_glideRenderer->setClipWindow(s_clipWindow[0], s_clipWindow[1], s_clipWindow[2], s_clipWindow[3]);
+    app->lockContext(cpu);
+}
+
+static const GrVertex* fitted(const GrVertex* vertex, GrVertex& copy)
+{
+    if (s_fitScale == 1.0f && s_fitOffset == 0.0f)
+        return vertex;
+    copy = *vertex;
+    copy.x = s_fitOffset + copy.x * s_fitScale;
+    return &copy;
+}
+
+bool screenRect(int& x, int& y, int& w, int& h, int& pictureWidth, int& pictureHeight)
+{
+    if (!s_renderer)
+        return false;
+    s_renderer->getViewportRect(x, y, w, h);
+    pictureWidth = int(s_renderer->getWidth());
+    pictureHeight = int(s_renderer->getHeight());
+    return w > 0 && h > 0 && pictureWidth > 0 && pictureHeight > 0;
+}
+
 void setSwapObserver(SwapObserver observer)
 {
     s_swapObserver = observer;
@@ -492,6 +542,14 @@ static x86::reg32 grSstWinOpen(WinApplication* app, x86::CPU& cpu, HWND hWnd,
         width = 1280;
         height = 720;
         break;
+    case win32::glide2x::kResolution1600x900:
+        width = 1600;
+        height = 900;
+        break;
+    case win32::glide2x::kResolution1920x1080:
+        width = 1920;
+        height = 1080;
+        break;
     default:
         SDL_LogError(SDL_LOG_CATEGORY_RENDER, "Unsupported resolution: %d", resolution);
         width = 640;
@@ -621,6 +679,11 @@ static void grClipWindow(WinApplication* app, x86::CPU& cpu,
 {
     NFS2_USE(app);
     NFS2_USE(cpu);
+    s_clipWindow[0] = minX;
+    s_clipWindow[1] = minY;
+    s_clipWindow[2] = maxX;
+    s_clipWindow[3] = maxY;
+    s_clipWindowSet = true;
     s_glideRenderer->setClipWindow(minX, minY, maxX, maxY);
 }
 
@@ -908,13 +971,17 @@ static void grDrawTriangle(WinApplication* app, x86::CPU& cpu, const GrVertex* a
 {
     NFS2_USE(app);
     NFS2_USE(cpu);
-    s_glideRenderer->drawTriangle(a, b, c);
+    GrVertex fitA, fitB, fitC;
+    s_glideRenderer->drawTriangle(fitted(a, fitA), fitted(b, fitB), fitted(c, fitC));
 }
 
 static void grDrawLine(WinApplication* app, x86::CPU& cpu, const GrVertex *a, const GrVertex *b)
 {
     NFS2_USE(app);
     NFS2_USE(cpu);
+    GrVertex fitA, fitB;
+    a = fitted(a, fitA);
+    b = fitted(b, fitB);
     float orthX = a->y - b->y;
     float orthY = b->x - a->x;
     float len = ::sqrt(orthX*orthX + orthY * orthY);

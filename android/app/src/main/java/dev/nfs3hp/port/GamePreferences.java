@@ -14,9 +14,15 @@ final class GamePreferences
         SharedPreferences.Editor edit=preferences.edit().putString(TOUCH_LAYOUT,layout);
         boolean mirrored=TOUCH_LAYOUT_MIRRORED.equals(layout);
         if(mirrored!=TOUCH_LAYOUT_MIRRORED.equals(old)) {
-            for(Map.Entry<String,?> entry:preferences.getAll().entrySet())
-                if(entry.getKey().startsWith("touch_position_")&&entry.getKey().endsWith("_x")&&entry.getValue() instanceof Float)
+            /* A placed control goes to the other side: the edge it keeps its
+             * distance from, or the fraction of an older layout, flips. */
+            for(Map.Entry<String,?> entry:preferences.getAll().entrySet()) {
+                if(!entry.getKey().startsWith("touch_position_")) continue;
+                if(entry.getKey().endsWith("_x")&&entry.getValue() instanceof Float)
                     edit.putFloat(entry.getKey(),1f-(Float)entry.getValue());
+                else if(entry.getKey().endsWith("_from_right")&&entry.getValue() instanceof Boolean)
+                    edit.putBoolean(entry.getKey(),!(Boolean)entry.getValue());
+            }
         }
         edit.apply();
     }
@@ -52,7 +58,6 @@ final class GamePreferences
     static final String TOUCH_AUTO_HIDE = "touch_auto_hide";
     static final String TOUCH_EDGE = "touch_edge_spacing";
     static final String TOUCH_RAISE = "touch_raise_controls";
-    static final String TOUCH_SEPARATE = "touch_separate_layouts";
     /* Whether the save archive carries the game's own settings.  Remembered
      * rather than read off the checkbox: the data screen is rebuilt every time
      * the system file picker returns, which used to blank the box and make a
@@ -66,6 +71,12 @@ final class GamePreferences
     /* Whether a control dragged in the layout editor lands on its grid
      * (TouchLayout.GRID).  On unless switched off. */
     static final String TOUCH_SNAP = "touch_editor_snap";
+    /* The area, in pixels, the touch controls had in the game the last time it
+     * ran, for the launcher's previews to lay them out in exactly as the game
+     * does (TouchPreviewFrame).  Written by the game's overlay; this device's
+     * alone, so never carried in a settings file. */
+    static final String TOUCH_GAME_WIDTH = "touch_game_area_width";
+    static final String TOUCH_GAME_HEIGHT = "touch_game_area_height";
     /* Whether the first gamepad vibrates at all: off until the player turns it
      * on in Controls -> Gamepads, while how strong stays the game's Force
      * Feedback menu's to say.  A key of its own rather than 0.72's

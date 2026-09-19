@@ -16677,7 +16677,7 @@ L_0x0047262b:
     // 00472666  891d14bc6f00           -mov dword ptr [0x6fbc14], ebx
     app->getMemory<x86::reg32>(x86::reg32(7322644) /* 0x6fbc14 */) = cpu.ebx;
     // 0047266c  893d28bc6f00           -mov dword ptr [0x6fbc28], edi
-    app->getMemory<x86::reg32>(x86::reg32(7322664) /* 0x6fbc28 */) = cpu.edi;
+    app->getMemory<x86::reg32>(x86::reg32(7322664) /* 0x6fbc28 */) = 0; /* port: View Distance Full, was Far */
     // 00472672  891d1cbc6f00           -mov dword ptr [0x6fbc1c], ebx
     app->getMemory<x86::reg32>(x86::reg32(7322652) /* 0x6fbc1c */) = cpu.ebx;
     // 00472678  89fe                   -mov esi, edi
@@ -18932,7 +18932,7 @@ L_0x00472dfa:
     // 00472dfe  c1fa10                 -sar edx, 0x10
     cpu.edx = x86::reg32(x86::sreg32(cpu.edx) >> (16 /*0x10*/ % 32));
     // 00472e01  891528bc6f00           -mov dword ptr [0x6fbc28], edx
-    app->getMemory<x86::reg32>(x86::reg32(7322664) /* 0x6fbc28 */) = cpu.edx;
+    app->getMemory<x86::reg32>(x86::reg32(7322664) /* 0x6fbc28 */) = 0; /* port: View Distance Full at any CPU speed */
     // 00472e07  8b544dce               -mov edx, dword ptr [ebp + ecx*2 - 0x32]
     cpu.edx = app->getMemory<x86::reg32>(cpu.ebp + x86::reg32(-50) /* -0x32 */ + cpu.ecx * 2);
     // 00472e0b  c1fa10                 -sar edx, 0x10

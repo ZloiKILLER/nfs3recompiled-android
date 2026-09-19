@@ -26,6 +26,7 @@
  <string name="controls_write_no_config">The game has no settings file yet. Start the game once, then try again.</string>
  <string name="controls_write_game_running">Close the game before writing its controls.</string>
  <string name="controls_write_failed">Could not write the controls: %1$s</string>
+ <string name="gamepads_keyboard_note">The game is set to its own keyboard controls (Default in game). The gamepads do nothing in split-screen races until you press Gamepad ON.</string>
  <string name="controls_help">Help: split screen</string>
  <string name="controls_help_title">Split screen with two gamepads</string>
  <string name="help_split_setup"><b>1. Set up the gamepads (once)</b>\nConnect both gamepads to the phone. In Controls → Gamepads press Assign under Gamepad 1 and press any button on player 1\'s pad, then do the same for Gamepad 2. Automatic works too: pads are taken in the order they connect. Buttons lets you choose what each button does.</string>

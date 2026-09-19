@@ -112,3 +112,41 @@ if __name__ == '__main__':
     # buffer and wheel spin kept per car, so split screen and the mirror match.
     from tools.apply_car_detail import apply as apply_car_detail
     apply_car_detail(Path(__file__).resolve().parent)
+
+    # View Distance: Full by default and 500 in every view, split screen and
+    # night included; the other settings stay the game's own.
+    from tools.apply_track_detail import apply as apply_track_detail
+    apply_track_detail(Path(__file__).resolve().parent)
+
+    # Race state: which of the two on-screen layouts belongs on the screen.
+    from tools.apply_race_state import apply as apply_race_state
+    apply_race_state(Path(__file__).resolve().parent)
+
+    # HUD scale: the parts of a HUD element keep their proportions on a wide
+    # screen instead of growing with its width.
+    from tools.apply_hud_scale import apply as apply_hud_scale
+    apply_hud_scale(Path(__file__).resolve().parent)
+
+    # Cabin fit: the in-car dashboard and wheel keep their shape on a wide screen.
+    from tools.apply_cabin_fit import apply as apply_cabin_fit
+    apply_cabin_fit(Path(__file__).resolve().parent)
+
+    # HUD editor: an element is framed, moved and checked for room as it is
+    # drawn, and written back to the layout as laid out.
+    from tools.apply_hud_editor import apply as apply_hud_editor
+    apply_hud_editor(Path(__file__).resolve().parent)
+
+    # Loading screen: 4:3 in the middle of a wide screen, as the Modern Patch
+    # shows it.
+    from tools.apply_loading_screen import apply as apply_loading_screen
+    apply_loading_screen(Path(__file__).resolve().parent)
+
+    # Alpha intensity: the Advanced Graphics slider, which the original applies
+    # on its Direct3D driver only.
+    from tools.apply_alpha_intensity import apply as apply_alpha_intensity
+    apply_alpha_intensity(Path(__file__).resolve().parent)
+
+    # Widescreen: a 16:9 screen size in the list, Hor+ cameras, and the
+    # interface fitted to the screen it is drawn on.
+    from tools.apply_widescreen import apply as apply_widescreen
+    apply_widescreen(Path(__file__).resolve().parent)

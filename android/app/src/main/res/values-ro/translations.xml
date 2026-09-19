@@ -77,7 +77,6 @@
 
  <string name="touch_preview_description">Previzualizare interactivă a comenzilor digitale</string>
  <string name="touch_preview_hint">Încearcă comenzile</string>
- <string name="touch_digital_note">Apasă ☰ pentru a comuta între aranjarea de meniu și cea de cursă</string>
  <string name="touch_dim_label">Ascunde butoanele</string>
  <string name="touch_edge_label">Distanța față de margini</string>
  <string name="touch_raise_label">Ridică comenzile de condus</string>
@@ -117,7 +116,6 @@
  <string name="touch_keys_hint">Tasta trimisă de fiecare comandă de pe ecran. Trebuie să corespundă cu tasta setată în joc.</string>
 
  <string name="pref_phone_vibration">Vibrația telefonului (efecte din joc; repornește jocul)</string>
- <string name="pref_separate_layouts">Aranjări separate pentru meniu și cursă</string>
  <string name="pref_show_gears">Arată butoanele de treaptă − / +</string>
  <string name="pref_hide_full">Ascunde complet (altfel siluetă estompată)</string>
  <string name="auto_hide_delay">Întârziere: %1$d s</string>
@@ -125,7 +123,6 @@
  <string name="editor_touch_zone">Zonă tactilă: %1$d%%</string>
  <string name="editor_mode_race">Cursă</string>
  <string name="editor_mode_menu">Meniu</string>
- <string name="editor_mode_shared">Comună</string>
  <string name="editor_reset_title">Resetezi această aranjare?</string>
  <string name="editor_reset_message">Restaurează pozițiile, mărimile butoanelor și zonele tactile implicite ale acestei aranjări.</string>
  <string name="edit_touch_layout">Editează pozițiile și zonele tactile</string>
@@ -145,10 +142,7 @@
  <string name="importer_open_zip_failed">ZIP-ul selectat nu poate fi deschis</string>
  <string name="importer_zip_missing_files">Din ZIP lipsesc folderele fedata/gamedata așteptate</string>
 
- <string name="faq_layout_modes"><b>Meniu sau cursă?</b>\nCu aranjările separate active, un singur buton ☰ comută între ele: aranjarea de meniu dă o cruce direcțională cu ✓ și ←, cea de cursă butoanele stânga / dreapta și pedalele. Nu comută niciodată singură. Cu o aranjare comună toate butoanele rămân vizibile: o cruce direcțională în patru direcții virează și navighează prin meniuri, iar ✓ / ← funcționează în meniuri.</string>
- <string name="faq_mouse"><b>Cum funcționează mausul?</b>\nGlisează pe o zonă goală a ecranului ca să miști cursorul. Dacă ridici degetul după glisare, nu se face clic. O atingere scurtă și nemișcată face clic în poziția cursorului. Ține degetul nemișcat: butonul rămâne apăsat și poți trage; ridică degetul ca să îl eliberezi. Gesturile cu mai multe degete nu fac clic.</string>
  <string name="faq_size"><b>Ce schimbă mărimea?</b>\nMărimea globală scalează comenzile implicite. În «Editează pozițiile și zonele tactile» trage o comandă și ajustează «Buton» ca să-i schimbi aspectul, sau «Zonă tactilă» ca să schimbi doar unde răspunde. Liniile întrerupte arată zonele tactile; procentele sunt raportate la comanda implicită. Modificările se salvează singure. Editorul afișează o grilă; cu „Aliniere la grilă” activată, elementul tras se așază pe ea.</string>
- <string name="faq_shared_layouts"><b>O aranjare sau două?</b>\nCu «Aranjări separate pentru meniu și cursă» dezactivat, în meniuri și în curse se folosesc aceleași comenzi, poziții și mărimi. Activează-l ca să personalizezi fiecare mod separat. Comutarea păstrează ambele seturi salvate. Resetarea privește doar setul selectat. «Direcție în stânga / dreapta» oglindește atât pozițiile implicite, cât și cele salvate manual.</string>
  <string name="faq_edges"><b>Margini și înălțime</b>\nDistanța față de margini mută comenzile implicite spre interior. «Ridică comenzile de condus» urcă comenzile de jos implicite. Decupajele sistemului sunt respectate. Comenzile plasate manual își păstrează pozițiile salvate.</string>
  <string name="faq_hiding"><b>Opacitate și ascundere automată</b>\nOpacitatea stabilește vizibilitatea normală. Ascunderea automată începe după ce ridici toate degetele, cu o întârziere de 1–30 de secunde. Alege o siluetă estompată sau invizibilitate completă. Butoanele ascunse răspund deja la prima atingere și redevin vizibile. Ținerea apăsată a unei comenzi împiedică ascunderea. O apăsare pe gamepad ascunde imediat butoanele; următoarea atingere le readuce.</string>
  <string name="faq_gears"><b>Cutie manuală</b>\n«Arată butoanele de treaptă − / +» adaugă două butoane opționale la aranjarea de cursă. Activează cutia manuală în joc. Tastele lor se setează în Comenzi → Atingere → Taste și trebuie să corespundă cu setările jocului.</string>

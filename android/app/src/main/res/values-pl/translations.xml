@@ -78,7 +78,6 @@
 
  <string name="touch_preview_description">Interaktywny podgląd cyfrowego sterowania</string>
  <string name="touch_preview_hint">Wypróbuj sterowanie</string>
- <string name="touch_digital_note">Naciśnij ☰, aby przełączyć układ menu i wyścigu</string>
  <string name="touch_dim_label">Ukrywaj przyciski</string>
  <string name="touch_edge_label">Odstęp od krawędzi</string>
  <string name="touch_raise_label">Podnieś przyciski jazdy</string>
@@ -118,7 +117,6 @@
  <string name="touch_keys_hint">Klawisz klawiatury wysyłany przez każdy przycisk na ekranie. Musi zgadzać się z klawiszem ustawionym w grze.</string>
 
  <string name="pref_phone_vibration">Wibracje telefonu (efekty gry; uruchom grę ponownie)</string>
- <string name="pref_separate_layouts">Osobne układy dla menu i wyścigu</string>
  <string name="pref_show_gears">Pokaż przyciski biegów − / +</string>
  <string name="pref_hide_full">Ukryj całkowicie (inaczej blady zarys)</string>
  <string name="auto_hide_delay">Opóźnienie: %1$d s</string>
@@ -126,7 +124,6 @@
  <string name="editor_touch_zone">Strefa dotyku: %1$d%%</string>
  <string name="editor_mode_race">Wyścig</string>
  <string name="editor_mode_menu">Menu</string>
- <string name="editor_mode_shared">Wspólny</string>
  <string name="editor_reset_title">Zresetować ten układ?</string>
  <string name="editor_reset_message">Przywróć domyślne pozycje, rozmiary przycisków i strefy dotyku tego układu.</string>
  <string name="edit_touch_layout">Edytuj pozycje i strefy dotyku</string>
@@ -146,10 +143,7 @@
  <string name="importer_open_zip_failed">Nie można otworzyć wybranego ZIP-a</string>
  <string name="importer_zip_missing_files">W ZIP-ie brakuje oczekiwanych folderów fedata/gamedata</string>
 
- <string name="faq_layout_modes"><b>Menu czy wyścig?</b>\nGdy osobne układy są włączone, przełącza między nimi jeden przycisk ☰: układ menu daje krzyżak z ✓ i ←, a wyścigowy przyciski lewo / prawo i pedały. Sam nigdy się nie przełącza. Przy jednym wspólnym układzie wszystkie przyciski pozostają widoczne: czterokierunkowy krzyżak skręca i porusza się po menu, a ✓ / ← działają w menu.</string>
- <string name="faq_mouse"><b>Jak działa mysz?</b>\nPrzesuń palcem po pustym miejscu ekranu, aby poruszyć kursorem. Po przesunięciu oderwanie palca nie powoduje kliknięcia. Krótkie dotknięcie bez ruchu klika w miejscu kursora. Przytrzymaj palec bez ruchu: przycisk zostaje wciśnięty i możesz przeciągać; oderwij palec, aby go zwolnić. Gesty wieloma palcami nie klikają.</string>
  <string name="faq_size"><b>Co zmienia rozmiar?</b>\nRozmiar ogólny skaluje domyślne elementy. W «Edytuj pozycje i strefy dotyku» przeciągnij element i zmień «Przycisk», aby zmienić jego wygląd, albo «Strefa dotyku», aby zmienić tylko obszar reakcji. Kreskowanie pokazuje strefy dotyku; procenty liczone są względem elementu domyślnego. Zmiany zapisują się same. Edytor pokazuje siatkę; z opcją „Przyciągaj do siatki” przeciągnięty element trafia na nią.</string>
- <string name="faq_shared_layouts"><b>Jeden układ czy dwa?</b>\nGdy «Osobne układy dla menu i wyścigu» są wyłączone, w menu i w wyścigu obowiązują te same elementy, pozycje i rozmiary. Włącz opcję, aby ustawiać każdy tryb osobno. Przełączenie zachowuje oba zapisane układy. Reset dotyczy tylko wybranego układu. «Kierowanie z lewej / prawej» odbija zarówno domyślne, jak i ręcznie zapisane pozycje.</string>
  <string name="faq_edges"><b>Krawędzie i wysokość</b>\nOdstęp od krawędzi przesuwa domyślne elementy do środka. «Podnieś przyciski jazdy» unosi dolne domyślne elementy. Wycięcia systemowe są uwzględniane. Elementy ustawione ręcznie zachowują zapisane pozycje.</string>
  <string name="faq_hiding"><b>Krycie i automatyczne ukrywanie</b>\nKrycie ustala zwykłą widoczność. Ukrywanie zaczyna się po oderwaniu wszystkich palców, po 1–30 sekundach. Wybierz blady zarys albo pełną niewidoczność. Ukryte przyciski reagują już na pierwsze dotknięcie i znów stają się widoczne. Przytrzymanie elementu wstrzymuje ukrywanie. Naciśnięcie przycisku na padzie od razu ukrywa przyciski; następny dotyk je przywraca.</string>
  <string name="faq_gears"><b>Skrzynia ręczna</b>\n«Pokaż przyciski biegów − / +» dodaje dwa dodatkowe przyciski do układu wyścigowego. Włącz skrzynię ręczną w grze. Ich klawisze ustawia się w Sterowanie → Dotyk → Klawisze i muszą zgadzać się z ustawieniami gry.</string>

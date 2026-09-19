@@ -149,7 +149,23 @@ final class DataImporter
             }
             copyTree(resolver, src, new File(destRoot, name), listener, bytesCopied, filesCopied);
         }
+        writeImportDefaults(destRoot);
         writeCompletionMarker(destRoot, USER_DATA_COMPLETE);
+    }
+
+    /* The controls and View Distance a new game starts with, into the settings
+     * file just copied (ControlProfile.writeImportDefaults).  An import is not
+     * worth failing over them: the game runs on the file as it came. */
+    private static void writeImportDefaults(File root)
+    {
+        try
+        {
+            ControlProfile.writeImportDefaults(root);
+        }
+        catch (IOException e)
+        {
+            android.util.Log.w("DataImporter", "Could not write the imported game's starting settings", e);
+        }
     }
 
     /** Imports fedata/, gamedata/ and optional drivers/ from a ZIP. The archive
@@ -206,6 +222,7 @@ final class DataImporter
             }
         }
 
+        writeImportDefaults(destRoot);
         writeCompletionMarker(destRoot, USER_DATA_COMPLETE);
         if (!isUserDataPresent(destRoot))
         {

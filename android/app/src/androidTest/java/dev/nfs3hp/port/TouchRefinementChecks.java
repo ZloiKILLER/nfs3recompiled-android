@@ -4,7 +4,6 @@ import android.app.Instrumentation;
 import android.content.SharedPreferences;
 import android.graphics.RectF;
 import android.view.MotionEvent;
-import android.view.View;
 import java.lang.reflect.Field;
 import java.util.*;
 
@@ -24,29 +23,71 @@ final class TouchRefinementChecks {
     static void touch(TouchControlsOverlay v,int action,float x,float y){
         MotionEvent e=MotionEvent.obtain(1,2,action,x,y,0);v.onTouchEvent(e);e.recycle();
     }
-    static void mouse(TouchMouseInput m,int action,long time,float x,float y){
-        MotionEvent e=MotionEvent.obtain(100,time,action,x,y,0);m.onTouch(e);e.recycle();
+    static void finger(TouchPointer p,int action,float x,float y){
+        MotionEvent e=MotionEvent.obtain(100,200,action,x,y,0);p.onTouch(e);e.recycle();
+    }
+    /* Two fingers at once, the given one acting. */
+    static void fingers(TouchPointer p,int action,int index,float[] xs,float[] ys){
+        MotionEvent.PointerProperties[] props=new MotionEvent.PointerProperties[xs.length];
+        MotionEvent.PointerCoords[] coords=new MotionEvent.PointerCoords[xs.length];
+        for(int i=0;i<xs.length;++i){
+            props[i]=new MotionEvent.PointerProperties();props[i].id=i;
+            props[i].toolType=MotionEvent.TOOL_TYPE_FINGER;
+            coords[i]=new MotionEvent.PointerCoords();coords[i].x=xs[i];coords[i].y=ys[i];
+        }
+        MotionEvent e=MotionEvent.obtain(100,200,action|(index<<MotionEvent.ACTION_POINTER_INDEX_SHIFT),
+            xs.length,props,coords,0,0,1,1,100,0,0,0);
+        p.onTouch(e);e.recycle();
     }
     static void run(Instrumentation test)throws Exception{
         SharedPreferences prefs=GamePreferences.get(test.getTargetContext());Map<String,?> saved=prefs.getAll();
-        Throwable[] failure={null};TouchControlsOverlay[] idle={null};TouchMouseInput[] cursor={null};
+        Throwable[] failure={null};TouchControlsOverlay[] idle={null};
         ArrayList<String> events=new ArrayList<>();
         try{
             test.runOnMainSync(()->{try{
                 // Isolated test application; preserve its full settings after the checks.
                 prefs.edit().clear().commit();
-                TouchMouseInput mouse=new TouchMouseInput(new View(test.getTargetContext()),(button,action,x,y,relative)->events.add(action+":"+button));
-                cursor[0]=mouse;
-                mouse(mouse,MotionEvent.ACTION_DOWN,100,100,100);mouse(mouse,MotionEvent.ACTION_MOVE,140,230,100);
-                mouse(mouse,MotionEvent.ACTION_MOVE,180,100,100);mouse(mouse,MotionEvent.ACTION_UP,200,100,100);
-                check(!events.contains("0:1"),"drag out and back must not click");events.clear();
-                mouse(mouse,MotionEvent.ACTION_DOWN,100,100,100);mouse(mouse,MotionEvent.ACTION_UP,170,100,100);
-                check(events.contains("0:1"),"short stationary tap clicks");mouse.cancel();
-                check(events.contains("1:0"),"cancel releases pending mouse button");events.clear();
-                mouse(mouse,MotionEvent.ACTION_DOWN,100,100,100);mouse(mouse,MotionEvent.ACTION_UP,600,100,100);
-                check(events.isEmpty(),"a hold past the tap window must not click");
-                mouse(mouse,MotionEvent.ACTION_DOWN,100,100,100);mouse(mouse,MotionEvent.ACTION_CANCEL,140,100,100);
-                mouse(mouse,MotionEvent.ACTION_UP,160,100,100);check(events.isEmpty(),"cancelled gesture must not click");
+                /* The pointer follows the finger, but only a tap clicks: a finger that
+                 * lands points, lifted where it landed it clicks, resting it presses
+                 * and drags, and one that wanders first presses nothing. */
+                TouchPointer pointer=new TouchPointer(new android.view.View(test.getTargetContext()),
+                    (action,x,y)->events.add(action+":"+(int)x+","+(int)y));
+                finger(pointer,MotionEvent.ACTION_DOWN,230,140);
+                check(events.equals(Arrays.asList("1:230,140")),"a finger that lands only points");
+                events.clear();
+                finger(pointer,MotionEvent.ACTION_UP,231,141);
+                check(events.equals(Arrays.asList("0:231,141","2:231,141")),"lifted where it landed, it clicks");
+                events.clear();
+                finger(pointer,MotionEvent.ACTION_DOWN,50,60);pointer.hold();
+                check(events.equals(Arrays.asList("1:50,60","0:50,60")),"a finger at rest presses");
+                events.clear();
+                finger(pointer,MotionEvent.ACTION_MOVE,400,300);finger(pointer,MotionEvent.ACTION_UP,410,305);
+                check(events.equals(Arrays.asList("1:400,300","2:410,305")),"a pressing finger drags and lifts");
+                events.clear();
+                /* A swipe through a list, or the system's back gesture from the edge. */
+                finger(pointer,MotionEvent.ACTION_DOWN,70,80);finger(pointer,MotionEvent.ACTION_MOVE,370,80);
+                pointer.hold();finger(pointer,MotionEvent.ACTION_UP,380,80);
+                check(events.equals(Arrays.asList("1:70,80","1:370,80","1:380,80")),"a swipe presses nothing");
+                events.clear();
+                /* Taken away mid-gesture: nothing clicks, and a held button is lifted
+                 * where it last was, once. */
+                finger(pointer,MotionEvent.ACTION_DOWN,70,80);finger(pointer,MotionEvent.ACTION_CANCEL,70,80);
+                check(events.equals(Arrays.asList("1:70,80")),"a cancelled tap clicks nothing");
+                events.clear();
+                finger(pointer,MotionEvent.ACTION_DOWN,70,80);pointer.hold();events.clear();
+                finger(pointer,MotionEvent.ACTION_CANCEL,70,80);
+                check(events.equals(Arrays.asList("2:70,80")),"a cancelled hold lifts the button");
+                events.clear();pointer.cancel();
+                check(events.isEmpty(),"nothing left to lift afterwards");
+                /* A second finger neither moves the pointer nor lifts it. */
+                finger(pointer,MotionEvent.ACTION_DOWN,100,100);pointer.hold();events.clear();
+                fingers(pointer,MotionEvent.ACTION_POINTER_DOWN,1,new float[]{100,500},new float[]{100,500});
+                fingers(pointer,MotionEvent.ACTION_MOVE,0,new float[]{120,900},new float[]{130,900});
+                fingers(pointer,MotionEvent.ACTION_POINTER_UP,1,new float[]{120,900},new float[]{130,900});
+                check(events.equals(Arrays.asList("1:120,130")),"only the first finger drives the pointer");
+                events.clear();finger(pointer,MotionEvent.ACTION_UP,120,130);
+                check(events.equals(Arrays.asList("2:120,130")),"lifting the first finger releases");
+                events.clear();
 
                 TouchControlsOverlay view=new TouchControlsOverlay(test.getTargetContext(),true);view.layout(0,0,1280,680);
                 RectF gearUp=bounds(view,"gear_up","box"),gearDown=bounds(view,"gear_down","box");
@@ -61,24 +102,18 @@ final class TouchRefinementChecks {
                 check(Math.abs(gas.width()-(62*scale+8))<.1f,"gas is eight physical pixels wider");
                 check(Math.abs((brakePair.left-gas.right)-(12*scale+19))<.1f,"pedal gap includes twelve more physical pixels");
                 check(Math.abs(gas.bottom-brakePair.bottom)<.1f,"pedals stand level");
-                /* The shared layout steers with the D-pad, stacks horn and spikes over
-                 * it and the gears over those in the same two columns, keeps the
-                 * keyboard between pause and OK, and shows lights and recovery
-                 * whatever mode the overlay is in. */
-                RectF dpad=bounds(view,"steering","box");
-                check(dpad!=null&&bounds(view,"steer_left","box")==null&&bounds(view,"steer_right","box")==null,"shared layout steers with the D-pad");
+                /* The racing layout steers with two buttons, stacks horn and spikes over
+                 * them and the gears over those in the same two columns. */
+                RectF steerLeft=bounds(view,"steer_left","box"),steerRight=bounds(view,"steer_right","box");
+                check(steerLeft!=null&&steerRight!=null&&steerLeft.centerX()<steerRight.centerX(),"the racing layout steers with two buttons");
                 RectF horn=bounds(view,"horn","box"),spikes=bounds(view,"spike_strip","box");
                 check(Math.abs(gearDown.centerX()-horn.centerX())<.1f&&Math.abs(gearUp.centerX()-spikes.centerX())<.1f,"gears stand over horn and spikes");
-                check(gearDown.bottom<=horn.top&&horn.bottom<=dpad.top,"gears, then horn and spikes, then the D-pad");
-                RectF pause=bounds(view,"pause","box"),keyboardKey=bounds(view,"keyboard","box"),confirm=bounds(view,"confirm","box");
-                check(keyboardKey!=null&&keyboardKey.left>pause.right&&keyboardKey.right<confirm.left&&Math.abs(keyboardKey.top-pause.top)<.1f
-                    &&Math.abs(keyboardKey.width()-confirm.width())<.1f&&Math.abs(keyboardKey.height()-confirm.height())<.1f,
-                    "keyboard sits between pause and OK, sized like OK");
+                check(gearDown.bottom<=horn.top&&horn.bottom<=steerLeft.top,"gears, then horn and spikes, then the steering");
                 RectF camera=bounds(view,"camera","box"),lookBehind=bounds(view,"look_behind","box");
-                /* Every control but the D-pad and the pedals has the one small size,
+                /* Every control but the steering and the pedals has the one small size,
                  * stands on the grid and sits whole cells from its neighbours. */
                 check(Math.abs(horn.width()-58*scale)<.1f&&Math.abs(horn.height()-48*scale)<.1f,"small buttons are 58 x 48 at 100%");
-                for(String action:new String[]{"pause","keyboard","confirm","back","headlights","recover","horn","spike_strip",
+                for(String action:new String[]{"pause","headlights","recover","horn","spike_strip",
                                                "camera","look_behind","handbrake","gear_down","gear_up"}) {
                     RectF small=bounds(view,action,"box");
                     check(Math.abs(small.width()-horn.width())<.1f&&Math.abs(small.height()-horn.height())<.1f,action+" is the small button size");
@@ -86,7 +121,7 @@ final class TouchRefinementChecks {
                 }
                 check(onGrid(spikes.left-horn.left,cell)&&Math.abs(spikes.top-horn.top)<.1f,"horn and spikes share a row, whole cells apart");
                 check(onGrid(lookBehind.left-camera.left,cell)&&Math.abs(lookBehind.top-camera.top)<.1f,"camera and look-behind share a row, whole cells apart");
-                check(bounds(view,"headlights","box")!=null&&bounds(view,"recover","box")!=null,"shared layout shows lights and recovery");
+                check(bounds(view,"headlights","box")!=null&&bounds(view,"recover","box")!=null,"the racing layout shows lights and recovery");
                 prefs.edit().putInt(GamePreferences.TOUCH_SIZE,80).commit();view.refreshSettings();
                 check(Math.abs(bounds(view,"camera","box").width()-58*.8f*scale)<.1f&&Math.abs(bounds(view,"gear_up","box").height()-48*.8f*scale)<.1f,
                     "small buttons follow the size setting");
@@ -99,15 +134,26 @@ final class TouchRefinementChecks {
                 view.resizeSelected(150,80);
                 RectF visible=bounds(view,"pause","box"),hit=bounds(view,"pause","hitBox");
                 check(visible.width()>hit.width(),"visual and hit sizes independent");
-                view.setMenuMode(true);RectF shared=bounds(view,"pause","box");
-                check(Math.abs(shared.centerX()-640)<1,"shared mode reuses saved position");
-                prefs.edit().putBoolean(GamePreferences.TOUCH_SEPARATE,true).apply();view.refreshSettings();
-                check(Math.abs(bounds(view,"pause","box").centerX()-640)>20,"separate mode has its own positions");
-                view.setMenuMode(false);lights=bounds(view,"pause","box");
-                touch(view,0,lights.centerX(),lights.centerY());touch(view,2,600,200);touch(view,1,600,200);
-                view.setMenuMode(true);check(Math.abs(bounds(view,"pause","box").centerX()-600)>20,"race position does not modify menu");
-                view.setMenuMode(false);check(Math.abs(bounds(view,"pause","box").centerX()-600)<1,"race position survives mode switch");
-                view.resetLayout();check(Math.abs(bounds(view,"pause","box").centerX()-600)>20,"reset restores layout");
+                /* The two layouts keep their positions apart: pause exists only in the
+                 * racing one, so dragging it there leaves the menu layout alone. */
+                view.setMenuMode(true);check(bounds(view,"pause","box")==null,"the menu layout has no pause");
+                view.setMenuMode(false);check(Math.abs(bounds(view,"pause","box").centerX()-640)<1,"a dragged control keeps its place");
+                RectF menuBack;
+                view.setMenuMode(true);menuBack=bounds(view,"back","box");
+                touch(view,0,menuBack.centerX(),menuBack.centerY());touch(view,2,300,200);touch(view,1,300,200);
+                check(Math.abs(bounds(view,"back","box").centerX()-300)<1,"the menu layout saves its own position");
+                /* A placed control keeps its distance from the nearer edge, in layout
+                 * units, on an area of another size: the controls along an edge keep
+                 * their spacing where the game's area differs from the editor's. */
+                float fromLeft=bounds(view,"back","box").centerX()/(float)field(view,"scale");
+                view.layout(0,0,1180,680);
+                check(Math.abs(bounds(view,"back","box").centerX()/(float)field(view,"scale")-fromLeft)<.5f,
+                    "a placed control keeps its distance from the nearer edge");
+                view.layout(0,0,1280,680);
+                // Reset works on the layout shown; the menu one goes back to its defaults for the checks below.
+                view.resetLayout();check(Math.abs(bounds(view,"back","box").centerX()-300)>20,"reset restores the menu layout");
+                view.setMenuMode(false);check(Math.abs(bounds(view,"pause","box").centerX()-640)<1,"the racing layout is untouched by it");
+                view.resetLayout();check(Math.abs(bounds(view,"pause","box").centerX()-640)>20,"reset restores layout");
                 /* With Snap to grid on, a dragged control's centre lands on a grid point
                  * while it is being dragged. */
                 prefs.edit().putBoolean(GamePreferences.TOUCH_SNAP,true).commit();
@@ -120,48 +166,59 @@ final class TouchRefinementChecks {
                     &&Math.abs(snapped.centerX()-recover.centerX())<.1f&&Math.abs(snapped.centerY()-recover.centerY()-16*scale)<.1f,
                     "a dragged control lands on the grid");
                 view.resetLayout();
-                prefs.edit().putBoolean(GamePreferences.TOUCH_SEPARATE,false).apply();view.refreshSettings();
-                check(Math.abs(bounds(view,"pause","box").centerX()-640)<1,"reset separate layout preserves shared layout");
                 // Mirroring must also move custom positions, and be reversible.
                 GamePreferences.setTouchLayout(prefs,GamePreferences.TOUCH_LAYOUT_MIRRORED);
                 view.refreshSettings();
-                check(Math.abs(bounds(view,"pause","box").centerX()-640)<1,"center stays centered when mirrored");
-                check(bounds(view,"steering","box").centerX()>640,"steering moves right");
+                check(bounds(view,"steer_left","box").centerX()>640,"steering moves right");
                 RectF mirroredBrake=bounds(view,"brake","box"),mirroredGas=bounds(view,"accelerate","box");
                 check(mirroredBrake.left<mirroredGas.left,"mirrored brake remains the outer pedal");
                 GamePreferences.setTouchLayout(prefs,GamePreferences.TOUCH_LAYOUT_STANDARD);
                 view.refreshSettings();
-                check(bounds(view,"steering","box").centerX()<640,"steering moves left again");
-                check(bounds(view,"mode","box")==null,"shared layout has no mode switch");
+                check(bounds(view,"steer_left","box").centerX()<640,"steering moves left again");
+                check(bounds(view,"steer_left","box").centerX()<bounds(view,"steer_right","box").centerX(),"left steers left of right");
+                /* The menus take a finger on the screen itself, so the menu layout is
+                 * down to the two keys a screen cannot offer. */
                 view.setEditing(false,null);view.setMenuMode(true);
-                RectF sharedPad=bounds(view,"steering","box");
-                check(bounds(view,"keyboard","box")!=null&&bounds(view,"headlights","box")!=null&&bounds(view,"recover","box")!=null,
-                    "shared layout in the game's menus keeps lights and recovery beside the keyboard");
-                view.setMenuMode(false);
-                check(sharedPad.equals(bounds(view,"steering","box"))&&bounds(view,"confirm","box")!=null&&bounds(view,"keyboard","box")!=null,
-                    "shared controls unchanged in race");
-                Map<?,?> sharedHeld=(Map<?,?>)field(field(view,"keys"),"held");
-                touch(view,0,sharedPad.left+sharedPad.width()*.1f,sharedPad.centerY());
-                check(sharedHeld.size()==1&&sharedHeld.containsKey(android.view.KeyEvent.KEYCODE_DPAD_LEFT),"shared D-pad left steers left");
-                /* Up and down move through menus on the pedals' keys, but past the
-                 * pedals themselves: a D-pad arm never accelerates or brakes. */
-                touch(view,2,sharedPad.centerX(),sharedPad.top+sharedPad.height()*.1f);
-                check(sharedHeld.size()==1&&sharedHeld.containsKey(TouchControlsOverlay.MENU_KEY|android.view.KeyEvent.KEYCODE_DPAD_UP)
-                    &&!sharedHeld.containsKey(android.view.KeyEvent.KEYCODE_DPAD_UP),"shared D-pad up moves through menus, never as the pedal");
-                touch(view,1,sharedPad.centerX(),sharedPad.top+sharedPad.height()*.1f);
-                view.releaseAll();
-                prefs.edit().putBoolean(GamePreferences.TOUCH_SEPARATE,true).apply();
-                view.setEditing(false,null);view.setMenuMode(true);RectF pad=bounds(view,"steering","box");
-                check(bounds(view,"keyboard","box")!=null&&bounds(view,"headlights","box")==null&&bounds(view,"recover","box")==null,"menu replaces race utilities with keyboard");
-                touch(view,0,pad.centerX(),pad.top+pad.height()*.1f);
+                check(bounds(view,"back","box")!=null&&bounds(view,"keyboard","box")!=null,"the menu layout keeps back and the keyboard");
+                for(String gone:new String[]{"steer_left","steer_right","accelerate","brake","handbrake","pause",
+                                             "headlights","recover","horn","spike_strip","gear_up","gear_down",
+                                             "look_behind","camera"})
+                    check(bounds(view,gone,"box")==null,"the menu layout leaves "+gone+" behind");
                 Map<?,?> held=(Map<?,?>)field(field(view,"keys"),"held");
-                check(held.size()==1&&held.containsKey(TouchControlsOverlay.MENU_KEY|android.view.KeyEvent.KEYCODE_DPAD_UP),"D-pad up sends only the menu's up");
-                touch(view,2,pad.right-pad.width()*.1f,pad.centerY());
-                check(held.size()==1&&held.containsKey(android.view.KeyEvent.KEYCODE_DPAD_RIGHT),"D-pad direction change releases up");
+                RectF back=bounds(view,"back","box"),menuKeyboard=bounds(view,"keyboard","box");
+                check(Math.abs(back.width()-menuKeyboard.width())<.5f&&Math.abs(back.height()-menuKeyboard.height())<.5f,
+                    "back is the keyboard's size");
+                check(Math.abs(back.centerX()-menuKeyboard.centerX())<.5f&&back.bottom<=menuKeyboard.top
+                    &&menuKeyboard.bottom<view.getHeight()/2f,"back takes the top corner and the keyboard stands under it");
+                touch(view,0,back.centerX(),back.centerY());
+                check(held.size()==1&&held.containsKey(GamePreferences.getTouchKey(prefs,"pause")),"back sends the pause key");
+                touch(view,1,back.centerX(),back.centerY());
+                view.setMenuMode(false);
+                check(bounds(view,"steer_left","box")!=null&&bounds(view,"accelerate","box")!=null,"the racing layout comes back");
+                RectF left=bounds(view,"steer_left","box");
+                touch(view,0,left.centerX(),left.centerY());
+                check(held.size()==1&&held.containsKey(android.view.KeyEvent.KEYCODE_DPAD_LEFT),"the left button steers left");
+                touch(view,1,left.centerX(),left.centerY());
                 view.releaseAll();
+                /* Positions kept the old way, as fractions of the area, become their
+                 * distances from the nearer edges, once, where they stood. */
+                prefs.edit().putFloat("touch_position_race_horn_x",.1f).putFloat("touch_position_race_horn_y",.75f)
+                    .putFloat("touch_position_race_brake_x",.9f).putFloat("touch_position_race_brake_y",.2f).commit();
+                TouchControlsOverlay.anchorLegacyPositions(prefs,800,400);
+                check(!prefs.contains("touch_position_race_horn_x")&&!prefs.contains("touch_position_race_horn_y"),
+                    "old positions are replaced");
+                check(Math.abs(prefs.getFloat("touch_position_race_horn_dx",-1)-80)<.01f&&!prefs.getBoolean("touch_position_race_horn_from_right",true)
+                    &&Math.abs(prefs.getFloat("touch_position_race_horn_dy",-1)-100)<.01f&&prefs.getBoolean("touch_position_race_horn_from_bottom",false),
+                    "an old position becomes its distance from the left and the bottom");
+                check(Math.abs(prefs.getFloat("touch_position_race_brake_dx",-1)-80)<.01f&&prefs.getBoolean("touch_position_race_brake_from_right",false)
+                    &&Math.abs(prefs.getFloat("touch_position_race_brake_dy",-1)-80)<.01f&&!prefs.getBoolean("touch_position_race_brake_from_bottom",true),
+                    "and from the right and the top");
+                SharedPreferences.Editor unplace=prefs.edit();
+                for(String k:prefs.getAll().keySet())if(k.startsWith("touch_position_"))unplace.remove(k);
+                unplace.commit();
                 prefs.edit().putBoolean(GamePreferences.TOUCH_AUTO_HIDE,true).putBoolean(GamePreferences.TOUCH_HIDE_FULL,true)
                     .putInt(GamePreferences.TOUCH_HIDE_SECONDS,1).apply();
-                idle[0]=new TouchControlsOverlay(test.getTargetContext(),false,(k,down)->{});idle[0].layout(0,0,1280,680);idle[0].setMenuMode(false);
+                idle[0]=new TouchControlsOverlay(test.getTargetContext(),false,(k,down)->{});idle[0].setMenuMode(false);idle[0].layout(0,0,1280,680);
                 RectF brake=bounds(idle[0],"brake","box");touch(idle[0],0,brake.centerX(),brake.centerY());
                 idle[0].resumeIdleTimer();
                 /* Gamepad slots: pinned pads go first, automatic slots share the
@@ -289,23 +346,6 @@ final class TouchRefinementChecks {
             }catch(Throwable e){failure[0]=e;}});
             Thread.sleep(1500);
             test.runOnMainSync(()->{if(failure[0]==null&&Math.abs(idle[0].getAlpha()-.12f)>.02f)failure[0]=new AssertionError("a rebuilt layout keeps the idle timer");});
-            // The grab runs on the looper, so these need real time to elapse.
-            test.runOnMainSync(()->{events.clear();mouse(cursor[0],MotionEvent.ACTION_DOWN,100,100,100);});
-            Thread.sleep(600);
-            test.runOnMainSync(()->{try{
-                check(events.contains("0:1"),"a stationary hold grabs the button");
-                mouse(cursor[0],MotionEvent.ACTION_MOVE,700,300,100);
-                check(!events.contains("1:0"),"the button stays down while the finger drags");
-                mouse(cursor[0],MotionEvent.ACTION_UP,800,300,100);
-                check(events.contains("1:0"),"lifting after a drag releases the button");
-                events.clear();mouse(cursor[0],MotionEvent.ACTION_DOWN,100,100,100);
-                mouse(cursor[0],MotionEvent.ACTION_MOVE,140,300,100);
-            }catch(Throwable e){failure[0]=e;}});
-            Thread.sleep(600);
-            test.runOnMainSync(()->{try{
-                check(!events.contains("0:1"),"a moving finger never grabs");
-                mouse(cursor[0],MotionEvent.ACTION_UP,160,300,100);cursor[0].cancel();
-            }catch(Throwable e){failure[0]=e;}});
             if(failure[0]!=null)throw new AssertionError(failure[0]);
         }finally{
             test.runOnMainSync(()->{if(idle[0]!=null)idle[0].releaseAll();});

@@ -6,7 +6,6 @@
 
  <!-- Settings the launcher builds in code rather than in a layout. -->
  <string name="pref_phone_vibration">Phone vibration (game effects; restart game)</string>
- <string name="pref_separate_layouts">Separate menu and race layouts</string>
  <string name="pref_show_gears">Show gear − / + buttons</string>
  <string name="pref_hide_full">Hide completely (otherwise faint silhouette)</string>
  <string name="auto_hide_delay">Auto-hide delay: %1$d s</string>
@@ -16,7 +15,6 @@
  <string name="editor_touch_zone">Touch zone: %1$d%%</string>
  <string name="editor_mode_race">Race</string>
  <string name="editor_mode_menu">Menu</string>
- <string name="editor_mode_shared">Shared</string>
  <string name="editor_reset_title">Reset this layout?</string>
  <string name="editor_reset_message">Restore default positions, button sizes and touch zones for this layout.</string>
  <string name="edit_touch_layout">Edit positions &amp; touch zones</string>

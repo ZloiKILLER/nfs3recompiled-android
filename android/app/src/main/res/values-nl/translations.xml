@@ -76,7 +76,6 @@
 
  <string name="touch_preview_description">Interactief voorbeeld van de digitale bediening</string>
  <string name="touch_preview_hint">Probeer de bediening</string>
- <string name="touch_digital_note">Tik op ☰ om te wisselen tussen de menu- en race-indeling</string>
  <string name="touch_dim_label">Knoppen automatisch verbergen</string>
  <string name="touch_edge_label">Afstand tot de randen</string>
  <string name="touch_raise_label">Rijknoppen omhoog</string>
@@ -116,7 +115,6 @@
  <string name="touch_keys_hint">De toetsenbordtoets die elk schermelement verstuurt. Die moet overeenkomen met de toets die in het spel is ingesteld.</string>
 
  <string name="pref_phone_vibration">Telefoontrilling (spel-effecten; start het spel opnieuw)</string>
- <string name="pref_separate_layouts">Aparte indelingen voor menu en race</string>
  <string name="pref_show_gears">Schakelknoppen − / + tonen</string>
  <string name="pref_hide_full">Volledig verbergen (anders vaag silhouet)</string>
  <string name="auto_hide_delay">Vertraging: %1$d s</string>
@@ -124,7 +122,6 @@
  <string name="editor_touch_zone">Touchzone: %1$d%%</string>
  <string name="editor_mode_race">Race</string>
  <string name="editor_mode_menu">Menu</string>
- <string name="editor_mode_shared">Gedeeld</string>
  <string name="editor_reset_title">Deze indeling herstellen?</string>
  <string name="editor_reset_message">Standaardposities, knopgroottes en touchzones van deze indeling herstellen.</string>
  <string name="edit_touch_layout">Posities en touchzones bewerken</string>
@@ -144,10 +141,7 @@
  <string name="importer_open_zip_failed">De gekozen ZIP kan niet worden geopend</string>
  <string name="importer_zip_missing_files">In de ZIP ontbreken de verwachte mappen fedata/gamedata</string>
 
- <string name="faq_layout_modes"><b>Menu of race?</b>\nMet aparte indelingen wisselt één ☰-knop ertussen: de menu-indeling geeft een vierwegkruis met ✓ en ←, de race-indeling de knoppen links / rechts en de pedalen. Vanzelf wisselt hij nooit. Bij één gedeelde indeling blijven alle knoppen zichtbaar: een vierwegkruis stuurt en navigeert door de menu\'s, en ✓ / ← werken in de menu\'s.</string>
- <string name="faq_mouse"><b>Hoe werkt de muis?</b>\nVeeg over een leeg deel van het scherm om de cursor te verplaatsen. Til je na een veeg je vinger op, dan volgt geen klik. Een korte, stilstaande tik klikt op de cursorpositie. Houd je vinger stil: de knop blijft ingedrukt en je kunt slepen; til je vinger op om los te laten. Gebaren met meerdere vingers klikken niet.</string>
  <string name="faq_size"><b>Wat verandert de grootte?</b>\nDe globale grootte schaalt de standaardknoppen. Sleep in «Posities en touchzones bewerken» een knop en pas «Knop» aan om het uiterlijk te wijzigen, of «Touchzone» om alleen te wijzigen waar hij reageert. Stippellijnen tonen de touchzones; de percentages zijn relatief aan de standaardknop. Wijzigingen worden vanzelf bewaard. De editor toont een raster; met ‘Uitlijnen op raster’ komt een versleept element erop terecht.</string>
- <string name="faq_shared_layouts"><b>Eén indeling of twee?</b>\nMet «Aparte indelingen voor menu en race» uit gelden in menu\'s en races dezelfde knoppen, posities en groottes. Zet het aan om elke modus apart in te stellen. Omschakelen bewaart beide opgeslagen indelingen. Herstellen betreft alleen de gekozen indeling. «Sturen links / rechts» spiegelt zowel de standaard- als de handmatig bewaarde posities.</string>
  <string name="faq_edges"><b>Randen en hoogte</b>\nDe afstand tot de randen schuift de standaardknoppen naar binnen. «Rijknoppen omhoog» tilt de onderste standaardknoppen op. Uitsparingen van het systeem worden gerespecteerd. Handmatig geplaatste knoppen houden hun bewaarde positie.</string>
  <string name="faq_hiding"><b>Dekking en automatisch verbergen</b>\nDe dekking bepaalt de normale zichtbaarheid. Het verbergen begint zodra alle vingers zijn opgetild, na 1 tot 30 seconden. Kies een vaag silhouet of volledige onzichtbaarheid. Verborgen knoppen reageren al op de eerste aanraking en worden weer zichtbaar. Een knop vasthouden voorkomt het verbergen. Een druk op de gamepad verbergt de knoppen meteen; de volgende aanraking brengt ze terug.</string>
  <string name="faq_gears"><b>Handgeschakeld</b>\n«Schakelknoppen − / + tonen» voegt twee extra knoppen toe aan de race-indeling. Zet de handbak aan in het spel. Hun toetsen stel je in bij Bediening → Touch → Toetsen; ze moeten overeenkomen met de spelinstellingen.</string>

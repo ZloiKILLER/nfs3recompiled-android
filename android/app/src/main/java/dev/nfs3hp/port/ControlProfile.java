@@ -178,6 +178,38 @@ final class ControlProfile
         };
     }
 
+    /** Which of the two sets the game's settings file holds: null for any other
+     *  bindings -- the player's own, made in the game's Controls screen -- and
+     *  for no settings file at all. */
+    static Kind installedKind(File dataRoot)
+    {
+        try
+        {
+            File file = settingsFile(dataRoot);
+            if (file == null)
+                return null;
+            byte[] config = Files.readAllBytes(file.toPath());
+            if (!isSettingsFile(config))
+                return null;
+            ByteBuffer buffer = ByteBuffer.wrap(config).order(ByteOrder.LITTLE_ENDIAN);
+            for (Kind kind : Kind.values())
+            {
+                int[][] tables = tables(kind);
+                boolean same = true;
+                for (int table = 0; table < TABLES.length && same; ++table)
+                    for (int function = 0; function < FUNCTIONS && same; ++function)
+                        same = buffer.getInt(TABLES[table] + 4 * function) == tables[table][function];
+                if (same)
+                    return kind;
+            }
+        }
+        catch (IOException ignored)
+        {
+            // Unreadable is as good as unknown here.
+        }
+        return null;
+    }
+
     static boolean isSettingsFile(byte[] config)
     {
         return config.length == FILE_SIZE
@@ -249,8 +281,48 @@ final class ControlProfile
             throw new NoSettingsException();
         String backup = backup(dataRoot, config);
         apply(config, kind);
-        /* Written beside the file and moved over it, so a failure half way
-         * leaves the old settings rather than a torn file. */
+        replace(file, config);
+        return backup;
+    }
+
+    /* View Distance, Full to Close as 0 to 3 ([0x6fbc28] in the game). */
+    static final int VIEW_DISTANCE = 0xE8;
+    /* Screen Size, kept as a width alone ([0x6fbc18]): at start the game takes
+     * the screen mode nearest it and finds its place in the menu's list itself
+     * (sub_4730d0), so the list index beside it (+0xD4) need not be written. */
+    static final int SCREEN_WIDTH = 0xD8;
+    static final int IMPORT_SCREEN_WIDTH = 1280;
+
+    /** What a freshly imported game starts with: the gamepad set, which is what
+     *  the pads and the on-screen controls send, View Distance at Full, the
+     *  whole track out to the horizon, and a 1280x720 screen for races, which
+     *  any phone draws smoothly -- a player after more picks it in the game's
+     *  Graphics menu.  Written once, as the last step of an
+     *  import, into the settings file that came with the data -- and never
+     *  again: from then on the file is the player's, whatever they change in
+     *  the game or write from the Controls screen.  Last, because the game
+     *  throws away a settings file older than its executable, and the
+     *  executable is in place before any import starts.  A file that is not a
+     *  settings file is left for the game, which starts it over itself. */
+    static void writeImportDefaults(File dataRoot) throws IOException
+    {
+        File file = settingsFile(dataRoot);
+        if (file == null)
+            return;
+        byte[] config = Files.readAllBytes(file.toPath());
+        if (!isSettingsFile(config))
+            return;
+        apply(config, Kind.GAMEPADS);
+        ByteBuffer buffer = ByteBuffer.wrap(config).order(ByteOrder.LITTLE_ENDIAN);
+        buffer.putInt(VIEW_DISTANCE, 0);
+        buffer.putInt(SCREEN_WIDTH, IMPORT_SCREEN_WIDTH);
+        replace(file, config);
+    }
+
+    /* Written beside the file and moved over it, so a failure half way leaves
+     * the old settings rather than a torn file. */
+    private static void replace(File file, byte[] config) throws IOException
+    {
         File partial = new File(file.getParentFile(), file.getName() + ".part");
         try (FileOutputStream out = new FileOutputStream(partial))
         {
@@ -263,7 +335,6 @@ final class ControlProfile
                 partial.deleteOnExit();
             throw new IOException("Could not replace " + file);
         }
-        return backup;
     }
 
     private static File settingsFile(File dataRoot)

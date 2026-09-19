@@ -17,9 +17,9 @@ android {
         // AndroidWindowCompat and the preview fallback uses DisplayMetrics.
         minSdk = 29
         targetSdk = 36
-        // Kept in step with versionName so the two can never disagree: 0.73 -> 73.
-        versionCode = 73
-        versionName = "0.73"
+        // Kept in step with versionName so the two can never disagree: 0.74 -> 74.
+        versionCode = 74
+        versionName = "0.74"
         testInstrumentationRunner "dev.nfs3hp.port.TouchOverlayInstrumentation"
         manifestPlaceholders = [launcherAppLabel: "@string/app_name"]
 

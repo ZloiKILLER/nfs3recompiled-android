@@ -74,6 +74,14 @@ public:
     /* Drains up to `max` queued events (oldest first) into `out`, returns how
      * many were written.  Always destructive (DIGDD_PEEK is not honoured). */
     static x86::reg32 drainBuffer(BufferedEvent* out, x86::reg32 max);
+
+    /* For a pointer that knows where it is rather than how far it moved -- a
+     * finger on the screen.  Whoever owns that pointer works out the movement
+     * from where the game keeps its own cursor and posts it here, so what
+     * arrives is the same shape a mouse would have produced and both read
+     * paths stay in step.  `button` is 0 to 3, as DIMOFS_BUTTON0 counts them. */
+    static void movePointer(x86::sreg32 dx, x86::sreg32 dy);
+    static void pressPointer(x86::reg32 button, bool down);
 };
 
 struct GamepadState
@@ -149,6 +157,17 @@ public:
      * their buttons into the keys the launcher assigned, and runs the
      * force-feedback mixer. */
     static void update();
+    /* While set, a pad's buttons send no key but Escape, and keys they already
+     * hold are let go.  Set from the game layer, once a frame, for the time the
+     * pads' keys would work somebody else's car (nfs3hp_main.cpp). */
+    static void muteGameKeys(bool muted);
+    /* Whether the touch overlay's steering buttons are what steers player
+     * one: true from the moment one is held, false once the first pad steers
+     * the slot's axis itself (its stick, or a button bound to the axis), and
+     * unchanged while nothing steers.  Kept up to date as the game reads the
+     * first slot; the game layer gives those buttons the game's own keyboard
+     * steering by it (nfs3hp_main.cpp). */
+    static bool touchSteering();
     /* About every 40 ms while a race is drawn, from the game layer: how hard
      * player one's car is cornering, 0 to 1, for the phone's own vibration
      * (GameHaptics).  No pad plays it; the desktop build does nothing with it. */

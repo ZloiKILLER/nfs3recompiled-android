@@ -3,6 +3,8 @@
 
 namespace nfs3hp
 {
+// Port (tools/apply_hud_editor.py): defined in nfs3hp_main.cpp.
+void hudQueueQuad(win32::WinApplication* app, x86::reg32 list, x86::reg32 a, x86::reg32 b, x86::reg32 c, x86::reg32 d);
 
 /* align: skip 0x8d 0x80 0x00 0x00 0x00 0x00 0x8d 0x92 0x00 0x00 0x00 0x00 0x90 */
 void Application::sub_496550(WinApplication* app, x86::CPU& cpu)
@@ -25444,6 +25446,7 @@ void Application::sub_49bd30(WinApplication* app, x86::CPU& cpu)
   NFS2_USE(cpu);
   NFS2_USE(app);
     // 0049bd30  56                     -push esi
+    hudQueueQuad(app, cpu.eax, cpu.edx, cpu.ebx, cpu.ecx, app->getMemory<x86::reg32>(cpu.esp + 4)); /* port: measured for the HUD editor */
     app->getMemory<x86::reg32>(cpu.esp-4) = cpu.esi;
     cpu.esp -= 4;
     // 0049bd31  57                     -push edi

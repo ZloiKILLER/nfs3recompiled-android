@@ -78,7 +78,6 @@
 
  <string name="touch_preview_description">Interaktive Vorschau der digitalen Fahrsteuerung</string>
  <string name="touch_preview_hint">Steuerung ausprobieren</string>
- <string name="touch_digital_note">Tippe ☰, um zwischen Menü- und Rennanordnung zu wechseln</string>
  <string name="touch_dim_label">Tasten automatisch ausblenden</string>
  <string name="touch_edge_label">Abstand zu den Rändern</string>
  <string name="touch_raise_label">Fahrtasten anheben</string>
@@ -118,7 +117,6 @@
  <string name="touch_keys_hint">Die Tastaturtaste, die jedes Bildschirmelement sendet. Sie muss zur im Spiel eingestellten Taste passen.</string>
 
  <string name="pref_phone_vibration">Telefon-Vibration (Spieleffekte; Spiel neu starten)</string>
- <string name="pref_separate_layouts">Getrennte Anordnungen für Menü und Rennen</string>
  <string name="pref_show_gears">Gangtasten − / + anzeigen</string>
  <string name="pref_hide_full">Ganz ausblenden (sonst blasse Silhouette)</string>
  <string name="auto_hide_delay">Verzögerung: %1$d s</string>
@@ -126,7 +124,6 @@
  <string name="editor_touch_zone">Touch-Bereich: %1$d%%</string>
  <string name="editor_mode_race">Rennen</string>
  <string name="editor_mode_menu">Menü</string>
- <string name="editor_mode_shared">Gemeinsam</string>
  <string name="editor_reset_title">Diese Anordnung zurücksetzen?</string>
  <string name="editor_reset_message">Standardpositionen, Tastengrößen und Touch-Bereiche dieser Anordnung wiederherstellen.</string>
  <string name="edit_touch_layout">Positionen und Touch-Bereiche bearbeiten</string>
@@ -146,10 +143,7 @@
  <string name="importer_open_zip_failed">Das gewählte ZIP lässt sich nicht öffnen</string>
  <string name="importer_zip_missing_files">Im ZIP fehlen die erwarteten Ordner fedata/gamedata</string>
 
- <string name="faq_layout_modes"><b>Menü oder Rennen?</b>\nMit getrennten Anordnungen wechselt eine einzige ☰-Taste zwischen ihnen: die Menüanordnung bringt ein Vier-Wege-Steuerkreuz mit ✓ und ←, die Rennanordnung die Tasten links / rechts und die Pedale. Von selbst wechselt sie nie. Bei einer gemeinsamen Anordnung bleiben alle Tasten sichtbar: ein Vier-Wege-Steuerkreuz lenkt und navigiert durch die Menüs, und ✓ / ← wirken in den Menüs.</string>
- <string name="faq_mouse"><b>Wie funktioniert die Maus?</b>\nWische über eine freie Stelle des Bildschirms, um den Zeiger zu bewegen. Hebst du nach einem Wischen ab, wird nicht geklickt. Ein kurzes Tippen ohne Bewegung klickt an der Zeigerposition. Hältst du still, wird die Taste gedrückt und bleibt gedrückt — dann kannst du ziehen; Abheben löst sie. Gesten mit mehreren Fingern klicken nicht.</string>
  <string name="faq_size"><b>Was ändert die Größe?</b>\nDie Gesamtgröße skaliert die Standardelemente. Unter „Positionen und Touch-Bereiche bearbeiten“ ziehst du ein Element und änderst mit „Taste“ sein Aussehen oder mit „Touch-Bereich“ nur den Bereich, in dem es reagiert. Gestrichelte Linien zeigen die Touch-Bereiche; die Prozentwerte beziehen sich auf das Standardelement. Änderungen werden automatisch gespeichert. Der Editor zeigt ein Raster; mit „Am Raster ausrichten“ rastet ein gezogenes Element darauf ein.</string>
- <string name="faq_shared_layouts"><b>Eine Anordnung oder zwei?</b>\nIst „Getrennte Anordnungen für Menü und Rennen“ aus, gelten in Menüs und Rennen dieselben Elemente, Positionen und Größen. Schalte es ein, um jeden Modus einzeln anzupassen. Das Umschalten behält beide gespeicherten Sätze. Das Zurücksetzen betrifft nur den gewählten Satz. „Lenkung links / rechts“ spiegelt sowohl Standard- als auch von Hand gespeicherte Positionen.</string>
  <string name="faq_edges"><b>Ränder und Höhe</b>\nDer Abstand zu den Rändern schiebt die Standardelemente nach innen. „Fahrtasten anheben“ hebt die unteren Standardelemente an. Systemaussparungen werden berücksichtigt. Von Hand platzierte Elemente behalten ihre gespeicherten Positionen.</string>
  <string name="faq_hiding"><b>Deckkraft und automatisches Ausblenden</b>\nDie Deckkraft legt die normale Sichtbarkeit fest. Das Ausblenden beginnt, sobald alle Finger abgehoben sind, nach 1 bis 30 Sekunden. Wähle eine blasse Silhouette oder völlige Unsichtbarkeit. Ausgeblendete Tasten reagieren schon auf die erste Berührung und werden wieder sichtbar. Wer ein Element hält, verhindert das Ausblenden. Ein Druck auf dem Gamepad blendet die Steuerung sofort aus; die nächste Berührung holt sie zurück.</string>
  <string name="faq_gears"><b>Manuelle Gänge</b>\n„Gangtasten − / + anzeigen“ fügt der Rennanordnung zwei zusätzliche Tasten hinzu. Aktiviere im Spiel das manuelle Getriebe. Ihre Tasten legst du unter Steuerung → Touch → Tasten fest; sie müssen zu den Spieleinstellungen passen.</string>

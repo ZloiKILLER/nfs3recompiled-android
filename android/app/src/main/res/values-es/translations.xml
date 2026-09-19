@@ -78,7 +78,6 @@
 
  <string name="touch_preview_description">Vista previa interactiva de los controles digitales</string>
  <string name="touch_preview_hint">Prueba los controles</string>
- <string name="touch_digital_note">Toca ☰ para cambiar entre la disposición de menú y la de carrera</string>
  <string name="touch_dim_label">Ocultar botones automáticamente</string>
  <string name="touch_edge_label">Distancia a los bordes</string>
  <string name="touch_raise_label">Subir los controles de conducción</string>
@@ -118,7 +117,6 @@
  <string name="touch_keys_hint">La tecla que envía cada control en pantalla. Debe coincidir con la tecla configurada en el juego.</string>
 
  <string name="pref_phone_vibration">Vibración del teléfono (efectos del juego; reinicia el juego)</string>
- <string name="pref_separate_layouts">Disposiciones separadas para menú y carrera</string>
  <string name="pref_show_gears">Mostrar los botones de marcha − / +</string>
  <string name="pref_hide_full">Ocultar por completo (si no, silueta tenue)</string>
  <string name="auto_hide_delay">Retardo de ocultación: %1$d s</string>
@@ -126,7 +124,6 @@
  <string name="editor_touch_zone">Zona táctil: %1$d%%</string>
  <string name="editor_mode_race">Carrera</string>
  <string name="editor_mode_menu">Menú</string>
- <string name="editor_mode_shared">Común</string>
  <string name="editor_reset_title">¿Restablecer esta disposición?</string>
  <string name="editor_reset_message">Restaurar las posiciones, los tamaños de botón y las zonas táctiles predeterminados de esta disposición.</string>
  <string name="edit_touch_layout">Editar posiciones y zonas táctiles</string>
@@ -146,10 +143,7 @@
  <string name="importer_open_zip_failed">No se ha podido abrir el ZIP seleccionado</string>
  <string name="importer_zip_missing_files">Al ZIP le faltan las carpetas fedata/gamedata esperadas</string>
 
- <string name="faq_layout_modes"><b>¿Menú o carrera?</b>\nCon las disposiciones separadas activadas, un solo botón ☰ alterna entre ellas: la disposición de menú ofrece una cruceta con ✓ y ←, y la de carrera los botones izquierda / derecha y los pedales. Nunca cambia sola. Con una disposición compartida todos los botones permanecen visibles: una cruceta de cuatro direcciones gira y navega por los menús, y ✓ / ← funcionan en los menús.</string>
- <string name="faq_mouse"><b>¿Cómo funciona el ratón?</b>\nDesliza por una zona vacía de la pantalla para mover el cursor. Levanta el dedo tras deslizar y no habrá clic. Un toque breve y sin movimiento hace clic en la posición del cursor. Mantén el dedo quieto: el botón se queda pulsado y puedes arrastrar; levanta el dedo para soltarlo. Los gestos con varios dedos no hacen clic.</string>
  <string name="faq_size"><b>¿Qué cambia el tamaño?</b>\nEl tamaño global escala los controles predeterminados. En «Editar posiciones y zonas táctiles», arrastra un control y ajusta «Botón» para cambiar su aspecto, o «Zona táctil» para cambiar solo dónde responde. Las líneas discontinuas muestran las zonas táctiles; los porcentajes son relativos al control predeterminado. Los cambios se guardan automáticamente. El editor muestra una cuadrícula; con «Ajustar a la cuadrícula», el control arrastrado se coloca en ella.</string>
- <string name="faq_shared_layouts"><b>¿Una disposición o dos?</b>\nCon «Disposiciones separadas para menú y carrera» desactivado, se usan los mismos controles, posiciones y tamaños en los menús y en las carreras. Actívalo para personalizar cada modo por separado. Cambiar esta opción conserva ambos conjuntos guardados. Restablecer la disposición solo restaura el conjunto seleccionado. «Dirección a la izquierda / derecha» refleja tanto las posiciones predeterminadas como las guardadas a mano.</string>
  <string name="faq_edges"><b>Bordes y posición vertical</b>\nLa distancia a los bordes desplaza los controles predeterminados hacia dentro. «Subir los controles de conducción» eleva los controles inferiores predeterminados. Se respetan los recortes del sistema. Los controles colocados a mano conservan sus posiciones guardadas.</string>
  <string name="faq_hiding"><b>Opacidad y ocultación automática</b>\nLa opacidad fija la visibilidad normal. La ocultación automática empieza cuando se levantan todos los dedos, tras un retardo de 1 a 30 segundos. Elige una silueta tenue o la invisibilidad completa. Los botones ocultos siguen respondiendo al primer toque y vuelven a hacerse visibles. Mantener pulsado un control impide la ocultación. Pulsar el mando oculta los controles al instante; el siguiente toque los devuelve.</string>
  <string name="faq_gears"><b>Marchas manuales</b>\n«Mostrar los botones de marcha − / +» añade dos botones opcionales a la disposición de carrera. Activa la transmisión manual en el juego. Sus teclas se configuran en Controles → Táctil → Teclas y deben coincidir con los ajustes del juego.</string>

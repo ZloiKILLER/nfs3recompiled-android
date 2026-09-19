@@ -5,6 +5,7 @@
 #endif
 #include <SDL3/SDL.h>
 #include <array>
+#include <atomic>
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
@@ -320,6 +321,33 @@ bool SDLCALL mouseEventWatch(void* /*userdata*/, SDL_Event* event)
 
 }
 
+void Mouse::movePointer(x86::sreg32 dx, x86::sreg32 dy)
+{
+    if (!dx && !dy)
+        return;
+    MouseImpl& m = mouseImpl();
+    SDL_LockMutex(m.mutex);
+    m.accumDx += float(dx);
+    m.accumDy += float(dy);
+    if (dx)
+        m.pushEvent(DIMOFS_X, dx);
+    if (dy)
+        m.pushEvent(DIMOFS_Y, dy);
+    SDL_UnlockMutex(m.mutex);
+}
+
+void Mouse::pressPointer(x86::reg32 button, bool down)
+{
+    if (button > 3)
+        return;
+    MouseImpl& m = mouseImpl();
+    SDL_LockMutex(m.mutex);
+    if (down) m.buttons |= (x86::reg32(1) << button);
+    else      m.buttons &= ~(x86::reg32(1) << button);
+    m.pushEvent(DIMOFS_BUTTON0 + button, down ? 0x80 : 0x00);
+    SDL_UnlockMutex(m.mutex);
+}
+
 Mouse::MouseState Mouse::getState()
 {
     /* mouseImpl() installs the event watch on its first call ever (from
@@ -404,6 +432,15 @@ static const SDL_Scancode* touchAxisKeys()
     }();
     return s_keys.data();
 }
+
+/* Whether the touch overlay's steering buttons are what steers player one, for
+ * Gamepad::touchSteering(): set while one of them is held, cleared once the
+ * pad steers the slot's axis itself, left alone while nothing steers -- so the
+ * wheel a button let go of still comes back to the centre the same way. */
+static bool s_touchSteering = false;
+/* How far off the centre the pad has to steer to count, a quarter of the
+ * range: a stick resting a little off-centre must not take steering back. */
+static const int kPadSteerThreshold = 8192;
 
 /* Larger magnitude wins rather than a sum, so a stick resting off-centre
  * cannot cancel a finger or a button asking for full lock, and no two sources
@@ -551,47 +588,28 @@ void sendKey(const ButtonBinding& binding, bool down)
     SDL_PushEvent(&event);
 }
 
-/* The touch D-pad's up and down arms, handed over from the Android UI thread
- * (NFS3Activity.sendTouchMenuKey) and sent from here, once a frame, the way a
- * pad's buttons are: as key events, past the keyboard state the touch blend in
- * getState() reads, so moving through a menu never works the pedals. */
-std::mutex s_touchMenuKeysLock;
-std::vector<std::pair<ButtonBinding, bool>> s_touchMenuKeys;
-
-void sendTouchMenuKeys()
-{
-    std::vector<std::pair<ButtonBinding, bool>> pending;
-    {
-        std::lock_guard<std::mutex> lock(s_touchMenuKeysLock);
-        pending.swap(s_touchMenuKeys);
-    }
-    for (const auto& key : pending)
-        sendKey(key.first, key.second);
-}
-
-#ifdef __ANDROID__
-void queueTouchMenuKey(const char* name, bool down)
-{
-    const ButtonBinding binding = parseBinding(name);
-    if (binding.scancode == SDL_SCANCODE_UNKNOWN)
-        return;
-    std::lock_guard<std::mutex> lock(s_touchMenuKeysLock);
-    s_touchMenuKeys.emplace_back(binding, down);
-}
-#endif
-
 struct SlotButtons
 {
     SDL_JoystickID pad = 0;
     bool           held[kPadButtons] = {};
+    bool           sent[kPadButtons] = {};    // its key went down and has not come up
 };
 SlotButtons s_slotButtons[Gamepad::kSlotCount];
+
+std::atomic<bool> s_gameKeysMuted{false};
+
+/* A key a muted pad keeps quiet: all of them but Escape, which the game never
+ * binds to a car -- it is the pause menu, and a pad keeps its way into that. */
+bool muteable(const ButtonBinding& binding)
+{
+    return binding.scancode != SDL_SCANCODE_UNKNOWN && binding.scancode != SDL_SCANCODE_ESCAPE;
+}
 
 void updateButtonKeys()
 {
     // The first frame resolves and logs every binding, before anything is pressed.
     buttonBinding(0, 0);
-    sendTouchMenuKeys();
+    const bool muted = s_gameKeysMuted.load(std::memory_order_relaxed);
     for (x86::reg32 slot = 0; slot < Gamepad::kSlotCount; ++slot)
     {
         SlotButtons& buttons = s_slotButtons[slot];
@@ -602,9 +620,9 @@ void updateButtonKeys()
         {
             for (size_t i = 0; i < kPadButtons; ++i)
             {
-                if (buttons.held[i])
+                if (buttons.sent[i])
                     sendKey(buttonBinding(slot, i), false);
-                buttons.held[i] = false;
+                buttons.held[i] = buttons.sent[i] = false;
             }
             buttons.pad = source.id;
         }
@@ -612,15 +630,35 @@ void updateButtonKeys()
             continue;
         for (size_t i = 0; i < kPadButtons; ++i)
         {
+            const ButtonBinding& binding = buttonBinding(slot, i);
+            if (muted && buttons.sent[i] && muteable(binding))
+            {
+                sendKey(binding, false);
+                buttons.sent[i] = false;
+            }
             const bool down = SDL_GetGamepadButton(source.gamepad, s_padButtons[i].button);
             if (down == buttons.held[i])
                 continue;
             buttons.held[i] = down;
-            sendKey(buttonBinding(slot, i), down);
+            if (down && !(muted && muteable(binding)))
+            {
+                sendKey(binding, true);
+                buttons.sent[i] = true;
+            }
+            else if (!down && buttons.sent[i])
+            {
+                sendKey(binding, false);
+                buttons.sent[i] = false;
+            }
         }
     }
 }
 
+}
+
+void Gamepad::muteGameKeys(bool muted)
+{
+    s_gameKeysMuted.store(muted, std::memory_order_relaxed);
 }
 
 Gamepad::Gamepad(x86::reg32 gamepadIndex)
@@ -657,6 +695,11 @@ x86::reg32 Gamepad::getButtonCount() const
 x86::reg32 Gamepad::getAxesCount() const
 {
     return 2;
+}
+
+bool Gamepad::touchSteering()
+{
+    return s_touchSteering;
 }
 
 GamepadState Gamepad::getState() const
@@ -706,8 +749,12 @@ GamepadState Gamepad::getState() const
         auto held = [keys, touch](int action) {
             return touch[action] != SDL_SCANCODE_UNKNOWN && keys[touch[action]];
         };
-        blendAxis(result, kAxisSteer,
-                  32767 * (int(held(TOUCH_STEER_RIGHT)) - int(held(TOUCH_STEER_LEFT))));
+        const int touchSteer = int(held(TOUCH_STEER_RIGHT)) - int(held(TOUCH_STEER_LEFT));
+        if (touchSteer != 0)
+            s_touchSteering = true;
+        else if (std::abs(int(result.axes[kAxisSteer])) > kPadSteerThreshold)
+            s_touchSteering = false;
+        blendAxis(result, kAxisSteer, 32767 * touchSteer);
         blendAxis(result, kAxisPedals,
                   32767 * (int(held(TOUCH_BRAKE)) - int(held(TOUCH_ACCELERATE))));
     }
@@ -734,15 +781,6 @@ void androidForceFeedback(x86::reg32 slot,float strength,const win32::Gamepad::R
 }
 }
 
-extern "C" JNIEXPORT void JNICALL
-Java_dev_nfs3hp_port_NFS3Activity_nativeTouchMenuKey(JNIEnv* env, jclass, jstring key, jboolean down)
-{
-    const char* name = key ? env->GetStringUTFChars(key, nullptr) : nullptr;
-    if (!name)
-        return;
-    win32::queueTouchMenuKey(name, down == JNI_TRUE);
-    env->ReleaseStringUTFChars(key, name);
-}
 #endif
 bool win32::Gamepad::hasForceFeedback() const {
 #ifdef __ANDROID__

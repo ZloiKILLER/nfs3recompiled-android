@@ -3,6 +3,8 @@
 
 namespace nfs3hp
 {
+// Port (tools/apply_loading_screen.py): defined in nfs3hp_main.cpp.
+void loadingScreenFit(win32::WinApplication* app, x86::CPU& cpu, bool on);
 
 /* align: skip 0x8d 0x40 0x00 */
 void Application::sub_48ec40(WinApplication* app, x86::CPU& cpu)
@@ -26076,6 +26078,7 @@ void Application::sub_494cb0(WinApplication* app, x86::CPU& cpu)
   NFS2_USE(cpu);
   NFS2_USE(app);
     // 00494cb0  53                     -push ebx
+    loadingScreenFit(app, cpu, true); /* port: the loading screen at 4:3 */
     app->getMemory<x86::reg32>(cpu.esp-4) = cpu.ebx;
     cpu.esp -= 4;
     // 00494cb1  51                     -push ecx

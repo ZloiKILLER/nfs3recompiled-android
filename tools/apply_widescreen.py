@@ -9,6 +9,13 @@
   size, so every other test still applies to a widescreen mode exactly as it
   does to a 4:3 one.  Which widescreen mode there is to list is the driver
   table's business, set up in main().
+- The saved screen size.  config.dat keeps the width of the chosen size, not
+  its place in the list ([0x6fbc18]), and at startup sub_4730d0 hands it to
+  sub_4bee80 to find the mode again: the one of that width, or the nearest.
+  sub_4bee80 runs the list's own tests on the table, the 4:3 one among them
+  (0x4beee6), so a 16:9 size was never found and 1920 came back as 1024x768,
+  the nearest 4:3 width -- the menu had to be set again every time the game
+  started.  That jump asks nfs3hp::widescreenMode too.
 - Field of view.  Every camera -- chase and in-car, the mirror, each half of
   split screen -- sets up its projection in sub_4dbce0 from one horizontal half
   angle, and makes the vertical one 13/16 of it: proportions that hold on a 4:3
@@ -35,6 +42,11 @@ SITES = [
      "    if (!cpu.flags.zf)",
      "    if (!cpu.flags.zf && !widescreenMode(cpu.edi, cpu.ebx)) /* port: 16:9 listed as well as 4:3 */",
      "bool widescreenMode(x86::reg32 width, x86::reg32 height);\n"),
+    ("nfs3hp.27.cpp", "004beee6  7547",
+     "    if (!cpu.flags.zf)",
+     "    if (!cpu.flags.zf && !widescreenMode(app->getMemory<x86::reg32>(cpu.ebp + x86::reg32(-4)),"
+     " app->getMemory<x86::reg32>(cpu.ebp + x86::reg32(-16)))) /* port: the saved 16:9 size is found again */",
+     ""),
     ("nfs3hp.31.cpp", "004dbd1b  8945e8",
      "    app->getMemory<x86::reg32>(cpu.ebp + x86::reg32(-24) /* -0x18 */) = cpu.eax;",
      "    app->getMemory<x86::reg32>(cpu.ebp + x86::reg32(-24) /* -0x18 */) = cpu.eax;\n"

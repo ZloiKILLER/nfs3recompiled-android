@@ -1521,7 +1521,7 @@ L_0x004bee9d:
         cpu.set_szp(result);
     }
     // 004beee6  7547                   -jne 0x4bef2f
-    if (!cpu.flags.zf)
+    if (!cpu.flags.zf && !widescreenMode(app->getMemory<x86::reg32>(cpu.ebp + x86::reg32(-4)), app->getMemory<x86::reg32>(cpu.ebp + x86::reg32(-16)))) /* port: the saved 16:9 size is found again */
     {
         goto L_0x004bef2f;
     }

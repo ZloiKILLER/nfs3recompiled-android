@@ -3,6 +3,13 @@
 
 namespace nfs3hp
 {
+// Port (tools/apply_hud_editor.py): defined in nfs3hp_main.cpp.
+void hudTablePanel(win32::WinApplication* app, x86::reg32 player, bool otherLayout);
+// Port (tools/apply_cabin_fit.py): defined in nfs3hp_main.cpp.
+x86::reg32 cabinRect(win32::WinApplication* app, x86::reg32 field);
+// Port (tools/apply_hud_scale.py): defined in nfs3hp_main.cpp.
+x86::reg32 hudReferenceWidth(win32::WinApplication* app);
+x86::reg32 hudReferenceHeight(win32::WinApplication* app);
 // Port (tools/apply_widescreen.py): defined in nfs3hp_main.cpp.
 void widescreenHudRect(win32::WinApplication* app, x86::reg32 slot);
 
@@ -1019,7 +1026,7 @@ L_0x00480163:
         goto L_0x004801c8;
     }
     // 00480187  db05c8da7c00           -fild dword ptr [0x7cdac8]
-    cpu.fpu.push(x86::Float(x86::sreg32(app->getMemory<x86::reg32>(x86::reg32(8182472) /* 0x7cdac8 */))));
+    cpu.fpu.push(x86::Float(x86::sreg32(hudReferenceWidth(app)))); /* port: 4:3 proportions, was [0x7cdac8] */
     // 0048018d  8b4572                 -mov eax, dword ptr [ebp + 0x72]
     cpu.eax = app->getMemory<x86::reg32>(cpu.ebp + x86::reg32(114) /* 0x72 */);
     // 00480190  d80d00b55300           -fmul dword ptr [0x53b500]
@@ -5161,7 +5168,7 @@ void Application::sub_480fc0(WinApplication* app, x86::CPU& cpu)
     // 00480fcb  89c7                   -mov edi, eax
     cpu.edi = cpu.eax;
     // 00480fcd  db05c8da7c00           -fild dword ptr [0x7cdac8]
-    cpu.fpu.push(x86::Float(x86::sreg32(app->getMemory<x86::reg32>(x86::reg32(8182472) /* 0x7cdac8 */))));
+    cpu.fpu.push(x86::Float(x86::sreg32(hudReferenceWidth(app)))); /* port: 4:3 proportions, was [0x7cdac8] */
     // 00480fd3  c1e002                 -shl eax, 2
     cpu.eax <<= 2 /*0x2*/ % 32;
     // 00480fd6  d80d18b55300           -fmul dword ptr [0x53b518]
@@ -5189,7 +5196,7 @@ void Application::sub_480fc0(WinApplication* app, x86::CPU& cpu)
     cpu.eax = app->getMemory<x86::reg32>(cpu.esp);
     cpu.esp += 4;
     // 00480ffb  db05c8da7c00           -fild dword ptr [0x7cdac8]
-    cpu.fpu.push(x86::Float(x86::sreg32(app->getMemory<x86::reg32>(x86::reg32(8182472) /* 0x7cdac8 */))));
+    cpu.fpu.push(x86::Float(x86::sreg32(hudReferenceWidth(app)))); /* port: 4:3 proportions, was [0x7cdac8] */
     // 00481001  8b5608                 -mov edx, dword ptr [esi + 8]
     cpu.edx = app->getMemory<x86::reg32>(cpu.esi + x86::reg32(8) /* 0x8 */);
     // 00481004  d80d18b55300           -fmul dword ptr [0x53b518]
@@ -5210,7 +5217,7 @@ void Application::sub_480fc0(WinApplication* app, x86::CPU& cpu)
     cpu.eax = app->getMemory<x86::reg32>(cpu.esp);
     cpu.esp += 4;
     // 0048101a  db05c8da7c00           -fild dword ptr [0x7cdac8]
-    cpu.fpu.push(x86::Float(x86::sreg32(app->getMemory<x86::reg32>(x86::reg32(8182472) /* 0x7cdac8 */))));
+    cpu.fpu.push(x86::Float(x86::sreg32(hudReferenceWidth(app)))); /* port: 4:3 proportions, was [0x7cdac8] */
     // 00481020  d80d18b55300           -fmul dword ptr [0x53b518]
     cpu.fpu.st(0) *= x86::Float(app->getMemory<float>(x86::reg32(5485848) /* 0x53b518 */));
     // 00481026  8b4e0c                 -mov ecx, dword ptr [esi + 0xc]
@@ -5228,7 +5235,7 @@ void Application::sub_480fc0(WinApplication* app, x86::CPU& cpu)
     cpu.eax = app->getMemory<x86::reg32>(cpu.esp);
     cpu.esp += 4;
     // 00481038  db05c8da7c00           -fild dword ptr [0x7cdac8]
-    cpu.fpu.push(x86::Float(x86::sreg32(app->getMemory<x86::reg32>(x86::reg32(8182472) /* 0x7cdac8 */))));
+    cpu.fpu.push(x86::Float(x86::sreg32(hudReferenceWidth(app)))); /* port: 4:3 proportions, was [0x7cdac8] */
     // 0048103e  d80d18b55300           -fmul dword ptr [0x53b518]
     cpu.fpu.st(0) *= x86::Float(app->getMemory<float>(x86::reg32(5485848) /* 0x53b518 */));
     // 00481044  8b1e                   -mov ebx, dword ptr [esi]
@@ -5266,7 +5273,7 @@ void Application::sub_480fc0(WinApplication* app, x86::CPU& cpu)
     sub_47f650(app, cpu);
     if (cpu.terminate) return;
     // 00481072  db05c8da7c00           -fild dword ptr [0x7cdac8]
-    cpu.fpu.push(x86::Float(x86::sreg32(app->getMemory<x86::reg32>(x86::reg32(8182472) /* 0x7cdac8 */))));
+    cpu.fpu.push(x86::Float(x86::sreg32(hudReferenceWidth(app)))); /* port: 4:3 proportions, was [0x7cdac8] */
     // 00481078  d80d18b55300           -fmul dword ptr [0x53b518]
     cpu.fpu.st(0) *= x86::Float(app->getMemory<float>(x86::reg32(5485848) /* 0x53b518 */));
     // 0048107e  89f8                   -mov eax, edi
@@ -5288,7 +5295,7 @@ void Application::sub_480fc0(WinApplication* app, x86::CPU& cpu)
     cpu.eax = app->getMemory<x86::reg32>(cpu.esp);
     cpu.esp += 4;
     // 00481098  db05c8da7c00           -fild dword ptr [0x7cdac8]
-    cpu.fpu.push(x86::Float(x86::sreg32(app->getMemory<x86::reg32>(x86::reg32(8182472) /* 0x7cdac8 */))));
+    cpu.fpu.push(x86::Float(x86::sreg32(hudReferenceWidth(app)))); /* port: 4:3 proportions, was [0x7cdac8] */
     // 0048109e  8b1e                   -mov ebx, dword ptr [esi]
     cpu.ebx = app->getMemory<x86::reg32>(cpu.esi);
     // 004810a0  d80d18b55300           -fmul dword ptr [0x53b518]
@@ -5315,7 +5322,7 @@ void Application::sub_480fc0(WinApplication* app, x86::CPU& cpu)
     cpu.eax = app->getMemory<x86::reg32>(cpu.esp);
     cpu.esp += 4;
     // 004810c0  db05c8da7c00           -fild dword ptr [0x7cdac8]
-    cpu.fpu.push(x86::Float(x86::sreg32(app->getMemory<x86::reg32>(x86::reg32(8182472) /* 0x7cdac8 */))));
+    cpu.fpu.push(x86::Float(x86::sreg32(hudReferenceWidth(app)))); /* port: 4:3 proportions, was [0x7cdac8] */
     // 004810c6  8b5608                 -mov edx, dword ptr [esi + 8]
     cpu.edx = app->getMemory<x86::reg32>(cpu.esi + x86::reg32(8) /* 0x8 */);
     // 004810c9  d80d18b55300           -fmul dword ptr [0x53b518]
@@ -5342,7 +5349,7 @@ void Application::sub_480fc0(WinApplication* app, x86::CPU& cpu)
     cpu.eax = app->getMemory<x86::reg32>(cpu.esp);
     cpu.esp += 4;
     // 004810ea  db05c8da7c00           -fild dword ptr [0x7cdac8]
-    cpu.fpu.push(x86::Float(x86::sreg32(app->getMemory<x86::reg32>(x86::reg32(8182472) /* 0x7cdac8 */))));
+    cpu.fpu.push(x86::Float(x86::sreg32(hudReferenceWidth(app)))); /* port: 4:3 proportions, was [0x7cdac8] */
     // 004810f0  8b7e04                 -mov edi, dword ptr [esi + 4]
     cpu.edi = app->getMemory<x86::reg32>(cpu.esi + x86::reg32(4) /* 0x4 */);
     // 004810f3  d80d18b55300           -fmul dword ptr [0x53b518]
@@ -5781,7 +5788,7 @@ L_0x0048131d:
     app->getMemory<x86::reg32>(cpu.ebp + x86::reg32(-8) /* -0x8 */) = cpu.ebx;
 L_0x00481322:
     // 00481322  db05c8da7c00           -fild dword ptr [0x7cdac8]
-    cpu.fpu.push(x86::Float(x86::sreg32(app->getMemory<x86::reg32>(x86::reg32(8182472) /* 0x7cdac8 */))));
+    cpu.fpu.push(x86::Float(x86::sreg32(hudReferenceWidth(app)))); /* port: 4:3 proportions, was [0x7cdac8] */
     // 00481328  8d14b500000000         -lea edx, [esi*4]
     cpu.edx = x86::reg32(cpu.esi * 4);
     // 0048132f  d80d20b55300           -fmul dword ptr [0x53b520]
@@ -5803,7 +5810,7 @@ L_0x00481322:
     // 00481347  29f2                   -sub edx, esi
     (cpu.edx) -= x86::reg32(x86::sreg32(cpu.esi));
     // 00481349  db05c8da7c00           -fild dword ptr [0x7cdac8]
-    cpu.fpu.push(x86::Float(x86::sreg32(app->getMemory<x86::reg32>(x86::reg32(8182472) /* 0x7cdac8 */))));
+    cpu.fpu.push(x86::Float(x86::sreg32(hudReferenceWidth(app)))); /* port: 4:3 proportions, was [0x7cdac8] */
     // 0048134f  c1e204                 -shl edx, 4
     cpu.edx <<= 4 /*0x4*/ % 32;
     // 00481352  d80d20b55300           -fmul dword ptr [0x53b520]
@@ -5826,7 +5833,7 @@ L_0x00481322:
     cpu.eax = app->getMemory<x86::reg32>(cpu.esp);
     cpu.esp += 4;
     // 0048136e  db05c8da7c00           -fild dword ptr [0x7cdac8]
-    cpu.fpu.push(x86::Float(x86::sreg32(app->getMemory<x86::reg32>(x86::reg32(8182472) /* 0x7cdac8 */))));
+    cpu.fpu.push(x86::Float(x86::sreg32(hudReferenceWidth(app)))); /* port: 4:3 proportions, was [0x7cdac8] */
     // 00481374  d80d20b55300           -fmul dword ptr [0x53b520]
     cpu.fpu.st(0) *= x86::Float(app->getMemory<float>(x86::reg32(5485856) /* 0x53b520 */));
     // 0048137a  8b8a94977400           -mov ecx, dword ptr [edx + 0x749794]
@@ -5844,7 +5851,7 @@ L_0x00481322:
     cpu.eax = app->getMemory<x86::reg32>(cpu.esp);
     cpu.esp += 4;
     // 0048138f  db05c8da7c00           -fild dword ptr [0x7cdac8]
-    cpu.fpu.push(x86::Float(x86::sreg32(app->getMemory<x86::reg32>(x86::reg32(8182472) /* 0x7cdac8 */))));
+    cpu.fpu.push(x86::Float(x86::sreg32(hudReferenceWidth(app)))); /* port: 4:3 proportions, was [0x7cdac8] */
     // 00481395  d80d20b55300           -fmul dword ptr [0x53b520]
     cpu.fpu.st(0) *= x86::Float(app->getMemory<float>(x86::reg32(5485856) /* 0x53b520 */));
     // 0048139b  8b9a88977400           -mov ebx, dword ptr [edx + 0x749788]
@@ -5882,7 +5889,7 @@ L_0x00481322:
     sub_47f650(app, cpu);
     if (cpu.terminate) return;
     // 004813d0  db05c8da7c00           -fild dword ptr [0x7cdac8]
-    cpu.fpu.push(x86::Float(x86::sreg32(app->getMemory<x86::reg32>(x86::reg32(8182472) /* 0x7cdac8 */))));
+    cpu.fpu.push(x86::Float(x86::sreg32(hudReferenceWidth(app)))); /* port: 4:3 proportions, was [0x7cdac8] */
     // 004813d6  89f0                   -mov eax, esi
     cpu.eax = cpu.esi;
     // 004813d8  d80d20b55300           -fmul dword ptr [0x53b520]
@@ -5916,7 +5923,7 @@ L_0x00481322:
     cpu.eax = app->getMemory<x86::reg32>(cpu.esp);
     cpu.esp += 4;
     // 00481406  db05c8da7c00           -fild dword ptr [0x7cdac8]
-    cpu.fpu.push(x86::Float(x86::sreg32(app->getMemory<x86::reg32>(x86::reg32(8182472) /* 0x7cdac8 */))));
+    cpu.fpu.push(x86::Float(x86::sreg32(hudReferenceWidth(app)))); /* port: 4:3 proportions, was [0x7cdac8] */
     // 0048140c  d80d20b55300           -fmul dword ptr [0x53b520]
     cpu.fpu.st(0) *= x86::Float(app->getMemory<float>(x86::reg32(5485856) /* 0x53b520 */));
     // 00481412  8945fc                 -mov dword ptr [ebp - 4], eax
@@ -5945,7 +5952,7 @@ L_0x00481322:
     cpu.eax = app->getMemory<x86::reg32>(cpu.esp);
     cpu.esp += 4;
     // 00481434  db05c8da7c00           -fild dword ptr [0x7cdac8]
-    cpu.fpu.push(x86::Float(x86::sreg32(app->getMemory<x86::reg32>(x86::reg32(8182472) /* 0x7cdac8 */))));
+    cpu.fpu.push(x86::Float(x86::sreg32(hudReferenceWidth(app)))); /* port: 4:3 proportions, was [0x7cdac8] */
     // 0048143a  d80d20b55300           -fmul dword ptr [0x53b520]
     cpu.fpu.st(0) *= x86::Float(app->getMemory<float>(x86::reg32(5485856) /* 0x53b520 */));
     // 00481440  8945fc                 -mov dword ptr [ebp - 4], eax
@@ -5985,7 +5992,7 @@ L_0x00481322:
     app->getMemory<float>(cpu.edx + x86::reg32(32) /* 0x20 */) = float(cpu.fpu.st(0));
     cpu.fpu.pop();
     // 00481476  db05c8da7c00           -fild dword ptr [0x7cdac8]
-    cpu.fpu.push(x86::Float(x86::sreg32(app->getMemory<x86::reg32>(x86::reg32(8182472) /* 0x7cdac8 */))));
+    cpu.fpu.push(x86::Float(x86::sreg32(hudReferenceWidth(app)))); /* port: 4:3 proportions, was [0x7cdac8] */
     // 0048147c  d80d20b55300           -fmul dword ptr [0x53b520]
     cpu.fpu.st(0) *= x86::Float(app->getMemory<float>(x86::reg32(5485856) /* 0x53b520 */));
     // 00481482  a1341b7900             -mov eax, dword ptr [0x791b34]
@@ -7428,7 +7435,7 @@ L_0x00481adf:
     (cpu.esi) += x86::reg32(x86::sreg32(352 /*0x160*/));
 L_0x00481ae5:
     // 00481ae5  db05c8da7c00           -fild dword ptr [0x7cdac8]
-    cpu.fpu.push(x86::Float(x86::sreg32(app->getMemory<x86::reg32>(x86::reg32(8182472) /* 0x7cdac8 */))));
+    cpu.fpu.push(x86::Float(x86::sreg32(hudReferenceWidth(app)))); /* port: 4:3 proportions, was [0x7cdac8] */
     // 00481aeb  d80d8cb55300           -fmul dword ptr [0x53b58c]
     cpu.fpu.st(0) *= x86::Float(app->getMemory<float>(x86::reg32(5485964) /* 0x53b58c */));
     // 00481af1  d80d90b55300           -fmul dword ptr [0x53b590]
@@ -7442,7 +7449,7 @@ L_0x00481ae5:
     cpu.eax = app->getMemory<x86::reg32>(cpu.esp);
     cpu.esp += 4;
     // 00481afe  db05c8da7c00           -fild dword ptr [0x7cdac8]
-    cpu.fpu.push(x86::Float(x86::sreg32(app->getMemory<x86::reg32>(x86::reg32(8182472) /* 0x7cdac8 */))));
+    cpu.fpu.push(x86::Float(x86::sreg32(hudReferenceWidth(app)))); /* port: 4:3 proportions, was [0x7cdac8] */
     // 00481b04  8b5608                 -mov edx, dword ptr [esi + 8]
     cpu.edx = app->getMemory<x86::reg32>(cpu.esi + x86::reg32(8) /* 0x8 */);
     // 00481b07  d80d8cb55300           -fmul dword ptr [0x53b58c]
@@ -7463,7 +7470,7 @@ L_0x00481ae5:
     cpu.eax = app->getMemory<x86::reg32>(cpu.esp);
     cpu.esp += 4;
     // 00481b1d  db05c8da7c00           -fild dword ptr [0x7cdac8]
-    cpu.fpu.push(x86::Float(x86::sreg32(app->getMemory<x86::reg32>(x86::reg32(8182472) /* 0x7cdac8 */))));
+    cpu.fpu.push(x86::Float(x86::sreg32(hudReferenceWidth(app)))); /* port: 4:3 proportions, was [0x7cdac8] */
     // 00481b23  d80d8cb55300           -fmul dword ptr [0x53b58c]
     cpu.fpu.st(0) *= x86::Float(app->getMemory<float>(x86::reg32(5485964) /* 0x53b58c */));
     // 00481b29  8b4e0c                 -mov ecx, dword ptr [esi + 0xc]
@@ -7481,7 +7488,7 @@ L_0x00481ae5:
     cpu.eax = app->getMemory<x86::reg32>(cpu.esp);
     cpu.esp += 4;
     // 00481b3b  db05c8da7c00           -fild dword ptr [0x7cdac8]
-    cpu.fpu.push(x86::Float(x86::sreg32(app->getMemory<x86::reg32>(x86::reg32(8182472) /* 0x7cdac8 */))));
+    cpu.fpu.push(x86::Float(x86::sreg32(hudReferenceWidth(app)))); /* port: 4:3 proportions, was [0x7cdac8] */
     // 00481b41  d80d8cb55300           -fmul dword ptr [0x53b58c]
     cpu.fpu.st(0) *= x86::Float(app->getMemory<float>(x86::reg32(5485964) /* 0x53b58c */));
     // 00481b47  8b1e                   -mov ebx, dword ptr [esi]
@@ -7517,7 +7524,7 @@ L_0x00481ae5:
     sub_47f650(app, cpu);
     if (cpu.terminate) return;
     // 00481b72  db05c8da7c00           -fild dword ptr [0x7cdac8]
-    cpu.fpu.push(x86::Float(x86::sreg32(app->getMemory<x86::reg32>(x86::reg32(8182472) /* 0x7cdac8 */))));
+    cpu.fpu.push(x86::Float(x86::sreg32(hudReferenceWidth(app)))); /* port: 4:3 proportions, was [0x7cdac8] */
     // 00481b78  d80d8cb55300           -fmul dword ptr [0x53b58c]
     cpu.fpu.st(0) *= x86::Float(app->getMemory<float>(x86::reg32(5485964) /* 0x53b58c */));
     // 00481b7e  89fa                   -mov edx, edi
@@ -7539,7 +7546,7 @@ L_0x00481ae5:
     cpu.eax = app->getMemory<x86::reg32>(cpu.esp);
     cpu.esp += 4;
     // 00481b97  db05c8da7c00           -fild dword ptr [0x7cdac8]
-    cpu.fpu.push(x86::Float(x86::sreg32(app->getMemory<x86::reg32>(x86::reg32(8182472) /* 0x7cdac8 */))));
+    cpu.fpu.push(x86::Float(x86::sreg32(hudReferenceWidth(app)))); /* port: 4:3 proportions, was [0x7cdac8] */
     // 00481b9d  8b0e                   -mov ecx, dword ptr [esi]
     cpu.ecx = app->getMemory<x86::reg32>(cpu.esi);
     // 00481b9f  d80d8cb55300           -fmul dword ptr [0x53b58c]
@@ -7566,7 +7573,7 @@ L_0x00481ae5:
     cpu.eax = app->getMemory<x86::reg32>(cpu.esp);
     cpu.esp += 4;
     // 00481bbf  db05c8da7c00           -fild dword ptr [0x7cdac8]
-    cpu.fpu.push(x86::Float(x86::sreg32(app->getMemory<x86::reg32>(x86::reg32(8182472) /* 0x7cdac8 */))));
+    cpu.fpu.push(x86::Float(x86::sreg32(hudReferenceWidth(app)))); /* port: 4:3 proportions, was [0x7cdac8] */
     // 00481bc5  8b4e08                 -mov ecx, dword ptr [esi + 8]
     cpu.ecx = app->getMemory<x86::reg32>(cpu.esi + x86::reg32(8) /* 0x8 */);
     // 00481bc8  d80d8cb55300           -fmul dword ptr [0x53b58c]
@@ -7593,7 +7600,7 @@ L_0x00481ae5:
     cpu.eax = app->getMemory<x86::reg32>(cpu.esp);
     cpu.esp += 4;
     // 00481be9  db05c8da7c00           -fild dword ptr [0x7cdac8]
-    cpu.fpu.push(x86::Float(x86::sreg32(app->getMemory<x86::reg32>(x86::reg32(8182472) /* 0x7cdac8 */))));
+    cpu.fpu.push(x86::Float(x86::sreg32(hudReferenceWidth(app)))); /* port: 4:3 proportions, was [0x7cdac8] */
     // 00481bef  8b5e04                 -mov ebx, dword ptr [esi + 4]
     cpu.ebx = app->getMemory<x86::reg32>(cpu.esi + x86::reg32(4) /* 0x4 */);
     // 00481bf2  d80d8cb55300           -fmul dword ptr [0x53b58c]
@@ -7855,7 +7862,7 @@ L_0x00481ca0:
         goto L_0x00481d44;
     }
     // 00481d0c  db05c8da7c00           -fild dword ptr [0x7cdac8]
-    cpu.fpu.push(x86::Float(x86::sreg32(app->getMemory<x86::reg32>(x86::reg32(8182472) /* 0x7cdac8 */))));
+    cpu.fpu.push(x86::Float(x86::sreg32(hudReferenceWidth(app)))); /* port: 4:3 proportions, was [0x7cdac8] */
     // 00481d12  8b82a4987400           -mov eax, dword ptr [edx + 0x7498a4]
     cpu.eax = app->getMemory<x86::reg32>(cpu.edx + x86::reg32(7641252) /* 0x7498a4 */);
     // 00481d18  d80da8b55300           -fmul dword ptr [0x53b5a8]
@@ -7898,7 +7905,7 @@ L_0x00481ca0:
     goto L_0x00481d72;
 L_0x00481d44:
     // 00481d44  db05c8da7c00           -fild dword ptr [0x7cdac8]
-    cpu.fpu.push(x86::Float(x86::sreg32(app->getMemory<x86::reg32>(x86::reg32(8182472) /* 0x7cdac8 */))));
+    cpu.fpu.push(x86::Float(x86::sreg32(hudReferenceWidth(app)))); /* port: 4:3 proportions, was [0x7cdac8] */
     // 00481d4a  d80da8b55300           -fmul dword ptr [0x53b5a8]
     cpu.fpu.st(0) *= x86::Float(app->getMemory<float>(x86::reg32(5485992) /* 0x53b5a8 */));
     // 00481d50  8b829c987400           -mov eax, dword ptr [edx + 0x74989c]
@@ -7940,7 +7947,7 @@ L_0x00481d72:
     goto L_0x00481e52;
 L_0x00481d7d:
     // 00481d7d  db05ccda7c00           -fild dword ptr [0x7cdacc]
-    cpu.fpu.push(x86::Float(x86::sreg32(app->getMemory<x86::reg32>(x86::reg32(8182476) /* 0x7cdacc */))));
+    cpu.fpu.push(x86::Float(x86::sreg32(hudReferenceHeight(app)))); /* port: 4:3 proportions, was [0x7cdacc] */
     // 00481d83  dc0db0b55300           -fmul qword ptr [0x53b5b0]
     cpu.fpu.st(0) *= x86::Float(app->getMemory<double>(x86::reg32(5486000) /* 0x53b5b0 */));
     // 00481d89  89f2                   -mov edx, esi
@@ -8003,7 +8010,7 @@ L_0x00481d7d:
         goto L_0x00481e1e;
     }
     // 00481de6  db05c8da7c00           -fild dword ptr [0x7cdac8]
-    cpu.fpu.push(x86::Float(x86::sreg32(app->getMemory<x86::reg32>(x86::reg32(8182472) /* 0x7cdac8 */))));
+    cpu.fpu.push(x86::Float(x86::sreg32(hudReferenceWidth(app)))); /* port: 4:3 proportions, was [0x7cdac8] */
     // 00481dec  8b8734987400           -mov eax, dword ptr [edi + 0x749834]
     cpu.eax = app->getMemory<x86::reg32>(cpu.edi + x86::reg32(7641140) /* 0x749834 */);
     // 00481df2  d80da8b55300           -fmul dword ptr [0x53b5a8]
@@ -8046,7 +8053,7 @@ L_0x00481d7d:
     goto L_0x00481e4c;
 L_0x00481e1e:
     // 00481e1e  db05c8da7c00           -fild dword ptr [0x7cdac8]
-    cpu.fpu.push(x86::Float(x86::sreg32(app->getMemory<x86::reg32>(x86::reg32(8182472) /* 0x7cdac8 */))));
+    cpu.fpu.push(x86::Float(x86::sreg32(hudReferenceWidth(app)))); /* port: 4:3 proportions, was [0x7cdac8] */
     // 00481e24  d80da8b55300           -fmul dword ptr [0x53b5a8]
     cpu.fpu.st(0) *= x86::Float(app->getMemory<float>(x86::reg32(5485992) /* 0x53b5a8 */));
     // 00481e2a  8b872c987400           -mov eax, dword ptr [edi + 0x74982c]
@@ -8148,7 +8155,7 @@ L_0x00481e8b:
     cpu.eax = app->getMemory<x86::reg32>(x86::reg32(7939528) /* 0x7925c8 */);
 L_0x00481e90:
     // 00481e90  db05c8da7c00           -fild dword ptr [0x7cdac8]
-    cpu.fpu.push(x86::Float(x86::sreg32(app->getMemory<x86::reg32>(x86::reg32(8182472) /* 0x7cdac8 */))));
+    cpu.fpu.push(x86::Float(x86::sreg32(hudReferenceWidth(app)))); /* port: 4:3 proportions, was [0x7cdac8] */
     // 00481e96  8b0f                   -mov ecx, dword ptr [edi]
     cpu.ecx = app->getMemory<x86::reg32>(cpu.edi);
     // 00481e98  d80da8b55300           -fmul dword ptr [0x53b5a8]
@@ -8171,7 +8178,7 @@ L_0x00481e90:
     cpu.eax = app->getMemory<x86::reg32>(cpu.esp);
     cpu.esp += 4;
     // 00481eb5  db05c8da7c00           -fild dword ptr [0x7cdac8]
-    cpu.fpu.push(x86::Float(x86::sreg32(app->getMemory<x86::reg32>(x86::reg32(8182472) /* 0x7cdac8 */))));
+    cpu.fpu.push(x86::Float(x86::sreg32(hudReferenceWidth(app)))); /* port: 4:3 proportions, was [0x7cdac8] */
     // 00481ebb  d80da8b55300           -fmul dword ptr [0x53b5a8]
     cpu.fpu.st(0) *= x86::Float(app->getMemory<float>(x86::reg32(5485992) /* 0x53b5a8 */));
     // 00481ec1  8b1f                   -mov ebx, dword ptr [edi]
@@ -8209,7 +8216,7 @@ L_0x00481e90:
     sub_47f650(app, cpu);
     if (cpu.terminate) return;
     // 00481ef3  db05c8da7c00           -fild dword ptr [0x7cdac8]
-    cpu.fpu.push(x86::Float(x86::sreg32(app->getMemory<x86::reg32>(x86::reg32(8182472) /* 0x7cdac8 */))));
+    cpu.fpu.push(x86::Float(x86::sreg32(hudReferenceWidth(app)))); /* port: 4:3 proportions, was [0x7cdac8] */
     // 00481ef9  d80da8b55300           -fmul dword ptr [0x53b5a8]
     cpu.fpu.st(0) *= x86::Float(app->getMemory<float>(x86::reg32(5485992) /* 0x53b5a8 */));
     // 00481eff  89f0                   -mov eax, esi
@@ -8262,7 +8269,7 @@ L_0x00481f36:
     cpu.eax = app->getMemory<x86::reg32>(x86::reg32(7939528) /* 0x7925c8 */);
 L_0x00481f3b:
     // 00481f3b  db05c8da7c00           -fild dword ptr [0x7cdac8]
-    cpu.fpu.push(x86::Float(x86::sreg32(app->getMemory<x86::reg32>(x86::reg32(8182472) /* 0x7cdac8 */))));
+    cpu.fpu.push(x86::Float(x86::sreg32(hudReferenceWidth(app)))); /* port: 4:3 proportions, was [0x7cdac8] */
     // 00481f41  8b0f                   -mov ecx, dword ptr [edi]
     cpu.ecx = app->getMemory<x86::reg32>(cpu.edi);
     // 00481f43  d80da8b55300           -fmul dword ptr [0x53b5a8]
@@ -8309,6 +8316,7 @@ L_0x00481f3b:
     app->getMemory<float>(cpu.edx + x86::reg32(68) /* 0x44 */) = float(cpu.fpu.st(0));
     cpu.fpu.pop();
     // 00481f86  89ec                   -mov esp, ebp
+    hudTablePanel(app, cpu.esi, app->getMemory<x86::reg32>(cpu.ebp + x86::reg32(-8)) != 0); /* port: the table's rectangle is its panel */
     cpu.esp = cpu.ebp;
     // 00481f88  5d                     -pop ebp
     cpu.ebp = app->getMemory<x86::reg32>(cpu.esp);
@@ -19188,7 +19196,7 @@ void Application::sub_484b70(WinApplication* app, x86::CPU& cpu)
     // 00484b77  83ec04                 -sub esp, 4
     (cpu.esp) -= x86::reg32(x86::sreg32(4 /*0x4*/));
     // 00484b7a  a1c8da7c00             -mov eax, dword ptr [0x7cdac8]
-    cpu.eax = app->getMemory<x86::reg32>(x86::reg32(8182472) /* 0x7cdac8 */);
+    cpu.eax = hudReferenceWidth(app); /* port: HUD text sized for 4:3, was [0x7cdac8] */
     // 00484b7f  3d80020000             +cmp eax, 0x280
     {
         x86::reg32 tmp1 = cpu.eax;
@@ -28441,7 +28449,7 @@ void Application::sub_487210(WinApplication* app, x86::CPU& cpu)
         goto L_0x004872ee;
     }
     // 00487238  db05c8da7c00           -fild dword ptr [0x7cdac8]
-    cpu.fpu.push(x86::Float(x86::sreg32(app->getMemory<x86::reg32>(x86::reg32(8182472) /* 0x7cdac8 */))));
+    cpu.fpu.push(x86::Float(x86::sreg32(hudReferenceWidth(app)))); /* port: 4:3 proportions, was [0x7cdac8] */
     // 0048723e  d80d90b65300           -fmul dword ptr [0x53b690]
     cpu.fpu.st(0) *= x86::Float(app->getMemory<float>(x86::reg32(5486224) /* 0x53b690 */));
     // 00487244  d80d94b65300           -fmul dword ptr [0x53b694]
@@ -28455,7 +28463,7 @@ void Application::sub_487210(WinApplication* app, x86::CPU& cpu)
     cpu.eax = app->getMemory<x86::reg32>(cpu.esp);
     cpu.esp += 4;
     // 00487251  db05c8da7c00           -fild dword ptr [0x7cdac8]
-    cpu.fpu.push(x86::Float(x86::sreg32(app->getMemory<x86::reg32>(x86::reg32(8182472) /* 0x7cdac8 */))));
+    cpu.fpu.push(x86::Float(x86::sreg32(hudReferenceWidth(app)))); /* port: 4:3 proportions, was [0x7cdac8] */
     // 00487257  d80d90b65300           -fmul dword ptr [0x53b690]
     cpu.fpu.st(0) *= x86::Float(app->getMemory<float>(x86::reg32(5486224) /* 0x53b690 */));
     // 0048725d  8945fc                 -mov dword ptr [ebp - 4], eax
@@ -28494,7 +28502,7 @@ void Application::sub_487210(WinApplication* app, x86::CPU& cpu)
     cpu.eax = app->getMemory<x86::reg32>(cpu.esp);
     cpu.esp += 4;
     // 00487284  db05c8da7c00           -fild dword ptr [0x7cdac8]
-    cpu.fpu.push(x86::Float(x86::sreg32(app->getMemory<x86::reg32>(x86::reg32(8182472) /* 0x7cdac8 */))));
+    cpu.fpu.push(x86::Float(x86::sreg32(hudReferenceWidth(app)))); /* port: 4:3 proportions, was [0x7cdac8] */
     // 0048728a  8945fc                 -mov dword ptr [ebp - 4], eax
     app->getMemory<x86::reg32>(cpu.ebp + x86::reg32(-4) /* -0x4 */) = cpu.eax;
     // 0048728d  d80d90b65300           -fmul dword ptr [0x53b690]
@@ -28531,7 +28539,7 @@ void Application::sub_487210(WinApplication* app, x86::CPU& cpu)
     cpu.eax = app->getMemory<x86::reg32>(cpu.esp);
     cpu.esp += 4;
     // 004872b3  db05c8da7c00           -fild dword ptr [0x7cdac8]
-    cpu.fpu.push(x86::Float(x86::sreg32(app->getMemory<x86::reg32>(x86::reg32(8182472) /* 0x7cdac8 */))));
+    cpu.fpu.push(x86::Float(x86::sreg32(hudReferenceWidth(app)))); /* port: 4:3 proportions, was [0x7cdac8] */
     // 004872b9  8945fc                 -mov dword ptr [ebp - 4], eax
     app->getMemory<x86::reg32>(cpu.ebp + x86::reg32(-4) /* -0x4 */) = cpu.eax;
     // 004872bc  d80d90b65300           -fmul dword ptr [0x53b690]
@@ -32726,7 +32734,7 @@ void Application::sub_4880b0(WinApplication* app, x86::CPU& cpu)
     // 004880c4  894576                 -mov dword ptr [ebp + 0x76], eax
     app->getMemory<x86::reg32>(cpu.ebp + x86::reg32(118) /* 0x76 */) = cpu.eax;
     // 004880c7  db05a0db7c00           -fild dword ptr [0x7cdba0]
-    cpu.fpu.push(x86::Float(x86::sreg32(app->getMemory<x86::reg32>(x86::reg32(8182688) /* 0x7cdba0 */))));
+    cpu.fpu.push(x86::Float(x86::sreg32(cabinRect(app, 2) /* port: the cabin fitted to 4:3, was [0x7cdba0] */)));
     // 004880cd  d80d9cb65300           -fmul dword ptr [0x53b69c]
     cpu.fpu.st(0) *= x86::Float(app->getMemory<float>(x86::reg32(5486236) /* 0x53b69c */));
     // 004880d3  b920000000             -mov ecx, 0x20
@@ -32871,7 +32879,7 @@ L_0x00488138:
     // 0048818b  d9c1                   -fld st(1)
     cpu.fpu.push(x86::Float(cpu.fpu.st(1)));
     // 0048818d  db0598db7c00           -fild dword ptr [0x7cdb98]
-    cpu.fpu.push(x86::Float(x86::sreg32(app->getMemory<x86::reg32>(x86::reg32(8182680) /* 0x7cdb98 */))));
+    cpu.fpu.push(x86::Float(x86::sreg32(cabinRect(app, 0) /* port: the cabin fitted to 4:3, was [0x7cdb98] */)));
     // 00488193  dec5                   -faddp st(5)
     cpu.fpu.st(5) += cpu.fpu.st(0);
     cpu.fpu.pop();
@@ -32897,7 +32905,7 @@ L_0x00488138:
     // 004881a2  d9c4                   -fld st(4)
     cpu.fpu.push(x86::Float(cpu.fpu.st(4)));
     // 004881a4  db059cdb7c00           -fild dword ptr [0x7cdb9c]
-    cpu.fpu.push(x86::Float(x86::sreg32(app->getMemory<x86::reg32>(x86::reg32(8182684) /* 0x7cdb9c */))));
+    cpu.fpu.push(x86::Float(x86::sreg32(cabinRect(app, 1) /* port: the cabin fitted to 4:3, was [0x7cdb9c] */)));
     // 004881aa  dec4                   -faddp st(4)
     cpu.fpu.st(4) += cpu.fpu.st(0);
     cpu.fpu.pop();
@@ -33311,7 +33319,7 @@ L_0x004882c1:
     // 0048832d  d9c1                   -fld st(1)
     cpu.fpu.push(x86::Float(cpu.fpu.st(1)));
     // 0048832f  db0598db7c00           -fild dword ptr [0x7cdb98]
-    cpu.fpu.push(x86::Float(x86::sreg32(app->getMemory<x86::reg32>(x86::reg32(8182680) /* 0x7cdb98 */))));
+    cpu.fpu.push(x86::Float(x86::sreg32(cabinRect(app, 0) /* port: the cabin fitted to 4:3, was [0x7cdb98] */)));
     // 00488335  dec5                   -faddp st(5)
     cpu.fpu.st(5) += cpu.fpu.st(0);
     cpu.fpu.pop();
@@ -33337,7 +33345,7 @@ L_0x004882c1:
     // 00488344  d9c4                   -fld st(4)
     cpu.fpu.push(x86::Float(cpu.fpu.st(4)));
     // 00488346  db059cdb7c00           -fild dword ptr [0x7cdb9c]
-    cpu.fpu.push(x86::Float(x86::sreg32(app->getMemory<x86::reg32>(x86::reg32(8182684) /* 0x7cdb9c */))));
+    cpu.fpu.push(x86::Float(x86::sreg32(cabinRect(app, 1) /* port: the cabin fitted to 4:3, was [0x7cdb9c] */)));
     // 0048834c  dec4                   -faddp st(4)
     cpu.fpu.st(4) += cpu.fpu.st(0);
     cpu.fpu.pop();
@@ -33732,15 +33740,15 @@ void Application::sub_488470(WinApplication* app, x86::CPU& cpu)
     // 00488484  89c1                   -mov ecx, eax
     cpu.ecx = cpu.eax;
     // 00488486  db05a0db7c00           -fild dword ptr [0x7cdba0]
-    cpu.fpu.push(x86::Float(x86::sreg32(app->getMemory<x86::reg32>(x86::reg32(8182688) /* 0x7cdba0 */))));
+    cpu.fpu.push(x86::Float(x86::sreg32(cabinRect(app, 2) /* port: the cabin fitted to 4:3, was [0x7cdba0] */)));
     // 0048848c  d80db0b65300           -fmul dword ptr [0x53b6b0]
     cpu.fpu.st(0) *= x86::Float(app->getMemory<float>(x86::reg32(5486256) /* 0x53b6b0 */));
     // 00488492  db05a4db7c00           -fild dword ptr [0x7cdba4]
-    cpu.fpu.push(x86::Float(x86::sreg32(app->getMemory<x86::reg32>(x86::reg32(8182692) /* 0x7cdba4 */))));
+    cpu.fpu.push(x86::Float(x86::sreg32(cabinRect(app, 3) /* port: the cabin fitted to 4:3, was [0x7cdba4] */)));
     // 00488498  d80db4b65300           -fmul dword ptr [0x53b6b4]
     cpu.fpu.st(0) *= x86::Float(app->getMemory<float>(x86::reg32(5486260) /* 0x53b6b4 */));
     // 0048849e  a198db7c00             -mov eax, dword ptr [0x7cdb98]
-    cpu.eax = app->getMemory<x86::reg32>(x86::reg32(8182680) /* 0x7cdb98 */);
+    cpu.eax = cabinRect(app, 0) /* port: the cabin fitted to 4:3, was [0x7cdb98] */;
     // 004884a3  31db                   +xor ebx, ebx
     cpu.clear_co();
     cpu.set_szp((cpu.ebx ^= x86::reg32(x86::sreg32(cpu.ebx))));
@@ -33756,7 +33764,7 @@ void Application::sub_488470(WinApplication* app, x86::CPU& cpu)
     app->getMemory<float>(cpu.ebp + x86::reg32(110) /* 0x6e */) = float(cpu.fpu.st(0));
     cpu.fpu.pop();
     // 004884ad  a19cdb7c00             -mov eax, dword ptr [0x7cdb9c]
-    cpu.eax = app->getMemory<x86::reg32>(x86::reg32(8182684) /* 0x7cdb9c */);
+    cpu.eax = cabinRect(app, 1) /* port: the cabin fitted to 4:3, was [0x7cdb9c] */;
     // 004884b2  d95d66                 +fstp dword ptr [ebp + 0x66]
     app->getMemory<float>(cpu.ebp + x86::reg32(102) /* 0x66 */) = float(cpu.fpu.st(0));
     cpu.fpu.pop();
@@ -37225,11 +37233,11 @@ void Application::sub_489240(WinApplication* app, x86::CPU& cpu)
     // 00489299  dd056cb75300           -fld qword ptr [0x53b76c]
     cpu.fpu.push(x86::Float(app->getMemory<double>(x86::reg32(5486444) /* 0x53b76c */)));
     // 0048929f  db05a0db7c00           -fild dword ptr [0x7cdba0]
-    cpu.fpu.push(x86::Float(x86::sreg32(app->getMemory<x86::reg32>(x86::reg32(8182688) /* 0x7cdba0 */))));
+    cpu.fpu.push(x86::Float(x86::sreg32(cabinRect(app, 2) /* port: the cabin fitted to 4:3, was [0x7cdba0] */)));
     // 004892a5  d8c9                   -fmul st(1)
     cpu.fpu.st(0) *= x86::Float(cpu.fpu.st(1));
     // 004892a7  db05a4db7c00           -fild dword ptr [0x7cdba4]
-    cpu.fpu.push(x86::Float(x86::sreg32(app->getMemory<x86::reg32>(x86::reg32(8182692) /* 0x7cdba4 */))));
+    cpu.fpu.push(x86::Float(x86::sreg32(cabinRect(app, 3) /* port: the cabin fitted to 4:3, was [0x7cdba4] */)));
     // 004892ad  deca                   -fmulp st(2)
     cpu.fpu.st(2) *= cpu.fpu.st(0);
     cpu.fpu.pop();
@@ -37244,19 +37252,19 @@ void Application::sub_489240(WinApplication* app, x86::CPU& cpu)
     // 004892b7  dc0d7cb75300           -fmul qword ptr [0x53b77c]
     cpu.fpu.st(0) *= x86::Float(app->getMemory<double>(x86::reg32(5486460) /* 0x53b77c */));
     // 004892bd  8b3d98db7c00           -mov edi, dword ptr [0x7cdb98]
-    cpu.edi = app->getMemory<x86::reg32>(x86::reg32(8182680) /* 0x7cdb98 */);
+    cpu.edi = cabinRect(app, 0) /* port: the cabin fitted to 4:3, was [0x7cdb98] */;
     // 004892c3  a1a0db7c00             -mov eax, dword ptr [0x7cdba0]
-    cpu.eax = app->getMemory<x86::reg32>(x86::reg32(8182688) /* 0x7cdba0 */);
+    cpu.eax = cabinRect(app, 2) /* port: the cabin fitted to 4:3, was [0x7cdba0] */;
     // 004892c8  ba01000000             -mov edx, 1
     cpu.edx = 1 /*0x1*/;
     // 004892cd  01f8                   -add eax, edi
     (cpu.eax) += x86::reg32(x86::sreg32(cpu.edi));
     // 004892cf  8b359cdb7c00           -mov esi, dword ptr [0x7cdb9c]
-    cpu.esi = app->getMemory<x86::reg32>(x86::reg32(8182684) /* 0x7cdb9c */);
+    cpu.esi = cabinRect(app, 1) /* port: the cabin fitted to 4:3, was [0x7cdb9c] */;
     // 004892d5  89454e                 -mov dword ptr [ebp + 0x4e], eax
     app->getMemory<x86::reg32>(cpu.ebp + x86::reg32(78) /* 0x4e */) = cpu.eax;
     // 004892d8  a1a4db7c00             -mov eax, dword ptr [0x7cdba4]
-    cpu.eax = app->getMemory<x86::reg32>(x86::reg32(8182692) /* 0x7cdba4 */);
+    cpu.eax = cabinRect(app, 3) /* port: the cabin fitted to 4:3, was [0x7cdba4] */;
     // 004892dd  894d62                 -mov dword ptr [ebp + 0x62], ecx
     app->getMemory<x86::reg32>(cpu.ebp + x86::reg32(98) /* 0x62 */) = cpu.ecx;
     // 004892e0  01f0                   -add eax, esi
@@ -37701,11 +37709,11 @@ L_0x004894ea:
         goto L_0x00489619;
     }
     // 004894fe  db05a0db7c00           -fild dword ptr [0x7cdba0]
-    cpu.fpu.push(x86::Float(x86::sreg32(app->getMemory<x86::reg32>(x86::reg32(8182688) /* 0x7cdba0 */))));
+    cpu.fpu.push(x86::Float(x86::sreg32(cabinRect(app, 2) /* port: the cabin fitted to 4:3, was [0x7cdba0] */)));
     // 00489504  d80d84b75300           -fmul dword ptr [0x53b784]
     cpu.fpu.st(0) *= x86::Float(app->getMemory<float>(x86::reg32(5486468) /* 0x53b784 */));
     // 0048950a  db05a4db7c00           -fild dword ptr [0x7cdba4]
-    cpu.fpu.push(x86::Float(x86::sreg32(app->getMemory<x86::reg32>(x86::reg32(8182692) /* 0x7cdba4 */))));
+    cpu.fpu.push(x86::Float(x86::sreg32(cabinRect(app, 3) /* port: the cabin fitted to 4:3, was [0x7cdba4] */)));
     // 00489510  d80d88b75300           -fmul dword ptr [0x53b788]
     cpu.fpu.st(0) *= x86::Float(app->getMemory<float>(x86::reg32(5486472) /* 0x53b788 */));
     // 00489516  d9059cd65500           -fld dword ptr [0x55d69c]
@@ -53014,7 +53022,7 @@ L_0x0048d3cc:
     if (cpu.terminate) return;
 L_0x0048d40a:
     // 0048d40a  db05c8da7c00           -fild dword ptr [0x7cdac8]
-    cpu.fpu.push(x86::Float(x86::sreg32(app->getMemory<x86::reg32>(x86::reg32(8182472) /* 0x7cdac8 */))));
+    cpu.fpu.push(x86::Float(x86::sreg32(hudReferenceWidth(app)))); /* port: 4:3 proportions, was [0x7cdac8] */
     // 0048d410  d9c0                   -fld st(0)
     cpu.fpu.push(x86::Float(cpu.fpu.st(0)));
     // 0048d412  d80dccb95300           -fmul dword ptr [0x53b9cc]
