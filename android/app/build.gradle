@@ -11,15 +11,20 @@ android {
 
     defaultConfig {
         applicationId = "dev.nfs3hp.port"
-        // Android 12+: this is also what lets M5 actually test the 16 KB-page
-        // fix from src/lib/memmap.cpp, rather than just carrying it untested.
-        // Android 10 is API 29. API 30 window/cutout calls are guarded in
-        // AndroidWindowCompat and the preview fallback uses DisplayMetrics.
-        minSdk = 29
+        /* Android 8.0.  The floor is java.nio.file, which the launcher reads
+         * and writes the game's files with: it arrived in API 26, and going
+         * lower would mean desugaring the library and rewriting that.  Nothing
+         * else in the app needs more: calls above 26 are guarded by their
+         * level -- window metrics and insets in AndroidWindowCompat and
+         * TouchPreviewFrame (30), the vibrator manager in GameHaptics (31),
+         * the centred glyph span in withControlIcons (29) -- and the native
+         * side asks nothing of the platform that NDK 28 does not cover from
+         * API 21 on, as SDL3 itself does. */
+        minSdk = 26
         targetSdk = 36
-        // Kept in step with versionName so the two can never disagree: 0.74 -> 74.
-        versionCode = 74
-        versionName = "0.74"
+        // Kept in step with versionName so the two can never disagree: 0.75 -> 75.
+        versionCode = 75
+        versionName = "0.75"
         testInstrumentationRunner "dev.nfs3hp.port.TouchOverlayInstrumentation"
         manifestPlaceholders = [launcherAppLabel: "@string/app_name"]
 

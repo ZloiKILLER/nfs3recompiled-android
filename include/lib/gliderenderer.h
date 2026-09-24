@@ -15,6 +15,7 @@ enum TextureFormat
     TF_RGB_565,
     TF_ARGB_1555,
     TF_ARGB_4444,
+    TF_ARGB_8888,   // four bytes a texel; the rest are two
 };
 
 enum AlphaBlend

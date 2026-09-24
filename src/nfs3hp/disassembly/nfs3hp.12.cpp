@@ -3,6 +3,8 @@
 
 namespace nfs3hp
 {
+// Port (tools/apply_full_colour.py): defined in nfs3hp_main.cpp.
+x86::reg32 shownDepth(x86::reg32 depth);
 
 /* align: skip 0x8d 0x80 0x00 0x00 0x00 0x00 0x8d 0x92 0x00 0x00 0x00 0x00 0x8b 0xc0 */
 void Application::sub_4451d0(WinApplication* app, x86::CPU& cpu)
@@ -13728,7 +13730,7 @@ void Application::sub_448210(WinApplication* app, x86::CPU& cpu)
         goto L_0x004482b3;
     }
     // 0044823e  51                     -push ecx
-    app->getMemory<x86::reg32>(cpu.esp-4) = cpu.ecx;
+    app->getMemory<x86::reg32>(cpu.esp-4) = shownDepth(cpu.ecx); /* port: the depth a race is drawn in */
     cpu.esp -= 4;
     // 0044823f  893a                   -mov dword ptr [edx], edi
     app->getMemory<x86::reg32>(cpu.edx) = cpu.edi;

@@ -161,6 +161,15 @@ public:
      * hold are let go.  Set from the game layer, once a frame, for the time the
      * pads' keys would work somebody else's car (nfs3hp_main.cpp). */
     static void muteGameKeys(bool muted);
+    /** What is on the screen, which decides what a pad's buttons mean: while a
+     *  race is being driven they are the racing set the launcher put on them,
+     *  and everywhere else -- the menus, the pause screen, a replay being
+     *  watched -- the lower face button confirms, the right one goes back, the
+     *  D-pad moves the highlight and the rest are quiet.  The same two states
+     *  the on-screen controls have layouts for, from the same signal, set from
+     *  the game layer once a frame (nfs3hp_main.cpp). */
+    enum class Context { Race, Menu };
+    static void context(Context context);
     /* Whether the touch overlay's steering buttons are what steers player
      * one: true from the moment one is held, false once the first pad steers
      * the slot's axis itself (its stick, or a button bound to the axis), and

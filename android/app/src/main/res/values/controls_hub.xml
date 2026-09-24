@@ -16,7 +16,7 @@
  <string name="touch_keys_hint">The keyboard key each on-screen control sends. It must match the key set in the game.</string>
  <string name="gamepad_buttons">Buttons</string>
  <string name="gamepad_buttons_title">Gamepad %1$d buttons</string>
- <string name="gamepad_buttons_hint">What each button on this pad does. The left stick steers, the right trigger accelerates and the left trigger brakes. Button actions reach the game once the gamepad controls have been written into it.</string>
+ <string name="gamepad_buttons_hint">What each button on this pad does while you drive. The left stick steers, the right trigger accelerates and the left trigger brakes. In the menus and in replays the buttons are fixed and need no setting: Cross / A and Options / Menu confirm, Circle / B and Create / View go back, the D-pad moves the selection. Button actions reach the game once the gamepad controls have been written into it.</string>
  <string name="gamepad_buttons_reset">Defaults</string>
  <string name="controls_write_gamepads">Gamepad ON</string>
  <string name="controls_write_keyboard">Default in game</string>
@@ -31,8 +31,8 @@
  <string name="controls_help_title">Split screen with two gamepads</string>
  <string name="help_split_setup"><b>1. Set up the gamepads (once)</b>\nConnect both gamepads to the phone. In Controls → Gamepads press Assign under Gamepad 1 and press any button on player 1\'s pad, then do the same for Gamepad 2. Automatic works too: pads are taken in the order they connect. Buttons lets you choose what each button does.</string>
  <string name="help_split_write"><b>2. Write the controls into the game</b>\nOn the same screen press Gamepad ON and confirm. This is needed once, and again only after installing other game data or changing the controls inside the game. The previous settings are backed up.</string>
- <string name="help_split_race"><b>3. Start a split-screen race</b>\nStart the game and choose Two Players…. Player 1 drives with Gamepad 1 or the touch controls, player 2 with Gamepad 2. Either pad moves through the menus: the D-pad moves the selection, Options / Start confirms, Create / Back goes back or pauses.</string>
- <string name="help_split_driving"><b>Driving</b>\nThe left stick steers, the right trigger accelerates and the left trigger brakes. By default Cross / A is the handbrake, R1 / L1 shift gears, Triangle / Y changes the camera, Square / X returns to the track, Circle / B drops a spike strip, L3 sounds the horn and R3 switches the headlights.</string>
+ <string name="help_split_race"><b>3. Start a split-screen race</b>\nStart the game and choose Two Players…. Player 1 drives with Gamepad 1 or the touch controls, player 2 with Gamepad 2. Either pad moves through the menus: the D-pad moves the selection, Cross / A or Options / Menu confirms, Circle / B or Create / View goes back.</string>
+ <string name="help_split_driving"><b>Driving</b>\nThe left stick steers, the right trigger accelerates and the left trigger brakes. By default Circle / B is the handbrake, Square / X drops a spike strip, Cross / A looks behind, Triangle / Y changes the camera, R1 / L1 shift gears, Create / View puts the car back on the track, Options / Menu pauses the race, L3 sounds the horn and R3 switches the headlights.</string>
  <string name="help_split_notes"><b>Good to know</b>\nOnly Gamepad 1 and the phone vibrate: the game drives a single force-feedback device. If the controls stop matching, for example after resetting them in the game, press Gamepad ON again. To play on a keyboard instead, press Default in game. Touch controls can be switched off in Controls → Touch.</string>
  <string name="gamepad_vibration">Gamepad vibration</string>
  <string name="gamepad_vibration_note">Off by default. Its strength is set in the game: Options → Controllers → Force Feedback.</string>

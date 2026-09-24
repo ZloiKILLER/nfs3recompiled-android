@@ -9,10 +9,7 @@
 
  <string name="checking_game_data">Oyun verileri denetleniyor…</string>
  <string name="pick_data_folder">NFS3 veri klasörünü seç…</string>
- <plurals name="importing_progress">
-  <item quantity="one">%1$s içe aktarılıyor\n%2$d MB kopyalandı, %3$d dosya</item>
-  <item quantity="other">%1$s içe aktarılıyor\n%2$d MB kopyalandı, %3$d dosya</item>
- </plurals>
+ <string name="importing_percent">%1$s içe aktarılıyor\n%%%2$d</string>
  <string name="import_failed">İçe aktarma başarısız: %1$s</string>
  <string name="import_hint">Doğrudan \'fedata\' ve \'gamedata\' içeren klasörü seç (örneğin CD kökü veya bir kopyası).</string>
  <string name="launcher_title">Need For Speed III başlatıcı</string>
@@ -58,6 +55,10 @@
  <string name="touch_mode_wheel">Direksiyon (yakında)</string>
  <string name="touch_mode_tilt">Eğerek direksiyon (yakında)</string>
  <string name="touch_layout_label">Düğme yerleşimi</string>
+ <string name="touch_pointer_label">Menülerde imleç</string>
+ <string name="touch_pointer_tap">Parmağın dokunduğu yer</string>
+ <string name="touch_pointer_touchpad">Dokunmatik yüzey</string>
+ <string name="touch_pointer_note">Dokunmatik yüzey: imleci taşımak için herhangi bir yerde kaydır, tıklamak için dokun, tutup sürüklemek için parmağını sabit tut. Oyunun bir sonraki başlatılışında geçerli olur.</string>
  <string name="opacity_label">Düğme saydamlığı</string>
  <string name="size_label">Düğme boyutu</string>
  <string name="auto_hide_label">4 saniye hareketsizlikten sonra gizle</string>
@@ -78,7 +79,6 @@
  <string name="touch_preview_hint">Kontrolleri dene</string>
  <string name="touch_dim_label">Düğmeleri gizle</string>
  <string name="touch_edge_label">Kenarlardan uzaklık</string>
- <string name="touch_raise_label">Sürüş düğmelerini yükselt</string>
  <string name="touch_dim_note">Tüm parmaklar kaldırıldıktan sonra başlar. Gizli düğmeler hemen tepki verir.</string>
  <string name="editor_drag_title">Düğmeleri sürükle</string>
  <string name="editor_resize_hint">Boyutlandırmak için seç</string>
@@ -119,12 +119,9 @@
  <string name="pref_hide_full">Tamamen gizle (yoksa soluk siluet)</string>
  <string name="auto_hide_delay">Gecikme: %1$d sn</string>
  <string name="editor_button_size">Düğme: %1$d%%</string>
- <string name="editor_touch_zone">Dokunma alanı: %1$d%%</string>
- <string name="editor_mode_race">Yarış</string>
- <string name="editor_mode_menu">Menü</string>
  <string name="editor_reset_title">Bu yerleşim sıfırlansın mı?</string>
- <string name="editor_reset_message">Bu yerleşimin varsayılan konumlarını, düğme boyutlarını ve dokunma alanlarını geri yükle.</string>
- <string name="edit_touch_layout">Konumları ve dokunma alanlarını düzenle</string>
+ <string name="editor_reset_message">Bu yerleşimin varsayılan konumlarını ve düğme boyutlarını geri yükle.</string>
+ <string name="edit_touch_layout">Konumları ve boyutları düzenle</string>
  <string name="editor_done">Bitti</string>
  <string name="editor_reset">Sıfırla</string>
  <string name="editor_select_control">Bir düğme seç</string>
@@ -135,23 +132,27 @@
  <string name="data_set_active_suffix"> (etkin)</string>
  <string name="error_external_storage">Harici depolama kullanılamıyor</string>
  <string name="error_import_incomplete">İçe aktarılan veride beklenen dosyalar eksik</string>
+ <string name="data_missing_title">Oyun verileri eksik</string>
+ <string name="data_missing_message">İçe aktarılan verilerde oyunun ihtiyaç duyduğu dosyalar eksik (%1$d):\n\n%2$s\n\nOyun bunlardan birine ihtiyaç duyduğu anda “OPEN FAILED” hatasıyla durur. FEDATA ve GAMEDATA klasörlerini diskten veya imajından yeniden içe aktar.</string>
+ <string name="data_missing_more">…ve %1$d tane daha</string>
  <string name="error_data_set_incomplete">Seçilen veri kümesi eksik</string>
  <string name="importer_open_folder_failed">Seçilen klasör açılamıyor</string>
  <string name="importer_missing_subfolder">Seçilen klasörde \'%1$s\' alt klasörü yok — doğrudan fedata ve gamedata içeren klasörü seç (örneğin CD kökü).</string>
  <string name="importer_open_zip_failed">Seçilen ZIP açılamadı</string>
  <string name="importer_zip_missing_files">ZIP içinde beklenen fedata/gamedata klasörleri yok</string>
 
- <string name="faq_size"><b>Boyut neyi değiştirir?</b>\nGenel boyut varsayılan düğmeleri ölçekler. «Konumları ve dokunma alanlarını düzenle» bölümünde bir düğmeyi sürükle; görünümünü değiştirmek için «Düğme», yalnızca tepki verdiği alanı değiştirmek için «Dokunma alanı» ayarını kullan. Kesik çizgiler dokunma alanlarını gösterir; yüzdeler varsayılan düğmeye göredir. Değişiklikler kendiliğinden kaydedilir. Düzenleyici bir ızgara gösterir; «Izgaraya hizala» açıkken sürüklenen öğe ızgaraya oturur.</string>
- <string name="faq_edges"><b>Kenarlar ve yükseklik</b>\nKenarlardan uzaklık varsayılan düğmeleri içe kaydırır. «Sürüş düğmelerini yükselt» alttaki varsayılan düğmeleri yukarı taşır. Sistem çentikleri gözetilir. Elle yerleştirilen düğmeler kayıtlı konumlarını korur.</string>
- <string name="faq_hiding"><b>Saydamlık ve otomatik gizleme</b>\nSaydamlık normal görünürlüğü belirler. Otomatik gizleme tüm parmaklar kaldırıldıktan sonra, 1–30 saniyelik gecikmeyle başlar. Soluk bir siluet ya da tam görünmezlik seç. Gizli düğmeler ilk dokunuşta zaten tepki verir ve yeniden görünür olur. Bir düğmeyi basılı tutmak gizlemeyi engeller. Kumandada bir tuşa basmak düğmeleri hemen gizler; bir sonraki dokunuş onları geri getirir.</string>
- <string name="faq_gears"><b>Elle vites</b>\n«Vites düğmelerini − / + göster» yarış yerleşimine iki isteğe bağlı düğme ekler. Oyunda elle vitesi etkinleştir. Gönderdikleri tuşlar Kontroller → Dokunma → Tuşlar bölümünde ayarlanır ve oyun ayarlarıyla eşleşmelidir.</string>
+ <string name="faq_layout_modes"><b>Menü mü, yarış mı?</b>\nBunu oyun söyler. Sürerken yarış yerleşimini alırsın: direksiyon düğmeleri, pedallar, vitesler ve gerisi. Menülerde ve bir menü yarışın üzerine açıldığında port hiç düğme göstermez: menüler dokunuşu kendileri alır, telefonun Geri tuşu Escape olur ve klavye kendiliğinden açılır. Elle değiştirilecek bir şey yok.</string>
+ <string name="faq_mouse"><b>Menüler nasıl çalışır?</b>\nDokunarak. Parmağını nereye koyarsan oyunun imleci oraya gider; dokunuş altındaki öğeye basar, kaydırıcı da onu sürükleyen parmağı izler. Telefonun Geri tuşu ya da hareketi Escape\'tir; oyun bir ad istediğinde telefonun klavyesi kendiliğinden açılır, klavye açıkken Geri onu kapatır.</string>
+ <string name="faq_size"><b>Boyut neyi değiştirir?</b>\nDüğme boyutu varsayılan kontrolleri ölçekler. Konumları ve boyutları düzenle ekranında bir kontrolü sürükle ve boyut kaydırıcısıyla boyutunu değiştir; kontrol tam çizildiği yerde tepki verir ve yüzdeler varsayılan kontrole göredir. Değişiklikler kendiliğinden kaydedilir. Düzenleyici bir ızgara gösterir; Izgaraya hizala açıkken sürüklenen kontrol ızgaraya oturur.</string>
+ <string name="faq_edges"><b>Kenarlar ve yükseklik</b>\nKenarlardan uzaklık varsayılan düğmeleri içe kaydırır. Sistem çentikleri gözetilir. Elle yerleştirilen düğmeler kayıtlı konumlarını korur.</string>
+ <string name="faq_hiding"><b>Saydamlık ve otomatik gizleme</b>\nSaydamlık normal görünürlüğü belirler. Otomatik gizleme tüm parmaklar kaldırıldıktan sonra, 1–30 saniyelik gecikmeyle başlar. Soluk bir siluet ya da tam görünmezlik seç. Gizli düğmeler ilk dokunuşta zaten tepki verir ve yeniden görünür olur. Bir düğmeyi basılı tutmak gizlemeyi engeller. 1. oyuncunun kumandasında bir tuşa basmak düğmeleri hemen gizler; bir sonraki dokunuş onları geri getirir. 2. oyuncunun kumandası onlara dokunmaz, böylece biri ekrandan sürerken diğeri kumandayla oynayabilir.</string>
  <string name="faq_vibration"><b>Titreşim</b>\nOyunun Force Feedback efektleri telefona ve Kumanda 1\'e ulaşır. Oyun yalnızca bir force feedback cihazını sürer, bu yüzden Kumanda 2 hiç titreşmez. Telefon titreşimi Kontroller → Dokunma bölümünde açılıp kapatılır. Kumanda titreşimi Kontroller → Kumandalar bölümünde açılana kadar kapalıdır; gücü oyunun kendisinde ayarlanır: Options → Controllers → Force Feedback. Efektler oyundan gelir, asla düğmeye basmaktan gelmez.</string>
- <string name="faq_mapping"><b>Kumandalar</b>\nOyun her zaman iki kumanda görür: Kumanda 1, dokunmatik kontrollerle birlikte 1. oyuncudur, Kumanda 2 ise 2. oyuncudur. Kontroller → Kumandalar bölümünde üzerindeki bir düğmeye basarak hangi kumandanın hangisi olduğunu seç, her düğmenin ne yaptığını ayarla, ardından Kumanda AÇIK düğmesine bir kez bas. Bu, uygun kontrolleri oyun ayarlarına yazar ve eski dosyanın yedeğini alır. Sol çubuk direksiyonu çevirir, tetikler gaz verir ve fren yapar. Klavyeyle oynamak için bunun yerine Oyun varsayılanı seçeneğini yaz.</string>
+ <string name="faq_mapping"><b>Kumandalar</b>\nOyun her zaman iki kumanda görür: Kumanda 1, dokunmatik kontrollerle birlikte 1. oyuncudur, Kumanda 2 ise 2. oyuncudur. Kontroller → Kumandalar bölümünde üzerindeki bir düğmeye basarak hangi kumandanın hangisi olduğunu seç, her düğmenin ne yaptığını ayarla, ardından Kumanda AÇIK düğmesine bir kez bas. Bu, uygun kontrolleri oyun ayarlarına yazar ve eski dosyanın yedeğini alır. Sol çubuk direksiyonu çevirir, tetikler gaz verir ve fren yapar. Kumandanın iki düğme takımı vardır, tıpkı dokunmatik kontrollerin iki yerleşimi olduğu gibi: burada ayarladığın yarış takımı ve menülerle tekrarlar için sabit olan takım — orada Cross / A onaylar, Circle / B geri gider, yön tuşları seçimi taşır. Klavyeyle oynamak için bunun yerine Oyun varsayılanı seçeneğini yaz.</string>
  <string name="faq_lights"><b>Farlar ve piste dönüş</b>\n☼ L gönderir. ↻ piste dönmek için R gönderir. Tuşlar Kontroller → Dokunma → Tuşlar bölümünde değiştirilebilir.</string>
  <string name="faq_screen_data"><b>Ekran ve oyun verileri</b>\nYatay oyunu yatayda kilitler; Otomatik dönüşe izin verir. FPS sınırı kare hızını kısar; daha düşük bir değer saniyedeki işi azaltır. «Oyun verileri» içe aktarmaları yönetir ve hangi kümenin etkin olduğunu gösterir. Bir küme hazır olduğunda «Oyna» etkinleşir.</string>
  <string name="gamepad_buttons">Düğmeler</string>
  <string name="gamepad_buttons_title">Kumanda %1$d düğmeleri</string>
- <string name="gamepad_buttons_hint">Bu kumandanın her düğmesinin ne yaptığı. Sol çubuk direksiyonu çevirir, sağ tetik gaz verir, sol tetik fren yapar. Düğme eylemleri, kumanda kontrolleri oyuna yazıldıktan sonra oyuna ulaşır.</string>
+ <string name="gamepad_buttons_hint">Bu kumandanın her düğmesinin sürerken ne yaptığı. Sol çubuk direksiyonu çevirir, sağ tetik gaz verir, sol tetik fren yapar. Menülerde ve tekrarlarda düğmeler sabittir ve ayar gerektirmez: Cross / A ile Options / Menu onaylar, Circle / B ile Create / View geri gider, yön tuşları seçimi taşır. Düğme işlemleri, kumanda kontrolleri oyuna yazıldıktan sonra oyuna ulaşır.</string>
  <string name="gamepad_buttons_reset">Varsayılanlar</string>
  <string name="controls_write_gamepads">Kumanda AÇIK</string>
  <string name="controls_write_keyboard">Oyun varsayılanı</string>
@@ -161,14 +162,15 @@
  <string name="controls_write_no_config">Oyunun henüz bir ayar dosyası yok. Oyunu bir kez başlat, sonra yeniden dene.</string>
  <string name="controls_write_game_running">Kontrollerini yazmadan önce oyunu kapat.</string>
  <string name="controls_write_failed">Kontroller yazılamadı: %1$s</string>
+ <string name="gamepads_keyboard_note">Oyun kendi klavye kontrollerine ayarlı (Oyun varsayılanı). Kumanda AÇIK düğmesine basana kadar kumandalar bölünmüş ekran yarışlarında hiçbir şey yapmaz.</string>
  <string name="pref_touch_enabled">Dokunmatik kontrolleri kullan</string>
  <string name="touch_enabled_note">Kapalıyken ekrana dokunmak oyunda hiçbir şey yapmaz; ne düğmeler ne dokunmatik fare çalışır. Kumandalar ve gerçek bir fare çalışmaya devam eder.</string>
  <string name="controls_help">Yardım: bölünmüş ekran</string>
  <string name="controls_help_title">İki kumandayla bölünmüş ekran</string>
  <string name="help_split_setup"><b>1. Kumandaları ayarla (bir kez)</b>\nİki kumandayı da telefona bağla. Kontroller → Kumandalar bölümünde Kumanda 1 altındaki Ata düğmesine bas ve 1. oyuncunun kumandasında herhangi bir düğmeye bas, sonra aynısını Kumanda 2 için yap. Otomatik de çalışır: kumandalar bağlanma sırasına göre alınır. Düğmeler bölümünde her düğmenin ne yapacağını seçersin.</string>
  <string name="help_split_write"><b>2. Kontrolleri oyuna yaz</b>\nAynı ekranda Kumanda AÇIK düğmesine bas ve onayla. Bu bir kez gerekir; tekrar yalnızca başka oyun verileri kurduktan ya da kontrolleri oyunun içinde değiştirdikten sonra gerekir. Önceki ayarların yedeği alınır.</string>
- <string name="help_split_race"><b>3. Bölünmüş ekranda yarış başlat</b>\nOyunu başlat ve Two Players… seçeneğini seç. 1. oyuncu Kumanda 1 ya da dokunmatik kontrollerle, 2. oyuncu Kumanda 2 ile sürer. Menülerde iki kumandadan biriyle gezinilebilir: yön tuşları seçimi taşır, Options / Start onaylar, Create / Back geri gider ya da duraklatır.</string>
- <string name="help_split_driving"><b>Sürüş</b>\nSol çubuk direksiyonu çevirir, sağ tetik gaz verir, sol tetik fren yapar. Varsayılan olarak Cross / A el freni, R1 / L1 vites değiştirir, Triangle / Y kamerayı değiştirir, Square / X piste geri koyar, Circle / B çivili şerit bırakır, L3 korna çalar, R3 farları yakar.</string>
+ <string name="help_split_race"><b>3. Bölünmüş ekranda yarış başlat</b>\nOyunu başlat ve Two Players… seçeneğini seç. 1. oyuncu Kumanda 1 ya da dokunmatik kontrollerle, 2. oyuncu Kumanda 2 ile sürer. Menülerde iki kumandadan biriyle gezinilebilir: yön tuşları seçimi taşır, Cross / A ya da Options / Menu onaylar, Circle / B ya da Create / View geri gider.</string>
+ <string name="help_split_driving"><b>Sürüş</b>\nSol çubuk direksiyonu çevirir, sağ tetik gaz verir, sol tetik fren yapar. Varsayılan olarak Circle / B el freni, Square / X çivili şerit bırakır, Cross / A arkaya bakar, Triangle / Y kamerayı değiştirir, R1 / L1 vites değiştirir, Create / View arabayı piste geri koyar, Options / Menu yarışı duraklatır, L3 korna çalar, R3 farları yakar.</string>
  <string name="help_split_notes"><b>Bilmekte fayda var</b>\nYalnızca Kumanda 1 ve telefon titreşir: oyun yalnızca bir force feedback cihazını sürer. Kontroller artık uyuşmazsa, örneğin oyunun içinde sıfırladıktan sonra, Kumanda AÇIK düğmesine yeniden bas. Klavyeyle oynamak için bunun yerine Oyun varsayılanı düğmesine bas. Dokunmatik kontroller Kontroller → Dokunma bölümünden kapatılır.</string>
  <string name="gamepad_vibration">Kumanda titreşimi</string>
  <string name="gamepad_vibration_note">Varsayılan olarak kapalı. Gücü oyunda ayarlanır: Options → Controllers → Force Feedback.</string>

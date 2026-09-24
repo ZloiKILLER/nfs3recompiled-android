@@ -807,13 +807,16 @@ void GlideRenderer::setTextureData(x86::reg32 tmu, x86::reg32 address, const voi
         m_tmus[tmu]->returnTextureSlot(*info);
     }
     *info = m_tmus[tmu]->reserveTextureSlot(largeMipmap);
+    /* The levels lie one after another, each a quarter of the one before, at
+     * two bytes a texel -- four for the full-colour format. */
+    const x86::reg32 texelBytes = format == TF_ARGB_8888 ? 4 : 2;
     /* No room at this size: keep the texture from a smaller level of its own
      * mipmap chain instead, a little softer.  This used to take the null slot
      * straight to the next line and crash the game. */
     const x86::reg32 askedSize = largeMipmapSize;
     while (!*info && largeMipmapSize > smallMipmapSize)
     {
-        data = reinterpret_cast<const x86::reg16*>(data) + largeMipmapSize * largeMipmapSize;
+        data = static_cast<const x86::reg8*>(data) + largeMipmapSize * largeMipmapSize * texelBytes;
         largeMipmapSize >>= 1;
         *info = m_tmus[tmu]->reserveTextureSlot(++largeMipmap);
     }
@@ -855,9 +858,20 @@ void GlideRenderer::setTextureData(x86::reg32 tmu, x86::reg32 address, const voi
     for (; largeMipmapSize >= smallMipmapSize; ++lod, largeMipmapSize >>= 1)
     {
         const x86::reg16* pixelData = reinterpret_cast<const x86::reg16*>(data);
+        const x86::reg8* texelBytesData = static_cast<const x86::reg8*>(data);
         for (x86::reg32 i = 0; i < largeMipmapSize*largeMipmapSize; ++i)
         {
             x86::reg8* px = textureData + i*4;
+            if (format == TF_ARGB_8888)
+            {
+                // 0xAARRGGBB little-endian: B, G, R, A in memory.
+                const x86::reg8* t = texelBytesData + i*4;
+                px[0] = t[2];
+                px[1] = t[1];
+                px[2] = t[0];
+                px[3] = t[3];
+                continue;
+            }
             const x86::reg16 p = pixelData[i];
             switch(format)
             {
@@ -904,7 +918,7 @@ void GlideRenderer::setTextureData(x86::reg32 tmu, x86::reg32 address, const voi
         glTexSubImage2D(GL_TEXTURE_2D, GLint(lod), GLint(x >> lod), GLint(y >> lod),
                         GLsizei(largeMipmapSize), GLsizei(largeMipmapSize),
                         GL_RGBA, GL_UNSIGNED_BYTE, textureData);
-        data = pixelData + largeMipmapSize * largeMipmapSize;
+        data = texelBytesData + largeMipmapSize * largeMipmapSize * texelBytes;
     }
     (*info)->mipLevels = lod ? lod : 1;
     m_renderer->clearCurrent();

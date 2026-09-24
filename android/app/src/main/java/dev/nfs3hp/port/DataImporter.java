@@ -2,7 +2,10 @@ package dev.nfs3hp.port;
 
 import android.content.ContentResolver;
 import android.content.Context;
+import android.database.Cursor;
 import android.net.Uri;
+import android.provider.DocumentsContract;
+import android.provider.OpenableColumns;
 import androidx.documentfile.provider.DocumentFile;
 
 import java.io.File;
@@ -11,10 +14,16 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.InterruptedIOException;
 import java.io.OutputStream;
+import java.io.BufferedReader;
+import java.io.InputStreamReader;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
+import java.util.Set;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
 
@@ -112,9 +121,18 @@ final class DataImporter
 
     interface ProgressListener
     {
-        /** Called from a background thread; implementations that touch views
-         * must post back to the UI thread themselves. */
-        void onProgress(long bytesCopied, int filesCopied, String currentPath);
+        /** How far along the import is: `done` of `total`, in bytes -- of the
+         *  files copied, or of the archive read -- and the file it is on.  A
+         *  total of 0 or less is not known yet: the folder is still being
+         *  measured.  Called from a background thread; implementations that
+         *  touch views must post back to the UI thread themselves. */
+        void onProgress(long done, long total, String currentPath);
+
+        /** `done` of `total` as a percentage, or -1 while the total is unknown. */
+        static int percent(long done, long total)
+        {
+            return total > 0 ? (int) Math.max(0, Math.min(100, done * 100 / total)) : -1;
+        }
     }
 
     /** Recursively copies fedata/, gamedata/ and (if present) drivers/ out of the
@@ -130,9 +148,14 @@ final class DataImporter
 
         ContentResolver resolver = context.getContentResolver();
         long[] bytesCopied = { 0 };
-        int[] filesCopied = { 0 };
 
         removeCompletionMarker(destRoot, USER_DATA_COMPLETE);
+        /* Every folder found and measured before anything is copied, so the
+         * copy can say how far along it is. */
+        if (listener != null)
+            listener.onProgress(0, -1, "");
+        DocumentFile[] sources = new DocumentFile[USER_DATA_DIRS.length];
+        long total = 0;
         for (int i = 0; i < USER_DATA_DIRS.length; ++i)
         {
             throwIfInterrupted();
@@ -147,10 +170,80 @@ final class DataImporter
                 }
                 continue;
             }
-            copyTree(resolver, src, new File(destRoot, name), listener, bytesCopied, filesCopied);
+            sources[i] = src;
+            long size = treeSize(resolver, treeUri, src.getUri());
+            total = size < 0 || total < 0 ? -1 : total + size;
         }
+        for (int i = 0; i < USER_DATA_DIRS.length; ++i)
+            if (sources[i] != null)
+                copyTree(resolver, sources[i], new File(destRoot, USER_DATA_DIRS[i]), listener, bytesCopied, total);
         writeImportDefaults(destRoot);
         writeCompletionMarker(destRoot, USER_DATA_COMPLETE);
+    }
+
+    /** The retail disc's files an import should have brought, one lower-case
+     *  path a line (tools/make_data_manifest.py). */
+    private static final String MANIFEST = "game-data-manifest.txt";
+
+    /** Files of the game the imported data lacks, compared without case, as the
+     *  game compares names.  An import copies a folder faithfully, missing
+     *  files and all, and the game only finds one gone when it needs it --
+     *  half way into loading a race, where it stops with "OPEN FAILED".  The
+     *  list leaves out language files, speech, saves and settings, so another
+     *  edition of the game is not taken for an incomplete copy.  Runs on the
+     *  calling thread: a walk of about a thousand files. */
+    static List<String> missingFiles(Context context, File root) throws IOException
+    {
+        Set<String> present = new HashSet<>();
+        File[] tops = root.listFiles();
+        if (tops != null)
+            for (File top : tops)
+            {
+                String name = top.getName().toLowerCase(Locale.ROOT);
+                if (top.isDirectory() && (name.equals("fedata") || name.equals("gamedata")))
+                    collect(top, name, present);
+            }
+        List<String> missing = new ArrayList<>();
+        try (BufferedReader in = new BufferedReader(new InputStreamReader(
+                context.getAssets().open(MANIFEST), StandardCharsets.UTF_8)))
+        {
+            String line;
+            while ((line = in.readLine()) != null)
+            {
+                line = line.trim();
+                if (!line.isEmpty() && !line.startsWith("#") && !present.contains(line))
+                    missing.add(line);
+            }
+        }
+        return missing;
+    }
+
+    private static void collect(File folder, String path, Set<String> into)
+    {
+        File[] children = folder.listFiles();
+        if (children == null)
+            return;
+        for (File child : children)
+        {
+            String name = path + "/" + child.getName().toLowerCase(Locale.ROOT);
+            if (child.isDirectory())
+                collect(child, name, into);
+            else
+                into.add(name);
+        }
+    }
+
+    /** What an import left missing, as the launcher tells the player: how many,
+     *  and the first few by name. */
+    static String describeMissing(Context context, List<String> missing)
+    {
+        final int shown = 8;
+        StringBuilder list = new StringBuilder();
+        for (int i = 0; i < missing.size() && i < shown; ++i)
+            list.append(i == 0 ? "" : "\n").append(missing.get(i));
+        if (missing.size() > shown)
+            list.append("\n").append(context.getString(R.string.data_missing_more, missing.size() - shown));
+        return context.getString(R.string.data_missing_message, missing.size(), list.toString());
     }
 
     /* The controls and View Distance a new game starts with, into the settings
@@ -175,14 +268,16 @@ final class DataImporter
     {
         Context strings = LocaleHelper.wrap(context);
         ContentResolver resolver = context.getContentResolver();
-        long[] bytesCopied = { 0 };
-        int[] filesCopied = { 0 };
+        /* How far along is how much of the archive has been read: an archive
+         * read from start to end states no total of what it unpacks to. */
+        final long total = documentSize(resolver, zipUri);
 
         removeCompletionMarker(destRoot, USER_DATA_COMPLETE);
-        try (InputStream raw = resolver.openInputStream(zipUri))
+        try (InputStream opened = resolver.openInputStream(zipUri))
         {
-            if (raw == null)
+            if (opened == null)
                 throw new IOException(strings.getString(R.string.importer_open_zip_failed));
+            final CountingInputStream raw = new CountingInputStream(opened);
             try (ZipInputStream zip = new ZipInputStream(raw))
             {
                 ZipEntry entry;
@@ -208,14 +303,12 @@ final class DataImporter
                         if (parent == null || (!parent.isDirectory() && !parent.mkdirs()))
                             throw new IOException("Could not create directory for: " + destination);
                         File part = new File(parent, destination.getName() + ".part");
-                        final long baseBytes = bytesCopied[0];
-                        bytesCopied[0] = baseBytes + copyFileAtomically(zip, part, destination, (n) -> {
+                        copyFileAtomically(zip, part, destination, (n) -> {
                             if (listener != null)
-                                listener.onProgress(baseBytes + n, filesCopied[0], destination.getPath());
+                                listener.onProgress(raw.count, total, destination.getPath());
                         });
-                        filesCopied[0]++;
                         if (listener != null)
-                            listener.onProgress(bytesCopied[0], filesCopied[0], destination.getPath());
+                            listener.onProgress(raw.count, total, destination.getPath());
                     }
                     zip.closeEntry();
                 }
@@ -372,7 +465,7 @@ final class DataImporter
     }
 
     private static void copyTree(ContentResolver resolver, DocumentFile src, File dstDir,
-                                  ProgressListener listener, long[] bytesCopied, int[] filesCopied)
+                                  ProgressListener listener, long[] bytesCopied, long total)
         throws IOException
     {
         if (!dstDir.isDirectory() && !dstDir.mkdirs())
@@ -387,7 +480,7 @@ final class DataImporter
             File dstChild = new File(dstDir, name);
             if (child.isDirectory())
             {
-                copyTree(resolver, child, dstChild, listener, bytesCopied, filesCopied);
+                copyTree(resolver, child, dstChild, listener, bytesCopied, total);
             }
             else
             {
@@ -399,13 +492,97 @@ final class DataImporter
                     final long baseBytes = bytesCopied[0];
                     bytesCopied[0] = baseBytes + copyFileAtomically(in, part, dstChild, (n) -> {
                         if (listener != null)
-                            listener.onProgress(baseBytes + n, filesCopied[0], dstChild.getPath());
+                            listener.onProgress(baseBytes + n, total, dstChild.getPath());
                     });
                 }
-                filesCopied[0]++;
                 if (listener != null)
-                    listener.onProgress(bytesCopied[0], filesCopied[0], dstChild.getPath());
+                    listener.onProgress(bytesCopied[0], total, dstChild.getPath());
             }
+        }
+    }
+
+    /** How many bytes a picked folder holds, all the way down, or -1 if the
+     *  provider will not say.  One query a folder, for the sizes of everything
+     *  in it: asking each of the game's thousand-odd files on its own takes
+     *  far longer than the copy is worth waiting on. */
+    private static long treeSize(ContentResolver resolver, Uri treeUri, Uri folder)
+    {
+        try
+        {
+            return treeSize(resolver, treeUri, DocumentsContract.getDocumentId(folder));
+        }
+        catch (RuntimeException | InterruptedIOException e)
+        {
+            return -1;
+        }
+    }
+
+    private static long treeSize(ContentResolver resolver, Uri treeUri, String documentId)
+        throws InterruptedIOException
+    {
+        throwIfInterrupted();
+        Uri children = DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, documentId);
+        long total = 0;
+        try (Cursor c = resolver.query(children, new String[] {
+                DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+                DocumentsContract.Document.COLUMN_MIME_TYPE,
+                DocumentsContract.Document.COLUMN_SIZE }, null, null, null))
+        {
+            if (c == null)
+                return -1;
+            while (c.moveToNext())
+            {
+                if (DocumentsContract.Document.MIME_TYPE_DIR.equals(c.getString(1)))
+                {
+                    long size = treeSize(resolver, treeUri, c.getString(0));
+                    if (size < 0)
+                        return -1;
+                    total += size;
+                }
+                else if (!c.isNull(2))
+                    total += c.getLong(2);
+            }
+        }
+        return total;
+    }
+
+    /** The size of a picked file, or -1 if the provider does not know it. */
+    private static long documentSize(ContentResolver resolver, Uri uri)
+    {
+        try (Cursor c = resolver.query(uri, new String[] { OpenableColumns.SIZE }, null, null, null))
+        {
+            if (c != null && c.moveToFirst() && !c.isNull(0))
+                return c.getLong(0);
+        }
+        catch (RuntimeException ignored)
+        {
+            // Unknown is as good as unknown: the progress just has no end to show.
+        }
+        return -1;
+    }
+
+    /** Counts what is read through it: how much of an archive has gone by. */
+    private static final class CountingInputStream extends java.io.FilterInputStream
+    {
+        volatile long count;
+        CountingInputStream(InputStream in) { super(in); }
+        @Override public int read() throws IOException
+        {
+            int b = super.read();
+            if (b >= 0) ++count;
+            return b;
+        }
+        @Override public int read(byte[] buffer, int offset, int length) throws IOException
+        {
+            int n = super.read(buffer, offset, length);
+            if (n > 0) count += n;
+            return n;
+        }
+        @Override public long skip(long n) throws IOException
+        {
+            long skipped = super.skip(n);
+            if (skipped > 0) count += skipped;
+            return skipped;
         }
     }
 

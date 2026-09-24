@@ -35,19 +35,39 @@ executables from `nfs3hp/`.
 
 ## Playing on a phone
 
+Android 8.0 or newer on a 64-bit ARM device. Testing happens on Android 13, and
+Android 10 was confirmed by a tester; 8 and 9 install but have not been played
+on yet.
+
 1. Put the game data folder on the device, e.g. `/sdcard/nfs3-og`.
 2. Launch the app, import that folder, make it the active data set.
 3. Play.
 
 An import leaves the game ready for a phone: the gamepad control set (see
-Controls), View Distance at Full and races at 1280x720 are written into its
-`config.dat` once, as the last step. From then on the file is the player's.
+Controls), View Distance at Full, races at 1280x720 and a HUD arranged for a
+phone — the standings and the maps in the corners rather than under your thumbs
+— are written into its `config.dat` once, as the last step. From then on the
+file is the player's, and the game's own Heads Up Display screen rearranges it.
+
+A race also starts sooner than the original's: the game used to copy the whole
+of the track it was about to play, 7 to 14 MB, into a file of its own and play
+from the copy. That was for a 1998 CD drive; here the track is played where it
+lies.
 
 The launcher holds what the game cannot ask for itself: **Controls → Touch** (the
 on-screen controls, their layout editor, the key each one sends, the phone's
 vibration switch), **Controls → Gamepads** (which pad is which player, the key
 each button sends, the pad vibration switch) and **Display** with **Screen
 adjustment** (orientation, frame rate cap, gamma, brightness, contrast).
+
+The menus carry no buttons of the port's at all: a finger works them as a
+pointer, and the system's own back is the game's Escape. When the game asks for
+a name, a tap on the line being typed in brings up the phone's keyboard and a
+tap beside it puts it away; a box opened from a pad brings the keyboard up at
+once, and with a real keyboard connected it never comes up. A tap on the
+player's name beside its tab opens the same box. A pad's buttons follow the same
+two worlds — the racing set while a race is driven, confirm and back everywhere
+else.
 
 ### Controls
 
@@ -71,9 +91,8 @@ buttons, the pedals and the rest, and the steering buttons turn the wheel the
 way the game's keyboard steering does, easing to full lock and back, while a
 pad's stick stays analog. In the menus a finger is the game's own pointer: a tap
 clicks where it lands, resting still for a quarter of a second presses and
-drags, and a swipe clicks nothing; only back and the keyboard stay on screen,
-top right. The layout editor shows the controls exactly where the game puts
-them.
+drags, and a swipe clicks nothing; no controls stay on screen. The layout
+editor shows the controls exactly where the game puts them.
 
 The phone's back button or gesture is Escape, in the menus and in a race; with
 the on-screen keyboard open it closes the keyboard. A real mouse moves the
@@ -119,6 +138,17 @@ Alpha intensity in Advanced Graphics works here as well. The original applies it
 only on its Direct3D driver, so on this one the slider used to move and change
 nothing.
 
+### Full colour
+
+The picture is drawn with eight bits a channel, races and menus alike, with no
+dithering. Textures that are 32-bit on the disc stay 32-bit: most of the cars'
+paint, the HUD, smoke, lights and sky, and the menus' track pictures, car
+comparison and logos. The original let only its Direct3D drivers take them and
+shrank them to 16 bits for a Voodoo2; here the Voodoo2 driver takes them too
+(`tools/apply_full_colour.py`), so Screen Size reads "x 32". Art that is 16-bit
+on the disc — the track surfaces and most of the menu backgrounds — stays as it
+is. `NFS_TEXTURES32=0` goes back to 16-bit textures.
+
 ## Known issues
 
 - **Mosaic artefacts in the headlight-lit area on Mali GPUs.** Blocky patches
@@ -133,7 +163,9 @@ nothing.
 
 Requires Android SDK with **NDK 28.2.13676358**, build-tools 36.0.0, compileSdk
 36, and a JDK (Android Studio's bundled JBR works). The app is arm64-v8a only,
-minSdk 29, so it installs on Android 10 and later.
+minSdk 26, so it installs on Android 8.0 and later. The floor is `java.nio.file`,
+which the launcher reads and writes the game's files with; every platform call
+above 26 is behind a version check with a fallback.
 
 SDL3 is built from source on Android and is not vendored here — clone it first:
 
@@ -184,8 +216,8 @@ directory and the disc.
 
 Read once at startup. On Android the launcher sets `NFS_ORIENTATION`,
 `NFS_FPS_CAP`, `NFS_GAMMA`, `NFS_BRIGHTNESS`, `NFS_CONTRAST`, the `NFS_TOUCH_*`
-keys and one variable per pad button from its own screens; the rest matter for a
-desktop run.
+keys and one variable per pad button from its own screens, and `NFS_AUDIO_RATE`
+from the phone; the rest matter for a desktop run.
 
 | Variable | Default | Description |
 |---|---|---|
@@ -194,6 +226,8 @@ desktop run.
 | `NFS_ORIENTATION` | unset | `auto` allows both landscape directions; anything else pins one. Must be set before `SDL_Init`. |
 | `NFS_CAR_DETAIL_FULL` | on | With Car Detail at High, every car keeps its detailed model and the player's texture size out to the draw distance, in every view, and the limit on how many are drawn at once is lifted. `0` restores the original. |
 | `NFS_WIDESCREEN` | on | `0` takes the 1280x720, 1600x900 and 1920x1080 modes back out of the Screen Size list. |
+| `NFS_TEXTURES32` | on | `0` has the Voodoo2 driver refuse 32-bit textures again, so the game shrinks them to 16 bits as it used to. |
+| `NFS_AUDIO_RATE` | unset | The output's own sample rate. The game mixes at 22050 Hz and SDL converts to this; a device opened at any other rate is resampled by Android, off its low-latency path. Unset, the device opens at SDL's default. |
 | `NFS_TOUCH_STEER_LEFT` etc. | unset | Keys the touch overlay sends for steering and the pedals, so that endpoint can report them as axes. |
 | `NFS_GAMEPAD1_SOUTH` etc. | built-in defaults | What a pad button sends, as `NFS_GAMEPAD<n>_<BUTTON>`: an SDL key name (`Space`, `Return`), `axis:steer_left`, `axis:steer_right`, `axis:accelerate`, `axis:brake`, or empty for nothing. |
 

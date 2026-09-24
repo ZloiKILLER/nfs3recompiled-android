@@ -4,7 +4,7 @@
 namespace nfs3hp
 {
 // Port (tools/apply_widescreen.py): defined in nfs3hp_main.cpp.
-x86::reg32 widescreenHalfAngle(win32::WinApplication* app, x86::reg32 half);
+x86::reg32 widescreenHalfAngle(win32::WinApplication* app, x86::reg32 half, x86::reg32 vertical);
 
 /* align: skip 0x8d 0x80 0x00 0x00 0x00 0x00 */
 void Application::sub_4d66f0(WinApplication* app, x86::CPU& cpu)
@@ -22839,7 +22839,7 @@ void Application::sub_4dbce0(WinApplication* app, x86::CPU& cpu)
     cpu.eax = x86::reg32(x86::sreg32(cpu.eax) >> (4 /*0x4*/ % 32));
     // 004dbd1b  8945e8                 -mov dword ptr [ebp - 0x18], eax
     app->getMemory<x86::reg32>(cpu.ebp + x86::reg32(-24) /* -0x18 */) = cpu.eax;
-    cpu.esi = widescreenHalfAngle(app, cpu.esi); /* port: Hor+ on a wide screen, the vertical angle as it was */
+    cpu.esi = widescreenHalfAngle(app, cpu.esi, cpu.eax); /* port: the horizontal angle the view's own shape asks for */
     // 004dbd1e  89fa                   -mov edx, edi
     cpu.edx = cpu.edi;
     // 004dbd20  8b45ec                 -mov eax, dword ptr [ebp - 0x14]

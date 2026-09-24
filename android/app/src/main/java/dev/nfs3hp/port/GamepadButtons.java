@@ -36,14 +36,57 @@ final class GamepadButtons
         "menu_up", "menu_down", "menu_left", "menu_right", "confirm", "pause",
     };
 
-    /* Parallel to BUTTON_IDS.  Look behind is the one action left without a
-     * button: there are nine for eight buttons, and it is the one a race
-     * misses least. */
+    /* Parallel to BUTTON_IDS, and for a race: the face buttons where a driving
+     * hand expects them -- the handbrake under the thumb on the right, the
+     * spikes beside it, look behind where a hand rests, the camera on top --
+     * Start for the pause menu, and Share for the one thing a race asks for
+     * when it has gone wrong, putting the car back on the road.  Every action
+     * now has a button; none of them is the one the menus need, because a
+     * button means something else there (MENU_KEYS). */
     static final String[] DEFAULT_ACTIONS = {
+        "look_behind", "handbrake", "spike_strip", "camera", "gear_down", "gear_up",
+        "horn", "headlights", "recover", "pause",
+        "menu_up", "menu_down", "menu_left", "menu_right",
+    };
+
+    /* What the same buttons send outside a race, parallel to BUTTON_IDS: the
+     * face buttons a console player reaches for without looking -- the lower
+     * one confirms, the right one goes back -- Start confirms as well, Share
+     * goes back, and the D-pad moves the highlight.  The rest are quiet: a
+     * menu has nothing for a handbrake, and a replay being watched has nothing
+     * for any of them.  Fixed rather than set per button, so the screen that
+     * sets up a pad stays one screen about driving. */
+    private static final String[] MENU_KEYS = {
+        "Return", "Escape", "", "", "", "",
+        "", "", "Escape", "Return",
+        "Up", "Down", "Left", "Right",
+    };
+
+    /* What the buttons were set to before they knew about menus: pause on
+     * Share and confirm on Start, which a race has no use for either way, and
+     * the handbrake, the spikes and the reset one button to the left of where
+     * they are now.  A pad still on exactly that set is moved to the new one;
+     * a pad the player has arranged themselves is left alone. */
+    private static final String[] SUPERSEDED_ACTIONS = {
         "handbrake", "spike_strip", "recover", "camera", "gear_down", "gear_up",
         "horn", "headlights", "pause", "confirm",
         "menu_up", "menu_down", "menu_left", "menu_right",
     };
+
+    static void migrateDefaults(SharedPreferences preferences)
+    {
+        for (int slot = 0; slot < GamepadSlots.COUNT; ++slot)
+        {
+            boolean asShipped = true;
+            for (int button = 0; button < BUTTON_IDS.length && asShipped; ++button)
+            {
+                String saved = preferences.getString(preferenceKey(slot, BUTTON_IDS[button]), null);
+                asShipped = saved == null || saved.equals(SUPERSEDED_ACTIONS[button]);
+            }
+            if (asShipped)
+                reset(preferences, slot);
+        }
+    }
 
     private GamepadButtons() {}
 
@@ -78,6 +121,18 @@ final class GamepadButtons
     static String environmentName(int slot, String buttonId)
     {
         return "NFS_GAMEPAD" + (slot + 1) + "_" + buttonId.toUpperCase(Locale.ROOT);
+    }
+
+    /** The same button outside a race: the native side reads this one while a
+     *  menu or a replay is on the screen (NFS_GAMEPAD&lt;n&gt;_&lt;BUTTON&gt;_UI). */
+    static String menuEnvironmentName(int slot, String buttonId)
+    {
+        return environmentName(slot, buttonId) + "_UI";
+    }
+
+    static String menuEnvironmentValue(int button)
+    {
+        return MENU_KEYS[button];
     }
 
     /** An SDL key name; "axis:" and a steering or pedal action; or "" for a

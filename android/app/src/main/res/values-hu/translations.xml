@@ -9,10 +9,7 @@
 
  <string name="checking_game_data">Játékadatok ellenőrzése…</string>
  <string name="pick_data_folder">Válaszd ki az NFS3 adatmappáját…</string>
- <plurals name="importing_progress">
-  <item quantity="one">%1$s importálása\n%2$d MB másolva, %3$d fájl</item>
-  <item quantity="other">%1$s importálása\n%2$d MB másolva, %3$d fájl</item>
- </plurals>
+ <string name="importing_percent">%1$s importálása\n%2$d%%</string>
  <string name="import_failed">Az importálás nem sikerült: %1$s</string>
  <string name="import_hint">Azt a mappát válaszd, amely közvetlenül tartalmazza a \'fedata\' és \'gamedata\' mappát (például a CD gyökerét vagy annak másolatát).</string>
  <string name="launcher_title">Need For Speed III indító</string>
@@ -58,6 +55,10 @@
  <string name="touch_mode_wheel">Kormány (hamarosan)</string>
  <string name="touch_mode_tilt">Döntéses kormányzás (hamarosan)</string>
  <string name="touch_layout_label">Gombelrendezés</string>
+ <string name="touch_pointer_label">Mutató a menükben</string>
+ <string name="touch_pointer_tap">Ahová az ujj ér</string>
+ <string name="touch_pointer_touchpad">Érintőpad</string>
+ <string name="touch_pointer_note">Érintőpad: húzd az ujjad bárhol a kurzor mozgatásához, koppints a kattintáshoz, tartsd az ujjad mozdulatlanul a megfogáshoz és húzáshoz. A játék következő indításától érvényes.</string>
  <string name="opacity_label">Gombok átlátszatlansága</string>
  <string name="size_label">Gombméret</string>
  <string name="auto_hide_label">Elrejtés 4 másodperc tétlenség után</string>
@@ -78,7 +79,6 @@
  <string name="touch_preview_hint">Próbáld ki a vezérlést</string>
  <string name="touch_dim_label">Gombok elrejtése</string>
  <string name="touch_edge_label">Távolság a szélektől</string>
- <string name="touch_raise_label">Vezérlők feljebb</string>
  <string name="touch_dim_note">Akkor indul, ha minden ujjat felemeltél. A rejtett gombok azonnal reagálnak.</string>
  <string name="editor_drag_title">Húzd az elemeket</string>
  <string name="editor_resize_hint">Válassz az átméretezéshez</string>
@@ -119,12 +119,9 @@
  <string name="pref_hide_full">Teljes elrejtés (különben halvány körvonal)</string>
  <string name="auto_hide_delay">Késleltetés: %1$d mp</string>
  <string name="editor_button_size">Gomb: %1$d%%</string>
- <string name="editor_touch_zone">Érintési zóna: %1$d%%</string>
- <string name="editor_mode_race">Verseny</string>
- <string name="editor_mode_menu">Menü</string>
  <string name="editor_reset_title">Visszaállítod ezt az elrendezést?</string>
- <string name="editor_reset_message">Az elrendezés alapértelmezett pozícióinak, gombméreteinek és érintési zónáinak visszaállítása.</string>
- <string name="edit_touch_layout">Pozíciók és érintési zónák</string>
+ <string name="editor_reset_message">Az elrendezés alapértelmezett pozícióinak és gombméreteinek visszaállítása.</string>
+ <string name="edit_touch_layout">Pozíciók és méretek</string>
  <string name="editor_done">Kész</string>
  <string name="editor_reset">Alaphelyzet</string>
  <string name="editor_select_control">Válassz egy elemet</string>
@@ -135,23 +132,27 @@
  <string name="data_set_active_suffix"> (aktív)</string>
  <string name="error_external_storage">A külső tárhely nem érhető el</string>
  <string name="error_import_incomplete">Az importált adatokból hiányoznak a várt fájlok</string>
+ <string name="data_missing_title">A játék adatai hiányosak</string>
+ <string name="data_missing_message">Az importált adatokból hiányoznak a játékhoz szükséges fájlok (%1$d):\n\n%2$s\n\nA játék „OPEN FAILED” hibával leáll, amint szüksége lesz valamelyikre. Importáld újra a FEDATA és GAMEDATA mappát a lemezről vagy annak képfájljáról.</string>
+ <string name="data_missing_more">…és még %1$d</string>
  <string name="error_data_set_incomplete">A kiválasztott adatkészlet hiányos</string>
  <string name="importer_open_folder_failed">A kiválasztott mappa nem nyitható meg</string>
  <string name="importer_missing_subfolder">A kiválasztott mappában nincs \'%1$s\' almappa — azt a mappát válaszd, amely közvetlenül tartalmazza a fedata és gamedata mappát (például a CD gyökerét).</string>
  <string name="importer_open_zip_failed">A kiválasztott ZIP nem nyitható meg</string>
  <string name="importer_zip_missing_files">A ZIP-ből hiányoznak a várt fedata/gamedata mappák</string>
 
- <string name="faq_size"><b>Mit változtat a méret?</b>\nAz általános méret az alapértelmezett elemeket skálázza. A «Pozíciók és érintési zónák» részben húzd el az elemet, és a «Gomb» értékkel a megjelenését, az «Érintési zóna» értékkel csak a reagálási területét módosítod. A szaggatott vonal az érintési zónát mutatja; a százalék az alapértelmezett elemhez viszonyul. A változások maguktól mentődnek. A szerkesztő rácsot mutat; a „Rácshoz igazítás” bekapcsolásával a húzott elem a rácsra kerül.</string>
- <string name="faq_edges"><b>Szélek és magasság</b>\nA szélektől mért távolság befelé tolja az alapértelmezett elemeket. A «Vezérlők feljebb» megemeli az alsó alapértelmezett elemeket. A rendszerkivágásokat figyelembe veszi. A kézzel elhelyezett elemek megtartják mentett helyüket.</string>
- <string name="faq_hiding"><b>Átlátszatlanság és automatikus elrejtés</b>\nAz átlátszatlanság a szokásos láthatóságot állítja be. Az elrejtés akkor indul, amikor minden ujjat felemeltél, 1–30 másodperc késleltetéssel. Válassz halvány körvonalat vagy teljes láthatatlanságot. A rejtett gombok már az első érintésre reagálnak, és újra láthatóvá válnak. Egy elem nyomva tartása megakadályozza az elrejtést. Egy gombnyomás a kontrolleren azonnal elrejti a gombokat; a következő érintés visszahozza őket.</string>
- <string name="faq_gears"><b>Kézi váltó</b>\nA «Váltógombok − / + megjelenítése» két opcionális gombot ad a versenyelrendezéshez. Kapcsold be a játékban a kézi váltót. A billentyűiket a Vezérlés → Érintés → Billentyűk alatt állíthatod be; egyezniük kell a játék beállításaival.</string>
+ <string name="faq_layout_modes"><b>Menü vagy verseny?</b>\nA játék mondja meg. Vezetés közben a versenyelrendezést kapod: kormánygombok, pedálok, sebességváltás és a többi. A menükben, és valahányszor menü nyílik a verseny fölé, a port egyetlen gombot sem mutat: a menük maguk fogadják az érintést, a telefon Vissza gombja az Escape, a billentyűzet pedig magától feljön. Kézzel nincs mit átkapcsolni.</string>
+ <string name="faq_mouse"><b>Hogyan működnek a menük?</b>\nÉrintéssel. Ahová az ujjadat teszed, oda kerül a játék mutatója, így a koppintás az alatta lévő elemet nyomja meg, a csúszka pedig követi a húzó ujjat. A telefon Vissza gombja vagy mozdulata az Escape, és amikor a játék nevet kér, a telefon billentyűzete magától megnyílik; nyitott billentyűzetnél a Vissza bezárja.</string>
+ <string name="faq_size"><b>Mit változtat a méret?</b>\nA gombméret a gyári vezérlőket méretezi. A Pozíciók és méretek alatt húzd el az elemet, és a méretcsúszkával állítsd a méretét; az elem pontosan ott reagál, ahol meg van rajzolva, a százalékok pedig a gyári elemhez képest értendők. A változások maguktól mentődnek. A szerkesztő rácsot mutat; bekapcsolt Rácshoz igazítás mellett a húzott elem rápattan.</string>
+ <string name="faq_edges"><b>Szélek és magasság</b>\nA szélektől mért távolság befelé tolja az alapértelmezett elemeket. A rendszerkivágásokat figyelembe veszi. A kézzel elhelyezett elemek megtartják mentett helyüket.</string>
+ <string name="faq_hiding"><b>Átlátszatlanság és automatikus elrejtés</b>\nAz átlátszatlanság a szokásos láthatóságot állítja be. Az elrejtés akkor indul, amikor minden ujjat felemeltél, 1–30 másodperc késleltetéssel. Válassz halvány körvonalat vagy teljes láthatatlanságot. A rejtett gombok már az első érintésre reagálnak, és újra láthatóvá válnak. Egy elem nyomva tartása megakadályozza az elrejtést. Az 1. játékos kontrollerén egy gombnyomás azonnal elrejti a gombokat; a következő érintés visszahozza őket. A 2. játékos kontrollere nem nyúl hozzájuk, így az egyik a képernyőn vezethet, míg a másik kontrollerrel játszik.</string>
  <string name="faq_vibration"><b>Rezgés</b>\nA játék Force Feedback-effektjei a telefonhoz és az 1. kontrollerhez jutnak el. A játék csak egy erő-visszacsatolásos eszközt vezérel, ezért a 2. kontroller soha nem rezeg. A telefon rezgését a Vezérlés → Érintés alatt kapcsolhatod be vagy ki. A kontroller rezgése ki van kapcsolva, amíg be nem kapcsolod a Vezérlés → Kontrollerek alatt; az erősségét magában a játékban állítod be: Options → Controllers → Force Feedback. Az effektek a játékból jönnek, soha nem gombnyomásból.</string>
- <string name="faq_mapping"><b>Kontrollerek</b>\nA játék mindig két kontrollert lát: az 1. kontroller az 1. játékos az érintővezérléssel együtt, a 2. kontroller a 2. játékos. A Vezérlés → Kontrollerek alatt egy gombja megnyomásával válaszd ki, melyik kontroller melyik, állítsd be, mit csinál az egyes gomb, majd egyszer nyomd meg a Kontroller BE gombot. Ez beírja a megfelelő vezérlést a játék beállításaiba, és elmenti a régi fájlt. A bal kar kormányoz, a ravaszok gázt adnak és fékeznek. Billentyűzetes játékhoz inkább a Játék alapértelmezése beállítást írd be.</string>
+ <string name="faq_mapping"><b>Kontrollerek</b>\nA játék mindig két kontrollert lát: az 1. kontroller az 1. játékos az érintővezérléssel együtt, a 2. kontroller a 2. játékos. A Vezérlés → Kontrollerek alatt egy gombja megnyomásával válaszd ki, melyik kontroller melyik, állítsd be, mit csinál az egyes gomb, majd egyszer nyomd meg a Kontroller BE gombot. Ez beírja a megfelelő vezérlést a játék beállításaiba, és elmenti a régi fájlt. A bal kar kormányoz, a ravaszok gázt adnak és fékeznek. A kontrollernek két gombkészlete van, ahogy az érintővezérlésnek két elrendezése: a versenyhez való, amit itt állítasz be, és egy rögzített a menükhöz és a visszajátszásokhoz, ahol a Cross / A megerősít, a Circle / B visszalép, a kereszt pedig mozgatja a kijelölést. Billentyűzetes játékhoz inkább a Játék alapértelmezése beállítást írd be.</string>
  <string name="faq_lights"><b>Lámpák és visszatérés</b>\nA ☼ az L billentyűt küldi. A ↻ az R billentyűt küldi, hogy visszatérj a pályára. A billentyűk a Vezérlés → Érintés → Billentyűk alatt módosíthatók.</string>
  <string name="faq_screen_data"><b>Képernyő és játékadatok</b>\nA fekvő rögzíti a játékot vízszintesen; az Automatikus engedi a forgatást. Az FPS-korlát a képkockaszámot korlátozza; alacsonyabb érték kevesebb munkát jelent másodpercenként. A «Játékadatok» kezeli az importálásokat, és mutatja, melyik készlet aktív. A «Játék» akkor válik elérhetővé, ha egy készlet készen áll.</string>
  <string name="gamepad_buttons">Gombok</string>
  <string name="gamepad_buttons_title">%1$d. kontroller gombjai</string>
- <string name="gamepad_buttons_hint">Mit csinál ennek a kontrollernek az egyes gombja. A bal kar kormányoz, a jobb ravasz gázt ad, a bal fékez. A gombok műveletei azután jutnak el a játékba, hogy a kontrolleres vezérlést beírtad a játékba.</string>
+ <string name="gamepad_buttons_hint">Mit csinál ennek a kontrollernek minden gombja vezetés közben. A bal kar kormányoz, a jobb ravasz gázt ad, a bal fékez. A menükben és a visszajátszásokban a gombok rögzítettek, nem kell állítani őket: a Cross / A és az Options / Menu megerősít, a Circle / B és a Create / View visszalép, a kereszt mozgatja a kijelölést. A gombok műveletei akkor jutnak el a játékhoz, ha a kontrollervezérlés bele lett írva.</string>
  <string name="gamepad_buttons_reset">Alapértelmezés</string>
  <string name="controls_write_gamepads">Kontroller BE</string>
  <string name="controls_write_keyboard">Játék alapértelmezése</string>
@@ -161,14 +162,15 @@
  <string name="controls_write_no_config">A játéknak még nincs beállításfájlja. Indítsd el egyszer a játékot, majd próbáld újra.</string>
  <string name="controls_write_game_running">A vezérlés beírása előtt zárd be a játékot.</string>
  <string name="controls_write_failed">A vezérlést nem sikerült beírni: %1$s</string>
+ <string name="gamepads_keyboard_note">A játék a saját billentyűzetes vezérlésére van állítva (Játék alapértelmezése). A kontrollerek osztott képernyős versenyben addig nem csinálnak semmit, amíg meg nem nyomod a Kontroller BE gombot.</string>
  <string name="pref_touch_enabled">Érintővezérlés használata</string>
  <string name="touch_enabled_note">Kikapcsolva a képernyő érintése semmit sem csinál a játékban: nincsenek gombok és érintős egér sem. A kontrollerek és egy valódi egér továbbra is működnek.</string>
  <string name="controls_help">Súgó: osztott képernyő</string>
  <string name="controls_help_title">Osztott képernyő két kontrollerrel</string>
  <string name="help_split_setup"><b>1. A kontrollerek beállítása (egyszer)</b>\nCsatlakoztasd mindkét kontrollert a telefonhoz. A Vezérlés → Kontrollerek alatt nyomd meg az 1. kontroller Hozzárendelés gombját, majd bármelyik gombot az 1. játékos kontrollerén, aztán tedd ugyanezt a 2. kontrollerrel. Az Automatikus is működik: a kontrollereket a csatlakozás sorrendjében veszi. A Gombok alatt választhatod ki, mit csináljon az egyes gomb.</string>
  <string name="help_split_write"><b>2. A vezérlés beírása a játékba</b>\nUgyanezen a képernyőn nyomd meg a Kontroller BE gombot, és erősítsd meg. Ez egyszer kell, és újra csak más játékadatok telepítése vagy a játékon belüli vezérlésmódosítás után. Az előző beállításokról biztonsági mentés készül.</string>
- <string name="help_split_race"><b>3. Osztott képernyős verseny indítása</b>\nIndítsd el a játékot, és válaszd a Two Players… pontot. Az 1. játékos az 1. kontrollerrel vagy az érintővezérléssel vezet, a 2. játékos a 2. kontrollerrel. A menükben bármelyik kontroller használható: a kereszt mozgatja a kijelölést, az Options / Start megerősít, a Create / Back visszalép vagy szüneteltet.</string>
- <string name="help_split_driving"><b>Vezetés</b>\nA bal kar kormányoz, a jobb ravasz gázt ad, a bal fékez. Alapértelmezés szerint a Cross / A a kézifék, az R1 / L1 vált, a Triangle / Y kamerát vált, a Square / X visszarak a pályára, a Circle / B tüskés szalagot dob, az L3 dudál, az R3 pedig fényszórót kapcsol.</string>
+ <string name="help_split_race"><b>3. Osztott képernyős verseny indítása</b>\nIndítsd el a játékot, és válaszd a Two Players… pontot. Az 1. játékos az 1. kontrollerrel vagy az érintővezérléssel vezet, a 2. játékos a 2. kontrollerrel. A menükben bármelyik kontroller használható: a kereszt mozgatja a kijelölést, a Cross / A vagy az Options / Menu megerősít, a Circle / B vagy a Create / View visszalép.</string>
+ <string name="help_split_driving"><b>Vezetés</b>\nA bal kar kormányoz, a jobb ravasz gázt ad, a bal fékez. Alapértelmezés szerint a Circle / B a kézifék, a Square / X tüskés szalagot dob, a Cross / A hátranéz, a Triangle / Y kamerát vált, az R1 / L1 vált, a Create / View visszarakja az autót a pályára, az Options / Menu szünetelteti a versenyt, az L3 dudál, az R3 pedig fényszórót kapcsol.</string>
  <string name="help_split_notes"><b>Jó tudni</b>\nCsak az 1. kontroller és a telefon rezeg: a játék csak egy erő-visszacsatolásos eszközt vezérel. Ha a vezérlés már nem egyezik, például a játékban végzett alaphelyzetbe állítás után, nyomd meg újra a Kontroller BE gombot. Billentyűzetes játékhoz inkább a Játék alapértelmezése gombot nyomd meg. Az érintővezérlés a Vezérlés → Érintés alatt kapcsolható ki.</string>
  <string name="gamepad_vibration">Kontroller rezgése</string>
  <string name="gamepad_vibration_note">Alapból kikapcsolva. Az erősséget a játékban állítod be: Options → Controllers → Force Feedback.</string>

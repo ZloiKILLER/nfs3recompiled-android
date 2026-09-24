@@ -9,10 +9,7 @@
 
  <string name="checking_game_data">Spelgegevens controleren…</string>
  <string name="pick_data_folder">Kies de NFS3-gegevensmap…</string>
- <plurals name="importing_progress">
-  <item quantity="one">%1$s importeren\n%2$d MB gekopieerd, %3$d bestand</item>
-  <item quantity="other">%1$s importeren\n%2$d MB gekopieerd, %3$d bestanden</item>
- </plurals>
+ <string name="importing_percent">%1$s importeren\n%2$d%%</string>
  <string name="import_failed">Importeren mislukt: %1$s</string>
  <string name="import_hint">Kies de map die \'fedata\' en \'gamedata\' rechtstreeks bevat (bijvoorbeeld de hoofdmap van de cd of een kopie).</string>
  <string name="launcher_title">Need For Speed III Launcher</string>
@@ -58,6 +55,10 @@
  <string name="touch_mode_wheel">Stuur (binnenkort)</string>
  <string name="touch_mode_tilt">Sturen door kantelen (binnenkort)</string>
  <string name="touch_layout_label">Knopindeling</string>
+ <string name="touch_pointer_label">Aanwijzer in menu\'s</string>
+ <string name="touch_pointer_tap">Waar de vinger tikt</string>
+ <string name="touch_pointer_touchpad">Touchpad</string>
+ <string name="touch_pointer_note">Touchpad: veeg ergens om de cursor te bewegen, tik om te klikken, houd stil om te pakken en te slepen. Geldt vanaf de volgende keer dat het spel start.</string>
  <string name="opacity_label">Dekking van de knoppen</string>
  <string name="size_label">Knopgrootte</string>
  <string name="auto_hide_label">Verbergen na 4 seconden inactiviteit</string>
@@ -78,7 +79,6 @@
  <string name="touch_preview_hint">Probeer de bediening</string>
  <string name="touch_dim_label">Knoppen automatisch verbergen</string>
  <string name="touch_edge_label">Afstand tot de randen</string>
- <string name="touch_raise_label">Rijknoppen omhoog</string>
  <string name="touch_dim_note">Begint zodra alle vingers zijn opgetild. Verborgen knoppen reageren meteen.</string>
  <string name="editor_drag_title">Sleep de knoppen</string>
  <string name="editor_resize_hint">Kies om te schalen</string>
@@ -119,12 +119,9 @@
  <string name="pref_hide_full">Volledig verbergen (anders vaag silhouet)</string>
  <string name="auto_hide_delay">Vertraging: %1$d s</string>
  <string name="editor_button_size">Knop: %1$d%%</string>
- <string name="editor_touch_zone">Touchzone: %1$d%%</string>
- <string name="editor_mode_race">Race</string>
- <string name="editor_mode_menu">Menu</string>
  <string name="editor_reset_title">Deze indeling herstellen?</string>
- <string name="editor_reset_message">Standaardposities, knopgroottes en touchzones van deze indeling herstellen.</string>
- <string name="edit_touch_layout">Posities en touchzones bewerken</string>
+ <string name="editor_reset_message">Standaardposities en knopgroottes van deze indeling herstellen.</string>
+ <string name="edit_touch_layout">Posities en groottes bewerken</string>
  <string name="editor_done">Klaar</string>
  <string name="editor_reset">Herstellen</string>
  <string name="editor_select_control">Kies een knop</string>
@@ -135,23 +132,27 @@
  <string name="data_set_active_suffix"> (actief)</string>
  <string name="error_external_storage">Externe opslag is niet beschikbaar</string>
  <string name="error_import_incomplete">In de geïmporteerde gegevens ontbreken de verwachte bestanden</string>
+ <string name="data_missing_title">Spelgegevens onvolledig</string>
+ <string name="data_missing_message">In de geïmporteerde gegevens ontbreken bestanden die het spel nodig heeft (%1$d):\n\n%2$s\n\nHet spel stopt met „OPEN FAILED” zodra het er een van nodig heeft. Importeer de mappen FEDATA en GAMEDATA opnieuw van de cd of de image ervan.</string>
+ <string name="data_missing_more">…en nog %1$d</string>
  <string name="error_data_set_incomplete">De gekozen gegevensset is onvolledig</string>
  <string name="importer_open_folder_failed">De gekozen map kan niet worden geopend</string>
  <string name="importer_missing_subfolder">De gekozen map heeft geen submap \'%1$s\' — kies de map die fedata en gamedata rechtstreeks bevat (bijvoorbeeld de hoofdmap van de cd).</string>
  <string name="importer_open_zip_failed">De gekozen ZIP kan niet worden geopend</string>
  <string name="importer_zip_missing_files">In de ZIP ontbreken de verwachte mappen fedata/gamedata</string>
 
- <string name="faq_size"><b>Wat verandert de grootte?</b>\nDe globale grootte schaalt de standaardknoppen. Sleep in «Posities en touchzones bewerken» een knop en pas «Knop» aan om het uiterlijk te wijzigen, of «Touchzone» om alleen te wijzigen waar hij reageert. Stippellijnen tonen de touchzones; de percentages zijn relatief aan de standaardknop. Wijzigingen worden vanzelf bewaard. De editor toont een raster; met ‘Uitlijnen op raster’ komt een versleept element erop terecht.</string>
- <string name="faq_edges"><b>Randen en hoogte</b>\nDe afstand tot de randen schuift de standaardknoppen naar binnen. «Rijknoppen omhoog» tilt de onderste standaardknoppen op. Uitsparingen van het systeem worden gerespecteerd. Handmatig geplaatste knoppen houden hun bewaarde positie.</string>
- <string name="faq_hiding"><b>Dekking en automatisch verbergen</b>\nDe dekking bepaalt de normale zichtbaarheid. Het verbergen begint zodra alle vingers zijn opgetild, na 1 tot 30 seconden. Kies een vaag silhouet of volledige onzichtbaarheid. Verborgen knoppen reageren al op de eerste aanraking en worden weer zichtbaar. Een knop vasthouden voorkomt het verbergen. Een druk op de gamepad verbergt de knoppen meteen; de volgende aanraking brengt ze terug.</string>
- <string name="faq_gears"><b>Handgeschakeld</b>\n«Schakelknoppen − / + tonen» voegt twee extra knoppen toe aan de race-indeling. Zet de handbak aan in het spel. Hun toetsen stel je in bij Bediening → Touch → Toetsen; ze moeten overeenkomen met de spelinstellingen.</string>
+ <string name="faq_layout_modes"><b>Menu of race?</b>\nDat zegt het spel. Tijdens het rijden krijg je de race-indeling: stuurknoppen, pedalen, versnellingen en de rest. In de menu\'s, en zodra er een menu over een race opent, toont de port helemaal geen knoppen: de menu\'s nemen de aanraking zelf aan, de Terug van de telefoon is Escape en het toetsenbord komt vanzelf op. Er valt niets met de hand om te schakelen.</string>
+ <string name="faq_mouse"><b>Hoe werken de menu\'s?</b>\nMet aanraken. Waar je je vinger neerzet, staat de aanwijzer van het spel, dus een tik drukt het item eronder in en een schuifregelaar volgt de vinger die hem sleept. De Terug-knop of -veeg van de telefoon is Escape, en als het spel om een naam vraagt, gaat het toetsenbord van de telefoon vanzelf open; met open toetsenbord sluit Terug het.</string>
+ <string name="faq_size"><b>Wat verandert de grootte?</b>\nDe knopgrootte schaalt de standaardbediening. Sleep bij Posities en groottes bewerken een knop en wijzig de grootte met de groottebalk; een knop reageert precies waar hij getekend is en de percentages gelden ten opzichte van de standaardknop. Wijzigingen worden vanzelf bewaard. De editor toont een raster; met Uitlijnen op raster aan komt een gesleepte knop erop te liggen.</string>
+ <string name="faq_edges"><b>Randen en hoogte</b>\nDe afstand tot de randen schuift de standaardknoppen naar binnen. Uitsparingen van het systeem worden gerespecteerd. Handmatig geplaatste knoppen houden hun bewaarde positie.</string>
+ <string name="faq_hiding"><b>Dekking en automatisch verbergen</b>\nDe dekking bepaalt de normale zichtbaarheid. Het verbergen begint zodra alle vingers zijn opgetild, na 1 tot 30 seconden. Kies een vaag silhouet of volledige onzichtbaarheid. Verborgen knoppen reageren al op de eerste aanraking en worden weer zichtbaar. Een knop vasthouden voorkomt het verbergen. Een druk op de gamepad van speler 1 verbergt de knoppen meteen; de volgende aanraking brengt ze terug. De gamepad van speler 2 laat ze met rust, zodat de een op het scherm kan rijden terwijl de ander met een pad speelt.</string>
  <string name="faq_vibration"><b>Trilling</b>\nDe Force Feedback-effecten van het spel bereiken de telefoon en gamepad 1. Het spel stuurt maar één force-feedbackapparaat aan, dus gamepad 2 trilt nooit. Trilling van de telefoon zet je aan of uit bij Bediening → Touch. Trilling van de gamepad staat uit tot je die aanzet bij Bediening → Gamepads; de sterkte stel je in het spel zelf in: Options → Controllers → Force Feedback. De effecten komen van het spel, nooit van knopdrukken.</string>
- <string name="faq_mapping"><b>Gamepads</b>\nHet spel ziet altijd twee gamepads: gamepad 1 is speler 1 samen met de touchbediening, gamepad 2 is speler 2. Kies bij Bediening → Gamepads welke pad welke is door er een knop op in te drukken, stel in wat elke knop doet en druk daarna eenmalig op Gamepad AAN. Dat schrijft de bijpassende bediening naar de spelinstellingen en maakt een back-up van het oude bestand. De linkerstick stuurt, de triggers geven gas en remmen. Wil je met een toetsenbord spelen, schrijf dan Standaard van het spel.</string>
+ <string name="faq_mapping"><b>Gamepads</b>\nHet spel ziet altijd twee gamepads: gamepad 1 is speler 1 samen met de touchbediening, gamepad 2 is speler 2. Kies bij Bediening → Gamepads welke pad welke is door er een knop op in te drukken, stel in wat elke knop doet en druk daarna eenmalig op Gamepad AAN. Dat schrijft de bijpassende bediening naar de spelinstellingen en maakt een back-up van het oude bestand. De linkerstick stuurt, de triggers geven gas en remmen. Een pad heeft twee knoppensets, net zoals de touchbediening twee indelingen heeft: die van de race, die je hier instelt, en een vaste voor de menu\'s en herhalingen, waarin Cross / A bevestigt, Circle / B teruggaat en het kruis de selectie verplaatst. Wil je met een toetsenbord spelen, schrijf dan Standaard van het spel.</string>
  <string name="faq_lights"><b>Licht en terug naar de baan</b>\n☼ stuurt L. ↻ stuurt R om terug te keren naar de baan. De toetsen kun je wijzigen bij Bediening → Touch → Toetsen.</string>
  <string name="faq_screen_data"><b>Scherm en spelgegevens</b>\nLiggend vergrendelt het spel horizontaal; Automatisch staat draaien toe. De FPS-limiet beperkt de beeldsnelheid; een lagere waarde vermindert het werk per seconde. «Spelgegevens» beheert de imports en toont welke set actief is. Spelen wordt beschikbaar zodra een set klaar is.</string>
  <string name="gamepad_buttons">Knoppen</string>
  <string name="gamepad_buttons_title">Knoppen van gamepad %1$d</string>
- <string name="gamepad_buttons_hint">Wat elke knop van deze pad doet. De linkerstick stuurt, de rechtertrigger geeft gas en de linker remt. De knopacties bereiken het spel zodra de gamepadbediening naar het spel is geschreven.</string>
+ <string name="gamepad_buttons_hint">Wat elke knop van dit pad doet tijdens het rijden. De linkerstick stuurt, de rechtertrigger geeft gas en de linker remt. In de menu\'s en in herhalingen liggen de knoppen vast en valt er niets in te stellen: Cross / A en Options / Menu bevestigen, Circle / B en Create / View gaan terug, het kruis verplaatst de selectie. De knopacties bereiken het spel zodra de gamepadbediening erin is geschreven.</string>
  <string name="gamepad_buttons_reset">Standaard</string>
  <string name="controls_write_gamepads">Gamepad AAN</string>
  <string name="controls_write_keyboard">Standaard van het spel</string>
@@ -161,14 +162,15 @@
  <string name="controls_write_no_config">Het spel heeft nog geen instellingenbestand. Start het spel één keer en probeer het opnieuw.</string>
  <string name="controls_write_game_running">Sluit het spel voordat je de bediening schrijft.</string>
  <string name="controls_write_failed">Kon de bediening niet schrijven: %1$s</string>
+ <string name="gamepads_keyboard_note">Het spel staat op zijn eigen toetsenbordbediening (Standaard van het spel). De gamepads doen niets in splitscreenraces totdat je op Gamepad AAN drukt.</string>
  <string name="pref_touch_enabled">Touchbediening gebruiken</string>
  <string name="touch_enabled_note">Uit: het scherm aanraken doet niets in het spel, geen knoppen en geen touchmuis. Gamepads en een echte muis blijven werken.</string>
  <string name="controls_help">Help: splitscreen</string>
  <string name="controls_help_title">Splitscreen met twee gamepads</string>
  <string name="help_split_setup"><b>1. De gamepads instellen (eenmalig)</b>\nVerbind beide gamepads met de telefoon. Druk bij Bediening → Gamepads onder gamepad 1 op Toewijzen en druk op een willekeurige knop van de pad van speler 1; doe daarna hetzelfde voor gamepad 2. Automatisch werkt ook: de pads worden genomen in de volgorde waarin ze verbinden. Bij Knoppen kies je wat elke knop doet.</string>
  <string name="help_split_write"><b>2. De bediening naar het spel schrijven</b>\nDruk op hetzelfde scherm op Gamepad AAN en bevestig. Dat is één keer nodig, en opnieuw alleen na het installeren van andere spelgegevens of als de bediening in het spel zelf is veranderd. Van de vorige instellingen wordt een back-up gemaakt.</string>
- <string name="help_split_race"><b>3. Een splitscreenrace starten</b>\nStart het spel en kies Two Players…. Speler 1 rijdt met gamepad 1 of de touchbediening, speler 2 met gamepad 2. Door de menu\'s gaat het met elk van beide pads: het kruis verplaatst de selectie, Options / Start bevestigt, Create / Back gaat terug of pauzeert.</string>
- <string name="help_split_driving"><b>Rijden</b>\nDe linkerstick stuurt, de rechtertrigger geeft gas en de linker remt. Standaard is Cross / A de handrem, schakelen R1 / L1, wisselt Triangle / Y de camera, zet Square / X terug op de baan, legt Circle / B een spijkermat, toetert L3 en schakelt R3 de lichten.</string>
+ <string name="help_split_race"><b>3. Een splitscreenrace starten</b>\nStart het spel en kies Two Players…. Speler 1 rijdt met gamepad 1 of de touchbediening, speler 2 met gamepad 2. Door de menu\'s gaat het met elk van beide pads: het kruis verplaatst de selectie, Cross / A of Options / Menu bevestigt, Circle / B of Create / View gaat terug.</string>
+ <string name="help_split_driving"><b>Rijden</b>\nDe linkerstick stuurt, de rechtertrigger geeft gas en de linker remt. Standaard is Circle / B de handrem, legt Square / X een spijkermat, kijkt Cross / A achterom, wisselt Triangle / Y de camera, schakelen R1 / L1, zet Create / View de auto terug op de baan, pauzeert Options / Menu de race, toetert L3 en schakelt R3 de lichten.</string>
  <string name="help_split_notes"><b>Goed om te weten</b>\nAlleen gamepad 1 en de telefoon trillen: het spel stuurt maar één force-feedbackapparaat aan. Klopt de bediening niet meer, bijvoorbeeld na terugzetten in het spel, druk dan opnieuw op Gamepad AAN. Om met een toetsenbord te spelen druk je in plaats daarvan op Standaard van het spel. De touchbediening zet je uit bij Bediening → Touch.</string>
  <string name="gamepad_vibration">Gamepadtrilling</string>
  <string name="gamepad_vibration_note">Standaard uit. De sterkte stel je in het spel in: Options → Controllers → Force Feedback.</string>

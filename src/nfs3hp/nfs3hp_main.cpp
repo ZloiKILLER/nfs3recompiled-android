@@ -1,4 +1,4 @@
-#include <SDL3/SDL_main.h>
+﻿#include <SDL3/SDL_main.h>
 #include <lib/file.h>
 #include <lib/registry.h>
 #include <lib/gamepad.h>
@@ -56,6 +56,29 @@ void loadingScreenFit(win32::WinApplication* app, x86::CPU& cpu, bool on)
 bool raceIsRunning()
 {
     return s_raceRunning;
+}
+
+/* Whether the game is waiting for a name to be typed: the dialog that takes one
+ * is up (tools/apply_text_entry.py).  Read once a frame by textEntryTick, which
+ * is what raises and lowers the phone's keyboard by it. */
+static bool s_takingText = false;
+
+void textEntry(bool taking)
+{
+    s_takingText = taking;
+}
+
+bool takingText()
+{
+    return s_takingText;
+}
+
+/* The depth a Screen Size entry reads (tools/apply_full_colour.py): the mode
+ * table's 16 is what the game keeps, but a race is drawn in full colour and,
+ * with the game's 32-bit textures taken, in full colour throughout. */
+x86::reg32 shownDepth(x86::reg32 depth)
+{
+    return depth == 16 && win32::glide2x::fullColourTextures() ? 32 : depth;
 }
 
 /* View Distance at Full: the player's choice in the Graphics menu, [0x6fbc28],
@@ -117,24 +140,39 @@ bool widescreenMode(x86::reg32 width, x86::reg32 height)
     return width * 9 == height * 16;
 }
 
-/* A camera's horizontal half field of view, in whole degrees, for the screen the
- * race is drawn on (tools/apply_widescreen.py, in sub_4dbce0).  The game makes
- * each view's vertical angle 13/16 of its horizontal one, proportions that hold
- * on a 4:3 screen only, so on anything wider the picture came out stretched
- * sideways.  The vertical angle stays what the game makes it; the horizontal one
- * opens up by as much as the screen is wider than 4:3 -- Hor+ -- for every view
- * alike: the chase and in-car cameras, the mirror, both halves of split screen.
- * 4:3 and narrower screens keep the game's own angle to the degree.  The screen
- * is the mode the race switched to (sub_4bef50 copies it to 0x7cdae0). */
-x86::reg32 widescreenHalfAngle(win32::WinApplication* app, x86::reg32 half)
+/* A camera's horizontal half field of view, in whole degrees, for the view it
+ * draws into (tools/apply_widescreen.py, in sub_4dbce0).
+ *
+ * The projection takes both angles and works a focal length out of each --
+ * half the width over the tangent of the horizontal, half the height over the
+ * tangent of the vertical (sub_4fd2b0, through the game's own sine table).
+ * Nothing is distorted only while those two come out equal, which asks that the
+ * tangents stand in the ratio of the view's sides.  The game's own rule, the
+ * vertical angle being 13/16 of the horizontal one in whole degrees, gives that
+ * ratio at a single angle and drifts either side of it: about 1.27 at a
+ * horizontal half angle of 30 degrees, 1.35 at 45, 1.52 at 60, where a 4:3
+ * screen asks for 1.33.  So the original squeezed its picture at close angles
+ * and stretched it at wide ones by a few percent -- little enough to pass on a
+ * 4:3 monitor, plain enough to see through the wide cinema cameras of a replay
+ * or a finish.
+ *
+ * The vertical angle stays exactly what the game made it, and the horizontal
+ * one becomes the one that view's shape asks for.  On a wide screen that is
+ * Hor+ -- the vertical view unchanged, more of the world at the sides -- and on
+ * any screen it is the game's proportions put right, at every camera angle,
+ * which is what a round wheel wants.  The view is the rectangle being drawn
+ * into ([0x7cdba0]), so split screen's halves each get their own shape. */
+x86::reg32 widescreenHalfAngle(win32::WinApplication* app, x86::reg32 half, x86::reg32 vertical)
 {
-    const x86::reg32 width = app->getMemory<x86::reg32>(0x7cdae0);
-    const x86::reg32 height = app->getMemory<x86::reg32>(0x7cdae4);
-    if (!height || width * 3 <= height * 4 || x86::sreg32(half) <= 0 || half >= 90)
+    const x86::sreg32 width = x86::sreg32(app->getMemory<x86::reg32>(0x7cdba0));
+    const x86::sreg32 height = x86::sreg32(app->getMemory<x86::reg32>(0x7cdba4));
+    const x86::sreg32 down = x86::sreg32(vertical);
+    if (width <= 0 || height <= 0 || down <= 0 || down >= 90 || x86::sreg32(half) <= 0 || half >= 90)
         return half;
-    const double wider = double(width) * 3.0 / (double(height) * 4.0);
-    const double angle = SDL_atan(SDL_tan(double(half) * SDL_PI_D / 180.0) * wider) * 180.0 / SDL_PI_D;
-    return x86::reg32(SDL_lround(angle));
+    const double across = SDL_atan(SDL_tan(double(down) * SDL_PI_D / 180.0) * double(width) / double(height))
+                          * 180.0 / SDL_PI_D;
+    const x86::sreg32 rounded = x86::sreg32(SDL_lround(across));
+    return rounded > 0 && rounded < 90 ? x86::reg32(rounded) : half;
 }
 
 /* The rectangle the in-car cabin is drawn in (tools/apply_cabin_fit.py): field
@@ -330,7 +368,16 @@ struct HudDrawn
     x86::sreg32 x0, y0, x1, y1; // what was drawn, pixels
     x86::sreg32 left, top, right, bottom;  // the element's rectangle then
 };
-static HudDrawn s_hudDrawn[2][23];
+/* Per player, per layout -- the racer's and the cop's -- and per element.  The
+ * editor names an element by its place in the pair of layouts, 0 to 45, which
+ * is the layout and the element within it; the player it is editing for is what
+ * its test is handed (hudLayoutsDrawn), and is kept here for the measuring,
+ * which is told only the element.  Split screen edits one player's HUD at a
+ * time, and a cop and a racer never share a screen, so one set per player is
+ * enough -- but the racer's and the cop's own layouts are different HUDs, and
+ * measurements of one said nothing about the other. */
+static HudDrawn s_hudDrawn[2][2][23];
+static x86::reg32 s_hudPlayer = 0;
 
 static bool hudDrawnFresh(const HudDrawn& drawn)
 {
@@ -374,7 +421,7 @@ void hudEditorDraw(win32::WinApplication* app, x86::reg32 object, bool begin)
     const x86::reg32 index = app->getMemory<x86::reg32>(object + 0x3c);
     if (index >= 46)
         return;
-    HudDrawn& drawn = s_hudDrawn[index / 23][index % 23];
+    HudDrawn& drawn = s_hudDrawn[s_hudPlayer][index / 23][index % 23];
     const x86::sreg32 left = x86::sreg16(app->getMemory<x86::reg16>(object + 6));
     const x86::sreg32 top = x86::sreg16(app->getMemory<x86::reg16>(object + 8));
     const x86::sreg32 right = x86::sreg32(app->getMemory<x86::reg32>(object + 0x60));
@@ -386,11 +433,20 @@ void hudEditorDraw(win32::WinApplication* app, x86::reg32 object, bool begin)
         drawn.swap = 0;
         return;
     }
-    /* Said once for each new shape, not for every step of a drag. */
+    /* Said once for each new shape, not for every step of a drag.  The
+     * rectangle the game itself drew the element into is said with it: that is
+     * what a line of text is centred between (sub_4897f0), and it is the
+     * element's layout in pixels (sub_480910) as sub_4800a0 leaves it, not the
+     * box the editor moves. */
+    const x86::reg32 pixels = 0x749758 + s_hudPlayer * 23 * 16 + (index % 23) * 16;
     if (!drawn.swap || x0 - left != drawn.x0 - drawn.left || y0 - top != drawn.y0 - drawn.top
         || x1 - right != drawn.x1 - drawn.right || y1 - bottom != drawn.y1 - drawn.bottom)
-        SDL_Log("[HUDEDIT] element %u drawn at %d,%d-%d,%d in its box %d,%d-%d,%d",
-                unsigned(index % 23), x0, y0, x1, y1, int(left), int(top), int(right), int(bottom));
+        SDL_Log("[HUDEDIT] element %u drawn at %d,%d-%d,%d in its box %d,%d-%d,%d, the game's %d,%d-%d,%d",
+                unsigned(index % 23), x0, y0, x1, y1, int(left), int(top), int(right), int(bottom),
+                int(x86::sreg32(app->getMemory<x86::reg32>(pixels))),
+                int(x86::sreg32(app->getMemory<x86::reg32>(pixels + 4))),
+                int(x86::sreg32(app->getMemory<x86::reg32>(pixels + 8))),
+                int(x86::sreg32(app->getMemory<x86::reg32>(pixels + 12))));
     drawn.swap = s_swaps ? s_swaps : 1;
     drawn.x0 = x0;
     drawn.y0 = y0;
@@ -409,13 +465,21 @@ void hudEditorDraw(win32::WinApplication* app, x86::reg32 object, bool begin)
  * (tools/apply_hud_editor.py, sub_45a120's four clamps), so a line of text in
  * the middle of a box half the screen wide could never come near the edge.
  * Negative where the drawing spills out of the box: it stays on the screen
- * then.  0 for an element not measured, which leaves the game's own rule. */
+ * then.  0 for an element not measured, which leaves the game's own rule.
+ *
+ * What made this shake near the left edge was not the slack but what the game
+ * did underneath it: it re-decided every frame whether an element's text was
+ * centred in it or put against one of its edges, and near an edge a pixel of
+ * movement flipped the answer.  It does not any more -- an element's text is
+ * always centred in it (tools/apply_hud_editor.py) -- so what an element draws
+ * stands in the same place in its box wherever the box goes, which is what
+ * makes this measurement worth anything. */
 x86::sreg32 hudDragSlack(win32::WinApplication* app, x86::reg32 object, x86::reg32 side)
 {
     const x86::reg32 index = app->getMemory<x86::reg32>(object + 0x3c);
-    if (index >= 46 || !hudDrawnFresh(s_hudDrawn[index / 23][index % 23]))
+    if (index >= 46 || !hudDrawnFresh(s_hudDrawn[s_hudPlayer][index / 23][index % 23]))
         return 0;
-    const HudDrawn& measured = s_hudDrawn[index / 23][index % 23];
+    const HudDrawn& measured = s_hudDrawn[s_hudPlayer][index / 23][index % 23];
     switch (side)
     {
     case 0: return measured.x0 - measured.left;
@@ -446,9 +510,9 @@ void hudEditorFrame(win32::WinApplication* app, x86::reg32 object, bool drawn)
         return;
     }
     const x86::reg32 index = app->getMemory<x86::reg32>(object + 0x3c);
-    if (index >= 46 || !hudDrawnFresh(s_hudDrawn[index / 23][index % 23]))
+    if (index >= 46 || !hudDrawnFresh(s_hudDrawn[s_hudPlayer][index / 23][index % 23]))
         return;
-    const HudDrawn& measured = s_hudDrawn[index / 23][index % 23];
+    const HudDrawn& measured = s_hudDrawn[s_hudPlayer][index / 23][index % 23];
     s_object = object;
     s_left = app->getMemory<x86::reg16>(object + 6);
     s_top = app->getMemory<x86::reg16>(object + 8);
@@ -573,11 +637,20 @@ void hudLayoutsDrawn(win32::WinApplication* app, x86::CPU& cpu, bool drawn)
         app->getMemory<float>(at + 12) = float(right) / float(hudWidth);
     };
 
-    if (measurable && s_element < kElements && hudDrawnFresh(s_hudDrawn[player][s_element]))
+    s_hudPlayer = player < 2 ? player : 0;
+    /* Which of the player's two layouts is being edited -- the racer's or the
+     * cop's.  The test is handed the element's place within one of them, 0 to
+     * 22, while the item it belongs to names both: its index runs 0 to 45, the
+     * racer's elements and then the cop's, and the rectangle being tried is
+     * that item's own (object + 0x40).  An element measured in one layout says
+     * nothing about the other: they are different HUDs. */
+    const x86::reg32 named = app->getMemory<x86::reg32>(s_rect - 0x40 + 0x3c);
+    const x86::reg32 variant = named < 46 ? named / 23 : 0;
+    if (measurable && s_element < kElements && hudDrawnFresh(s_hudDrawn[player][variant][s_element]))
     {
         for (x86::reg32 edge = 0; edge < 4; ++edge)
             s_savedTried[edge] = app->getMemory<float>(s_rect + edge * 4);
-        const HudDrawn& measured = s_hudDrawn[player][s_element];
+        const HudDrawn& measured = s_hudDrawn[player][variant][s_element];
         const x86::reg32 object = s_rect - 0x40;
         const x86::sreg32 left = x86::sreg16(app->getMemory<x86::reg16>(object + 6));
         const x86::sreg32 top = x86::sreg16(app->getMemory<x86::reg16>(object + 8));
@@ -594,9 +667,10 @@ void hudLayoutsDrawn(win32::WinApplication* app, x86::CPU& cpu, bool drawn)
             const x86::reg32 rect = s_base + layout * 0x1a4 + element * 16;
             for (x86::reg32 edge = 0; edge < 4; ++edge)
                 s_saved[layout][element][edge] = app->getMemory<float>(rect + edge * 4);
-            if (measurable && element != s_element && hudDrawnFresh(s_hudDrawn[player][element]))
+            if (measurable && !(layout == variant && element == s_element)
+                && hudDrawnFresh(s_hudDrawn[player][layout][element]))
             {
-                const HudDrawn& measured = s_hudDrawn[player][element];
+                const HudDrawn& measured = s_hudDrawn[player][layout][element];
                 putFractions(rect, measured.x0, measured.y0, measured.x1, measured.y1);
             }
             else if (element == (layout ? 20u : 13u) && measurable)
@@ -630,6 +704,49 @@ void hudLayoutsDrawn(win32::WinApplication* app, x86::CPU& cpu, bool drawn)
                 app->getMemory<float>(rect + 12) = right - in;
             }
         }
+}
+
+/* A race's music, played from the track's own file rather than from a copy of
+ * it (tools/apply_music_stream.py).  The game copied the whole track -- 7 to 14
+ * MB -- into a file of its own at every race start and streamed from that; on a
+ * phone that is megabytes written to flash and seconds of loading for nothing.
+ *
+ * The name is the game's own.  sub_4107c0 spells the track out to open its index
+ * file -- the audio directory, the track, rock or tech, and ".map" or ".lin" --
+ * and then spells the copy's name over it for the stream.  The first is kept
+ * here as the game opens it, and put back in place of the second with ".mus"
+ * for its extension: the track beside its index.  It goes into the game's own
+ * buffer, which held that very name a moment ago and so has the room for it.
+ *
+ * Anything unexpected -- no name kept, or one with no extension to replace --
+ * leaves the game's own name alone, and the stream finds no file where the copy
+ * used to be: a race without music rather than a race with the wrong one. */
+static char s_musicIndex[256];
+
+void musicIndexOpened(win32::WinApplication* app, x86::reg32 path)
+{
+    s_musicIndex[0] = '\0';
+    for (size_t i = 0; i + 1 < sizeof(s_musicIndex); ++i)
+    {
+        const char letter = char(app->getMemory<x86::reg8>(path + x86::reg32(i)));
+        s_musicIndex[i] = letter;
+        s_musicIndex[i + 1] = '\0';
+        if (!letter)
+            return;
+    }
+    /* Longer than any name of the game's: keep none rather than half of one. */
+    s_musicIndex[0] = '\0';
+}
+
+void musicStreamFile(win32::WinApplication* app, x86::reg32 path)
+{
+    const size_t length = SDL_strlen(s_musicIndex);
+    if (length < 5 || s_musicIndex[length - 4] != '.')
+        return;
+    SDL_memcpy(s_musicIndex + length - 4, ".mus", 5);
+    for (size_t i = 0; i <= length; ++i)
+        app->getMemory<x86::reg8>(path + x86::reg32(i)) = x86::reg8(s_musicIndex[i]);
+    SDL_Log("[MUSIC] streaming %s", s_musicIndex);
 }
 }
 
@@ -744,6 +861,16 @@ void phoneTick(win32::WinApplication* app)
 void steeringTick(win32::WinApplication* app)
 {
     static int s_last = -1;
+    static x86::reg32 s_raced = 0;
+    /* Nothing to do where the on-screen controls are bound as the keyboard they
+     * are (NFS_TOUCH_DRIVE): the game sees keys steering the car and raises the
+     * flag itself, at the start of the race, where a replay raises it again. */
+    static const bool s_keys = []() {
+        const char* how = SDL_getenv("NFS_TOUCH_DRIVE");
+        return how && SDL_strcmp(how, "keys") == 0;
+    }();
+    if (s_keys)
+        return;
     if (!nfs3hp::raceIsRunning())
     {
         s_last = -1;
@@ -755,19 +882,112 @@ void steeringTick(win32::WinApplication* app)
     const x86::reg32 record = app->getMemory<x86::reg32>(car + 0x220);
     if (record < 0x6fd52c || record >= 0x6fd52c + 16 * 0x6c || (record - 0x6fd52c) % 0x6c)
         return;
-    const x86::reg32 digital = win32::Gamepad::touchSteering() ? 1 : 0;
+    /* A replay is the race driven again from what the game recorded of it, so
+     * the car is steered the way it was steered then: the flag keeps the value
+     * the race left it at rather than following a screen nobody is touching.
+     * ([0x6fd3a0] is 2 while a replay runs, as sub_4bcb00 sets it.) */
+    const bool replay = app->getMemory<x86::reg32>(0x6fd3a0) == 2;
+    const x86::reg32 digital = replay ? s_raced : x86::reg32(win32::Gamepad::touchSteering() ? 1 : 0);
+    if (!replay)
+        s_raced = digital;
     if (app->getMemory<x86::reg32>(record + 0x24) != digital)
         app->getMemory<x86::reg32>(record + 0x24) = digital;
     if (s_last != int(digital))
     {
-        SDL_Log("[STEERING] player %u: %s", unsigned((record - 0x6fd52c) / 0x6c),
-                digital ? "the game's keyboard steering (touch buttons)" : "analog (pad)");
+        SDL_Log("[STEERING] player %u: %s%s", unsigned((record - 0x6fd52c) / 0x6c),
+                digital ? "the game's keyboard steering (touch buttons)" : "analog (pad)",
+                replay ? ", as the replay was recorded" : "");
         s_last = int(digital);
     }
 }
 
 bool s_traceCarDetail = false;
 bool s_tracePointer = false;
+bool s_traceTicks = false;
+bool s_traceInput = false;
+
+/* NFS_INPUT_TRACE: what player one's car is being driven with and where it has
+ * got to, once every eight ticks of the game's clock -- the same eight a replay
+ * is recorded by.  A replay is the race run again from what was recorded of it,
+ * so a race and its replay should read the same here: the same numbers in the
+ * player's record at the same tick, and the car in the same place.  Where the
+ * two part company is what makes a replay a different drive, and which of the
+ * two columns parts company first says whether it is the input that differs or
+ * what the game does with it.  The record is the one at [car+0x220], six of its
+ * words from +0x1c: the gearbox, the steering as given, the flag that says
+ * whether the car turns towards it, the pedals.  The place is the car's own
+ * (+0x98), which is what the ghost recorder writes down too. */
+void traceInput(win32::WinApplication* app)
+{
+    static x86::reg32 s_step = ~x86::reg32(0);
+    if (!nfs3hp::raceIsRunning())
+    {
+        s_step = ~x86::reg32(0);
+        return;
+    }
+    const x86::reg32 step = app->getMemory<x86::reg32>(0x7d3684) >> 3;
+    if (step == s_step)
+        return;
+    s_step = step;
+    const x86::reg32 car = app->getMemory<x86::reg32>(0x678b54);
+    if (!car)
+        return;
+    const x86::reg32 record = app->getMemory<x86::reg32>(car + 0x220);
+    if (record < 0x6fd52c || record >= 0x6fd52c + 16 * 0x6c || (record - 0x6fd52c) % 0x6c)
+        return;
+    SDL_Log("[INPUT] step %u mode %u rec %08x %08x %08x %08x %08x %08x at %.1f %.1f %.1f",
+            unsigned(step), unsigned(app->getMemory<x86::reg32>(0x6fd3a0)),
+            unsigned(app->getMemory<x86::reg32>(record + 0x1c)),
+            unsigned(app->getMemory<x86::reg32>(record + 0x20)),
+            unsigned(app->getMemory<x86::reg32>(record + 0x24)),
+            unsigned(app->getMemory<x86::reg32>(record + 0x28)),
+            unsigned(app->getMemory<x86::reg32>(record + 0x2c)),
+            unsigned(app->getMemory<x86::reg32>(record + 0x30)),
+            double(app->getMemory<float>(car + 0x98)), double(app->getMemory<float>(car + 0x9c)),
+            double(app->getMemory<float>(car + 0xa0)));
+}
+
+/* NFS_TICK_TRACE: once a second, the game's own clock against real time and
+ * against the frames drawn.  [0x7d3684] is that clock -- zeroed as a race is
+ * set up (sub_4c4740) and read all over the game, the replay's recorder among
+ * them: sub_477c20 keeps one sample of a car for every eight of these, so how
+ * fast this counts is how finely a replay remembers a drive, and how fast a
+ * replay plays back.  What the trace says is ticks in the second, frames in the
+ * second, and the two divided: if the clock counts frames rather than time,
+ * that quotient sits at 1 and everything timed by it follows the frame rate. */
+struct TickTrace
+{
+    x86::reg32 clock = 0;
+    x86::reg32 swaps = 0;
+    Uint64     at = 0;
+};
+TickTrace s_ticks;
+
+void traceTicks(win32::WinApplication* app)
+{
+    const Uint64 now = SDL_GetTicks();
+    const x86::reg32 clock = app->getMemory<x86::reg32>(0x7d3684);
+    if (!s_ticks.at || clock < s_ticks.clock)
+    {
+        s_ticks.clock = clock;
+        s_ticks.swaps = nfs3hp::s_swaps;
+        s_ticks.at = now;
+        return;
+    }
+    const Uint64 span = now - s_ticks.at;
+    if (span < 1000)
+        return;
+    const x86::reg32 ticks = clock - s_ticks.clock;
+    const x86::reg32 frames = nfs3hp::s_swaps - s_ticks.swaps;
+    SDL_Log("[TICKS] %u in %llu ms (%.1f/s), %u frames (%.1f/s), %.2f ticks a frame, clock %u, mode %u",
+            unsigned(ticks), (unsigned long long)span, double(ticks) * 1000.0 / double(span),
+            unsigned(frames), double(frames) * 1000.0 / double(span),
+            frames ? double(ticks) / double(frames) : 0.0, unsigned(clock),
+            unsigned(app->getMemory<x86::reg32>(0x6fd3a0)));
+    s_ticks.clock = clock;
+    s_ticks.swaps = nfs3hp::s_swaps;
+    s_ticks.at = now;
+}
 
 /* A finger on the picture, or a real mouse, as the game's own pointer.
  *
@@ -800,12 +1020,19 @@ bool s_tracePointer = false;
  * back.  A mouse keeps working in a race, as it does in the original. */
 struct PointerInput
 {
-    int   source;   // kSourceTouch, kSourceMouse
+    int   source;   // kSourceTouch, kSourceMouse, kSourceTouchpad
     int   action;   // a finger: kTouchDown, kTouchMove, kTouchUp
-    float x, y;     // window pixels
-    int   buttons;  // a mouse: bit 0 left, 1 right, 2 middle
+    float x, y;     // window pixels; for the touchpad, how far the finger moved
+    int   buttons;  // a mouse: bit 0 left, 1 right, 2 middle; the touchpad: bit 0
 };
-const int kSourceTouch = 0, kSourceMouse = 1;
+/* The touchpad is the other way a finger can work the pointer, picked in the
+ * launcher (TouchpadPointer.java): the finger moves the cursor by as far as it
+ * slides, wherever it is on the screen, rather than putting it under itself --
+ * one pixel of the game's cursor for each pixel of the screen, the way it went
+ * when it reached the game as a relative mouse, before 0.74.  Its moves add up
+ * in the queue, and only the whole pixels go out; the rest waits for the next. */
+const int kSourceTouch = 0, kSourceMouse = 1, kSourceTouchpad = 2;
+float s_touchpadRestX, s_touchpadRestY;
 const int kTouchDown = 0, kTouchMove = 1, kTouchUp = 2;
 const int kPointerQueue = 32;
 
@@ -820,11 +1047,175 @@ x86::sreg32 clampAxis(x86::sreg32 value, x86::sreg32 low, x86::sreg32 high)
     return value < low ? low : (value > high ? high : value);
 }
 
-/* The player is driving: a race is up and its menu is not open over it
- * (sub_4bc680 keeps [0x7a3d10] set while it is). */
+/* The player is driving: a race is up, its menu is not open over it
+ * (sub_4bc680 keeps [0x7a3d10] set while it is), and what is on the screen is
+ * not a replay.  A replay is a race as far as the game is concerned -- the same
+ * loop, the same cars, the same HUD -- but nobody is driving: the player's
+ * hands are for the replay's own bar, which is worked with the pointer, and for
+ * the camera.  The game says which it is in [0x6fd3a0]: 0 a race, 1 split
+ * screen, 2 a replay, as sub_4bcb00 sets it while it plays one back. */
 bool playerDriving(win32::WinApplication* app)
 {
-    return nfs3hp::raceIsRunning() && app->getMemory<x86::reg32>(0x7a3d10) == 0;
+    return nfs3hp::raceIsRunning() && app->getMemory<x86::reg32>(0x7a3d10) == 0
+        && app->getMemory<x86::reg32>(0x6fd3a0) != 2;
+}
+
+bool guestNameIs(win32::WinApplication* app, x86::reg32 at, const char* name)
+{
+    for (x86::reg32 i = 0;; ++i)
+    {
+        const char c = char(app->getMemory<x86::reg8>(at + i));
+        if (c != name[i])
+            return false;
+        if (!c)
+            return true;
+    }
+}
+
+/* An item of the menu on the screen, by the codelink its menu file names it
+ * with, or 0.  The menu showing is the one at [0x559230], which the front end
+ * polls every frame (sub_44b230); its items are a run of the front end's own
+ * array -- 0xbc bytes each from 0x604ee0 -- that starts at the index in the
+ * menu's word at +0x18 and ends at an item whose type (+0) is 0.  That is how
+ * the game looks an item up itself (sub_442a40).  Of an item the port reads the
+ * flags at +4 (0x1301 keeps the game's own selection off it, sub_449f30), the
+ * place its menu file gave it at +6 and +8, in the 640x480 the menus are laid
+ * out in, and the codelink at +0x10 -- where the loader's table at 0x557c00
+ * puts x, y and codelink. */
+x86::reg32 menuItem(win32::WinApplication* app, const char* codelink)
+{
+    const x86::reg32 menu = app->getMemory<x86::reg32>(0x559230);
+    if (!menu)
+        return 0;
+    const x86::sreg32 first = x86::sreg16(app->getMemory<x86::reg16>(menu + 0x18));
+    if (first < 0)
+        return 0;
+    for (x86::reg32 i = x86::reg32(first); i < x86::reg32(first) + 256; ++i)
+    {
+        const x86::reg32 item = 0x604ee0 + i * 0xbc;
+        if (app->getMemory<x86::reg32>(item) == 0)
+            break;
+        const x86::reg32 name = app->getMemory<x86::reg32>(item + 0x10);
+        if (name && guestNameIs(app, name, codelink))
+            return item;
+    }
+    return 0;
+}
+
+/* The player's name on the main menu looks like the field it is typed into,
+ * but it is a line of text beside the Player Name tab: a [text] item,
+ * SHOW_PLAYERNAME1, next to the [button] SET_PLAYERNAME1 (MAIN.MNU, and the
+ * same pair for player two on the split screen's and the records' screens).
+ * The game takes no click on text, so a finger that lands on the name presses
+ * the tab beside it instead, and the game opens its name box as it does for
+ * the tab -- and with the box comes the phone's keyboard (textEntryTick).
+ *
+ * The name's line runs from where the text starts to past the ten letters a
+ * name can have (sub_45cef0 allows ten), and is as tall as the row of tabs it
+ * sits in, which stand 35 apart; the tab is pressed a little way in from its
+ * corner.  Where the name stands, the menu files also put the opponent choice
+ * and the assists line, but those are the ones shown when the name is not; the
+ * tab being one the game would let the player choose says which it is.  No
+ * other box may be up already. */
+bool nameTapTarget(win32::WinApplication* app, x86::sreg32 x, x86::sreg32 y,
+                   x86::sreg32& tabX, x86::sreg32& tabY)
+{
+    if (nfs3hp::raceIsRunning() || app->getMemory<x86::reg8>(0x558b10) != 0)
+        return false;
+    static const char* const kTabs[] = { "SET_PLAYERNAME1", "SET_PLAYERNAME2" };
+    static const char* const kNames[] = { "SHOW_PLAYERNAME1", "SHOW_PLAYERNAME2" };
+    for (int player = 0; player < 2; ++player)
+    {
+        const x86::reg32 tab = menuItem(app, kTabs[player]);
+        const x86::reg32 name = menuItem(app, kNames[player]);
+        if (!tab || !name || (app->getMemory<x86::reg16>(tab + 4) & 0x1301))
+            continue;
+        const x86::sreg32 atX = x86::sreg16(app->getMemory<x86::reg16>(tab + 6));
+        const x86::sreg32 atY = x86::sreg16(app->getMemory<x86::reg16>(tab + 8));
+        const x86::sreg32 nameX = x86::sreg16(app->getMemory<x86::reg16>(name + 6));
+        if (x >= nameX - 8 && x < nameX + 200 && y >= atY - 2 && y < atY + 32)
+        {
+            tabX = atX + 24;
+            tabY = atY + 12;
+            return true;
+        }
+    }
+    return false;
+}
+
+/* A finger that went down on a player's name, and the tab it presses instead,
+ * until the finger comes up. */
+bool        s_nameTab;
+x86::sreg32 s_nameTabX, s_nameTabY;
+
+/* NFS3Activity's say in something, by the name of its method taking a boolean;
+ * from the game thread, which SDL has attached to the VM.  False while there
+ * is no activity to tell yet. */
+bool tellActivity(const char* method, bool value)
+{
+#ifdef __ANDROID__
+    JNIEnv* env = static_cast<JNIEnv*>(SDL_GetAndroidJNIEnv());
+    jobject activity = static_cast<jobject>(SDL_GetAndroidActivity());
+    if (!env || !activity)
+        return false;
+    jclass cls = env->GetObjectClass(activity);
+    jmethodID id = env->GetMethodID(cls, method, "(Z)V");
+    if (id)
+        env->CallVoidMethod(activity, id, jboolean(value ? JNI_TRUE : JNI_FALSE));
+    if (env->ExceptionCheck())
+        env->ExceptionClear();
+    env->DeleteLocalRef(cls);
+    env->DeleteLocalRef(activity);
+#else
+    (void)method;
+    (void)value;
+#endif
+    return true;
+}
+
+bool frontEndTakingText(win32::WinApplication* app);
+
+/* The line the game's name box types into, in the 640x480 its menus are laid
+ * out in, as sub_444350 draws its frame.  The box itself is four floats at
+ * 0x661050 -- top, left, bottom, right -- that sub_444c20 fits around its text
+ * as it opens it; the line is centred across it, as wide as [0x661070] (the
+ * widest letter times the letters a name can have, and the cursor, 240 at
+ * most), and 20 tall from one above the text, which sits 90 above the box's
+ * bottom (the -30 and -60 at 0x538b08).  A finger is no cursor, so the line
+ * reaches a little way beyond itself -- short of the prompt above it and of
+ * Ok and Cancel below. */
+bool textFieldRect(win32::WinApplication* app, x86::sreg32& left, x86::sreg32& top,
+                   x86::sreg32& right, x86::sreg32& bottom)
+{
+    const float boxLeft = app->getMemory<float>(0x661054), boxRight = app->getMemory<float>(0x66105c);
+    const float boxBottom = app->getMemory<float>(0x661058);
+    const x86::sreg32 width = x86::sreg32(app->getMemory<x86::reg32>(0x661070));
+    if (!(boxRight > boxLeft) || width <= 0 || width > 640)
+        return false;
+    left = x86::sreg32(boxLeft) + (x86::sreg32(boxRight - boxLeft) - width) / 2;
+    right = left + width;
+    top = x86::sreg32(boxBottom - 90) - 1;
+    bottom = top + 20;
+    return true;
+}
+
+bool inTextField(win32::WinApplication* app, x86::sreg32 x, x86::sreg32 y)
+{
+    x86::sreg32 left, top, right, bottom;
+    return textFieldRect(app, left, top, right, bottom)
+        && x >= left - 10 && x <= right + 10 && y >= top - 10 && y <= bottom + 10;
+}
+
+/* A press on the picture while the name box is up: on its line the phone's
+ * keyboard comes up, anywhere else it goes away (NFS3Activity.onTextFieldTap).
+ * The press goes on to the game either way. */
+void textFieldPress(win32::WinApplication* app, x86::sreg32 x, x86::sreg32 y)
+{
+    if (!frontEndTakingText(app))
+        return;
+    const bool inside = inTextField(app, x, y);
+    SDL_Log("[TEXT] press at %d,%d %s the name's line", int(x), int(y), inside ? "on" : "off");
+    tellActivity("onTextFieldTap", inside);
 }
 
 void pointerTick(win32::WinApplication* app)
@@ -837,6 +1228,8 @@ void pointerTick(win32::WinApplication* app)
         win32::Mouse::pressPointer(0, false);
         s_touchHeld = false;
     }
+    if (driving)
+        s_nameTab = false;
     SDL_LockMutex(s_touchMutex);
     const int count = s_pointerCount;
     PointerInput inputs[kPointerQueue];
@@ -872,13 +1265,58 @@ void pointerTick(win32::WinApplication* app)
     for (; taken < count; ++taken)
     {
         const PointerInput& input = inputs[taken];
+        if (input.source == kSourceTouchpad)
+        {
+            if (driving)
+                continue;
+            s_touchpadRestX += input.x;
+            s_touchpadRestY += input.y;
+            const x86::sreg32 moveX = x86::sreg32(s_touchpadRestX), moveY = x86::sreg32(s_touchpadRestY);
+            s_touchpadRestX -= float(moveX);
+            s_touchpadRestY -= float(moveY);
+            const x86::sreg32 toX = clampAxis(atX + moveX, lowX, highX), toY = clampAxis(atY + moveY, lowY, highY);
+            win32::Mouse::movePointer(toX - atX, toY - atY);
+            atX = toX;
+            atY = toY;
+            const bool down = (input.buttons & 1) != 0;
+            if (s_tracePointer)
+                SDL_Log("[POINTER] touchpad %+.0f,%+.0f button %s -> cursor %d,%d of %dx%d", input.x, input.y,
+                        down ? "down" : "up", int(toX), int(toY), int(highX), int(highY));
+            if (down && !s_touchHeld)
+            {
+                textFieldPress(app, toX, toY);
+                win32::Mouse::pressPointer(0, true);
+                s_touchHeld = true;
+                ++taken;
+                break;  // as for a finger: the release waits for the next frame
+            }
+            if (!down && s_touchHeld)
+            {
+                win32::Mouse::pressPointer(0, false);
+                s_touchHeld = false;
+            }
+            continue;
+        }
         const bool touch = input.source == kSourceTouch;
         if (touch && driving)
             continue;
-        const x86::sreg32 toX = clampAxis(
+        x86::sreg32 toX = clampAxis(
             lowX + x86::sreg32(SDL_lround(double(input.x - rectX) * double(highX - lowX) / double(rectW))), lowX, highX);
-        const x86::sreg32 toY = clampAxis(
+        x86::sreg32 toY = clampAxis(
             lowY + x86::sreg32(SDL_lround(double(input.y - rectY) * double(highY - lowY) / double(rectH))), lowY, highY);
+        if (touch && input.action == kTouchDown && !s_touchHeld)
+        {
+            textFieldPress(app, toX, toY);
+            s_nameTab = nameTapTarget(app, toX, toY, s_nameTabX, s_nameTabY);
+            if (s_nameTab)
+                SDL_Log("[POINTER] finger on the player's name at %d,%d: the Player Name tab is pressed at %d,%d",
+                        int(toX), int(toY), int(s_nameTabX), int(s_nameTabY));
+        }
+        if (touch && s_nameTab)
+        {
+            toX = s_nameTabX;
+            toY = s_nameTabY;
+        }
         win32::Mouse::movePointer(toX - atX, toY - atY);
         atX = toX;
         atY = toY;
@@ -906,6 +1344,8 @@ void pointerTick(win32::WinApplication* app)
                 win32::Mouse::pressPointer(0, false);
                 s_touchHeld = false;
             }
+            if (input.action == kTouchUp)
+                s_nameTab = false;
             continue;
         }
         bool pressed = false;
@@ -943,7 +1383,19 @@ void queuePointer(const PointerInput& input)
     if (!s_touchMutex)
         return;
     SDL_LockMutex(s_touchMutex);
-    if (s_pointerCount > 0)
+    if (input.source == kSourceTouchpad && s_pointerCount > 0)
+    {
+        /* The touchpad counts how far, so its moves add up instead. */
+        PointerInput& last = s_pointerQueue[s_pointerCount - 1];
+        if (last.source == kSourceTouchpad && last.buttons == input.buttons)
+        {
+            last.x += input.x;
+            last.y += input.y;
+            SDL_UnlockMutex(s_touchMutex);
+            return;
+        }
+    }
+    else if (s_pointerCount > 0)
     {
         const PointerInput& last = s_pointerQueue[s_pointerCount - 1];
         const bool move = input.source == kSourceTouch ? input.action == kTouchMove : true;
@@ -963,6 +1415,19 @@ void queueScreenTouch(int action, float x, float y)
     input.action = action;
     input.x = x;
     input.y = y;
+    queuePointer(input);
+}
+
+/* How far the finger slid on the touchpad, in window pixels, and whether it
+ * holds the button. */
+void queueTouchpad(float dx, float dy, int buttons)
+{
+    PointerInput input = {};
+    input.source = kSourceTouchpad;
+    input.action = kTouchMove;
+    input.x = dx;
+    input.y = dy;
+    input.buttons = buttons & 1;
     queuePointer(input);
 }
 
@@ -1092,6 +1557,11 @@ void layoutTick(win32::WinApplication* app)
 {
     static int last = -1;
     const bool driving = playerDriving(app);
+    /* The pads follow the same signal as the on-screen controls: their buttons
+     * are the racing ones while a race is being driven, and the menu's -- one
+     * to confirm, one to go back, the D-pad to move -- everywhere else, a
+     * replay included. */
+    win32::Gamepad::context(driving ? win32::Gamepad::Context::Race : win32::Gamepad::Context::Menu);
     if (last == int(driving))
         return;
 #ifdef __ANDROID__
@@ -1111,6 +1581,114 @@ void layoutTick(win32::WinApplication* app)
     SDL_Log("[LAYOUT] %s, screen %ux%u", driving ? "race" : "menu",
             unsigned(app->getMemory<x86::reg32>(0x7cdae0)), unsigned(app->getMemory<x86::reg32>(0x7cdae4)));
     last = int(driving);
+}
+
+/* Which of the racing layout's buttons player one's car has any use for: the
+ * gears only with a manual gearbox, the spike strip only in a police car.  The
+ * car is the one the game's first view follows (sub_422bd0: [[0x5e10b0]+8]).
+ * Its gearbox is its player's record's at +0x1c -- 1 automatic, 0 manual, the
+ * car screen's Transmission list ("trans", 0x5561da) as kept for player one at
+ * [0x6fd2d4], copied into the record for the race (0x49ad7c) and read by the
+ * car when it shifts (0x43149a).  A police car carries bit 0x20 of its flags
+ * byte at +0x200: the bit the game tells the siren from the horn by (0x43154e)
+ * and picks the pause screen by (0x44d4fb). */
+void raceControlsTick(win32::WinApplication* app)
+{
+    static int s_last = -1;
+    if (!nfs3hp::raceIsRunning())
+    {
+        s_last = -1;
+        return;
+    }
+    const x86::reg32 view = app->getMemory<x86::reg32>(0x5e10b0);
+    const x86::reg32 car = view ? x86::reg32(app->getMemory<x86::reg32>(view + 8)) : 0;
+    if (!car)
+        return;
+    const x86::reg32 record = app->getMemory<x86::reg32>(car + 0x220);
+    if (record < 0x6fd52c || record >= 0x6fd52c + 16 * 0x6c || (record - 0x6fd52c) % 0x6c)
+        return;
+    const bool gears = app->getMemory<x86::reg32>(record + 0x1c) != 1;
+    const bool spikes = (app->getMemory<x86::reg8>(car + 0x200) & 0x20) != 0;
+    const int state = int(gears) | int(spikes) << 1;
+    if (state == s_last)
+        return;
+#ifdef __ANDROID__
+    JNIEnv* env = static_cast<JNIEnv*>(SDL_GetAndroidJNIEnv());
+    jobject activity = static_cast<jobject>(SDL_GetAndroidActivity());
+    if (!env || !activity)
+        return;  // asked again next frame
+    jclass cls = env->GetObjectClass(activity);
+    jmethodID method = env->GetMethodID(cls, "onRaceControls", "(ZZ)V");
+    if (method)
+        env->CallVoidMethod(activity, method, jboolean(gears ? JNI_TRUE : JNI_FALSE),
+                            jboolean(spikes ? JNI_TRUE : JNI_FALSE));
+    if (env->ExceptionCheck())
+        env->ExceptionClear();
+    env->DeleteLocalRef(cls);
+    env->DeleteLocalRef(activity);
+#endif
+    SDL_Log("[CONTROLS] gears %s, spike strip %s", gears ? "shown (manual)" : "hidden (automatic)",
+            spikes ? "shown (police car)" : "hidden");
+    s_last = state;
+}
+
+/* The phone's keyboard, raised by the game rather than by a button.
+ *
+ * The game puts up a little box to take a name -- a line of text with Ok and
+ * Cancel -- and nothing in it takes focus: on a keyboard you simply type.  So
+ * the box itself is the signal that typing is wanted, and where the keyboard
+ * comes up from is the player's hands: from a pad at once, from a finger with
+ * a tap on the line the box keeps (textFieldPress), never beside a real
+ * keyboard (NFS3Activity).  Whichever way, the keyboard goes when the box
+ * does, and a race lowers it whatever else is true -- nothing types while
+ * driving, and a keyboard left up over one would be a keyboard nobody could
+ * put away.  The car screen's own box (tools/apply_text_entry.py) counts as
+ * typing too.
+ *
+ * Android is asked on its own thread, which is where SDL's text input has to be
+ * started and stopped from (nativeToggleKeyboard). */
+/* Whether the front end has its string box up -- "Please enter your name", a
+ * line to type in and Ok and Cancel under it.
+ *
+ * Every screen that asks for a string asks through one function, sub_444c20:
+ * it is handed the buffer, how long a string may be and what to call
+ * afterwards, and it puts the box up.  What it sets is what this reads: a byte
+ * at [0x558b10] that says a box of some kind is up, and [0x558b14] for which
+ * kind -- 2 and 4 are the boxes that only ask a question, 3 is the one that
+ * takes typing.  So the answer holds wherever the box was opened from: the
+ * player's name in the race setup, the same name on the car screen, anything
+ * else that asks for a word.  The items themselves were the wrong place to look
+ * -- each screen hands its own handler out, and the first two the port watched
+ * were the car screen's, which a player who renames themselves from the main
+ * menu never touches. */
+bool frontEndTakingText(win32::WinApplication* app)
+{
+    return app->getMemory<x86::reg8>(0x558b10) != 0
+        && app->getMemory<x86::reg32>(0x558b14) == 3;
+}
+
+void textEntryTick(win32::WinApplication* app)
+{
+    static int last = -1;
+    const bool racing = nfs3hp::raceIsRunning();
+    const int typing = !racing && (nfs3hp::takingText() || frontEndTakingText(app)) ? 1 : 0;
+    if (typing == last)
+        return;
+    last = typing;
+    /* Whether the keyboard comes up now is NFS3Activity's to say, by what the
+     * box was opened with: at once from a pad, otherwise with a tap on the
+     * line (textFieldPress). */
+    if (!tellActivity("onTextEntry", typing != 0))
+    {
+        last = -1;  // asked again next frame
+        return;
+    }
+    x86::sreg32 left, top, right, bottom;
+    if (typing && frontEndTakingText(app) && textFieldRect(app, left, top, right, bottom))
+        SDL_Log("[TEXT] a name is asked for; its line runs %d..%d across, %d..%d down",
+                int(left), int(right), int(top), int(bottom));
+    else
+        SDL_Log("[TEXT] %s", typing ? "a name is asked for" : "typing over: keyboard down");
 }
 
 /* Whether the pads' keys would drive somebody else's car.  A pad's buttons send
@@ -1146,9 +1724,9 @@ void padKeysTick(win32::WinApplication* app)
 }
 
 /* Every buffer swap: the finger and the mouse on the picture, which layout the
- * controls should be showing, whether the pads' keys go out, the phone's
- * cornering, how the touch buttons steer, and the car detail trace when asked
- * for (NFS_CAR_DETAIL_TRACE). */
+ * controls should be showing and which of the race's buttons, whether the pads'
+ * keys go out, the phone's cornering, how the touch buttons steer, and the car
+ * detail trace when asked for (NFS_CAR_DETAIL_TRACE). */
 void onSwap(win32::WinApplication* app)
 {
     ++nfs3hp::s_swaps;
@@ -1157,11 +1735,17 @@ void onSwap(win32::WinApplication* app)
 #endif
     pointerTick(app);
     layoutTick(app);
+    raceControlsTick(app);
+    textEntryTick(app);
     padKeysTick(app);
     phoneTick(app);
     steeringTick(app);
     if (s_traceCarDetail)
         traceCarDetail(app);
+    if (s_traceTicks)
+        traceTicks(app);
+    if (s_traceInput)
+        traceInput(app);
 }
 }
 
@@ -1325,6 +1909,10 @@ int main(int argc, char* argv[])
         s_traceCarDetail = detailTrace && *detailTrace && *detailTrace != '0';
         const char* pointerTrace = SDL_getenv("NFS_POINTER_TRACE");
         s_tracePointer = pointerTrace && *pointerTrace && *pointerTrace != '0';
+        const char* tickTrace = SDL_getenv("NFS_TICK_TRACE");
+        s_traceTicks = tickTrace && *tickTrace && *tickTrace != '0';
+        const char* inputTrace = SDL_getenv("NFS_INPUT_TRACE");
+        s_traceInput = inputTrace && *inputTrace && *inputTrace != '0';
         s_touchMutex = SDL_CreateMutex();
 #ifndef __ANDROID__
         loadTouchScript();
@@ -1449,6 +2037,14 @@ extern "C" JNIEXPORT void JNICALL
 Java_dev_nfs3hp_port_NFS3Activity_nativeScreenTouch(JNIEnv*, jclass, jint action, jfloat x, jfloat y)
 {
     queueScreenTouch(int(action), float(x), float(y));
+}
+/* A finger on the touchpad (TouchpadPointer.java): how far it slid, in window
+ * pixels, and whether it holds the button, bit 0.  Called on the Android UI
+ * thread. */
+extern "C" JNIEXPORT void JNICALL
+Java_dev_nfs3hp_port_NFS3Activity_nativeTouchpad(JNIEnv*, jclass, jfloat dx, jfloat dy, jint buttons)
+{
+    queueTouchpad(float(dx), float(dy), int(buttons));
 }
 /* A real mouse, or a touchpad Android drives as one: where its pointer is, in
  * window pixels, and which buttons are down -- bit 0 left, 1 right, 2 middle.

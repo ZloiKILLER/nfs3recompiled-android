@@ -36,10 +36,17 @@ public:
      * recomputed by present() only when the window's pixel size actually
      * changes (see m_lastWindowW/H).  Touch input needs exactly this rect to
      * map a tap's window coordinates back into game framebuffer coordinates,
-     * so it is exposed here rather than kept private to present(). */
+     * so it is exposed here rather than kept private to present().
+     *
+     * Counted from the top of the window, the way a finger is reported, and
+     * not from the bottom, the way OpenGL wants its viewport.  The two agree
+     * while the letterbox is even, which is why they went unremarked -- until
+     * the keyboard raised the picture and the finger, mapped through a
+     * rectangle that had moved the other way, pressed twice as far above
+     * itself as the picture had risen. */
     void getViewportRect(int& x, int& y, int& w, int& h) const
     {
-        x = m_vpX; y = m_vpY + m_keyboardShift; w = m_vpW; h = m_vpH;
+        x = m_vpX; y = m_lastWindowH - (m_vpY + m_keyboardShift + m_vpH); w = m_vpW; h = m_vpH;
     }
 
 private: // friend class GlideRenderer

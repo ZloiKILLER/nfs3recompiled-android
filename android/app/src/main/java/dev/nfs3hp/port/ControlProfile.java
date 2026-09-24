@@ -1,5 +1,7 @@
 package dev.nfs3hp.port;
 
+import android.content.SharedPreferences;
+
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
@@ -30,7 +32,11 @@ import java.util.Locale;
  */
 final class ControlProfile
 {
-    enum Kind { GAMEPADS, KEYBOARD }
+    /** GAMEPADS: the pads drive, steering and pedals on their axes, and the
+     *  on-screen controls reach those axes through the port.  TOUCH: the
+     *  on-screen controls drive, as the keyboard they really are.  KEYBOARD:
+     *  the game's own defaults, for a player who wants them. */
+    enum Kind { GAMEPADS, TOUCH, KEYBOARD }
 
     /** There is no settings file to write into: the game creates it the first
      *  time it runs. */
@@ -161,9 +167,77 @@ final class ControlProfile
         return table;
     }
 
+    /** What the on-screen controls steer and work the pedals with when they are
+     *  what drives: the four keys they send, as the player set them in
+     *  Controls -> Touch -> Keys, in the order the tables want them. */
+    static Key[] touchDriving(SharedPreferences preferences)
+    {
+        return new Key[] {
+            touchDrivingKey(preferences, "steer_right", RIGHT),
+            touchDrivingKey(preferences, "steer_left", LEFT),
+            touchDrivingKey(preferences, "accelerate", UP),
+            touchDrivingKey(preferences, "brake", DOWN),
+        };
+    }
+
+    private static Key touchDrivingKey(SharedPreferences preferences, String action, Key fallback)
+    {
+        Key key = androidKey(GamePreferences.getTouchKey(preferences, action));
+        return key == null ? fallback : key;
+    }
+
+    /* The launcher keeps a control's key as Android names it; a table keeps the
+     * scan code the game knows.  Only the keys the launcher offers appear here
+     * (GamePreferences.KEY_VALUES); Enter and Escape are not among them,
+     * because the game gives neither to a car. */
+    private static Key androidKey(int code)
+    {
+        switch (code)
+        {
+        case android.view.KeyEvent.KEYCODE_DPAD_UP: return UP;
+        case android.view.KeyEvent.KEYCODE_DPAD_DOWN: return DOWN;
+        case android.view.KeyEvent.KEYCODE_DPAD_LEFT: return LEFT;
+        case android.view.KeyEvent.KEYCODE_DPAD_RIGHT: return RIGHT;
+        case android.view.KeyEvent.KEYCODE_SPACE: return SPACE;
+        case android.view.KeyEvent.KEYCODE_A: return A;
+        case android.view.KeyEvent.KEYCODE_B: return B;
+        case android.view.KeyEvent.KEYCODE_C: return C;
+        case android.view.KeyEvent.KEYCODE_H: return H;
+        case android.view.KeyEvent.KEYCODE_L: return L;
+        case android.view.KeyEvent.KEYCODE_R: return R;
+        case android.view.KeyEvent.KEYCODE_S: return S;
+        case android.view.KeyEvent.KEYCODE_Z: return Z;
+        default: return null;
+        }
+    }
+
     /** The three tables of a set, as the four-byte records the file holds. */
     static int[][] tables(Kind kind)
     {
+        return tables(kind, new Key[] { RIGHT, LEFT, UP, DOWN });
+    }
+
+    static int[][] tables(Kind kind, Key[] touchDriving)
+    {
+        if (kind == Kind.TOUCH)
+        {
+            /* The on-screen controls as the keyboard they are: the four that
+             * drive are bound to the keys those buttons send, so the game
+             * steers them the way it steers a keyboard -- turning towards the
+             * lock rather than snapping to it -- because it can see that is
+             * what they are.  Nothing needs telling it afterwards, and a race
+             * driven on them is a race the game can replay, which one driven
+             * through a pad's axes by a port holding a flag up is not.  The
+             * nine that are not driving stay the player's keys, which the
+             * buttons send as they are.  Split screen's second player keeps
+             * the second pad: two players on one screen means a pad. */
+            int[] one = gamepadTable(0, 0);
+            one[STEER_RIGHT] = touchDriving[0].record();
+            one[STEER_LEFT] = touchDriving[1].record();
+            one[ACCELERATE] = touchDriving[2].record();
+            one[BRAKE] = touchDriving[3].record();
+            return new int[][] { one, one.clone(), gamepadTable(1, 1) };
+        }
         if (kind == Kind.GAMEPADS)
         {
             /* Split screen player one is exactly the one-player set, so the
@@ -178,10 +252,15 @@ final class ControlProfile
         };
     }
 
-    /** Which of the two sets the game's settings file holds: null for any other
+    /** Which of the sets the game's settings file holds: null for any other
      *  bindings -- the player's own, made in the game's Controls screen -- and
      *  for no settings file at all. */
     static Kind installedKind(File dataRoot)
+    {
+        return installedKind(dataRoot, new Key[] { RIGHT, LEFT, UP, DOWN });
+    }
+
+    static Kind installedKind(File dataRoot, Key[] touchDriving)
     {
         try
         {
@@ -194,7 +273,7 @@ final class ControlProfile
             ByteBuffer buffer = ByteBuffer.wrap(config).order(ByteOrder.LITTLE_ENDIAN);
             for (Kind kind : Kind.values())
             {
-                int[][] tables = tables(kind);
+                int[][] tables = tables(kind, touchDriving);
                 boolean same = true;
                 for (int table = 0; table < TABLES.length && same; ++table)
                     for (int function = 0; function < FUNCTIONS && same; ++function)
@@ -219,6 +298,11 @@ final class ControlProfile
     /** Writes the set into a settings file held in memory. */
     static void apply(byte[] config, Kind kind)
     {
+        apply(config, kind, new Key[] { RIGHT, LEFT, UP, DOWN });
+    }
+
+    static void apply(byte[] config, Kind kind, Key[] touchDriving)
+    {
         if (!isSettingsFile(config))
             throw new IllegalArgumentException("not a config.dat");
         ByteBuffer buffer = ByteBuffer.wrap(config).order(ByteOrder.LITTLE_ENDIAN);
@@ -226,7 +310,7 @@ final class ControlProfile
             describeSlot(buffer, slot);
         buffer.putInt(DEVICE_COUNT, GamepadSlots.COUNT);
         buffer.putInt(FORCE_FEEDBACK_DEVICES, GamepadSlots.COUNT);
-        int[][] tables = tables(kind);
+        int[][] tables = tables(kind, touchDriving);
         for (int table = 0; table < TABLES.length; ++table)
             for (int function = 0; function < FUNCTIONS; ++function)
                 buffer.putInt(TABLES[table] + 4 * function, tables[table][function]);
@@ -273,6 +357,11 @@ final class ControlProfile
      *  backup taken of the file first. */
     static String writeToGame(File dataRoot, Kind kind) throws IOException
     {
+        return writeToGame(dataRoot, kind, new Key[] { RIGHT, LEFT, UP, DOWN });
+    }
+
+    static String writeToGame(File dataRoot, Kind kind, Key[] touchDriving) throws IOException
+    {
         File file = settingsFile(dataRoot);
         if (file == null)
             throw new NoSettingsException();
@@ -280,9 +369,37 @@ final class ControlProfile
         if (!isSettingsFile(config))
             throw new NoSettingsException();
         String backup = backup(dataRoot, config);
-        apply(config, kind);
+        apply(config, kind, touchDriving);
         replace(file, config);
         return backup;
+    }
+
+    /** The set that belongs in the settings file for how the player is about to
+     *  drive, written there if it is not what the file already holds.  A pad
+     *  assigned to player one steers on its axes (GAMEPADS); with no pad, the
+     *  on-screen controls drive as the keyboard they are (TOUCH), which is what
+     *  lets the game record and replay a race driven on them.  Settings the
+     *  player made themselves, in the game's own Controls screen, are not one of
+     *  the sets and are left exactly as they are.  Returns the set in force. */
+    static Kind driveWith(File dataRoot, SharedPreferences preferences, boolean padForPlayerOne)
+    {
+        Key[] touchDriving = touchDriving(preferences);
+        Kind installed = installedKind(dataRoot, touchDriving);
+        if (installed == null || installed == Kind.KEYBOARD)
+            return installed;
+        Kind wanted = padForPlayerOne ? Kind.GAMEPADS : Kind.TOUCH;
+        if (installed == wanted)
+            return wanted;
+        try
+        {
+            writeToGame(dataRoot, wanted, touchDriving);
+        }
+        catch (IOException couldNotWrite)
+        {
+            android.util.Log.w("ControlProfile", "Could not set the controls up for this race", couldNotWrite);
+            return installed;
+        }
+        return wanted;
     }
 
     /* View Distance, Full to Close as 0 to 3 ([0x6fbc28] in the game). */
@@ -295,9 +412,10 @@ final class ControlProfile
 
     /** What a freshly imported game starts with: the gamepad set, which is what
      *  the pads and the on-screen controls send, View Distance at Full, the
-     *  whole track out to the horizon, and a 1280x720 screen for races, which
+     *  whole track out to the horizon, a 1280x720 screen for races, which
      *  any phone draws smoothly -- a player after more picks it in the game's
-     *  Graphics menu.  Written once, as the last step of an
+     *  Graphics menu -- a HUD arranged for a phone (hudDefaults) and the cop's
+     *  map as a minimap in split screen too (copMinimap).  Written once, as the last step of an
      *  import, into the settings file that came with the data -- and never
      *  again: from then on the file is the player's, whatever they change in
      *  the game or write from the Controls screen.  Last, because the game
@@ -316,7 +434,182 @@ final class ControlProfile
         ByteBuffer buffer = ByteBuffer.wrap(config).order(ByteOrder.LITTLE_ENDIAN);
         buffer.putInt(VIEW_DISTANCE, 0);
         buffer.putInt(SCREEN_WIDTH, IMPORT_SCREEN_WIDTH);
+        hudDefaults(config);
+        copMinimap(config);
         replace(file, config);
+        // Done as part of the import: the launcher's one-off pass leaves it be.
+        File done = new File(file.getParentFile(), COP_MINIMAP_DONE);
+        if (!done.exists() && !done.createNewFile())
+            android.util.Log.w("ControlProfile", "Could not mark the cop's minimap as done");
+    }
+
+    /* The HUD layouts in the settings file: from 0x6fbc50 in the game, a slot
+     * for one player and one for each of split screen's two, HUD_SLOT apart,
+     * each holding a racer's layout and then a cop's, HUD_LAYOUT apart.  In a
+     * layout: the map's scale (float), its mode, the 23 elements from
+     * HUD_ELEMENTS (top, left, bottom, right as fractions of the screen), and
+     * after them the small map's place. */
+    private static final int HUD_LAYOUTS = 0x6fbc50 - 0x6fbb40;
+    private static final int HUD_SLOT = 0x348, HUD_LAYOUT = 0x1a4;
+    private static final int HUD_MAP_SCALE = 0x10, HUD_MAP_MODE = 0x20, HUD_ELEMENTS = 0x24, HUD_SMALL_MAP = 0x194;
+    private static final int COP_MAP = 22;
+    /* The Map list in the game's HUD menu, as kept: 0 off, 1 rotating, 2 stationary. */
+    private static final int MAP_ROTATING = 1, MAP_STATIONARY = 2;
+    /* Beside config.dat once the cop's map has been set up, so it happens once. */
+    private static final String COP_MINIMAP_DONE = ".port-cop-minimap";
+
+    /* The HUD an import hands the player, arranged on a phone in the game's own
+     * HUD screen.  The game's arrangement is a 640x480 monitor's: the standings
+     * and the map lie along the bottom, where a phone's thumbs and the
+     * on-screen controls are, and the cop's map covers the road entirely.  Here
+     * the standings and the map move to the top corners, the cone stats sit
+     * under the standings, the cop's table of speeders is a block on the left
+     * and both maps are corner minimaps.  The Modern Patch likewise ships a HUD
+     * of its own rather than the game's.  Only the single player's two layouts
+     * are set; split screen keeps the game's, with its cop map brought into the
+     * corner by copMinimap.
+     *
+     * A row is one element's top, left, bottom and right as fractions of the
+     * screen, in the game's own order -- gamedata/dashhud/def.pos names them and
+     * holds the arrangement these started from.  A row of zeroes is an element
+     * the layout does not show: the cop has no standings, the racer no radar. */
+    private static final float[] RACER_HUD = {
+        0.0080f, 0.1370f, 0.0600f, 0.3420f, /* DigitalSpeedometer */
+        0.0021f, 0.2141f, 0.1521f, 0.3297f, /* AnalogSpeedometer */
+        0.0042f, 0.6500f, 0.1000f, 0.8406f, /* DigitalTachometer */
+        0.0000f, 0.6672f, 0.1500f, 0.7813f, /* AnalogTachometer */
+        0.0463f, -0.0234f, 0.0870f, 0.1214f, /* LapCounter */
+        0.0065f, -0.0250f, 0.0444f, 0.1042f, /* Time */
+        0.1970f, 0.4625f, 0.2970f, 0.5375f, /* TutorIcon */
+        0.3056f, -0.0516f, 0.3796f, 0.2432f, /* ConeStats */
+        0.9100f, 0.3500f, 0.9900f, 0.6500f, /* ReplayHUD */
+        0.0100f, 0.3500f, 0.1430f, 0.6500f, /* RearView */
+        0.0454f, 0.9187f, 0.0833f, 1.0589f, /* Position */
+        0.0056f, 0.8859f, 0.0417f, 1.0245f, /* SplitTime */
+        0.4102f, 0.8016f, 0.4509f, 1.0698f, /* OpponentName */
+        0.1000f, 0.0000f, 0.2963f, 0.1495f, /* OpponentList */
+        0.3704f, 0.8302f, 0.4167f, 1.0422f, /* PlayerTickets */
+        0.4000f, 0.3880f, 0.4400f, 0.6120f, /* WrongWayIndicator */
+        0.1500f, 0.3438f, 0.1750f, 0.6563f, /* RadarDetector */
+        0.1000f, 0.8500f, 0.3741f, 0.9995f, /* RacerMap */
+        0.0000f, 0.0000f, 0.0000f, 0.0000f, /* Radar */
+        0.0000f, 0.0000f, 0.0000f, 0.0000f, /* CopTickets */
+        0.0000f, 0.0000f, 0.0000f, 0.0000f, /* RadarSpeeds */
+        0.0000f, 0.0000f, 0.0000f, 0.0000f, /* SpikeBeltIndicator */
+        0.0000f, 0.0000f, 0.0000f, 0.0000f, /* CopMap */
+    };
+    private static final float[] RACER_SMALL_MAP = { 0.1000f, 0.8500f, 0.3741f, 0.9995f };
+    private static final float[] COP_HUD = {
+        0.0080f, 0.1370f, 0.0600f, 0.3420f, /* DigitalSpeedometer */
+        0.0000f, 0.2281f, 0.1500f, 0.3406f, /* AnalogSpeedometer */
+        0.0060f, 0.6600f, 0.1020f, 0.8510f, /* DigitalTachometer */
+        0.0000f, 0.6562f, 0.1500f, 0.7719f, /* AnalogTachometer */
+        0.0080f, 0.8500f, 0.0500f, 0.9950f, /* LapCounter */
+        0.0120f, 0.0000f, 0.0540f, 0.1310f, /* Time */
+        0.1560f, 0.4625f, 0.2560f, 0.5375f, /* TutorIcon */
+        0.1542f, 0.7031f, 0.2292f, 0.9937f, /* ConeStats */
+        0.9125f, 0.3656f, 0.9958f, 0.6656f, /* ReplayHUD */
+        0.0125f, 0.3469f, 0.1458f, 0.6469f, /* RearView */
+        0.0000f, 0.0000f, 0.0000f, 0.0000f, /* Position */
+        0.0000f, 0.0000f, 0.0000f, 0.0000f, /* SplitTime */
+        0.0000f, 0.0000f, 0.0000f, 0.0000f, /* OpponentName */
+        0.0000f, 0.0000f, 0.0000f, 0.0000f, /* OpponentList */
+        0.0000f, 0.0000f, 0.0000f, 0.0000f, /* PlayerTickets */
+        0.0000f, 0.0000f, 0.0000f, 0.0000f, /* WrongWayIndicator */
+        0.0000f, 0.0000f, 0.0000f, 0.0000f, /* RadarDetector */
+        0.0000f, 0.0000f, 0.0000f, 0.0000f, /* RacerMap */
+        0.1740f, 0.0250f, 0.5080f, 0.2750f, /* Radar */
+        0.1167f, 0.7937f, 0.1646f, 0.9969f, /* CopTickets */
+        0.5269f, 0.0000f, 0.7565f, 0.3260f, /* RadarSpeeds */
+        0.0680f, 0.8560f, 0.0921f, 0.9960f, /* SpikeBeltIndicator */
+        0.6479f, 0.8484f, 0.9167f, 0.9984f, /* CopMap */
+    };
+    private static final float[] COP_SMALL_MAP = { 0.6479f, 0.8484f, 0.9167f, 0.9984f };
+
+    /* How far the maps are zoomed in, as the arrangement has them. */
+    private static final float MAP_ZOOM = 4f;
+
+    /** The arrangement above, into a settings file held in memory: the single
+     *  player's racer layout and cop layout, each with the small map the map
+     *  key shrinks to and the map's zoom and mode. */
+    static void hudDefaults(byte[] config)
+    {
+        if (!isSettingsFile(config))
+            return;
+        ByteBuffer buffer = ByteBuffer.wrap(config).order(ByteOrder.LITTLE_ENDIAN);
+        hudLayout(buffer, 0, RACER_HUD, RACER_SMALL_MAP);
+        hudLayout(buffer, 1, COP_HUD, COP_SMALL_MAP);
+    }
+
+    private static void hudLayout(ByteBuffer buffer, int variant, float[] elements, float[] smallMap)
+    {
+        int layout = HUD_LAYOUTS + variant * HUD_LAYOUT;
+        for (int i = 0; i < elements.length; ++i)
+            buffer.putFloat(layout + HUD_ELEMENTS + 4 * i, elements[i]);
+        for (int i = 0; i < smallMap.length; ++i)
+            buffer.putFloat(layout + HUD_SMALL_MAP + 4 * i, smallMap[i]);
+        buffer.putFloat(layout + HUD_MAP_SCALE, MAP_ZOOM);
+        buffer.putInt(layout + HUD_MAP_MODE, MAP_ROTATING);
+    }
+
+    /** The cop's map as a minimap in the corner, as the Modern Patch sets it up
+     *  when it is installed.  The game's own default is the whole track across
+     *  the whole screen -- DASHHUD/DEF.POS has CopCopMap at (0,0)-(1,1), the Map
+     *  setting at Stationary and the scale at 1 -- which on a phone lies over
+     *  the road and the controls.  The corner is the game's own: the small map
+     *  its map key shrinks the cop's to (sub_48e790), kept after the layout's
+     *  elements.  Rotating, and zoomed as far as the racer's map, as the Modern
+     *  Patch does; the HUD menu and the map key still offer the rest.  Only a
+     *  map still across the whole width at Stationary and scale 1 is changed.
+     *  Returns whether anything was. */
+    static boolean copMinimap(byte[] config)
+    {
+        if (!isSettingsFile(config))
+            return false;
+        ByteBuffer buffer = ByteBuffer.wrap(config).order(ByteOrder.LITTLE_ENDIAN);
+        boolean changed = false;
+        for (int slot = 0; slot < 3; ++slot)
+        {
+            int racer = HUD_LAYOUTS + slot * HUD_SLOT, cop = racer + HUD_LAYOUT;
+            int map = cop + HUD_ELEMENTS + COP_MAP * 16;
+            boolean asTheGameHasIt = buffer.getInt(cop + HUD_MAP_MODE) == MAP_STATIONARY
+                && buffer.getFloat(cop + HUD_MAP_SCALE) == 1f
+                && buffer.getFloat(map + 4) == 0f && buffer.getFloat(map + 12) == 1f;
+            if (!asTheGameHasIt)
+                continue;
+            for (int edge = 0; edge < 16; edge += 4)
+                buffer.putInt(map + edge, buffer.getInt(cop + HUD_SMALL_MAP + edge));
+            buffer.putInt(cop + HUD_MAP_MODE, MAP_ROTATING);
+            buffer.putFloat(cop + HUD_MAP_SCALE, buffer.getFloat(racer + HUD_MAP_SCALE));
+            changed = true;
+        }
+        return changed;
+    }
+
+    /** The cop's minimap for game data imported before it was part of an
+     *  import: once per data set -- a player who puts the big map back later
+     *  keeps it -- and never while the game runs, which would write its own
+     *  settings over it on the way out. */
+    static void copMinimapOnce(File dataRoot)
+    {
+        try
+        {
+            File file = settingsFile(dataRoot);
+            if (file == null)
+                return;
+            File done = new File(file.getParentFile(), COP_MINIMAP_DONE);
+            if (done.exists())
+                return;
+            byte[] config = Files.readAllBytes(file.toPath());
+            if (copMinimap(config))
+                replace(file, config);
+            if (!done.createNewFile())
+                android.util.Log.w("ControlProfile", "Could not mark the cop's minimap as done");
+        }
+        catch (IOException e)
+        {
+            android.util.Log.w("ControlProfile", "Could not set up the cop's minimap", e);
+        }
     }
 
     /* Written beside the file and moved over it, so a failure half way leaves

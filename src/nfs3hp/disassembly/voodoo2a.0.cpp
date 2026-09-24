@@ -1,4 +1,5 @@
 #include "voodoo2a.h"
+#include <winapi/glide2x.h> // Port (tools/apply_full_colour.py)
 #include <lib/thread.h>
 
 namespace voodoo2a
@@ -2406,6 +2407,12 @@ L_0x00a83c7a:
     app->getMemory<x86::reg32>(x86::reg32(11083648) /* 0xa91f80 */) = cpu.eax;
     // 00a83d3c  8915841fa900           -mov dword ptr [0xa91f84], edx
     app->getMemory<x86::reg32>(x86::reg32(11083652) /* 0xa91f84 */) = cpu.edx;
+    if (win32::glide2x::fullColourTextures())
+    {
+        /* port: THRASH format 6, ARGB 8888, taken, and handed to Glide as such */
+        app->getMemory<x86::reg32>(x86::reg32(0xa91fd4 + 6 * 4)) = 1;
+        app->getMemory<x86::reg8>(x86::reg32(0xa92348 + 6)) = x86::reg8(win32::glide2x::kTexFmtArgb8888);
+    }
     // 00a83d42  57                     -push edi
     app->getMemory<x86::reg32>(cpu.esp-4) = cpu.edi;
     cpu.esp -= 4;

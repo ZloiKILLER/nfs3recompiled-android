@@ -3,6 +3,8 @@
 
 namespace nfs3hp
 {
+// Port (tools/apply_text_entry.py): defined in nfs3hp_main.cpp.
+void textEntry(bool taking);
 
 /* align: skip 0x8d 0x80 0x00 0x00 0x00 0x00 0x8d 0x52 0x00 0x8b 0xdb */
 void Application::sub_4262a0(WinApplication* app, x86::CPU& cpu)
@@ -3049,7 +3051,7 @@ L_0x00426deb:
         goto L_0x00426e02;
     }
     // 00426dfb  c74064602e4500         -mov dword ptr [eax + 0x64], 0x452e60
-    app->getMemory<x86::reg32>(cpu.eax + x86::reg32(100) /* 0x64 */) = 4533856 /*0x452e60*/;
+    app->getMemory<x86::reg8>(cpu.eax + x86::reg32(5) /* 0x5 */) |= x86::reg8(16 /*0x10*/); /* port: Download Car hidden, as hidethis is (tools/apply_hide_download.py) */
 L_0x00426e02:
     // 00426e02  ba48705300             -mov edx, 0x537048
     cpu.edx = 5468232 /*0x537048*/;
@@ -7130,6 +7132,7 @@ void Application::sub_427d00(WinApplication* app, x86::CPU& cpu)
   NFS2_USE(cpu);
   NFS2_USE(app);
     // 00427d00  53                     -push ebx
+    textEntry(false); /* port: the name is taken */
     app->getMemory<x86::reg32>(cpu.esp-4) = cpu.ebx;
     cpu.esp -= 4;
     // 00427d01  52                     -push edx
@@ -7594,6 +7597,7 @@ void Application::sub_427ea0(WinApplication* app, x86::CPU& cpu)
   NFS2_USE(cpu);
   NFS2_USE(app);
     // 00427ea0  51                     -push ecx
+    textEntry(false); /* port: the name is let go */
     app->getMemory<x86::reg32>(cpu.esp-4) = cpu.ecx;
     cpu.esp -= 4;
     // 00427ea1  56                     -push esi
@@ -8001,6 +8005,7 @@ void Application::sub_428020(WinApplication* app, x86::CPU& cpu)
   NFS2_USE(cpu);
   NFS2_USE(app);
     // 00428020  53                     -push ebx
+    textEntry(true); /* port: the game is waiting for a name */
     app->getMemory<x86::reg32>(cpu.esp-4) = cpu.ebx;
     cpu.esp -= 4;
     // 00428021  51                     -push ecx

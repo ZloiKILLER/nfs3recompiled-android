@@ -100,7 +100,18 @@ public class LauncherActivity extends Activity
     @Override
     protected void onCreate(Bundle savedInstanceState)
     {
+        /* On a desktop -- Samsung DeX -- the launcher is a window the player
+         * sizes, so the manifest's landscape lock is let go: the task's window
+         * is made to its shape, and the game that follows into it inherits it
+         * (NFS3Activity.desktopWindow). */
+        if (DesktopMode.active(this))
+            setRequestedOrientation(android.content.pm.ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED);
         super.onCreate(savedInstanceState);
+        // Removed in 0.75: fixed/editable positions supersede this global offset.
+        GamePreferences.get(this).edit().remove("touch_raise_controls").apply();
+        // 0.75: the pads' buttons mean one thing in a race and another in the
+        // menus, and their racing set moved with it.
+        GamepadButtons.migrateDefaults(GamePreferences.get(this));
         TouchControlsOverlay.anchorLegacyPositions(this);
         ((InputManager) getSystemService(INPUT_SERVICE))
             .registerInputDeviceListener(gamepadListener, null);
@@ -428,7 +439,7 @@ public class LauncherActivity extends Activity
      * and writes the whole file back, which would quietly undo this. */
     private void writeControls(ControlProfile.Kind kind)
     {
-        if (NFS3Activity.isRunning())
+        if (GameProcess.running(this))
         {
             Toast.makeText(this, R.string.controls_write_game_running, Toast.LENGTH_LONG).show();
             return;
@@ -551,13 +562,23 @@ public class LauncherActivity extends Activity
             if (touchPreview != null) touchPreview.refreshSettings();
         }));
 
+        // How a finger works the game's pointer in the menus.
+        final String[] pointerValues = {
+            GamePreferences.TOUCH_POINTER_TAP,
+            GamePreferences.TOUCH_POINTER_TOUCHPAD,
+        };
+        Spinner pointer = findViewById(R.id.touch_pointer_spinner);
+        pointer.setAdapter(stringAdapter(new String[] { getString(R.string.touch_pointer_tap), getString(R.string.touch_pointer_touchpad) }));
+        pointer.setSelection(GamePreferences.indexOf(pointerValues,
+            preferences.getString(GamePreferences.TOUCH_POINTER, GamePreferences.TOUCH_POINTER_TAP)));
+        pointer.setOnItemSelectedListener(new SimpleItemSelectedListener(position ->
+            preferences.edit().putString(GamePreferences.TOUCH_POINTER, pointerValues[position]).apply()));
+
         bindSeekBar(R.id.opacity_seek, R.id.opacity_value, GamePreferences.TOUCH_OPACITY,
             20, 100, 65, "%");
         bindSeekBar(R.id.size_seek, R.id.size_value, GamePreferences.TOUCH_SIZE,
             70, 115, 100, "%");
         bindSeekBar(R.id.edge_seek, R.id.edge_value, GamePreferences.TOUCH_EDGE,0,32,0," dp");
-        bindSeekBar(R.id.raise_seek, R.id.raise_value, GamePreferences.TOUCH_RAISE,0,24,0," dp");
-
         CheckBox enabled = findViewById(R.id.touch_enabled_check);
         enabled.setChecked(preferences.getBoolean(GamePreferences.TOUCH_ENABLED, true));
         enabled.setOnCheckedChangeListener((button, checked) ->
@@ -612,7 +633,12 @@ public class LauncherActivity extends Activity
             glyph = glyph.mutate();
             glyph.setTint(tint);
             glyph.setBounds(0, 0, size, size);
-            out.setSpan(new ImageSpan(glyph, ImageSpan.ALIGN_CENTER), i, i + 1,
+            /* Centring a span on the line came in Android 10; before it the
+             * constant means nothing and the glyph would sit on the baseline
+             * anyway, so ask for the baseline there and say so. */
+            int align = android.os.Build.VERSION.SDK_INT >= 29
+                ? ImageSpan.ALIGN_CENTER : ImageSpan.ALIGN_BASELINE;
+            out.setSpan(new ImageSpan(glyph, align), i, i + 1,
                 Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
         }
         return out;
@@ -1039,18 +1065,39 @@ public class LauncherActivity extends Activity
         },"nfs3-save-operation");importThread=worker;worker.start();
     }
 
+    /* How far along an import is, on whichever data screen shows it.  It used
+     * to ask for the Data screen by name, and imports run from Game data, so
+     * nothing but an endless bar ever showed there. */
     private DataImporter.ProgressListener progressListener()
     {
         Thread runningThread = Thread.currentThread();
-        return (bytesCopied, filesCopied, currentPath) -> runOnUiThread(() -> {
-            if (importThread != runningThread || isDestroyed() || !"data".equals(currentScreen))
+        return (done, total, currentPath) -> runOnUiThread(() -> {
+            if (importThread != runningThread || isDestroyed())
                 return;
-            TextView status = findViewById(R.id.data_status_text);
-            int mb = (int) (bytesCopied / (1024 * 1024));
-            String name = currentPath.substring(currentPath.lastIndexOf(File.separatorChar) + 1);
-            status.setText(getResources().getQuantityString(R.plurals.importing_progress,
-                filesCopied, name, mb, filesCopied));
+            showImportProgress(this, findViewById(R.id.data_progress), findViewById(R.id.data_status_text),
+                DataImporter.ProgressListener.percent(done, total), currentPath);
         });
+    }
+
+    /** One step of an import, the same on the first run's screen and on Game
+     *  data: the bar fills to the percentage and the text names the file and
+     *  says it; while the folder is still being measured the bar runs on its
+     *  own and the text says so. */
+    static void showImportProgress(Activity activity, ProgressBar bar, TextView status, int percent, String path)
+    {
+        if (bar == null || status == null)
+            return;
+        if (percent < 0)
+        {
+            bar.setIndeterminate(true);
+            status.setText(R.string.checking_game_data);
+            return;
+        }
+        bar.setIndeterminate(false);
+        bar.setMax(100);
+        bar.setProgress(percent);
+        String name = path.substring(path.lastIndexOf(File.separatorChar) + 1);
+        status.setText(activity.getString(R.string.importing_percent, name, percent));
     }
 
     private void startImport(String displayName, DataSetManager.ImportOperation operation)
@@ -1062,13 +1109,18 @@ public class LauncherActivity extends Activity
             Thread runningThread = Thread.currentThread();
             try
             {
-                dataSetManager.importDataSet(displayName, operation);
+                List<String> missing = new java.util.ArrayList<>();
+                dataSetManager.importDataSet(displayName, temporary -> {
+                    operation.run(temporary);
+                    missing.addAll(missingGameFiles(getApplicationContext(), temporary));
+                });
                 runOnUiThread(() -> {
                     if (importThread != runningThread || isDestroyed())
                         return;
                     importThread = null;
                     Toast.makeText(this, R.string.import_complete, Toast.LENGTH_SHORT).show();
                     showGameDataScreen();
+                    showMissingGameFiles(this, missing, null);
                 });
             }
             catch (IOException e)
@@ -1091,15 +1143,51 @@ public class LauncherActivity extends Activity
         worker.start();
     }
 
+    /* What an import copied without: the game would only find out half way
+     * into loading a race (DataImporter.missingFiles).  A failed check is no
+     * reason to fail the import, so it only goes to the log. */
+    static List<String> missingGameFiles(android.content.Context context, File root)
+    {
+        try
+        {
+            return DataImporter.missingFiles(context, root);
+        }
+        catch (IOException e)
+        {
+            Log.w(TAG, "Could not check the imported game data", e);
+            return new java.util.ArrayList<>();
+        }
+    }
+
+    /** Tells the player, once the import is through, which of the game's files
+     *  it did not bring; `then` runs when the message is closed, or at once if
+     *  nothing is missing. */
+    static void showMissingGameFiles(Activity activity, List<String> missing, Runnable then)
+    {
+        if (missing.isEmpty())
+        {
+            if (then != null) then.run();
+            return;
+        }
+        new AlertDialog.Builder(activity)
+            .setTitle(R.string.data_missing_title)
+            .setMessage(DataImporter.describeMissing(activity, missing))
+            .setPositiveButton(android.R.string.ok, null)
+            .setOnDismissListener(d -> { if (then != null) then.run(); })
+            .show();
+    }
+
     /* Long operations now run from three different screens, and each carries
      * only its own buttons -- so every control is disabled by id if it happens
      * to be there, rather than assuming a single layout holds them all. */
     private void setDataImportUi(boolean running)
     {
-        View progress = findViewById(R.id.data_progress);
+        ProgressBar progress = findViewById(R.id.data_progress);
         if (progress == null)
             return;
         progress.setVisibility(running ? View.VISIBLE : View.GONE);
+        // Endless until an import says how far it is; saves never do.
+        progress.setIndeterminate(true);
         boolean savesAvailable = !running && dataSetManager != null && dataSetManager.active() != null;
         enableIfPresent(R.id.import_folder_button, !running);
         enableIfPresent(R.id.import_zip_button, !running);
@@ -1181,6 +1269,13 @@ public class LauncherActivity extends Activity
     {
         if (dataSetManager == null || dataSetManager.active() == null)
             return;
+        /* Game data imported before the cop's map came as a minimap gets it
+         * now, once -- while the game is not running to save over it. */
+        if (!GameProcess.running(this))
+        {
+            try { ControlProfile.copMinimapOnce(dataRoot()); }
+            catch (IOException e) { Log.w(TAG, "No data root for the cop's minimap", e); }
+        }
         Intent intent = new Intent(this, NFS3Activity.class);
         if (getIntent() != null && getIntent().getExtras() != null)
             intent.putExtras(getIntent().getExtras());

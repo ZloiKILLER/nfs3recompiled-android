@@ -48,8 +48,8 @@ final class TouchLayout
 
     /* Groups that move onto the grid together, sideways.  Heights are placed on
      * it as they are worked out. */
-    private static final int TOP_LEFT = 0, TOP_RIGHT = 1, STEERING = 2, ROWS = 3, PEDALS = 4;
-    private static final int GROUPS = 5;
+    private static final int TOP_RIGHT = 0, STEERING = 1, ROWS = 2, PEDALS = 3;
+    private static final int GROUPS = 4;
 
     private TouchLayout() {}
 
@@ -69,38 +69,40 @@ final class TouchLayout
      * @param width    the overlay's area, in layout units
      * @param height   likewise
      * @param edge     distance from the side edges, from the touch settings
-     * @param raise    how far the lower controls are raised, likewise
      * @param size     the size setting, as a factor
      * @param physical one physical pixel, in layout units
      * @param menu     the game is showing a menu rather than a race
      * @param mirrored steering on the right
      */
-    static ArrayList<Box> defaults(float width, float height, float edge, float raise, float size,
+    static ArrayList<Box> defaults(float width, float height, float edge, float size,
                                    float physical, boolean menu, boolean mirrored)
     {
-        final float w = width - 2 * edge, h = height - raise;
+        final float w = width - 2 * edge, h = height;
         final float buttonWidth = 58 * size, buttonHeight = 48 * size;
         final float column = cells(buttonWidth + 6), row = cells(buttonHeight + 8);
         final ArrayList<Box> boxes = new ArrayList<>();
 
-        /* The top row: pause on the left of a race, and on the right the lights
-         * and recovery a race needs, or the back and keyboard a menu does. */
+        /* The top row: pause on the left of a race, or the back and keyboard a
+         * menu needs.  In a race each side is one uninterrupted five-button
+         * column, matching the layout settled on in the on-device editor. */
         final float topY = snap(18 + buttonHeight / 2);
-        final float topBottom = topY + buttonHeight / 2;
-        final float rightX = w - 20 - buttonWidth / 2;
+        final float rightX = w - 10 - buttonWidth / 2;
         if (menu)
         {
-            /* The whole of the menu layout: every other key a menu needs is the
-             * screen itself.  Back takes the corner and the keyboard stands
-             * under it, both out of the way of the menu's own buttons, which
-             * the game keeps along the bottom. */
-            boxes.add(new Box("back", TOP_RIGHT, rightX, topY, buttonWidth, buttonHeight));
-            boxes.add(new Box("keyboard", TOP_RIGHT, rightX, topY + row, buttonWidth, buttonHeight));
-            return placed(boxes, w, edge, mirrored);
+            /* A menu has no buttons at all.  The screen itself is what a menu
+             * is worked with; the system's own back, gesture or button, is the
+             * game's Escape; and the keyboard comes up by itself while the game
+             * waits for a name (nfs3hp_main.cpp, textEntryTick).  Those two
+             * were the only things a menu could not offer for itself, and
+             * neither is missing now -- so the menus are left as the game drew
+             * them, with nothing of ours on top. */
+            return boxes;
         }
-        boxes.add(new Box("pause", TOP_LEFT, 20 + buttonWidth / 2, topY, buttonWidth, buttonHeight));
-        boxes.add(new Box("headlights", TOP_RIGHT, rightX - column, topY, buttonWidth, buttonHeight));
         boxes.add(new Box("recover", TOP_RIGHT, rightX, topY, buttonWidth, buttonHeight));
+        boxes.add(new Box("headlights", TOP_RIGHT, rightX, topY + row, buttonWidth, buttonHeight));
+        boxes.add(new Box("look_behind", TOP_RIGHT, rightX, topY + 2 * row, buttonWidth, buttonHeight));
+        boxes.add(new Box("camera", TOP_RIGHT, rightX, topY + 3 * row, buttonWidth, buttonHeight));
+        boxes.add(new Box("handbrake", TOP_RIGHT, rightX, topY + 4 * row, buttonWidth, buttonHeight));
 
         /* Steering: two buttons, one for each way.  They used to share the
          * layout with a D-pad whose other two arms walked through menus; the
@@ -108,79 +110,42 @@ final class TouchLayout
          * a D-pad to do. */
         final float steerWidth = 68 * size, steerHeight = 76 * size;
         final float steerY = snap(h - 20 - steerHeight / 2);
-        final float steerHalf = steerHeight / 2;
-        final float leftX = 20 + steerWidth / 2;
+        /* On the normal phone aspect ratio the steering remains at the edge,
+         * below the column.  A very short preview cannot fit both vertically;
+         * there the steering pair moves one column inward instead of covering
+         * a button. */
+        final float stackBottom = topY + 4 * row + GRID + buttonHeight / 2;
+        final boolean tightLeft = stackBottom + 4 > steerY - steerHeight / 2;
+        final float leftX = 20 + steerWidth / 2 + (tightLeft ? column : 0);
+        final float steeringStep = cells(steerWidth + 8 + 26 * physical) - (tightLeft ? 2 * GRID : 0);
         boxes.add(new Box("steer_left", STEERING, leftX, steerY, steerWidth, steerHeight));
-        boxes.add(new Box("steer_right", STEERING, leftX + cells(steerWidth + 8 + 26 * physical), steerY,
+        boxes.add(new Box("steer_right", STEERING, leftX + steeringStep, steerY,
                           steerWidth, steerHeight));
 
-        /* Horn and spikes right above the steering, the gears above them in the
-         * same two columns.  Only a screen too short for that puts the gears
-         * beside them instead. */
-        final float hornY = steerY - cells(steerHalf + 8 + buttonHeight / 2);
-        final float gearY = hornY - row;
-        final float rowX = 20 + buttonWidth / 2;
-        final boolean gearsAbove = gearY - buttonHeight / 2 >= topBottom + 4;
-        boxes.add(new Box("horn", ROWS, rowX, hornY, buttonWidth, buttonHeight));
-        boxes.add(new Box("spike_strip", ROWS, rowX + column, hornY, buttonWidth, buttonHeight));
-        boxes.add(new Box("gear_down", ROWS, gearsAbove ? rowX : rowX + 2 * column, gearsAbove ? gearY : hornY,
-                          buttonWidth, buttonHeight));
-        boxes.add(new Box("gear_up", ROWS, gearsAbove ? rowX + column : rowX + 3 * column, gearsAbove ? gearY : hornY,
-                          buttonWidth, buttonHeight));
+        /* The final left column: pause, spikes, horn, plus and minus. */
+        final float rowX = buttonWidth / 2;
+        boxes.add(new Box("pause", ROWS, rowX, topY, buttonWidth, buttonHeight));
+        boxes.add(new Box("spike_strip", ROWS, rowX, topY + row, buttonWidth, buttonHeight));
+        boxes.add(new Box("horn", ROWS, rowX, topY + 2 * row, buttonWidth, buttonHeight));
+        boxes.add(new Box("gear_up", ROWS, rowX, topY + 3 * row + GRID, buttonWidth, buttonHeight));
+        boxes.add(new Box("gear_down", ROWS, rowX, topY + 4 * row + GRID, buttonWidth, buttonHeight));
 
         /* Brake is the outer pedal and throttle the inner one.  The gas pedal is
          * eight physical pixels wider than the brake and the gap between them
-         * nineteen pixels more than twelve units, as tuned on the device; the
-         * handbrake sits over the brake. */
+         * nineteen pixels more than twelve units, as tuned on the device. */
         final float brakeWidth = 62 * size, brakeHeight = 84 * size;
         final float gasWidth = brakeWidth + 8 * physical, gasHeight = 118 * size;
-        final float brakeX = w - 20 - 5 * physical - brakeWidth / 2;
         final float brakeY = snap(h - 20 - brakeHeight / 2);
+        final float utilityBottom = topY + 4 * row + buttonHeight / 2;
+        final boolean tightRight = utilityBottom + 4 > brakeY - brakeHeight / 2;
+        final float brakeX = w - 20 - 5 * physical - brakeWidth / 2 - (tightRight ? column : 0);
         boxes.add(new Box("brake", PEDALS, brakeX, brakeY, brakeWidth, brakeHeight));
-        boxes.add(new Box("accelerate", PEDALS, brakeX - brakeWidth / 2 - (12 + 19 * physical) - gasWidth / 2,
-                          brakeY + brakeHeight / 2 - gasHeight / 2, gasWidth, gasHeight));
-        boxes.add(new Box("handbrake", PEDALS, brakeX, brakeY - cells(brakeHeight / 2 + 8 + buttonHeight / 2),
-                          buttonWidth, buttonHeight));
-
-        /* Look behind and camera stand under recovery and lights, on the first of
-         * these rows that keeps clear of the pedals: the gears' row, where the
-         * two have always been, when it can.  A screen too short for any of them
-         * gets the pair beside the handbrake instead, a column in from it. */
-        final float[] rows = gearsAbove ? new float[] { gearY, hornY, gearY - row, topY + row }
-                                        : new float[] { hornY, hornY - row, topY + row };
-        float lookX = rightX, lookY = rows[rows.length - 1];
-        int lookGroup = TOP_RIGHT;
-        search:
-        for (int group : new int[] { TOP_RIGHT, PEDALS })
-        {
-            final float x = group == TOP_RIGHT ? rightX : brakeX - column;
-            for (float y : rows)
-            {
-                if (clear(boxes, group, x, y, buttonWidth, buttonHeight)
-                    && clear(boxes, group, x - column, y, buttonWidth, buttonHeight))
-                {
-                    lookX = x;
-                    lookY = y;
-                    lookGroup = group;
-                    break search;
-                }
-            }
-        }
-        boxes.add(new Box("look_behind", lookGroup, lookX, lookY, buttonWidth, buttonHeight));
-        boxes.add(new Box("camera", lookGroup, lookX - column, lookY, buttonWidth, buttonHeight));
+        final float gasX = brakeX - brakeWidth / 2 - (12 + 19 * physical) - gasWidth / 2;
+        final float gasY = brakeY + brakeHeight / 2 - gasHeight / 2;
+        boxes.add(new Box("accelerate", PEDALS, gasX, gasY, gasWidth, gasHeight));
+        /* A short preview moves the pedals inward to keep the right utility
+         * column intact.  On the phone they stay at the edge below it. */
         return placed(boxes, w, edge, mirrored);
-    }
-
-    /* Whether a box of a group keeps half a cell clear of every box placed so
-     * far -- and a whole cell sideways of other groups, since each group can
-     * still move by up to half a cell as it goes onto the grid. */
-    private static boolean clear(ArrayList<Box> boxes, int group, float x, float y, float width, float height)
-    {
-        for (Box b : boxes)
-            if (Math.abs(x - b.x) < (width + b.width) / 2 + (b.group == group ? 1 : GRID)
-                && Math.abs(y - b.y) < (height + b.height) / 2 + GRID / 2)
-                return false;
-        return true;
     }
 
     /* Mirrored for steering on the right, moved in from the edges, and each

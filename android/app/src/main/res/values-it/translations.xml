@@ -9,12 +9,7 @@
 
  <string name="checking_game_data">Controllo dei dati di gioco…</string>
  <string name="pick_data_folder">Scegli la cartella dei dati di NFS3…</string>
- <plurals name="importing_progress">
-  <item quantity="one">Importazione di %1$s\n%2$d MB copiati, %3$d file</item>
-  <item quantity="many">Importazione di %1$s
-%2$d MB copiati, %3$d di file</item>
-  <item quantity="other">Importazione di %1$s\n%2$d MB copiati, %3$d file</item>
- </plurals>
+ <string name="importing_percent">Importazione di %1$s\n%2$d%%</string>
  <string name="import_failed">Importazione non riuscita: %1$s</string>
  <string name="import_hint">Scegli la cartella che contiene direttamente \'fedata\' e \'gamedata\' (per esempio la radice del CD o una copia).</string>
  <string name="launcher_title">Avvio di Need For Speed III</string>
@@ -60,6 +55,10 @@
  <string name="touch_mode_wheel">Volante (in arrivo)</string>
  <string name="touch_mode_tilt">Sterzo con inclinazione (in arrivo)</string>
  <string name="touch_layout_label">Disposizione dei pulsanti</string>
+ <string name="touch_pointer_label">Puntatore nei menu</string>
+ <string name="touch_pointer_tap">Dove tocca il dito</string>
+ <string name="touch_pointer_touchpad">Touchpad</string>
+ <string name="touch_pointer_note">Touchpad: scorri ovunque per muovere il cursore, tocca per cliccare, tieni fermo il dito per afferrare e trascinare. Vale dal prossimo avvio del gioco.</string>
  <string name="opacity_label">Opacità dei pulsanti</string>
  <string name="size_label">Dimensione dei pulsanti</string>
  <string name="auto_hide_label">Nascondi dopo 4 secondi di inattività</string>
@@ -80,7 +79,6 @@
  <string name="touch_preview_hint">Prova i comandi</string>
  <string name="touch_dim_label">Nascondi i pulsanti</string>
  <string name="touch_edge_label">Distanza dai bordi</string>
- <string name="touch_raise_label">Alza i comandi di guida</string>
  <string name="touch_dim_note">Inizia quando tutte le dita si sollevano. I comandi nascosti rispondono subito.</string>
  <string name="editor_drag_title">Trascina i comandi</string>
  <string name="editor_resize_hint">Seleziona per ridimensionare</string>
@@ -121,12 +119,9 @@
  <string name="pref_hide_full">Nascondi del tutto (altrimenti sagoma tenue)</string>
  <string name="auto_hide_delay">Ritardo: %1$d s</string>
  <string name="editor_button_size">Pulsante: %1$d%%</string>
- <string name="editor_touch_zone">Area touch: %1$d%%</string>
- <string name="editor_mode_race">Gara</string>
- <string name="editor_mode_menu">Menu</string>
  <string name="editor_reset_title">Ripristinare questa disposizione?</string>
- <string name="editor_reset_message">Ripristina posizioni, dimensioni dei pulsanti e aree touch predefinite di questa disposizione.</string>
- <string name="edit_touch_layout">Modifica posizioni e aree touch</string>
+ <string name="editor_reset_message">Ripristina posizioni e dimensioni dei pulsanti predefinite di questa disposizione.</string>
+ <string name="edit_touch_layout">Modifica posizioni e dimensioni</string>
  <string name="editor_done">Fatto</string>
  <string name="editor_reset">Ripristina</string>
  <string name="editor_select_control">Seleziona un comando</string>
@@ -137,23 +132,27 @@
  <string name="data_set_active_suffix"> (attivo)</string>
  <string name="error_external_storage">La memoria esterna non è disponibile</string>
  <string name="error_import_incomplete">Nei dati importati mancano i file previsti</string>
+ <string name="data_missing_title">Dati del gioco incompleti</string>
+ <string name="data_missing_message">Nei dati importati mancano file necessari al gioco (%1$d):\n\n%2$s\n\nIl gioco si ferma con «OPEN FAILED» appena gliene serve uno. Importa di nuovo le cartelle FEDATA e GAMEDATA dal disco o dalla sua immagine.</string>
+ <string name="data_missing_more">…e altri %1$d</string>
  <string name="error_data_set_incomplete">Il set di dati selezionato è incompleto</string>
  <string name="importer_open_folder_failed">Impossibile aprire la cartella selezionata</string>
  <string name="importer_missing_subfolder">La cartella selezionata non ha la sottocartella \'%1$s\': scegli la cartella che contiene direttamente fedata e gamedata (per esempio la radice del CD).</string>
  <string name="importer_open_zip_failed">Impossibile aprire lo ZIP selezionato</string>
  <string name="importer_zip_missing_files">Nello ZIP mancano le cartelle fedata/gamedata previste</string>
 
- <string name="faq_size"><b>Che cosa cambia la dimensione?</b>\nLa dimensione globale scala i comandi predefiniti. In «Modifica posizioni e aree touch» trascina un comando e regola «Pulsante» per cambiarne l\'aspetto, oppure «Area touch» per cambiare solo dove risponde. I tratteggi mostrano le aree touch; le percentuali sono relative al comando predefinito. Le modifiche si salvano da sole. L\'editor mostra una griglia; con «Aggancia alla griglia» il comando trascinato si posiziona su di essa.</string>
- <string name="faq_edges"><b>Bordi e posizione verticale</b>\nLa distanza dai bordi sposta i comandi predefiniti verso l\'interno. «Alza i comandi di guida» solleva i comandi bassi predefiniti. I ritagli di sistema sono rispettati. I comandi collocati a mano mantengono le posizioni salvate.</string>
- <string name="faq_hiding"><b>Opacità e scomparsa automatica</b>\nL\'opacità imposta la visibilità normale. La scomparsa automatica parte quando tutte le dita si sollevano, dopo un ritardo da 1 a 30 secondi. Scegli una sagoma tenue o l\'invisibilità totale. I pulsanti nascosti rispondono già al primo tocco e tornano visibili. Tenendo premuto un comando la scomparsa non avviene. Una pressione sul gamepad nasconde subito i comandi; il tocco successivo li riporta.</string>
- <string name="faq_gears"><b>Marce manuali</b>\n«Mostra i pulsanti marcia − / +» aggiunge due pulsanti facoltativi alla disposizione gara. Attiva il cambio manuale nel gioco. I tasti che inviano si impostano in Comandi → Touch → Tasti e devono corrispondere alle impostazioni del gioco.</string>
+ <string name="faq_layout_modes"><b>Menu o gara?</b>\nLo dice il gioco. Mentre guidi hai la disposizione da gara: pulsanti di sterzo, pedali, marce e il resto. Nei menu, e ogni volta che un menu si apre sopra una gara, il port non mostra alcun pulsante: i menu accettano il tocco da soli, l\'Indietro del telefono è Escape e la tastiera compare da sé. Non c\'è nulla da cambiare a mano.</string>
+ <string name="faq_mouse"><b>Come funzionano i menu?</b>\nCon il tocco. Il puntatore del gioco va dove metti il dito, così un tocco preme la voce sottostante e un cursore segue il dito che lo trascina. Il pulsante o il gesto Indietro del telefono è Escape e, quando il gioco chiede un nome, la tastiera del telefono si apre da sola; con la tastiera aperta, Indietro la chiude.</string>
+ <string name="faq_size"><b>Cosa cambia la dimensione?</b>\nLa dimensione dei pulsanti scala i comandi predefiniti. In Modifica posizioni e dimensioni trascina un comando e cambiane la dimensione con il cursore della dimensione; un comando risponde esattamente dov\'è disegnato e le percentuali sono relative al comando predefinito. Le modifiche si salvano da sole. L\'editor mostra una griglia; con Aggancia alla griglia attivo, il comando trascinato ci si posa.</string>
+ <string name="faq_edges"><b>Bordi e posizione verticale</b>\nLa distanza dai bordi sposta i comandi predefiniti verso l\'interno. I ritagli di sistema sono rispettati. I comandi collocati a mano mantengono le posizioni salvate.</string>
+ <string name="faq_hiding"><b>Opacità e scomparsa automatica</b>\nL\'opacità imposta la visibilità normale. La scomparsa automatica parte quando tutte le dita si sollevano, dopo un ritardo da 1 a 30 secondi. Scegli una sagoma tenue o l\'invisibilità totale. I pulsanti nascosti rispondono già al primo tocco e tornano visibili. Tenendo premuto un comando la scomparsa non avviene. Una pressione sul pad del giocatore 1 nasconde subito i comandi; il tocco successivo li riporta. Il pad del giocatore 2 non li tocca, così uno può guidare sullo schermo mentre l\'altro gioca con il pad.</string>
  <string name="faq_vibration"><b>Vibrazione</b>\nGli effetti Force Feedback del gioco arrivano al telefono e al gamepad 1. Il gioco gestisce un solo dispositivo force feedback, quindi il gamepad 2 non vibra mai. La vibrazione del telefono si attiva o disattiva in Comandi → Touch. La vibrazione del gamepad resta disattivata finché non viene attivata in Comandi → Gamepad; la sua intensità si imposta nel gioco stesso: Options → Controllers → Force Feedback. Gli effetti arrivano dal gioco, mai dalla pressione dei tasti.</string>
- <string name="faq_mapping"><b>Gamepad</b>\nIl gioco vede sempre due gamepad: il gamepad 1 è il giocatore 1 insieme ai comandi touch, il gamepad 2 è il giocatore 2. In Comandi → Gamepad scegli quale pad è quale premendo un suo tasto e imposta cosa fa ogni tasto, poi premi una volta Gamepad ATTIVO, che scrive i comandi corrispondenti nelle impostazioni del gioco e fa un backup del vecchio file. Lo stick sinistro sterza, i grilletti accelerano e frenano. Per giocare con la tastiera, scrivi invece Predefinito del gioco.</string>
+ <string name="faq_mapping"><b>Gamepad</b>\nIl gioco vede sempre due gamepad: il gamepad 1 è il giocatore 1 insieme ai comandi touch, il gamepad 2 è il giocatore 2. In Comandi → Gamepad scegli quale pad è quale premendo un suo tasto e imposta cosa fa ogni tasto, poi premi una volta Gamepad ATTIVO, che scrive i comandi corrispondenti nelle impostazioni del gioco e fa un backup del vecchio file. Lo stick sinistro sterza, i grilletti accelerano e frenano. Un pad ha due set di tasti, come i comandi touch hanno due disposizioni: quello da gara che imposti qui e uno fisso per i menu e i replay, dove Cross / A conferma, Circle / B torna indietro e la croce sposta la selezione. Per giocare con la tastiera, scrivi invece Predefinito del gioco.</string>
  <string name="faq_lights"><b>Fari e rientro in pista</b>\n☼ invia L. ↻ invia R per tornare in pista. I tasti si possono cambiare in Comandi → Touch → Tasti.</string>
  <string name="faq_screen_data"><b>Schermo e dati di gioco</b>\nOrizzontale blocca il gioco in landscape; Automatico consente la rotazione. Il limite FPS riduce la frequenza dei fotogrammi; un valore più basso alleggerisce il lavoro al secondo. «Dati di gioco» gestisce le importazioni e mostra il set attivo. «Gioca» si abilita quando un set è pronto.</string>
  <string name="gamepad_buttons">Tasti</string>
  <string name="gamepad_buttons_title">Tasti del gamepad %1$d</string>
- <string name="gamepad_buttons_hint">Cosa fa ogni tasto di questo pad. Lo stick sinistro sterza, il grilletto destro accelera e quello sinistro frena. Le azioni dei tasti arrivano al gioco dopo che i comandi gamepad sono stati scritti nel gioco.</string>
+ <string name="gamepad_buttons_hint">Cosa fa ogni tasto di questo pad mentre guidi. Lo stick sinistro sterza, il grilletto destro accelera e quello sinistro frena. Nei menu e nei replay i tasti sono fissi e non si impostano: Cross / A e Options / Menu confermano, Circle / B e Create / View tornano indietro, la croce sposta la selezione. Le azioni dei tasti arrivano al gioco una volta scritti in esso i comandi del gamepad.</string>
  <string name="gamepad_buttons_reset">Predefiniti</string>
  <string name="controls_write_gamepads">Gamepad ATTIVO</string>
  <string name="controls_write_keyboard">Predefinito del gioco</string>
@@ -163,14 +162,15 @@
  <string name="controls_write_no_config">Il gioco non ha ancora un file di impostazioni. Avvia il gioco una volta, poi riprova.</string>
  <string name="controls_write_game_running">Chiudi il gioco prima di scriverne i comandi.</string>
  <string name="controls_write_failed">Impossibile scrivere i comandi: %1$s</string>
+ <string name="gamepads_keyboard_note">Il gioco è impostato sui propri comandi da tastiera (Predefinito del gioco). I gamepad non fanno nulla nelle gare a schermo diviso finché non premi Gamepad ATTIVO.</string>
  <string name="pref_touch_enabled">Usa i comandi touch</string>
  <string name="touch_enabled_note">Disattivato: toccare lo schermo non fa nulla nel gioco, né pulsanti né mouse touch. I gamepad e un mouse vero continuano a funzionare.</string>
  <string name="controls_help">Aiuto: schermo diviso</string>
  <string name="controls_help_title">Schermo diviso con due gamepad</string>
  <string name="help_split_setup"><b>1. Configura i gamepad (una volta)</b>\nCollega entrambi i gamepad al telefono. In Comandi → Gamepad premi Assegna sotto il gamepad 1 e premi un tasto qualsiasi sul pad del giocatore 1, poi fai lo stesso per il gamepad 2. Funziona anche Automatico: i pad vengono presi nell\'ordine in cui si collegano. In Tasti scegli cosa fa ogni tasto.</string>
  <string name="help_split_write"><b>2. Scrivi i comandi nel gioco</b>\nNella stessa schermata premi Gamepad ATTIVO e conferma. Serve una volta, e di nuovo solo dopo aver installato altri dati di gioco o cambiato i comandi dentro il gioco. Le impostazioni precedenti vengono salvate in un backup.</string>
- <string name="help_split_race"><b>3. Avvia una gara a schermo diviso</b>\nAvvia il gioco e scegli Two Players…. Il giocatore 1 guida con il gamepad 1 o con i comandi touch, il giocatore 2 con il gamepad 2. Nei menu ci si muove con uno qualsiasi dei due pad: la croce sposta la selezione, Options / Start conferma, Create / Back torna indietro o mette in pausa.</string>
- <string name="help_split_driving"><b>Guida</b>\nLo stick sinistro sterza, il grilletto destro accelera e quello sinistro frena. Di base Cross / A è il freno a mano, R1 / L1 cambiano marcia, Triangle / Y cambia la visuale, Square / X riporta in pista, Circle / B lancia la striscia chiodata, L3 suona il clacson e R3 accende i fari.</string>
+ <string name="help_split_race"><b>3. Avvia una gara a schermo diviso</b>\nAvvia il gioco e scegli Two Players…. Il giocatore 1 guida con il gamepad 1 o con i comandi touch, il giocatore 2 con il gamepad 2. Nei menu ci si muove con uno qualsiasi dei due pad: la croce sposta la selezione, Cross / A o Options / Menu conferma, Circle / B o Create / View torna indietro.</string>
+ <string name="help_split_driving"><b>Guida</b>\nLo stick sinistro sterza, il grilletto destro accelera e quello sinistro frena. Di base Circle / B è il freno a mano, Square / X lancia la striscia chiodata, Cross / A guarda indietro, Triangle / Y cambia la visuale, R1 / L1 cambiano marcia, Create / View riporta l\'auto in pista, Options / Menu mette in pausa la gara, L3 suona il clacson e R3 accende i fari.</string>
  <string name="help_split_notes"><b>Buono a sapersi</b>\nVibrano solo il gamepad 1 e il telefono: il gioco gestisce un solo dispositivo force feedback. Se i comandi non corrispondono più, per esempio dopo averli ripristinati nel gioco, premi di nuovo Gamepad ATTIVO. Per giocare con la tastiera premi invece Predefinito del gioco. I comandi touch si disattivano in Comandi → Touch.</string>
  <string name="gamepad_vibration">Vibrazione del gamepad</string>
  <string name="gamepad_vibration_note">Disattivata di default. L\'intensità si imposta nel gioco: Options → Controllers → Force Feedback.</string>

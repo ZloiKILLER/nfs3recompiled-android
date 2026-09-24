@@ -4,6 +4,7 @@
 #include <lib/renderer.h>
 #include <lib/gliderenderer.h>
 #include <lib/window.h>
+#include <SDL3/SDL.h>
 #include <cmath>
 #include <cstdlib>
 
@@ -19,6 +20,15 @@ static x86::reg32 s_preferredAtlasSize = 2048;
 void setPreferredAtlasSize(x86::reg32 size)
 {
     s_preferredAtlasSize = size;
+}
+
+bool fullColourTextures()
+{
+    static const bool on = []() {
+        const char* value = SDL_getenv("NFS_TEXTURES32");
+        return !value || SDL_strcmp(value, "0") != 0;
+    }();
+    return on;
 }
 
 /* fitFourThree: x becomes s_fitOffset + x * s_fitScale for everything drawn. */
@@ -642,9 +652,12 @@ static void grRenderBuffer(WinApplication* app, x86::CPU& cpu, GrBuffer_t buffer
     /* The GL path renders into one FBO texture and ignores this entirely --
      * only the software/LFB addressing in Renderer uses the buffer index.  If
      * the game switches to an off-screen buffer to build the rear-view image,
-     * that render lands in the visible frame instead. */
+     * that render lands in the visible frame instead.  Twice a frame in a
+     * race, so traced only with the rest of the Glide layer. */
+#ifdef NFS_TRACE_MSG
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "[MIRROR] grRenderBuffer(%u)", (unsigned)buffer);
-    s_glideRenderer->render(buffer);;
+#endif
+    s_glideRenderer->render(buffer);
 }
 
 static void grBufferClear(WinApplication* app, x86::CPU& cpu, GrColor_t color, GrAlpha_t alpha, x86::reg16 depth)
@@ -1106,6 +1119,11 @@ static void grTexDownloadMipMap(WinApplication* app, x86::CPU& cpu, GrChipID_t t
     {
         s_glideRenderer->setTextureData(tmu, startAddress, &app->getMemory<const void>(info ->data),
                                         info->largeLod, info->smallLod, TF_ARGB_4444);
+    }
+    else if (info->format == kTexFmtArgb8888)
+    {
+        s_glideRenderer->setTextureData(tmu, startAddress, &app->getMemory<const void>(info ->data),
+                                        info->largeLod, info->smallLod, TF_ARGB_8888);
     }
     else
     {

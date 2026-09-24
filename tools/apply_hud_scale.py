@@ -14,7 +14,22 @@ height, and the game takes that for granted:
   [0x791b54], which every HUD caller of sub_4d1390 passes on -- are the width
   times four constants, worked out once a race starts (sub_484b70);
 - so are the sizes of the points on the map, the cars and the markers sub_48d4c0
-  draws ([0x7930d8] to [0x793104]), in sub_48d110.
+  draws ([0x7930d8] to [0x793104]), in sub_48d110;
+- and the tables: the columns of the racer's standings and the cop's table of
+  speeders and their widths ([0x7925c8], [0x7925cc]), worked out in sub_48aa40
+  from the screen's size it is handed ([0x55d6b8] and [0x55d6bc]), and the
+  insets of their rows, in sub_48ae70 and sub_48a660.
+
+The cop's table also spaced its rows at one and a half times the height of
+its text -- 20/13, at 0x481cbe for its panel and 0x48a70e for its rows -- where
+the racer's standings sit close together.  The Modern Patch has 12.414/13
+there ("Compact cop's speeds table.  Now it looks like the standard opponents
+list"), and so does this.  Its last column originally uses the format
+``%d %s - %d %s %s`` (current speed, excess and "over").  The compact table
+uses the game's existing ``%d %s`` format instead, both for each live row and
+for the two worst-case strings used to calculate the panel width.  Leaving the
+extra variadic arguments on the stack is harmless: the shorter format simply
+does not consume them, and the original caller still performs the same cleanup.
 
 Make the screen wider and every one of them grows with it, so a 16:9 race came
 out with a third more border, and text a third larger, than it was drawn with.
@@ -43,6 +58,25 @@ FILD_WIDTH = ("    cpu.fpu.push(x86::Float(x86::sreg32(" + WIDTH + ")));",
 FILD_HEIGHT = ("    cpu.fpu.push(x86::Float(x86::sreg32(" + HEIGHT + ")));",
                "    cpu.fpu.push(x86::Float(x86::sreg32(hudReferenceHeight(app))));"
                " /* port: 4:3 proportions, was [0x7cdacc] */")
+# sub_48aa40 keeps the screen's size it is handed as two floats.
+FLD_WIDTH_ARG = ("    cpu.fpu.push(x86::Float(app->getMemory<float>(x86::reg32(5625528) /* 0x55d6b8 */)));",
+                 "    cpu.fpu.push(x86::Float(x86::sreg32(hudReferenceWidth(app))));"
+                 " /* port: 4:3 proportions, was [0x55d6b8], the screen's width */")
+FLD_HEIGHT_ARG = ("    cpu.fpu.push(x86::Float(app->getMemory<float>(x86::reg32(5625532) /* 0x55d6bc */)));",
+                  "    cpu.fpu.push(x86::Float(x86::sreg32(hudReferenceHeight(app))));"
+                  " /* port: 4:3 proportions, was [0x55d6bc], the screen's height */")
+# The cop's table, its rows 12.414/13 of a text line apart instead of 20/13.
+COP_ROWS = lambda address: (
+    "    cpu.fpu.st(0) *= x86::Float(app->getMemory<double>(x86::reg32(%d) /* 0x%x */));" % (address, address),
+    "    cpu.fpu.st(0) *= x86::Float(12.414); /* port: the cop's rows as close as the Modern Patch has them,"
+    " was [0x%x] = 20 */" % address)
+# The cop table's live speeding row, and its MPH/KPH worst-case width probes.
+# Only the format pointer changes; the game's sprintf call and stack cleanup
+# stay byte-for-byte equivalent to the original call site.
+COP_SPEED = lambda original: (
+    "    app->getMemory<x86::reg32>(cpu.esp-4) = %d /*0x%x*/;" % (original, original),
+    "    app->getMemory<x86::reg32>(cpu.esp-4) = 5486168 /*0x53b658*/;"
+    " /* port: compact cop table, current speed only */")
 # sub_484b70 loads the width into eax, compares it against 640 and scales the
 # four text sizes by it.
 MOV_WIDTH = ("    cpu.eax = " + WIDTH + ";",
@@ -75,6 +109,18 @@ READS = [
     ("00484b7a", MOV_WIDTH),
     # The sizes of the points on the map, worked out as a race starts.
     ("0048d40a", FILD_WIDTH),
+    # The tables: the cop's speeders (sub_48a660), their columns and widths
+    # (sub_48aa40) and the racer's standings (sub_48ae70).
+    ("0048a670", FILD_WIDTH), ("0048a714", FILD_WIDTH),
+    ("0048ab47", FLD_WIDTH_ARG), ("0048abfa", FLD_WIDTH_ARG), ("0048ac06", FILD_WIDTH),
+    ("0048ac53", FLD_HEIGHT_ARG), ("0048ae0f", FILD_WIDTH),
+    ("0048ae87", FILD_WIDTH), ("0048aea0", FILD_WIDTH), ("0048aecb", FLD_HEIGHT_ARG),
+    # The cop's table, spaced like the racer's.
+    ("00481cbe", COP_ROWS(0x53b598)), ("0048a70e", COP_ROWS(0x53b8cc)),
+    # Drop the "- N MPH/KPH over" suffix from live rows and from the strings
+    # used to size the panel, so its right edge contracts with the text.
+    ("004852da", COP_SPEED(0x53b644)),
+    ("0048ad85", COP_SPEED(0x53b8e4)), ("0048adc4", COP_SPEED(0x53b8e4)),
 ]
 
 DECLARATIONS = ("x86::reg32 hudReferenceWidth(win32::WinApplication* app);\n"
@@ -95,7 +141,11 @@ def apply(root):
 
 def apply_file(root, name, reads):
     path = root / "src/nfs3hp/disassembly" / name
-    text = path.read_text(newline="")
+    # pathlib only gained the newline parameter in newer Python releases;
+    # keep the generator usable with the Python bundled by older Android/CI
+    # environments while preserving the generated file's original endings.
+    with path.open("r", newline="") as source:
+        text = source.read()
     eol = "\r\n" if text.count("\r\n") * 2 > text.count("\n") else "\n"
 
     def native(s):
@@ -132,7 +182,8 @@ def apply_file(root, name, reads):
             raise RuntimeError("%s: unexpected shape at %s" % (name, address))
         text = text[:start] + block.replace(old, new, 1) + text[stop:]
 
-    path.write_text(text, newline="")
+    with path.open("w", newline="") as output:
+        output.write(text)
 
 
 if __name__ == "__main__":

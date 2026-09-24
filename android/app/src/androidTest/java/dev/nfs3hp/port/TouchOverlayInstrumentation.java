@@ -87,20 +87,24 @@ public final class TouchOverlayInstrumentation extends Instrumentation {
                     touch(view,MotionEvent.ACTION_DOWN,new int[]{51},spikes.centerX(),spikes.centerY());
                     require(held(view).containsKey(spikeKey),"spike strip emits its configured key");
                     view.releaseAll();
-                    /* The menu layout is what the game asks for when it is not racing:
-                     * back and the keyboard, and nothing a race needs. */
+                    /* The menu layout is what the game asks for when it is not
+                     * racing, and it has nothing on it: a menu is worked with the
+                     * screen itself, the system's back is the game's Escape, and
+                     * the keyboard comes up by itself while the game takes a name. */
                     view.setMenuMode(true);
-                    bounds(view,"back");bounds(view,"keyboard");
-                    require(TouchRefinementChecks.bounds(view,"headlights","box")==null
+                    require(TouchRefinementChecks.bounds(view,"back","box")==null
+                        &&TouchRefinementChecks.bounds(view,"keyboard","box")==null
+                        &&TouchRefinementChecks.bounds(view,"headlights","box")==null
                         &&TouchRefinementChecks.bounds(view,"recover","box")==null
                         &&TouchRefinementChecks.bounds(view,"steer_left","box")==null
-                        &&TouchRefinementChecks.bounds(view,"accelerate","box")==null,"the menu layout leaves the race behind");
+                        &&TouchRefinementChecks.bounds(view,"accelerate","box")==null,
+                        "the menu layout is the menu, with nothing of ours on it");
                     require((boolean)field(view,"menuMode"),"the game decides which layout is up");
                     view.setMenuMode(false);
                     view.releaseAll();require(held(view).isEmpty(),"pause clears key state");
                     android.content.SharedPreferences prefs=GamePreferences.get(getTargetContext());
                     Map<String,?> saved=prefs.getAll();
-                    ArrayList<String> changed=new ArrayList<>(Arrays.asList(GamePreferences.TOUCH_SIZE,GamePreferences.TOUCH_EDGE,GamePreferences.TOUCH_RAISE,GamePreferences.TOUCH_LAYOUT));
+                    ArrayList<String> changed=new ArrayList<>(Arrays.asList(GamePreferences.TOUCH_SIZE,GamePreferences.TOUCH_EDGE,GamePreferences.TOUCH_LAYOUT));
                     /* What is checked here is the default arrangement: controls a tester
                      * dragged in the layout editor are set aside for the check and put
                      * back afterwards exactly as they were. */
@@ -108,8 +112,7 @@ public final class TouchOverlayInstrumentation extends Instrumentation {
                     for(String k:saved.keySet()) if(k.startsWith("touch_position_")) { changed.add(k);setAside.remove(k); }
                     setAside.commit();
                     try {
-                        prefs.edit().putInt(GamePreferences.TOUCH_SIZE,115).putInt(GamePreferences.TOUCH_EDGE,32)
-                            .putInt(GamePreferences.TOUCH_RAISE,24).apply();
+                        prefs.edit().putInt(GamePreferences.TOUCH_SIZE,115).putInt(GamePreferences.TOUCH_EDGE,32).apply();
                         // Both layouts, both ways round.
                         for(boolean menu:new boolean[]{false,true})
                         for(String layout:new String[]{GamePreferences.TOUCH_LAYOUT_STANDARD,GamePreferences.TOUCH_LAYOUT_MIRRORED}) {
@@ -117,11 +120,14 @@ public final class TouchOverlayInstrumentation extends Instrumentation {
                             view.setMenuMode(menu);
                             view.layout(0,0,640,340);view.refreshSettings();
                             ArrayList<RectF> boxes=new ArrayList<>();
+                            ArrayList<String> names=new ArrayList<>();
                             for(Object control:(Iterable<?>)field(view,"controls")) {
+                                String name=(String)field(control,"action");
                                 RectF box=(RectF)field(control,"box");
-                                require(box.left>=0&&box.top>=0&&box.right<=640&&box.bottom<=340,"controls remain on screen");
-                                for(RectF other:boxes) require(!RectF.intersects(box,other),"controls do not overlap");
-                                boxes.add(box);
+                                require(box.left>=0&&box.top>=0&&box.right<=640&&box.bottom<=340,name+" remains on screen");
+                                for(int i=0;i<boxes.size();++i) require(!RectF.intersects(box,boxes.get(i)),
+                                    layout+" "+(menu?"menu":"race")+": "+name+" "+box+" does not overlap "+names.get(i)+" "+boxes.get(i));
+                                boxes.add(box);names.add(name);
                             }
                         }
                     } finally {
@@ -191,12 +197,9 @@ public final class TouchOverlayInstrumentation extends Instrumentation {
             runOnMainSync(()->activity.onBackPressed());waitForIdleSync();
             require(activity.findViewById(R.id.edit_touch_layout)!=null,"back from touch keys returns to touch settings");
             runOnMainSync(()->activity.findViewById(R.id.edit_touch_layout).performClick());waitForIdleSync();
+            /* One layout to arrange: the racing one.  The menus carry nothing of
+             * ours any more, so the editor no longer asks which is being edited. */
             capture("ui-touch-editor-race.png");
-            runOnMainSync(()->{
-                android.widget.Spinner mode=activity.findViewById(R.id.editor_mode);
-                if(mode.getAdapter().getCount()>1)mode.setSelection(1);
-            });waitForIdleSync();
-            capture("ui-touch-editor-menu.png");
             runOnMainSync(()->activity.findViewById(R.id.editor_done).performClick());waitForIdleSync();
             runOnMainSync(()->activity.onBackPressed());waitForIdleSync();
             runOnMainSync(()->activity.findViewById(R.id.gamepad_controls_button).performClick());waitForIdleSync();

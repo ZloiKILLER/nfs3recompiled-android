@@ -353,7 +353,7 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
 
         /* Control activity re-creation */
         if (mSDLMainFinished || mActivityCreated) {
-              boolean allow_recreate = SDLActivity.nativeAllowRecreateActivity();
+              boolean allow_recreate = allowActivityRecreation();
               if (mSDLMainFinished) {
                   Log.v(TAG, "SDL main() finished");
               }
@@ -429,7 +429,7 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
         {
             int run_count = SDLActivity.nativeCheckSDLThreadCounter(); /* get and increment a native counter */
             if (run_count != 0) {
-                boolean allow_recreate = SDLActivity.nativeAllowRecreateActivity();
+                boolean allow_recreate = allowActivityRecreation();
                 if (allow_recreate) {
                     Log.v(TAG, "activity re-created // run_count: " + run_count);
                 } else {
@@ -498,6 +498,13 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
                 SDLActivity.onNativeDropFile(filename);
             }
         }
+    }
+
+    /** Ports that cleanly return from SDL_main can opt into another run in the
+     * same Android process.  SDL's default remains unchanged for applications
+     * that rely on process termination after main returns. */
+    protected boolean allowActivityRecreation() {
+        return SDLActivity.nativeAllowRecreateActivity();
     }
 
     protected void pauseNativeThread() {
@@ -1417,6 +1424,14 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
 
             if (mTextEdit == null) {
                 mTextEdit = new SDLDummyEdit(getContext());
+                /* The field is there to catch what the keyboard types and is
+                 * never meant to be seen.  Focused, Android draws its own
+                 * highlight around it -- a green frame around the whole
+                 * picture, since the field is laid out where the game says the
+                 * text is.  Nothing is navigated to it, so the highlight has
+                 * nothing to tell anyone. */
+                mTextEdit.setDefaultFocusHighlightEnabled(false);
+                mTextEdit.setBackground(null);
 
                 mLayout.addView(mTextEdit, params);
             } else {

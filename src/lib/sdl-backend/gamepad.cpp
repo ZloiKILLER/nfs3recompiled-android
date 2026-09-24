@@ -433,6 +433,21 @@ static const SDL_Scancode* touchAxisKeys()
     return s_keys.data();
 }
 
+/* Whether the on-screen controls drive as the keyboard they are, which is what
+ * the launcher binds them as when no pad has the first slot (NFS_TOUCH_DRIVE,
+ * ControlProfile.driveWith).  Then the game reads those keys itself, steers
+ * them its own way and can record and replay a race driven on them, and none of
+ * the folding below belongs: it would put the same press on the axes as well,
+ * and the game would be driven twice over. */
+static bool touchDrivesAsKeys()
+{
+    static const bool s_keys = []() {
+        const char* how = SDL_getenv("NFS_TOUCH_DRIVE");
+        return how && SDL_strcmp(how, "keys") == 0;
+    }();
+    return s_keys;
+}
+
 /* Whether the touch overlay's steering buttons are what steers player one, for
  * Gamepad::touchSteering(): set while one of them is held, cleared once the
  * pad steers the slot's axis itself, left alone while nothing steers -- so the
@@ -483,24 +498,25 @@ struct PadButton
     /* Only for a variable that is not set at all -- a build without the
      * launcher.  The launcher's own defaults, GamepadButtons.java. */
     const char*       defaults[Gamepad::kSlotCount];
+    const char*       menu;         // the same, for NFS_GAMEPAD<n>_<BUTTON>_UI
 };
 
 const PadButton s_padButtons[] =
 {
-    { "SOUTH",          SDL_GAMEPAD_BUTTON_SOUTH,          { "Space",  "D"      } },
-    { "EAST",           SDL_GAMEPAD_BUTTON_EAST,           { "S",      "P"      } },
-    { "WEST",           SDL_GAMEPAD_BUTTON_WEST,           { "R",      "X"      } },
-    { "NORTH",          SDL_GAMEPAD_BUTTON_NORTH,          { "C",      "Q"      } },
-    { "LEFT_SHOULDER",  SDL_GAMEPAD_BUTTON_LEFT_SHOULDER,  { "Z",      "G"      } },
-    { "RIGHT_SHOULDER", SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER, { "A",      "F"      } },
-    { "LEFT_STICK",     SDL_GAMEPAD_BUTTON_LEFT_STICK,     { "H",      "W"      } },
-    { "RIGHT_STICK",    SDL_GAMEPAD_BUTTON_RIGHT_STICK,    { "L",      "Y"      } },
-    { "BACK",           SDL_GAMEPAD_BUTTON_BACK,           { "Escape", "Escape" } },
-    { "START",          SDL_GAMEPAD_BUTTON_START,          { "Return", "Return" } },
-    { "DPAD_UP",        SDL_GAMEPAD_BUTTON_DPAD_UP,        { "Up",     "Up"     } },
-    { "DPAD_DOWN",      SDL_GAMEPAD_BUTTON_DPAD_DOWN,      { "Down",   "Down"   } },
-    { "DPAD_LEFT",      SDL_GAMEPAD_BUTTON_DPAD_LEFT,      { "Left",   "Left"   } },
-    { "DPAD_RIGHT",     SDL_GAMEPAD_BUTTON_DPAD_RIGHT,     { "Right",  "Right"  } },
+    { "SOUTH",          SDL_GAMEPAD_BUTTON_SOUTH,          { "B",      "E"      }, "Return" },
+    { "EAST",           SDL_GAMEPAD_BUTTON_EAST,           { "Space",  "D"      }, "Escape" },
+    { "WEST",           SDL_GAMEPAD_BUTTON_WEST,           { "S",      "P"      }, ""       },
+    { "NORTH",          SDL_GAMEPAD_BUTTON_NORTH,          { "C",      "Q"      }, ""       },
+    { "LEFT_SHOULDER",  SDL_GAMEPAD_BUTTON_LEFT_SHOULDER,  { "Z",      "G"      }, ""       },
+    { "RIGHT_SHOULDER", SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER, { "A",      "F"      }, ""       },
+    { "LEFT_STICK",     SDL_GAMEPAD_BUTTON_LEFT_STICK,     { "H",      "W"      }, ""       },
+    { "RIGHT_STICK",    SDL_GAMEPAD_BUTTON_RIGHT_STICK,    { "L",      "Y"      }, ""       },
+    { "BACK",           SDL_GAMEPAD_BUTTON_BACK,           { "R",      "X"      }, "Escape" },
+    { "START",          SDL_GAMEPAD_BUTTON_START,          { "Escape", "Escape" }, "Return" },
+    { "DPAD_UP",        SDL_GAMEPAD_BUTTON_DPAD_UP,        { "Up",     "Up"     }, "Up"     },
+    { "DPAD_DOWN",      SDL_GAMEPAD_BUTTON_DPAD_DOWN,      { "Down",   "Down"   }, "Down"   },
+    { "DPAD_LEFT",      SDL_GAMEPAD_BUTTON_DPAD_LEFT,      { "Left",   "Left"   }, "Left"   },
+    { "DPAD_RIGHT",     SDL_GAMEPAD_BUTTON_DPAD_RIGHT,     { "Right",  "Right"  }, "Right"  },
 };
 constexpr size_t kPadButtons = SDL_arraysize(s_padButtons);
 
@@ -536,34 +552,55 @@ ButtonBinding parseBinding(const char* value)
     return binding;
 }
 
-const ButtonBinding& buttonBinding(x86::reg32 slot, size_t button)
+/* What is on the screen, as the game layer sees it (Gamepad::context): a race
+ * being driven, or a menu -- which a replay counts as, since nobody is driving
+ * one either.  A button means one thing while driving and another outside it,
+ * the way the on-screen controls have two layouts, and from the same signal. */
+std::atomic<int> s_context{int(Gamepad::Context::Menu)};
+
+/* Both meanings of every button of every slot: the racing one the launcher
+ * sets (NFS_GAMEPAD<n>_<BUTTON>) and the one a menu and a replay get
+ * (..._UI), which the launcher fixes -- the lower face button confirms, the
+ * right one goes back, the D-pad moves the highlight, the rest say nothing. */
+const ButtonBinding& buttonBinding(x86::reg32 slot, size_t button, Gamepad::Context context)
 {
     static const auto s_bindings = []() {
-        std::array<std::array<ButtonBinding, kPadButtons>, Gamepad::kSlotCount> table;
+        std::array<std::array<std::array<ButtonBinding, kPadButtons>, 2>, Gamepad::kSlotCount> table;
         for (x86::reg32 slot = 0; slot < Gamepad::kSlotCount; ++slot)
         {
             std::string summary;
             for (size_t i = 0; i < kPadButtons; ++i)
             {
-                char variable[64];
+                char variable[72];
                 SDL_snprintf(variable, sizeof(variable), "NFS_GAMEPAD%u_%s",
                              unsigned(slot) + 1, s_padButtons[i].name);
                 // Unset means the default; set but empty means nothing.
                 const char* value = SDL_getenv(variable);
                 if (!value)
                     value = s_padButtons[i].defaults[slot];
-                table[slot][i] = parseBinding(value);
+                table[slot][0][i] = parseBinding(value);
+                SDL_snprintf(variable, sizeof(variable), "NFS_GAMEPAD%u_%s_UI",
+                             unsigned(slot) + 1, s_padButtons[i].name);
+                const char* menu = SDL_getenv(variable);
+                if (!menu)
+                    menu = s_padButtons[i].menu;
+                table[slot][1][i] = parseBinding(menu);
                 summary += ' ';
                 summary += s_padButtons[i].name;
                 summary += '=';
                 summary += value;
+                if (*menu)
+                {
+                    summary += '/';
+                    summary += menu;
+                }
             }
-            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "gamepad slot %u buttons:%s",
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "gamepad slot %u buttons (race/menu):%s",
                         unsigned(slot), summary.c_str());
         }
         return table;
     }();
-    return s_bindings[slot][button];
+    return s_bindings[slot][context == Gamepad::Context::Race ? 0 : 1][button];
 }
 
 /* How many held buttons, across both pads, are keeping each key down.  Two
@@ -593,6 +630,10 @@ struct SlotButtons
     SDL_JoystickID pad = 0;
     bool           held[kPadButtons] = {};
     bool           sent[kPadButtons] = {};    // its key went down and has not come up
+    /* Which key that was.  A button held across the end of a race sends one
+     * key and would otherwise be let go of by another, leaving the first one
+     * down for good. */
+    ButtonBinding  sentAs[kPadButtons] = {};
 };
 SlotButtons s_slotButtons[Gamepad::kSlotCount];
 
@@ -607,8 +648,9 @@ bool muteable(const ButtonBinding& binding)
 
 void updateButtonKeys()
 {
+    const Gamepad::Context context = Gamepad::Context(s_context.load(std::memory_order_relaxed));
     // The first frame resolves and logs every binding, before anything is pressed.
-    buttonBinding(0, 0);
+    buttonBinding(0, 0, context);
     const bool muted = s_gameKeysMuted.load(std::memory_order_relaxed);
     for (x86::reg32 slot = 0; slot < Gamepad::kSlotCount; ++slot)
     {
@@ -621,7 +663,7 @@ void updateButtonKeys()
             for (size_t i = 0; i < kPadButtons; ++i)
             {
                 if (buttons.sent[i])
-                    sendKey(buttonBinding(slot, i), false);
+                    sendKey(buttons.sentAs[i], false);
                 buttons.held[i] = buttons.sent[i] = false;
             }
             buttons.pad = source.id;
@@ -630,24 +672,28 @@ void updateButtonKeys()
             continue;
         for (size_t i = 0; i < kPadButtons; ++i)
         {
-            const ButtonBinding& binding = buttonBinding(slot, i);
-            if (muted && buttons.sent[i] && muteable(binding))
+            const ButtonBinding& binding = buttonBinding(slot, i, context);
+            /* A key that is down goes up as soon as it stops being what this
+             * button means -- muted, or a race gave way to a menu under a
+             * thumb that never moved. */
+            if (buttons.sent[i]
+                && ((muted && muteable(buttons.sentAs[i])) || buttons.sentAs[i].scancode != binding.scancode))
             {
-                sendKey(binding, false);
+                sendKey(buttons.sentAs[i], false);
                 buttons.sent[i] = false;
             }
             const bool down = SDL_GetGamepadButton(source.gamepad, s_padButtons[i].button);
-            if (down == buttons.held[i])
-                continue;
+            const bool changed = down != buttons.held[i];
             buttons.held[i] = down;
-            if (down && !(muted && muteable(binding)))
+            if (down && !buttons.sent[i] && changed && !(muted && muteable(binding)))
             {
                 sendKey(binding, true);
+                buttons.sentAs[i] = binding;
                 buttons.sent[i] = true;
             }
             else if (!down && buttons.sent[i])
             {
-                sendKey(binding, false);
+                sendKey(buttons.sentAs[i], false);
                 buttons.sent[i] = false;
             }
         }
@@ -659,6 +705,11 @@ void updateButtonKeys()
 void Gamepad::muteGameKeys(bool muted)
 {
     s_gameKeysMuted.store(muted, std::memory_order_relaxed);
+}
+
+void Gamepad::context(Context context)
+{
+    s_context.store(int(context), std::memory_order_relaxed);
 }
 
 Gamepad::Gamepad(x86::reg32 gamepadIndex)
@@ -724,9 +775,11 @@ GamepadState Gamepad::getState() const
         result.axes[kAxisPedals] = x86::sreg16(
               int(SDL_GetGamepadAxis(slot->gamepad, SDL_GAMEPAD_AXIS_LEFT_TRIGGER))
             - int(SDL_GetGamepadAxis(slot->gamepad, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER)));
+        /* A button put on an axis steers or works a pedal, which is a racing
+         * thing whatever else is on the screen. */
         for (size_t i = 0; i < kPadButtons; ++i)
         {
-            const ButtonBinding& binding = buttonBinding(m_slot, i);
+            const ButtonBinding& binding = buttonBinding(m_slot, i, Context::Race);
             if (binding.axis >= 0 && SDL_GetGamepadButton(slot->gamepad, s_padButtons[i].button))
                 blendAxis(result, x86::reg32(binding.axis), binding.direction * 32767);
         }
@@ -742,7 +795,7 @@ GamepadState Gamepad::getState() const
             result.axes[kAxisPedals] = SDL_GetJoystickAxis(pad, 1);
     }
 
-    if (m_slot == 0)
+    if (m_slot == 0 && !touchDrivesAsKeys())
     {
         const bool* keys = SDL_GetKeyboardState(nullptr);
         const SDL_Scancode* touch = touchAxisKeys();

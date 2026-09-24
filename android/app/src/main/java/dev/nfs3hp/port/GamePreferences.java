@@ -53,11 +53,16 @@ final class GamePreferences
     static final String TOUCH_ENABLED = "touch_enabled";
     static final String TOUCH_MODE = "touch_mode";
     static final String TOUCH_LAYOUT = "touch_layout";
+    /* How a finger works the game's pointer in the menus: TAP puts the cursor
+     * where it lands and clicks on a tap (TouchPointer), TOUCHPAD moves it by as
+     * far as the finger slides (TouchpadPointer).  Read as the game starts. */
+    static final String TOUCH_POINTER = "touch_pointer";
+    static final String TOUCH_POINTER_TAP = "tap";
+    static final String TOUCH_POINTER_TOUCHPAD = "touchpad";
     static final String TOUCH_OPACITY = "touch_opacity";
     static final String TOUCH_SIZE = "touch_size";
     static final String TOUCH_AUTO_HIDE = "touch_auto_hide";
     static final String TOUCH_EDGE = "touch_edge_spacing";
-    static final String TOUCH_RAISE = "touch_raise_controls";
     /* Whether the save archive carries the game's own settings.  Remembered
      * rather than read off the checkbox: the data screen is rebuilt every time
      * the system file picker returns, which used to blank the box and make a

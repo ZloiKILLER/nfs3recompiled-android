@@ -11466,6 +11466,7 @@ start:
     if (cpu.terminate) return;
     // 00471128  89c3                   -mov ebx, eax
     cpu.ebx = cpu.eax;
+    cpu.edx = 0; /* port: player one, unless an axis on the pad says otherwise */
     // 0047112a  31c0                   +xor eax, eax
     cpu.clear_co();
     cpu.set_szp((cpu.eax ^= x86::reg32(x86::sreg32(cpu.eax))));
@@ -11574,6 +11575,7 @@ L_0x00471146:
     if (cpu.terminate) return;
     // 00471177  89c6                   -mov esi, eax
     cpu.esi = cpu.eax;
+    cpu.edx = app->getMemory<x86::reg32>(x86::reg32(7329016) /* 0x6fd4f8 */); /* port: the local player, unless an axis on the pad says otherwise */
     // 00471179  31c0                   +xor eax, eax
     cpu.clear_co();
     cpu.set_szp((cpu.eax ^= x86::reg32(x86::sreg32(cpu.eax))));

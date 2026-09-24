@@ -15,11 +15,15 @@
 
     <uses-permission android:name="android.permission.VIBRATE" />
 
+    <!-- resizeableActivity is the default at this target, and is said here
+         because a desktop depends on it: in Samsung DeX the app is a window on
+         a monitor, and a window the player can size is the point. -->
     <application android:label="${launcherAppLabel}"
         android:icon="@mipmap/ic_launcher"
         android:allowBackup="true"
         android:theme="@style/AppTheme"
         android:enableOnBackInvokedCallback="false"
+        android:resizeableActivity="true"
         android:hardwareAccelerated="true" >
 
         <!-- Launcher entry point: checks for imported game data and, on first
@@ -30,7 +34,7 @@
             android:label="@string/app_name"
             android:exported="true"
             android:screenOrientation="landscape"
-            android:configChanges="orientation|screenSize|keyboardHidden" >
+            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|density|uiMode|keyboardHidden" >
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
@@ -44,20 +48,43 @@
             android:theme="@style/LauncherTheme"
             android:label="@string/launcher_title"
             android:screenOrientation="landscape"
-            android:configChanges="orientation|screenSize|keyboardHidden"
-            android:exported="false" />
+            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|density|uiMode|keyboardHidden"
+            android:exported="false" >
+            <!-- Where there are windows rather than a screen, this one opens as
+                 large as the display allows and is sized from there.  The
+                 system keeps a freeform window inside the display, so asking
+                 for more than any monitor has is asking for all of it. -->
+            <layout android:defaultWidth="4096dp" android:defaultHeight="4096dp"
+                android:minWidth="480dp" android:minHeight="320dp"
+                android:gravity="center" />
+        </activity>
 
         <!-- The actual game, an SDLActivity subclass.  Not a launcher target:
              LauncherActivity starts it once game data is confirmed present. -->
+        <!-- The game runs in a process of its own.  SDL and the virtual machine
+             under it set themselves up once per process and cannot do it twice:
+             a second race started without the process ending in between died in
+             SDLThread with SEGV_ACCERR a tenth of a second in, which the player
+             saw as the game not opening on the first press of Play.  With its
+             own process the game starts clean every time, and ending it leaves
+             the launcher, which stays in the main process, where it was. -->
         <activity android:name="dev.nfs3hp.port.NFS3Activity"
+            android:process=":game"
             android:label="@string/app_name"
             android:alwaysRetainTaskState="true"
-            android:launchMode="singleInstance"
             android:screenOrientation="landscape"
             android:configChanges="layoutDirection|locale|grammaticalGender|fontScale|fontWeightAdjustment|orientation|uiMode|screenLayout|screenSize|smallestScreenSize|keyboard|keyboardHidden|navigation"
             android:preferMinimalPostProcessing="true"
             android:exported="false"
             >
+            <!-- As the launcher: the game's window opens filling the display
+                 and the player sizes it from there.  The landscape lock above
+                 is a phone's; on a desktop NFS3Activity lets it go, or the
+                 system would hand the window one shape and letterbox the rest
+                 of it. -->
+            <layout android:defaultWidth="4096dp" android:defaultHeight="4096dp"
+                android:minWidth="480dp" android:minHeight="320dp"
+                android:gravity="center" />
             <intent-filter>
                 <action android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED" />
             </intent-filter>

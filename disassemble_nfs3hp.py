@@ -108,6 +108,10 @@ if __name__ == '__main__':
     from tools.apply_menu_unlock import apply as apply_menu_unlock
     apply_menu_unlock(Path(__file__).resolve().parent)
 
+    # Download Car: off both car screens, there being nothing left to download.
+    from tools.apply_hide_download import apply as apply_hide_download
+    apply_hide_download(Path(__file__).resolve().parent)
+
     # Car detail: every car's texture at the player's size, a larger transform
     # buffer and wheel spin kept per car, so split screen and the mirror match.
     from tools.apply_car_detail import apply as apply_car_detail
@@ -150,3 +154,23 @@ if __name__ == '__main__':
     # interface fitted to the screen it is drawn on.
     from tools.apply_widescreen import apply as apply_widescreen
     apply_widescreen(Path(__file__).resolve().parent)
+
+    # Music: a track is streamed from its own file instead of from a copy the
+    # game makes of it at every race start.
+    from tools.apply_music_stream import apply as apply_music_stream
+    apply_music_stream(Path(__file__).resolve().parent)
+
+    # Text entry: the phone's keyboard comes up by itself while the game waits
+    # for a name to be typed.
+    from tools.apply_text_entry import apply as apply_text_entry
+    apply_text_entry(Path(__file__).resolve().parent)
+
+    # Force feedback: player one's car keeps its effects when the on-screen
+    # controls are bound as keys, which leaves no axis on the pad to claim them.
+    from tools.apply_force_feedback_car import apply as apply_force_feedback_car
+    apply_force_feedback_car(Path(__file__).resolve().parent)
+
+    # Full colour: the Voodoo2 driver takes the game's 32-bit texture format,
+    # and the Screen Size list shows the depth a race is drawn in.
+    from tools.apply_full_colour import apply as apply_full_colour
+    apply_full_colour(Path(__file__).resolve().parent)

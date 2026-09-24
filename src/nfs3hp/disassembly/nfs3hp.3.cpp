@@ -3,6 +3,9 @@
 
 namespace nfs3hp
 {
+// Port (tools/apply_music_stream.py): defined in nfs3hp_main.cpp.
+void musicIndexOpened(win32::WinApplication* app, x86::reg32 path);
+void musicStreamFile(win32::WinApplication* app, x86::reg32 path);
 
 /* align: skip 0x90 */
 void Application::sub_4103a0(WinApplication* app, x86::CPU& cpu)
@@ -1616,6 +1619,7 @@ L_0x004108ff:
     // 00410905  8d457e                 -lea eax, [ebp + 0x7e]
     cpu.eax = x86::reg32(cpu.ebp + x86::reg32(126) /* 0x7e */);
     // 00410908  e8b3050d00             -call 0x4e0ec0
+    musicIndexOpened(app, cpu.eax); /* port: the track's name, as the game spells it */
     cpu.esp -= 4;
     sub_4e0ec0(app, cpu);
     if (cpu.terminate) return;
@@ -1754,6 +1758,7 @@ L_0x0041095f:
     // 00410960  a198255500             -mov eax, dword ptr [0x552598]
     cpu.eax = app->getMemory<x86::reg32>(x86::reg32(5580184) /* 0x552598 */);
     // 00410965  e8a2650d00             -call 0x4e6f0c
+    musicStreamFile(app, cpu.edx); /* port: the track itself, not a copy of it */
     cpu.esp -= 4;
     sub_4e6f0c(app, cpu);
     if (cpu.terminate) return;

@@ -12,12 +12,9 @@
 
  <!-- Touch layout editor. -->
  <string name="editor_button_size">Button: %1$d%%</string>
- <string name="editor_touch_zone">Touch zone: %1$d%%</string>
- <string name="editor_mode_race">Race</string>
- <string name="editor_mode_menu">Menu</string>
  <string name="editor_reset_title">Reset this layout?</string>
- <string name="editor_reset_message">Restore default positions, button sizes and touch zones for this layout.</string>
- <string name="edit_touch_layout">Edit positions &amp; touch zones</string>
+ <string name="editor_reset_message">Restore default positions and button sizes for this layout.</string>
+ <string name="edit_touch_layout">Edit positions &amp; sizes</string>
  <string name="editor_done">Done</string>
  <string name="editor_reset">Reset layout</string>
  <string name="editor_select_control">Select a control</string>
@@ -31,6 +28,9 @@
  <string name="data_set_active_suffix"> (active)</string>
  <string name="error_external_storage">External storage is not available</string>
  <string name="error_import_incomplete">The imported data is missing the expected files</string>
+ <string name="data_missing_title">Game data incomplete</string>
+ <string name="data_missing_message">The imported data lacks files the game needs (%1$d):\n\n%2$s\n\nThe game stops with “OPEN FAILED” as soon as it needs one of them. Import the FEDATA and GAMEDATA folders again from the disc or its image.</string>
+ <string name="data_missing_more">…and %1$d more</string>
  <string name="error_data_set_incomplete">The selected data set is incomplete</string>
  <string name="importer_open_folder_failed">Cannot open the selected folder</string>
  <string name="importer_missing_subfolder">The selected folder has no \'%1$s\' subfolder — pick the folder that directly contains fedata and gamedata (e.g. the CD root).</string>

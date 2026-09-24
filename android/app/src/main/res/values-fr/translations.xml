@@ -9,12 +9,7 @@
 
  <string name="checking_game_data">Vérification des données du jeu…</string>
  <string name="pick_data_folder">Choisissez le dossier de données NFS3…</string>
- <plurals name="importing_progress">
-  <item quantity="one">Importation de %1$s\n%2$d Mo copiés, %3$d fichier</item>
-  <item quantity="many">Importation de %1$s
-%2$d Mo copiés, %3$d de fichiers</item>
-  <item quantity="other">Importation de %1$s\n%2$d Mo copiés, %3$d fichiers</item>
- </plurals>
+ <string name="importing_percent">Importation de %1$s\n%2$d %%</string>
  <string name="import_failed">Échec de l\'importation : %1$s</string>
  <string name="import_hint">Choisissez le dossier qui contient directement \'fedata\' et \'gamedata\' (par exemple la racine du CD ou une copie).</string>
  <string name="launcher_title">Lanceur Need For Speed III</string>
@@ -60,6 +55,10 @@
  <string name="touch_mode_wheel">Volant (bientôt)</string>
  <string name="touch_mode_tilt">Direction par inclinaison (bientôt)</string>
  <string name="touch_layout_label">Disposition des boutons</string>
+ <string name="touch_pointer_label">Pointeur dans les menus</string>
+ <string name="touch_pointer_tap">Là où le doigt touche</string>
+ <string name="touch_pointer_touchpad">Pavé tactile</string>
+ <string name="touch_pointer_note">Pavé tactile : glissez n\'importe où pour déplacer le curseur, touchez pour cliquer, maintenez le doigt immobile pour saisir et faire glisser. Prend effet au prochain lancement du jeu.</string>
  <string name="opacity_label">Opacité des boutons</string>
  <string name="size_label">Taille des boutons</string>
  <string name="auto_hide_label">Masquage automatique après 4 secondes d\'inactivité</string>
@@ -80,7 +79,6 @@
  <string name="touch_preview_hint">Essayez les commandes</string>
  <string name="touch_dim_label">Masquer les boutons automatiquement</string>
  <string name="touch_edge_label">Distance aux bords</string>
- <string name="touch_raise_label">Remonter les commandes de conduite</string>
  <string name="touch_dim_note">Démarre une fois tous les doigts levés. Les commandes masquées répondent immédiatement.</string>
  <string name="editor_drag_title">Faites glisser les commandes</string>
  <string name="editor_resize_hint">Sélectionnez pour redimensionner</string>
@@ -121,12 +119,9 @@
  <string name="pref_hide_full">Masquer complètement (sinon silhouette discrète)</string>
  <string name="auto_hide_delay">Délai de masquage : %1$d s</string>
  <string name="editor_button_size">Bouton : %1$d%%</string>
- <string name="editor_touch_zone">Zone tactile : %1$d%%</string>
- <string name="editor_mode_race">Course</string>
- <string name="editor_mode_menu">Menu</string>
  <string name="editor_reset_title">Réinitialiser cette disposition ?</string>
- <string name="editor_reset_message">Restaurer les positions, tailles de boutons et zones tactiles par défaut de cette disposition.</string>
- <string name="edit_touch_layout">Modifier les positions et zones tactiles</string>
+ <string name="editor_reset_message">Restaurer les positions et tailles de boutons par défaut de cette disposition.</string>
+ <string name="edit_touch_layout">Modifier les positions et tailles</string>
  <string name="editor_done">Terminé</string>
  <string name="editor_reset">Réinitialiser</string>
  <string name="editor_select_control">Sélectionnez une commande</string>
@@ -137,23 +132,27 @@
  <string name="data_set_active_suffix"> (actif)</string>
  <string name="error_external_storage">Le stockage externe n\'est pas disponible</string>
  <string name="error_import_incomplete">Il manque des fichiers attendus dans les données importées</string>
+ <string name="data_missing_title">Données du jeu incomplètes</string>
+ <string name="data_missing_message">Il manque aux données importées des fichiers nécessaires au jeu (%1$d) :\n\n%2$s\n\nLe jeu s\'arrête sur « OPEN FAILED » dès qu\'il a besoin de l\'un d\'eux. Importez à nouveau les dossiers FEDATA et GAMEDATA depuis le disque ou son image.</string>
+ <string name="data_missing_more">…et %1$d de plus</string>
  <string name="error_data_set_incomplete">Le jeu de données sélectionné est incomplet</string>
  <string name="importer_open_folder_failed">Impossible d\'ouvrir le dossier sélectionné</string>
  <string name="importer_missing_subfolder">Le dossier sélectionné ne contient pas de sous-dossier \'%1$s\' — choisissez le dossier qui contient directement fedata et gamedata (par exemple la racine du CD).</string>
  <string name="importer_open_zip_failed">Impossible d\'ouvrir le ZIP sélectionné</string>
  <string name="importer_zip_missing_files">Le ZIP ne contient pas les dossiers fedata/gamedata attendus</string>
 
- <string name="faq_size"><b>Que change la taille ?</b>\nLa taille globale met à l\'échelle les commandes par défaut. Dans « Modifier les positions et zones tactiles », faites glisser une commande et ajustez « Bouton » pour changer son apparence, ou « Zone tactile » pour changer seulement l\'endroit où elle répond. Les pointillés montrent les zones tactiles ; les pourcentages sont relatifs à la commande par défaut. Les modifications sont enregistrées automatiquement. L\'éditeur affiche une grille ; avec « Aligner sur la grille », un élément déplacé s\'y cale.</string>
- <string name="faq_edges"><b>Bords et position verticale</b>\nLa distance aux bords rapproche les commandes par défaut du centre. « Remonter les commandes de conduite » relève les commandes basses par défaut. Les découpes système sont respectées. Les commandes placées à la main gardent leurs positions enregistrées.</string>
- <string name="faq_hiding"><b>Opacité et masquage automatique</b>\nL\'opacité fixe la visibilité normale. Le masquage automatique démarre une fois tous les doigts levés, après un délai de 1 à 30 secondes. Choisissez une silhouette discrète ou l\'invisibilité complète. Les boutons masqués répondent dès le premier contact et redeviennent visibles. Maintenir une commande empêche le masquage. Un appui sur la manette masque aussitôt les commandes ; le toucher suivant les fait revenir.</string>
- <string name="faq_gears"><b>Boîte manuelle</b>\n« Afficher les boutons de vitesse − / + » ajoute deux boutons facultatifs à la disposition course. Activez la boîte manuelle dans le jeu. Leurs touches se règlent dans Commandes → Tactile → Touches et doivent correspondre aux réglages du jeu.</string>
+ <string name="faq_layout_modes"><b>Menu ou course ?</b>\nC\'est le jeu qui le dit. Au volant, vous avez la disposition de course : boutons de direction, pédales, vitesses et le reste. Dans les menus, et dès qu\'un menu s\'ouvre par-dessus une course, le portage n\'affiche aucun bouton : les menus acceptent le toucher d\'eux-mêmes, le Retour du téléphone fait Échap et le clavier apparaît tout seul. Il n\'y a rien à basculer à la main.</string>
+ <string name="faq_mouse"><b>Comment fonctionnent les menus ?</b>\nAu toucher. Le pointeur du jeu va là où se pose le doigt : une tape appuie sur l\'élément en dessous et un curseur suit le doigt qui le fait glisser. Le bouton ou le geste Retour du téléphone fait Échap et, quand le jeu demande un nom, le clavier du téléphone s\'ouvre tout seul ; clavier ouvert, Retour le referme.</string>
+ <string name="faq_size"><b>Que change la taille ?</b>\nLa taille des boutons met à l\'échelle les commandes par défaut. Dans Modifier les positions et tailles, faites glisser une commande et changez sa taille avec le curseur de taille ; une commande répond exactement là où elle est dessinée et les pourcentages sont relatifs à la commande par défaut. Les changements sont enregistrés tout seuls. L\'éditeur affiche une grille ; avec Aligner sur la grille, la commande déplacée s\'y pose.</string>
+ <string name="faq_edges"><b>Bords et position verticale</b>\nLa distance aux bords rapproche les commandes par défaut du centre. Les découpes système sont respectées. Les commandes placées à la main gardent leurs positions enregistrées.</string>
+ <string name="faq_hiding"><b>Opacité et masquage automatique</b>\nL\'opacité fixe la visibilité normale. Le masquage automatique démarre une fois tous les doigts levés, après un délai de 1 à 30 secondes. Choisissez une silhouette discrète ou l\'invisibilité complète. Les boutons masqués répondent dès le premier contact et redeviennent visibles. Maintenir une commande empêche le masquage. Un appui sur la manette du joueur 1 masque aussitôt les commandes ; le toucher suivant les fait revenir. La manette du joueur 2 n\'y touche pas : l\'un peut conduire sur l\'écran pendant que l\'autre joue à la manette.</string>
  <string name="faq_vibration"><b>Vibration</b>\nLes effets Force Feedback du jeu atteignent le téléphone et la manette 1. Le jeu ne pilote qu\'un seul périphérique à retour de force, donc la manette 2 ne vibre jamais. La vibration du téléphone s\'active ou se coupe dans Commandes → Tactile. La vibration de la manette reste coupée tant qu\'elle n\'est pas activée dans Commandes → Manettes ; son intensité se règle dans le jeu lui-même : Options → Controllers → Force Feedback. Les effets viennent du jeu, jamais des appuis sur les boutons.</string>
- <string name="faq_mapping"><b>Manettes</b>\nLe jeu voit toujours deux manettes : la manette 1 est le joueur 1 avec les commandes tactiles, la manette 2 est le joueur 2. Dans Commandes → Manettes, choisissez quelle manette est laquelle en appuyant sur un de ses boutons et réglez ce que fait chaque bouton, puis appuyez une fois sur Manette ACTIVE. Les commandes correspondantes sont alors écrites dans les réglages du jeu et l\'ancien fichier est sauvegardé. Le stick gauche dirige, les gâchettes accélèrent et freinent. Pour jouer au clavier, écrivez plutôt Défaut du jeu.</string>
+ <string name="faq_mapping"><b>Manettes</b>\nLe jeu voit toujours deux manettes : la manette 1 est le joueur 1 avec les commandes tactiles, la manette 2 est le joueur 2. Dans Commandes → Manettes, choisissez quelle manette est laquelle en appuyant sur un de ses boutons et réglez ce que fait chaque bouton, puis appuyez une fois sur Manette ACTIVE. Les commandes correspondantes sont alors écrites dans les réglages du jeu et l\'ancien fichier est sauvegardé. Le stick gauche dirige, les gâchettes accélèrent et freinent. Une manette a deux jeux de boutons, comme les commandes tactiles ont deux dispositions : celui de la course, réglé ici, et un jeu fixe pour les menus et les replays, où Cross / A valide, Circle / B revient en arrière et la croix déplace la sélection. Pour jouer au clavier, écrivez plutôt Défaut du jeu.</string>
  <string name="faq_lights"><b>Phares et remise en piste</b>\n☼ envoie L. ↻ envoie R pour revenir sur la piste. Les touches se modifient dans Commandes → Tactile → Touches.</string>
  <string name="faq_screen_data"><b>Écran et données du jeu</b>\nPaysage verrouille le jeu à l\'horizontale ; Automatique autorise la rotation. La limite d\'IPS restreint la fréquence d\'images ; une valeur plus basse réduit le travail par seconde. « Données du jeu » gère les importations et indique le jeu de données actif. Jouer devient disponible dès qu\'un jeu de données est prêt.</string>
  <string name="gamepad_buttons">Boutons</string>
  <string name="gamepad_buttons_title">Boutons de la manette %1$d</string>
- <string name="gamepad_buttons_hint">Ce que fait chaque bouton de cette manette. Le stick gauche dirige, la gâchette droite accélère et la gauche freine. Les actions des boutons atteignent le jeu une fois les commandes manette écrites dans ses réglages.</string>
+ <string name="gamepad_buttons_hint">Ce que fait chaque bouton de cette manette au volant. Le stick gauche dirige, la gâchette droite accélère et la gauche freine. Dans les menus et les replays, les boutons sont fixes et ne se règlent pas : Cross / A et Options / Menu valident, Circle / B et Create / View reviennent en arrière, la croix déplace la sélection. Les actions des boutons atteignent le jeu une fois les commandes manette écrites dedans.</string>
  <string name="gamepad_buttons_reset">Par défaut</string>
  <string name="controls_write_gamepads">Manette ACTIVE</string>
  <string name="controls_write_keyboard">Défaut du jeu</string>
@@ -163,14 +162,15 @@
  <string name="controls_write_no_config">Le jeu n\'a pas encore de fichier de réglages. Lancez le jeu une fois, puis réessayez.</string>
  <string name="controls_write_game_running">Fermez le jeu avant d\'écrire ses commandes.</string>
  <string name="controls_write_failed">Impossible d\'écrire les commandes : %1$s</string>
+ <string name="gamepads_keyboard_note">Le jeu est réglé sur ses propres commandes clavier (Défaut du jeu). Les manettes ne font rien dans les courses en écran partagé tant que vous n\'appuyez pas sur Manette ACTIVE.</string>
  <string name="pref_touch_enabled">Utiliser les commandes tactiles</string>
  <string name="touch_enabled_note">Désactivé : toucher l\'écran ne fait rien dans le jeu, ni boutons ni souris tactile. Les manettes et une vraie souris continuent de fonctionner.</string>
  <string name="controls_help">Aide : écran partagé</string>
  <string name="controls_help_title">Écran partagé avec deux manettes</string>
  <string name="help_split_setup"><b>1. Configurer les manettes (une fois)</b>\nConnectez les deux manettes au téléphone. Dans Commandes → Manettes, appuyez sur Attribuer sous la manette 1 puis sur n\'importe quel bouton de la manette du joueur 1, et faites de même pour la manette 2. Automatique fonctionne aussi : les manettes sont prises dans l\'ordre de connexion. Boutons permet de choisir ce que fait chaque bouton.</string>
  <string name="help_split_write"><b>2. Écrire les commandes dans le jeu</b>\nSur le même écran, appuyez sur Manette ACTIVE et confirmez. C\'est nécessaire une fois, puis seulement après avoir installé d\'autres données de jeu ou modifié les commandes dans le jeu. Les réglages précédents sont sauvegardés.</string>
- <string name="help_split_race"><b>3. Lancer une course en écran partagé</b>\nLancez le jeu et choisissez Two Players…. Le joueur 1 conduit avec la manette 1 ou les commandes tactiles, le joueur 2 avec la manette 2. Les deux manettes parcourent les menus : la croix déplace la sélection, Options / Start valide, Create / Back revient en arrière ou met en pause.</string>
- <string name="help_split_driving"><b>Conduite</b>\nLe stick gauche dirige, la gâchette droite accélère et la gauche freine. Par défaut, Cross / A est le frein à main, R1 / L1 passent les vitesses, Triangle / Y change de caméra, Square / X replace sur la piste, Circle / B pose une herse, L3 klaxonne et R3 allume les phares.</string>
+ <string name="help_split_race"><b>3. Lancer une course en écran partagé</b>\nLancez le jeu et choisissez Two Players…. Le joueur 1 conduit avec la manette 1 ou les commandes tactiles, le joueur 2 avec la manette 2. Les deux manettes parcourent les menus : la croix déplace la sélection, Cross / A ou Options / Menu valide, Circle / B ou Create / View revient en arrière.</string>
+ <string name="help_split_driving"><b>Conduite</b>\nLe stick gauche dirige, la gâchette droite accélère et la gauche freine. Par défaut, Circle / B est le frein à main, Square / X pose une herse, Cross / A regarde derrière, Triangle / Y change de caméra, R1 / L1 passent les vitesses, Create / View replace la voiture sur la piste, Options / Menu met la course en pause, L3 klaxonne et R3 allume les phares.</string>
  <string name="help_split_notes"><b>Bon à savoir</b>\nSeuls la manette 1 et le téléphone vibrent : le jeu ne pilote qu\'un seul périphérique à retour de force. Si les commandes ne correspondent plus, par exemple après les avoir réinitialisées dans le jeu, appuyez à nouveau sur Manette ACTIVE. Pour jouer au clavier, appuyez plutôt sur Défaut du jeu. Les commandes tactiles se désactivent dans Commandes → Tactile.</string>
  <string name="gamepad_vibration">Vibration de la manette</string>
  <string name="gamepad_vibration_note">Désactivée par défaut. L\'intensité se règle dans le jeu : Options → Controllers → Force Feedback.</string>

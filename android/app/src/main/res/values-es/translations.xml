@@ -9,12 +9,7 @@
 
  <string name="checking_game_data">Comprobando los datos del juego…</string>
  <string name="pick_data_folder">Elige la carpeta de datos de NFS3…</string>
- <plurals name="importing_progress">
-  <item quantity="one">Importando %1$s\n%2$d MB copiados, %3$d archivo</item>
-  <item quantity="many">Importando %1$s
-%2$d MB copiados, %3$d de archivos</item>
-  <item quantity="other">Importando %1$s\n%2$d MB copiados, %3$d archivos</item>
- </plurals>
+ <string name="importing_percent">Importando %1$s\n%2$d %%</string>
  <string name="import_failed">Error de importación: %1$s</string>
  <string name="import_hint">Elige la carpeta que contiene directamente \'fedata\' y \'gamedata\' (por ejemplo, la raíz del CD o una copia suya).</string>
  <string name="launcher_title">Lanzador de Need For Speed III</string>
@@ -60,6 +55,10 @@
  <string name="touch_mode_wheel">Volante (próximamente)</string>
  <string name="touch_mode_tilt">Dirección por inclinación (próximamente)</string>
  <string name="touch_layout_label">Disposición de los botones</string>
+ <string name="touch_pointer_label">Puntero en los menús</string>
+ <string name="touch_pointer_tap">Donde toca el dedo</string>
+ <string name="touch_pointer_touchpad">Panel táctil</string>
+ <string name="touch_pointer_note">Panel táctil: desliza en cualquier parte para mover el cursor, toca para hacer clic y mantén el dedo quieto para agarrar y arrastrar. Se aplica la próxima vez que se inicie el juego.</string>
  <string name="opacity_label">Opacidad de los botones</string>
  <string name="size_label">Tamaño de los botones</string>
  <string name="auto_hide_label">Ocultar automáticamente tras 4 segundos de inactividad</string>
@@ -80,7 +79,6 @@
  <string name="touch_preview_hint">Prueba los controles</string>
  <string name="touch_dim_label">Ocultar botones automáticamente</string>
  <string name="touch_edge_label">Distancia a los bordes</string>
- <string name="touch_raise_label">Subir los controles de conducción</string>
  <string name="touch_dim_note">Empieza cuando se levantan todos los dedos. Los controles ocultos responden de inmediato.</string>
  <string name="editor_drag_title">Arrastra los controles</string>
  <string name="editor_resize_hint">Selecciona para cambiar el tamaño</string>
@@ -121,12 +119,9 @@
  <string name="pref_hide_full">Ocultar por completo (si no, silueta tenue)</string>
  <string name="auto_hide_delay">Retardo de ocultación: %1$d s</string>
  <string name="editor_button_size">Botón: %1$d%%</string>
- <string name="editor_touch_zone">Zona táctil: %1$d%%</string>
- <string name="editor_mode_race">Carrera</string>
- <string name="editor_mode_menu">Menú</string>
  <string name="editor_reset_title">¿Restablecer esta disposición?</string>
- <string name="editor_reset_message">Restaurar las posiciones, los tamaños de botón y las zonas táctiles predeterminados de esta disposición.</string>
- <string name="edit_touch_layout">Editar posiciones y zonas táctiles</string>
+ <string name="editor_reset_message">Restaurar las posiciones y los tamaños de botón predeterminados de esta disposición.</string>
+ <string name="edit_touch_layout">Editar posiciones y tamaños</string>
  <string name="editor_done">Listo</string>
  <string name="editor_reset">Restablecer disposición</string>
  <string name="editor_select_control">Selecciona un control</string>
@@ -137,23 +132,27 @@
  <string name="data_set_active_suffix"> (activo)</string>
  <string name="error_external_storage">El almacenamiento externo no está disponible</string>
  <string name="error_import_incomplete">A los datos importados les faltan los archivos esperados</string>
+ <string name="data_missing_title">Datos del juego incompletos</string>
+ <string name="data_missing_message">A los datos importados les faltan archivos que el juego necesita (%1$d):\n\n%2$s\n\nEl juego se detiene con «OPEN FAILED» en cuanto necesita uno de ellos. Importa de nuevo las carpetas FEDATA y GAMEDATA desde el disco o su imagen.</string>
+ <string name="data_missing_more">…y %1$d más</string>
  <string name="error_data_set_incomplete">El conjunto de datos seleccionado está incompleto</string>
  <string name="importer_open_folder_failed">No se puede abrir la carpeta seleccionada</string>
  <string name="importer_missing_subfolder">La carpeta seleccionada no tiene la subcarpeta \'%1$s\': elige la carpeta que contiene directamente fedata y gamedata (por ejemplo, la raíz del CD).</string>
  <string name="importer_open_zip_failed">No se ha podido abrir el ZIP seleccionado</string>
  <string name="importer_zip_missing_files">Al ZIP le faltan las carpetas fedata/gamedata esperadas</string>
 
- <string name="faq_size"><b>¿Qué cambia el tamaño?</b>\nEl tamaño global escala los controles predeterminados. En «Editar posiciones y zonas táctiles», arrastra un control y ajusta «Botón» para cambiar su aspecto, o «Zona táctil» para cambiar solo dónde responde. Las líneas discontinuas muestran las zonas táctiles; los porcentajes son relativos al control predeterminado. Los cambios se guardan automáticamente. El editor muestra una cuadrícula; con «Ajustar a la cuadrícula», el control arrastrado se coloca en ella.</string>
- <string name="faq_edges"><b>Bordes y posición vertical</b>\nLa distancia a los bordes desplaza los controles predeterminados hacia dentro. «Subir los controles de conducción» eleva los controles inferiores predeterminados. Se respetan los recortes del sistema. Los controles colocados a mano conservan sus posiciones guardadas.</string>
- <string name="faq_hiding"><b>Opacidad y ocultación automática</b>\nLa opacidad fija la visibilidad normal. La ocultación automática empieza cuando se levantan todos los dedos, tras un retardo de 1 a 30 segundos. Elige una silueta tenue o la invisibilidad completa. Los botones ocultos siguen respondiendo al primer toque y vuelven a hacerse visibles. Mantener pulsado un control impide la ocultación. Pulsar el mando oculta los controles al instante; el siguiente toque los devuelve.</string>
- <string name="faq_gears"><b>Marchas manuales</b>\n«Mostrar los botones de marcha − / +» añade dos botones opcionales a la disposición de carrera. Activa la transmisión manual en el juego. Sus teclas se configuran en Controles → Táctil → Teclas y deben coincidir con los ajustes del juego.</string>
+ <string name="faq_layout_modes"><b>¿Menú o carrera?</b>\nLo decide el juego. Mientras conduces tienes la disposición de carrera: botones de giro, pedales, marchas y lo demás. En los menús, y siempre que se abre un menú sobre una carrera, el port no muestra ningún botón: los menús aceptan el toque por sí mismos, el Atrás del teléfono es Escape y el teclado aparece solo. No hay nada que cambiar a mano.</string>
+ <string name="faq_mouse"><b>¿Cómo funcionan los menús?</b>\nTocándolos. Donde pones el dedo va el puntero del juego, así que un toque pulsa el elemento que hay debajo y un control deslizante sigue al dedo que lo arrastra. El botón o el gesto Atrás del teléfono es Escape y, cuando el juego pide un nombre, el teclado del teléfono se abre solo; con el teclado abierto, Atrás lo cierra.</string>
+ <string name="faq_size"><b>¿Qué cambia el tamaño?</b>\nEl tamaño de los botones escala los controles predeterminados. En Editar posiciones y tamaños arrastra un control y cambia su tamaño con el deslizador de tamaño; un control responde exactamente donde se dibuja y los porcentajes son relativos al control predeterminado. Los cambios se guardan solos. El editor muestra una cuadrícula; con Ajustar a la cuadrícula activado, el control arrastrado encaja en ella.</string>
+ <string name="faq_edges"><b>Bordes y posición vertical</b>\nLa distancia a los bordes desplaza los controles predeterminados hacia dentro. Se respetan los recortes del sistema. Los controles colocados a mano conservan sus posiciones guardadas.</string>
+ <string name="faq_hiding"><b>Opacidad y ocultación automática</b>\nLa opacidad fija la visibilidad normal. La ocultación automática empieza cuando se levantan todos los dedos, tras un retardo de 1 a 30 segundos. Elige una silueta tenue o la invisibilidad completa. Los botones ocultos siguen respondiendo al primer toque y vuelven a hacerse visibles. Mantener pulsado un control impide la ocultación. Pulsar el mando del jugador 1 oculta los controles al instante; el siguiente toque los devuelve. El mando del jugador 2 no los toca, así que uno puede conducir en la pantalla mientras el otro juega con mando.</string>
  <string name="faq_vibration"><b>Vibración</b>\nLos efectos Force Feedback del juego llegan al teléfono y al mando 1. El juego solo maneja un dispositivo de force feedback, así que el mando 2 nunca vibra. La vibración del teléfono se activa o desactiva en Controles → Táctil. La vibración del mando está desactivada hasta que se activa en Controles → Mandos; su intensidad se ajusta en el propio juego: Options → Controllers → Force Feedback. Los efectos vienen del juego, nunca de pulsar botones.</string>
- <string name="faq_mapping"><b>Mandos</b>\nEl juego siempre ve dos mandos: el mando 1 es el jugador 1 junto con los controles táctiles, el mando 2 es el jugador 2. En Controles → Mandos elige qué mando es cuál pulsando un botón en él y configura qué hace cada botón; después pulsa una vez Mando ACTIVADO, que escribe los controles correspondientes en los ajustes del juego y guarda una copia del archivo anterior. El stick izquierdo gira y los gatillos aceleran y frenan. Para jugar con teclado, escribe en su lugar Predeterminado del juego.</string>
+ <string name="faq_mapping"><b>Mandos</b>\nEl juego siempre ve dos mandos: el mando 1 es el jugador 1 junto con los controles táctiles, el mando 2 es el jugador 2. En Controles → Mandos elige qué mando es cuál pulsando un botón en él y configura qué hace cada botón; después pulsa una vez Mando ACTIVADO, que escribe los controles correspondientes en los ajustes del juego y guarda una copia del archivo anterior. El stick izquierdo gira y los gatillos aceleran y frenan. El mando tiene dos juegos de botones, igual que los controles táctiles tienen dos disposiciones: el de carrera que configuras aquí y uno fijo para los menús y las repeticiones, donde Cross / A confirma, Circle / B vuelve atrás y la cruceta mueve la selección. Para jugar con teclado, escribe en su lugar Predeterminado del juego.</string>
  <string name="faq_lights"><b>Luces y recuperación</b>\n☼ envía L. ↻ envía R para volver a la pista. Las teclas se pueden cambiar en Controles → Táctil → Teclas.</string>
  <string name="faq_screen_data"><b>Pantalla y datos del juego</b>\nHorizontal bloquea el juego en apaisado; Automática permite la rotación. El límite de FPS restringe la tasa de imágenes; un valor más bajo reduce el trabajo por segundo. «Datos del juego» gestiona las importaciones y muestra qué conjunto está activo. Jugar se habilita cuando hay un conjunto listo.</string>
  <string name="gamepad_buttons">Botones</string>
  <string name="gamepad_buttons_title">Botones del mando %1$d</string>
- <string name="gamepad_buttons_hint">Qué hace cada botón de este mando. El stick izquierdo gira, el gatillo derecho acelera y el izquierdo frena. Las acciones de los botones llegan al juego cuando se han escrito en él los controles de mando.</string>
+ <string name="gamepad_buttons_hint">Qué hace cada botón de este mando mientras conduces. El stick izquierdo gira, el gatillo derecho acelera y el izquierdo frena. En los menús y en las repeticiones los botones son fijos y no hay nada que configurar: Cross / A y Options / Menu confirman, Circle / B y Create / View vuelven atrás, la cruceta mueve la selección. Las acciones de los botones llegan al juego en cuanto se escriben en él los controles de mando.</string>
  <string name="gamepad_buttons_reset">Predeterminados</string>
  <string name="controls_write_gamepads">Mando ACTIVADO</string>
  <string name="controls_write_keyboard">Predeterminado del juego</string>
@@ -163,14 +162,15 @@
  <string name="controls_write_no_config">El juego aún no tiene archivo de ajustes. Inicia el juego una vez y vuelve a intentarlo.</string>
  <string name="controls_write_game_running">Cierra el juego antes de escribir sus controles.</string>
  <string name="controls_write_failed">No se pudieron escribir los controles: %1$s</string>
+ <string name="gamepads_keyboard_note">El juego está puesto en su propio control por teclado (Predeterminado del juego). Los mandos no hacen nada en las carreras a pantalla dividida hasta que pulses Mando ACTIVADO.</string>
  <string name="pref_touch_enabled">Usar controles táctiles</string>
  <string name="touch_enabled_note">Desactivado: tocar la pantalla no hace nada en el juego, ni botones ni ratón táctil. Los mandos y un ratón de verdad siguen funcionando.</string>
  <string name="controls_help">Ayuda: pantalla dividida</string>
  <string name="controls_help_title">Pantalla dividida con dos mandos</string>
  <string name="help_split_setup"><b>1. Configura los mandos (una vez)</b>\nConecta los dos mandos al teléfono. En Controles → Mandos pulsa Asignar en el mando 1 y pulsa cualquier botón del mando del jugador 1; luego haz lo mismo con el mando 2. Automático también sirve: los mandos se toman en el orden en que se conectan. En Botones eliges qué hace cada botón.</string>
  <string name="help_split_write"><b>2. Escribe los controles en el juego</b>\nEn la misma pantalla pulsa Mando ACTIVADO y confirma. Hace falta una vez, y de nuevo solo tras instalar otros datos del juego o cambiar los controles dentro del juego. Los ajustes anteriores se guardan en una copia de seguridad.</string>
- <string name="help_split_race"><b>3. Empieza una carrera a pantalla dividida</b>\nInicia el juego y elige Two Players…. El jugador 1 conduce con el mando 1 o con los controles táctiles, el jugador 2 con el mando 2. Cualquiera de los dos mandos recorre los menús: la cruceta mueve la selección, Options / Start confirma y Create / Back vuelve atrás o pausa.</string>
- <string name="help_split_driving"><b>Conducción</b>\nEl stick izquierdo gira, el gatillo derecho acelera y el izquierdo frena. Por defecto Cross / A es el freno de mano, R1 / L1 cambian de marcha, Triangle / Y cambia la cámara, Square / X vuelve a la pista, Circle / B lanza una barrera de pinchos, L3 toca el claxon y R3 enciende las luces.</string>
+ <string name="help_split_race"><b>3. Empieza una carrera a pantalla dividida</b>\nInicia el juego y elige Two Players…. El jugador 1 conduce con el mando 1 o con los controles táctiles, el jugador 2 con el mando 2. Cualquiera de los dos mandos recorre los menús: la cruceta mueve la selección, Cross / A u Options / Menu confirma y Circle / B o Create / View vuelve atrás.</string>
+ <string name="help_split_driving"><b>Conducción</b>\nEl stick izquierdo gira, el gatillo derecho acelera y el izquierdo frena. Por defecto Circle / B es el freno de mano, Square / X lanza una barrera de pinchos, Cross / A mira atrás, Triangle / Y cambia la cámara, R1 / L1 cambian de marcha, Create / View devuelve el coche a la pista, Options / Menu pausa la carrera, L3 toca el claxon y R3 enciende las luces.</string>
  <string name="help_split_notes"><b>Conviene saber</b>\nSolo vibran el mando 1 y el teléfono: el juego maneja un único dispositivo de force feedback. Si los controles dejan de coincidir, por ejemplo tras restablecerlos en el juego, vuelve a pulsar Mando ACTIVADO. Para jugar con teclado, pulsa en su lugar Predeterminado del juego. Los controles táctiles se desactivan en Controles → Táctil.</string>
  <string name="gamepad_vibration">Vibración del mando</string>
  <string name="gamepad_vibration_note">Desactivada por defecto. La intensidad se ajusta en el juego: Options → Controllers → Force Feedback.</string>

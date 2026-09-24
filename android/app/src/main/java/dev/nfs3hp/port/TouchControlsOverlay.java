@@ -47,9 +47,9 @@ final class TouchControlsOverlay extends View {
     private java.util.function.Consumer<String> selectionChanged;
     private static final class Control {
         final String action,label; final RectF box; final boolean pulse;
-        final RectF hitBox=new RectF(); float visualSize=1,hitSize=1;
+        final RectF hitBox=new RectF(); float visualSize=1,layoutSize;
         float baseWidth,baseHeight;
-        Control(String a,String l,RectF b,boolean p) { action=a;label=l;box=b;pulse=p;baseWidth=b.width();baseHeight=b.height(); }
+        Control(String a,String l,RectF b,boolean p,float s) { action=a;label=l;box=b;pulse=p;layoutSize=s;baseWidth=b.width();baseHeight=b.height(); }
     }
     private static final class Contact {
         final Control control; final ArrayList<Integer> held=new ArrayList<>(); boolean inside=true;
@@ -86,6 +86,23 @@ final class TouchControlsOverlay extends View {
     /* Which layout is up.  The game answers it -- a race is on or it is not
      * (nfs3hp_main.cpp) -- so there is no button for it to be wrong about. */
     void setMenuMode(boolean menu) { if(menuMode==menu)return;menuMode=menu;rebuild(); }
+    /* Race buttons player one's car has no use for stay off the screen: the
+     * gears with an automatic gearbox, the spike strip unless it is a police
+     * car -- the game answers that too.  The rest keep their places, and a
+     * preview shows every control, so each can still be placed. */
+    private boolean showGears=true,showSpikes=true;
+    void setRaceControls(boolean gears,boolean spikes) {
+        if(showGears==gears&&showSpikes==spikes)return;
+        showGears=gears;showSpikes=spikes;invalidate();
+    }
+    private boolean shown(Control c) {
+        if(preview)return true;
+        switch(c.action) {
+        case "gear_up": case "gear_down": return showGears;
+        case "spike_strip": return showSpikes;
+        default: return true;
+        }
+    }
     boolean isMenuMode() { return menuMode; }
     void setEditing(boolean value,java.util.function.Consumer<String> listener) {
         editing=value;selectionChanged=listener;selected=null;releaseAll();
@@ -95,7 +112,6 @@ final class TouchControlsOverlay extends View {
     String selectedAction() { return selected==null?null:selected.action; }
     String selectedLabel() { return selected==null?getContext().getString(R.string.editor_select_control):selected.label; }
     int selectedVisualSize() { return selected==null?100:Math.round(selected.visualSize*100); }
-    int selectedHitSize() { return selected==null?100:Math.round(selected.hitSize*100); }
     private String layoutPrefix() {
         return "touch_position_"+(menuMode?"menu_":"race_");
     }
@@ -104,9 +120,15 @@ final class TouchControlsOverlay extends View {
         for(String k:preferences.getAll().keySet()) if(k.startsWith(layoutPrefix())) edit.remove(k);
         edit.apply();selected=null;rebuild();if(selectionChanged!=null)selectionChanged.accept(getContext().getString(R.string.editor_select_control));
     }
-    void resizeSelected(int visual,int hit) {
+    /** How big the control being edited is, as a percentage of its default.
+     *  The button, its glyph and what it answers to all change at once: a
+     *  control is touched exactly where it is drawn, so the preview shows what
+     *  the game will do.  The size a control was given used to be one setting
+     *  and the area it answered to another, and a button made bigger kept
+     *  answering to the smaller square it started as. */
+    void resizeSelected(int percent) {
         if(selected==null)return;
-        selected.visualSize=visual/100f;selected.hitSize=hit/100f;
+        selected.visualSize=percent/100f;
         float x=selected.box.centerX(),y=selected.box.centerY();
         float w=selected.baseWidth*selected.visualSize,h=selected.baseHeight*selected.visualSize;
         selected.box.set(x-w/2,y-h/2,x+w/2,y+h/2);
@@ -119,9 +141,8 @@ final class TouchControlsOverlay extends View {
         float x=Math.max(w/2,Math.min(areaWidth()-w/2,c.box.centerX()));
         float y=Math.max(h/2,Math.min(areaHeight()-h/2,c.box.centerY()));
         c.box.set(x-w/2,y-h/2,x+w/2,y+h/2);
-        // Hit size is independent of the visible size, relative to the default control.
-        float hw=c.baseWidth*c.hitSize,hh=c.baseHeight*c.hitSize;
-        c.hitBox.set(Math.max(0,x-hw/2),Math.max(0,y-hh/2),Math.min(areaWidth(),x+hw/2),Math.min(areaHeight(),y+hh/2));
+        // What a control covers is what it answers to, less whatever falls off the screen.
+        c.hitBox.set(Math.max(0,x-w/2),Math.max(0,y-h/2),Math.min(areaWidth(),x+w/2),Math.min(areaHeight(),y+h/2));
     }
     /* Where a control was put is kept as the distance of its centre from the
      * nearer side edge and from the nearer of top and bottom, in layout units,
@@ -137,7 +158,8 @@ final class TouchControlsOverlay extends View {
         preferences.edit().remove(k+"_x").remove(k+"_y")
             .putFloat(k+"_dx",right?areaWidth()-x:x).putBoolean(k+"_from_right",right)
             .putFloat(k+"_dy",bottom?areaHeight()-y:y).putBoolean(k+"_from_bottom",bottom)
-            .putFloat(k+"_size",c.visualSize).putFloat(k+"_hit",c.hitSize).apply();
+            // _hit was a touch zone of its own, before a control answered to what it covers.
+            .remove(k+"_hit").putFloat(k+"_size",c.visualSize).apply();
     }
     private float savedX(String k,float fallback) {
         if(preferences.contains(k+"_dx")) {
@@ -228,13 +250,13 @@ final class TouchControlsOverlay extends View {
         float size=Math.min(preferences.getInt(GamePreferences.TOUCH_SIZE,100)/100f,1.15f);
         boolean mirrored=GamePreferences.TOUCH_LAYOUT_MIRRORED.equals(preferences.getString(GamePreferences.TOUCH_LAYOUT,"standard"));
         for(TouchLayout.Box b:TouchLayout.defaults(areaWidth(),areaHeight(),preferences.getInt(GamePreferences.TOUCH_EDGE,0),
-                preferences.getInt(GamePreferences.TOUCH_RAISE,0),size,pixelScale/scale,menuMode,mirrored))
+                size,pixelScale/scale,menuMode,mirrored))
             controls.add(new Control(b.action,getContext().getString(label(b.action)),
-                new RectF(b.left(),b.top(),b.right(),b.bottom()),pulse(b.action)));
+                new RectF(b.left(),b.top(),b.right(),b.bottom()),pulse(b.action),size));
         for(Control c:controls) {
             String k=layoutPrefix()+c.action;
             float x=savedX(k,c.box.centerX()),y=savedY(k,c.box.centerY());
-            c.visualSize=preferences.getFloat(k+"_size",1);c.hitSize=preferences.getFloat(k+"_hit",1);
+            c.visualSize=preferences.getFloat(k+"_size",1);
             float cw=c.baseWidth*c.visualSize,ch=c.baseHeight*c.visualSize;
             c.box.set(x-cw/2,y-ch/2,x+cw/2,y+ch/2);constrain(c);
             if(c.action.equals(selection))selected=c;
@@ -288,25 +310,38 @@ final class TouchControlsOverlay extends View {
         }
         int opacity=preferences.getInt(GamePreferences.TOUCH_OPACITY,65);
         for(Control c:controls) {
+            if(!shown(c))continue;
             boolean down=false;
             for(Contact contact:contacts.values()) if(contact.control==c&&contact.inside) down=true;
             paint.setStyle(Paint.Style.FILL);paint.setColor(Color.argb(Math.round(opacity*2.1f),down?88:18,down?64:24,down?30:34));
-            canvas.drawRoundRect(c.box,16,16,paint);
+            float corner=16*c.layoutSize*c.visualSize;
+            canvas.drawRoundRect(c.box,corner,corner,paint);
             paint.setStyle(Paint.Style.STROKE);paint.setStrokeWidth(down?2.2f:1.4f);
             paint.setColor(down?0xffffbf69:Color.argb(Math.round(opacity*2.55f),203,216,232));
-            canvas.drawRoundRect(c.box,16,16,paint);
-            if(c.action.equals("accelerate")||c.action.equals("brake")) {
-                float firstLine=c.box.centerY()-13.5f;
-                for(int i=0;i<4;i++) canvas.drawLine(c.box.left+13,firstLine+i*9,c.box.right-13,firstLine+i*9,paint);
-            } else icon(canvas,c.action,c.box.centerX(),c.box.centerY());
-            if(editing) {
-                paint.setStyle(Paint.Style.STROKE);paint.setStrokeWidth(c==selected?2:1);
-                paint.setColor(c==selected?0xffffbf69:0xff668f9a);
+            canvas.drawRoundRect(c.box,corner,corner,paint);
+            drawControlGlyph(canvas,c);
+            if(editing&&c==selected) {
+                /* Which control the size slider works on.  Nothing else is
+                 * outlined: a control answers to what it covers, so the button
+                 * already drawn is the touch zone. */
+                paint.setStyle(Paint.Style.STROKE);paint.setStrokeWidth(2);
+                paint.setColor(0xffffbf69);
                 paint.setPathEffect(new DashPathEffect(new float[]{4,4},0));
-                canvas.drawRect(c.hitBox,paint);paint.setPathEffect(null);
-                if(c==selected)canvas.drawRoundRect(c.box,8,8,paint);
+                canvas.drawRoundRect(c.box,corner,corner,paint);paint.setPathEffect(null);
             }
         }
+        canvas.restore();
+    }
+    /* A control's box follows both the global button-size setting and its own
+     * size in the editor, and so does everything drawn in it. */
+    private void drawControlGlyph(Canvas canvas,Control c) {
+        float x=c.box.centerX(),y=c.box.centerY();
+        float glyphScale=c.layoutSize*c.visualSize;
+        canvas.save();canvas.scale(glyphScale,glyphScale,x,y);
+        if(c.action.equals("accelerate")||c.action.equals("brake")) {
+            float halfWidth=c.baseWidth/c.layoutSize/2,firstLine=y-13.5f;
+            for(int i=0;i<4;i++) canvas.drawLine(x-halfWidth+13,firstLine+i*9,x+halfWidth-13,firstLine+i*9,paint);
+        } else icon(canvas,c.action,x,y);
         canvas.restore();
     }
     /* The editor's grid over the area controls can be placed in: a hairline every
@@ -414,7 +449,7 @@ final class TouchControlsOverlay extends View {
     }
     private Control hitTest(float x,float y) {
         Control best=null;float distance=Float.MAX_VALUE;
-        for(Control c:controls) if(c.hitBox.contains(x,y)) {
+        for(Control c:controls) if(shown(c)&&c.hitBox.contains(x,y)) {
             float dx=(x-c.box.centerX())/c.hitBox.width(),dy=(y-c.box.centerY())/c.hitBox.height();
             float d=dx*dx+dy*dy;if(d<distance){best=c;distance=d;}
         }

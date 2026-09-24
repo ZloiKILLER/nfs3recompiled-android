@@ -44,6 +44,11 @@ public class SplashActivity extends Activity
     @Override
     protected void onCreate(Bundle savedInstanceState)
     {
+        /* The first screen of all, so the shape of the task's window on a
+         * desktop is decided here: DeX gets a window the player sizes rather
+         * than the manifest's phone landscape (see DesktopMode). */
+        if (DesktopMode.active(this))
+            setRequestedOrientation(android.content.pm.ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED);
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_splash);
         statusText = findViewById(R.id.status_text);
@@ -160,15 +165,14 @@ public class SplashActivity extends Activity
             try
             {
                 DataImporter.importFromTree(getApplicationContext(), treeUri, root,
-                    (bytesCopied, filesCopied, currentPath) ->
+                    (done, total, currentPath) ->
                     runOnUiThread(() -> {
                         if (importThread != runningThread || isDestroyed())
                             return;
-                        int mb = (int) (bytesCopied / (1024 * 1024));
-                        String name = currentPath.substring(currentPath.lastIndexOf('/') + 1);
-                        statusText.setText(getResources().getQuantityString(
-                            R.plurals.importing_progress, filesCopied, name, mb, filesCopied));
+                        LauncherActivity.showImportProgress(this, progressBar, statusText,
+                            DataImporter.ProgressListener.percent(done, total), currentPath);
                     }));
+                java.util.List<String> missing = LauncherActivity.missingGameFiles(getApplicationContext(), root);
 
                 runOnUiThread(() -> {
                     if (importThread != runningThread || isDestroyed())
@@ -177,7 +181,8 @@ public class SplashActivity extends Activity
                     importRunning = false;
                     if (DataImporter.isUserDataPresent(root))
                     {
-                        startLauncher();
+                        // What the copy is short of, before the launcher takes over.
+                        LauncherActivity.showMissingGameFiles(this, missing, this::startLauncher);
                     }
                     else
                     {

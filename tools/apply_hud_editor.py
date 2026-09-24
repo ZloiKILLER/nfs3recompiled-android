@@ -33,7 +33,24 @@ fractions back.  In four ways the rectangle was not what the screen showed:
   is no measure of it: the queues are drawn later, all together.  A drag
   (sub_45a120) kept the whole box on the screen, so text in the middle of a
   wide box could never come near an edge; its four clamps now let the part of
-  the box that draws nothing go past it (nfs3hp::hudDragSlack).
+  the box that draws nothing go past it (nfs3hp::hudDragSlack), which allows
+  it on three sides -- past the left edge the game draws an element's contents
+  at the box's own edge instead of inside it, so there that clamp stands.
+- Where the line of text inside an element sits.  sub_4800a0 works out an
+  alignment for every element of a player's HUD, every frame, from where they
+  all stand, and keeps them at 0x725690, 23 to a player; sub_4897f0 reads one
+  when it draws: 1 puts the line at the left edge of the element's rectangle, 2
+  at the right edge, anything else centres it between them.  Near a screen edge
+  a pixel of movement flipped that answer and the line jumped the width of its
+  own margin -- measured on a phone, the lap counter drawn at 45 in its box at
+  0 one frame and at 3 in its box at 3 the next: forty-five pixels for three of
+  finger, and the same jump again when the element was let go and the game
+  decided afresh for where it had been put.  Nothing about the box can settle
+  that, because what moves is the decision.  So the alignment is always the
+  centred one: an element's contents sit in the middle of it wherever it
+  stands, the editor moves what the player sees, and letting go changes
+  nothing.  An element can then be put against an edge by letting the empty
+  half of its box past it, which is what hudDragSlack is for.
 - The test itself.  sub_459670 compares the element being moved, as the editor
   has it, with every other element's fractions, as laid out: wider than the
   gauges on the screen, whole boxes where a line of text is drawn, and to the
@@ -161,6 +178,15 @@ SITES = [
      "    app->getMemory<x86::reg32>(cpu.esp-4) = cpu.esi;",
      "void hudQueueQuad(win32::WinApplication* app, x86::reg32 list, x86::reg32 a, x86::reg32 b, x86::reg32 c,"
      " x86::reg32 d);\n"),
+    # sub_4800a0, the alignment it settles on for one element of a player's HUD.
+    # 8 is one of the game's own values for "centred"; the ones it writes
+    # elsewhere in this function, 8 and 16, are centred too, so this is the only
+    # place an edge can be asked for.
+    ("nfs3hp.20.cpp", "00480e20  899090567200",
+     "    app->getMemory<x86::reg32>(cpu.eax + x86::reg32(7493264) /* 0x725690 */) = cpu.edx;",
+     "    app->getMemory<x86::reg32>(cpu.eax + x86::reg32(7493264) /* 0x725690 */) = 8;"
+     " /* port: an element's text stays centred in it, was the edge it stood nearest */",
+     ""),
     # sub_481c50, the table's panel placed: esi is the player, [ebp-8] the car's
     # flag 0x20 that picks the table's other layout.
     ("nfs3hp.20.cpp", "00481f86  89ec",

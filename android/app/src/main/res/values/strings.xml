@@ -3,10 +3,7 @@
     <string name="app_name" translatable="false">Need For Speed III</string>
     <string name="checking_game_data">Checking game data...</string>
     <string name="pick_data_folder">Select NFS3 data folder...</string>
-    <plurals name="importing_progress">
-      <item quantity="one">Importing %1$s\n%2$d MB copied, %3$d file</item>
-      <item quantity="other">Importing %1$s\n%2$d MB copied, %3$d files</item>
-    </plurals>
+    <string name="importing_percent">Importing %1$s\n%2$d%%</string>
     <string name="import_failed">Import failed: %1$s</string>
     <string name="import_hint">Pick the folder that directly contains \'fedata\' and \'gamedata\' (for example, the CD root or a copy of it).</string>
 
@@ -68,6 +65,10 @@
     <string name="touch_mode_wheel">Steering wheel (coming soon)</string>
     <string name="touch_mode_tilt">Tilt steering (coming soon)</string>
     <string name="touch_layout_label">Button layout</string>
+    <string name="touch_pointer_label">Pointer in menus</string>
+    <string name="touch_pointer_tap">Where the finger lands</string>
+    <string name="touch_pointer_touchpad">Touchpad</string>
+    <string name="touch_pointer_note">Touchpad: slide anywhere to move the cursor, tap to click, hold still to grab and drag. Applies the next time the game starts.</string>
     <string name="opacity_label">Button opacity</string>
     <string name="size_label">Button size</string>
     <string name="auto_hide_label">Auto-hide after 4 seconds idle</string>

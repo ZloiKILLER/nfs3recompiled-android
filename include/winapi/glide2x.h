@@ -55,6 +55,14 @@ static const x86::reg32 kResolution1280x720 = 0x80;
 static const x86::reg32 kResolution1600x900 = 0x81;
 static const x86::reg32 kResolution1920x1080 = 0x82;
 
+/* A texture format Glide 2 never had: eight bits a channel, numbered as Glide 3
+ * numbers it for the Voodoo 4 and 5 (GR_TEXFMT_ARGB_8888), each texel a
+ * little-endian 0xAARRGGBB.  A game layer maps its driver's 32-bit format to
+ * it, and the texels reach the atlas as they are.  Offered unless
+ * NFS_TEXTURES32 is 0 (fullColourTextures). */
+static const x86::reg32 kTexFmtArgb8888 = 0x12;
+bool fullColourTextures();
+
 }}
 
 #endif

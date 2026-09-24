@@ -24,6 +24,7 @@ private:
     static void audioCallback22050(void *userdata, SDL_AudioStream *stream, int additional_amount, int total_amount);
 
 private:
+    SDL_AudioDeviceID           m_device;
     SDL_AudioStream*            m_stream;
     std::vector<AudioBuffer*>   m_playingBuffers;
 };

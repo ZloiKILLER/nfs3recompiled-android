@@ -11,37 +11,68 @@ static const x86::reg32 s_channelCount = 2;
 static const x86::reg32 s_sampleCount = 4096;
 static const x86::reg32 s_sampleSize = s_sampleCount * s_channelCount;
 
+/* The game mixes at 22050 Hz and the stream takes it at that rate; the device
+ * runs at the phone's own rate (NFS_AUDIO_RATE, from AudioManager), and SDL
+ * converts between the two.  Opened at the game's rate instead -- raised to
+ * SDL's 44100 floor -- the device ran at a rate the phone does not, so Android
+ * resampled it inside its mixer, which keeps a stream off the low-latency path:
+ * the sound lagged the picture by a quarter of a second or more on some phones,
+ * and not on others.  Without the variable -- the desktop -- the device opens as
+ * it always did. */
 AudioDevice::AudioDevice()
-    :   m_stream(nullptr)
+    :   m_device(0)
+    ,   m_stream(nullptr)
 {
-    SDL_AudioSpec audioSpec;
-    audioSpec.format   = SDL_AUDIO_S16;
-    audioSpec.channels = s_channelCount;
-    audioSpec.freq     = 22050;
-    m_stream = SDL_OpenAudioDeviceStream(
-        SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK,
-        &audioSpec,
-        &audioCallback22050,
-        this);
+    SDL_AudioSpec game;
+    game.format   = SDL_AUDIO_S16;
+    game.channels = s_channelCount;
+    game.freq     = 22050;
+    SDL_AudioSpec output = game;
+    const char* nativeRate = SDL_getenv("NFS_AUDIO_RATE");
+    const int rate = nativeRate ? SDL_atoi(nativeRate) : 0;
+    if (rate >= 8000 && rate <= 192000)
+        output.freq = rate;
+    m_device = SDL_OpenAudioDevice(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &output);
+    if (!m_device)
+    {
+        SDL_Log("[AUDIO] no output: %s", SDL_GetError());
+        return;
+    }
+    // Paused until a buffer plays, as SDL_OpenAudioDeviceStream left it.
+    SDL_PauseAudioDevice(m_device);
+    m_stream = SDL_CreateAudioStream(&game, &output);
+    if (!m_stream || !SDL_SetAudioStreamGetCallback(m_stream, &audioCallback22050, this)
+        || !SDL_BindAudioStream(m_device, m_stream))
+    {
+        SDL_Log("[AUDIO] no stream: %s", SDL_GetError());
+        return;
+    }
+    SDL_AudioSpec opened;
+    int frames = 0;
+    if (SDL_GetAudioDeviceFormat(m_device, &opened, &frames))
+        SDL_Log("[AUDIO] output at %d Hz, %d channels, %d frames a buffer; the game's %d Hz converted to it",
+                opened.freq, opened.channels, frames, game.freq);
 }
 
 AudioDevice::~AudioDevice()
 {
     SDL_DestroyAudioStream(m_stream);
+    if (m_device)
+        SDL_CloseAudioDevice(m_device);
 }
 
 void AudioDevice::play(AudioBuffer* buffer)
 {
-    if (m_playingBuffers.empty())
-        SDL_ResumeAudioDevice(SDL_GetAudioStreamDevice(m_stream));
+    if (m_playingBuffers.empty() && m_device)
+        SDL_ResumeAudioDevice(m_device);
     m_playingBuffers.push_back(buffer);
 }
 
 void AudioDevice::stop(AudioBuffer* buffer)
 {
     m_playingBuffers.erase(std::remove(m_playingBuffers.begin(), m_playingBuffers.end(), buffer), m_playingBuffers.end());
-    if (m_playingBuffers.empty())
-        SDL_PauseAudioDevice(SDL_GetAudioStreamDevice(m_stream));
+    if (m_playingBuffers.empty() && m_device)
+        SDL_PauseAudioDevice(m_device);
 }
 
 

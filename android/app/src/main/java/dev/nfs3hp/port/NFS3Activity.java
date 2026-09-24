@@ -45,6 +45,19 @@ public class NFS3Activity extends SDLActivity
      * touch mouse (GamePreferences.TOUCH_ENABLED).  Read once in onCreate --
      * only the launcher changes it. */
     private boolean touchEnabled = true;
+    /* A finger works the game's pointer as a touchpad rather than putting it
+     * where it lands (GamePreferences.TOUCH_POINTER).  Read once, likewise. */
+    private boolean touchpadPointer;
+
+    /* The port tears its Application down and calls SDL_Quit before main
+     * returns, so it can safely be launched again.  Without this opt-in SDL's
+     * stock glue calls System.exit(0) on the next launch and takes the launcher
+     * down with it. */
+    @Override
+    protected boolean allowActivityRecreation()
+    {
+        return true;
+    }
 
     /* Language of the launcher, chosen in the picker on the main screen.
      * LocaleHelper returns the context unchanged while the setting is
@@ -61,6 +74,8 @@ public class NFS3Activity extends SDLActivity
         haptics=new GameHaptics(this);
         SharedPreferences preferences = GamePreferences.get(this);
         touchEnabled = preferences.getBoolean(GamePreferences.TOUCH_ENABLED, true);
+        touchpadPointer = GamePreferences.TOUCH_POINTER_TOUCHPAD.equals(
+            preferences.getString(GamePreferences.TOUCH_POINTER, GamePreferences.TOUCH_POINTER_TAP));
         /* The four on-screen controls that steer and work the pedals.  The
          * control profile puts those on the first slot's axes rather than on
          * keys, so the native side recognises what the overlay is doing by the
@@ -76,8 +91,30 @@ public class NFS3Activity extends SDLActivity
          * sees final values. */
         for(int slot=0;slot<GamepadSlots.COUNT;slot++)
             for(int button=0;button<GamepadButtons.BUTTON_IDS.length;button++)
+            {
                 setEnv(GamepadButtons.environmentName(slot,GamepadButtons.BUTTON_IDS[button]),
                     GamepadButtons.environmentValue(slot,GamepadButtons.action(preferences,slot,button)));
+                /* And what the same button sends while a menu or a replay is on
+                 * the screen, where driving actions mean nothing. */
+                setEnv(GamepadButtons.menuEnvironmentName(slot,GamepadButtons.BUTTON_IDS[button]),
+                    GamepadButtons.menuEnvironmentValue(button));
+            }
+        /* How player one is about to drive, decided before the game reads its
+         * settings.  With a pad in the first slot the game steers on that pad's
+         * axes and the on-screen controls reach them through the port; with no
+         * pad the on-screen controls are bound as the keyboard they are, and
+         * the game steers them itself -- which is what makes a race driven on
+         * them one the game can replay.  The native side is told which it is,
+         * because in the second case it must keep out of the way: no folding
+         * those keys into axes, and no holding the game's steering flag up. */
+        boolean padForPlayerOne = GamepadSlots.resolve(preferences)[0] != null;
+        java.io.File dataRoot = getExternalFilesDir(null);
+        ControlProfile.Kind driving = dataRoot == null ? null
+            : ControlProfile.driveWith(dataRoot, preferences, padForPlayerOne);
+        setEnv("NFS_TOUCH_DRIVE", driving == ControlProfile.Kind.TOUCH ? "keys" : "axes");
+        Log.i(TAG, "driving with " + (driving == null ? "the player's own controls" : driving)
+            + (padForPlayerOne ? ", pad in slot 1" : ", no pad"));
+
         String orientation = preferences.getString(GamePreferences.ORIENTATION,
             GamePreferences.ORIENTATION_LANDSCAPE);
         int fpsCap = preferences.getInt(GamePreferences.FPS_CAP, 30);
@@ -92,11 +129,40 @@ public class NFS3Activity extends SDLActivity
             ScreenAdjustment.brightness(ScreenAdjustment.brightnessPercent(preferences))));
         setEnv("NFS_CONTRAST", String.format(java.util.Locale.ROOT, "%.3f",
             ScreenAdjustment.contrast(ScreenAdjustment.contrastPercent(preferences))));
+        /* The phone's own output rate, for the game's sound (audio.cpp): a stream
+         * at any other rate is resampled inside Android, off its low-latency
+         * path, and on some phones that alone delays the sound by a quarter of a
+         * second or more.  Logged with what the sound goes out through, since
+         * Bluetooth adds a delay of its own whatever the rate. */
+        android.media.AudioManager audio=(android.media.AudioManager)getSystemService(AUDIO_SERVICE);
+        if(audio!=null) {
+            String nativeRate=audio.getProperty(android.media.AudioManager.PROPERTY_OUTPUT_SAMPLE_RATE);
+            if(nativeRate!=null)setEnv("NFS_AUDIO_RATE",nativeRate);
+            Log.i(TAG,"sound: the phone's own rate "+nativeRate+" Hz, a burst of "
+                +audio.getProperty(android.media.AudioManager.PROPERTY_OUTPUT_FRAMES_PER_BUFFER)
+                +" frames, "+(bluetoothOutput(audio)?"a Bluetooth output connected":"no Bluetooth output"));
+        }
         /* Debug builds log the car detail the game settles on, once a second
          * during a race ([CARDETAIL] in logcat): the level each car was drawn
          * at against the game's budget, the transform buffer and the atlas. */
-        if ((getApplicationInfo().flags & android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0)
-            setEnv("NFS_CAR_DETAIL_TRACE", "1");
+        /* The traces that answer a question while it is being asked, and are
+         * noise the rest of the time: the car detail the game settles on
+         * ([CARDETAIL]), its clock against real time ([TICKS]) and what player
+         * one's car is driven with ([INPUT]).  Off unless the launch asks for
+         * one, which costs a line:
+         *   adb shell am start -n dev.nfs3hp.port/.SplashActivity --ez trace_ticks true
+         * The ones that speak only when something changes -- the layout, the
+         * pads, the steering, text entry -- stay on: they are a handful of
+         * lines a session and they are what makes a report readable. */
+        if (getIntent() != null)
+        {
+            if (getIntent().getBooleanExtra("trace_car_detail", false))
+                setEnv("NFS_CAR_DETAIL_TRACE", "1");
+            if (getIntent().getBooleanExtra("trace_ticks", false))
+                setEnv("NFS_TICK_TRACE", "1");
+            if (getIntent().getBooleanExtra("trace_input", false))
+                setEnv("NFS_INPUT_TRACE", "1");
+        }
 
         /* Landscape whatever happens -- portrait is not offered, the game
          * cannot use it.  "auto" turns over with the phone; the two fixed
@@ -124,6 +190,7 @@ public class NFS3Activity extends SDLActivity
             setEnv("NFS_TRACE_API", "1");
             setEnv("SDL_LOGGING", "app=verbose,error=verbose");
         }
+        desktopWindow();
         super.onCreate(savedInstanceState);
         running = true;
         attachTouchControls();
@@ -132,8 +199,9 @@ public class NFS3Activity extends SDLActivity
             .registerInputDeviceListener(gamepadListener, null);
     }
 
-    /* Whether the game is up.  The launcher asks before writing the game's
-     * settings file: the game keeps that file in memory and writes it back
+    /* Whether the game is up, for its own process.  The launcher runs in
+     * another one and asks the system instead (GameProcess.running): it writes
+     * the game's settings file, which the game keeps in memory and writes back
      * whole, so a change made underneath it would be lost. */
     private static volatile boolean running;
 
@@ -149,6 +217,13 @@ public class NFS3Activity extends SDLActivity
         ((InputManager) getSystemService(Context.INPUT_SERVICE))
             .unregisterInputDeviceListener(gamepadListener);
         super.onDestroy();
+        /* The game's process ends with the game.  SDL and the machine under it
+         * are set up once per process; a second race in the same one died in
+         * SDLThread before it drew anything.  Ending here means the next race
+         * starts in a process of its own, as the first one did, and the
+         * launcher -- another process since this was split off -- stays up. */
+        if (isFinishing())
+            System.exit(0);
     }
 
     /* Tells the native side which physical pad sits in each game slot.  It is
@@ -159,6 +234,7 @@ public class NFS3Activity extends SDLActivity
     private void pushGamepadSlots()
     {
         GamepadSlots.Pad[] pads = GamepadSlots.resolve(GamePreferences.get(this));
+        firstPlayersPad = pads[0] == null ? -1 : pads[0].id;
         try
         {
             nativeSetGamepadSlots(pads[0] == null ? "" : pads[0].descriptor,
@@ -178,10 +254,46 @@ public class NFS3Activity extends SDLActivity
         @Override public void onInputDeviceChanged(int deviceId) { pushGamepadSlots(); }
     };
 
+    /* Which way the window has to lie.  SDL asks Android for it once the game's
+     * window exists, from that window's size and SDL_HINT_ORIENTATIONS, and the
+     * manifest asks for landscape before that: right for a phone, where the
+     * screen is the game's.
+     *
+     * On a desktop -- Samsung DeX -- the game is a window on a monitor, and an
+     * activity that insists on a shape gets a window of that shape: the system
+     * lays it inside the task's window and leaves the rest of it showing what
+     * was there before, which is the launcher behind the game.  So there the
+     * request is let go and the window is the player's: it opens across the
+     * display (the manifest's <layout>) and is resized from the frame after
+     * that.  What the game draws still fills whatever the window becomes. */
+    private void desktopWindow()
+    {
+        if (!DesktopMode.active(this))
+            return;
+        Log.i(TAG, "desktop mode: the window's shape is the player's");
+        setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED);
+    }
+
+    @Override
+    public void setOrientationBis(int w, int h, boolean resizable, String hint)
+    {
+        if (DesktopMode.active(this))
+        {
+            desktopWindow();
+            return;
+        }
+        super.setOrientationBis(w, h, resizable, hint);
+    }
+
     @Override
     protected SDLSurface createSDLSurface(Context context)
     {
         gameSurface = new GameSurface(context);
+        /* A pad's press takes Android out of touch mode, and the focused view --
+         * this one, the whole window -- then wears the system's focus
+         * highlight: a green line round the screen for as long as the pad is
+         * used.  The game highlights its own items. */
+        gameSurface.setDefaultFocusHighlightEnabled(false);
         return gameSurface;
     }
 
@@ -198,7 +310,7 @@ public class NFS3Activity extends SDLActivity
     {
         if (touchControlsOverlay != null)
             touchControlsOverlay.releaseAll();
-        if (gameSurface != null) gameSurface.pointer.cancel();
+        if (gameSurface != null) gameSurface.cancelPointer();
         if(haptics!=null)haptics.pause();
         super.onPause();
     }
@@ -209,7 +321,10 @@ public class NFS3Activity extends SDLActivity
             return;
 
         if (touchControlsOverlay == null)
+        {
             touchControlsOverlay = new TouchControlsOverlay(this);
+            touchControlsOverlay.setRaceControls(raceGears, raceSpikes);
+        }
 
         if (touchControlsOverlay.getParent() != mLayout)
         {
@@ -230,7 +345,32 @@ public class NFS3Activity extends SDLActivity
      * is on, and the effect was routed to the pad and then dropped there.  The
      * game now names the device slot the effect belongs to, so no guessing is
      * needed and these handlers no longer steer the output. */
+    /* What the player last pressed with, for the phone's keyboard (onTextEntry):
+     * a box opened from a pad brings it up at once, since a pad has nothing
+     * else to type with.  Opened any other way the box waits for a finger on
+     * the line being typed in (onTextFieldTap).  Presses only: a mouse resting
+     * on the desk still reports its hovering. */
+    private static final int INPUT_TOUCH=0,INPUT_PAD=1,INPUT_POINTER=2,INPUT_KEYBOARD=3;
+    private int lastInput=INPUT_TOUCH;
+
+    /* A keyboard with letters on it, plugged in or paired -- not the phone's own
+     * volume keys, and not the on-screen keyboard's keys either. */
+    private static boolean isRealKeyboard(android.view.InputDevice device) {
+        return device!=null&&!device.isVirtual()&&!GamepadSlots.isGamepad(device)
+            &&device.getKeyboardType()==android.view.InputDevice.KEYBOARD_TYPE_ALPHABETIC;
+    }
+
+    /* With a real keyboard at hand the phone's is never wanted: the name is
+     * typed on the one there is. */
+    private static boolean realKeyboardConnected() {
+        for(int id:android.view.InputDevice.getDeviceIds())
+            if(isRealKeyboard(android.view.InputDevice.getDevice(id)))return true;
+        return false;
+    }
+
     @Override public boolean dispatchTouchEvent(android.view.MotionEvent event) {
+        if(event.getActionMasked()==android.view.MotionEvent.ACTION_DOWN)
+            lastInput=isExternalPointer(event)?INPUT_POINTER:(isScreenTouch(event)?INPUT_TOUCH:lastInput);
         /* Only the screen presses the on-screen controls.  A pointer driven from
          * elsewhere -- a mouse, or the DualSense touchpad, which Android turns
          * into a mouse pointer but reports with a finger tool type -- goes
@@ -296,11 +436,27 @@ public class NFS3Activity extends SDLActivity
         return buttons;
     }
 
+    /* The first player's pad, as GamepadSlots resolves the slots, kept from every
+     * attach and detach; -1 for none.  Only that pad puts the on-screen controls
+     * away: the second player drives split screen with a pad of their own while
+     * the first drives with the screen, and a press of theirs must not take the
+     * first player's controls out from under their thumbs.  The controls then
+     * follow their own auto-hide setting, as they do with no pad at all. */
+    private int firstPlayersPad = -1;
+
+    private boolean fromFirstPlayersPad(android.view.InputDevice device) {
+        return device != null && device.getId() == firstPlayersPad && GamepadSlots.isGamepad(device);
+    }
+
     /* A gamepad in the player's hands: the on-screen controls get out of the way
      * at the first press, and come back with the next touch on the screen. */
     @Override public boolean dispatchKeyEvent(android.view.KeyEvent event) {
+        if(event.getAction()==android.view.KeyEvent.ACTION_DOWN) {
+            if(GamepadSlots.isGamepad(event.getDevice()))lastInput=INPUT_PAD;
+            else if(isRealKeyboard(event.getDevice()))lastInput=INPUT_KEYBOARD;
+        }
         if(touchControlsOverlay!=null&&event.getAction()==android.view.KeyEvent.ACTION_DOWN
-           &&GamepadSlots.isGamepad(event.getDevice()))
+           &&fromFirstPlayersPad(event.getDevice()))
             touchControlsOverlay.hideForGamepad();
         if(isSystemBack(event)) {
             systemBack(event);
@@ -376,7 +532,10 @@ public class NFS3Activity extends SDLActivity
     }
 
     @Override public boolean dispatchGenericMotionEvent(android.view.MotionEvent event) {
-        if(touchControlsOverlay!=null&&isGamepadMotion(event))touchControlsOverlay.hideForGamepad();
+        if(isGamepadMotion(event))lastInput=INPUT_PAD;
+        else if(isExternalPointer(event)&&event.getActionMasked()==android.view.MotionEvent.ACTION_BUTTON_PRESS)
+            lastInput=INPUT_POINTER;
+        if(touchControlsOverlay!=null&&isGamepadMotion(event)&&fromFirstPlayersPad(event.getDevice()))touchControlsOverlay.hideForGamepad();
         /* The rest of a real pointer: moving with no button down, and buttons
          * pressed while another is held, which Android reports here rather than
          * as a touch.  The wheel still goes to SDL, which the game's DirectInput
@@ -452,6 +611,44 @@ public class NFS3Activity extends SDLActivity
         runOnUiThread(()->{if(touchControlsOverlay!=null)touchControlsOverlay.setMenuMode(!driving);});
     }
 
+    /** The game is taking a name (nfs3hp_main.cpp): the phone's keyboard comes
+     *  up for as long as it is, and goes away when the typing is over, so a
+     *  player never has to ask for it.  Raised through SDL, as the overlay's
+     *  own keyboard button is -- a keyboard raised behind SDL's back deletes
+     *  but types nothing -- and from the UI thread, which is where that has to
+     *  happen.  At once only for a box opened from a pad (lastInput); a finger
+     *  or a pointer opens the box and then the keyboard with a tap on the line
+     *  being typed in (onTextFieldTap).  Never while a real keyboard is
+     *  connected.  Going away is unconditional. */
+    public void onTextEntry(boolean typing) {
+        runOnUiThread(()->{
+            if(typing&&(lastInput!=INPUT_PAD||realKeyboardConnected()))return;
+            if(typing!=nativeKeyboardActive())nativeToggleKeyboard();
+        });
+    }
+
+    /** A finger on the picture while the game's name box is up (nfs3hp_main.cpp):
+     *  on the line being typed in, the keyboard comes up; anywhere else it goes
+     *  away, as a tap beside a field does everywhere.  The tap still reaches the
+     *  game, so one on Ok or Cancel does what it says as well. */
+    public void onTextFieldTap(boolean inside) {
+        runOnUiThread(()->{
+            boolean wanted=inside&&!realKeyboardConnected();
+            if(wanted!=nativeKeyboardActive())nativeToggleKeyboard();
+        });
+    }
+
+    /* Which of the racing layout's buttons player one's car can use, from the
+     * game (nfs3hp_main.cpp): the gears only with a manual gearbox, the spike
+     * strip only in a police car.  Kept for an overlay made afterwards. */
+    private boolean raceGears=true,raceSpikes=true;
+    public void onRaceControls(boolean gears,boolean spikes) {
+        runOnUiThread(()->{
+            raceGears=gears;raceSpikes=spikes;
+            if(touchControlsOverlay!=null)touchControlsOverlay.setRaceControls(gears,spikes);
+        });
+    }
+
     /** Invoked by the menu overlay. SDL's hidden edit view forwards committed
      * text as SDL_TEXT_INPUT, which the Win32 bridge exposes as WM_CHAR. */
     /* The same button opens and closes, and both ways go through SDL rather
@@ -470,12 +667,28 @@ public class NFS3Activity extends SDLActivity
      * turns the place the finger reached into the movement the game's cursor
      * needs to get there. */
     private static native void nativeScreenTouch(int action, float x, float y);
+    /* The finger on the touchpad instead: how far it slid, in window pixels,
+     * and whether it holds the button (bit 0). */
+    private static native void nativeTouchpad(float dx, float dy, int buttons);
     /* A real mouse, in window pixels, with its buttons: bit 0 left, 1 right,
      * 2 middle. */
     private static native void nativeMousePointer(float x, float y, int buttons);
     private static native void nativeToggleKeyboard();
     private static native boolean nativeKeyboardActive();
     private static native void nativeSetGamepadSlots(String first, String second);
+
+    /* Whether sound can be going out over Bluetooth: Android sends media there
+     * whenever such an output is connected. */
+    private static boolean bluetoothOutput(android.media.AudioManager audio) {
+        for(android.media.AudioDeviceInfo device:audio.getDevices(android.media.AudioManager.GET_DEVICES_OUTPUTS)) {
+            int type=device.getType();
+            if(type==android.media.AudioDeviceInfo.TYPE_BLUETOOTH_A2DP
+               ||type==android.media.AudioDeviceInfo.TYPE_BLUETOOTH_SCO
+               ||type==26/* TYPE_BLE_HEADSET, API 31 */||type==27/* TYPE_BLE_SPEAKER */)
+                return true;
+        }
+        return false;
+    }
 
     private void setEnv(String name, String value)
     {
@@ -493,10 +706,17 @@ public class NFS3Activity extends SDLActivity
     private final class GameSurface extends SDLSurface
     {
         final TouchPointer pointer;
+        final TouchpadPointer touchpad;
         GameSurface(Context context)
         {
             super(context);
             pointer = new TouchPointer(this, NFS3Activity::nativeScreenTouch);
+            touchpad = new TouchpadPointer(this, NFS3Activity::nativeTouchpad);
+        }
+
+        void cancelPointer() {
+            pointer.cancel();
+            touchpad.cancel();
         }
 
         /* No system arrow over the game.  The game draws its own cursor, and a
@@ -514,12 +734,12 @@ public class NFS3Activity extends SDLActivity
                 return true;
             int tool=event.getToolType(0);
             if(tool==android.view.MotionEvent.TOOL_TYPE_FINGER||tool==android.view.MotionEvent.TOOL_TYPE_UNKNOWN)
-                return pointer.onTouch(event);
+                return touchpadPointer?touchpad.onTouch(event):pointer.onTouch(event);
             return super.onTouch(v,event);
         }
 
         @Override public void onWindowFocusChanged(boolean focus) {
-            super.onWindowFocusChanged(focus);if(!focus)pointer.cancel();
+            super.onWindowFocusChanged(focus);if(!focus)cancelPointer();
         }
 
         @Override
