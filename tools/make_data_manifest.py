@@ -10,7 +10,8 @@ lower case, as DataImporter.missingFiles compares them.
 Left out, so that another edition of the game is not taken for an incomplete
 copy of this one: whatever depends on the language (the text files, the speech
 banks), and what belongs to the player rather than the disc (saves, records,
-settings -- config.dat is checked on its own, as the import's marker).
+settings -- config.dat is not on the disc at all: the game makes it the first
+time it runs).
 """
 import re
 import sys

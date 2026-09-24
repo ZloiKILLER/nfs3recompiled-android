@@ -111,8 +111,16 @@ public class NFS3Activity extends SDLActivity
         java.io.File dataRoot = getExternalFilesDir(null);
         ControlProfile.Kind driving = dataRoot == null ? null
             : ControlProfile.driveWith(dataRoot, preferences, padForPlayerOne);
+        /* No settings file yet -- data straight off the disc: the game makes
+         * one as it starts, and the set chosen here goes into it then
+         * (onFirstSettings). */
+        final boolean firstStart = driving == null && dataRoot != null && !ControlProfile.hasSettings(dataRoot);
+        if (firstStart)
+            driving = padForPlayerOne ? ControlProfile.Kind.GAMEPADS : ControlProfile.Kind.TOUCH;
+        firstStartKind = driving == ControlProfile.Kind.TOUCH ? driving : ControlProfile.Kind.GAMEPADS;
         setEnv("NFS_TOUCH_DRIVE", driving == ControlProfile.Kind.TOUCH ? "keys" : "axes");
         Log.i(TAG, "driving with " + (driving == null ? "the player's own controls" : driving)
+            + (firstStart ? ", into the settings the game is about to make" : "")
             + (padForPlayerOne ? ", pad in slot 1" : ", no pad"));
 
         String orientation = preferences.getString(GamePreferences.ORIENTATION,
@@ -636,6 +644,24 @@ public class NFS3Activity extends SDLActivity
             boolean wanted=inside&&!realKeyboardConnected();
             if(wanted!=nativeKeyboardActive())nativeToggleKeyboard();
         });
+    }
+
+    /* The control set a game making its settings from nothing gets: the one
+     * onCreate told the native side it drives with. */
+    private ControlProfile.Kind firstStartKind=ControlProfile.Kind.GAMEPADS;
+
+    /** The game has made a new player's settings (nfs3hp_main.cpp): it found
+     *  no settings file, or none it would take, and has chosen what suits the
+     *  machine.  The phone's go over them here, in the block the game keeps,
+     *  as an import puts them into a settings file that came with the data;
+     *  the game then saves the file itself.  On the game's thread, before its
+     *  first menu is drawn.  Returns whether the block was changed. */
+    public boolean onFirstSettings(byte[] config) {
+        boolean laid=ControlProfile.firstStart(config,firstStartKind,
+            ControlProfile.touchDriving(GamePreferences.get(this)),getExternalFilesDir(null));
+        Log.i(TAG,laid?"a new player's settings: the phone's, with "+firstStartKind
+            :"a new player's settings: not a settings block, left as the game made it");
+        return laid;
     }
 
     /* Which of the racing layout's buttons player one's car can use, from the

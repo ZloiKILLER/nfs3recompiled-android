@@ -421,7 +421,8 @@ final class ControlProfile
      *  the game or write from the Controls screen.  Last, because the game
      *  throws away a settings file older than its executable, and the
      *  executable is in place before any import starts.  A file that is not a
-     *  settings file is left for the game, which starts it over itself. */
+     *  settings file is left for the game, which starts it over itself --
+     *  and then gets the same from firstStart. */
     static void writeImportDefaults(File dataRoot) throws IOException
     {
         File file = settingsFile(dataRoot);
@@ -430,17 +431,69 @@ final class ControlProfile
         byte[] config = Files.readAllBytes(file.toPath());
         if (!isSettingsFile(config))
             return;
-        apply(config, Kind.GAMEPADS);
+        newGame(config, Kind.GAMEPADS, new Key[] { RIGHT, LEFT, UP, DOWN });
+        replace(file, config);
+        // Done as part of the import: the launcher's one-off pass leaves it be.
+        copMinimapDone(file.getParentFile());
+    }
+
+    /** The same for a game with no settings file of its own -- data copied
+     *  straight off the disc, which has none: the game makes a new player's
+     *  settings as it first starts and chooses what suits the machine
+     *  (sub_472d10), and this goes over them before the game saves them
+     *  (NFS3Activity.onFirstSettings).  The controls are the set for how player
+     *  one is about to drive, as the launch decided.  Returns whether the block
+     *  was a settings block to change at all. */
+    static boolean firstStart(byte[] config, Kind kind, Key[] touchDriving, File dataRoot)
+    {
+        if (!isSettingsFile(config))
+            return false;
+        newGame(config, kind, touchDriving);
+        File fedata = dataRoot == null ? null : child(dataRoot, "fedata");
+        File folder = fedata == null ? null : child(fedata, "config");
+        if (folder != null)
+            copMinimapDone(folder);
+        return true;
+    }
+
+    /* What a new game starts with, into a settings block held in memory. */
+    private static void newGame(byte[] config, Kind kind, Key[] touchDriving)
+    {
+        apply(config, kind, touchDriving);
         ByteBuffer buffer = ByteBuffer.wrap(config).order(ByteOrder.LITTLE_ENDIAN);
         buffer.putInt(VIEW_DISTANCE, 0);
         buffer.putInt(SCREEN_WIDTH, IMPORT_SCREEN_WIDTH);
         hudDefaults(config);
         copMinimap(config);
-        replace(file, config);
-        // Done as part of the import: the launcher's one-off pass leaves it be.
-        File done = new File(file.getParentFile(), COP_MINIMAP_DONE);
-        if (!done.exists() && !done.createNewFile())
-            android.util.Log.w("ControlProfile", "Could not mark the cop's minimap as done");
+    }
+
+    /** Whether the game will find settings of its own to start with: a
+     *  settings file it can read, where the game keeps it. */
+    static boolean hasSettings(File dataRoot)
+    {
+        try
+        {
+            File file = settingsFile(dataRoot);
+            return file != null && isSettingsFile(Files.readAllBytes(file.toPath()));
+        }
+        catch (IOException unreadable)
+        {
+            return false;
+        }
+    }
+
+    private static void copMinimapDone(File folder)
+    {
+        File done = new File(folder, COP_MINIMAP_DONE);
+        try
+        {
+            if (!done.exists() && !done.createNewFile())
+                android.util.Log.w("ControlProfile", "Could not mark the cop's minimap as done");
+        }
+        catch (IOException e)
+        {
+            android.util.Log.w("ControlProfile", "Could not mark the cop's minimap as done", e);
+        }
     }
 
     /* The HUD layouts in the settings file: from 0x6fbc50 in the game, a slot

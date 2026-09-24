@@ -3,6 +3,8 @@
 
 namespace nfs3hp
 {
+// Port (tools/apply_first_settings.py): defined in nfs3hp_main.cpp.
+bool firstSettings(win32::WinApplication* app);
 
 /* align: skip 0x8d 0x80 0x00 0x00 0x00 0x00 0x8d 0x92 0x00 0x00 0x00 0x00 */
 void Application::sub_46e270(WinApplication* app, x86::CPU& cpu)
@@ -19863,6 +19865,17 @@ L_0x00473169:
     cpu.esp -= 4;
     sub_472d10(app, cpu);
     if (cpu.terminate) return;
+    if (firstSettings(app)) /* port: the phone's settings over the new player's */
+    {
+        const x86::reg32 kept = cpu.eax;
+        cpu.esp -= 4;
+        sub_43c040(app, cpu); /* the game takes up the new bindings */
+        if (cpu.terminate) return;
+        cpu.esp -= 4;
+        sub_472820(app, cpu); /* and saves them, as it does leaving the front end */
+        if (cpu.terminate) return;
+        cpu.eax = kept;
+    }
 L_0x0047319a:
     // 0047319a  e8a1d00700             -call 0x4f0240
     cpu.esp -= 4;

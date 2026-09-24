@@ -174,3 +174,8 @@ if __name__ == '__main__':
     # and the Screen Size list shows the depth a race is drawn in.
     from tools.apply_full_colour import apply as apply_full_colour
     apply_full_colour(Path(__file__).resolve().parent)
+
+    # First settings: a game that starts with no settings file -- data copied
+    # straight off the disc -- gets the phone's, as an import writes them.
+    from tools.apply_first_settings import apply as apply_first_settings
+    apply_first_settings(Path(__file__).resolve().parent)

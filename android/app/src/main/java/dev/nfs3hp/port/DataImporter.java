@@ -61,9 +61,12 @@ final class DataImporter
     private static final boolean[] USER_DATA_REQUIRED = { true, true, false };
 
     /** One representative file per required subfolder: enough to tell "imported"
-     * from "not imported" without walking the whole 430 MB tree on every launch. */
+     * from "not imported" without walking the whole 430 MB tree on every launch.
+     * For fedata, the main menu, which the game opens at every start -- not
+     * config/config.dat, which is no file of the disc's: the game makes it the
+     * first time it runs, so folders copied straight off the disc lack it. */
     private static final String[] USER_DATA_MARKERS = {
-        "fedata/config/config.dat",
+        "fedata/menus/main.mnu",
         "gamedata/tracks/trk000/sky.fsh",
     };
 
@@ -80,10 +83,38 @@ final class DataImporter
             return false;
         for (String marker : USER_DATA_MARKERS)
         {
-            if (!new File(root, marker).isFile())
+            if (!holdsFile(root, marker))
                 return false;
         }
         return true;
+    }
+
+    /* Whether the file is there, its name in any case: a disc names everything
+     * in capitals, the copy keeps the names it found, and the game finds its
+     * files whatever their case (file.cpp). */
+    private static boolean holdsFile(File root, String path)
+    {
+        File at = root;
+        for (String name : path.split("/"))
+        {
+            File next = new File(at, name);
+            if (!next.exists())
+            {
+                next = null;
+                String[] names = at.list();
+                if (names != null)
+                    for (String candidate : names)
+                        if (candidate.equalsIgnoreCase(name))
+                        {
+                            next = new File(at, candidate);
+                            break;
+                        }
+                if (next == null)
+                    return false;
+            }
+            at = next;
+        }
+        return at.isFile();
     }
 
     static boolean areBundledFilesPresent(File root)
@@ -248,7 +279,10 @@ final class DataImporter
 
     /* The controls and View Distance a new game starts with, into the settings
      * file just copied (ControlProfile.writeImportDefaults).  An import is not
-     * worth failing over them: the game runs on the file as it came. */
+     * worth failing over them: the game runs on the file as it came.  Data
+     * copied straight off the disc brings no settings file; it gets the same
+     * at the game's first start, when the game makes one
+     * (NFS3Activity.onFirstSettings). */
     private static void writeImportDefaults(File root)
     {
         try

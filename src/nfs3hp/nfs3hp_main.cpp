@@ -748,6 +748,52 @@ void musicStreamFile(win32::WinApplication* app, x86::reg32 path)
         app->getMemory<x86::reg8>(path + x86::reg32(i)) = x86::reg8(s_musicIndex[i]);
     SDL_Log("[MUSIC] streaming %s", s_musicIndex);
 }
+
+/* A new player's settings (tools/apply_first_settings.py).  With no settings
+ * file of its own -- data copied straight off the disc has none, the game makes
+ * it the first time it runs -- or none it would take, the game starts its
+ * settings over (sub_472980, sub_4723f0), and the first time the front end
+ * comes up it chooses what suits the machine (sub_472d10, View Distance among
+ * it).  Right after that the phone's go over them: NFS3Activity.onFirstSettings
+ * lays them on the block the game keeps, 0x20f0 bytes at 0x6fbb40 that are the
+ * file word for word, as an import writes them into a settings file that came
+ * with the data.  Returns whether it did, for the caller to have the game take
+ * up the new bindings and save the file. */
+bool firstSettings(win32::WinApplication* app)
+{
+    bool laid = false;
+#ifdef __ANDROID__
+    const jsize kSize = 0x20f0;
+    JNIEnv* env = static_cast<JNIEnv*>(SDL_GetAndroidJNIEnv());
+    jobject activity = env ? static_cast<jobject>(SDL_GetAndroidActivity()) : nullptr;
+    if (activity)
+    {
+        jclass cls = env->GetObjectClass(activity);
+        jmethodID method = env->GetMethodID(cls, "onFirstSettings", "([B)Z");
+        jbyteArray config = method ? env->NewByteArray(kSize) : nullptr;
+        if (config)
+        {
+            void* block = &app->getMemory<void>(0x6fbb40);
+            env->SetByteArrayRegion(config, 0, kSize, static_cast<const jbyte*>(block));
+            laid = env->CallBooleanMethod(activity, method, config) == JNI_TRUE && !env->ExceptionCheck();
+            if (laid)
+                env->GetByteArrayRegion(config, 0, kSize, static_cast<jbyte*>(block));
+            env->DeleteLocalRef(config);
+        }
+        if (env->ExceptionCheck())
+        {
+            env->ExceptionClear();
+            laid = false;
+        }
+        env->DeleteLocalRef(cls);
+        env->DeleteLocalRef(activity);
+    }
+#else
+    (void)app;
+#endif
+    SDL_Log("[SETTINGS] a new player's settings: %s", laid ? "the phone's, over the game's" : "the game's own");
+    return laid;
+}
 }
 
 namespace

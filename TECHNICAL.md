@@ -30,7 +30,8 @@ executables from `nfs3hp/`.
 
 ## Playing on a phone
 
-Android 8.0 or newer on a 64-bit ARM device. Testing happens on Android 13, and
+Android 8.0 or newer on a 64-bit ARM device (ARMv8, arm64-v8a) with OpenGL ES
+3.0. Testing happens on Android 13, and
 Android 10 was confirmed by a tester; 8 and 9 install but have not been played
 on yet.
 
@@ -41,8 +42,10 @@ on yet.
 An import leaves the game ready for a phone: the gamepad control set (see
 Controls), View Distance at Full, races at 1280x720 and a HUD arranged for a
 phone — the standings and the maps in the corners rather than under your thumbs
-— are written into its `config.dat` once, as the last step. From then on the
-file is the player's, and the game's own Heads Up Display screen rearranges it.
+— are written into its `config.dat` once, as the last step. Data straight off
+the disc has no `config.dat` yet — the game makes it the first time it runs —
+and gets the same at that first start. From then on the file is the player's,
+and the game's own Heads Up Display screen rearranges it.
 
 A race also starts sooner than the original's: the game used to copy the whole
 of the track it was about to play, 7 to 14 MB, into a file of its own and play

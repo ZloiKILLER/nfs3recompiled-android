@@ -21,8 +21,12 @@ full-colour textures.
 
 ## Playing
 
-You need a 64-bit Android phone with Android 8.0 or newer, and the game's data
-from your own copy: the `FEDATA` and `GAMEDATA` folders of the 1998 retail disc.
+You need:
+
+- a device with Android 8.0 or newer, a 64-bit ARM processor (ARMv8,
+  arm64-v8a) and OpenGL ES 3.0 graphics;
+- the game's data from your own copy: the `FEDATA` and `GAMEDATA` folders of
+  the 1998 retail disc.
 
 1. Copy both folders to the phone, for example to `/sdcard/nfs3-og`.
 2. Install the app, open it and import that folder.
