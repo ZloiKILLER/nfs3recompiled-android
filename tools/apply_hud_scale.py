@@ -67,8 +67,8 @@ FLD_HEIGHT_ARG = ("    cpu.fpu.push(x86::Float(app->getMemory<float>(x86::reg32(
                   " /* port: 4:3 proportions, was [0x55d6bc], the screen's height */")
 # The cop's table, its rows 12.414/13 of a text line apart instead of 20/13.
 COP_ROWS = lambda address: (
-    "    cpu.fpu.st(0) *= x86::Float(app->getMemory<double>(x86::reg32(%d) /* 0x%x */));" % (address, address),
-    "    cpu.fpu.st(0) *= x86::Float(12.414); /* port: the cop's rows as close as the Modern Patch has them,"
+    "    cpu.fpu.st(0) = cpu.fpu.mul(cpu.fpu.st(0), x86::Float(app->getMemory<double>(x86::reg32(%d) /* 0x%x */)));" % (address, address),
+    "    cpu.fpu.st(0) = cpu.fpu.mul(cpu.fpu.st(0), x86::Float(12.414)); /* port: the cop's rows as close as the Modern Patch has them,"
     " was [0x%x] = 20 */" % address)
 # The cop table's live speeding row, and its MPH/KPH worst-case width probes.
 # Only the format pointer changes; the game's sprintf call and stack cleanup

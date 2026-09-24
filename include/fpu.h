@@ -2,10 +2,17 @@
 #define FPU_H_
 
 #include <x86.h>
+#include <cstdint>
 #include <cstring>
 #include <cmath>
 
 //#define NFS2SE_X87_DEBUG 1
+
+#if defined(_MSC_VER) && !defined(__clang__)
+#define FPU_NOINLINE __declspec(noinline)
+#else
+#define FPU_NOINLINE __attribute__((noinline))
+#endif
 
 namespace x86
 {
@@ -397,6 +404,143 @@ namespace x86
             count = 0;
         }
 
+        /* The four operations and fsqrt as the x87 rounds them: to the
+         * precision its control word asks for.  NFS3 clears the precision
+         * control before every race (fldcw at 0x4a3ed3), so on a PC each sum,
+         * product and quotient of the race comes out with a float's 24-bit
+         * significand, while the exponent keeps the x87's range.  Worked out in
+         * double and rounded from there, the result is the x87's bit for bit:
+         * the exact result is the double plus an error whose sign is known --
+         * TwoSum for a sum, fma for a product, the remainder for a quotient or
+         * a root -- and that sign settles the only cases rounding twice could
+         * get wrong, a double exactly half way between two floats or exactly on
+         * one.  Precision control at 53 or 64 bits leaves the double as it is,
+         * as close as the port comes to either.  The disassembler emits these
+         * for fadd, fsub, fsubr, fmul, fdiv and fdivr (disasm/codegen/fpu.py). */
+#ifdef WITH_PEDANTIC_FPU
+        inline Float add(const Float &a, const Float &b) { return a + b; }
+        inline Float sub(const Float &a, const Float &b) { return a - b; }
+        inline Float mul(const Float &a, const Float &b) { return a * b; }
+        inline Float div(const Float &a, const Float &b) { return a / b; }
+#else
+        /* Which operation a rounding came from, for the rare rounding that has
+         * to know the exact result more closely than the double says. */
+        enum class Rounded { Add, Sub, Mul, Div, Sqrt };
+
+        inline Float add(const Float &a, const Float &b)
+        {
+            const double sum = a + b;
+            return control.pc != 0 ? sum : toSingle(sum, Rounded::Add, a, b);
+        }
+
+        inline Float sub(const Float &a, const Float &b)
+        {
+            const double difference = a - b;
+            return control.pc != 0 ? difference : toSingle(difference, Rounded::Sub, a, b);
+        }
+
+        inline Float mul(const Float &a, const Float &b)
+        {
+            const double product = a * b;
+            return control.pc != 0 ? product : toSingle(product, Rounded::Mul, a, b);
+        }
+
+        inline Float div(const Float &a, const Float &b)
+        {
+            const double quotient = a / b;
+            return control.pc != 0 ? quotient : toSingle(quotient, Rounded::Div, a, b);
+        }
+
+        static constexpr std::uint64_t kSingleDropped = (std::uint64_t(1) << 29) - 1;
+        static constexpr std::uint64_t kSingleHalf = std::uint64_t(1) << 28;
+        static constexpr std::uint64_t kSingleStep = std::uint64_t(1) << 29;
+
+        /* `value` rounded to a 24-bit significand in the rounding mode of the
+         * control word.  It stands in every one of the game's sums, so only the
+         * common case is done here: to nearest, with the value not exactly half
+         * way between two floats.  A tie, a directed mode, an infinity or a NaN
+         * goes to roundSingleSlow, which works out from `a` and `b` which side
+         * of `value` the exact result lies. */
+        inline double toSingle(double value, Rounded op, double a, double b) const
+        {
+            std::uint64_t bits;
+            std::memcpy(&bits, &value, sizeof bits);
+            const std::uint64_t dropped = bits & kSingleDropped;
+            if (control.rc == 0 && dropped != kSingleHalf && ((bits >> 52) & 0x7ff) != 0x7ff)
+            {
+                bits = (bits & ~kSingleDropped) + (dropped > kSingleHalf ? kSingleStep : 0);
+                std::memcpy(&value, &bits, sizeof bits);
+                return value;
+            }
+            return roundSingleSlow(value, op, a, b, control.rc);
+        }
+
+        static inline int sign(double value)
+        {
+            return (value > 0) - (value < 0);
+        }
+
+        static FPU_NOINLINE double roundSingleSlow(double value, Rounded op, double a, double b, unsigned rc)
+        {
+            std::uint64_t bits;
+            std::memcpy(&bits, &value, sizeof bits);
+            if (value == 0 || ((bits >> 52) & 0x7ff) == 0x7ff)
+                return value;
+            int beyond;  // the sign of the exact result minus `value`
+            switch (op)
+            {
+            case Rounded::Add:
+            {
+                const double part = value - a;
+                beyond = sign((a - (value - part)) + (b - part));
+                break;
+            }
+            case Rounded::Sub:
+            {
+                const double part = value - a;
+                beyond = sign((a - (value - part)) + (-b - part));
+                break;
+            }
+            case Rounded::Mul:
+                beyond = sign(std::fma(a, b, -value));
+                break;
+            case Rounded::Div:
+                beyond = sign(std::fma(-value, b, a)) * sign(b);
+                break;
+            default:  // the square root of `a`
+                beyond = sign(std::fma(-value, value, a));
+                break;
+            }
+            const bool negative = value < 0;
+            if (negative)
+                beyond = -beyond;  // the exact magnitude against |value|
+            const std::uint64_t dropped = bits & kSingleDropped;
+            if (dropped == 0 && beyond == 0)
+                return value;
+            std::uint64_t kept = bits & ~kSingleDropped;
+            if (rc == 0)
+            {
+                if (dropped > kSingleHalf || (dropped == kSingleHalf && (beyond > 0 || (beyond == 0 && ((kept >> 29) & 1)))))
+                    kept += kSingleStep;
+            }
+            else
+            {
+                const bool away = rc != 3 && ((rc == 2) != negative);
+                if (away)
+                {
+                    if (dropped != 0 || beyond > 0)
+                        kept += kSingleStep;
+                }
+                else if (dropped == 0 && beyond < 0)
+                {
+                    kept -= kSingleStep;
+                }
+            }
+            std::memcpy(&value, &kept, sizeof kept);
+            return value;
+        }
+#endif
+
         inline void compare(const Float& val1, const Float& val2)
         {
 #ifdef WITH_PEDANTIC_FPU
@@ -523,7 +667,8 @@ namespace x86
 #endif
             return result;
 #else
-            return ::sqrt(value);
+            const double root = ::sqrt(value);
+            return control.pc != 0 ? root : toSingle(root, Rounded::Sqrt, value, 0.0);
 #endif
         }
 

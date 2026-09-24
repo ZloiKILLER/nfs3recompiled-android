@@ -42,6 +42,7 @@
  <string name="sample_bright">Tag</string>
  <string name="back_to_launcher">Zurück</string>
  <string name="switch_data">Aktivieren</string>
+ <string name="data_change">Ändern…</string>
  <string name="delete">Löschen</string>
  <string name="import_folder">Ordner importieren…</string>
  <string name="import_zip">ZIP importieren…</string>
@@ -118,7 +119,6 @@
 
  <string name="pref_phone_vibration">Telefon-Vibration (Spieleffekte; Spiel neu starten)</string>
  <string name="pref_show_gears">Gangtasten − / + anzeigen</string>
- <string name="pref_hide_full">Ganz ausblenden (sonst blasse Silhouette)</string>
  <string name="auto_hide_delay">Verzögerung: %1$d s</string>
  <string name="editor_button_size">Taste: %1$d%%</string>
  <string name="editor_reset_title">Diese Anordnung zurücksetzen?</string>
@@ -147,7 +147,7 @@
  <string name="faq_mouse"><b>Wie funktionieren die Menüs?</b>\nDurch Berühren. Wo der Finger liegt, ist der Zeiger des Spiels, also drückt ein Tippen den Eintrag darunter und ein Regler folgt dem Finger, der ihn zieht. Die Zurück-Taste oder -Geste des Telefons ist Escape, und wenn das Spiel nach einem Namen fragt, öffnet sich die Tastatur des Telefons von selbst; bei offener Tastatur schließt Zurück sie.</string>
  <string name="faq_size"><b>Was ändert die Größe?</b>\nDie Tastengröße skaliert die Standardsteuerung. Ziehe unter Positionen und Größen bearbeiten ein Element und ändere seine Größe mit dem Größenregler; ein Element reagiert genau dort, wo es gezeichnet wird, und die Prozente beziehen sich auf das Standardelement. Änderungen werden automatisch gespeichert. Der Editor zeigt ein Raster; ist Am Raster ausrichten an, rastet ein gezogenes Element darauf ein.</string>
  <string name="faq_edges"><b>Ränder und Höhe</b>\nDer Abstand zu den Rändern schiebt die Standardelemente nach innen. Systemaussparungen werden berücksichtigt. Von Hand platzierte Elemente behalten ihre gespeicherten Positionen.</string>
- <string name="faq_hiding"><b>Deckkraft und automatisches Ausblenden</b>\nDie Deckkraft legt die normale Sichtbarkeit fest. Das Ausblenden beginnt, sobald alle Finger abgehoben sind, nach 1 bis 30 Sekunden. Wähle eine blasse Silhouette oder völlige Unsichtbarkeit. Ausgeblendete Tasten reagieren schon auf die erste Berührung und werden wieder sichtbar. Wer ein Element hält, verhindert das Ausblenden. Ein Druck auf dem Pad von Spieler 1 blendet die Steuerung sofort aus; die nächste Berührung holt sie zurück. Das Pad von Spieler 2 lässt sie in Ruhe, damit einer auf dem Bildschirm fahren kann, während der andere am Pad spielt.</string>
+ <string name="faq_hiding"><b>Deckkraft und automatisches Ausblenden</b>\nDie Deckkraft legt die normale Sichtbarkeit fest. Das Ausblenden beginnt, sobald alle Finger abgehoben sind, nach 1 bis 30 Sekunden. Ausgeblendete Tasten reagieren schon auf die erste Berührung und werden wieder sichtbar. Wer ein Element hält, verhindert das Ausblenden. Ein Druck auf dem Pad von Spieler 1 blendet die Steuerung sofort aus; die nächste Berührung holt sie zurück. Das Pad von Spieler 2 lässt sie in Ruhe, damit einer auf dem Bildschirm fahren kann, während der andere am Pad spielt.</string>
  <string name="faq_vibration"><b>Vibration</b>\nDie Force-Feedback-Effekte des Spiels erreichen das Telefon und Gamepad 1. Das Spiel steuert nur ein Force-Feedback-Gerät, daher vibriert Gamepad 2 nie. Die Telefonvibration schaltest du unter Steuerung → Touch ein oder aus. Die Gamepad-Vibration ist aus, bis du sie unter Steuerung → Gamepads einschaltest; ihre Stärke stellst du im Spiel selbst ein: Options → Controllers → Force Feedback. Die Effekte kommen vom Spiel, nie von Tastendrücken.</string>
  <string name="faq_mapping"><b>Gamepads</b>\nDas Spiel sieht immer zwei Gamepads: Gamepad 1 ist Spieler 1 zusammen mit der Touch-Steuerung, Gamepad 2 ist Spieler 2. Wähle unter Steuerung → Gamepads per Tastendruck, welches Pad welches ist, lege fest, was jede Taste tut, und tippe dann einmal auf Gamepad AN. Das schreibt die passende Steuerung in die Spieleinstellungen und sichert die alte Datei. Der linke Stick lenkt, die Trigger geben Gas und bremsen. Ein Pad hat zwei Tastensätze, so wie die Touch-Steuerung zwei Anordnungen hat: die Rennanordnung, die du hier einstellst, und eine feste für Menüs und Wiederholungen, in der Cross / A bestätigt, Circle / B zurückgeht und das Steuerkreuz die Auswahl bewegt. Zum Spielen mit Tastatur schreibe stattdessen Spielstandard.</string>
  <string name="faq_lights"><b>Licht und Rückkehr zur Strecke</b>\n☼ sendet L. ↻ sendet R, um auf die Strecke zurückzukehren. Die Tasten lassen sich unter Steuerung → Touch → Tasten ändern.</string>
@@ -166,7 +166,6 @@
  <string name="controls_write_failed">Die Steuerung konnte nicht geschrieben werden: %1$s</string>
  <string name="gamepads_keyboard_note">Das Spiel ist auf seine eigene Tastatursteuerung eingestellt (Spielstandard). Die Gamepads tun in Splitscreen-Rennen nichts, bis du Gamepad AN drückst.</string>
  <string name="pref_touch_enabled">Touch-Steuerung verwenden</string>
- <string name="touch_enabled_note">Aus: Berührungen des Bildschirms bewirken im Spiel nichts, weder Tasten noch Touch-Maus. Gamepads und eine echte Maus funktionieren weiter.</string>
  <string name="controls_help">Hilfe: Splitscreen</string>
  <string name="controls_help_title">Splitscreen mit zwei Gamepads</string>
  <string name="help_split_setup"><b>1. Gamepads einrichten (einmalig)</b>\nVerbinde beide Gamepads mit dem Telefon. Tippe unter Steuerung → Gamepads bei Gamepad 1 auf Zuweisen und drücke eine beliebige Taste auf dem Pad von Spieler 1, danach dasselbe für Gamepad 2. Automatisch geht auch: Die Pads werden in der Reihenfolge übernommen, in der sie verbunden wurden. Unter Tasten legst du fest, was jede Taste tut.</string>

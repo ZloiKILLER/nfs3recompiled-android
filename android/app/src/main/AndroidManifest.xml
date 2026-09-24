@@ -33,7 +33,7 @@
             android:theme="@style/LauncherTheme"
             android:label="@string/app_name"
             android:exported="true"
-            android:screenOrientation="landscape"
+            android:screenOrientation="sensorLandscape"
             android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|density|uiMode|keyboardHidden" >
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
@@ -47,7 +47,7 @@
         <activity android:name="dev.nfs3hp.port.LauncherActivity"
             android:theme="@style/LauncherTheme"
             android:label="@string/launcher_title"
-            android:screenOrientation="landscape"
+            android:screenOrientation="sensorLandscape"
             android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|density|uiMode|keyboardHidden"
             android:exported="false" >
             <!-- Where there are windows rather than a screen, this one opens as

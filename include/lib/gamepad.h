@@ -167,8 +167,10 @@ public:
      *  watched -- the lower face button confirms, the right one goes back, the
      *  D-pad moves the highlight and the rest are quiet.  The same two states
      *  the on-screen controls have layouts for, from the same signal, set from
-     *  the game layer once a frame (nfs3hp_main.cpp). */
-    enum class Context { Race, Menu };
+     *  the game layer once a frame (nfs3hp_main.cpp).  Pause is the menu over a
+     *  race: the menu's buttons, except that the button which opened it -- the
+     *  racing set's Escape, Start out of the box -- closes it again. */
+    enum class Context { Race, Menu, Pause };
     static void context(Context context);
     /* Whether the touch overlay's steering buttons are what steers player
      * one: true from the moment one is held, false once the first pad steers

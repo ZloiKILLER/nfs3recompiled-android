@@ -40,6 +40,7 @@
  <string name="sample_bright">Jour</string>
  <string name="back_to_launcher">Retour</string>
  <string name="switch_data">Activer</string>
+ <string name="data_change">Changer…</string>
  <string name="delete">Supprimer</string>
  <string name="import_folder">Importer un dossier…</string>
  <string name="import_zip">Importer un ZIP…</string>
@@ -116,7 +117,6 @@
 
  <string name="pref_phone_vibration">Vibration du téléphone (effets du jeu ; redémarrez le jeu)</string>
  <string name="pref_show_gears">Afficher les boutons de vitesse − / +</string>
- <string name="pref_hide_full">Masquer complètement (sinon silhouette discrète)</string>
  <string name="auto_hide_delay">Délai de masquage : %1$d s</string>
  <string name="editor_button_size">Bouton : %1$d%%</string>
  <string name="editor_reset_title">Réinitialiser cette disposition ?</string>
@@ -145,7 +145,7 @@
  <string name="faq_mouse"><b>Comment fonctionnent les menus ?</b>\nAu toucher. Le pointeur du jeu va là où se pose le doigt : une tape appuie sur l\'élément en dessous et un curseur suit le doigt qui le fait glisser. Le bouton ou le geste Retour du téléphone fait Échap et, quand le jeu demande un nom, le clavier du téléphone s\'ouvre tout seul ; clavier ouvert, Retour le referme.</string>
  <string name="faq_size"><b>Que change la taille ?</b>\nLa taille des boutons met à l\'échelle les commandes par défaut. Dans Modifier les positions et tailles, faites glisser une commande et changez sa taille avec le curseur de taille ; une commande répond exactement là où elle est dessinée et les pourcentages sont relatifs à la commande par défaut. Les changements sont enregistrés tout seuls. L\'éditeur affiche une grille ; avec Aligner sur la grille, la commande déplacée s\'y pose.</string>
  <string name="faq_edges"><b>Bords et position verticale</b>\nLa distance aux bords rapproche les commandes par défaut du centre. Les découpes système sont respectées. Les commandes placées à la main gardent leurs positions enregistrées.</string>
- <string name="faq_hiding"><b>Opacité et masquage automatique</b>\nL\'opacité fixe la visibilité normale. Le masquage automatique démarre une fois tous les doigts levés, après un délai de 1 à 30 secondes. Choisissez une silhouette discrète ou l\'invisibilité complète. Les boutons masqués répondent dès le premier contact et redeviennent visibles. Maintenir une commande empêche le masquage. Un appui sur la manette du joueur 1 masque aussitôt les commandes ; le toucher suivant les fait revenir. La manette du joueur 2 n\'y touche pas : l\'un peut conduire sur l\'écran pendant que l\'autre joue à la manette.</string>
+ <string name="faq_hiding"><b>Opacité et masquage automatique</b>\nL\'opacité fixe la visibilité normale. Le masquage automatique démarre une fois tous les doigts levés, après un délai de 1 à 30 secondes. Les boutons masqués répondent dès le premier contact et redeviennent visibles. Maintenir une commande empêche le masquage. Un appui sur la manette du joueur 1 masque aussitôt les commandes ; le toucher suivant les fait revenir. La manette du joueur 2 n\'y touche pas : l\'un peut conduire sur l\'écran pendant que l\'autre joue à la manette.</string>
  <string name="faq_vibration"><b>Vibration</b>\nLes effets Force Feedback du jeu atteignent le téléphone et la manette 1. Le jeu ne pilote qu\'un seul périphérique à retour de force, donc la manette 2 ne vibre jamais. La vibration du téléphone s\'active ou se coupe dans Commandes → Tactile. La vibration de la manette reste coupée tant qu\'elle n\'est pas activée dans Commandes → Manettes ; son intensité se règle dans le jeu lui-même : Options → Controllers → Force Feedback. Les effets viennent du jeu, jamais des appuis sur les boutons.</string>
  <string name="faq_mapping"><b>Manettes</b>\nLe jeu voit toujours deux manettes : la manette 1 est le joueur 1 avec les commandes tactiles, la manette 2 est le joueur 2. Dans Commandes → Manettes, choisissez quelle manette est laquelle en appuyant sur un de ses boutons et réglez ce que fait chaque bouton, puis appuyez une fois sur Manette ACTIVE. Les commandes correspondantes sont alors écrites dans les réglages du jeu et l\'ancien fichier est sauvegardé. Le stick gauche dirige, les gâchettes accélèrent et freinent. Une manette a deux jeux de boutons, comme les commandes tactiles ont deux dispositions : celui de la course, réglé ici, et un jeu fixe pour les menus et les replays, où Cross / A valide, Circle / B revient en arrière et la croix déplace la sélection. Pour jouer au clavier, écrivez plutôt Défaut du jeu.</string>
  <string name="faq_lights"><b>Phares et remise en piste</b>\n☼ envoie L. ↻ envoie R pour revenir sur la piste. Les touches se modifient dans Commandes → Tactile → Touches.</string>
@@ -164,7 +164,6 @@
  <string name="controls_write_failed">Impossible d\'écrire les commandes : %1$s</string>
  <string name="gamepads_keyboard_note">Le jeu est réglé sur ses propres commandes clavier (Défaut du jeu). Les manettes ne font rien dans les courses en écran partagé tant que vous n\'appuyez pas sur Manette ACTIVE.</string>
  <string name="pref_touch_enabled">Utiliser les commandes tactiles</string>
- <string name="touch_enabled_note">Désactivé : toucher l\'écran ne fait rien dans le jeu, ni boutons ni souris tactile. Les manettes et une vraie souris continuent de fonctionner.</string>
  <string name="controls_help">Aide : écran partagé</string>
  <string name="controls_help_title">Écran partagé avec deux manettes</string>
  <string name="help_split_setup"><b>1. Configurer les manettes (une fois)</b>\nConnectez les deux manettes au téléphone. Dans Commandes → Manettes, appuyez sur Attribuer sous la manette 1 puis sur n\'importe quel bouton de la manette du joueur 1, et faites de même pour la manette 2. Automatique fonctionne aussi : les manettes sont prises dans l\'ordre de connexion. Boutons permet de choisir ce que fait chaque bouton.</string>

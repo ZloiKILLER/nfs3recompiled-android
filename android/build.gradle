@@ -11,6 +11,10 @@ buildscript {
         // all; AGP is pinned to a version that in turn requires that Gradle
         // (see gradle/wrapper/gradle-wrapper.properties) and compileSdk 36.
         classpath 'com.android.tools.build:gradle:9.1.1'
+        // The launcher is Jetpack Compose.  AGP 9 compiles Kotlin itself; this
+        // pins the Kotlin it uses to the one the Compose compiler plugin is for.
+        classpath 'org.jetbrains.kotlin:kotlin-gradle-plugin:2.4.10'
+        classpath 'org.jetbrains.kotlin:compose-compiler-gradle-plugin:2.4.10'
     }
 }
 

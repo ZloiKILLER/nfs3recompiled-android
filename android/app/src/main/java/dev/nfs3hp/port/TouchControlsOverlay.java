@@ -15,7 +15,7 @@ import java.util.HashMap;
 import java.util.Map;
 
 /** Digital controls: movement changes held keys; touches starting outside controls pass to SDL. */
-final class TouchControlsOverlay extends View {
+public final class TouchControlsOverlay extends View {
     /* What the short presses of tap controls are released under, so releasing
      * everything drops those and nothing else.  It used to drop every pending
      * callback, the idle timer too, and a layout rebuilt for new window insets
@@ -219,8 +219,11 @@ final class TouchControlsOverlay extends View {
     }
     /* The game's own area, in pixels, for the previews to lay the controls out
      * in (TouchPreviewFrame): the launcher's window is not the game's -- it
-     * keeps the navigation bar, the game hides it and draws beside the cutout. */
+     * keeps the navigation bar, the game hides it and draws beside the cutout.
+     * Not from a desktop window (DeX): its shape is whatever the player dragged
+     * it to, and the phone's previews would lay controls out in it. */
     private void rememberGameArea(float width,float height) {
+        if(DesktopMode.active(getContext())) return;
         int w=Math.round(width),h=Math.round(height);
         if(preferences.getInt(GamePreferences.TOUCH_GAME_WIDTH,0)!=w||preferences.getInt(GamePreferences.TOUCH_GAME_HEIGHT,0)!=h)
             preferences.edit().putInt(GamePreferences.TOUCH_GAME_WIDTH,w).putInt(GamePreferences.TOUCH_GAME_HEIGHT,h).apply();
@@ -488,7 +491,7 @@ final class TouchControlsOverlay extends View {
     }
     private void release(Contact c) { for(Integer k:c.held) keys.release(k);c.held.clear(); }
     void releaseAll() { handler.removeCallbacksAndMessages(PULSES);keys.releaseAll();contacts.clear();pointers.clear();screenFingers=0;invalidate(); }
-    private void fadeIdle() { if(!gamepadHidden&&screenFingers==0&&pointers.isEmpty()&&contacts.isEmpty())animate().alpha(preferences.getBoolean(GamePreferences.TOUCH_HIDE_FULL,false)?0f:.12f).setDuration(350).start(); }
+    private void fadeIdle() { if(!gamepadHidden&&screenFingers==0&&pointers.isEmpty()&&contacts.isEmpty())animate().alpha(0f).setDuration(350).start(); }
     void resumeIdleTimer() { if(gamepadHidden)return;reveal();scheduleHide(); }
     private void reveal() { gamepadHidden=false;handler.removeCallbacks(dim);animate().cancel();setAlpha(1); }
     private void scheduleHide() {

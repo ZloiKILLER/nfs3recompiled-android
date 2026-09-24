@@ -5086,7 +5086,7 @@ void sub_a77830(win32::WinApplication* app, x86::CPU& cpu)
     // 00a77837  d9ee                   +fldz 
     cpu.fpu.push(0.0);
     // 00a77839  def9                   +fdivp st(1)
-    cpu.fpu.st(1) /= cpu.fpu.st(0);
+    cpu.fpu.st(1) = cpu.fpu.div(cpu.fpu.st(1), cpu.fpu.st(0));
     cpu.fpu.pop();
     // 00a7783b  d9c0                   +fld st(0)
     cpu.fpu.push(x86::Float(cpu.fpu.st(0)));

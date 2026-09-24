@@ -49,7 +49,7 @@ final class LauncherSettings {
         GamePreferences.TOUCH_POINTER,
         GamePreferences.TOUCH_OPACITY, GamePreferences.TOUCH_SIZE,
         GamePreferences.TOUCH_AUTO_HIDE, GamePreferences.TOUCH_EDGE,
-        GamePreferences.TOUCH_HIDE_SECONDS, GamePreferences.TOUCH_HIDE_FULL,
+        GamePreferences.TOUCH_HIDE_SECONDS,
         GamePreferences.TOUCH_VIBRATION,
         GamePreferences.SAVES_INCLUDE_SETTINGS,
     };

@@ -40,6 +40,7 @@
  <string name="sample_bright">Den</string>
  <string name="back_to_launcher">Zpět</string>
  <string name="switch_data">Aktivovat</string>
+ <string name="data_change">Změnit…</string>
  <string name="delete">Smazat</string>
  <string name="import_folder">Importovat složku…</string>
  <string name="import_zip">Importovat ZIP…</string>
@@ -116,7 +117,6 @@
 
  <string name="pref_phone_vibration">Vibrace telefonu (herní efekty; restartuj hru)</string>
  <string name="pref_show_gears">Zobrazit tlačítka převodů − / +</string>
- <string name="pref_hide_full">Skrýt úplně (jinak bledá silueta)</string>
  <string name="auto_hide_delay">Prodleva: %1$d s</string>
  <string name="editor_button_size">Tlačítko: %1$d%%</string>
  <string name="editor_reset_title">Obnovit toto rozložení?</string>
@@ -145,7 +145,7 @@
  <string name="faq_mouse"><b>Jak fungují nabídky?</b>\nDotykem. Kam položíš prst, tam je ukazatel hry, takže ťuknutí stiskne položku pod ním a posuvník jde za prstem, který ho táhne. Systémové tlačítko nebo gesto Zpět je Escape, a když si hra řekne o jméno, klávesnice telefonu se otevře sama; při otevřené klávesnici ji Zpět zavře.</string>
  <string name="faq_size"><b>Co mění velikost?</b>\nVelikost tlačítek škáluje výchozí ovládání. V Upravit pozice a velikosti přetáhni prvek a změň jeho velikost posuvníkem velikosti; prvek reaguje na dotyk přesně tam, kde je vykreslen, a procenta jsou vztažena k výchozímu prvku. Změny se ukládají samy. Editor ukazuje mřížku; se zapnutým Přichytit k mřížce na ni tažený prvek dosedne.</string>
  <string name="faq_edges"><b>Okraje a výška</b>\nOdstup od okrajů posouvá výchozí prvky dovnitř. Systémové výřezy se respektují. Ručně umístěné prvky si drží uložené pozice.</string>
- <string name="faq_hiding"><b>Krytí a automatické skrývání</b>\nKrytí určuje běžnou viditelnost. Skrývání začne po zvednutí všech prstů, po 1–30 sekundách. Vyber bledou siluetu, nebo úplnou neviditelnost. Skrytá tlačítka reagují už na první dotek a znovu se zobrazí. Podržení prvku skrývání zabrání. Stisk na padu prvního hráče ovládání okamžitě skryje; další dotyk ho vrátí. Pad druhého hráče se ho nedotkne, takže jeden hráč může jezdit po displeji, zatímco druhý hraje na padu.</string>
+ <string name="faq_hiding"><b>Krytí a automatické skrývání</b>\nKrytí určuje běžnou viditelnost. Skrývání začne po zvednutí všech prstů, po 1–30 sekundách. Skrytá tlačítka reagují už na první dotek a znovu se zobrazí. Podržení prvku skrývání zabrání. Stisk na padu prvního hráče ovládání okamžitě skryje; další dotyk ho vrátí. Pad druhého hráče se ho nedotkne, takže jeden hráč může jezdit po displeji, zatímco druhý hraje na padu.</string>
  <string name="faq_vibration"><b>Vibrace</b>\nEfekty Force Feedback hry dorazí do telefonu a do gamepadu 1. Hra ovládá jen jedno zařízení se silovou zpětnou vazbou, takže gamepad 2 nikdy nevibruje. Vibrace telefonu se zapínají a vypínají v Ovládání → Dotyk. Vibrace gamepadu jsou vypnuté, dokud je nezapnete v Ovládání → Gamepady; jejich síla se nastavuje přímo ve hře: Options → Controllers → Force Feedback. Efekty přicházejí ze hry, nikdy ze stisku tlačítek.</string>
  <string name="faq_mapping"><b>Gamepady</b>\nHra vždy vidí dva gamepady: gamepad 1 je první hráč spolu s dotykovým ovládáním, gamepad 2 je druhý hráč. V Ovládání → Gamepady stiskem tlačítka vyberte, který ovladač je který, nastavte, co dělá každé tlačítko, a pak jednou stiskněte Gamepad ZAPNUTO. Tím se do nastavení hry zapíše odpovídající ovládání a starý soubor se zálohuje. Levá páčka zatáčí, spouště přidávají plyn a brzdí. Pad má dvě sady tlačítek, stejně jako má dotykové ovládání dvě rozložení: závodní, kterou nastavíte zde, a pevnou pro nabídky a záznamy, kde Cross / A potvrzuje, Circle / B se vrací a kříž posouvá výběr. Pro hru na klávesnici zapište místo toho Výchozí ve hře.</string>
  <string name="faq_lights"><b>Světla a návrat na trať</b>\n☼ posílá L. ↻ posílá R pro návrat na trať. Klávesy lze změnit v Ovládání → Dotyk → Klávesy.</string>
@@ -164,7 +164,6 @@
  <string name="controls_write_failed">Ovládání se nepodařilo zapsat: %1$s</string>
  <string name="gamepads_keyboard_note">Hra je nastavená na vlastní klávesnicové ovládání (Výchozí ve hře). Gamepady v závodech na rozdělené obrazovce nic nedělají, dokud nestisknete Gamepad ZAPNUTO.</string>
  <string name="pref_touch_enabled">Používat dotykové ovládání</string>
- <string name="touch_enabled_note">Vypnuto: dotyk obrazovky ve hře nic nedělá, nefungují tlačítka ani dotyková myš. Gamepady a skutečná myš fungují dál.</string>
  <string name="controls_help">Nápověda: rozdělená obrazovka</string>
  <string name="controls_help_title">Rozdělená obrazovka se dvěma gamepady</string>
  <string name="help_split_setup"><b>1. Nastavte gamepady (jednou)</b>\nPřipojte k telefonu oba gamepady. V Ovládání → Gamepady stiskněte Přiřadit u gamepadu 1 a stiskněte libovolné tlačítko na ovladači prvního hráče, pak totéž udělejte pro gamepad 2. Funguje i Automaticky: ovladače se berou v pořadí připojení. V Tlačítka zvolíte, co které tlačítko dělá.</string>

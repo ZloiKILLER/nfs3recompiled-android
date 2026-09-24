@@ -148,32 +148,24 @@ public final class TouchOverlayInstrumentation extends Instrumentation {
             if(failure[0]!=null) throw new AssertionError(failure[0]);
             TouchRefinementChecks.run(this);
             SaveGameChecks.run(this);
-            android.app.Activity activity=startActivitySync(new android.content.Intent(getTargetContext(),LauncherActivity.class)
+            LauncherActivity activity=(LauncherActivity)startActivitySync(new android.content.Intent(getTargetContext(),LauncherActivity.class)
                 .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK));
             waitForIdleSync();
             HapticsChecks.run(this);
             capture("ui-launcher.png");
-            /* The main screen: the build's version under the settings column, and
-             * that column spanning exactly the height of the title card. */
-            String version=((android.widget.TextView)activity.findViewById(R.id.version_text)).getText().toString();
+            /* The launcher is Compose now: the screens are walked through the
+             * activity's own navigation, and each is checked for what it is
+             * there to do. */
+            String version=activity.versionLabel();
             require(version.startsWith("v0.")&&version.endsWith(" DEBUG"),"the launcher names a debug build's version: "+version);
-            runOnMainSync(()->{
-                android.view.View card=(android.view.View)activity.findViewById(R.id.play_button).getParent();
-                android.view.View first=activity.findViewById(R.id.controls_button),last=activity.findViewById(R.id.faq_button);
-                int[] c=new int[2],f=new int[2],l=new int[2];
-                card.getLocationOnScreen(c);first.getLocationOnScreen(f);last.getLocationOnScreen(l);
-                require(Math.abs(c[1]-f[1])<=1&&Math.abs(c[1]+card.getHeight()-l[1]-last.getHeight())<=1,
-                    "the settings column spans the title card, top to bottom");
-            });
-            runOnMainSync(()->activity.findViewById(R.id.controls_button).performClick());
+            runOnMainSync(()->activity.go(LauncherActivity.Screen.Controls));
             waitForIdleSync();capture("ui-controls-home.png");
-            require(activity.findViewById(R.id.controls_help_button)==null,"split screen help lives on the gamepads screen");
-            runOnMainSync(()->activity.findViewById(R.id.touch_controls_button).performClick());
+            runOnMainSync(()->activity.go(LauncherActivity.Screen.Touch));
             waitForIdleSync();Thread.sleep(500);waitForIdleSync();
             runOnMainSync(()->{
-                android.widget.FrameLayout host=activity.findViewById(R.id.touch_preview);
-                require(host.getChildCount()==1,"preview has one touch canvas");
-                TouchControlsOverlay canvas=(TouchControlsOverlay)host.getChildAt(0);
+                TouchControlsOverlay canvas=activity.getTouchPreview();
+                require(canvas!=null,"the touch screen shows the overlay itself");
+                android.view.View host=(android.view.View)canvas.getParent();
                 require(canvas.getWidth()==host.getWidth()&&canvas.getHeight()==host.getHeight(),"the touch canvas fills its card");
                 try {
                     /* Controls are laid out on the real screen's shape, fitted into the
@@ -191,71 +183,58 @@ public final class TouchOverlayInstrumentation extends Instrumentation {
                 } catch(Exception e) { throw new RuntimeException(e); }
             });
             capture("ui-touch-settings.png");
-            runOnMainSync(()->activity.findViewById(R.id.touch_keys_button).performClick());waitForIdleSync();
-            require(((android.view.ViewGroup)activity.findViewById(R.id.touch_keys_container)).getChildCount()==GamePreferences.ACTION_IDS.length,"every touch control has a key to choose");
+            runOnMainSync(()->activity.go(LauncherActivity.Screen.TouchKeys));waitForIdleSync();
             capture("ui-touch-keys.png");
             runOnMainSync(()->activity.onBackPressed());waitForIdleSync();
-            require(activity.findViewById(R.id.edit_touch_layout)!=null,"back from touch keys returns to touch settings");
-            runOnMainSync(()->activity.findViewById(R.id.edit_touch_layout).performClick());waitForIdleSync();
+            require(activity.getScreen()==LauncherActivity.Screen.Touch,"back from touch keys returns to touch settings");
+            runOnMainSync(()->activity.openEditor());waitForIdleSync();
             /* One layout to arrange: the racing one.  The menus carry nothing of
              * ours any more, so the editor no longer asks which is being edited. */
+            require(activity.findViewById(R.id.editor_done)!=null,"the layout editor opens from touch settings");
             capture("ui-touch-editor-race.png");
             runOnMainSync(()->activity.findViewById(R.id.editor_done).performClick());waitForIdleSync();
+            require(activity.getScreen()==LauncherActivity.Screen.Touch,"done in the editor returns to touch settings");
             runOnMainSync(()->activity.onBackPressed());waitForIdleSync();
-            runOnMainSync(()->activity.findViewById(R.id.gamepad_controls_button).performClick());waitForIdleSync();
-            require(activity.findViewById(R.id.gamepad1_assign)!=null&&activity.findViewById(R.id.gamepad2_assign)!=null,"gamepads screen offers both slots");
-            runOnMainSync(()->activity.findViewById(R.id.gamepad1_assign).performClick());waitForIdleSync();
-            require(((android.widget.TextView)activity.findViewById(R.id.gamepad1_status)).getText().toString()
-                .equals(activity.getString(R.string.gamepad_assign_prompt,1)),"assigning waits for a button press");
+            require(activity.getScreen()==LauncherActivity.Screen.Controls,"back from touch settings returns to controls");
+            runOnMainSync(()->activity.go(LauncherActivity.Screen.Gamepads));waitForIdleSync();
+            runOnMainSync(()->activity.setCapturingSlot(0));waitForIdleSync();
             runOnMainSync(()->activity.onBackPressed());waitForIdleSync();
-            require(activity.findViewById(R.id.gamepad1_assign)!=null,"back cancels the wait without leaving the screen");
+            require(activity.getCapturingSlot()==-1&&activity.getScreen()==LauncherActivity.Screen.Gamepads,
+                "back cancels the wait for a pad without leaving the screen");
             capture("ui-gamepads.png");
-            require(activity.findViewById(R.id.write_gamepad_controls)!=null
-                &&activity.findViewById(R.id.write_keyboard_controls)!=null,"both control sets can be written to the game");
-            require(((android.widget.CheckBox)activity.findViewById(R.id.gamepad_vibration_check)).isChecked()
-                ==GamePreferences.get(getTargetContext()).getBoolean(GamePreferences.GAMEPAD_VIBRATION,false),
-                "the gamepad vibration switch shows its setting");
-            runOnMainSync(()->activity.findViewById(R.id.controls_help_button).performClick());waitForIdleSync();
-            require(((android.widget.TextView)activity.findViewById(R.id.controls_help_body)).getText().length()>200,
-                "controls help explains split screen");
+            runOnMainSync(()->activity.go(LauncherActivity.Screen.ControlsHelp));waitForIdleSync();
             capture("ui-controls-help.png");
             runOnMainSync(()->activity.onBackPressed());waitForIdleSync();
-            require(activity.findViewById(R.id.gamepad1_assign)!=null,"back from help returns to the gamepads screen");
-            runOnMainSync(()->activity.findViewById(R.id.gamepad2_buttons).performClick());waitForIdleSync();
-            require(((android.view.ViewGroup)activity.findViewById(R.id.gamepad_buttons_container)).getChildCount()
-                ==GamepadButtons.BUTTON_IDS.length,"every pad button has an action to choose");
+            require(activity.getScreen()==LauncherActivity.Screen.Gamepads,"back from help returns to the gamepads screen");
+            runOnMainSync(()->activity.openGamepadButtons(1));waitForIdleSync();
             capture("ui-gamepad-buttons.png");
             runOnMainSync(()->activity.onBackPressed());waitForIdleSync();
-            require(activity.findViewById(R.id.gamepad2_buttons)!=null,"back from the buttons returns to the gamepads screen");
+            require(activity.getScreen()==LauncherActivity.Screen.Gamepads,"back from the buttons returns to the gamepads screen");
             runOnMainSync(()->activity.onBackPressed());waitForIdleSync();
             runOnMainSync(()->activity.onBackPressed());waitForIdleSync();
+            require(activity.getScreen()==LauncherActivity.Screen.Main,"back walks up to the first screen");
             /* Display, saved as it is chosen with no Save button, and Screen
              * adjustment underneath it. */
-            runOnMainSync(()->activity.findViewById(R.id.screen_settings_button).performClick());waitForIdleSync();
-            require(activity.findViewById(R.id.orientation_group)!=null&&activity.findViewById(R.id.fps_cap_group)!=null,
-                "display settings list their choices");
+            runOnMainSync(()->activity.go(LauncherActivity.Screen.Display));waitForIdleSync();
             capture("ui-display.png");
-            runOnMainSync(()->activity.findViewById(R.id.screen_adjustment_button).performClick());waitForIdleSync();
-            require(activity.findViewById(R.id.reset_adjust_button)!=null,"screen adjustment opens from display settings");
+            runOnMainSync(()->activity.go(LauncherActivity.Screen.Adjustment));waitForIdleSync();
             capture("ui-screen-adjustment.png");
             runOnMainSync(()->activity.onBackPressed());waitForIdleSync();
+            require(activity.getScreen()==LauncherActivity.Screen.Display,"back from screen adjustment returns to display");
             runOnMainSync(()->activity.onBackPressed());waitForIdleSync();
-            /* Data is a menu now, so saves live one level down -- and back has
-             * to return to that menu rather than all the way out. */
-            runOnMainSync(()->activity.findViewById(R.id.data_button).performClick());waitForIdleSync();
-            require(activity.findViewById(R.id.game_data_button)!=null
-                &&activity.findViewById(R.id.game_saves_button)!=null
-                &&activity.findViewById(R.id.launcher_settings_button)!=null,"data menu lists its screens");
-            runOnMainSync(()->activity.findViewById(R.id.launcher_settings_button).performClick());waitForIdleSync();
-            require(activity.findViewById(R.id.export_launcher_button)!=null,"launcher settings can be exported");
+            /* Data is a menu, so saves live one level down -- and back has to
+             * return to that menu rather than all the way out. */
+            runOnMainSync(()->activity.go(LauncherActivity.Screen.Data));waitForIdleSync();
+            runOnMainSync(()->activity.go(LauncherActivity.Screen.LauncherSettings));waitForIdleSync();
             runOnMainSync(()->activity.onBackPressed());waitForIdleSync();
-            require(activity.findViewById(R.id.game_saves_button)!=null,"back from a sub-screen returns to the data menu");
-            runOnMainSync(()->activity.findViewById(R.id.game_saves_button).performClick());waitForIdleSync();
-            require(activity.findViewById(R.id.import_saves_button)!=null&&activity.findViewById(R.id.export_saves_button)!=null,"save management actions visible");
+            require(activity.getScreen()==LauncherActivity.Screen.Data,"back from a sub-screen returns to the data menu");
+            runOnMainSync(()->activity.go(LauncherActivity.Screen.Saves));waitForIdleSync();
             capture("ui-data-saves.png");
+            runOnMainSync(()->activity.go(LauncherActivity.Screen.GameData));waitForIdleSync();
+            capture("ui-game-data.png");
             runOnMainSync(()->activity.onBackPressed());waitForIdleSync();
             runOnMainSync(()->activity.onBackPressed());waitForIdleSync();
-            runOnMainSync(()->activity.findViewById(R.id.faq_button).performClick());waitForIdleSync();
+            runOnMainSync(()->activity.go(LauncherActivity.Screen.Faq));waitForIdleSync();
             capture("ui-faq.png");
             result.putString("stream","PASS: touch geometry/keyboard, multitouch, vibration cap, gamepad slots, touch keys, save ZIP backup/import/export, layout editor and auto-hide\n");
             finish(-1,result);

@@ -1,11 +1,14 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <color name="ui_background">#10151D</color>
-    <color name="ui_panel">#1A2330</color>
-    <color name="ui_border">#334155</color>
-    <color name="ui_accent">#F4B664</color>
-    <color name="ui_text">#EEF2F8</color>
-    <color name="ui_muted">#9BAAC0</color>
+    <!-- The game's menu colours, as LauncherTheme.kt has them: the night blue
+         behind everything, the indigo of its button pills and their rim, the
+         gold of its headings, silver lettering. -->
+    <color name="ui_background">#050726</color>
+    <color name="ui_panel">#2B2A78</color>
+    <color name="ui_border">#5A63C8</color>
+    <color name="ui_accent">#E7D24B</color>
+    <color name="ui_text">#E8ECF6</color>
+    <color name="ui_muted">#A9B4D8</color>
     <color name="colorPrimary">#3F51B5</color>
     <color name="colorPrimaryDark">#303F9F</color>
     <color name="colorAccent">#FF4081</color>

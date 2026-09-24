@@ -15,14 +15,14 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Locale;
 
-final class DataSetManager
+public final class DataSetManager
 {
     interface ImportOperation
     {
         void run(File temporaryRoot) throws IOException;
     }
 
-    static final class DataSet
+    public static final class DataSet
     {
         final String id;
         final String name;

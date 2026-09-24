@@ -18,7 +18,11 @@ final class TouchPreviewFrame {
          * that fit where in the game they overlap. */
         android.content.SharedPreferences preferences=GamePreferences.get(activity);
         int gameWidth=preferences.getInt(GamePreferences.TOUCH_GAME_WIDTH,0),gameHeight=preferences.getInt(GamePreferences.TOUCH_GAME_HEIGHT,0);
-        if(gameWidth>0&&gameHeight>0&&gameWidth>=gameHeight) { width=gameWidth;height=gameHeight; }
+        /* Only an area of this screen's shape, give or take the bars the game
+         * hides: one recorded in a DeX window, before the game stopped
+         * recording those, would lay the phone's controls out in a box. */
+        boolean sameShape=gameHeight>0&&Math.abs((float)gameWidth/gameHeight-width/height)<.2f*width/height;
+        if(gameWidth>0&&gameHeight>0&&gameWidth>=gameHeight&&sameShape) { width=gameWidth;height=gameHeight; }
         overlay.setPreviewReference(width,height);
         // The whole card is the normalized touch canvas. This exposes the side space
         // to the layout editor instead of leaving untouchable letterbox pillars.

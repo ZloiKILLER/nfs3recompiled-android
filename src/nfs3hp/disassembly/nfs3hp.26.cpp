@@ -105,13 +105,13 @@ void Application::sub_4b8740(WinApplication* app, x86::CPU& cpu)
     // 004b87ab  db451e                 +fild dword ptr [ebp + 0x1e]
     cpu.fpu.push(x86::Float(x86::sreg32(app->getMemory<x86::reg32>(cpu.ebp + x86::reg32(30) /* 0x1e */))));
     // 004b87ae  dc0dc8ff5300           +fmul qword ptr [0x53ffc8]
-    cpu.fpu.st(0) *= x86::Float(app->getMemory<double>(x86::reg32(5504968) /* 0x53ffc8 */));
+    cpu.fpu.st(0) = cpu.fpu.mul(cpu.fpu.st(0), x86::Float(app->getMemory<double>(x86::reg32(5504968) /* 0x53ffc8 */)));
     // 004b87b4  dc0dd0ff5300           +fmul qword ptr [0x53ffd0]
-    cpu.fpu.st(0) *= x86::Float(app->getMemory<double>(x86::reg32(5504976) /* 0x53ffd0 */));
+    cpu.fpu.st(0) = cpu.fpu.mul(cpu.fpu.st(0), x86::Float(app->getMemory<double>(x86::reg32(5504976) /* 0x53ffd0 */)));
     // 004b87ba  d9e8                   +fld1 
     cpu.fpu.push(1.0);
     // 004b87bc  dee1                   +fsubrp st(1)
-    cpu.fpu.st(1) = cpu.fpu.st(0) - x86::Float(cpu.fpu.st(1));
+    cpu.fpu.st(1) = cpu.fpu.sub(cpu.fpu.st(0), x86::Float(cpu.fpu.st(1)));
     cpu.fpu.pop();
     // 004b87be  d9554e                 +fst dword ptr [ebp + 0x4e]
     app->getMemory<float>(cpu.ebp + x86::reg32(78) /* 0x4e */) = float(cpu.fpu.st(0));
@@ -229,7 +229,7 @@ L_0x004b8817:
     // 004b884e  d94552                 -fld dword ptr [ebp + 0x52]
     cpu.fpu.push(x86::Float(app->getMemory<float>(cpu.ebp + x86::reg32(82) /* 0x52 */)));
     // 004b8851  d805e8ff5300           -fadd dword ptr [0x53ffe8]
-    cpu.fpu.st(0) += x86::Float(app->getMemory<float>(x86::reg32(5505000) /* 0x53ffe8 */));
+    cpu.fpu.st(0) = cpu.fpu.add(cpu.fpu.st(0), x86::Float(app->getMemory<float>(x86::reg32(5505000) /* 0x53ffe8 */)));
     // 004b8857  d9c9                   -fxch st(1)
     {
         x86::Float tmp = cpu.fpu.st(0);
@@ -237,10 +237,10 @@ L_0x004b8817:
         cpu.fpu.st(1) = tmp;
     }
     // 004b8859  dec2                   -faddp st(2)
-    cpu.fpu.st(2) += cpu.fpu.st(0);
+    cpu.fpu.st(2) = cpu.fpu.add(cpu.fpu.st(2), cpu.fpu.st(0));
     cpu.fpu.pop();
     // 004b885b  d80decff5300           -fmul dword ptr [0x53ffec]
-    cpu.fpu.st(0) *= x86::Float(app->getMemory<float>(x86::reg32(5505004) /* 0x53ffec */));
+    cpu.fpu.st(0) = cpu.fpu.mul(cpu.fpu.st(0), x86::Float(app->getMemory<float>(x86::reg32(5505004) /* 0x53ffec */)));
     // 004b8861  d9c9                   -fxch st(1)
     {
         x86::Float tmp = cpu.fpu.st(0);
@@ -293,9 +293,9 @@ L_0x004b8883:
     // 004b8883  d94552                 -fld dword ptr [ebp + 0x52]
     cpu.fpu.push(x86::Float(app->getMemory<float>(cpu.ebp + x86::reg32(82) /* 0x52 */)));
     // 004b8886  d805e8ff5300           -fadd dword ptr [0x53ffe8]
-    cpu.fpu.st(0) += x86::Float(app->getMemory<float>(x86::reg32(5505000) /* 0x53ffe8 */));
+    cpu.fpu.st(0) = cpu.fpu.add(cpu.fpu.st(0), x86::Float(app->getMemory<float>(x86::reg32(5505000) /* 0x53ffe8 */)));
     // 004b888c  d80decff5300           -fmul dword ptr [0x53ffec]
-    cpu.fpu.st(0) *= x86::Float(app->getMemory<float>(x86::reg32(5505004) /* 0x53ffec */));
+    cpu.fpu.st(0) = cpu.fpu.mul(cpu.fpu.st(0), x86::Float(app->getMemory<float>(x86::reg32(5505004) /* 0x53ffec */)));
     // 004b8892  d95d2e                 -fstp dword ptr [ebp + 0x2e]
     app->getMemory<float>(cpu.ebp + x86::reg32(46) /* 0x2e */) = float(cpu.fpu.st(0));
     cpu.fpu.pop();
@@ -364,7 +364,7 @@ L_0x004b88b9:
     // 004b88cd  d9c0                   -fld st(0)
     cpu.fpu.push(x86::Float(cpu.fpu.st(0)));
     // 004b88cf  dc0df0ff5300           -fmul qword ptr [0x53fff0]
-    cpu.fpu.st(0) *= x86::Float(app->getMemory<double>(x86::reg32(5505008) /* 0x53fff0 */));
+    cpu.fpu.st(0) = cpu.fpu.mul(cpu.fpu.st(0), x86::Float(app->getMemory<double>(x86::reg32(5505008) /* 0x53fff0 */)));
     // 004b88d5  ddd9                   -fstp st(1)
     cpu.fpu.st(1) = x86::Float(cpu.fpu.st(0));
     cpu.fpu.pop();
@@ -390,7 +390,7 @@ L_0x004b88e0:
     // 004b88e7  8b8744090000           -mov eax, dword ptr [edi + 0x944]
     cpu.eax = app->getMemory<x86::reg32>(cpu.edi + x86::reg32(2372) /* 0x944 */);
     // 004b88ed  d80d00005400           -fmul dword ptr [0x540000]
-    cpu.fpu.st(0) *= x86::Float(app->getMemory<float>(x86::reg32(5505024) /* 0x540000 */));
+    cpu.fpu.st(0) = cpu.fpu.mul(cpu.fpu.st(0), x86::Float(app->getMemory<float>(x86::reg32(5505024) /* 0x540000 */)));
     // 004b88f3  01c8                   -add eax, ecx
     (cpu.eax) += x86::reg32(x86::sreg32(cpu.ecx));
     // 004b88f5  89c2                   -mov edx, eax
@@ -404,7 +404,7 @@ L_0x004b88e0:
     // 004b8909  db8744090000           -fild dword ptr [edi + 0x944]
     cpu.fpu.push(x86::Float(x86::sreg32(app->getMemory<x86::reg32>(cpu.edi + x86::reg32(2372) /* 0x944 */))));
     // 004b890f  dc0df8ff5300           -fmul qword ptr [0x53fff8]
-    cpu.fpu.st(0) *= x86::Float(app->getMemory<double>(x86::reg32(5505016) /* 0x53fff8 */));
+    cpu.fpu.st(0) = cpu.fpu.mul(cpu.fpu.st(0), x86::Float(app->getMemory<double>(x86::reg32(5505016) /* 0x53fff8 */)));
     // 004b8915  d9c9                   -fxch st(1)
     {
         x86::Float tmp = cpu.fpu.st(0);
@@ -557,7 +557,7 @@ L_0x004b899f:
     // 004b899f  d9456e                 +fld dword ptr [ebp + 0x6e]
     cpu.fpu.push(x86::Float(app->getMemory<float>(cpu.ebp + x86::reg32(110) /* 0x6e */)));
     // 004b89a2  d80d04005400           +fmul dword ptr [0x540004]
-    cpu.fpu.st(0) *= x86::Float(app->getMemory<float>(x86::reg32(5505028) /* 0x540004 */));
+    cpu.fpu.st(0) = cpu.fpu.mul(cpu.fpu.st(0), x86::Float(app->getMemory<float>(x86::reg32(5505028) /* 0x540004 */)));
     // 004b89a8  d9e8                   +fld1 
     cpu.fpu.push(1.0);
     // 004b89aa  d9c9                   +fxch st(1)
@@ -586,7 +586,7 @@ L_0x004b899f:
     // 004b89c0  dd0508005400           -fld qword ptr [0x540008]
     cpu.fpu.push(x86::Float(app->getMemory<double>(x86::reg32(5505032) /* 0x540008 */)));
     // 004b89c6  dca57affffff           -fsub qword ptr [ebp - 0x86]
-    cpu.fpu.st(0) -= x86::Float(app->getMemory<double>(cpu.ebp + x86::reg32(-134) /* -0x86 */));
+    cpu.fpu.st(0) = cpu.fpu.sub(cpu.fpu.st(0), x86::Float(app->getMemory<double>(cpu.ebp + x86::reg32(-134) /* -0x86 */)));
     // 004b89cc  d95d6e                 -fstp dword ptr [ebp + 0x6e]
     app->getMemory<float>(cpu.ebp + x86::reg32(110) /* 0x6e */) = float(cpu.fpu.st(0));
     cpu.fpu.pop();
@@ -676,14 +676,14 @@ L_0x004b89d4:
     // 004b8a34  d94008                 +fld dword ptr [eax + 8]
     cpu.fpu.push(x86::Float(app->getMemory<float>(cpu.eax + x86::reg32(8) /* 0x8 */)));
     // 004b8a37  d8a562ffffff           +fsub dword ptr [ebp - 0x9e]
-    cpu.fpu.st(0) -= x86::Float(app->getMemory<float>(cpu.ebp + x86::reg32(-158) /* -0x9e */));
+    cpu.fpu.st(0) = cpu.fpu.sub(cpu.fpu.st(0), x86::Float(app->getMemory<float>(cpu.ebp + x86::reg32(-158) /* -0x9e */)));
     // 004b8a3d  d99d6effffff           +fstp dword ptr [ebp - 0x92]
     app->getMemory<float>(cpu.ebp + x86::reg32(-146) /* -0x92 */) = float(cpu.fpu.st(0));
     cpu.fpu.pop();
     // 004b8a43  d9400c                 +fld dword ptr [eax + 0xc]
     cpu.fpu.push(x86::Float(app->getMemory<float>(cpu.eax + x86::reg32(12) /* 0xc */)));
     // 004b8a46  d8a566ffffff           +fsub dword ptr [ebp - 0x9a]
-    cpu.fpu.st(0) -= x86::Float(app->getMemory<float>(cpu.ebp + x86::reg32(-154) /* -0x9a */));
+    cpu.fpu.st(0) = cpu.fpu.sub(cpu.fpu.st(0), x86::Float(app->getMemory<float>(cpu.ebp + x86::reg32(-154) /* -0x9a */)));
     // 004b8a4c  8d956effffff           -lea edx, [ebp - 0x92]
     cpu.edx = x86::reg32(cpu.ebp + x86::reg32(-146) /* -0x92 */);
     // 004b8a52  d99d72ffffff           +fstp dword ptr [ebp - 0x8e]
@@ -692,7 +692,7 @@ L_0x004b89d4:
     // 004b8a58  d94010                 +fld dword ptr [eax + 0x10]
     cpu.fpu.push(x86::Float(app->getMemory<float>(cpu.eax + x86::reg32(16) /* 0x10 */)));
     // 004b8a5b  d8a56affffff           +fsub dword ptr [ebp - 0x96]
-    cpu.fpu.st(0) -= x86::Float(app->getMemory<float>(cpu.ebp + x86::reg32(-150) /* -0x96 */));
+    cpu.fpu.st(0) = cpu.fpu.sub(cpu.fpu.st(0), x86::Float(app->getMemory<float>(cpu.ebp + x86::reg32(-150) /* -0x96 */)));
     // 004b8a61  8d856effffff           -lea eax, [ebp - 0x92]
     cpu.eax = x86::reg32(cpu.ebp + x86::reg32(-146) /* -0x92 */);
     // 004b8a67  d99d76ffffff           +fstp dword ptr [ebp - 0x8a]
@@ -755,7 +755,7 @@ L_0x004b89d4:
     // 004b8aa1  dd45da                 +fld qword ptr [ebp - 0x26]
     cpu.fpu.push(x86::Float(app->getMemory<double>(cpu.ebp + x86::reg32(-38) /* -0x26 */)));
     // 004b8aa4  dc0d18005400           +fmul qword ptr [0x540018]
-    cpu.fpu.st(0) *= x86::Float(app->getMemory<double>(x86::reg32(5505048) /* 0x540018 */));
+    cpu.fpu.st(0) = cpu.fpu.mul(cpu.fpu.st(0), x86::Float(app->getMemory<double>(x86::reg32(5505048) /* 0x540018 */)));
     // 004b8aaa  dd5dba                 +fstp qword ptr [ebp - 0x46]
     app->getMemory<double>(cpu.ebp + x86::reg32(-70) /* -0x46 */) = double(cpu.fpu.st(0));
     cpu.fpu.pop();
@@ -804,9 +804,9 @@ L_0x004b8adf:
     // 004b8adf  d94532                 -fld dword ptr [ebp + 0x32]
     cpu.fpu.push(x86::Float(app->getMemory<float>(cpu.ebp + x86::reg32(50) /* 0x32 */)));
     // 004b8ae2  dc0d28005400           -fmul qword ptr [0x540028]
-    cpu.fpu.st(0) *= x86::Float(app->getMemory<double>(x86::reg32(5505064) /* 0x540028 */));
+    cpu.fpu.st(0) = cpu.fpu.mul(cpu.fpu.st(0), x86::Float(app->getMemory<double>(x86::reg32(5505064) /* 0x540028 */)));
     // 004b8ae8  d84d5a                 -fmul dword ptr [ebp + 0x5a]
-    cpu.fpu.st(0) *= x86::Float(app->getMemory<float>(cpu.ebp + x86::reg32(90) /* 0x5a */));
+    cpu.fpu.st(0) = cpu.fpu.mul(cpu.fpu.st(0), x86::Float(app->getMemory<float>(cpu.ebp + x86::reg32(90) /* 0x5a */)));
     // 004b8aeb  8ab709050000           -mov dh, byte ptr [edi + 0x509]
     cpu.dh = app->getMemory<x86::reg8>(cpu.edi + x86::reg32(1289) /* 0x509 */);
     // 004b8af1  d95d66                 -fstp dword ptr [ebp + 0x66]
@@ -831,9 +831,9 @@ L_0x004b8b08:
     // 004b8b08  d9452a                 -fld dword ptr [ebp + 0x2a]
     cpu.fpu.push(x86::Float(app->getMemory<float>(cpu.ebp + x86::reg32(42) /* 0x2a */)));
     // 004b8b0b  d84d0e                 -fmul dword ptr [ebp + 0xe]
-    cpu.fpu.st(0) *= x86::Float(app->getMemory<float>(cpu.ebp + x86::reg32(14) /* 0xe */));
+    cpu.fpu.st(0) = cpu.fpu.mul(cpu.fpu.st(0), x86::Float(app->getMemory<float>(cpu.ebp + x86::reg32(14) /* 0xe */)));
     // 004b8b0e  d84d5a                 -fmul dword ptr [ebp + 0x5a]
-    cpu.fpu.st(0) *= x86::Float(app->getMemory<float>(cpu.ebp + x86::reg32(90) /* 0x5a */));
+    cpu.fpu.st(0) = cpu.fpu.mul(cpu.fpu.st(0), x86::Float(app->getMemory<float>(cpu.ebp + x86::reg32(90) /* 0x5a */)));
     // 004b8b11  d95542                 -fst dword ptr [ebp + 0x42]
     app->getMemory<float>(cpu.ebp + x86::reg32(66) /* 0x42 */) = float(cpu.fpu.st(0));
     // 004b8b14  83ec04                 -sub esp, 4
@@ -933,14 +933,14 @@ L_0x004b8b5a:
     // 004b8b66  d94008                 +fld dword ptr [eax + 8]
     cpu.fpu.push(x86::Float(app->getMemory<float>(cpu.eax + x86::reg32(8) /* 0x8 */)));
     // 004b8b69  d8a562ffffff           +fsub dword ptr [ebp - 0x9e]
-    cpu.fpu.st(0) -= x86::Float(app->getMemory<float>(cpu.ebp + x86::reg32(-158) /* -0x9e */));
+    cpu.fpu.st(0) = cpu.fpu.sub(cpu.fpu.st(0), x86::Float(app->getMemory<float>(cpu.ebp + x86::reg32(-158) /* -0x9e */)));
     // 004b8b6f  d99d6effffff           +fstp dword ptr [ebp - 0x92]
     app->getMemory<float>(cpu.ebp + x86::reg32(-146) /* -0x92 */) = float(cpu.fpu.st(0));
     cpu.fpu.pop();
     // 004b8b75  d9400c                 +fld dword ptr [eax + 0xc]
     cpu.fpu.push(x86::Float(app->getMemory<float>(cpu.eax + x86::reg32(12) /* 0xc */)));
     // 004b8b78  d8a566ffffff           +fsub dword ptr [ebp - 0x9a]
-    cpu.fpu.st(0) -= x86::Float(app->getMemory<float>(cpu.ebp + x86::reg32(-154) /* -0x9a */));
+    cpu.fpu.st(0) = cpu.fpu.sub(cpu.fpu.st(0), x86::Float(app->getMemory<float>(cpu.ebp + x86::reg32(-154) /* -0x9a */)));
     // 004b8b7e  8d956effffff           -lea edx, [ebp - 0x92]
     cpu.edx = x86::reg32(cpu.ebp + x86::reg32(-146) /* -0x92 */);
     // 004b8b84  d99d72ffffff           +fstp dword ptr [ebp - 0x8e]
@@ -949,7 +949,7 @@ L_0x004b8b5a:
     // 004b8b8a  d94010                 +fld dword ptr [eax + 0x10]
     cpu.fpu.push(x86::Float(app->getMemory<float>(cpu.eax + x86::reg32(16) /* 0x10 */)));
     // 004b8b8d  d8a56affffff           +fsub dword ptr [ebp - 0x96]
-    cpu.fpu.st(0) -= x86::Float(app->getMemory<float>(cpu.ebp + x86::reg32(-150) /* -0x96 */));
+    cpu.fpu.st(0) = cpu.fpu.sub(cpu.fpu.st(0), x86::Float(app->getMemory<float>(cpu.ebp + x86::reg32(-150) /* -0x96 */)));
     // 004b8b93  8d856effffff           -lea eax, [ebp - 0x92]
     cpu.eax = x86::reg32(cpu.ebp + x86::reg32(-146) /* -0x92 */);
     // 004b8b99  d99d76ffffff           +fstp dword ptr [ebp - 0x8a]
@@ -1010,7 +1010,7 @@ L_0x004b8b5a:
     // 004b8bd1  dd45e2                 +fld qword ptr [ebp - 0x1e]
     cpu.fpu.push(x86::Float(app->getMemory<double>(cpu.ebp + x86::reg32(-30) /* -0x1e */)));
     // 004b8bd4  dc0d18005400           +fmul qword ptr [0x540018]
-    cpu.fpu.st(0) *= x86::Float(app->getMemory<double>(x86::reg32(5505048) /* 0x540018 */));
+    cpu.fpu.st(0) = cpu.fpu.mul(cpu.fpu.st(0), x86::Float(app->getMemory<double>(x86::reg32(5505048) /* 0x540018 */)));
     // 004b8bda  dd5d9a                 +fstp qword ptr [ebp - 0x66]
     app->getMemory<double>(cpu.ebp + x86::reg32(-102) /* -0x66 */) = double(cpu.fpu.st(0));
     cpu.fpu.pop();
@@ -1073,11 +1073,11 @@ L_0x004b8c19:
     // 004b8c19  d9455e                 -fld dword ptr [ebp + 0x5e]
     cpu.fpu.push(x86::Float(app->getMemory<float>(cpu.ebp + x86::reg32(94) /* 0x5e */)));
     // 004b8c1c  dc0d28005400           -fmul qword ptr [0x540028]
-    cpu.fpu.st(0) *= x86::Float(app->getMemory<double>(x86::reg32(5505064) /* 0x540028 */));
+    cpu.fpu.st(0) = cpu.fpu.mul(cpu.fpu.st(0), x86::Float(app->getMemory<double>(x86::reg32(5505064) /* 0x540028 */)));
     // 004b8c22  d94512                 -fld dword ptr [ebp + 0x12]
     cpu.fpu.push(x86::Float(app->getMemory<float>(cpu.ebp + x86::reg32(18) /* 0x12 */)));
     // 004b8c25  d80d30005400           -fmul dword ptr [0x540030]
-    cpu.fpu.st(0) *= x86::Float(app->getMemory<float>(x86::reg32(5505072) /* 0x540030 */));
+    cpu.fpu.st(0) = cpu.fpu.mul(cpu.fpu.st(0), x86::Float(app->getMemory<float>(x86::reg32(5505072) /* 0x540030 */)));
     // 004b8c2b  d9c9                   -fxch st(1)
     {
         x86::Float tmp = cpu.fpu.st(0);
@@ -1085,7 +1085,7 @@ L_0x004b8c19:
         cpu.fpu.st(1) = tmp;
     }
     // 004b8c2d  dc4da2                 -fmul qword ptr [ebp - 0x5e]
-    cpu.fpu.st(0) *= x86::Float(app->getMemory<double>(cpu.ebp + x86::reg32(-94) /* -0x5e */));
+    cpu.fpu.st(0) = cpu.fpu.mul(cpu.fpu.st(0), x86::Float(app->getMemory<double>(cpu.ebp + x86::reg32(-94) /* -0x5e */)));
     // 004b8c30  d9c9                   -fxch st(1)
     {
         x86::Float tmp = cpu.fpu.st(0);
@@ -1101,7 +1101,7 @@ L_0x004b8c19:
         cpu.fpu.st(1) = tmp;
     }
     // 004b8c37  d8c9                   -fmul st(1)
-    cpu.fpu.st(0) *= x86::Float(cpu.fpu.st(1));
+    cpu.fpu.st(0) = cpu.fpu.mul(cpu.fpu.st(0), x86::Float(cpu.fpu.st(1)));
     // 004b8c39  d9c9                   -fxch st(1)
     {
         x86::Float tmp = cpu.fpu.st(0);
@@ -1109,7 +1109,7 @@ L_0x004b8c19:
         cpu.fpu.st(1) = tmp;
     }
     // 004b8c3b  deca                   -fmulp st(2)
-    cpu.fpu.st(2) *= cpu.fpu.st(0);
+    cpu.fpu.st(2) = cpu.fpu.mul(cpu.fpu.st(2), cpu.fpu.st(0));
     cpu.fpu.pop();
     // 004b8c3d  d9553e                 -fst dword ptr [ebp + 0x3e]
     app->getMemory<float>(cpu.ebp + x86::reg32(62) /* 0x3e */) = float(cpu.fpu.st(0));
@@ -1883,11 +1883,11 @@ L_0x004b8f5f:
     // 004b8f5f  d9456e                 -fld dword ptr [ebp + 0x6e]
     cpu.fpu.push(x86::Float(app->getMemory<float>(cpu.ebp + x86::reg32(110) /* 0x6e */)));
     // 004b8f62  d80d30005400           -fmul dword ptr [0x540030]
-    cpu.fpu.st(0) *= x86::Float(app->getMemory<float>(x86::reg32(5505072) /* 0x540030 */));
+    cpu.fpu.st(0) = cpu.fpu.mul(cpu.fpu.st(0), x86::Float(app->getMemory<float>(x86::reg32(5505072) /* 0x540030 */)));
     // 004b8f68  d94516                 -fld dword ptr [ebp + 0x16]
     cpu.fpu.push(x86::Float(app->getMemory<float>(cpu.ebp + x86::reg32(22) /* 0x16 */)));
     // 004b8f6b  dc0d38005400           -fmul qword ptr [0x540038]
-    cpu.fpu.st(0) *= x86::Float(app->getMemory<double>(x86::reg32(5505080) /* 0x540038 */));
+    cpu.fpu.st(0) = cpu.fpu.mul(cpu.fpu.st(0), x86::Float(app->getMemory<double>(x86::reg32(5505080) /* 0x540038 */)));
     // 004b8f71  d9c9                   -fxch st(1)
     {
         x86::Float tmp = cpu.fpu.st(0);
@@ -1903,7 +1903,7 @@ L_0x004b8f5f:
         cpu.fpu.st(1) = tmp;
     }
     // 004b8f78  d8c9                   -fmul st(1)
-    cpu.fpu.st(0) *= x86::Float(cpu.fpu.st(1));
+    cpu.fpu.st(0) = cpu.fpu.mul(cpu.fpu.st(0), x86::Float(cpu.fpu.st(1)));
     // 004b8f7a  d9c9                   -fxch st(1)
     {
         x86::Float tmp = cpu.fpu.st(0);
@@ -1911,7 +1911,7 @@ L_0x004b8f5f:
         cpu.fpu.st(1) = tmp;
     }
     // 004b8f7c  deca                   -fmulp st(2)
-    cpu.fpu.st(2) *= cpu.fpu.st(0);
+    cpu.fpu.st(2) = cpu.fpu.mul(cpu.fpu.st(2), cpu.fpu.st(0));
     cpu.fpu.pop();
     // 004b8f7e  d9553a                 -fst dword ptr [ebp + 0x3a]
     app->getMemory<float>(cpu.ebp + x86::reg32(58) /* 0x3a */) = float(cpu.fpu.st(0));
@@ -2019,7 +2019,7 @@ L_0x004b8fcb:
     app->getMemory<double>(cpu.ebp + x86::reg32(-62) /* -0x3e */) = double(cpu.fpu.st(0));
     cpu.fpu.pop();
     // 004b8fd5  dc65c2                 +fsub qword ptr [ebp - 0x3e]
-    cpu.fpu.st(0) -= x86::Float(app->getMemory<double>(cpu.ebp + x86::reg32(-62) /* -0x3e */));
+    cpu.fpu.st(0) = cpu.fpu.sub(cpu.fpu.st(0), x86::Float(app->getMemory<double>(cpu.ebp + x86::reg32(-62) /* -0x3e */)));
     // 004b8fd8  dd0510005400           +fld qword ptr [0x540010]
     cpu.fpu.push(x86::Float(app->getMemory<double>(x86::reg32(5505040) /* 0x540010 */)));
     // 004b8fde  d9c9                   +fxch st(1)
@@ -2069,7 +2069,7 @@ L_0x004b9000:
     // 004b9009  d9e8                   -fld1 
     cpu.fpu.push(1.0);
     // 004b900b  dee1                   -fsubrp st(1)
-    cpu.fpu.st(1) = cpu.fpu.st(0) - x86::Float(cpu.fpu.st(1));
+    cpu.fpu.st(1) = cpu.fpu.sub(cpu.fpu.st(0), x86::Float(cpu.fpu.st(1)));
     cpu.fpu.pop();
     // 004b900d  d9c9                   -fxch st(1)
     {
@@ -2078,7 +2078,7 @@ L_0x004b9000:
         cpu.fpu.st(1) = tmp;
     }
     // 004b900f  dc0d38005400           -fmul qword ptr [0x540038]
-    cpu.fpu.st(0) *= x86::Float(app->getMemory<double>(x86::reg32(5505080) /* 0x540038 */));
+    cpu.fpu.st(0) = cpu.fpu.mul(cpu.fpu.st(0), x86::Float(app->getMemory<double>(x86::reg32(5505080) /* 0x540038 */)));
     // 004b9015  d9c9                   -fxch st(1)
     {
         x86::Float tmp = cpu.fpu.st(0);
@@ -2086,7 +2086,7 @@ L_0x004b9000:
         cpu.fpu.st(1) = tmp;
     }
     // 004b9017  dc0d40005400           -fmul qword ptr [0x540040]
-    cpu.fpu.st(0) *= x86::Float(app->getMemory<double>(x86::reg32(5505088) /* 0x540040 */));
+    cpu.fpu.st(0) = cpu.fpu.mul(cpu.fpu.st(0), x86::Float(app->getMemory<double>(x86::reg32(5505088) /* 0x540040 */)));
     // 004b901d  d9455a                 -fld dword ptr [ebp + 0x5a]
     cpu.fpu.push(x86::Float(app->getMemory<float>(cpu.ebp + x86::reg32(90) /* 0x5a */)));
     // 004b9020  d9ca                   -fxch st(2)
@@ -2096,7 +2096,7 @@ L_0x004b9000:
         cpu.fpu.st(2) = tmp;
     }
     // 004b9022  d8ca                   -fmul st(2)
-    cpu.fpu.st(0) *= x86::Float(cpu.fpu.st(2));
+    cpu.fpu.st(0) = cpu.fpu.mul(cpu.fpu.st(0), x86::Float(cpu.fpu.st(2)));
     // 004b9024  d9c9                   -fxch st(1)
     {
         x86::Float tmp = cpu.fpu.st(0);
@@ -2104,7 +2104,7 @@ L_0x004b9000:
         cpu.fpu.st(1) = tmp;
     }
     // 004b9026  deca                   -fmulp st(2)
-    cpu.fpu.st(2) *= cpu.fpu.st(0);
+    cpu.fpu.st(2) = cpu.fpu.mul(cpu.fpu.st(2), cpu.fpu.st(0));
     cpu.fpu.pop();
     // 004b9028  d95d66                 -fstp dword ptr [ebp + 0x66]
     app->getMemory<float>(cpu.ebp + x86::reg32(102) /* 0x66 */) = float(cpu.fpu.st(0));
@@ -2257,7 +2257,7 @@ L_0x004b90a6:
     // 004b90bc  d987b8080000           -fld dword ptr [edi + 0x8b8]
     cpu.fpu.push(x86::Float(app->getMemory<float>(cpu.edi + x86::reg32(2232) /* 0x8b8 */)));
     // 004b90c2  d825e0cf7d00           -fsub dword ptr [0x7dcfe0]
-    cpu.fpu.st(0) -= x86::Float(app->getMemory<float>(x86::reg32(8245216) /* 0x7dcfe0 */));
+    cpu.fpu.st(0) = cpu.fpu.sub(cpu.fpu.st(0), x86::Float(app->getMemory<float>(x86::reg32(8245216) /* 0x7dcfe0 */)));
     // 004b90c8  8b4572                 -mov eax, dword ptr [ebp + 0x72]
     cpu.eax = app->getMemory<x86::reg32>(cpu.ebp + x86::reg32(114) /* 0x72 */);
     // 004b90cb  d91c24                 -fstp dword ptr [esp]
@@ -2333,13 +2333,13 @@ void Application::sub_4b90e0(WinApplication* app, x86::CPU& cpu)
     sub_4eb230(app, cpu);
     if (cpu.terminate) return;
     // 004b90fe  d88930090000           -fmul dword ptr [ecx + 0x930]
-    cpu.fpu.st(0) *= x86::Float(app->getMemory<float>(cpu.ecx + x86::reg32(2352) /* 0x930 */));
+    cpu.fpu.st(0) = cpu.fpu.mul(cpu.fpu.st(0), x86::Float(app->getMemory<float>(cpu.ecx + x86::reg32(2352) /* 0x930 */)));
     // 004b9104  d98130090000           -fld dword ptr [ecx + 0x930]
     cpu.fpu.push(x86::Float(app->getMemory<float>(cpu.ecx + x86::reg32(2352) /* 0x930 */)));
     // 004b910a  d80d48005400           -fmul dword ptr [0x540048]
-    cpu.fpu.st(0) *= x86::Float(app->getMemory<float>(x86::reg32(5505096) /* 0x540048 */));
+    cpu.fpu.st(0) = cpu.fpu.mul(cpu.fpu.st(0), x86::Float(app->getMemory<float>(x86::reg32(5505096) /* 0x540048 */)));
     // 004b9110  dee9                   -fsubp st(1)
-    cpu.fpu.st(1) -= cpu.fpu.st(0);
+    cpu.fpu.st(1) = cpu.fpu.sub(cpu.fpu.st(1), cpu.fpu.st(0));
     cpu.fpu.pop();
     // 004b9112  d99940090000           -fstp dword ptr [ecx + 0x940]
     app->getMemory<float>(cpu.ecx + x86::reg32(2368) /* 0x940 */) = float(cpu.fpu.st(0));
@@ -2362,13 +2362,13 @@ L_0x004b911c:
     sub_4eb230(app, cpu);
     if (cpu.terminate) return;
     // 004b9121  d88930090000           -fmul dword ptr [ecx + 0x930]
-    cpu.fpu.st(0) *= x86::Float(app->getMemory<float>(cpu.ecx + x86::reg32(2352) /* 0x930 */));
+    cpu.fpu.st(0) = cpu.fpu.mul(cpu.fpu.st(0), x86::Float(app->getMemory<float>(cpu.ecx + x86::reg32(2352) /* 0x930 */)));
     // 004b9127  d98130090000           -fld dword ptr [ecx + 0x930]
     cpu.fpu.push(x86::Float(app->getMemory<float>(cpu.ecx + x86::reg32(2352) /* 0x930 */)));
     // 004b912d  d80d48005400           -fmul dword ptr [0x540048]
-    cpu.fpu.st(0) *= x86::Float(app->getMemory<float>(x86::reg32(5505096) /* 0x540048 */));
+    cpu.fpu.st(0) = cpu.fpu.mul(cpu.fpu.st(0), x86::Float(app->getMemory<float>(x86::reg32(5505096) /* 0x540048 */)));
     // 004b9133  dee9                   -fsubp st(1)
-    cpu.fpu.st(1) -= cpu.fpu.st(0);
+    cpu.fpu.st(1) = cpu.fpu.sub(cpu.fpu.st(1), cpu.fpu.st(0));
     cpu.fpu.pop();
     // 004b9135  d9993c090000           -fstp dword ptr [ecx + 0x93c]
     app->getMemory<float>(cpu.ecx + x86::reg32(2364) /* 0x93c */) = float(cpu.fpu.st(0));
@@ -2414,7 +2414,7 @@ void Application::sub_4b9140(WinApplication* app, x86::CPU& cpu)
     // 004b914b  d980f4040000           -fld dword ptr [eax + 0x4f4]
     cpu.fpu.push(x86::Float(app->getMemory<float>(cpu.eax + x86::reg32(1268) /* 0x4f4 */)));
     // 004b9151  d80d4c005400           -fmul dword ptr [0x54004c]
-    cpu.fpu.st(0) *= x86::Float(app->getMemory<float>(x86::reg32(5505100) /* 0x54004c */));
+    cpu.fpu.st(0) = cpu.fpu.mul(cpu.fpu.st(0), x86::Float(app->getMemory<float>(x86::reg32(5505100) /* 0x54004c */)));
     // 004b9157  8b3528fe5500           -mov esi, dword ptr [0x55fe28]
     cpu.esi = carWheelStamp(app, cpu.ecx, 0u); /* port: per-car stamp, was [0x55fe28] */
     // 004b915d  a184367d00             -mov eax, dword ptr [0x7d3684]
@@ -2422,7 +2422,7 @@ void Application::sub_4b9140(WinApplication* app, x86::CPU& cpu)
     // 004b9162  db8198050000           -fild dword ptr [ecx + 0x598]
     cpu.fpu.push(x86::Float(x86::sreg32(app->getMemory<x86::reg32>(cpu.ecx + x86::reg32(1432) /* 0x598 */))));
     // 004b9168  dc0d50005400           -fmul qword ptr [0x540050]
-    cpu.fpu.st(0) *= x86::Float(app->getMemory<double>(x86::reg32(5505104) /* 0x540050 */));
+    cpu.fpu.st(0) = cpu.fpu.mul(cpu.fpu.st(0), x86::Float(app->getMemory<double>(x86::reg32(5505104) /* 0x540050 */)));
     // 004b916e  29f0                   +sub eax, esi
     {
         x86::reg32& tmp1 = cpu.eax;
@@ -2436,7 +2436,7 @@ void Application::sub_4b9140(WinApplication* app, x86::CPU& cpu)
         cpu.set_szp(tmp1);
     }
     // 004b9170  dec1                   +faddp st(1)
-    cpu.fpu.st(1) += cpu.fpu.st(0);
+    cpu.fpu.st(1) = cpu.fpu.add(cpu.fpu.st(1), cpu.fpu.st(0));
     cpu.fpu.pop();
     // 004b9172  89c6                   -mov esi, eax
     cpu.esi = cpu.eax;
@@ -2517,11 +2517,11 @@ L_0x004b91ae:
     // 004b91c7  db45fc                 +fild dword ptr [ebp - 4]
     cpu.fpu.push(x86::Float(x86::sreg32(app->getMemory<x86::reg32>(cpu.ebp + x86::reg32(-4) /* -0x4 */))));
     // 004b91ca  dc0d68005400           +fmul qword ptr [0x540068]
-    cpu.fpu.st(0) *= x86::Float(app->getMemory<double>(x86::reg32(5505128) /* 0x540068 */));
+    cpu.fpu.st(0) = cpu.fpu.mul(cpu.fpu.st(0), x86::Float(app->getMemory<double>(x86::reg32(5505128) /* 0x540068 */)));
     // 004b91d0  d84df8                 +fmul dword ptr [ebp - 8]
-    cpu.fpu.st(0) *= x86::Float(app->getMemory<float>(cpu.ebp + x86::reg32(-8) /* -0x8 */));
+    cpu.fpu.st(0) = cpu.fpu.mul(cpu.fpu.st(0), x86::Float(app->getMemory<float>(cpu.ebp + x86::reg32(-8) /* -0x8 */)));
     // 004b91d3  d88138090000           +fadd dword ptr [ecx + 0x938]
-    cpu.fpu.st(0) += x86::Float(app->getMemory<float>(cpu.ecx + x86::reg32(2360) /* 0x938 */));
+    cpu.fpu.st(0) = cpu.fpu.add(cpu.fpu.st(0), x86::Float(app->getMemory<float>(cpu.ecx + x86::reg32(2360) /* 0x938 */)));
 L_0x004b91d9:
     // 004b91d9  d99938090000           +fstp dword ptr [ecx + 0x938]
     app->getMemory<float>(cpu.ecx + x86::reg32(2360) /* 0x938 */) = float(cpu.fpu.st(0));
@@ -2549,7 +2549,7 @@ L_0x004b91df:
     // 004b91f2  dd45e0                 +fld qword ptr [ebp - 0x20]
     cpu.fpu.push(x86::Float(app->getMemory<double>(cpu.ebp + x86::reg32(-32) /* -0x20 */)));
     // 004b91f5  dc0570005400           +fadd qword ptr [0x540070]
-    cpu.fpu.st(0) += x86::Float(app->getMemory<double>(x86::reg32(5505136) /* 0x540070 */));
+    cpu.fpu.st(0) = cpu.fpu.add(cpu.fpu.st(0), x86::Float(app->getMemory<double>(x86::reg32(5505136) /* 0x540070 */)));
     // 004b91fb  ebdc                   -jmp 0x4b91d9
     goto L_0x004b91d9;
 L_0x004b91fd:
@@ -2572,7 +2572,7 @@ L_0x004b91fd:
     // 004b9211  d9e8                   +fld1 
     cpu.fpu.push(1.0);
     // 004b9213  dc45e8                 +fadd qword ptr [ebp - 0x18]
-    cpu.fpu.st(0) += x86::Float(app->getMemory<double>(cpu.ebp + x86::reg32(-24) /* -0x18 */));
+    cpu.fpu.st(0) = cpu.fpu.add(cpu.fpu.st(0), x86::Float(app->getMemory<double>(cpu.ebp + x86::reg32(-24) /* -0x18 */)));
     // 004b9216  d99938090000           +fstp dword ptr [ecx + 0x938]
     app->getMemory<float>(cpu.ecx + x86::reg32(2360) /* 0x938 */) = float(cpu.fpu.st(0));
     cpu.fpu.pop();
@@ -2619,7 +2619,7 @@ L_0x004b921e:
     // 004b9247  db45fc                 -fild dword ptr [ebp - 4]
     cpu.fpu.push(x86::Float(x86::sreg32(app->getMemory<x86::reg32>(cpu.ebp + x86::reg32(-4) /* -0x4 */))));
     // 004b924a  dc0d78005400           -fmul qword ptr [0x540078]
-    cpu.fpu.st(0) *= x86::Float(app->getMemory<double>(x86::reg32(5505144) /* 0x540078 */));
+    cpu.fpu.st(0) = cpu.fpu.mul(cpu.fpu.st(0), x86::Float(app->getMemory<double>(x86::reg32(5505144) /* 0x540078 */)));
     // 004b9250  83ec04                 +sub esp, 4
     {
         x86::reg32& tmp1 = cpu.esp;
@@ -2719,7 +2719,7 @@ void Application::sub_4b9280(WinApplication* app, x86::CPU& cpu)
     // 004b928a  d980f4040000           -fld dword ptr [eax + 0x4f4]
     cpu.fpu.push(x86::Float(app->getMemory<float>(cpu.eax + x86::reg32(1268) /* 0x4f4 */)));
     // 004b9290  d80d80005400           -fmul dword ptr [0x540080]
-    cpu.fpu.st(0) *= x86::Float(app->getMemory<float>(x86::reg32(5505152) /* 0x540080 */));
+    cpu.fpu.st(0) = cpu.fpu.mul(cpu.fpu.st(0), x86::Float(app->getMemory<float>(x86::reg32(5505152) /* 0x540080 */)));
     // 004b9296  8b1d28fe5500           -mov ebx, dword ptr [0x55fe28]
     cpu.ebx = carWheelStamp(app, cpu.ecx, 1u); /* port: per-car stamp, was [0x55fe28] */
     // 004b929c  a184367d00             -mov eax, dword ptr [0x7d3684]
@@ -2727,7 +2727,7 @@ void Application::sub_4b9280(WinApplication* app, x86::CPU& cpu)
     // 004b92a1  db8194050000           -fild dword ptr [ecx + 0x594]
     cpu.fpu.push(x86::Float(x86::sreg32(app->getMemory<x86::reg32>(cpu.ecx + x86::reg32(1428) /* 0x594 */))));
     // 004b92a7  dc0d88005400           -fmul qword ptr [0x540088]
-    cpu.fpu.st(0) *= x86::Float(app->getMemory<double>(x86::reg32(5505160) /* 0x540088 */));
+    cpu.fpu.st(0) = cpu.fpu.mul(cpu.fpu.st(0), x86::Float(app->getMemory<double>(x86::reg32(5505160) /* 0x540088 */)));
     // 004b92ad  29d8                   +sub eax, ebx
     {
         x86::reg32& tmp1 = cpu.eax;
@@ -2741,7 +2741,7 @@ void Application::sub_4b9280(WinApplication* app, x86::CPU& cpu)
         cpu.set_szp(tmp1);
     }
     // 004b92af  dec1                   +faddp st(1)
-    cpu.fpu.st(1) += cpu.fpu.st(0);
+    cpu.fpu.st(1) = cpu.fpu.add(cpu.fpu.st(1), cpu.fpu.st(0));
     cpu.fpu.pop();
     // 004b92b1  89c3                   -mov ebx, eax
     cpu.ebx = cpu.eax;
@@ -2895,11 +2895,11 @@ L_0x004b933c:
     // 004b9355  db45fc                 +fild dword ptr [ebp - 4]
     cpu.fpu.push(x86::Float(x86::sreg32(app->getMemory<x86::reg32>(cpu.ebp + x86::reg32(-4) /* -0x4 */))));
     // 004b9358  dc0db0005400           +fmul qword ptr [0x5400b0]
-    cpu.fpu.st(0) *= x86::Float(app->getMemory<double>(x86::reg32(5505200) /* 0x5400b0 */));
+    cpu.fpu.st(0) = cpu.fpu.mul(cpu.fpu.st(0), x86::Float(app->getMemory<double>(x86::reg32(5505200) /* 0x5400b0 */)));
     // 004b935e  d84dec                 +fmul dword ptr [ebp - 0x14]
-    cpu.fpu.st(0) *= x86::Float(app->getMemory<float>(cpu.ebp + x86::reg32(-20) /* -0x14 */));
+    cpu.fpu.st(0) = cpu.fpu.mul(cpu.fpu.st(0), x86::Float(app->getMemory<float>(cpu.ebp + x86::reg32(-20) /* -0x14 */)));
     // 004b9361  d88134090000           +fadd dword ptr [ecx + 0x934]
-    cpu.fpu.st(0) += x86::Float(app->getMemory<float>(cpu.ecx + x86::reg32(2356) /* 0x934 */));
+    cpu.fpu.st(0) = cpu.fpu.add(cpu.fpu.st(0), x86::Float(app->getMemory<float>(cpu.ecx + x86::reg32(2356) /* 0x934 */)));
 L_0x004b9367:
     // 004b9367  d99934090000           +fstp dword ptr [ecx + 0x934]
     app->getMemory<float>(cpu.ecx + x86::reg32(2356) /* 0x934 */) = float(cpu.fpu.st(0));
@@ -2927,7 +2927,7 @@ L_0x004b936d:
     // 004b9380  dd45dc                 +fld qword ptr [ebp - 0x24]
     cpu.fpu.push(x86::Float(app->getMemory<double>(cpu.ebp + x86::reg32(-36) /* -0x24 */)));
     // 004b9383  dc05b8005400           +fadd qword ptr [0x5400b8]
-    cpu.fpu.st(0) += x86::Float(app->getMemory<double>(x86::reg32(5505208) /* 0x5400b8 */));
+    cpu.fpu.st(0) = cpu.fpu.add(cpu.fpu.st(0), x86::Float(app->getMemory<double>(x86::reg32(5505208) /* 0x5400b8 */)));
     // 004b9389  ebdc                   -jmp 0x4b9367
     goto L_0x004b9367;
 L_0x004b938b:
@@ -2950,7 +2950,7 @@ L_0x004b938b:
     // 004b939f  d9e8                   +fld1 
     cpu.fpu.push(1.0);
     // 004b93a1  dc45cc                 +fadd qword ptr [ebp - 0x34]
-    cpu.fpu.st(0) += x86::Float(app->getMemory<double>(cpu.ebp + x86::reg32(-52) /* -0x34 */));
+    cpu.fpu.st(0) = cpu.fpu.add(cpu.fpu.st(0), x86::Float(app->getMemory<double>(cpu.ebp + x86::reg32(-52) /* -0x34 */)));
     // 004b93a4  d99934090000           +fstp dword ptr [ecx + 0x934]
     app->getMemory<float>(cpu.ecx + x86::reg32(2356) /* 0x934 */) = float(cpu.fpu.st(0));
     cpu.fpu.pop();
@@ -3360,7 +3360,7 @@ void Application::sub_4b9550(WinApplication* app, x86::CPU& cpu)
     // 004b955f  d98098000000           -fld dword ptr [eax + 0x98]
     cpu.fpu.push(x86::Float(app->getMemory<float>(cpu.eax + x86::reg32(152) /* 0x98 */)));
     // 004b9565  dc0df0005400           -fmul qword ptr [0x5400f0]
-    cpu.fpu.st(0) *= x86::Float(app->getMemory<double>(x86::reg32(5505264) /* 0x5400f0 */));
+    cpu.fpu.st(0) = cpu.fpu.mul(cpu.fpu.st(0), x86::Float(app->getMemory<double>(x86::reg32(5505264) /* 0x5400f0 */)));
     // 004b956b  83ec04                 -sub esp, 4
     (cpu.esp) -= x86::reg32(x86::sreg32(4 /*0x4*/));
     // 004b956e  db1c24                 -fistp dword ptr [esp]
@@ -3376,7 +3376,7 @@ void Application::sub_4b9550(WinApplication* app, x86::CPU& cpu)
     // 004b9578  d9809c000000           -fld dword ptr [eax + 0x9c]
     cpu.fpu.push(x86::Float(app->getMemory<float>(cpu.eax + x86::reg32(156) /* 0x9c */)));
     // 004b957e  dc0df0005400           -fmul qword ptr [0x5400f0]
-    cpu.fpu.st(0) *= x86::Float(app->getMemory<double>(x86::reg32(5505264) /* 0x5400f0 */));
+    cpu.fpu.st(0) = cpu.fpu.mul(cpu.fpu.st(0), x86::Float(app->getMemory<double>(x86::reg32(5505264) /* 0x5400f0 */)));
     // 004b9584  83ec04                 -sub esp, 4
     (cpu.esp) -= x86::reg32(x86::sreg32(4 /*0x4*/));
     // 004b9587  db1c24                 -fistp dword ptr [esp]
@@ -3392,7 +3392,7 @@ void Application::sub_4b9550(WinApplication* app, x86::CPU& cpu)
     // 004b9591  d980a0000000           -fld dword ptr [eax + 0xa0]
     cpu.fpu.push(x86::Float(app->getMemory<float>(cpu.eax + x86::reg32(160) /* 0xa0 */)));
     // 004b9597  dc0df0005400           -fmul qword ptr [0x5400f0]
-    cpu.fpu.st(0) *= x86::Float(app->getMemory<double>(x86::reg32(5505264) /* 0x5400f0 */));
+    cpu.fpu.st(0) = cpu.fpu.mul(cpu.fpu.st(0), x86::Float(app->getMemory<double>(x86::reg32(5505264) /* 0x5400f0 */)));
     // 004b959d  31c9                   -xor ecx, ecx
     cpu.ecx ^= x86::reg32(x86::sreg32(cpu.ecx));
     // 004b959f  31db                   -xor ebx, ebx
@@ -4282,7 +4282,7 @@ L_0x004b98fc:
     // 004b990e  d945a0                 -fld dword ptr [ebp - 0x60]
     cpu.fpu.push(x86::Float(app->getMemory<float>(cpu.ebp + x86::reg32(-96) /* -0x60 */)));
     // 004b9911  d8706c                 -fdiv dword ptr [eax + 0x6c]
-    cpu.fpu.st(0) /= x86::Float(app->getMemory<float>(cpu.eax + x86::reg32(108) /* 0x6c */));
+    cpu.fpu.st(0) = cpu.fpu.div(cpu.fpu.st(0), x86::Float(app->getMemory<float>(cpu.eax + x86::reg32(108) /* 0x6c */)));
     // 004b9914  8b55d4                 -mov edx, dword ptr [ebp - 0x2c]
     cpu.edx = app->getMemory<x86::reg32>(cpu.ebp + x86::reg32(-44) /* -0x2c */);
     // 004b9917  c1fa10                 -sar edx, 0x10
@@ -4296,7 +4296,7 @@ L_0x004b98fc:
     // 004b9926  d9e8                   -fld1 
     cpu.fpu.push(1.0);
     // 004b9928  dee1                   -fsubrp st(1)
-    cpu.fpu.st(1) = cpu.fpu.st(0) - x86::Float(cpu.fpu.st(1));
+    cpu.fpu.st(1) = cpu.fpu.sub(cpu.fpu.st(0), x86::Float(cpu.fpu.st(1)));
     cpu.fpu.pop();
     // 004b992a  db45fc                 -fild dword ptr [ebp - 4]
     cpu.fpu.push(x86::Float(x86::sreg32(app->getMemory<x86::reg32>(cpu.ebp + x86::reg32(-4) /* -0x4 */))));
@@ -4310,7 +4310,7 @@ L_0x004b98fc:
     app->getMemory<float>(cpu.ebp + x86::reg32(-68) /* -0x44 */) = float(cpu.fpu.st(0));
     cpu.fpu.pop();
     // 004b9932  d84dbc                 -fmul dword ptr [ebp - 0x44]
-    cpu.fpu.st(0) *= x86::Float(app->getMemory<float>(cpu.ebp + x86::reg32(-68) /* -0x44 */));
+    cpu.fpu.st(0) = cpu.fpu.mul(cpu.fpu.st(0), x86::Float(app->getMemory<float>(cpu.ebp + x86::reg32(-68) /* -0x44 */)));
     // 004b9935  c1f908                 -sar ecx, 8
     cpu.ecx = x86::reg32(x86::sreg32(cpu.ecx) >> (8 /*0x8*/ % 32));
     // 004b9938  8b5dd4                 -mov ebx, dword ptr [ebp - 0x2c]
@@ -4332,7 +4332,7 @@ L_0x004b98fc:
     // 004b9951  db45fc                 -fild dword ptr [ebp - 4]
     cpu.fpu.push(x86::Float(x86::sreg32(app->getMemory<x86::reg32>(cpu.ebp + x86::reg32(-4) /* -0x4 */))));
     // 004b9954  d84dbc                 -fmul dword ptr [ebp - 0x44]
-    cpu.fpu.st(0) *= x86::Float(app->getMemory<float>(cpu.ebp + x86::reg32(-68) /* -0x44 */));
+    cpu.fpu.st(0) = cpu.fpu.mul(cpu.fpu.st(0), x86::Float(app->getMemory<float>(cpu.ebp + x86::reg32(-68) /* -0x44 */)));
     // 004b9957  895dfc                 -mov dword ptr [ebp - 4], ebx
     app->getMemory<x86::reg32>(cpu.ebp + x86::reg32(-4) /* -0x4 */) = cpu.ebx;
     // 004b995a  8b5df8                 -mov ebx, dword ptr [ebp - 8]
@@ -4350,7 +4350,7 @@ L_0x004b98fc:
     // 004b9966  db45fc                 -fild dword ptr [ebp - 4]
     cpu.fpu.push(x86::Float(x86::sreg32(app->getMemory<x86::reg32>(cpu.ebp + x86::reg32(-4) /* -0x4 */))));
     // 004b9969  d84dbc                 -fmul dword ptr [ebp - 0x44]
-    cpu.fpu.st(0) *= x86::Float(app->getMemory<float>(cpu.ebp + x86::reg32(-68) /* -0x44 */));
+    cpu.fpu.st(0) = cpu.fpu.mul(cpu.fpu.st(0), x86::Float(app->getMemory<float>(cpu.ebp + x86::reg32(-68) /* -0x44 */)));
     // 004b996c  43                     -inc ebx
     (cpu.ebx)++;
     // 004b996d  01d7                   -add edi, edx
@@ -4540,11 +4540,11 @@ L_0x004b9a25:
     // 004b9a37  d945ac                 +fld dword ptr [ebp - 0x54]
     cpu.fpu.push(x86::Float(app->getMemory<float>(cpu.ebp + x86::reg32(-84) /* -0x54 */)));
     // 004b9a3a  d8706c                 +fdiv dword ptr [eax + 0x6c]
-    cpu.fpu.st(0) /= x86::Float(app->getMemory<float>(cpu.eax + x86::reg32(108) /* 0x6c */));
+    cpu.fpu.st(0) = cpu.fpu.div(cpu.fpu.st(0), x86::Float(app->getMemory<float>(cpu.eax + x86::reg32(108) /* 0x6c */)));
     // 004b9a3d  d9e8                   +fld1 
     cpu.fpu.push(1.0);
     // 004b9a3f  dee1                   +fsubrp st(1)
-    cpu.fpu.st(1) = cpu.fpu.st(0) - x86::Float(cpu.fpu.st(1));
+    cpu.fpu.st(1) = cpu.fpu.sub(cpu.fpu.st(0), x86::Float(cpu.fpu.st(1)));
     cpu.fpu.pop();
     // 004b9a41  d9ee                   +fldz 
     cpu.fpu.push(0.0);
@@ -4587,7 +4587,7 @@ L_0x004b9a60:
     // 004b9a60  d945c4                 -fld dword ptr [ebp - 0x3c]
     cpu.fpu.push(x86::Float(app->getMemory<float>(cpu.ebp + x86::reg32(-60) /* -0x3c */)));
     // 004b9a63  d875ac                 -fdiv dword ptr [ebp - 0x54]
-    cpu.fpu.st(0) /= x86::Float(app->getMemory<float>(cpu.ebp + x86::reg32(-84) /* -0x54 */));
+    cpu.fpu.st(0) = cpu.fpu.div(cpu.fpu.st(0), x86::Float(app->getMemory<float>(cpu.ebp + x86::reg32(-84) /* -0x54 */)));
     // 004b9a66  8b55e8                 -mov edx, dword ptr [ebp - 0x18]
     cpu.edx = app->getMemory<x86::reg32>(cpu.ebp + x86::reg32(-24) /* -0x18 */);
     // 004b9a69  8b5270                 -mov edx, dword ptr [edx + 0x70]
@@ -4597,12 +4597,12 @@ L_0x004b9a60:
     // 004b9a6f  d9e8                   -fld1 
     cpu.fpu.push(1.0);
     // 004b9a71  dee1                   -fsubrp st(1)
-    cpu.fpu.st(1) = cpu.fpu.st(0) - x86::Float(cpu.fpu.st(1));
+    cpu.fpu.st(1) = cpu.fpu.sub(cpu.fpu.st(0), x86::Float(cpu.fpu.st(1)));
     cpu.fpu.pop();
     // 004b9a73  81e2ff000000           -and edx, 0xff
     cpu.edx &= x86::reg32(x86::sreg32(255 /*0xff*/));
     // 004b9a79  d84de4                 -fmul dword ptr [ebp - 0x1c]
-    cpu.fpu.st(0) *= x86::Float(app->getMemory<float>(cpu.ebp + x86::reg32(-28) /* -0x1c */));
+    cpu.fpu.st(0) = cpu.fpu.mul(cpu.fpu.st(0), x86::Float(app->getMemory<float>(cpu.ebp + x86::reg32(-28) /* -0x1c */)));
     // 004b9a7c  8955fc                 -mov dword ptr [ebp - 4], edx
     app->getMemory<x86::reg32>(cpu.ebp + x86::reg32(-4) /* -0x4 */) = cpu.edx;
     // 004b9a7f  8b75e8                 -mov esi, dword ptr [ebp - 0x18]
@@ -4619,7 +4619,7 @@ L_0x004b9a60:
     app->getMemory<float>(cpu.ebp + x86::reg32(-28) /* -0x1c */) = float(cpu.fpu.st(0));
     cpu.fpu.pop();
     // 004b9a8a  d84de4                 -fmul dword ptr [ebp - 0x1c]
-    cpu.fpu.st(0) *= x86::Float(app->getMemory<float>(cpu.ebp + x86::reg32(-28) /* -0x1c */));
+    cpu.fpu.st(0) = cpu.fpu.mul(cpu.fpu.st(0), x86::Float(app->getMemory<float>(cpu.ebp + x86::reg32(-28) /* -0x1c */)));
     // 004b9a8d  8b7670                 -mov esi, dword ptr [esi + 0x70]
     cpu.esi = app->getMemory<x86::reg32>(cpu.esi + x86::reg32(112) /* 0x70 */);
     // 004b9a90  8b45e8                 -mov eax, dword ptr [ebp - 0x18]
@@ -4645,7 +4645,7 @@ L_0x004b9a60:
     // 004b9aaf  db45fc                 -fild dword ptr [ebp - 4]
     cpu.fpu.push(x86::Float(x86::sreg32(app->getMemory<x86::reg32>(cpu.ebp + x86::reg32(-4) /* -0x4 */))));
     // 004b9ab2  d84de4                 -fmul dword ptr [ebp - 0x1c]
-    cpu.fpu.st(0) *= x86::Float(app->getMemory<float>(cpu.ebp + x86::reg32(-28) /* -0x1c */));
+    cpu.fpu.st(0) = cpu.fpu.mul(cpu.fpu.st(0), x86::Float(app->getMemory<float>(cpu.ebp + x86::reg32(-28) /* -0x1c */)));
     // 004b9ab5  895dfc                 -mov dword ptr [ebp - 4], ebx
     app->getMemory<x86::reg32>(cpu.ebp + x86::reg32(-4) /* -0x4 */) = cpu.ebx;
     // 004b9ab8  8b75f8                 -mov esi, dword ptr [ebp - 8]
@@ -4663,7 +4663,7 @@ L_0x004b9a60:
     // 004b9ac4  db45fc                 -fild dword ptr [ebp - 4]
     cpu.fpu.push(x86::Float(x86::sreg32(app->getMemory<x86::reg32>(cpu.ebp + x86::reg32(-4) /* -0x4 */))));
     // 004b9ac7  d84de4                 -fmul dword ptr [ebp - 0x1c]
-    cpu.fpu.st(0) *= x86::Float(app->getMemory<float>(cpu.ebp + x86::reg32(-28) /* -0x1c */));
+    cpu.fpu.st(0) = cpu.fpu.mul(cpu.fpu.st(0), x86::Float(app->getMemory<float>(cpu.ebp + x86::reg32(-28) /* -0x1c */)));
     // 004b9aca  46                     -inc esi
     (cpu.esi)++;
     // 004b9acb  8b5df0                 -mov ebx, dword ptr [ebp - 0x10]
@@ -5263,7 +5263,7 @@ L_0x004b9cd9:
     // 004b9ce1  8b4dfc                 -mov ecx, dword ptr [ebp - 4]
     cpu.ecx = app->getMemory<x86::reg32>(cpu.ebp + x86::reg32(-4) /* -0x4 */);
     // 004b9ce4  d8402c                 -fadd dword ptr [eax + 0x2c]
-    cpu.fpu.st(0) += x86::Float(app->getMemory<float>(cpu.eax + x86::reg32(44) /* 0x2c */));
+    cpu.fpu.st(0) = cpu.fpu.add(cpu.fpu.st(0), x86::Float(app->getMemory<float>(cpu.eax + x86::reg32(44) /* 0x2c */)));
     // 004b9ce7  8b15903a5600           -mov edx, dword ptr [0x563a90]
     cpu.edx = app->getMemory<x86::reg32>(x86::reg32(5651088) /* 0x563a90 */);
     // 004b9ced  d95dc4                 -fstp dword ptr [ebp - 0x3c]
@@ -5342,7 +5342,7 @@ L_0x004b9d33:
     // 004b9d39  8d55e4                 -lea edx, [ebp - 0x1c]
     cpu.edx = x86::reg32(cpu.ebp + x86::reg32(-28) /* -0x1c */);
     // 004b9d3c  d825e0cf7d00           -fsub dword ptr [0x7dcfe0]
-    cpu.fpu.st(0) -= x86::Float(app->getMemory<float>(x86::reg32(8245216) /* 0x7dcfe0 */));
+    cpu.fpu.st(0) = cpu.fpu.sub(cpu.fpu.st(0), x86::Float(app->getMemory<float>(x86::reg32(8245216) /* 0x7dcfe0 */)));
     // 004b9d42  8b45fc                 -mov eax, dword ptr [ebp - 4]
     cpu.eax = app->getMemory<x86::reg32>(cpu.ebp + x86::reg32(-4) /* -0x4 */);
     // 004b9d45  d91c24                 -fstp dword ptr [esp]
@@ -5455,7 +5455,7 @@ L_0x004b9d33:
     // 004b9da8  d9e0                   -fchs 
     cpu.fpu.st(0) = -cpu.fpu.st(0);
     // 004b9daa  dc0df8005400           -fmul qword ptr [0x5400f8]
-    cpu.fpu.st(0) *= x86::Float(app->getMemory<double>(x86::reg32(5505272) /* 0x5400f8 */));
+    cpu.fpu.st(0) = cpu.fpu.mul(cpu.fpu.st(0), x86::Float(app->getMemory<double>(x86::reg32(5505272) /* 0x5400f8 */)));
     // 004b9db0  6a00                   -push 0
     app->getMemory<x86::reg32>(cpu.esp-4) = 0 /*0x0*/;
     cpu.esp -= 4;
@@ -5611,7 +5611,7 @@ start:
     // 004b9e4e  8b45fe                 -mov eax, dword ptr [ebp - 2]
     cpu.eax = app->getMemory<x86::reg32>(cpu.ebp + x86::reg32(-2) /* -0x2 */);
     // 004b9e51  dc0d00015400           +fmul qword ptr [0x540100]
-    cpu.fpu.st(0) *= x86::Float(app->getMemory<double>(x86::reg32(5505280) /* 0x540100 */));
+    cpu.fpu.st(0) = cpu.fpu.mul(cpu.fpu.st(0), x86::Float(app->getMemory<double>(x86::reg32(5505280) /* 0x540100 */)));
     // 004b9e57  89457e                 -mov dword ptr [ebp + 0x7e], eax
     app->getMemory<x86::reg32>(cpu.ebp + x86::reg32(126) /* 0x7e */) = cpu.eax;
     // 004b9e5a  8b4502                 -mov eax, dword ptr [ebp + 2]
@@ -5621,13 +5621,13 @@ start:
     // 004b9e60  89457e                 -mov dword ptr [ebp + 0x7e], eax
     app->getMemory<x86::reg32>(cpu.ebp + x86::reg32(126) /* 0x7e */) = cpu.eax;
     // 004b9e63  dc0d00015400           +fmul qword ptr [0x540100]
-    cpu.fpu.st(0) *= x86::Float(app->getMemory<double>(x86::reg32(5505280) /* 0x540100 */));
+    cpu.fpu.st(0) = cpu.fpu.mul(cpu.fpu.st(0), x86::Float(app->getMemory<double>(x86::reg32(5505280) /* 0x540100 */)));
     // 004b9e69  db457e                 +fild dword ptr [ebp + 0x7e]
     cpu.fpu.push(x86::Float(x86::sreg32(app->getMemory<x86::reg32>(cpu.ebp + x86::reg32(126) /* 0x7e */))));
     // 004b9e6c  8b4506                 -mov eax, dword ptr [ebp + 6]
     cpu.eax = app->getMemory<x86::reg32>(cpu.ebp + x86::reg32(6) /* 0x6 */);
     // 004b9e6f  dc0d00015400           +fmul qword ptr [0x540100]
-    cpu.fpu.st(0) *= x86::Float(app->getMemory<double>(x86::reg32(5505280) /* 0x540100 */));
+    cpu.fpu.st(0) = cpu.fpu.mul(cpu.fpu.st(0), x86::Float(app->getMemory<double>(x86::reg32(5505280) /* 0x540100 */)));
     // 004b9e75  89457e                 -mov dword ptr [ebp + 0x7e], eax
     app->getMemory<x86::reg32>(cpu.ebp + x86::reg32(126) /* 0x7e */) = cpu.eax;
     // 004b9e78  8b450a                 -mov eax, dword ptr [ebp + 0xa]
@@ -5637,13 +5637,13 @@ start:
     // 004b9e7e  89457e                 -mov dword ptr [ebp + 0x7e], eax
     app->getMemory<x86::reg32>(cpu.ebp + x86::reg32(126) /* 0x7e */) = cpu.eax;
     // 004b9e81  dc0d00015400           +fmul qword ptr [0x540100]
-    cpu.fpu.st(0) *= x86::Float(app->getMemory<double>(x86::reg32(5505280) /* 0x540100 */));
+    cpu.fpu.st(0) = cpu.fpu.mul(cpu.fpu.st(0), x86::Float(app->getMemory<double>(x86::reg32(5505280) /* 0x540100 */)));
     // 004b9e87  db457e                 +fild dword ptr [ebp + 0x7e]
     cpu.fpu.push(x86::Float(x86::sreg32(app->getMemory<x86::reg32>(cpu.ebp + x86::reg32(126) /* 0x7e */))));
     // 004b9e8a  8b450e                 -mov eax, dword ptr [ebp + 0xe]
     cpu.eax = app->getMemory<x86::reg32>(cpu.ebp + x86::reg32(14) /* 0xe */);
     // 004b9e8d  dc0d00015400           +fmul qword ptr [0x540100]
-    cpu.fpu.st(0) *= x86::Float(app->getMemory<double>(x86::reg32(5505280) /* 0x540100 */));
+    cpu.fpu.st(0) = cpu.fpu.mul(cpu.fpu.st(0), x86::Float(app->getMemory<double>(x86::reg32(5505280) /* 0x540100 */)));
     // 004b9e93  89457e                 -mov dword ptr [ebp + 0x7e], eax
     app->getMemory<x86::reg32>(cpu.ebp + x86::reg32(126) /* 0x7e */) = cpu.eax;
     // 004b9e96  8b4512                 -mov eax, dword ptr [ebp + 0x12]
@@ -5653,13 +5653,13 @@ start:
     // 004b9e9c  89457e                 -mov dword ptr [ebp + 0x7e], eax
     app->getMemory<x86::reg32>(cpu.ebp + x86::reg32(126) /* 0x7e */) = cpu.eax;
     // 004b9e9f  dc0d00015400           +fmul qword ptr [0x540100]
-    cpu.fpu.st(0) *= x86::Float(app->getMemory<double>(x86::reg32(5505280) /* 0x540100 */));
+    cpu.fpu.st(0) = cpu.fpu.mul(cpu.fpu.st(0), x86::Float(app->getMemory<double>(x86::reg32(5505280) /* 0x540100 */)));
     // 004b9ea5  db457e                 +fild dword ptr [ebp + 0x7e]
     cpu.fpu.push(x86::Float(x86::sreg32(app->getMemory<x86::reg32>(cpu.ebp + x86::reg32(126) /* 0x7e */))));
     // 004b9ea8  8b4516                 -mov eax, dword ptr [ebp + 0x16]
     cpu.eax = app->getMemory<x86::reg32>(cpu.ebp + x86::reg32(22) /* 0x16 */);
     // 004b9eab  dc0d00015400           +fmul qword ptr [0x540100]
-    cpu.fpu.st(0) *= x86::Float(app->getMemory<double>(x86::reg32(5505280) /* 0x540100 */));
+    cpu.fpu.st(0) = cpu.fpu.mul(cpu.fpu.st(0), x86::Float(app->getMemory<double>(x86::reg32(5505280) /* 0x540100 */)));
     // 004b9eb1  89457e                 -mov dword ptr [ebp + 0x7e], eax
     app->getMemory<x86::reg32>(cpu.ebp + x86::reg32(126) /* 0x7e */) = cpu.eax;
     // 004b9eb4  d9ce                   +fxch st(6)
@@ -5676,7 +5676,7 @@ start:
     // 004b9ebc  8b451a                 -mov eax, dword ptr [ebp + 0x1a]
     cpu.eax = app->getMemory<x86::reg32>(cpu.ebp + x86::reg32(26) /* 0x1a */);
     // 004b9ebf  dc0d00015400           +fmul qword ptr [0x540100]
-    cpu.fpu.st(0) *= x86::Float(app->getMemory<double>(x86::reg32(5505280) /* 0x540100 */));
+    cpu.fpu.st(0) = cpu.fpu.mul(cpu.fpu.st(0), x86::Float(app->getMemory<double>(x86::reg32(5505280) /* 0x540100 */)));
     // 004b9ec5  89457e                 -mov dword ptr [ebp + 0x7e], eax
     app->getMemory<x86::reg32>(cpu.ebp + x86::reg32(126) /* 0x7e */) = cpu.eax;
     // 004b9ec8  d9cd                   +fxch st(5)
@@ -5693,7 +5693,7 @@ start:
     // 004b9ed0  8b454e                 -mov eax, dword ptr [ebp + 0x4e]
     cpu.eax = app->getMemory<x86::reg32>(cpu.ebp + x86::reg32(78) /* 0x4e */);
     // 004b9ed3  dc0d00015400           +fmul qword ptr [0x540100]
-    cpu.fpu.st(0) *= x86::Float(app->getMemory<double>(x86::reg32(5505280) /* 0x540100 */));
+    cpu.fpu.st(0) = cpu.fpu.mul(cpu.fpu.st(0), x86::Float(app->getMemory<double>(x86::reg32(5505280) /* 0x540100 */)));
     // 004b9ed9  89457e                 -mov dword ptr [ebp + 0x7e], eax
     app->getMemory<x86::reg32>(cpu.ebp + x86::reg32(126) /* 0x7e */) = cpu.eax;
     // 004b9edc  d9cc                   +fxch st(4)
@@ -5710,7 +5710,7 @@ start:
     // 004b9ee4  8b4552                 -mov eax, dword ptr [ebp + 0x52]
     cpu.eax = app->getMemory<x86::reg32>(cpu.ebp + x86::reg32(82) /* 0x52 */);
     // 004b9ee7  dc0d00015400           +fmul qword ptr [0x540100]
-    cpu.fpu.st(0) *= x86::Float(app->getMemory<double>(x86::reg32(5505280) /* 0x540100 */));
+    cpu.fpu.st(0) = cpu.fpu.mul(cpu.fpu.st(0), x86::Float(app->getMemory<double>(x86::reg32(5505280) /* 0x540100 */)));
     // 004b9eed  89457e                 -mov dword ptr [ebp + 0x7e], eax
     app->getMemory<x86::reg32>(cpu.ebp + x86::reg32(126) /* 0x7e */) = cpu.eax;
     // 004b9ef0  d9cb                   +fxch st(3)
@@ -5727,7 +5727,7 @@ start:
     // 004b9ef8  8b4556                 -mov eax, dword ptr [ebp + 0x56]
     cpu.eax = app->getMemory<x86::reg32>(cpu.ebp + x86::reg32(86) /* 0x56 */);
     // 004b9efb  dc0d00015400           +fmul qword ptr [0x540100]
-    cpu.fpu.st(0) *= x86::Float(app->getMemory<double>(x86::reg32(5505280) /* 0x540100 */));
+    cpu.fpu.st(0) = cpu.fpu.mul(cpu.fpu.st(0), x86::Float(app->getMemory<double>(x86::reg32(5505280) /* 0x540100 */)));
     // 004b9f01  89457e                 -mov dword ptr [ebp + 0x7e], eax
     app->getMemory<x86::reg32>(cpu.ebp + x86::reg32(126) /* 0x7e */) = cpu.eax;
     // 004b9f04  d9ca                   +fxch st(2)
@@ -5742,7 +5742,7 @@ start:
     // 004b9f09  db457e                 +fild dword ptr [ebp + 0x7e]
     cpu.fpu.push(x86::Float(x86::sreg32(app->getMemory<x86::reg32>(cpu.ebp + x86::reg32(126) /* 0x7e */))));
     // 004b9f0c  dc0d00015400           +fmul qword ptr [0x540100]
-    cpu.fpu.st(0) *= x86::Float(app->getMemory<double>(x86::reg32(5505280) /* 0x540100 */));
+    cpu.fpu.st(0) = cpu.fpu.mul(cpu.fpu.st(0), x86::Float(app->getMemory<double>(x86::reg32(5505280) /* 0x540100 */)));
     // 004b9f12  8d555a                 -lea edx, [ebp + 0x5a]
     cpu.edx = x86::reg32(cpu.ebp + x86::reg32(90) /* 0x5a */);
     // 004b9f15  d9c9                   +fxch st(1)
@@ -6677,7 +6677,7 @@ L_0x004ba2d6:
     // 004ba2f3  8d5566                 -lea edx, [ebp + 0x66]
     cpu.edx = x86::reg32(cpu.ebp + x86::reg32(102) /* 0x66 */);
     // 004ba2f6  d825e0cf7d00           -fsub dword ptr [0x7dcfe0]
-    cpu.fpu.st(0) -= x86::Float(app->getMemory<float>(x86::reg32(8245216) /* 0x7dcfe0 */));
+    cpu.fpu.st(0) = cpu.fpu.sub(cpu.fpu.st(0), x86::Float(app->getMemory<float>(x86::reg32(8245216) /* 0x7dcfe0 */)));
     // 004ba2fc  89f8                   -mov eax, edi
     cpu.eax = cpu.edi;
     // 004ba2fe  d91c24                 -fstp dword ptr [esp]
@@ -8467,7 +8467,7 @@ void Application::sub_4ba960(WinApplication* app, x86::CPU& cpu)
     // 004baa0c  8d45bc                 -lea eax, [ebp - 0x44]
     cpu.eax = x86::reg32(cpu.ebp + x86::reg32(-68) /* -0x44 */);
     // 004baa0f  d80518015400           -fadd dword ptr [0x540118]
-    cpu.fpu.st(0) += x86::Float(app->getMemory<float>(x86::reg32(5505304) /* 0x540118 */));
+    cpu.fpu.st(0) = cpu.fpu.add(cpu.fpu.st(0), x86::Float(app->getMemory<float>(x86::reg32(5505304) /* 0x540118 */)));
     // 004baa15  50                     -push eax
     app->getMemory<x86::reg32>(cpu.esp-4) = cpu.eax;
     cpu.esp -= 4;
@@ -8724,7 +8724,7 @@ L_0x004baaaa:
     // 004bab29  8d45b8                 -lea eax, [ebp - 0x48]
     cpu.eax = x86::reg32(cpu.ebp + x86::reg32(-72) /* -0x48 */);
     // 004bab2c  d8051c015400           -fadd dword ptr [0x54011c]
-    cpu.fpu.st(0) += x86::Float(app->getMemory<float>(x86::reg32(5505308) /* 0x54011c */));
+    cpu.fpu.st(0) = cpu.fpu.add(cpu.fpu.st(0), x86::Float(app->getMemory<float>(x86::reg32(5505308) /* 0x54011c */)));
     // 004bab32  50                     -push eax
     app->getMemory<x86::reg32>(cpu.esp-4) = cpu.eax;
     cpu.esp -= 4;
@@ -8953,7 +8953,7 @@ L_0x004babcb:
     // 004bac21  8b80a0000000           -mov eax, dword ptr [eax + 0xa0]
     cpu.eax = app->getMemory<x86::reg32>(cpu.eax + x86::reg32(160) /* 0xa0 */);
     // 004bac27  d80520015400           -fadd dword ptr [0x540120]
-    cpu.fpu.st(0) += x86::Float(app->getMemory<float>(x86::reg32(5505312) /* 0x540120 */));
+    cpu.fpu.st(0) = cpu.fpu.add(cpu.fpu.st(0), x86::Float(app->getMemory<float>(x86::reg32(5505312) /* 0x540120 */)));
     // 004bac2d  894566                 -mov dword ptr [ebp + 0x66], eax
     app->getMemory<x86::reg32>(cpu.ebp + x86::reg32(102) /* 0x66 */) = cpu.eax;
     // 004bac30  8b457e                 -mov eax, dword ptr [ebp + 0x7e]
@@ -9551,7 +9551,7 @@ L_0x004bae6e:
     // 004baec7  8b80a0000000           -mov eax, dword ptr [eax + 0xa0]
     cpu.eax = app->getMemory<x86::reg32>(cpu.eax + x86::reg32(160) /* 0xa0 */);
     // 004baecd  d80524015400           -fadd dword ptr [0x540124]
-    cpu.fpu.st(0) += x86::Float(app->getMemory<float>(x86::reg32(5505316) /* 0x540124 */));
+    cpu.fpu.st(0) = cpu.fpu.add(cpu.fpu.st(0), x86::Float(app->getMemory<float>(x86::reg32(5505316) /* 0x540124 */)));
     // 004baed3  894566                 -mov dword ptr [ebp + 0x66], eax
     app->getMemory<x86::reg32>(cpu.ebp + x86::reg32(102) /* 0x66 */) = cpu.eax;
     // 004baed6  8b457e                 -mov eax, dword ptr [ebp + 0x7e]
@@ -9731,7 +9731,7 @@ L_0x004baf44:
     // 004baf7c  d94556                 -fld dword ptr [ebp + 0x56]
     cpu.fpu.push(x86::Float(app->getMemory<float>(cpu.ebp + x86::reg32(86) /* 0x56 */)));
     // 004baf7f  d8803c090000           -fadd dword ptr [eax + 0x93c]
-    cpu.fpu.st(0) += x86::Float(app->getMemory<float>(cpu.eax + x86::reg32(2364) /* 0x93c */));
+    cpu.fpu.st(0) = cpu.fpu.add(cpu.fpu.st(0), x86::Float(app->getMemory<float>(cpu.eax + x86::reg32(2364) /* 0x93c */)));
     // 004baf85  8b457a                 -mov eax, dword ptr [ebp + 0x7a]
     cpu.eax = app->getMemory<x86::reg32>(cpu.ebp + x86::reg32(122) /* 0x7a */);
     // 004baf88  6a00                   -push 0
@@ -9835,7 +9835,7 @@ L_0x004bafb5:
     // 004bafd3  d94556                 -fld dword ptr [ebp + 0x56]
     cpu.fpu.push(x86::Float(app->getMemory<float>(cpu.ebp + x86::reg32(86) /* 0x56 */)));
     // 004bafd6  d8803c090000           -fadd dword ptr [eax + 0x93c]
-    cpu.fpu.st(0) += x86::Float(app->getMemory<float>(cpu.eax + x86::reg32(2364) /* 0x93c */));
+    cpu.fpu.st(0) = cpu.fpu.add(cpu.fpu.st(0), x86::Float(app->getMemory<float>(cpu.eax + x86::reg32(2364) /* 0x93c */)));
     // 004bafdc  8b457a                 -mov eax, dword ptr [ebp + 0x7a]
     cpu.eax = app->getMemory<x86::reg32>(cpu.ebp + x86::reg32(122) /* 0x7a */);
     // 004bafdf  6a00                   -push 0
@@ -9955,7 +9955,7 @@ L_0x004bb00c:
     // 004bb042  d94556                 -fld dword ptr [ebp + 0x56]
     cpu.fpu.push(x86::Float(app->getMemory<float>(cpu.ebp + x86::reg32(86) /* 0x56 */)));
     // 004bb045  d88040090000           -fadd dword ptr [eax + 0x940]
-    cpu.fpu.st(0) += x86::Float(app->getMemory<float>(cpu.eax + x86::reg32(2368) /* 0x940 */));
+    cpu.fpu.st(0) = cpu.fpu.add(cpu.fpu.st(0), x86::Float(app->getMemory<float>(cpu.eax + x86::reg32(2368) /* 0x940 */)));
     // 004bb04b  8b457a                 -mov eax, dword ptr [ebp + 0x7a]
     cpu.eax = app->getMemory<x86::reg32>(cpu.ebp + x86::reg32(122) /* 0x7a */);
     // 004bb04e  6a00                   -push 0
@@ -10059,7 +10059,7 @@ L_0x004bb07b:
     // 004bb099  d94556                 -fld dword ptr [ebp + 0x56]
     cpu.fpu.push(x86::Float(app->getMemory<float>(cpu.ebp + x86::reg32(86) /* 0x56 */)));
     // 004bb09c  d88040090000           -fadd dword ptr [eax + 0x940]
-    cpu.fpu.st(0) += x86::Float(app->getMemory<float>(cpu.eax + x86::reg32(2368) /* 0x940 */));
+    cpu.fpu.st(0) = cpu.fpu.add(cpu.fpu.st(0), x86::Float(app->getMemory<float>(cpu.eax + x86::reg32(2368) /* 0x940 */)));
     // 004bb0a2  8b457a                 -mov eax, dword ptr [ebp + 0x7a]
     cpu.eax = app->getMemory<x86::reg32>(cpu.ebp + x86::reg32(122) /* 0x7a */);
     // 004bb0a5  6a00                   -push 0
@@ -10322,7 +10322,7 @@ void Application::sub_4bb110(WinApplication* app, x86::CPU& cpu)
     // 004bb1bc  8d45bc                 -lea eax, [ebp - 0x44]
     cpu.eax = x86::reg32(cpu.ebp + x86::reg32(-68) /* -0x44 */);
     // 004bb1bf  d80528015400           -fadd dword ptr [0x540128]
-    cpu.fpu.st(0) += x86::Float(app->getMemory<float>(x86::reg32(5505320) /* 0x540128 */));
+    cpu.fpu.st(0) = cpu.fpu.add(cpu.fpu.st(0), x86::Float(app->getMemory<float>(x86::reg32(5505320) /* 0x540128 */)));
     // 004bb1c5  50                     -push eax
     app->getMemory<x86::reg32>(cpu.esp-4) = cpu.eax;
     cpu.esp -= 4;
@@ -10573,7 +10573,7 @@ L_0x004bb26c:
     // 004bb2bf  8b80a0000000           -mov eax, dword ptr [eax + 0xa0]
     cpu.eax = app->getMemory<x86::reg32>(cpu.eax + x86::reg32(160) /* 0xa0 */);
     // 004bb2c5  d8052c015400           -fadd dword ptr [0x54012c]
-    cpu.fpu.st(0) += x86::Float(app->getMemory<float>(x86::reg32(5505324) /* 0x54012c */));
+    cpu.fpu.st(0) = cpu.fpu.add(cpu.fpu.st(0), x86::Float(app->getMemory<float>(x86::reg32(5505324) /* 0x54012c */)));
     // 004bb2cb  89455e                 -mov dword ptr [ebp + 0x5e], eax
     app->getMemory<x86::reg32>(cpu.ebp + x86::reg32(94) /* 0x5e */) = cpu.eax;
     // 004bb2ce  8b457e                 -mov eax, dword ptr [ebp + 0x7e]
@@ -10715,7 +10715,7 @@ L_0x004bb26c:
     // 004bb34d  d9454e                 -fld dword ptr [ebp + 0x4e]
     cpu.fpu.push(x86::Float(app->getMemory<float>(cpu.ebp + x86::reg32(78) /* 0x4e */)));
     // 004bb350  d8803c090000           -fadd dword ptr [eax + 0x93c]
-    cpu.fpu.st(0) += x86::Float(app->getMemory<float>(cpu.eax + x86::reg32(2364) /* 0x93c */));
+    cpu.fpu.st(0) = cpu.fpu.add(cpu.fpu.st(0), x86::Float(app->getMemory<float>(cpu.eax + x86::reg32(2364) /* 0x93c */)));
     // 004bb356  8d4556                 -lea eax, [ebp + 0x56]
     cpu.eax = x86::reg32(cpu.ebp + x86::reg32(86) /* 0x56 */);
     // 004bb359  8d4d4a                 -lea ecx, [ebp + 0x4a]
@@ -10801,7 +10801,7 @@ L_0x004bb26c:
     app->getMemory<x86::reg32>(cpu.esp-4) = cpu.esi;
     cpu.esp -= 4;
     // 004bb392  d8803c090000           -fadd dword ptr [eax + 0x93c]
-    cpu.fpu.st(0) += x86::Float(app->getMemory<float>(cpu.eax + x86::reg32(2364) /* 0x93c */));
+    cpu.fpu.st(0) = cpu.fpu.add(cpu.fpu.st(0), x86::Float(app->getMemory<float>(cpu.eax + x86::reg32(2364) /* 0x93c */)));
     // 004bb398  57                     -push edi
     app->getMemory<x86::reg32>(cpu.esp-4) = cpu.edi;
     cpu.esp -= 4;
@@ -10897,7 +10897,7 @@ L_0x004bb26c:
     // 004bb3e2  d9454e                 -fld dword ptr [ebp + 0x4e]
     cpu.fpu.push(x86::Float(app->getMemory<float>(cpu.ebp + x86::reg32(78) /* 0x4e */)));
     // 004bb3e5  d88040090000           -fadd dword ptr [eax + 0x940]
-    cpu.fpu.st(0) += x86::Float(app->getMemory<float>(cpu.eax + x86::reg32(2368) /* 0x940 */));
+    cpu.fpu.st(0) = cpu.fpu.add(cpu.fpu.st(0), x86::Float(app->getMemory<float>(cpu.eax + x86::reg32(2368) /* 0x940 */)));
     // 004bb3eb  8b456a                 -mov eax, dword ptr [ebp + 0x6a]
     cpu.eax = app->getMemory<x86::reg32>(cpu.ebp + x86::reg32(106) /* 0x6a */);
     // 004bb3ee  8d4d4a                 -lea ecx, [ebp + 0x4a]
@@ -10998,7 +10998,7 @@ L_0x004bb26c:
     // 004bb434  d9454e                 -fld dword ptr [ebp + 0x4e]
     cpu.fpu.push(x86::Float(app->getMemory<float>(cpu.ebp + x86::reg32(78) /* 0x4e */)));
     // 004bb437  d88040090000           -fadd dword ptr [eax + 0x940]
-    cpu.fpu.st(0) += x86::Float(app->getMemory<float>(cpu.eax + x86::reg32(2368) /* 0x940 */));
+    cpu.fpu.st(0) = cpu.fpu.add(cpu.fpu.st(0), x86::Float(app->getMemory<float>(cpu.eax + x86::reg32(2368) /* 0x940 */)));
     // 004bb43d  8d4556                 -lea eax, [ebp + 0x56]
     cpu.eax = x86::reg32(cpu.ebp + x86::reg32(86) /* 0x56 */);
     // 004bb440  8d4d4a                 -lea ecx, [ebp + 0x4a]
@@ -11438,7 +11438,7 @@ L_0x004bb5ab:
     // 004bb5b4  8d55f8                 -lea edx, [ebp - 8]
     cpu.edx = x86::reg32(cpu.ebp + x86::reg32(-8) /* -0x8 */);
     // 004bb5b7  d825e0cf7d00           -fsub dword ptr [0x7dcfe0]
-    cpu.fpu.st(0) -= x86::Float(app->getMemory<float>(x86::reg32(8245216) /* 0x7dcfe0 */));
+    cpu.fpu.st(0) = cpu.fpu.sub(cpu.fpu.st(0), x86::Float(app->getMemory<float>(x86::reg32(8245216) /* 0x7dcfe0 */)));
     // 004bb5bd  89c8                   -mov eax, ecx
     cpu.eax = cpu.ecx;
     // 004bb5bf  d91c24                 -fstp dword ptr [esp]
@@ -11697,15 +11697,15 @@ L_0x004bb6a3:
     // 004bb6a9  d9457a                 -fld dword ptr [ebp + 0x7a]
     cpu.fpu.push(x86::Float(app->getMemory<float>(cpu.ebp + x86::reg32(122) /* 0x7a */)));
     // 004bb6ac  d8c9                   -fmul st(1)
-    cpu.fpu.st(0) *= x86::Float(cpu.fpu.st(1));
+    cpu.fpu.st(0) = cpu.fpu.mul(cpu.fpu.st(0), x86::Float(cpu.fpu.st(1)));
     // 004bb6ae  d94572                 -fld dword ptr [ebp + 0x72]
     cpu.fpu.push(x86::Float(app->getMemory<float>(cpu.ebp + x86::reg32(114) /* 0x72 */)));
     // 004bb6b1  d8ca                   -fmul st(2)
-    cpu.fpu.st(0) *= x86::Float(cpu.fpu.st(2));
+    cpu.fpu.st(0) = cpu.fpu.mul(cpu.fpu.st(0), x86::Float(cpu.fpu.st(2)));
     // 004bb6b3  d9456e                 -fld dword ptr [ebp + 0x6e]
     cpu.fpu.push(x86::Float(app->getMemory<float>(cpu.ebp + x86::reg32(110) /* 0x6e */)));
     // 004bb6b6  decb                   -fmulp st(3)
-    cpu.fpu.st(3) *= cpu.fpu.st(0);
+    cpu.fpu.st(3) = cpu.fpu.mul(cpu.fpu.st(3), cpu.fpu.st(0));
     cpu.fpu.pop();
     // 004bb6b8  d95d72                 -fstp dword ptr [ebp + 0x72]
     app->getMemory<float>(cpu.ebp + x86::reg32(114) /* 0x72 */) = float(cpu.fpu.st(0));
@@ -11744,19 +11744,19 @@ L_0x004bb6c3:
     // 004bb6ce  d9457a                 -fld dword ptr [ebp + 0x7a]
     cpu.fpu.push(x86::Float(app->getMemory<float>(cpu.ebp + x86::reg32(122) /* 0x7a */)));
     // 004bb6d1  d8c9                   -fmul st(1)
-    cpu.fpu.st(0) *= x86::Float(cpu.fpu.st(1));
+    cpu.fpu.st(0) = cpu.fpu.mul(cpu.fpu.st(0), x86::Float(cpu.fpu.st(1)));
     // 004bb6d3  d94572                 -fld dword ptr [ebp + 0x72]
     cpu.fpu.push(x86::Float(app->getMemory<float>(cpu.ebp + x86::reg32(114) /* 0x72 */)));
     // 004bb6d6  d8ca                   -fmul st(2)
-    cpu.fpu.st(0) *= x86::Float(cpu.fpu.st(2));
+    cpu.fpu.st(0) = cpu.fpu.mul(cpu.fpu.st(0), x86::Float(cpu.fpu.st(2)));
     // 004bb6d8  d9456e                 -fld dword ptr [ebp + 0x6e]
     cpu.fpu.push(x86::Float(app->getMemory<float>(cpu.ebp + x86::reg32(110) /* 0x6e */)));
     // 004bb6db  d8cb                   -fmul st(3)
-    cpu.fpu.st(0) *= x86::Float(cpu.fpu.st(3));
+    cpu.fpu.st(0) = cpu.fpu.mul(cpu.fpu.st(0), x86::Float(cpu.fpu.st(3)));
     // 004bb6dd  d9456a                 -fld dword ptr [ebp + 0x6a]
     cpu.fpu.push(x86::Float(app->getMemory<float>(cpu.ebp + x86::reg32(106) /* 0x6a */)));
     // 004bb6e0  decc                   -fmulp st(4)
-    cpu.fpu.st(4) *= cpu.fpu.st(0);
+    cpu.fpu.st(4) = cpu.fpu.mul(cpu.fpu.st(4), cpu.fpu.st(0));
     cpu.fpu.pop();
     // 004bb6e2  d9c9                   -fxch st(1)
     {
@@ -11804,19 +11804,19 @@ L_0x004bb6f2:
     // 004bb6fe  d9457a                 -fld dword ptr [ebp + 0x7a]
     cpu.fpu.push(x86::Float(app->getMemory<float>(cpu.ebp + x86::reg32(122) /* 0x7a */)));
     // 004bb701  d8c9                   -fmul st(1)
-    cpu.fpu.st(0) *= x86::Float(cpu.fpu.st(1));
+    cpu.fpu.st(0) = cpu.fpu.mul(cpu.fpu.st(0), x86::Float(cpu.fpu.st(1)));
     // 004bb703  d94572                 -fld dword ptr [ebp + 0x72]
     cpu.fpu.push(x86::Float(app->getMemory<float>(cpu.ebp + x86::reg32(114) /* 0x72 */)));
     // 004bb706  d8ca                   -fmul st(2)
-    cpu.fpu.st(0) *= x86::Float(cpu.fpu.st(2));
+    cpu.fpu.st(0) = cpu.fpu.mul(cpu.fpu.st(0), x86::Float(cpu.fpu.st(2)));
     // 004bb708  d9456e                 -fld dword ptr [ebp + 0x6e]
     cpu.fpu.push(x86::Float(app->getMemory<float>(cpu.ebp + x86::reg32(110) /* 0x6e */)));
     // 004bb70b  d8cb                   -fmul st(3)
-    cpu.fpu.st(0) *= x86::Float(cpu.fpu.st(3));
+    cpu.fpu.st(0) = cpu.fpu.mul(cpu.fpu.st(0), x86::Float(cpu.fpu.st(3)));
     // 004bb70d  d9456a                 -fld dword ptr [ebp + 0x6a]
     cpu.fpu.push(x86::Float(app->getMemory<float>(cpu.ebp + x86::reg32(106) /* 0x6a */)));
     // 004bb710  decc                   -fmulp st(4)
-    cpu.fpu.st(4) *= cpu.fpu.st(0);
+    cpu.fpu.st(4) = cpu.fpu.mul(cpu.fpu.st(4), cpu.fpu.st(0));
     cpu.fpu.pop();
     // 004bb712  d9c9                   -fxch st(1)
     {
@@ -12101,7 +12101,7 @@ L_0x004bb84a:
     // 004bb84a  d9e8                   -fld1 
     cpu.fpu.push(1.0);
     // 004bb84c  d87542                 -fdiv dword ptr [ebp + 0x42]
-    cpu.fpu.st(0) /= x86::Float(app->getMemory<float>(cpu.ebp + x86::reg32(66) /* 0x42 */));
+    cpu.fpu.st(0) = cpu.fpu.div(cpu.fpu.st(0), x86::Float(app->getMemory<float>(cpu.ebp + x86::reg32(66) /* 0x42 */)));
     // 004bb84f  8b4562                 -mov eax, dword ptr [ebp + 0x62]
     cpu.eax = app->getMemory<x86::reg32>(cpu.ebp + x86::reg32(98) /* 0x62 */);
     // 004bb852  bef03b7a00             -mov esi, 0x7a3bf0
@@ -12124,15 +12124,15 @@ L_0x004bb84a:
     // 004bb86a  d9059c005600           -fld dword ptr [0x56009c]
     cpu.fpu.push(x86::Float(app->getMemory<float>(x86::reg32(5636252) /* 0x56009c */)));
     // 004bb870  d809                   -fmul dword ptr [ecx]
-    cpu.fpu.st(0) *= x86::Float(app->getMemory<float>(cpu.ecx));
+    cpu.fpu.st(0) = cpu.fpu.mul(cpu.fpu.st(0), x86::Float(app->getMemory<float>(cpu.ecx)));
     // 004bb872  d905a0005600           -fld dword ptr [0x5600a0]
     cpu.fpu.push(x86::Float(app->getMemory<float>(x86::reg32(5636256) /* 0x5600a0 */)));
     // 004bb878  d809                   -fmul dword ptr [ecx]
-    cpu.fpu.st(0) *= x86::Float(app->getMemory<float>(cpu.ecx));
+    cpu.fpu.st(0) = cpu.fpu.mul(cpu.fpu.st(0), x86::Float(app->getMemory<float>(cpu.ecx)));
     // 004bb87a  8b11                   -mov edx, dword ptr [ecx]
     cpu.edx = app->getMemory<x86::reg32>(cpu.ecx);
     // 004bb87c  d84804                 -fmul dword ptr [eax + 4]
-    cpu.fpu.st(0) *= x86::Float(app->getMemory<float>(cpu.eax + x86::reg32(4) /* 0x4 */));
+    cpu.fpu.st(0) = cpu.fpu.mul(cpu.fpu.st(0), x86::Float(app->getMemory<float>(cpu.eax + x86::reg32(4) /* 0x4 */)));
     // 004bb87f  d9c9                   -fxch st(1)
     {
         x86::Float tmp = cpu.fpu.st(0);
@@ -12142,18 +12142,18 @@ L_0x004bb84a:
     // 004bb881  89530c                 -mov dword ptr [ebx + 0xc], edx
     app->getMemory<x86::reg32>(cpu.ebx + x86::reg32(12) /* 0xc */) = cpu.edx;
     // 004bb884  d808                   -fmul dword ptr [eax]
-    cpu.fpu.st(0) *= x86::Float(app->getMemory<float>(cpu.eax));
+    cpu.fpu.st(0) = cpu.fpu.mul(cpu.fpu.st(0), x86::Float(app->getMemory<float>(cpu.eax)));
     // 004bb886  8b5008                 -mov edx, dword ptr [eax + 8]
     cpu.edx = app->getMemory<x86::reg32>(cpu.eax + x86::reg32(8) /* 0x8 */);
     // 004bb889  d905a4005600           -fld dword ptr [0x5600a4]
     cpu.fpu.push(x86::Float(app->getMemory<float>(x86::reg32(5636260) /* 0x5600a4 */)));
     // 004bb88f  dec1                   -faddp st(1)
-    cpu.fpu.st(1) += cpu.fpu.st(0);
+    cpu.fpu.st(1) = cpu.fpu.add(cpu.fpu.st(1), cpu.fpu.st(0));
     cpu.fpu.pop();
     // 004bb891  d905a8005600           -fld dword ptr [0x5600a8]
     cpu.fpu.push(x86::Float(app->getMemory<float>(x86::reg32(5636264) /* 0x5600a8 */)));
     // 004bb897  dec2                   -faddp st(2)
-    cpu.fpu.st(2) += cpu.fpu.st(0);
+    cpu.fpu.st(2) = cpu.fpu.add(cpu.fpu.st(2), cpu.fpu.st(0));
     cpu.fpu.pop();
     // 004bb899  d91b                   -fstp dword ptr [ebx]
     app->getMemory<float>(cpu.ebx) = float(cpu.fpu.st(0));
@@ -12320,7 +12320,7 @@ L_0x004bb90e:
     // 004bb913  8b5562                 -mov edx, dword ptr [ebp + 0x62]
     cpu.edx = app->getMemory<x86::reg32>(cpu.ebp + x86::reg32(98) /* 0x62 */);
     // 004bb916  d84542                 +fadd dword ptr [ebp + 0x42]
-    cpu.fpu.st(0) += x86::Float(app->getMemory<float>(cpu.ebp + x86::reg32(66) /* 0x42 */));
+    cpu.fpu.st(0) = cpu.fpu.add(cpu.fpu.st(0), x86::Float(app->getMemory<float>(cpu.ebp + x86::reg32(66) /* 0x42 */)));
     // 004bb919  42                     +inc edx
     {
         x86::reg32& tmp = cpu.edx;
@@ -12399,7 +12399,7 @@ L_0x004bb974:
     // 004bb977  d9c0                   -fld st(0)
     cpu.fpu.push(x86::Float(cpu.fpu.st(0)));
     // 004bb979  dc0d40015400           -fmul qword ptr [0x540140]
-    cpu.fpu.st(0) *= x86::Float(app->getMemory<double>(x86::reg32(5505344) /* 0x540140 */));
+    cpu.fpu.st(0) = cpu.fpu.mul(cpu.fpu.st(0), x86::Float(app->getMemory<double>(x86::reg32(5505344) /* 0x540140 */)));
     // 004bb97f  8b555e                 -mov edx, dword ptr [ebp + 0x5e]
     cpu.edx = app->getMemory<x86::reg32>(cpu.ebp + x86::reg32(94) /* 0x5e */);
     // 004bb982  ddd9                   -fstp st(1)
@@ -20605,7 +20605,7 @@ start:
     // 004bd409  db45fc                 -fild dword ptr [ebp - 4]
     cpu.fpu.push(x86::Float(x86::sreg32(app->getMemory<x86::reg32>(cpu.ebp + x86::reg32(-4) /* -0x4 */))));
     // 004bd40c  d80d78015400           -fmul dword ptr [0x540178]
-    cpu.fpu.st(0) *= x86::Float(app->getMemory<float>(x86::reg32(5505400) /* 0x540178 */));
+    cpu.fpu.st(0) = cpu.fpu.mul(cpu.fpu.st(0), x86::Float(app->getMemory<float>(x86::reg32(5505400) /* 0x540178 */)));
     // 004bd412  db05e0977400           -fild dword ptr [0x7497e0]
     cpu.fpu.push(x86::Float(x86::sreg32(app->getMemory<x86::reg32>(x86::reg32(7641056) /* 0x7497e0 */))));
     // 004bd418  db05d8977400           -fild dword ptr [0x7497d8]
@@ -20616,15 +20616,15 @@ start:
     // 004bd421  d955ec                 -fst dword ptr [ebp - 0x14]
     app->getMemory<float>(cpu.ebp + x86::reg32(-20) /* -0x14 */) = float(cpu.fpu.st(0));
     // 004bd424  d865f4                 -fsub dword ptr [ebp - 0xc]
-    cpu.fpu.st(0) -= x86::Float(app->getMemory<float>(cpu.ebp + x86::reg32(-12) /* -0xc */));
+    cpu.fpu.st(0) = cpu.fpu.sub(cpu.fpu.st(0), x86::Float(app->getMemory<float>(cpu.ebp + x86::reg32(-12) /* -0xc */)));
     // 004bd427  d9c0                   -fld st(0)
     cpu.fpu.push(x86::Float(cpu.fpu.st(0)));
     // 004bd429  dc0d80015400           -fmul qword ptr [0x540180]
-    cpu.fpu.st(0) *= x86::Float(app->getMemory<double>(x86::reg32(5505408) /* 0x540180 */));
+    cpu.fpu.st(0) = cpu.fpu.mul(cpu.fpu.st(0), x86::Float(app->getMemory<double>(x86::reg32(5505408) /* 0x540180 */)));
     // 004bd42f  d9c1                   -fld st(1)
     cpu.fpu.push(x86::Float(cpu.fpu.st(1)));
     // 004bd431  dc0d88015400           -fmul qword ptr [0x540188]
-    cpu.fpu.st(0) *= x86::Float(app->getMemory<double>(x86::reg32(5505416) /* 0x540188 */));
+    cpu.fpu.st(0) = cpu.fpu.mul(cpu.fpu.st(0), x86::Float(app->getMemory<double>(x86::reg32(5505416) /* 0x540188 */)));
     // 004bd437  d9ca                   -fxch st(2)
     {
         x86::Float tmp = cpu.fpu.st(0);
@@ -20632,7 +20632,7 @@ start:
         cpu.fpu.st(2) = tmp;
     }
     // 004bd439  dc0d90015400           -fmul qword ptr [0x540190]
-    cpu.fpu.st(0) *= x86::Float(app->getMemory<double>(x86::reg32(5505424) /* 0x540190 */));
+    cpu.fpu.st(0) = cpu.fpu.mul(cpu.fpu.st(0), x86::Float(app->getMemory<double>(x86::reg32(5505424) /* 0x540190 */)));
     // 004bd43f  d9cb                   -fxch st(3)
     {
         x86::Float tmp = cpu.fpu.st(0);
@@ -20651,7 +20651,7 @@ start:
         cpu.fpu.st(1) = tmp;
     }
     // 004bd44c  d8c1                   -fadd st(1)
-    cpu.fpu.st(0) += x86::Float(cpu.fpu.st(1));
+    cpu.fpu.st(0) = cpu.fpu.add(cpu.fpu.st(0), x86::Float(cpu.fpu.st(1)));
     // 004bd44e  d9ca                   -fxch st(2)
     {
         x86::Float tmp = cpu.fpu.st(0);
@@ -20659,7 +20659,7 @@ start:
         cpu.fpu.st(2) = tmp;
     }
     // 004bd450  d8c1                   -fadd st(1)
-    cpu.fpu.st(0) += x86::Float(cpu.fpu.st(1));
+    cpu.fpu.st(0) = cpu.fpu.add(cpu.fpu.st(0), x86::Float(cpu.fpu.st(1)));
     // 004bd452  d9cb                   -fxch st(3)
     {
         x86::Float tmp = cpu.fpu.st(0);
@@ -20667,7 +20667,7 @@ start:
         cpu.fpu.st(3) = tmp;
     }
     // 004bd454  dec1                   -faddp st(1)
-    cpu.fpu.st(1) += cpu.fpu.st(0);
+    cpu.fpu.st(1) = cpu.fpu.add(cpu.fpu.st(1), cpu.fpu.st(0));
     cpu.fpu.pop();
     // 004bd456  d9c9                   -fxch st(1)
     {
@@ -20712,31 +20712,31 @@ start:
     // 004bd46f  d945f0                 +fld dword ptr [ebp - 0x10]
     cpu.fpu.push(x86::Float(app->getMemory<float>(cpu.ebp + x86::reg32(-16) /* -0x10 */)));
     // 004bd472  d845f4                 +fadd dword ptr [ebp - 0xc]
-    cpu.fpu.st(0) += x86::Float(app->getMemory<float>(cpu.ebp + x86::reg32(-12) /* -0xc */));
+    cpu.fpu.st(0) = cpu.fpu.add(cpu.fpu.st(0), x86::Float(app->getMemory<float>(cpu.ebp + x86::reg32(-12) /* -0xc */)));
     // 004bd475  eb16                   -jmp 0x4bd48d
     goto L_0x004bd48d;
   case 0x004bd477:
     // 004bd477  d945e8                 +fld dword ptr [ebp - 0x18]
     cpu.fpu.push(x86::Float(app->getMemory<float>(cpu.ebp + x86::reg32(-24) /* -0x18 */)));
     // 004bd47a  d845f0                 +fadd dword ptr [ebp - 0x10]
-    cpu.fpu.st(0) += x86::Float(app->getMemory<float>(cpu.ebp + x86::reg32(-16) /* -0x10 */));
+    cpu.fpu.st(0) = cpu.fpu.add(cpu.fpu.st(0), x86::Float(app->getMemory<float>(cpu.ebp + x86::reg32(-16) /* -0x10 */)));
     // 004bd47d  eb0e                   -jmp 0x4bd48d
     goto L_0x004bd48d;
   case 0x004bd47f:
     // 004bd47f  d945e4                 +fld dword ptr [ebp - 0x1c]
     cpu.fpu.push(x86::Float(app->getMemory<float>(cpu.ebp + x86::reg32(-28) /* -0x1c */)));
     // 004bd482  d845e8                 +fadd dword ptr [ebp - 0x18]
-    cpu.fpu.st(0) += x86::Float(app->getMemory<float>(cpu.ebp + x86::reg32(-24) /* -0x18 */));
+    cpu.fpu.st(0) = cpu.fpu.add(cpu.fpu.st(0), x86::Float(app->getMemory<float>(cpu.ebp + x86::reg32(-24) /* -0x18 */)));
     // 004bd485  eb06                   -jmp 0x4bd48d
     goto L_0x004bd48d;
   case 0x004bd487:
     // 004bd487  d945ec                 -fld dword ptr [ebp - 0x14]
     cpu.fpu.push(x86::Float(app->getMemory<float>(cpu.ebp + x86::reg32(-20) /* -0x14 */)));
     // 004bd48a  d845e4                 -fadd dword ptr [ebp - 0x1c]
-    cpu.fpu.st(0) += x86::Float(app->getMemory<float>(cpu.ebp + x86::reg32(-28) /* -0x1c */));
+    cpu.fpu.st(0) = cpu.fpu.add(cpu.fpu.st(0), x86::Float(app->getMemory<float>(cpu.ebp + x86::reg32(-28) /* -0x1c */)));
 L_0x004bd48d:
     // 004bd48d  d80d78015400           -fmul dword ptr [0x540178]
-    cpu.fpu.st(0) *= x86::Float(app->getMemory<float>(x86::reg32(5505400) /* 0x540178 */));
+    cpu.fpu.st(0) = cpu.fpu.mul(cpu.fpu.st(0), x86::Float(app->getMemory<float>(x86::reg32(5505400) /* 0x540178 */)));
     // 004bd493  d95df8                 -fstp dword ptr [ebp - 8]
     app->getMemory<float>(cpu.ebp + x86::reg32(-8) /* -0x8 */) = float(cpu.fpu.st(0));
     cpu.fpu.pop();
@@ -20994,15 +20994,15 @@ L_0x004bd575:
     // 004bd582  d945ec                 +fld dword ptr [ebp - 0x14]
     cpu.fpu.push(x86::Float(app->getMemory<float>(cpu.ebp + x86::reg32(-20) /* -0x14 */)));
     // 004bd585  d8e1                   +fsub st(1)
-    cpu.fpu.st(0) -= x86::Float(cpu.fpu.st(1));
+    cpu.fpu.st(0) = cpu.fpu.sub(cpu.fpu.st(0), x86::Float(cpu.fpu.st(1)));
     // 004bd587  d9c0                   +fld st(0)
     cpu.fpu.push(x86::Float(cpu.fpu.st(0)));
     // 004bd589  dc0d98015400           +fmul qword ptr [0x540198]
-    cpu.fpu.st(0) *= x86::Float(app->getMemory<double>(x86::reg32(5505432) /* 0x540198 */));
+    cpu.fpu.st(0) = cpu.fpu.mul(cpu.fpu.st(0), x86::Float(app->getMemory<double>(x86::reg32(5505432) /* 0x540198 */)));
     // 004bd58f  d9c1                   +fld st(1)
     cpu.fpu.push(x86::Float(cpu.fpu.st(1)));
     // 004bd591  dc0da0015400           +fmul qword ptr [0x5401a0]
-    cpu.fpu.st(0) *= x86::Float(app->getMemory<double>(x86::reg32(5505440) /* 0x5401a0 */));
+    cpu.fpu.st(0) = cpu.fpu.mul(cpu.fpu.st(0), x86::Float(app->getMemory<double>(x86::reg32(5505440) /* 0x5401a0 */)));
     // 004bd597  d9ca                   +fxch st(2)
     {
         x86::Float tmp = cpu.fpu.st(0);
@@ -21010,7 +21010,7 @@ L_0x004bd575:
         cpu.fpu.st(2) = tmp;
     }
     // 004bd599  dc0da8015400           +fmul qword ptr [0x5401a8]
-    cpu.fpu.st(0) *= x86::Float(app->getMemory<double>(x86::reg32(5505448) /* 0x5401a8 */));
+    cpu.fpu.st(0) = cpu.fpu.mul(cpu.fpu.st(0), x86::Float(app->getMemory<double>(x86::reg32(5505448) /* 0x5401a8 */)));
     // 004bd59f  d945f8                 +fld dword ptr [ebp - 8]
     cpu.fpu.push(x86::Float(app->getMemory<float>(cpu.ebp + x86::reg32(-8) /* -0x8 */)));
     // 004bd5a2  d9ca                   +fxch st(2)
@@ -21020,7 +21020,7 @@ L_0x004bd575:
         cpu.fpu.st(2) = tmp;
     }
     // 004bd5a4  d8c4                   +fadd st(4)
-    cpu.fpu.st(0) += x86::Float(cpu.fpu.st(4));
+    cpu.fpu.st(0) = cpu.fpu.add(cpu.fpu.st(0), x86::Float(cpu.fpu.st(4)));
     // 004bd5a6  d9cb                   +fxch st(3)
     {
         x86::Float tmp = cpu.fpu.st(0);
@@ -21028,7 +21028,7 @@ L_0x004bd575:
         cpu.fpu.st(3) = tmp;
     }
     // 004bd5a8  d8c4                   +fadd st(4)
-    cpu.fpu.st(0) += x86::Float(cpu.fpu.st(4));
+    cpu.fpu.st(0) = cpu.fpu.add(cpu.fpu.st(0), x86::Float(cpu.fpu.st(4)));
     // 004bd5aa  d9c9                   +fxch st(1)
     {
         x86::Float tmp = cpu.fpu.st(0);
@@ -21036,7 +21036,7 @@ L_0x004bd575:
         cpu.fpu.st(1) = tmp;
     }
     // 004bd5ac  dec4                   +faddp st(4)
-    cpu.fpu.st(4) += cpu.fpu.st(0);
+    cpu.fpu.st(4) = cpu.fpu.add(cpu.fpu.st(4), cpu.fpu.st(0));
     cpu.fpu.pop();
     // 004bd5ae  d95de4                 +fstp dword ptr [ebp - 0x1c]
     app->getMemory<float>(cpu.ebp + x86::reg32(-28) /* -0x1c */) = float(cpu.fpu.st(0));
@@ -26426,13 +26426,13 @@ L_0x004be6a1:
     // 004be7e9  d9c0                   -fld st(0)
     cpu.fpu.push(x86::Float(cpu.fpu.st(0)));
     // 004be7eb  d88a04bd6f00           -fmul dword ptr [edx + 0x6fbd04]
-    cpu.fpu.st(0) *= x86::Float(app->getMemory<float>(cpu.edx + x86::reg32(7322884) /* 0x6fbd04 */));
+    cpu.fpu.st(0) = cpu.fpu.mul(cpu.fpu.st(0), x86::Float(app->getMemory<float>(cpu.edx + x86::reg32(7322884) /* 0x6fbd04 */)));
     // 004be7f1  db45f8                 -fild dword ptr [ebp - 8]
     cpu.fpu.push(x86::Float(x86::sreg32(app->getMemory<x86::reg32>(cpu.ebp + x86::reg32(-8) /* -0x8 */))));
     // 004be7f4  d9c0                   -fld st(0)
     cpu.fpu.push(x86::Float(cpu.fpu.st(0)));
     // 004be7f6  d88a10bd6f00           -fmul dword ptr [edx + 0x6fbd10]
-    cpu.fpu.st(0) *= x86::Float(app->getMemory<float>(cpu.edx + x86::reg32(7322896) /* 0x6fbd10 */));
+    cpu.fpu.st(0) = cpu.fpu.mul(cpu.fpu.st(0), x86::Float(app->getMemory<float>(cpu.edx + x86::reg32(7322896) /* 0x6fbd10 */)));
     // 004be7fc  d9cb                   -fxch st(3)
     {
         x86::Float tmp = cpu.fpu.st(0);
@@ -26440,7 +26440,7 @@ L_0x004be6a1:
         cpu.fpu.st(3) = tmp;
     }
     // 004be7fe  d88a0cbd6f00           -fmul dword ptr [edx + 0x6fbd0c]
-    cpu.fpu.st(0) *= x86::Float(app->getMemory<float>(cpu.edx + x86::reg32(7322892) /* 0x6fbd0c */));
+    cpu.fpu.st(0) = cpu.fpu.mul(cpu.fpu.st(0), x86::Float(app->getMemory<float>(cpu.edx + x86::reg32(7322892) /* 0x6fbd0c */)));
     // 004be804  d9c9                   -fxch st(1)
     {
         x86::Float tmp = cpu.fpu.st(0);
@@ -26448,7 +26448,7 @@ L_0x004be6a1:
         cpu.fpu.st(1) = tmp;
     }
     // 004be806  d88a08bd6f00           -fmul dword ptr [edx + 0x6fbd08]
-    cpu.fpu.st(0) *= x86::Float(app->getMemory<float>(cpu.edx + x86::reg32(7322888) /* 0x6fbd08 */));
+    cpu.fpu.st(0) = cpu.fpu.mul(cpu.fpu.st(0), x86::Float(app->getMemory<float>(cpu.edx + x86::reg32(7322888) /* 0x6fbd08 */)));
     // 004be80c  89c2                   -mov edx, eax
     cpu.edx = cpu.eax;
     // 004be80e  c1fa1f                 -sar edx, 0x1f

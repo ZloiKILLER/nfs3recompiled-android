@@ -10419,7 +10419,7 @@ L_0x004f80fa:
     // 004f80fa  d9ea                   -fldl2e 
     cpu.fpu.push(1.4426950408889634);
     // 004f80fc  dec9                   -fmulp st(1)
-    cpu.fpu.st(1) *= cpu.fpu.st(0);
+    cpu.fpu.st(1) = cpu.fpu.mul(cpu.fpu.st(1), cpu.fpu.st(0));
     cpu.fpu.pop();
     // 004f80fe  d9c0                   -fld st(0)
     cpu.fpu.push(x86::Float(cpu.fpu.st(0)));
@@ -10432,13 +10432,13 @@ L_0x004f80fa:
         cpu.fpu.st(1) = tmp;
     }
     // 004f8104  d8e1                   -fsub st(1)
-    cpu.fpu.st(0) -= x86::Float(cpu.fpu.st(1));
+    cpu.fpu.st(0) = cpu.fpu.sub(cpu.fpu.st(0), x86::Float(cpu.fpu.st(1)));
     // 004f8106  d9f0                   -f2xm1 
     cpu.fpu.st(0) = cpu.fpu.f2xm1(cpu.fpu.st(0));
     // 004f8108  d9e8                   -fld1 
     cpu.fpu.push(1.0);
     // 004f810a  dec1                   -faddp st(1)
-    cpu.fpu.st(1) += cpu.fpu.st(0);
+    cpu.fpu.st(1) = cpu.fpu.add(cpu.fpu.st(1), cpu.fpu.st(0));
     cpu.fpu.pop();
     // 004f810c  d9fd                   -fscale 
     cpu.fpu.st(0) = cpu.fpu.scale(cpu.fpu.st(0), cpu.fpu.st(1));
@@ -10565,7 +10565,7 @@ L_0x004f80fa:
     // 004f80fa  d9ea                   -fldl2e 
     cpu.fpu.push(1.4426950408889634);
     // 004f80fc  dec9                   -fmulp st(1)
-    cpu.fpu.st(1) *= cpu.fpu.st(0);
+    cpu.fpu.st(1) = cpu.fpu.mul(cpu.fpu.st(1), cpu.fpu.st(0));
     cpu.fpu.pop();
     // 004f80fe  d9c0                   -fld st(0)
     cpu.fpu.push(x86::Float(cpu.fpu.st(0)));
@@ -10578,13 +10578,13 @@ L_0x004f80fa:
         cpu.fpu.st(1) = tmp;
     }
     // 004f8104  d8e1                   -fsub st(1)
-    cpu.fpu.st(0) -= x86::Float(cpu.fpu.st(1));
+    cpu.fpu.st(0) = cpu.fpu.sub(cpu.fpu.st(0), x86::Float(cpu.fpu.st(1)));
     // 004f8106  d9f0                   -f2xm1 
     cpu.fpu.st(0) = cpu.fpu.f2xm1(cpu.fpu.st(0));
     // 004f8108  d9e8                   -fld1 
     cpu.fpu.push(1.0);
     // 004f810a  dec1                   -faddp st(1)
-    cpu.fpu.st(1) += cpu.fpu.st(0);
+    cpu.fpu.st(1) = cpu.fpu.add(cpu.fpu.st(1), cpu.fpu.st(0));
     cpu.fpu.pop();
     // 004f810c  d9fd                   -fscale 
     cpu.fpu.st(0) = cpu.fpu.scale(cpu.fpu.st(0), cpu.fpu.st(1));
@@ -10711,7 +10711,7 @@ L_0x004f80fa:
     // 004f80fa  d9ea                   -fldl2e 
     cpu.fpu.push(1.4426950408889634);
     // 004f80fc  dec9                   -fmulp st(1)
-    cpu.fpu.st(1) *= cpu.fpu.st(0);
+    cpu.fpu.st(1) = cpu.fpu.mul(cpu.fpu.st(1), cpu.fpu.st(0));
     cpu.fpu.pop();
     // 004f80fe  d9c0                   -fld st(0)
     cpu.fpu.push(x86::Float(cpu.fpu.st(0)));
@@ -10724,13 +10724,13 @@ L_0x004f80fa:
         cpu.fpu.st(1) = tmp;
     }
     // 004f8104  d8e1                   -fsub st(1)
-    cpu.fpu.st(0) -= x86::Float(cpu.fpu.st(1));
+    cpu.fpu.st(0) = cpu.fpu.sub(cpu.fpu.st(0), x86::Float(cpu.fpu.st(1)));
     // 004f8106  d9f0                   -f2xm1 
     cpu.fpu.st(0) = cpu.fpu.f2xm1(cpu.fpu.st(0));
     // 004f8108  d9e8                   -fld1 
     cpu.fpu.push(1.0);
     // 004f810a  dec1                   -faddp st(1)
-    cpu.fpu.st(1) += cpu.fpu.st(0);
+    cpu.fpu.st(1) = cpu.fpu.add(cpu.fpu.st(1), cpu.fpu.st(0));
     cpu.fpu.pop();
     // 004f810c  d9fd                   -fscale 
     cpu.fpu.st(0) = cpu.fpu.scale(cpu.fpu.st(0), cpu.fpu.st(1));

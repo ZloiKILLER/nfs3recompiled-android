@@ -30,13 +30,13 @@ import java.util.Locale;
  * difference it regenerates all three tables.  So the list is written too,
  * describing exactly the two slots the port reports, and the tables survive.
  */
-final class ControlProfile
+public final class ControlProfile
 {
     /** GAMEPADS: the pads drive, steering and pedals on their axes, and the
      *  on-screen controls reach those axes through the port.  TOUCH: the
      *  on-screen controls drive, as the keyboard they really are.  KEYBOARD:
      *  the game's own defaults, for a player who wants them. */
-    enum Kind { GAMEPADS, TOUCH, KEYBOARD }
+    public enum Kind { GAMEPADS, TOUCH, KEYBOARD }
 
     /** There is no settings file to write into: the game creates it the first
      *  time it runs. */

@@ -72,7 +72,6 @@ final class GamePreferences
      * GameHaptics' own. */
     static final String TOUCH_VIBRATION = "touch_vibration";
     static final String TOUCH_HIDE_SECONDS = "touch_hide_seconds";
-    static final String TOUCH_HIDE_FULL = "touch_hide_full";
     /* Whether a control dragged in the layout editor lands on its grid
      * (TouchLayout.GRID).  On unless switched off. */
     static final String TOUCH_SNAP = "touch_editor_snap";

@@ -40,6 +40,7 @@
  <string name="sample_bright">Día</string>
  <string name="back_to_launcher">Atrás</string>
  <string name="switch_data">Activar</string>
+ <string name="data_change">Cambiar…</string>
  <string name="delete">Eliminar</string>
  <string name="import_folder">Importar carpeta…</string>
  <string name="import_zip">Importar ZIP…</string>
@@ -116,7 +117,6 @@
 
  <string name="pref_phone_vibration">Vibración del teléfono (efectos del juego; reinicia el juego)</string>
  <string name="pref_show_gears">Mostrar los botones de marcha − / +</string>
- <string name="pref_hide_full">Ocultar por completo (si no, silueta tenue)</string>
  <string name="auto_hide_delay">Retardo de ocultación: %1$d s</string>
  <string name="editor_button_size">Botón: %1$d%%</string>
  <string name="editor_reset_title">¿Restablecer esta disposición?</string>
@@ -145,7 +145,7 @@
  <string name="faq_mouse"><b>¿Cómo funcionan los menús?</b>\nTocándolos. Donde pones el dedo va el puntero del juego, así que un toque pulsa el elemento que hay debajo y un control deslizante sigue al dedo que lo arrastra. El botón o el gesto Atrás del teléfono es Escape y, cuando el juego pide un nombre, el teclado del teléfono se abre solo; con el teclado abierto, Atrás lo cierra.</string>
  <string name="faq_size"><b>¿Qué cambia el tamaño?</b>\nEl tamaño de los botones escala los controles predeterminados. En Editar posiciones y tamaños arrastra un control y cambia su tamaño con el deslizador de tamaño; un control responde exactamente donde se dibuja y los porcentajes son relativos al control predeterminado. Los cambios se guardan solos. El editor muestra una cuadrícula; con Ajustar a la cuadrícula activado, el control arrastrado encaja en ella.</string>
  <string name="faq_edges"><b>Bordes y posición vertical</b>\nLa distancia a los bordes desplaza los controles predeterminados hacia dentro. Se respetan los recortes del sistema. Los controles colocados a mano conservan sus posiciones guardadas.</string>
- <string name="faq_hiding"><b>Opacidad y ocultación automática</b>\nLa opacidad fija la visibilidad normal. La ocultación automática empieza cuando se levantan todos los dedos, tras un retardo de 1 a 30 segundos. Elige una silueta tenue o la invisibilidad completa. Los botones ocultos siguen respondiendo al primer toque y vuelven a hacerse visibles. Mantener pulsado un control impide la ocultación. Pulsar el mando del jugador 1 oculta los controles al instante; el siguiente toque los devuelve. El mando del jugador 2 no los toca, así que uno puede conducir en la pantalla mientras el otro juega con mando.</string>
+ <string name="faq_hiding"><b>Opacidad y ocultación automática</b>\nLa opacidad fija la visibilidad normal. La ocultación automática empieza cuando se levantan todos los dedos, tras un retardo de 1 a 30 segundos. Los botones ocultos siguen respondiendo al primer toque y vuelven a hacerse visibles. Mantener pulsado un control impide la ocultación. Pulsar el mando del jugador 1 oculta los controles al instante; el siguiente toque los devuelve. El mando del jugador 2 no los toca, así que uno puede conducir en la pantalla mientras el otro juega con mando.</string>
  <string name="faq_vibration"><b>Vibración</b>\nLos efectos Force Feedback del juego llegan al teléfono y al mando 1. El juego solo maneja un dispositivo de force feedback, así que el mando 2 nunca vibra. La vibración del teléfono se activa o desactiva en Controles → Táctil. La vibración del mando está desactivada hasta que se activa en Controles → Mandos; su intensidad se ajusta en el propio juego: Options → Controllers → Force Feedback. Los efectos vienen del juego, nunca de pulsar botones.</string>
  <string name="faq_mapping"><b>Mandos</b>\nEl juego siempre ve dos mandos: el mando 1 es el jugador 1 junto con los controles táctiles, el mando 2 es el jugador 2. En Controles → Mandos elige qué mando es cuál pulsando un botón en él y configura qué hace cada botón; después pulsa una vez Mando ACTIVADO, que escribe los controles correspondientes en los ajustes del juego y guarda una copia del archivo anterior. El stick izquierdo gira y los gatillos aceleran y frenan. El mando tiene dos juegos de botones, igual que los controles táctiles tienen dos disposiciones: el de carrera que configuras aquí y uno fijo para los menús y las repeticiones, donde Cross / A confirma, Circle / B vuelve atrás y la cruceta mueve la selección. Para jugar con teclado, escribe en su lugar Predeterminado del juego.</string>
  <string name="faq_lights"><b>Luces y recuperación</b>\n☼ envía L. ↻ envía R para volver a la pista. Las teclas se pueden cambiar en Controles → Táctil → Teclas.</string>
@@ -164,7 +164,6 @@
  <string name="controls_write_failed">No se pudieron escribir los controles: %1$s</string>
  <string name="gamepads_keyboard_note">El juego está puesto en su propio control por teclado (Predeterminado del juego). Los mandos no hacen nada en las carreras a pantalla dividida hasta que pulses Mando ACTIVADO.</string>
  <string name="pref_touch_enabled">Usar controles táctiles</string>
- <string name="touch_enabled_note">Desactivado: tocar la pantalla no hace nada en el juego, ni botones ni ratón táctil. Los mandos y un ratón de verdad siguen funcionando.</string>
  <string name="controls_help">Ayuda: pantalla dividida</string>
  <string name="controls_help_title">Pantalla dividida con dos mandos</string>
  <string name="help_split_setup"><b>1. Configura los mandos (una vez)</b>\nConecta los dos mandos al teléfono. En Controles → Mandos pulsa Asignar en el mando 1 y pulsa cualquier botón del mando del jugador 1; luego haz lo mismo con el mando 2. Automático también sirve: los mandos se toman en el orden en que se conectan. En Botones eliges qué hace cada botón.</string>

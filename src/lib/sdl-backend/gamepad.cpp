@@ -600,6 +600,10 @@ const ButtonBinding& buttonBinding(x86::reg32 slot, size_t button, Gamepad::Cont
         }
         return table;
     }();
+    /* Over a race the menu is the pause menu, and the button that opened it
+     * closes it: the one that is Escape while driving stays Escape. */
+    if (context == Gamepad::Context::Pause && s_bindings[slot][0][button].scancode == SDL_SCANCODE_ESCAPE)
+        return s_bindings[slot][0][button];
     return s_bindings[slot][context == Gamepad::Context::Race ? 0 : 1][button];
 }
 

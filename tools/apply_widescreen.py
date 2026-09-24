@@ -56,8 +56,7 @@ SITES = [
      " app->getMemory<x86::reg32>(cpu.ebp + x86::reg32(-16)))) /* port: the saved 16:9 size is found again */",
      ""),
     ("nfs3hp.31.cpp", "004dbd1b  8945e8",
-     "    app->getMemory<x86::reg32>(cpu.ebp + x86::reg32(-24) /* -0x18 */) = cpu.eax;\n"
-     "    cpu.esi = widescreenHalfAngle(app, cpu.esi); /* port: Hor+ on a wide screen, the vertical angle as it was */",
+     "    app->getMemory<x86::reg32>(cpu.ebp + x86::reg32(-24) /* -0x18 */) = cpu.eax;",
      "    app->getMemory<x86::reg32>(cpu.ebp + x86::reg32(-24) /* -0x18 */) = cpu.eax;\n"
      "    cpu.esi = widescreenHalfAngle(app, cpu.esi, cpu.eax);"
      " /* port: the horizontal angle the view's own shape asks for */",
@@ -70,6 +69,12 @@ SITES = [
 ]
 
 NAMESPACE = "namespace nfs3hp\n{\n"
+
+# What an earlier version of this tool put after the stored vertical angle.  A
+# tree patched by it goes back to the generated code first, so that one site
+# serves a fresh disassembly and an old patch alike.
+STALE_HALF_ANGLE = ("    cpu.esi = widescreenHalfAngle(app, cpu.esi);"
+                    " /* port: Hor+ on a wide screen, the vertical angle as it was */\n")
 
 
 def apply(root):
@@ -88,6 +93,7 @@ def apply(root):
         stale = native(HEADER + "x86::reg32 widescreenHalfAngle(win32::WinApplication* app, x86::reg32 half);\n")
         if stale != declarations:
             text = text.replace(stale, "")
+        text = text.replace(eol + native(STALE_HALF_ANGLE), eol)
         if declarations not in text:
             namespace = native(NAMESPACE)
             if text.count(namespace) != 1:

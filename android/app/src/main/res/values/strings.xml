@@ -36,6 +36,7 @@
     <string name="back_to_launcher">Back</string>
 
     <string name="switch_data">Make active</string>
+    <string name="data_change">Change…</string>
     <string name="delete">Delete</string>
     <string name="import_folder">Import folder...</string>
     <string name="import_zip">Import ZIP...</string>

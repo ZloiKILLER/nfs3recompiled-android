@@ -1978,7 +1978,7 @@ void Application::sub_50ea4e(WinApplication* app, x86::CPU& cpu)
     sub_4dfd56(app, cpu);
     if (cpu.terminate) return;
     // 0050ea5a  dce9                   -fsub st(1), st(0)
-    cpu.fpu.st(1) -= x86::Float(cpu.fpu.st(0));
+    cpu.fpu.st(1) = cpu.fpu.sub(cpu.fpu.st(1), x86::Float(cpu.fpu.st(0)));
     // 0050ea5c  8b442410               -mov eax, dword ptr [esp + 0x10]
     cpu.eax = app->getMemory<x86::reg32>(cpu.esp + x86::reg32(16) /* 0x10 */);
     // 0050ea60  dd18                   -fstp qword ptr [eax]
@@ -9827,7 +9827,7 @@ void Application::sub_510a50(WinApplication* app, x86::CPU& cpu)
     // 00510aa4  d9c0                   -fld st(0)
     cpu.fpu.push(x86::Float(cpu.fpu.st(0)));
     // 00510aa6  d80d00ce5600           -fmul dword ptr [0x56ce00]
-    cpu.fpu.st(0) *= x86::Float(app->getMemory<float>(x86::reg32(5688832) /* 0x56ce00 */));
+    cpu.fpu.st(0) = cpu.fpu.mul(cpu.fpu.st(0), x86::Float(app->getMemory<float>(x86::reg32(5688832) /* 0x56ce00 */)));
     // 00510aac  d9ca                   -fxch st(2)
     {
         x86::Float tmp = cpu.fpu.st(0);
@@ -9835,9 +9835,9 @@ void Application::sub_510a50(WinApplication* app, x86::CPU& cpu)
         cpu.fpu.st(2) = tmp;
     }
     // 00510aae  dcc1                   -fadd st(1), st(0)
-    cpu.fpu.st(1) += x86::Float(cpu.fpu.st(0));
+    cpu.fpu.st(1) = cpu.fpu.add(cpu.fpu.st(1), x86::Float(cpu.fpu.st(0)));
     // 00510ab0  d80dfccd5600           -fmul dword ptr [0x56cdfc]
-    cpu.fpu.st(0) *= x86::Float(app->getMemory<float>(x86::reg32(5688828) /* 0x56cdfc */));
+    cpu.fpu.st(0) = cpu.fpu.mul(cpu.fpu.st(0), x86::Float(app->getMemory<float>(x86::reg32(5688828) /* 0x56cdfc */)));
     // 00510ab6  d9c9                   -fxch st(1)
     {
         x86::Float tmp = cpu.fpu.st(0);
@@ -9845,16 +9845,16 @@ void Application::sub_510a50(WinApplication* app, x86::CPU& cpu)
         cpu.fpu.st(1) = tmp;
     }
     // 00510ab8  d80d04ce5600           -fmul dword ptr [0x56ce04]
-    cpu.fpu.st(0) *= x86::Float(app->getMemory<float>(x86::reg32(5688836) /* 0x56ce04 */));
+    cpu.fpu.st(0) = cpu.fpu.mul(cpu.fpu.st(0), x86::Float(app->getMemory<float>(x86::reg32(5688836) /* 0x56ce04 */)));
     // 00510abe  f72df8cd5600           -imul dword ptr [0x56cdf8]
     cpu.edx_eax = x86::reg64(x86::sreg64(static_cast<x86::sreg32>(cpu.eax)) * x86::sreg64(x86::sreg32(app->getMemory<x86::reg32>(x86::reg32(5688824) /* 0x56cdf8 */))));
     // 00510ac4  dcc1                   -fadd st(1), st(0)
-    cpu.fpu.st(1) += x86::Float(cpu.fpu.st(0));
+    cpu.fpu.st(1) = cpu.fpu.add(cpu.fpu.st(1), x86::Float(cpu.fpu.st(0)));
     // 00510ac6  deea                   -fsubp st(2)
-    cpu.fpu.st(2) -= cpu.fpu.st(0);
+    cpu.fpu.st(2) = cpu.fpu.sub(cpu.fpu.st(2), cpu.fpu.st(0));
     cpu.fpu.pop();
     // 00510ac8  d80508ce5600           -fadd dword ptr [0x56ce08]
-    cpu.fpu.st(0) += x86::Float(app->getMemory<float>(x86::reg32(5688840) /* 0x56ce08 */));
+    cpu.fpu.st(0) = cpu.fpu.add(cpu.fpu.st(0), x86::Float(app->getMemory<float>(x86::reg32(5688840) /* 0x56ce08 */)));
     // 00510ace  d9c9                   -fxch st(1)
     {
         x86::Float tmp = cpu.fpu.st(0);
@@ -9862,7 +9862,7 @@ void Application::sub_510a50(WinApplication* app, x86::CPU& cpu)
         cpu.fpu.st(1) = tmp;
     }
     // 00510ad0  d80508ce5600           -fadd dword ptr [0x56ce08]
-    cpu.fpu.st(0) += x86::Float(app->getMemory<float>(x86::reg32(5688840) /* 0x56ce08 */));
+    cpu.fpu.st(0) = cpu.fpu.add(cpu.fpu.st(0), x86::Float(app->getMemory<float>(x86::reg32(5688840) /* 0x56ce08 */)));
     // 00510ad6  8b4608                 -mov eax, dword ptr [esi + 8]
     cpu.eax = app->getMemory<x86::reg32>(cpu.esi + x86::reg32(8) /* 0x8 */);
     // 00510ad9  8b5e18                 -mov ebx, dword ptr [esi + 0x18]
@@ -10024,7 +10024,7 @@ void Application::sub_510bb3(WinApplication* app, x86::CPU& cpu)
     // 00510be6  d9c0                   -fld st(0)
     cpu.fpu.push(x86::Float(cpu.fpu.st(0)));
     // 00510be8  d80d00ce5600           -fmul dword ptr [0x56ce00]
-    cpu.fpu.st(0) *= x86::Float(app->getMemory<float>(x86::reg32(5688832) /* 0x56ce00 */));
+    cpu.fpu.st(0) = cpu.fpu.mul(cpu.fpu.st(0), x86::Float(app->getMemory<float>(x86::reg32(5688832) /* 0x56ce00 */)));
     // 00510bee  d9ca                   -fxch st(2)
     {
         x86::Float tmp = cpu.fpu.st(0);
@@ -10032,9 +10032,9 @@ void Application::sub_510bb3(WinApplication* app, x86::CPU& cpu)
         cpu.fpu.st(2) = tmp;
     }
     // 00510bf0  dcc1                   -fadd st(1), st(0)
-    cpu.fpu.st(1) += x86::Float(cpu.fpu.st(0));
+    cpu.fpu.st(1) = cpu.fpu.add(cpu.fpu.st(1), x86::Float(cpu.fpu.st(0)));
     // 00510bf2  d80dfccd5600           -fmul dword ptr [0x56cdfc]
-    cpu.fpu.st(0) *= x86::Float(app->getMemory<float>(x86::reg32(5688828) /* 0x56cdfc */));
+    cpu.fpu.st(0) = cpu.fpu.mul(cpu.fpu.st(0), x86::Float(app->getMemory<float>(x86::reg32(5688828) /* 0x56cdfc */)));
     // 00510bf8  d9c9                   -fxch st(1)
     {
         x86::Float tmp = cpu.fpu.st(0);
@@ -10042,16 +10042,16 @@ void Application::sub_510bb3(WinApplication* app, x86::CPU& cpu)
         cpu.fpu.st(1) = tmp;
     }
     // 00510bfa  d80d04ce5600           -fmul dword ptr [0x56ce04]
-    cpu.fpu.st(0) *= x86::Float(app->getMemory<float>(x86::reg32(5688836) /* 0x56ce04 */));
+    cpu.fpu.st(0) = cpu.fpu.mul(cpu.fpu.st(0), x86::Float(app->getMemory<float>(x86::reg32(5688836) /* 0x56ce04 */)));
     // 00510c00  f72df8cd5600           -imul dword ptr [0x56cdf8]
     cpu.edx_eax = x86::reg64(x86::sreg64(static_cast<x86::sreg32>(cpu.eax)) * x86::sreg64(x86::sreg32(app->getMemory<x86::reg32>(x86::reg32(5688824) /* 0x56cdf8 */))));
     // 00510c06  dcc1                   -fadd st(1), st(0)
-    cpu.fpu.st(1) += x86::Float(cpu.fpu.st(0));
+    cpu.fpu.st(1) = cpu.fpu.add(cpu.fpu.st(1), x86::Float(cpu.fpu.st(0)));
     // 00510c08  deea                   -fsubp st(2)
-    cpu.fpu.st(2) -= cpu.fpu.st(0);
+    cpu.fpu.st(2) = cpu.fpu.sub(cpu.fpu.st(2), cpu.fpu.st(0));
     cpu.fpu.pop();
     // 00510c0a  d80508ce5600           -fadd dword ptr [0x56ce08]
-    cpu.fpu.st(0) += x86::Float(app->getMemory<float>(x86::reg32(5688840) /* 0x56ce08 */));
+    cpu.fpu.st(0) = cpu.fpu.add(cpu.fpu.st(0), x86::Float(app->getMemory<float>(x86::reg32(5688840) /* 0x56ce08 */)));
     // 00510c10  d9c9                   -fxch st(1)
     {
         x86::Float tmp = cpu.fpu.st(0);
@@ -10059,7 +10059,7 @@ void Application::sub_510bb3(WinApplication* app, x86::CPU& cpu)
         cpu.fpu.st(1) = tmp;
     }
     // 00510c12  d80508ce5600           -fadd dword ptr [0x56ce08]
-    cpu.fpu.st(0) += x86::Float(app->getMemory<float>(x86::reg32(5688840) /* 0x56ce08 */));
+    cpu.fpu.st(0) = cpu.fpu.add(cpu.fpu.st(0), x86::Float(app->getMemory<float>(x86::reg32(5688840) /* 0x56ce08 */)));
     // 00510c18  8b4608                 -mov eax, dword ptr [esi + 8]
     cpu.eax = app->getMemory<x86::reg32>(cpu.esi + x86::reg32(8) /* 0x8 */);
     // 00510c1b  8b5e18                 -mov ebx, dword ptr [esi + 0x18]

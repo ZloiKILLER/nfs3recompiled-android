@@ -1606,8 +1606,11 @@ void layoutTick(win32::WinApplication* app)
     /* The pads follow the same signal as the on-screen controls: their buttons
      * are the racing ones while a race is being driven, and the menu's -- one
      * to confirm, one to go back, the D-pad to move -- everywhere else, a
-     * replay included. */
-    win32::Gamepad::context(driving ? win32::Gamepad::Context::Race : win32::Gamepad::Context::Menu);
+     * replay included.  With the menu open over a race the button that opened
+     * it closes it too (Gamepad::Context::Pause). */
+    const bool paused = nfs3hp::raceIsRunning() && app->getMemory<x86::reg32>(0x7a3d10) != 0;
+    win32::Gamepad::context(driving ? win32::Gamepad::Context::Race
+                            : paused ? win32::Gamepad::Context::Pause : win32::Gamepad::Context::Menu);
     if (last == int(driving))
         return;
 #ifdef __ANDROID__

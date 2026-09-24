@@ -40,6 +40,7 @@
  <string name="sample_bright">Gündüz</string>
  <string name="back_to_launcher">Geri</string>
  <string name="switch_data">Etkinleştir</string>
+ <string name="data_change">Değiştir…</string>
  <string name="delete">Sil</string>
  <string name="import_folder">Klasör içe aktar…</string>
  <string name="import_zip">ZIP içe aktar…</string>
@@ -116,7 +117,6 @@
 
  <string name="pref_phone_vibration">Telefon titreşimi (oyun efektleri; oyunu yeniden başlat)</string>
  <string name="pref_show_gears">Vites düğmelerini − / + göster</string>
- <string name="pref_hide_full">Tamamen gizle (yoksa soluk siluet)</string>
  <string name="auto_hide_delay">Gecikme: %1$d sn</string>
  <string name="editor_button_size">Düğme: %1$d%%</string>
  <string name="editor_reset_title">Bu yerleşim sıfırlansın mı?</string>
@@ -145,7 +145,7 @@
  <string name="faq_mouse"><b>Menüler nasıl çalışır?</b>\nDokunarak. Parmağını nereye koyarsan oyunun imleci oraya gider; dokunuş altındaki öğeye basar, kaydırıcı da onu sürükleyen parmağı izler. Telefonun Geri tuşu ya da hareketi Escape\'tir; oyun bir ad istediğinde telefonun klavyesi kendiliğinden açılır, klavye açıkken Geri onu kapatır.</string>
  <string name="faq_size"><b>Boyut neyi değiştirir?</b>\nDüğme boyutu varsayılan kontrolleri ölçekler. Konumları ve boyutları düzenle ekranında bir kontrolü sürükle ve boyut kaydırıcısıyla boyutunu değiştir; kontrol tam çizildiği yerde tepki verir ve yüzdeler varsayılan kontrole göredir. Değişiklikler kendiliğinden kaydedilir. Düzenleyici bir ızgara gösterir; Izgaraya hizala açıkken sürüklenen kontrol ızgaraya oturur.</string>
  <string name="faq_edges"><b>Kenarlar ve yükseklik</b>\nKenarlardan uzaklık varsayılan düğmeleri içe kaydırır. Sistem çentikleri gözetilir. Elle yerleştirilen düğmeler kayıtlı konumlarını korur.</string>
- <string name="faq_hiding"><b>Saydamlık ve otomatik gizleme</b>\nSaydamlık normal görünürlüğü belirler. Otomatik gizleme tüm parmaklar kaldırıldıktan sonra, 1–30 saniyelik gecikmeyle başlar. Soluk bir siluet ya da tam görünmezlik seç. Gizli düğmeler ilk dokunuşta zaten tepki verir ve yeniden görünür olur. Bir düğmeyi basılı tutmak gizlemeyi engeller. 1. oyuncunun kumandasında bir tuşa basmak düğmeleri hemen gizler; bir sonraki dokunuş onları geri getirir. 2. oyuncunun kumandası onlara dokunmaz, böylece biri ekrandan sürerken diğeri kumandayla oynayabilir.</string>
+ <string name="faq_hiding"><b>Saydamlık ve otomatik gizleme</b>\nSaydamlık normal görünürlüğü belirler. Otomatik gizleme tüm parmaklar kaldırıldıktan sonra, 1–30 saniyelik gecikmeyle başlar. Gizli düğmeler ilk dokunuşta zaten tepki verir ve yeniden görünür olur. Bir düğmeyi basılı tutmak gizlemeyi engeller. 1. oyuncunun kumandasında bir tuşa basmak düğmeleri hemen gizler; bir sonraki dokunuş onları geri getirir. 2. oyuncunun kumandası onlara dokunmaz, böylece biri ekrandan sürerken diğeri kumandayla oynayabilir.</string>
  <string name="faq_vibration"><b>Titreşim</b>\nOyunun Force Feedback efektleri telefona ve Kumanda 1\'e ulaşır. Oyun yalnızca bir force feedback cihazını sürer, bu yüzden Kumanda 2 hiç titreşmez. Telefon titreşimi Kontroller → Dokunma bölümünde açılıp kapatılır. Kumanda titreşimi Kontroller → Kumandalar bölümünde açılana kadar kapalıdır; gücü oyunun kendisinde ayarlanır: Options → Controllers → Force Feedback. Efektler oyundan gelir, asla düğmeye basmaktan gelmez.</string>
  <string name="faq_mapping"><b>Kumandalar</b>\nOyun her zaman iki kumanda görür: Kumanda 1, dokunmatik kontrollerle birlikte 1. oyuncudur, Kumanda 2 ise 2. oyuncudur. Kontroller → Kumandalar bölümünde üzerindeki bir düğmeye basarak hangi kumandanın hangisi olduğunu seç, her düğmenin ne yaptığını ayarla, ardından Kumanda AÇIK düğmesine bir kez bas. Bu, uygun kontrolleri oyun ayarlarına yazar ve eski dosyanın yedeğini alır. Sol çubuk direksiyonu çevirir, tetikler gaz verir ve fren yapar. Kumandanın iki düğme takımı vardır, tıpkı dokunmatik kontrollerin iki yerleşimi olduğu gibi: burada ayarladığın yarış takımı ve menülerle tekrarlar için sabit olan takım — orada Cross / A onaylar, Circle / B geri gider, yön tuşları seçimi taşır. Klavyeyle oynamak için bunun yerine Oyun varsayılanı seçeneğini yaz.</string>
  <string name="faq_lights"><b>Farlar ve piste dönüş</b>\n☼ L gönderir. ↻ piste dönmek için R gönderir. Tuşlar Kontroller → Dokunma → Tuşlar bölümünde değiştirilebilir.</string>
@@ -164,7 +164,6 @@
  <string name="controls_write_failed">Kontroller yazılamadı: %1$s</string>
  <string name="gamepads_keyboard_note">Oyun kendi klavye kontrollerine ayarlı (Oyun varsayılanı). Kumanda AÇIK düğmesine basana kadar kumandalar bölünmüş ekran yarışlarında hiçbir şey yapmaz.</string>
  <string name="pref_touch_enabled">Dokunmatik kontrolleri kullan</string>
- <string name="touch_enabled_note">Kapalıyken ekrana dokunmak oyunda hiçbir şey yapmaz; ne düğmeler ne dokunmatik fare çalışır. Kumandalar ve gerçek bir fare çalışmaya devam eder.</string>
  <string name="controls_help">Yardım: bölünmüş ekran</string>
  <string name="controls_help_title">İki kumandayla bölünmüş ekran</string>
  <string name="help_split_setup"><b>1. Kumandaları ayarla (bir kez)</b>\nİki kumandayı da telefona bağla. Kontroller → Kumandalar bölümünde Kumanda 1 altındaki Ata düğmesine bas ve 1. oyuncunun kumandasında herhangi bir düğmeye bas, sonra aynısını Kumanda 2 için yap. Otomatik de çalışır: kumandalar bağlanma sırasına göre alınır. Düğmeler bölümünde her düğmenin ne yapacağını seçersin.</string>

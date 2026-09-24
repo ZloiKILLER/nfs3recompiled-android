@@ -9940,7 +9940,7 @@ L_0x0051669d:
     // 005166c0  db2a                   -fld xword ptr [edx]
     cpu.fpu.push(x86::Float(app->getMemory<x86::IEEEf80>(cpu.edx)));
     // 005166c2  dec9                   -fmulp st(1)
-    cpu.fpu.st(1) *= cpu.fpu.st(0);
+    cpu.fpu.st(1) = cpu.fpu.mul(cpu.fpu.st(1), cpu.fpu.st(0));
     cpu.fpu.pop();
     // 005166c4  db3b                   -fstp xword ptr [ebx]
     app->getMemory<x86::IEEEf80>(cpu.ebx) = x86::Float(cpu.fpu.st(0));
@@ -10065,7 +10065,7 @@ L_0x0051669d:
     // 005166c0  db2a                   -fld xword ptr [edx]
     cpu.fpu.push(x86::Float(app->getMemory<x86::IEEEf80>(cpu.edx)));
     // 005166c2  dec9                   -fmulp st(1)
-    cpu.fpu.st(1) *= cpu.fpu.st(0);
+    cpu.fpu.st(1) = cpu.fpu.mul(cpu.fpu.st(1), cpu.fpu.st(0));
     cpu.fpu.pop();
     // 005166c4  db3b                   -fstp xword ptr [ebx]
     app->getMemory<x86::IEEEf80>(cpu.ebx) = x86::Float(cpu.fpu.st(0));
@@ -10214,7 +10214,7 @@ void Application::sub_5166d8(WinApplication* app, x86::CPU& cpu)
     // 0051672b  db2a                   +fld xword ptr [edx]
     cpu.fpu.push(x86::Float(app->getMemory<x86::IEEEf80>(cpu.edx)));
     // 0051672d  def9                   +fdivp st(1)
-    cpu.fpu.st(1) /= cpu.fpu.st(0);
+    cpu.fpu.st(1) = cpu.fpu.div(cpu.fpu.st(1), cpu.fpu.st(0));
     cpu.fpu.pop();
     // 0051672f  db3b                   +fstp xword ptr [ebx]
     app->getMemory<x86::IEEEf80>(cpu.ebx) = x86::Float(cpu.fpu.st(0));
@@ -10239,7 +10239,7 @@ L_0x00516733:
     // 00516744  db2a                   -fld xword ptr [edx]
     cpu.fpu.push(x86::Float(app->getMemory<x86::IEEEf80>(cpu.edx)));
     // 00516746  dec9                   -fmulp st(1)
-    cpu.fpu.st(1) *= cpu.fpu.st(0);
+    cpu.fpu.st(1) = cpu.fpu.mul(cpu.fpu.st(1), cpu.fpu.st(0));
     cpu.fpu.pop();
     // 00516748  db3b                   -fstp xword ptr [ebx]
     app->getMemory<x86::IEEEf80>(cpu.ebx) = x86::Float(cpu.fpu.st(0));
@@ -10698,7 +10698,7 @@ L_0x005168fe:
     // 0051691f  db2a                   -fld xword ptr [edx]
     cpu.fpu.push(x86::Float(app->getMemory<x86::IEEEf80>(cpu.edx)));
     // 00516921  def9                   -fdivp st(1)
-    cpu.fpu.st(1) /= cpu.fpu.st(0);
+    cpu.fpu.st(1) = cpu.fpu.div(cpu.fpu.st(1), cpu.fpu.st(0));
     cpu.fpu.pop();
     // 00516923  db3b                   -fstp xword ptr [ebx]
     app->getMemory<x86::IEEEf80>(cpu.ebx) = x86::Float(cpu.fpu.st(0));
@@ -10771,7 +10771,7 @@ L_0x005168fe:
     // 0051695a  db2a                   +fld xword ptr [edx]
     cpu.fpu.push(x86::Float(app->getMemory<x86::IEEEf80>(cpu.edx)));
     // 0051695c  dec9                   +fmulp st(1)
-    cpu.fpu.st(1) *= cpu.fpu.st(0);
+    cpu.fpu.st(1) = cpu.fpu.mul(cpu.fpu.st(1), cpu.fpu.st(0));
     cpu.fpu.pop();
     // 0051695e  db3b                   +fstp xword ptr [ebx]
     app->getMemory<x86::IEEEf80>(cpu.ebx) = x86::Float(cpu.fpu.st(0));
@@ -10789,7 +10789,7 @@ L_0x005168fe:
     // 00516970  db2a                   +fld xword ptr [edx]
     cpu.fpu.push(x86::Float(app->getMemory<x86::IEEEf80>(cpu.edx)));
     // 00516972  dee9                   +fsubp st(1)
-    cpu.fpu.st(1) -= cpu.fpu.st(0);
+    cpu.fpu.st(1) = cpu.fpu.sub(cpu.fpu.st(1), cpu.fpu.st(0));
     cpu.fpu.pop();
     // 00516974  db3b                   +fstp xword ptr [ebx]
     app->getMemory<x86::IEEEf80>(cpu.ebx) = x86::Float(cpu.fpu.st(0));
@@ -11027,7 +11027,7 @@ L_0x005169d2:
     // 00516a49  db2a                   -fld xword ptr [edx]
     cpu.fpu.push(x86::Float(app->getMemory<x86::IEEEf80>(cpu.edx)));
     // 00516a4b  dee9                   -fsubp st(1)
-    cpu.fpu.st(1) -= cpu.fpu.st(0);
+    cpu.fpu.st(1) = cpu.fpu.sub(cpu.fpu.st(1), cpu.fpu.st(0));
     cpu.fpu.pop();
     // 00516a4d  db3b                   -fstp xword ptr [ebx]
     app->getMemory<x86::IEEEf80>(cpu.ebx) = x86::Float(cpu.fpu.st(0));
@@ -11056,7 +11056,7 @@ L_0x005169d2:
     // 00516a70  db2a                   +fld xword ptr [edx]
     cpu.fpu.push(x86::Float(app->getMemory<x86::IEEEf80>(cpu.edx)));
     // 00516a72  dec9                   +fmulp st(1)
-    cpu.fpu.st(1) *= cpu.fpu.st(0);
+    cpu.fpu.st(1) = cpu.fpu.mul(cpu.fpu.st(1), cpu.fpu.st(0));
     cpu.fpu.pop();
     // 00516a74  db3b                   +fstp xword ptr [ebx]
     app->getMemory<x86::IEEEf80>(cpu.ebx) = x86::Float(cpu.fpu.st(0));
@@ -11425,7 +11425,7 @@ L_0x005168fe:
     // 0051691f  db2a                   -fld xword ptr [edx]
     cpu.fpu.push(x86::Float(app->getMemory<x86::IEEEf80>(cpu.edx)));
     // 00516921  def9                   -fdivp st(1)
-    cpu.fpu.st(1) /= cpu.fpu.st(0);
+    cpu.fpu.st(1) = cpu.fpu.div(cpu.fpu.st(1), cpu.fpu.st(0));
     cpu.fpu.pop();
     // 00516923  db3b                   -fstp xword ptr [ebx]
     app->getMemory<x86::IEEEf80>(cpu.ebx) = x86::Float(cpu.fpu.st(0));
@@ -11498,7 +11498,7 @@ L_0x005168fe:
     // 0051695a  db2a                   +fld xword ptr [edx]
     cpu.fpu.push(x86::Float(app->getMemory<x86::IEEEf80>(cpu.edx)));
     // 0051695c  dec9                   +fmulp st(1)
-    cpu.fpu.st(1) *= cpu.fpu.st(0);
+    cpu.fpu.st(1) = cpu.fpu.mul(cpu.fpu.st(1), cpu.fpu.st(0));
     cpu.fpu.pop();
     // 0051695e  db3b                   +fstp xword ptr [ebx]
     app->getMemory<x86::IEEEf80>(cpu.ebx) = x86::Float(cpu.fpu.st(0));
@@ -11516,7 +11516,7 @@ L_0x005168fe:
     // 00516970  db2a                   +fld xword ptr [edx]
     cpu.fpu.push(x86::Float(app->getMemory<x86::IEEEf80>(cpu.edx)));
     // 00516972  dee9                   +fsubp st(1)
-    cpu.fpu.st(1) -= cpu.fpu.st(0);
+    cpu.fpu.st(1) = cpu.fpu.sub(cpu.fpu.st(1), cpu.fpu.st(0));
     cpu.fpu.pop();
     // 00516974  db3b                   +fstp xword ptr [ebx]
     app->getMemory<x86::IEEEf80>(cpu.ebx) = x86::Float(cpu.fpu.st(0));
@@ -11755,7 +11755,7 @@ L_entry_0x005169ef:
     // 00516a49  db2a                   -fld xword ptr [edx]
     cpu.fpu.push(x86::Float(app->getMemory<x86::IEEEf80>(cpu.edx)));
     // 00516a4b  dee9                   -fsubp st(1)
-    cpu.fpu.st(1) -= cpu.fpu.st(0);
+    cpu.fpu.st(1) = cpu.fpu.sub(cpu.fpu.st(1), cpu.fpu.st(0));
     cpu.fpu.pop();
     // 00516a4d  db3b                   -fstp xword ptr [ebx]
     app->getMemory<x86::IEEEf80>(cpu.ebx) = x86::Float(cpu.fpu.st(0));
@@ -11784,7 +11784,7 @@ L_entry_0x005169ef:
     // 00516a70  db2a                   +fld xword ptr [edx]
     cpu.fpu.push(x86::Float(app->getMemory<x86::IEEEf80>(cpu.edx)));
     // 00516a72  dec9                   +fmulp st(1)
-    cpu.fpu.st(1) *= cpu.fpu.st(0);
+    cpu.fpu.st(1) = cpu.fpu.mul(cpu.fpu.st(1), cpu.fpu.st(0));
     cpu.fpu.pop();
     // 00516a74  db3b                   +fstp xword ptr [ebx]
     app->getMemory<x86::IEEEf80>(cpu.ebx) = x86::Float(cpu.fpu.st(0));

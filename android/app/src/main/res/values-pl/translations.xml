@@ -40,6 +40,7 @@
  <string name="sample_bright">Dzień</string>
  <string name="back_to_launcher">Wstecz</string>
  <string name="switch_data">Ustaw aktywny</string>
+ <string name="data_change">Zmień…</string>
  <string name="delete">Usuń</string>
  <string name="import_folder">Importuj folder…</string>
  <string name="import_zip">Importuj ZIP…</string>
@@ -116,7 +117,6 @@
 
  <string name="pref_phone_vibration">Wibracje telefonu (efekty gry; uruchom grę ponownie)</string>
  <string name="pref_show_gears">Pokaż przyciski biegów − / +</string>
- <string name="pref_hide_full">Ukryj całkowicie (inaczej blady zarys)</string>
  <string name="auto_hide_delay">Opóźnienie: %1$d s</string>
  <string name="editor_button_size">Przycisk: %1$d%%</string>
  <string name="editor_reset_title">Zresetować ten układ?</string>
@@ -145,7 +145,7 @@
  <string name="faq_mouse"><b>Jak działa menu?</b>\nDotykiem. Wskaźnik gry idzie tam, gdzie kładziesz palec, więc stuknięcie naciska element pod nim, a suwak podąża za ciągnącym go palcem. Systemowy przycisk lub gest Wstecz to Escape, a gdy gra prosi o imię, klawiatura telefonu otwiera się sama; przy otwartej klawiaturze Wstecz ją zamyka.</string>
  <string name="faq_size"><b>Co zmienia wielkość?</b>\nWielkość przycisków skaluje domyślne sterowanie. W Edytuj pozycje i rozmiary przeciągnij element i zmień jego wielkość suwakiem rozmiaru; element reaguje dokładnie tam, gdzie jest narysowany, a procenty odnoszą się do elementu domyślnego. Zmiany zapisują się same. Edytor pokazuje siatkę; przy włączonym Przyciągaj do siatki przeciągany element na nią wskakuje.</string>
  <string name="faq_edges"><b>Krawędzie i wysokość</b>\nOdstęp od krawędzi przesuwa domyślne elementy do środka. Wycięcia systemowe są uwzględniane. Elementy ustawione ręcznie zachowują zapisane pozycje.</string>
- <string name="faq_hiding"><b>Krycie i automatyczne ukrywanie</b>\nKrycie ustala zwykłą widoczność. Ukrywanie zaczyna się po oderwaniu wszystkich palców, po 1–30 sekundach. Wybierz blady zarys albo pełną niewidoczność. Ukryte przyciski reagują już na pierwsze dotknięcie i znów stają się widoczne. Przytrzymanie elementu wstrzymuje ukrywanie. Naciśnięcie przycisku na padzie gracza 1 od razu ukrywa przyciski; następny dotyk je przywraca. Pad gracza 2 ich nie rusza, więc jeden może jechać po ekranie, a drugi na padzie.</string>
+ <string name="faq_hiding"><b>Krycie i automatyczne ukrywanie</b>\nKrycie ustala zwykłą widoczność. Ukrywanie zaczyna się po oderwaniu wszystkich palców, po 1–30 sekundach. Ukryte przyciski reagują już na pierwsze dotknięcie i znów stają się widoczne. Przytrzymanie elementu wstrzymuje ukrywanie. Naciśnięcie przycisku na padzie gracza 1 od razu ukrywa przyciski; następny dotyk je przywraca. Pad gracza 2 ich nie rusza, więc jeden może jechać po ekranie, a drugi na padzie.</string>
  <string name="faq_vibration"><b>Wibracje</b>\nEfekty Force Feedback gry trafiają do telefonu i do pada 1. Gra obsługuje tylko jedno urządzenie z force feedbackiem, więc pad 2 nigdy nie wibruje. Wibracje telefonu włącza się i wyłącza w Sterowanie → Dotyk. Wibracje pada są wyłączone, dopóki nie zostaną włączone w Sterowanie → Pady; ich siłę ustawia się w samej grze: Options → Controllers → Force Feedback. Efekty pochodzą z gry, nigdy z naciskania przycisków.</string>
  <string name="faq_mapping"><b>Pady</b>\nGra zawsze widzi dwa pady: pad 1 to gracz 1 razem ze sterowaniem dotykiem, pad 2 to gracz 2. W Sterowanie → Pady wybierz, który pad jest który, naciskając na nim przycisk, ustaw, co robi każdy przycisk, a potem raz naciśnij Pad WŁĄCZONY. Zapisze to pasujące sterowanie w ustawieniach gry i zrobi kopię starego pliku. Lewa gałka skręca, spusty przyspieszają i hamują. Pad ma dwa zestawy przycisków, tak jak sterowanie dotykiem ma dwa układy: wyścigowy, ustawiany tutaj, i stały dla menu i powtórek, gdzie Cross / A zatwierdza, Circle / B cofa, a krzyżak przesuwa wybór. Aby grać na klawiaturze, zapisz zamiast tego Domyślne w grze.</string>
  <string name="faq_lights"><b>Światła i powrót na tor</b>\n☼ wysyła L. ↻ wysyła R, aby wrócić na tor. Klawisze można zmienić w Sterowanie → Dotyk → Klawisze.</string>
@@ -164,7 +164,6 @@
  <string name="controls_write_failed">Nie udało się zapisać sterowania: %1$s</string>
  <string name="gamepads_keyboard_note">Gra jest ustawiona na własne sterowanie klawiaturą (Domyślne w grze). Pady nie robią nic w wyścigach na podzielonym ekranie, dopóki nie naciśniesz Pad WŁĄCZONY.</string>
  <string name="pref_touch_enabled">Używaj sterowania dotykiem</string>
- <string name="touch_enabled_note">Wyłączone: dotykanie ekranu nic nie robi w grze, ani przyciski, ani dotykowa mysz. Pady i prawdziwa mysz działają dalej.</string>
  <string name="controls_help">Pomoc: podzielony ekran</string>
  <string name="controls_help_title">Podzielony ekran z dwoma padami</string>
  <string name="help_split_setup"><b>1. Skonfiguruj pady (raz)</b>\nPodłącz oba pady do telefonu. W Sterowanie → Pady naciśnij Przypisz przy padzie 1 i naciśnij dowolny przycisk na padzie gracza 1, a potem zrób to samo dla pada 2. Działa też Automatycznie: pady są brane w kolejności podłączenia. W Przyciski wybierasz, co robi każdy przycisk.</string>

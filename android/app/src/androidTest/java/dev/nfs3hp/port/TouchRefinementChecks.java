@@ -305,7 +305,7 @@ final class TouchRefinementChecks {
                     "a copy short of one file is told which, whatever the case of the names");
                 check(DataImporter.describeMissing(test.getTargetContext(),all).contains("…"),"a long list is cut short");
                 deleteTree(data);
-                prefs.edit().putBoolean(GamePreferences.TOUCH_AUTO_HIDE,true).putBoolean(GamePreferences.TOUCH_HIDE_FULL,true)
+                prefs.edit().putBoolean(GamePreferences.TOUCH_AUTO_HIDE,true)
                     .putInt(GamePreferences.TOUCH_HIDE_SECONDS,1).apply();
                 idle[0]=new TouchControlsOverlay(test.getTargetContext(),false,(k,down)->{});idle[0].setMenuMode(false);idle[0].layout(0,0,1280,680);
                 RectF brake=bounds(idle[0],"brake","box");touch(idle[0],0,brake.centerX(),brake.centerY());
@@ -402,10 +402,10 @@ final class TouchRefinementChecks {
                 RectF brake=bounds(idle[0],"brake","box");touch(idle[0],0,brake.centerX(),brake.centerY());
                 check(idle[0].getAlpha()==1&&!((Map<?,?>)field(field(idle[0],"keys"),"held")).isEmpty(),"first touch on hidden control activates it immediately");
                 touch(idle[0],1,brake.centerX(),brake.centerY());
-                prefs.edit().putBoolean(GamePreferences.TOUCH_HIDE_FULL,false).apply();idle[0].resumeIdleTimer();
+                idle[0].resumeIdleTimer();
             }catch(Throwable e){failure[0]=e;}});
             Thread.sleep(1500);
-            test.runOnMainSync(()->{if(Math.abs(idle[0].getAlpha()-.12f)>.02f)failure[0]=new AssertionError("silhouette opacity");});
+            test.runOnMainSync(()->{if(idle[0].getAlpha()>.01f)failure[0]=new AssertionError("hidden again, completely, after the delay");});
             test.runOnMainSync(()->{
                 MotionEvent e=MotionEvent.obtain(1,2,MotionEvent.ACTION_DOWN,640,300,0);
                 idle[0].onScreenTouch(e);e.recycle();idle[0].resumeIdleTimer();

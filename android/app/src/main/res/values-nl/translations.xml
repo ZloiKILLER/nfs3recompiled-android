@@ -40,6 +40,7 @@
  <string name="sample_bright">Dag</string>
  <string name="back_to_launcher">Terug</string>
  <string name="switch_data">Activeren</string>
+ <string name="data_change">Wijzigen…</string>
  <string name="delete">Verwijderen</string>
  <string name="import_folder">Map importeren…</string>
  <string name="import_zip">ZIP importeren…</string>
@@ -116,7 +117,6 @@
 
  <string name="pref_phone_vibration">Telefoontrilling (spel-effecten; start het spel opnieuw)</string>
  <string name="pref_show_gears">Schakelknoppen − / + tonen</string>
- <string name="pref_hide_full">Volledig verbergen (anders vaag silhouet)</string>
  <string name="auto_hide_delay">Vertraging: %1$d s</string>
  <string name="editor_button_size">Knop: %1$d%%</string>
  <string name="editor_reset_title">Deze indeling herstellen?</string>
@@ -145,7 +145,7 @@
  <string name="faq_mouse"><b>Hoe werken de menu\'s?</b>\nMet aanraken. Waar je je vinger neerzet, staat de aanwijzer van het spel, dus een tik drukt het item eronder in en een schuifregelaar volgt de vinger die hem sleept. De Terug-knop of -veeg van de telefoon is Escape, en als het spel om een naam vraagt, gaat het toetsenbord van de telefoon vanzelf open; met open toetsenbord sluit Terug het.</string>
  <string name="faq_size"><b>Wat verandert de grootte?</b>\nDe knopgrootte schaalt de standaardbediening. Sleep bij Posities en groottes bewerken een knop en wijzig de grootte met de groottebalk; een knop reageert precies waar hij getekend is en de percentages gelden ten opzichte van de standaardknop. Wijzigingen worden vanzelf bewaard. De editor toont een raster; met Uitlijnen op raster aan komt een gesleepte knop erop te liggen.</string>
  <string name="faq_edges"><b>Randen en hoogte</b>\nDe afstand tot de randen schuift de standaardknoppen naar binnen. Uitsparingen van het systeem worden gerespecteerd. Handmatig geplaatste knoppen houden hun bewaarde positie.</string>
- <string name="faq_hiding"><b>Dekking en automatisch verbergen</b>\nDe dekking bepaalt de normale zichtbaarheid. Het verbergen begint zodra alle vingers zijn opgetild, na 1 tot 30 seconden. Kies een vaag silhouet of volledige onzichtbaarheid. Verborgen knoppen reageren al op de eerste aanraking en worden weer zichtbaar. Een knop vasthouden voorkomt het verbergen. Een druk op de gamepad van speler 1 verbergt de knoppen meteen; de volgende aanraking brengt ze terug. De gamepad van speler 2 laat ze met rust, zodat de een op het scherm kan rijden terwijl de ander met een pad speelt.</string>
+ <string name="faq_hiding"><b>Dekking en automatisch verbergen</b>\nDe dekking bepaalt de normale zichtbaarheid. Het verbergen begint zodra alle vingers zijn opgetild, na 1 tot 30 seconden. Verborgen knoppen reageren al op de eerste aanraking en worden weer zichtbaar. Een knop vasthouden voorkomt het verbergen. Een druk op de gamepad van speler 1 verbergt de knoppen meteen; de volgende aanraking brengt ze terug. De gamepad van speler 2 laat ze met rust, zodat de een op het scherm kan rijden terwijl de ander met een pad speelt.</string>
  <string name="faq_vibration"><b>Trilling</b>\nDe Force Feedback-effecten van het spel bereiken de telefoon en gamepad 1. Het spel stuurt maar één force-feedbackapparaat aan, dus gamepad 2 trilt nooit. Trilling van de telefoon zet je aan of uit bij Bediening → Touch. Trilling van de gamepad staat uit tot je die aanzet bij Bediening → Gamepads; de sterkte stel je in het spel zelf in: Options → Controllers → Force Feedback. De effecten komen van het spel, nooit van knopdrukken.</string>
  <string name="faq_mapping"><b>Gamepads</b>\nHet spel ziet altijd twee gamepads: gamepad 1 is speler 1 samen met de touchbediening, gamepad 2 is speler 2. Kies bij Bediening → Gamepads welke pad welke is door er een knop op in te drukken, stel in wat elke knop doet en druk daarna eenmalig op Gamepad AAN. Dat schrijft de bijpassende bediening naar de spelinstellingen en maakt een back-up van het oude bestand. De linkerstick stuurt, de triggers geven gas en remmen. Een pad heeft twee knoppensets, net zoals de touchbediening twee indelingen heeft: die van de race, die je hier instelt, en een vaste voor de menu\'s en herhalingen, waarin Cross / A bevestigt, Circle / B teruggaat en het kruis de selectie verplaatst. Wil je met een toetsenbord spelen, schrijf dan Standaard van het spel.</string>
  <string name="faq_lights"><b>Licht en terug naar de baan</b>\n☼ stuurt L. ↻ stuurt R om terug te keren naar de baan. De toetsen kun je wijzigen bij Bediening → Touch → Toetsen.</string>
@@ -164,7 +164,6 @@
  <string name="controls_write_failed">Kon de bediening niet schrijven: %1$s</string>
  <string name="gamepads_keyboard_note">Het spel staat op zijn eigen toetsenbordbediening (Standaard van het spel). De gamepads doen niets in splitscreenraces totdat je op Gamepad AAN drukt.</string>
  <string name="pref_touch_enabled">Touchbediening gebruiken</string>
- <string name="touch_enabled_note">Uit: het scherm aanraken doet niets in het spel, geen knoppen en geen touchmuis. Gamepads en een echte muis blijven werken.</string>
  <string name="controls_help">Help: splitscreen</string>
  <string name="controls_help_title">Splitscreen met twee gamepads</string>
  <string name="help_split_setup"><b>1. De gamepads instellen (eenmalig)</b>\nVerbind beide gamepads met de telefoon. Druk bij Bediening → Gamepads onder gamepad 1 op Toewijzen en druk op een willekeurige knop van de pad van speler 1; doe daarna hetzelfde voor gamepad 2. Automatisch werkt ook: de pads worden genomen in de volgorde waarin ze verbinden. Bij Knoppen kies je wat elke knop doet.</string>

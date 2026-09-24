@@ -40,6 +40,7 @@
  <string name="sample_bright">Dia</string>
  <string name="back_to_launcher">Voltar</string>
  <string name="switch_data">Tornar ativo</string>
+ <string name="data_change">Alterar…</string>
  <string name="delete">Eliminar</string>
  <string name="import_folder">Importar pasta…</string>
  <string name="import_zip">Importar ZIP…</string>
@@ -116,7 +117,6 @@
 
  <string name="pref_phone_vibration">Vibração do telemóvel (efeitos do jogo; reinicia o jogo)</string>
  <string name="pref_show_gears">Mostrar os botões de mudança − / +</string>
- <string name="pref_hide_full">Ocultar por completo (caso contrário, silhueta ténue)</string>
  <string name="auto_hide_delay">Atraso da ocultação: %1$d s</string>
  <string name="editor_button_size">Botão: %1$d%%</string>
  <string name="editor_reset_title">Repor esta disposição?</string>
@@ -145,7 +145,7 @@
  <string name="faq_mouse"><b>Como funcionam os menus?</b>\nAo toque. O ponteiro do jogo vai para onde pousas o dedo, por isso um toque carrega no item por baixo e um cursor segue o dedo que o arrasta. O botão ou gesto Recuar do telemóvel é Escape e, quando o jogo pede um nome, o teclado do telemóvel abre sozinho; com o teclado aberto, Recuar fecha-o.</string>
  <string name="faq_size"><b>O que muda o tamanho?</b>\nO tamanho dos botões dimensiona os controlos predefinidos. Em Editar posições e tamanhos arrasta um controlo e muda-lhe o tamanho com o cursor de tamanho; um controlo responde exatamente onde é desenhado e as percentagens são relativas ao controlo predefinido. As alterações guardam-se sozinhas. O editor mostra uma grelha; com Ajustar à grelha ativo, o controlo arrastado assenta nela.</string>
  <string name="faq_edges"><b>Margens e posição vertical</b>\nA distância às margens desloca os comandos predefinidos para dentro. Os recortes do sistema são respeitados. Os comandos colocados à mão mantêm as posições guardadas.</string>
- <string name="faq_hiding"><b>Opacidade e ocultação automática</b>\nA opacidade define a visibilidade normal. A ocultação automática começa depois de levantares todos os dedos, após um atraso de 1 a 30 segundos. Escolhe uma silhueta ténue ou a invisibilidade total. Os botões ocultos respondem logo ao primeiro toque e voltam a ficar visíveis. Manter um comando premido impede a ocultação. Premir o comando do jogador 1 esconde logo os controlos; o toque seguinte trá-los de volta. O comando do jogador 2 não lhes toca, por isso um pode conduzir no ecrã enquanto o outro joga com comando.</string>
+ <string name="faq_hiding"><b>Opacidade e ocultação automática</b>\nA opacidade define a visibilidade normal. A ocultação automática começa depois de levantares todos os dedos, após um atraso de 1 a 30 segundos. Os botões ocultos respondem logo ao primeiro toque e voltam a ficar visíveis. Manter um comando premido impede a ocultação. Premir o comando do jogador 1 esconde logo os controlos; o toque seguinte trá-los de volta. O comando do jogador 2 não lhes toca, por isso um pode conduzir no ecrã enquanto o outro joga com comando.</string>
  <string name="faq_vibration"><b>Vibração</b>\nOs efeitos Force Feedback do jogo chegam ao telemóvel e ao comando 1. O jogo só controla um dispositivo de force feedback, por isso o comando 2 nunca vibra. A vibração do telemóvel liga-se ou desliga-se em Comandos → Toque. A vibração do comando fica desligada até ser ligada em Comandos → Comandos de jogo; a sua intensidade define-se no próprio jogo: Options → Controllers → Force Feedback. Os efeitos vêm do jogo, nunca de premir botões.</string>
  <string name="faq_mapping"><b>Comandos de jogo</b>\nO jogo vê sempre dois comandos: o comando 1 é o jogador 1, juntamente com os controlos táteis, e o comando 2 é o jogador 2. Em Comandos → Comandos de jogo escolhe qual é qual premindo um botão nele e define o que faz cada botão; depois prime uma vez Comando LIGADO, que escreve os controlos correspondentes nas definições do jogo e guarda uma cópia do ficheiro antigo. O stick esquerdo vira e os gatilhos aceleram e travam. Um comando tem dois conjuntos de botões, tal como os controlos táteis têm duas disposições: o de corrida, que defines aqui, e um fixo para os menus e as repetições, onde Cross / A confirma, Circle / B recua e o direcional move a seleção. Para jogar com teclado, escreve antes Predefinição do jogo.</string>
  <string name="faq_lights"><b>Luzes e regresso à pista</b>\n☼ envia L. ↻ envia R para voltar à pista. As teclas podem ser alteradas em Comandos → Toque → Teclas.</string>
@@ -164,7 +164,6 @@
  <string name="controls_write_failed">Não foi possível escrever os controlos: %1$s</string>
  <string name="gamepads_keyboard_note">O jogo está definido para os seus próprios controlos de teclado (Predefinição do jogo). Os comandos não fazem nada em corridas de ecrã dividido até premires Comando LIGADO.</string>
  <string name="pref_touch_enabled">Usar controlos táteis</string>
- <string name="touch_enabled_note">Desligado: tocar no ecrã não faz nada no jogo, nem botões nem rato tátil. Os comandos e um rato verdadeiro continuam a funcionar.</string>
  <string name="controls_help">Ajuda: ecrã dividido</string>
  <string name="controls_help_title">Ecrã dividido com dois comandos</string>
  <string name="help_split_setup"><b>1. Configurar os comandos (uma vez)</b>\nLiga os dois comandos ao telemóvel. Em Comandos → Comandos de jogo prime Atribuir no comando 1 e prime qualquer botão no comando do jogador 1; depois faz o mesmo para o comando 2. Automático também funciona: os comandos são usados pela ordem em que se ligam. Em Botões escolhes o que faz cada botão.</string>

@@ -40,6 +40,7 @@
  <string name="sample_bright">Zi</string>
  <string name="back_to_launcher">Înapoi</string>
  <string name="switch_data">Activează</string>
+ <string name="data_change">Schimbă…</string>
  <string name="delete">Șterge</string>
  <string name="import_folder">Importă folder…</string>
  <string name="import_zip">Importă ZIP…</string>
@@ -116,7 +117,6 @@
 
  <string name="pref_phone_vibration">Vibrația telefonului (efecte din joc; repornește jocul)</string>
  <string name="pref_show_gears">Arată butoanele de treaptă − / +</string>
- <string name="pref_hide_full">Ascunde complet (altfel siluetă estompată)</string>
  <string name="auto_hide_delay">Întârziere: %1$d s</string>
  <string name="editor_button_size">Buton: %1$d%%</string>
  <string name="editor_reset_title">Resetezi această aranjare?</string>
@@ -145,7 +145,7 @@
  <string name="faq_mouse"><b>Cum funcționează meniurile?</b>\nPrin atingere. Unde pui degetul, acolo ajunge indicatorul jocului, așa că o atingere apasă elementul de dedesubt, iar un cursor urmează degetul care îl trage. Butonul sau gestul Înapoi al telefonului este Escape, iar când jocul cere un nume, tastatura telefonului se deschide singură; cu tastatura deschisă, Înapoi o închide.</string>
  <string name="faq_size"><b>Ce schimbă mărimea?</b>\nMărimea butoanelor scalează comenzile implicite. În Editează pozițiile și mărimile trage o comandă și schimbă-i mărimea cu cursorul de mărime; o comandă răspunde exact unde este desenată, iar procentele sunt raportate la comanda implicită. Modificările se salvează singure. Editorul arată o grilă; cu Aliniere la grilă activă, comanda trasă se așază pe ea.</string>
  <string name="faq_edges"><b>Margini și înălțime</b>\nDistanța față de margini mută comenzile implicite spre interior. Decupajele sistemului sunt respectate. Comenzile plasate manual își păstrează pozițiile salvate.</string>
- <string name="faq_hiding"><b>Opacitate și ascundere automată</b>\nOpacitatea stabilește vizibilitatea normală. Ascunderea automată începe după ce ridici toate degetele, cu o întârziere de 1–30 de secunde. Alege o siluetă estompată sau invizibilitate completă. Butoanele ascunse răspund deja la prima atingere și redevin vizibile. Ținerea apăsată a unei comenzi împiedică ascunderea. O apăsare pe gamepadul jucătorului 1 ascunde imediat butoanele; următoarea atingere le readuce. Gamepadul jucătorului 2 nu le atinge, așa că unul poate conduce pe ecran în timp ce celălalt joacă pe gamepad.</string>
+ <string name="faq_hiding"><b>Opacitate și ascundere automată</b>\nOpacitatea stabilește vizibilitatea normală. Ascunderea automată începe după ce ridici toate degetele, cu o întârziere de 1–30 de secunde. Butoanele ascunse răspund deja la prima atingere și redevin vizibile. Ținerea apăsată a unei comenzi împiedică ascunderea. O apăsare pe gamepadul jucătorului 1 ascunde imediat butoanele; următoarea atingere le readuce. Gamepadul jucătorului 2 nu le atinge, așa că unul poate conduce pe ecran în timp ce celălalt joacă pe gamepad.</string>
  <string name="faq_vibration"><b>Vibrații</b>\nEfectele Force Feedback ale jocului ajung la telefon și la gamepadul 1. Jocul controlează un singur dispozitiv force feedback, așa că gamepadul 2 nu vibrează niciodată. Vibrațiile telefonului se pornesc și se opresc în Comenzi → Atingere. Vibrațiile gamepadului sunt oprite până când le pornești în Comenzi → Gamepaduri; intensitatea lor se setează în joc: Options → Controllers → Force Feedback. Efectele vin din joc, niciodată din apăsarea butoanelor.</string>
  <string name="faq_mapping"><b>Gamepaduri</b>\nJocul vede mereu două gamepaduri: gamepadul 1 este jucătorul 1, împreună cu comenzile tactile, gamepadul 2 este jucătorul 2. În Comenzi → Gamepaduri alegi care gamepad e care apăsând un buton pe el și setezi ce face fiecare buton, apoi apeși o dată Gamepad ACTIV. Acesta scrie comenzile potrivite în setările jocului și face o copie a fișierului vechi. Stick-ul stâng virează, trăgaciele accelerează și frânează. Un gamepad are două seturi de butoane, așa cum comenzile tactile au două aranjamente: cel de cursă, pe care îl setezi aici, și unul fix pentru meniuri și reluări, unde Cross / A confirmă, Circle / B revine, iar crucea mută selecția. Pentru a juca de la tastatură, scrie în schimb Implicit în joc.</string>
  <string name="faq_lights"><b>Faruri și revenire pe pistă</b>\n☼ trimite L. ↻ trimite R pentru a reveni pe pistă. Tastele se pot schimba în Comenzi → Atingere → Taste.</string>
@@ -164,7 +164,6 @@
  <string name="controls_write_failed">Comenzile nu au putut fi scrise: %1$s</string>
  <string name="gamepads_keyboard_note">Jocul este setat pe propriile comenzi de tastatură (Implicit în joc). Gamepadurile nu fac nimic în cursele pe ecran împărțit până nu apeși Gamepad ACTIV.</string>
  <string name="pref_touch_enabled">Folosește comenzile tactile</string>
- <string name="touch_enabled_note">Oprit: atingerea ecranului nu face nimic în joc, nici butoane, nici mouse tactil. Gamepadurile și un mouse adevărat funcționează în continuare.</string>
  <string name="controls_help">Ajutor: ecran împărțit</string>
  <string name="controls_help_title">Ecran împărțit cu două gamepaduri</string>
  <string name="help_split_setup"><b>1. Configurează gamepadurile (o dată)</b>\nConectează ambele gamepaduri la telefon. În Comenzi → Gamepaduri apasă Atribuie la gamepadul 1 și apasă orice buton de pe gamepadul jucătorului 1, apoi fă la fel pentru gamepadul 2. Merge și Automat: gamepadurile sunt luate în ordinea conectării. În Butoane alegi ce face fiecare buton.</string>

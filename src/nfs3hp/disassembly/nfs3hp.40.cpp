@@ -33,11 +33,11 @@ void Application::sub_4f9482(WinApplication* app, x86::CPU& cpu)
     // 004f9484  d9c0                   +fld st(0)
     cpu.fpu.push(x86::Float(cpu.fpu.st(0)));
     // 004f9486  d8c8                   +fmul st(0)
-    cpu.fpu.st(0) *= x86::Float(cpu.fpu.st(0));
+    cpu.fpu.st(0) = cpu.fpu.mul(cpu.fpu.st(0), x86::Float(cpu.fpu.st(0)));
     // 004f9488  d9e8                   +fld1 
     cpu.fpu.push(1.0);
     // 004f948a  dee1                   +fsubrp st(1)
-    cpu.fpu.st(1) = cpu.fpu.st(0) - x86::Float(cpu.fpu.st(1));
+    cpu.fpu.st(1) = cpu.fpu.sub(cpu.fpu.st(0), x86::Float(cpu.fpu.st(1)));
     cpu.fpu.pop();
     // 004f948c  d9e4                   +ftst 
     cpu.fpu.compare(cpu.fpu.st(0), 0.0);
@@ -109,7 +109,7 @@ L_0x004f94a2:
     // 004f94b4  db2d9c715600           -fld xword ptr [0x56719c]
     cpu.fpu.push(x86::Float(app->getMemory<x86::IEEEf80>(x86::reg32(5665180) /* 0x56719c */)));
     // 004f94ba  dee1                   -fsubrp st(1)
-    cpu.fpu.st(1) = cpu.fpu.st(0) - x86::Float(cpu.fpu.st(1));
+    cpu.fpu.st(1) = cpu.fpu.sub(cpu.fpu.st(0), x86::Float(cpu.fpu.st(1)));
     cpu.fpu.pop();
 L_0x004f94bc:
     // 004f94bc  6658                   -pop ax

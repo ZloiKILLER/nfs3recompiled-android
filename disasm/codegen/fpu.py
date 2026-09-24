@@ -53,45 +53,45 @@ def cg_fyl2x(instruction, function_bounds, function_names):
 
 def cg_fadd(instruction, function_bounds, function_names, *argument):
     if len(argument) == 1:
-        return ['cpu.fpu.st(0) += x86::Float(%s);' % arguments.get_float(instruction, *argument)]
+        return ['cpu.fpu.st(0) = cpu.fpu.add(cpu.fpu.st(0), x86::Float(%s));' % arguments.get_float(instruction, *argument)]
     elif len(argument) == 2:
-        return ['%s += x86::Float(%s);' % (arguments.get_float(instruction, argument[0]), arguments.get_float(instruction, argument[1]))]
+        return ['%s = cpu.fpu.add(%s, x86::Float(%s));' % (arguments.get_float(instruction, argument[0]), arguments.get_float(instruction, argument[0]), arguments.get_float(instruction, argument[1]))]
     else:
         assert False
 
 
 def cg_faddp(instruction, function_bounds, function_names, *argument):
     if len(argument) == 0:
-        return ['cpu.fpu.st(1) += cpu.fpu.st(0);', 'cpu.fpu.pop();']
+        return ['cpu.fpu.st(1) = cpu.fpu.add(cpu.fpu.st(1), cpu.fpu.st(0));', 'cpu.fpu.pop();']
     elif len(argument) == 1:
-        return ['%s += cpu.fpu.st(0);' % arguments.get_float(instruction, *argument), 'cpu.fpu.pop();']
+        return ['%s = cpu.fpu.add(%s, cpu.fpu.st(0));' % (arguments.get_float(instruction, *argument), arguments.get_float(instruction, *argument)), 'cpu.fpu.pop();']
     else:
         assert False
 
 
 def cg_fsub(instruction, function_bounds, function_names, *argument):
     if len(argument) == 1:
-        return ['cpu.fpu.st(0) -= x86::Float(%s);' % arguments.get_float(instruction, *argument)]
+        return ['cpu.fpu.st(0) = cpu.fpu.sub(cpu.fpu.st(0), x86::Float(%s));' % arguments.get_float(instruction, *argument)]
     elif len(argument) == 2:
-        return ['%s -= x86::Float(%s);' % (arguments.get_float(instruction, argument[0]), arguments.get_float(instruction, argument[1]))]
+        return ['%s = cpu.fpu.sub(%s, x86::Float(%s));' % (arguments.get_float(instruction, argument[0]), arguments.get_float(instruction, argument[0]), arguments.get_float(instruction, argument[1]))]
     else:
         assert False
 
 
 def cg_fsubp(instruction, function_bounds, function_names, *argument):
     if len(argument) == 0:
-        return ['cpu.fpu.st(1) -= cpu.fpu.st(0);', 'cpu.fpu.pop();']
+        return ['cpu.fpu.st(1) = cpu.fpu.sub(cpu.fpu.st(1), cpu.fpu.st(0));', 'cpu.fpu.pop();']
     elif len(argument) == 1:
-        return ['%s -= cpu.fpu.st(0);' % arguments.get_float(instruction, *argument), 'cpu.fpu.pop();']
+        return ['%s = cpu.fpu.sub(%s, cpu.fpu.st(0));' % (arguments.get_float(instruction, *argument), arguments.get_float(instruction, *argument)), 'cpu.fpu.pop();']
     else:
         assert False
 
 
 def cg_fsubr(instruction, function_bounds, function_names, *argument):
     if len(argument) == 1:
-        return ['cpu.fpu.st(0) = x86::Float(%s) - cpu.fpu.st(0);' % arguments.get_float(instruction, *argument)]
+        return ['cpu.fpu.st(0) = cpu.fpu.sub(x86::Float(%s), cpu.fpu.st(0));' % arguments.get_float(instruction, *argument)]
     elif len(argument) == 2:
-        return ['%s = x86::Float(%s) - x86::Float(%s);' % (arguments.get_float(instruction, argument[0]),
+        return ['%s = cpu.fpu.sub(x86::Float(%s), x86::Float(%s));' % (arguments.get_float(instruction, argument[0]),
                                    arguments.get_float(instruction, argument[1]),
                                    arguments.get_float(instruction, argument[0]))]
     else:
@@ -100,9 +100,9 @@ def cg_fsubr(instruction, function_bounds, function_names, *argument):
 
 def cg_fsubrp(instruction, function_bounds, function_names, *argument):
     if len(argument) == 0:
-        return ['cpu.fpu.st(1) = cpu.fpu.st(0) - cpu.fpu.st(1);', 'cpu.fpu.pop();']
+        return ['cpu.fpu.st(1) = cpu.fpu.sub(cpu.fpu.st(0), cpu.fpu.st(1));', 'cpu.fpu.pop();']
     elif len(argument) == 1:
-        return ['%s = cpu.fpu.st(0) - x86::Float(%s);' % (arguments.get_float(instruction, *argument),
+        return ['%s = cpu.fpu.sub(cpu.fpu.st(0), x86::Float(%s));' % (arguments.get_float(instruction, *argument),
                                               arguments.get_float(instruction, *argument)),
                 'cpu.fpu.pop();']
     else:
@@ -111,45 +111,45 @@ def cg_fsubrp(instruction, function_bounds, function_names, *argument):
 
 def cg_fmul(instruction, function_bounds, function_names, *argument):
     if len(argument) == 1:
-        return ['cpu.fpu.st(0) *= x86::Float(%s);' % arguments.get_float(instruction, *argument)]
+        return ['cpu.fpu.st(0) = cpu.fpu.mul(cpu.fpu.st(0), x86::Float(%s));' % arguments.get_float(instruction, *argument)]
     elif len(argument) == 2:
-        return ['%s *= %s;' % (arguments.get_float(instruction, argument[0]), arguments.get_float(instruction, argument[1]))]
+        return ['%s = cpu.fpu.mul(%s, %s);' % (arguments.get_float(instruction, argument[0]), arguments.get_float(instruction, argument[0]), arguments.get_float(instruction, argument[1]))]
     else:
         assert False
 
 
 def cg_fmulp(instruction, function_bounds, function_names, *argument):
     if len(argument) == 0:
-        return ['cpu.fpu.st(1) *= cpu.fpu.st(0);', 'cpu.fpu.pop();']
+        return ['cpu.fpu.st(1) = cpu.fpu.mul(cpu.fpu.st(1), cpu.fpu.st(0));', 'cpu.fpu.pop();']
     elif len(argument) == 1:
-        return ['%s *= cpu.fpu.st(0);' % arguments.get_float(instruction, *argument), 'cpu.fpu.pop();']
+        return ['%s = cpu.fpu.mul(%s, cpu.fpu.st(0));' % (arguments.get_float(instruction, *argument), arguments.get_float(instruction, *argument)), 'cpu.fpu.pop();']
     else:
         assert False
 
 
 def cg_fdiv(instruction, function_bounds, function_names, *argument):
     if len(argument) == 1:
-        return ['cpu.fpu.st(0) /= x86::Float(%s);' % arguments.get_float(instruction, *argument)]
+        return ['cpu.fpu.st(0) = cpu.fpu.div(cpu.fpu.st(0), x86::Float(%s));' % arguments.get_float(instruction, *argument)]
     elif len(argument) == 2:
-        return ['%s /= x86::Float(%s);' % (arguments.get_float(instruction, argument[0]), arguments.get_float(instruction, argument[1]))]
+        return ['%s = cpu.fpu.div(%s, x86::Float(%s));' % (arguments.get_float(instruction, argument[0]), arguments.get_float(instruction, argument[0]), arguments.get_float(instruction, argument[1]))]
     else:
         assert False
 
 
 def cg_fdivp(instruction, function_bounds, function_names, *argument):
     if len(argument) == 0:
-        return ['cpu.fpu.st(1) /= cpu.fpu.st(0);', 'cpu.fpu.pop();']
+        return ['cpu.fpu.st(1) = cpu.fpu.div(cpu.fpu.st(1), cpu.fpu.st(0));', 'cpu.fpu.pop();']
     elif len(argument) == 1:
-        return ['%s /= cpu.fpu.st(0);' % arguments.get_float(instruction, *argument), 'cpu.fpu.pop();']
+        return ['%s = cpu.fpu.div(%s, cpu.fpu.st(0));' % (arguments.get_float(instruction, *argument), arguments.get_float(instruction, *argument)), 'cpu.fpu.pop();']
     else:
         assert False
 
 
 def cg_fdivr(instruction, function_bounds, function_names, *argument):
     if len(argument) == 1:
-        return ['cpu.fpu.st(0) = x86::Float(%s) / cpu.fpu.st(0);' % (arguments.get_float(instruction, *argument))]
+        return ['cpu.fpu.st(0) = cpu.fpu.div(x86::Float(%s), cpu.fpu.st(0));' % (arguments.get_float(instruction, *argument))]
     elif len(argument) == 2:
-        return ['%s = %s / %s;' % (arguments.get_float(instruction, argument[0]),
+        return ['%s = cpu.fpu.div(%s, %s);' % (arguments.get_float(instruction, argument[0]),
                                    arguments.get_float(instruction, argument[1]),
                                    arguments.get_float(instruction, argument[0]))]
     else:
@@ -158,10 +158,10 @@ def cg_fdivr(instruction, function_bounds, function_names, *argument):
 
 def cg_fdivrp(instruction, function_bounds, function_names, *argument):
     if len(argument) == 0:
-        return ['cpu.fpu.st(1) = cpu.fpu.st(0) / cpu.fpu.st(1);',
+        return ['cpu.fpu.st(1) = cpu.fpu.div(cpu.fpu.st(0), cpu.fpu.st(1));',
                 'cpu.fpu.pop();']
     elif len(argument) == 1:
-        return ['%s = cpu.fpu.st(0) / x86::Float(%s);' % (arguments.get_float(instruction, *argument),
+        return ['%s = cpu.fpu.div(cpu.fpu.st(0), x86::Float(%s));' % (arguments.get_float(instruction, *argument),
                                           arguments.get_float(instruction, *argument)),
                 'cpu.fpu.pop();']
     else:

@@ -40,6 +40,7 @@
  <string name="sample_bright">Dan</string>
  <string name="back_to_launcher">Natrag</string>
  <string name="switch_data">Aktiviraj</string>
+ <string name="data_change">Promijeni…</string>
  <string name="delete">Izbriši</string>
  <string name="import_folder">Uvezi mapu…</string>
  <string name="import_zip">Uvezi ZIP…</string>
@@ -116,7 +117,6 @@
 
  <string name="pref_phone_vibration">Vibracija telefona (efekti igre; ponovno pokreni igru)</string>
  <string name="pref_show_gears">Prikaži gumbe stupnjeva − / +</string>
- <string name="pref_hide_full">Sakrij potpuno (inače blijeda silueta)</string>
  <string name="auto_hide_delay">Odgoda: %1$d s</string>
  <string name="editor_button_size">Gumb: %1$d%%</string>
  <string name="editor_reset_title">Vratiti ovaj raspored?</string>
@@ -145,7 +145,7 @@
  <string name="faq_mouse"><b>Kako rade izbornici?</b>\nDodirom. Gdje staviš prst, ondje je pokazivač igre, pa dodir pritišće stavku ispod njega, a klizač prati prst koji ga vuče. Sistemski gumb ili gesta Natrag je Escape, a kad igra zatraži ime, tipkovnica telefona otvara se sama; dok je tipkovnica otvorena, Natrag je zatvara.</string>
  <string name="faq_size"><b>Što mijenja veličina?</b>\nVeličina gumba skalira zadano upravljanje. U Uredi položaje i veličine povuci gumb i promijeni mu veličinu klizačem veličine; gumb reagira točno ondje gdje je nacrtan, a postoci su u odnosu na zadani gumb. Promjene se spremaju same. Uređivač prikazuje mrežu; uz uključeno Poravnaj s mrežom povučeni gumb sjeda na nju.</string>
  <string name="faq_edges"><b>Rubovi i visina</b>\nUdaljenost od rubova pomiče zadane gumbe prema unutra. Sistemski izrezi se poštuju. Ručno postavljeni gumbi zadržavaju spremljene položaje.</string>
- <string name="faq_hiding"><b>Neprozirnost i automatsko skrivanje</b>\nNeprozirnost određuje uobičajenu vidljivost. Skrivanje počinje kad podigneš sve prste, nakon 1–30 sekundi. Odaberi blijedu siluetu ili potpunu nevidljivost. Skriveni gumbi reagiraju već na prvi dodir i ponovno postaju vidljivi. Držanje gumba sprječava skrivanje. Pritisak na kontroleru igrača 1 odmah skriva gumbe; sljedeći dodir ih vraća. Kontroler igrača 2 ih ne dira, pa jedan može voziti po zaslonu dok drugi igra kontrolerom.</string>
+ <string name="faq_hiding"><b>Neprozirnost i automatsko skrivanje</b>\nNeprozirnost određuje uobičajenu vidljivost. Skrivanje počinje kad podigneš sve prste, nakon 1–30 sekundi. Skriveni gumbi reagiraju već na prvi dodir i ponovno postaju vidljivi. Držanje gumba sprječava skrivanje. Pritisak na kontroleru igrača 1 odmah skriva gumbe; sljedeći dodir ih vraća. Kontroler igrača 2 ih ne dira, pa jedan može voziti po zaslonu dok drugi igra kontrolerom.</string>
  <string name="faq_vibration"><b>Vibracija</b>\nEfekti Force Feedback igre dolaze do telefona i do kontrolera 1. Igra pokreće samo jedan uređaj s povratnom silom, pa kontroler 2 nikad ne vibrira. Vibracija telefona uključuje se i isključuje u Upravljanje → Dodir. Vibracija kontrolera isključena je dok je ne uključite u Upravljanje → Kontroleri; njezina jačina podešava se u samoj igri: Options → Controllers → Force Feedback. Efekti dolaze iz igre, nikad od pritisaka tipki.</string>
  <string name="faq_mapping"><b>Kontroleri</b>\nIgra uvijek vidi dva kontrolera: kontroler 1 je igrač 1 zajedno s upravljanjem dodirom, kontroler 2 je igrač 2. U Upravljanje → Kontroleri pritiskom tipke odaberi koji je kontroler čiji i podesi što radi svaka tipka, zatim jednom pritisni Kontroler UKLJUČEN. To u postavke igre zapisuje odgovarajuće upravljanje i sigurnosno kopira staru datoteku. Lijeva palica skreće, okidači ubrzavaju i koče. Kontroler ima dva skupa tipki, kao što upravljanje dodirom ima dva rasporeda: utrkivački, koji ovdje podesiš, i nepromjenjiv za izbornike i snimke, gdje Cross / A potvrđuje, Circle / B vraća natrag, a križ pomiče odabir. Za igranje tipkovnicom umjesto toga zapiši Zadano u igri.</string>
  <string name="faq_lights"><b>Svjetla i povratak na stazu</b>\n☼ šalje L. ↻ šalje R za povratak na stazu. Tipke se mogu promijeniti u Upravljanje → Dodir → Tipke.</string>
@@ -164,7 +164,6 @@
  <string name="controls_write_failed">Upravljanje nije moguće zapisati: %1$s</string>
  <string name="gamepads_keyboard_note">Igra je postavljena na vlastito upravljanje tipkovnicom (Zadano u igri). Kontroleri u utrkama na podijeljenom zaslonu ne rade ništa dok ne pritisneš Kontroler UKLJUČEN.</string>
  <string name="pref_touch_enabled">Koristi upravljanje dodirom</string>
- <string name="touch_enabled_note">Isključeno: dodir zaslona u igri ne radi ništa, ni gumbi ni dodirni miš. Kontroleri i pravi miš i dalje rade.</string>
  <string name="controls_help">Pomoć: podijeljeni zaslon</string>
  <string name="controls_help_title">Podijeljeni zaslon s dva kontrolera</string>
  <string name="help_split_setup"><b>1. Postavi kontrolere (jednom)</b>\nSpoji oba kontrolera s telefonom. U Upravljanje → Kontroleri pritisni Dodijeli kod kontrolera 1 i pritisni bilo koju tipku na kontroleru igrača 1, zatim isto učini za kontroler 2. Radi i Automatski: kontroleri se uzimaju redoslijedom spajanja. U Tipke biraš što radi svaka tipka.</string>

@@ -40,6 +40,7 @@
  <string name="sample_bright">Dag</string>
  <string name="back_to_launcher">Tillbaka</string>
  <string name="switch_data">Aktivera</string>
+ <string name="data_change">Ändra…</string>
  <string name="delete">Ta bort</string>
  <string name="import_folder">Importera mapp…</string>
  <string name="import_zip">Importera ZIP…</string>
@@ -116,7 +117,6 @@
 
  <string name="pref_phone_vibration">Telefonens vibration (speleffekter; starta om spelet)</string>
  <string name="pref_show_gears">Visa växelknappar − / +</string>
- <string name="pref_hide_full">Dölj helt (annars svag siluett)</string>
  <string name="auto_hide_delay">Fördröjning: %1$d s</string>
  <string name="editor_button_size">Knapp: %1$d%%</string>
  <string name="editor_reset_title">Återställa den här layouten?</string>
@@ -145,7 +145,7 @@
  <string name="faq_mouse"><b>Hur fungerar menyerna?</b>\nGenom beröring. Spelets pekare hamnar där du sätter fingret, så en tryckning trycker på posten under det och ett reglage följer fingret som drar det. Telefonens Tillbaka-knapp eller -gest är Escape, och när spelet ber om ett namn öppnas telefonens tangentbord av sig självt; med tangentbordet uppe stänger Tillbaka det.</string>
  <string name="faq_size"><b>Vad ändrar storleken?</b>\nKnappstorleken skalar standardkontrollerna. Dra en kontroll under Redigera positioner och storlekar och ändra dess storlek med storleksreglaget; en kontroll svarar exakt där den ritas och procenten är i förhållande till standardkontrollen. Ändringarna sparas av sig själva. Redigeraren visar ett rutnät; med Fäst mot rutnät på hamnar en dragen kontroll på det.</string>
  <string name="faq_edges"><b>Kanter och höjd</b>\nAvståndet från kanterna flyttar standardknapparna inåt. Systemets urtag respekteras. Manuellt placerade knappar behåller sina sparade positioner.</string>
- <string name="faq_hiding"><b>Opacitet och automatisk döljning</b>\nOpaciteten anger den vanliga synligheten. Döljningen börjar när alla fingrar lyfts, efter 1–30 sekunder. Välj en svag siluett eller full osynlighet. Dolda knappar svarar redan vid första beröringen och blir synliga igen. Att hålla en knapp nedtryckt hindrar döljningen. Ett tryck på spelare 1:s handkontroll döljer knapparna direkt; nästa beröring tar tillbaka dem. Spelare 2:s handkontroll rör dem inte, så den ene kan köra på skärmen medan den andre spelar med kontroll.</string>
+ <string name="faq_hiding"><b>Opacitet och automatisk döljning</b>\nOpaciteten anger den vanliga synligheten. Döljningen börjar när alla fingrar lyfts, efter 1–30 sekunder. Dolda knappar svarar redan vid första beröringen och blir synliga igen. Att hålla en knapp nedtryckt hindrar döljningen. Ett tryck på spelare 1:s handkontroll döljer knapparna direkt; nästa beröring tar tillbaka dem. Spelare 2:s handkontroll rör dem inte, så den ene kan köra på skärmen medan den andre spelar med kontroll.</string>
  <string name="faq_vibration"><b>Vibration</b>\nSpelets Force Feedback-effekter når telefonen och handkontroll 1. Spelet driver bara en enhet med force feedback, så handkontroll 2 vibrerar aldrig. Telefonens vibration slås på och av under Kontroller → Pek. Handkontrollens vibration är av tills du slår på den under Kontroller → Handkontroller; styrkan ställs in i själva spelet: Options → Controllers → Force Feedback. Effekterna kommer från spelet, aldrig från knapptryck.</string>
  <string name="faq_mapping"><b>Handkontroller</b>\nSpelet ser alltid två handkontroller: handkontroll 1 är spelare 1 tillsammans med pekkontrollerna, handkontroll 2 är spelare 2. Välj under Kontroller → Handkontroller vilken kontroll som är vilken genom att trycka på en knapp på den, ställ in vad varje knapp gör och tryck sedan en gång på Handkontroll PÅ. Det skriver in motsvarande styrning i spelets inställningar och säkerhetskopierar den gamla filen. Vänster spak styr, avtryckarna gasar och bromsar. En handkontroll har två uppsättningar knappar, precis som pekkontrollerna har två layouter: loppets, som du ställer in här, och en fast för menyer och repriser, där Cross / A bekräftar, Circle / B går tillbaka och styrkorset flyttar markeringen. För att spela med tangentbord skriver du i stället Spelets standard.</string>
  <string name="faq_lights"><b>Ljus och tillbaka till banan</b>\n☼ skickar L. ↻ skickar R för att komma tillbaka till banan. Tangenterna kan ändras under Kontroller → Pek → Tangenter.</string>
@@ -164,7 +164,6 @@
  <string name="controls_write_failed">Det gick inte att skriva styrningen: %1$s</string>
  <string name="gamepads_keyboard_note">Spelet är inställt på sin egen tangentbordsstyrning (Spelets standard). Handkontrollerna gör ingenting i lopp med delad skärm förrän du trycker på Handkontroll PÅ.</string>
  <string name="pref_touch_enabled">Använd pekkontroller</string>
- <string name="touch_enabled_note">Av: att röra skärmen gör ingenting i spelet, varken knappar eller pekmus. Handkontroller och en riktig mus fortsätter att fungera.</string>
  <string name="controls_help">Hjälp: delad skärm</string>
  <string name="controls_help_title">Delad skärm med två handkontroller</string>
  <string name="help_split_setup"><b>1. Ställ in handkontrollerna (en gång)</b>\nAnslut båda handkontrollerna till telefonen. Tryck under Kontroller → Handkontroller på Tilldela vid handkontroll 1 och tryck på valfri knapp på spelare 1:s kontroll, gör sedan samma sak för handkontroll 2. Automatiskt fungerar också: kontrollerna tas i den ordning de ansluts. Under Knappar väljer du vad varje knapp gör.</string>
