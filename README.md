@@ -36,5 +36,3 @@ How it works, building it, and every setting: [TECHNICAL.md](TECHNICAL.md).
 
 Need for Speed III: Hot Pursuit is the property of Electronic Arts. This
 repository contains no game content.
-
-All rights reserved; no license is granted. See [LICENSE](LICENSE).

@@ -31,6 +31,12 @@ Copyright (c) 2026 ZloiKILLER. All rights reserved.
    implied. This project distributes no game assets and no proprietary
    compiler binaries.
 
+   Vendored third-party open-source components (SDL3 in "sdl3/", under the
+   zlib License; sse2neon in "third_party/sse2neon.h", under the MIT
+   License) remain the property of their respective authors and are
+   governed solely by their own licenses. The restrictions of this notice
+   do not apply to them.
+
 4. VIEWING ON GITHUB
 
    Hosting on GitHub grants only the minimal rights GitHub's Terms of
