@@ -19,12 +19,13 @@ image of the disc (ISO or BIN/CUE), which the launcher reads directly.
 
 <img src="screenshots/title.jpg" alt="the title screen" width="49%">
 <img src="screenshots/car-select.jpg" alt="choosing a car" width="49%">
+<img src="screenshots/multiplayer.jpg" alt="two phones in a network race lobby" width="49%">
 <img src="screenshots/race-widescreen.jpg" alt="a widescreen race" width="49%">
 <img src="screenshots/race-touch.jpg" alt="racing on the touch controls" width="49%">
 <img src="screenshots/pause-menu.jpg" alt="the pause menu over a race" width="49%">
 <img src="screenshots/split-screen.jpg" alt="split screen for two players" width="49%">
 <img src="screenshots/race-snow.jpg" alt="a snow track with the touch controls" width="49%">
-<img src="screenshots/multiplayer.jpg" alt="two phones in a network race lobby" width="49%">
+
 
 ## Playing
 
