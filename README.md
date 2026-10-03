@@ -12,7 +12,7 @@ gamepads with split screen, vibration, widescreen races up to 1920x1080 and
 full-colour textures.
 
 Network races work: phone with phone over Wi-Fi (IPX or TCP/IP), and phone
-with a PC running the Modern Patch over TCP/IP.
+with a PC running the Modern Patch over TCP/IP in both directions (host and client).
 
 <img src="screenshots/title.jpg" alt="the title screen" width="49%">
 <img src="screenshots/car-select.jpg" alt="choosing a car" width="49%">
@@ -31,7 +31,7 @@ You need:
 - the game's data from your own copy: the `FEDATA` and `GAMEDATA` folders of
   the 1998 retail disc.
 
-1. Copy both folders to the phone, for example to `/sdcard/nfs3-og`.
+1. Copy both folders to the phone, for example to `/sdcard/YOUR_FOLDER`.
 2. Install the app, open it and import that folder.
 3. Play.
 
