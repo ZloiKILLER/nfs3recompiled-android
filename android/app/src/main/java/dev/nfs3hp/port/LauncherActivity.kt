@@ -286,6 +286,16 @@ class LauncherActivity : ComponentActivity() {
         startActivityForResult(intent, REQUEST_PICK_ZIP)
     }
 
+    /** A CD image: an .iso, or the .bin of a BIN/CUE pair (DataImporter.importFromDiscImage). */
+    fun launchImagePicker() {
+        if (busy) return
+        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE)
+            // Any file: providers give .bin and .iso no one type; the importer
+            // reads what it is from the file itself.
+            .setType("*/*").addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        startActivityForResult(intent, REQUEST_PICK_IMAGE)
+    }
+
     fun launchSaveImport() {
         if (busy) return
         val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE)
@@ -344,6 +354,9 @@ class LauncherActivity : ComponentActivity() {
             REQUEST_PICK_ZIP -> startImport(displayName(uri)) { temporary ->
                 DataImporter.importFromZip(applicationContext, uri, temporary, progressListener())
             }
+            REQUEST_PICK_IMAGE -> startImport(displayName(uri, getString(R.string.data_set_name_image))) { temporary ->
+                DataImporter.importFromDiscImage(applicationContext, uri, temporary, progressListener())
+            }
             REQUEST_IMPORT_SAVES -> {
                 val withSettings = includeSettings()
                 startOperation {
@@ -375,7 +388,7 @@ class LauncherActivity : ComponentActivity() {
         }
     }
 
-    private fun displayName(uri: Uri): String {
+    private fun displayName(uri: Uri, fallback: String = getString(R.string.data_set_name_zip)): String {
         try {
             contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
                 if (cursor.moveToFirst())
@@ -384,7 +397,7 @@ class LauncherActivity : ComponentActivity() {
         } catch (e: Exception) {
             AppLog.w(TAG, "Could not read document display name", e)
         }
-        return getString(R.string.data_set_name_zip)
+        return fallback
     }
 
     private fun begin() {
@@ -557,6 +570,7 @@ class LauncherActivity : ComponentActivity() {
         private const val REQUEST_EXPORT_SAVES = 13
         private const val REQUEST_IMPORT_LAUNCHER = 14
         private const val REQUEST_EXPORT_LAUNCHER = 15
+        private const val REQUEST_PICK_IMAGE = 16
 
         /** Full screen, as the theme asks, said to the window as well: with the
          *  status bar gone from the start, nothing arrives later to move the

@@ -44,7 +44,8 @@
  <string name="delete">Διαγραφή</string>
  <string name="import_folder">Εισαγωγή φακέλου…</string>
  <string name="import_zip">Εισαγωγή ZIP…</string>
- <string name="data_import_hint">Εισήγαγε έναν φάκελο που περιέχει απευθείας τα \'fedata\' και \'gamedata\', ή ένα ZIP με αυτούς τους φακέλους. Ό,τι εισάγεται αντιγράφεται στον χώρο της εφαρμογής.</string>
+ <string name="import_image">Εισαγωγή εικόνας δίσκου…</string>
+ <string name="data_import_hint">Εισήγαγε έναν φάκελο που περιέχει απευθείας τα \'fedata\' και \'gamedata\', ή ένα ZIP με αυτούς τους φακέλους. Ό,τι εισάγεται αντιγράφεται στον χώρο της εφαρμογής. Γίνεται και εισαγωγή εικόνας του δίσκου του παιχνιδιού (ISO ή το BIN ενός ζεύγους BIN/CUE).</string>
  <string name="import_complete">Η εισαγωγή δεδομένων ολοκληρώθηκε</string>
  <string name="data_error">Η ενέργεια στα δεδομένα απέτυχε: %1$s</string>
  <string name="delete_data_title">Διαγραφή συνόλου δεδομένων;</string>
@@ -140,6 +141,12 @@
  <string name="importer_missing_subfolder">Ο επιλεγμένος φάκελος δεν έχει υποφάκελο \'%1$s\' — διάλεξε τον φάκελο που περιέχει απευθείας τα fedata και gamedata (για παράδειγμα τη ρίζα του CD).</string>
  <string name="importer_open_zip_failed">Δεν ήταν δυνατό το άνοιγμα του επιλεγμένου ZIP</string>
  <string name="importer_zip_missing_files">Από το ZIP λείπουν οι αναμενόμενοι φάκελοι fedata/gamedata</string>
+ <string name="data_set_name_image">Εισαγμένη εικόνα δίσκου</string>
+ <string name="importer_open_image_failed">Δεν ήταν δυνατό το άνοιγμα της επιλεγμένης εικόνας δίσκου</string>
+ <string name="importer_image_not_disc">Το επιλεγμένο αρχείο δεν είναι εικόνα CD (ISO ή το BIN ενός ζεύγους BIN/CUE)</string>
+ <string name="importer_image_cue">Αυτό είναι το αρχείο CUE: επιλέξτε το αρχείο BIN δίπλα του</string>
+ <string name="importer_image_missing_files">Η εικόνα δίσκου δεν έχει φακέλους fedata/gamedata</string>
+ <string name="importer_image_truncated">Η εικόνα δίσκου τελειώνει νωρίς: το αρχείο δεν αντιγράφηκε ολόκληρο</string>
 
  <string name="faq_layout_modes"><b>Μενού ή αγώνας;</b>\nΤο λέει το παιχνίδι. Όσο οδηγείς έχεις τη διάταξη του αγώνα: κουμπιά στροφής, πετάλια, ταχύτητες και τα υπόλοιπα. Στα μενού, και όποτε ανοίγει μενού πάνω από αγώνα, το port δεν δείχνει κανένα κουμπί: τα μενού δέχονται το άγγιγμα από μόνα τους, η Πίσω του τηλεφώνου είναι Escape και το πληκτρολόγιο εμφανίζεται μόνο του. Δεν υπάρχει τίποτα να αλλάξεις με το χέρι.</string>
  <string name="faq_mouse"><b>Πώς δουλεύουν τα μενού;</b>\nΜε άγγιγμα. Όπου βάζεις το δάχτυλο πηγαίνει ο δείκτης του παιχνιδιού, οπότε ένα χτύπημα πατά το στοιχείο από κάτω και ο ολισθητής ακολουθεί το δάχτυλο που τον σέρνει. Το κουμπί ή η κίνηση Πίσω του τηλεφώνου είναι Escape, και όταν το παιχνίδι ζητά όνομα, το πληκτρολόγιο του τηλεφώνου ανοίγει μόνο του· με ανοιχτό πληκτρολόγιο, η Πίσω το κλείνει.</string>

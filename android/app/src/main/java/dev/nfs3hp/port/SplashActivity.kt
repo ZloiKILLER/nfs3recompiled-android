@@ -100,6 +100,7 @@ class SplashActivity : ComponentActivity() {
                 ) {
                     MenuButton(getString(R.string.import_folder), { launchFolderPicker() }, Modifier.fillMaxWidth())
                     MenuButton(getString(R.string.import_zip), { launchZipPicker() }, Modifier.fillMaxWidth())
+                    MenuButton(getString(R.string.import_image), { launchImagePicker() }, Modifier.fillMaxWidth())
                 }
             }
         }
@@ -143,10 +144,21 @@ class SplashActivity : ComponentActivity() {
         startActivityForResult(intent, REQUEST_PICK_ZIP)
     }
 
+    /** A CD image: an .iso, or the .bin of a BIN/CUE pair (DataImporter.importFromDiscImage). */
+    private fun launchImagePicker() {
+        if (pickerOpen || importing) return
+        pickerOpen = true
+        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE)
+            // Any file: providers give .bin and .iso no one type; the importer
+            // reads what it is from the file itself.
+            .setType("*/*").addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        startActivityForResult(intent, REQUEST_PICK_IMAGE)
+    }
+
     @Deprecated("Deprecated in Java")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
-        if (requestCode != REQUEST_PICK_FOLDER && requestCode != REQUEST_PICK_ZIP) return
+        if (requestCode != REQUEST_PICK_FOLDER && requestCode != REQUEST_PICK_ZIP && requestCode != REQUEST_PICK_IMAGE) return
         pickerOpen = false
         val uri = data?.data
         if (resultCode != Activity.RESULT_OK || uri == null) return
@@ -159,10 +171,10 @@ class SplashActivity : ComponentActivity() {
                 AppLog.w(TAG, "Could not persist folder permission", e)
             }
         }
-        startImport(uri, fromZip = requestCode == REQUEST_PICK_ZIP)
+        startImport(uri, requestCode)
     }
 
-    private fun startImport(uri: Uri, fromZip: Boolean) {
+    private fun startImport(uri: Uri, kind: Int) {
         if (importing) return
         val root = try {
             dataRoot()
@@ -184,10 +196,11 @@ class SplashActivity : ComponentActivity() {
                         status = LauncherActivity.importStatus(this, importPercent, currentPath)
                     }
                 }
-                if (fromZip)
-                    DataImporter.importFromZip(applicationContext, uri, root, progress)
-                else
-                    DataImporter.importFromTree(applicationContext, uri, root, progress)
+                when (kind) {
+                    REQUEST_PICK_ZIP -> DataImporter.importFromZip(applicationContext, uri, root, progress)
+                    REQUEST_PICK_IMAGE -> DataImporter.importFromDiscImage(applicationContext, uri, root, progress)
+                    else -> DataImporter.importFromTree(applicationContext, uri, root, progress)
+                }
                 runOnUiThread {
                     if (worker !== running || isDestroyed) return@runOnUiThread
                     worker = null
@@ -243,5 +256,6 @@ class SplashActivity : ComponentActivity() {
         private const val TAG = "NFS3Splash"
         private const val REQUEST_PICK_FOLDER = 1
         private const val REQUEST_PICK_ZIP = 2
+        private const val REQUEST_PICK_IMAGE = 3
     }
 }

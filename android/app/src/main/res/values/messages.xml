@@ -35,6 +35,12 @@
  <string name="importer_missing_subfolder">The selected folder has no \'%1$s\' subfolder — pick the folder that directly contains fedata and gamedata (e.g. the CD root).</string>
  <string name="importer_open_zip_failed">Could not open the selected ZIP</string>
  <string name="importer_zip_missing_files">The ZIP is missing the expected fedata/gamedata files</string>
+ <string name="data_set_name_image">Imported disc image</string>
+ <string name="importer_open_image_failed">Could not open the selected disc image</string>
+ <string name="importer_image_not_disc">The selected file is not a CD image (ISO, or the BIN of a BIN/CUE)</string>
+ <string name="importer_image_cue">This is the CUE file: pick the BIN file next to it</string>
+ <string name="importer_image_missing_files">The disc image has no fedata/gamedata folders</string>
+ <string name="importer_image_truncated">The disc image ends early: the file was not copied whole</string>
  <string name="pref_touch_enabled">Use touch controls</string>
  <string name="editor_snap_grid">Snap to grid</string>
 </resources>

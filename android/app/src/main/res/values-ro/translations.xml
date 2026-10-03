@@ -44,7 +44,8 @@
  <string name="delete">Șterge</string>
  <string name="import_folder">Importă folder…</string>
  <string name="import_zip">Importă ZIP…</string>
- <string name="data_import_hint">Importă un folder care conține direct \'fedata\' și \'gamedata\', sau un ZIP cu aceste foldere. Ce imporți se copiază în stocarea aplicației.</string>
+ <string name="import_image">Importă imagine de disc…</string>
+ <string name="data_import_hint">Importă un folder care conține direct \'fedata\' și \'gamedata\', sau un ZIP cu aceste foldere. Ce imporți se copiază în stocarea aplicației. Merge și o imagine a discului jocului (ISO sau BIN-ul unei perechi BIN/CUE).</string>
  <string name="import_complete">Importul datelor s-a încheiat</string>
  <string name="data_error">Operația cu datele a eșuat: %1$s</string>
  <string name="delete_data_title">Ștergi setul de date?</string>
@@ -140,6 +141,12 @@
  <string name="importer_missing_subfolder">Folderul selectat nu are subfolderul \'%1$s\' — alege folderul care conține direct fedata și gamedata (de exemplu rădăcina CD-ului).</string>
  <string name="importer_open_zip_failed">ZIP-ul selectat nu poate fi deschis</string>
  <string name="importer_zip_missing_files">Din ZIP lipsesc folderele fedata/gamedata așteptate</string>
+ <string name="data_set_name_image">Imagine de disc importată</string>
+ <string name="importer_open_image_failed">Imaginea de disc aleasă nu a putut fi deschisă</string>
+ <string name="importer_image_not_disc">Fișierul ales nu este o imagine de CD (ISO sau BIN-ul unei perechi BIN/CUE)</string>
+ <string name="importer_image_cue">Acesta este fișierul CUE: alege fișierul BIN de lângă el</string>
+ <string name="importer_image_missing_files">Imaginea de disc nu are folderele fedata/gamedata</string>
+ <string name="importer_image_truncated">Imaginea de disc se termină prea devreme: fișierul nu a fost copiat întreg</string>
 
  <string name="faq_layout_modes"><b>Meniu sau cursă?</b>\nSpune jocul. Cât conduci ai aranjamentul de cursă: butoane de viraj, pedale, trepte și restul. În meniuri, și ori de câte ori se deschide un meniu peste o cursă, portul nu arată niciun buton: meniurile primesc singure atingerea, butonul Înapoi al telefonului este Escape, iar tastatura apare singură. Nu e nimic de comutat manual.</string>
  <string name="faq_mouse"><b>Cum funcționează meniurile?</b>\nPrin atingere. Unde pui degetul, acolo ajunge indicatorul jocului, așa că o atingere apasă elementul de dedesubt, iar un cursor urmează degetul care îl trage. Butonul sau gestul Înapoi al telefonului este Escape, iar când jocul cere un nume, tastatura telefonului se deschide singură; cu tastatura deschisă, Înapoi o închide.</string>

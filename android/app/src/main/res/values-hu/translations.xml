@@ -44,7 +44,8 @@
  <string name="delete">Törlés</string>
  <string name="import_folder">Mappa importálása…</string>
  <string name="import_zip">ZIP importálása…</string>
- <string name="data_import_hint">Olyan mappát importálj, amely közvetlenül tartalmazza a \'fedata\' és \'gamedata\' mappát, vagy egy ZIP-et ezekkel a mappákkal. Az importált adatok az alkalmazás tárhelyére másolódnak.</string>
+ <string name="import_image">Lemezkép importálása…</string>
+ <string name="data_import_hint">Olyan mappát importálj, amely közvetlenül tartalmazza a \'fedata\' és \'gamedata\' mappát, vagy egy ZIP-et ezekkel a mappákkal. Az importált adatok az alkalmazás tárhelyére másolódnak. A játéklemez képe is jó (ISO, vagy egy BIN/CUE pár BIN fájlja).</string>
  <string name="import_complete">Az adatimportálás kész</string>
  <string name="data_error">Az adatművelet nem sikerült: %1$s</string>
  <string name="delete_data_title">Törlöd az adatkészletet?</string>
@@ -140,6 +141,12 @@
  <string name="importer_missing_subfolder">A kiválasztott mappában nincs \'%1$s\' almappa — azt a mappát válaszd, amely közvetlenül tartalmazza a fedata és gamedata mappát (például a CD gyökerét).</string>
  <string name="importer_open_zip_failed">A kiválasztott ZIP nem nyitható meg</string>
  <string name="importer_zip_missing_files">A ZIP-ből hiányoznak a várt fedata/gamedata mappák</string>
+ <string name="data_set_name_image">Importált lemezkép</string>
+ <string name="importer_open_image_failed">A kiválasztott lemezkép nem nyitható meg</string>
+ <string name="importer_image_not_disc">A kiválasztott fájl nem CD-kép (ISO, vagy egy BIN/CUE pár BIN fájlja)</string>
+ <string name="importer_image_cue">Ez a CUE fájl: válaszd a mellette lévő BIN fájlt</string>
+ <string name="importer_image_missing_files">A lemezképben nincsenek fedata/gamedata mappák</string>
+ <string name="importer_image_truncated">A lemezkép túl korán véget ér: a fájl nem másolódott át teljesen</string>
 
  <string name="faq_layout_modes"><b>Menü vagy verseny?</b>\nA játék mondja meg. Vezetés közben a versenyelrendezést kapod: kormánygombok, pedálok, sebességváltás és a többi. A menükben, és valahányszor menü nyílik a verseny fölé, a port egyetlen gombot sem mutat: a menük maguk fogadják az érintést, a telefon Vissza gombja az Escape, a billentyűzet pedig magától feljön. Kézzel nincs mit átkapcsolni.</string>
  <string name="faq_mouse"><b>Hogyan működnek a menük?</b>\nÉrintéssel. Ahová az ujjadat teszed, oda kerül a játék mutatója, így a koppintás az alatta lévő elemet nyomja meg, a csúszka pedig követi a húzó ujjat. A telefon Vissza gombja vagy mozdulata az Escape, és amikor a játék nevet kér, a telefon billentyűzete magától megnyílik; nyitott billentyűzetnél a Vissza bezárja.</string>

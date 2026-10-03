@@ -44,7 +44,8 @@
  <string name="delete">Обриши</string>
  <string name="import_folder">Увези фасциклу…</string>
  <string name="import_zip">Увези ZIP…</string>
- <string name="data_import_hint">Увези фасциклу која директно садржи \'fedata\' и \'gamedata\', или ZIP са тим фасциклама. Увезено се копира у складиште апликације.</string>
+ <string name="import_image">Увези слику диска…</string>
+ <string name="data_import_hint">Увези фасциклу која директно садржи \'fedata\' и \'gamedata\', или ZIP са тим фасциклама. Увезено се копира у складиште апликације. Може и слика диска игре (ISO или BIN из пара BIN/CUE).</string>
  <string name="import_complete">Увоз података завршен</string>
  <string name="data_error">Радња са подацима није успела: %1$s</string>
  <string name="delete_data_title">Обрисати скуп података?</string>
@@ -140,6 +141,12 @@
  <string name="importer_missing_subfolder">Изабрана фасцикла нема подфасциклу \'%1$s\' — изабери фасциклу која директно садржи fedata и gamedata (на пример корен ЦД-а).</string>
  <string name="importer_open_zip_failed">Изабрани ZIP није могуће отворити</string>
  <string name="importer_zip_missing_files">У ZIP-у недостају очекиване фасцикле fedata/gamedata</string>
+ <string name="data_set_name_image">Увезена слика диска</string>
+ <string name="importer_open_image_failed">Изабрану слику диска није могуће отворити</string>
+ <string name="importer_image_not_disc">Изабрана датотека није слика CD-а (ISO или BIN из пара BIN/CUE)</string>
+ <string name="importer_image_cue">Ово је CUE датотека: изабери BIN датотеку поред ње</string>
+ <string name="importer_image_missing_files">У слици диска нема фасцикли fedata/gamedata</string>
+ <string name="importer_image_truncated">Слика диска се прерано завршава: датотека није копирана цела</string>
 
  <string name="faq_layout_modes"><b>Мени или трка?</b>\nИгра то каже. Док возиш имаш тркачки распоред: дугмад за скретање, папучице, степене преноса и остало. У менијима, и кад год се мени отвори преко трке, порт не приказује ниједно дугме: менији сами примају додир, системско Назад је Escape, а тастатура се подиже сама. Ручно нема шта да се мења.</string>
  <string name="faq_mouse"><b>Како раде менији?</b>\nДодиром. Где ставиш прст, ту је показивач игре, па додир притиска ставку испод њега, а клизач прати прст који га вуче. Системско дугме или покрет Назад је Escape, а кад игра затражи име, тастатура телефона се отвара сама; док је тастатура отворена, Назад је затвара.</string>

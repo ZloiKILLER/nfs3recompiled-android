@@ -44,7 +44,8 @@
  <string name="delete">Eliminar</string>
  <string name="import_folder">Importar carpeta…</string>
  <string name="import_zip">Importar ZIP…</string>
- <string name="data_import_hint">Importa una carpeta que contenga directamente \'fedata\' y \'gamedata\', o un ZIP con esas carpetas. Lo importado se copia al almacenamiento de la aplicación.</string>
+ <string name="import_image">Importar imagen de disco…</string>
+ <string name="data_import_hint">Importa una carpeta que contenga directamente \'fedata\' y \'gamedata\', o un ZIP con esas carpetas. Lo importado se copia al almacenamiento de la aplicación. También sirve una imagen del disco del juego (ISO, o el BIN de un par BIN/CUE).</string>
  <string name="import_complete">Importación de datos completada</string>
  <string name="data_error">La operación con los datos ha fallado: %1$s</string>
  <string name="delete_data_title">¿Eliminar el conjunto de datos?</string>
@@ -140,6 +141,12 @@
  <string name="importer_missing_subfolder">La carpeta seleccionada no tiene la subcarpeta \'%1$s\': elige la carpeta que contiene directamente fedata y gamedata (por ejemplo, la raíz del CD).</string>
  <string name="importer_open_zip_failed">No se ha podido abrir el ZIP seleccionado</string>
  <string name="importer_zip_missing_files">Al ZIP le faltan las carpetas fedata/gamedata esperadas</string>
+ <string name="data_set_name_image">Imagen de disco importada</string>
+ <string name="importer_open_image_failed">No se pudo abrir la imagen de disco seleccionada</string>
+ <string name="importer_image_not_disc">El archivo seleccionado no es una imagen de CD (ISO, o el BIN de un par BIN/CUE)</string>
+ <string name="importer_image_cue">Este es el archivo CUE: elige el archivo BIN que está a su lado</string>
+ <string name="importer_image_missing_files">La imagen de disco no tiene las carpetas fedata/gamedata</string>
+ <string name="importer_image_truncated">La imagen de disco termina antes de tiempo: el archivo no se copió entero</string>
 
  <string name="faq_layout_modes"><b>¿Menú o carrera?</b>\nLo decide el juego. Mientras conduces tienes la disposición de carrera: botones de giro, pedales, marchas y lo demás. En los menús, y siempre que se abre un menú sobre una carrera, el port no muestra ningún botón: los menús aceptan el toque por sí mismos, el Atrás del teléfono es Escape y el teclado aparece solo. No hay nada que cambiar a mano.</string>
  <string name="faq_mouse"><b>¿Cómo funcionan los menús?</b>\nTocándolos. Donde pones el dedo va el puntero del juego, así que un toque pulsa el elemento que hay debajo y un control deslizante sigue al dedo que lo arrastra. El botón o el gesto Atrás del teléfono es Escape y, cuando el juego pide un nombre, el teclado del teléfono se abre solo; con el teclado abierto, Atrás lo cierra.</string>

@@ -4,11 +4,13 @@ import android.content.ContentResolver;
 import android.content.Context;
 import android.database.Cursor;
 import android.net.Uri;
+import android.os.ParcelFileDescriptor;
 import android.provider.DocumentsContract;
 import android.provider.OpenableColumns;
 import androidx.documentfile.provider.DocumentFile;
 
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
@@ -443,6 +445,107 @@ final class DataImporter
         {
             removeCompletionMarker(destRoot, USER_DATA_COMPLETE);
             throw new IOException(strings.getString(R.string.importer_zip_missing_files));
+        }
+    }
+
+    /** Imports fedata/, gamedata/ and optional drivers/ straight out of a CD
+     *  image -- an .iso, or the .bin (.img) of a BIN/CUE pair -- read in place
+     *  (DiscImage), the folders found at the disc's root as on the retail disc.
+     *  Picking the CUE sheet itself says to pick its BIN: the sheet only names
+     *  it, and a picked file gives access to that file alone. */
+    static void importFromDiscImage(Context context, Uri imageUri, File destRoot, ProgressListener listener)
+        throws IOException
+    {
+        Context strings = LocaleHelper.wrap(context);
+        ContentResolver resolver = context.getContentResolver();
+        removeCompletionMarker(destRoot, USER_DATA_COMPLETE);
+        if (listener != null)
+            listener.onProgress(0, -1, "");
+        try (ParcelFileDescriptor descriptor = resolver.openFileDescriptor(imageUri, "r"))
+        {
+            if (descriptor == null)
+                throw new IOException(strings.getString(R.string.importer_open_image_failed));
+            try (FileInputStream file = new FileInputStream(descriptor.getFileDescriptor()))
+            {
+                java.nio.channels.FileChannel channel = file.getChannel();
+                DiscImage disc = DiscImage.open(channel);
+                if (disc == null)
+                {
+                    throw new IOException(strings.getString(DiscImage.looksLikeCueSheet(channel)
+                        ? R.string.importer_image_cue : R.string.importer_image_not_disc));
+                }
+                DiscImage.Entry[] sources = new DiscImage.Entry[USER_DATA_DIRS.length];
+                long total = 0;
+                for (int i = 0; i < USER_DATA_DIRS.length; ++i)
+                {
+                    throwIfInterrupted();
+                    DiscImage.Entry src = disc.find(disc.root(), USER_DATA_DIRS[i]);
+                    if (src == null || !src.directory)
+                    {
+                        if (USER_DATA_REQUIRED[i])
+                            throw new IOException(strings.getString(R.string.importer_image_missing_files));
+                        continue;
+                    }
+                    sources[i] = src;
+                    total += discTreeSize(disc, src);
+                }
+                long[] bytesCopied = { 0 };
+                for (int i = 0; i < USER_DATA_DIRS.length; ++i)
+                    if (sources[i] != null)
+                        copyDiscTree(disc, sources[i], new File(destRoot, USER_DATA_DIRS[i]), listener, bytesCopied, total);
+            }
+        }
+        catch (DiscImage.TruncatedException e)
+        {
+            throw new IOException(strings.getString(R.string.importer_image_truncated), e);
+        }
+        copyMissingInstallWin(context, destRoot);
+        copyMissingRender(context, destRoot);
+        writeImportDefaults(destRoot);
+        writeCompletionMarker(destRoot, USER_DATA_COMPLETE);
+        if (!isUserDataPresent(destRoot))
+        {
+            removeCompletionMarker(destRoot, USER_DATA_COMPLETE);
+            throw new IOException(strings.getString(R.string.importer_image_missing_files));
+        }
+    }
+
+    private static long discTreeSize(DiscImage disc, DiscImage.Entry folder) throws IOException
+    {
+        long size = 0;
+        for (DiscImage.Entry child : disc.list(folder))
+            size += child.directory ? discTreeSize(disc, child) : child.size;
+        return size;
+    }
+
+    /** A folder of the disc copied, its names in lower case. */
+    private static void copyDiscTree(DiscImage disc, DiscImage.Entry folder, File dstDir, ProgressListener listener,
+                                     long[] bytesCopied, long total)
+        throws IOException
+    {
+        if (!dstDir.isDirectory() && !dstDir.mkdirs())
+            throw new IOException("Could not create directory: " + dstDir);
+        for (DiscImage.Entry child : disc.list(folder))
+        {
+            throwIfInterrupted();
+            String name = child.name.toLowerCase(Locale.ROOT);
+            File dstChild = checkedChild(dstDir, name);
+            if (child.directory)
+            {
+                copyDiscTree(disc, child, dstChild, listener, bytesCopied, total);
+                continue;
+            }
+            File part = new File(dstDir, name + ".part");
+            final long baseBytes = bytesCopied[0];
+            try (InputStream in = disc.open(child))
+            {
+                bytesCopied[0] = baseBytes + copyFileAtomically(in, part, dstChild, (n) -> {
+                    if (listener != null)
+                        listener.onProgress(baseBytes + n, total, dstChild.getPath());
+                });
+            }
+            if (listener != null)
+                listener.onProgress(bytesCopied[0], total, dstChild.getPath());
         }
     }
 

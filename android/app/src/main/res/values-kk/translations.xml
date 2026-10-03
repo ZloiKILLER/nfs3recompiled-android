@@ -44,7 +44,8 @@
  <string name="delete">Жою</string>
  <string name="import_folder">Қалтаны импорттау…</string>
  <string name="import_zip">ZIP импорттау…</string>
- <string name="data_import_hint">Ішінде тікелей \'fedata\' және \'gamedata\' бар қалтаны немесе сол қалталары бар ZIP файлын импортта. Импортталған дүние қолданба жадына көшіріледі.</string>
+ <string name="import_image">Диск бейнесін импорттау…</string>
+ <string name="data_import_hint">Ішінде тікелей \'fedata\' және \'gamedata\' бар қалтаны немесе сол қалталары бар ZIP файлын импортта. Импортталған дүние қолданба жадына көшіріледі. Ойын дискісінің бейнесін де импорттауға болады (ISO немесе BIN/CUE жұбындағы BIN).</string>
  <string name="import_complete">Деректер импорты аяқталды</string>
  <string name="data_error">Деректермен әрекет сәтсіз аяқталды: %1$s</string>
  <string name="delete_data_title">Деректер жиынын жою керек пе?</string>
@@ -140,6 +141,12 @@
  <string name="importer_missing_subfolder">Таңдалған қалтада \'%1$s\' ішкі қалтасы жоқ — ішінде тікелей fedata және gamedata бар қалтаны таңда (мысалы, дискінің түбірі).</string>
  <string name="importer_open_zip_failed">Таңдалған ZIP файлын ашу мүмкін болмады</string>
  <string name="importer_zip_missing_files">ZIP ішінде күтілген fedata/gamedata қалталары жоқ</string>
+ <string name="data_set_name_image">Импортталған диск бейнесі</string>
+ <string name="importer_open_image_failed">Таңдалған диск бейнесін ашу мүмкін болмады</string>
+ <string name="importer_image_not_disc">Таңдалған файл CD бейнесі емес (ISO немесе BIN/CUE жұбындағы BIN керек)</string>
+ <string name="importer_image_cue">Бұл CUE файлы: жанындағы BIN файлын таңдаңыз</string>
+ <string name="importer_image_missing_files">Диск бейнесінде fedata/gamedata қалталары жоқ</string>
+ <string name="importer_image_truncated">Диск бейнесі ерте аяқталады: файл толық көшірілмеген</string>
 
  <string name="faq_layout_modes"><b>Мәзір ме, жарыс па?</b>\nОны ойын айтады. Жүргізіп келе жатқанда жарыс сұлбасы болады: бұрылыс түймелері, педальдар, берілістер және қалғаны. Мәзірлерде, сондай-ақ жарыстың үстінен мәзір ашылғанда, порт бірде-бір түйме көрсетпейді: мәзірлер жанасуды өздері қабылдайды, телефонның «Артқа» түймесі — Escape, ал пернетақта өзі шығады. Қолмен ауыстыратын ештеңе жоқ.</string>
  <string name="faq_mouse"><b>Мәзірлер қалай жұмыс істейді?</b>\nЖанасу арқылы. Саусақты қайда қойсаң, ойын меңзері сонда барады: түрту астындағы тармақты басады, ал жүгірткі оны сүйреген саусақтың соңынан ереді. Телефонның «Артқа» түймесі немесе қимылы — Escape, ал ойын есім сұрағанда телефон пернетақтасы өзі ашылады; пернетақта ашық тұрғанда «Артқа» оны жабады.</string>

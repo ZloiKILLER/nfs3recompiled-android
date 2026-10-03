@@ -44,7 +44,8 @@
  <string name="delete">Ta bort</string>
  <string name="import_folder">Importera mapp…</string>
  <string name="import_zip">Importera ZIP…</string>
- <string name="data_import_hint">Importera en mapp som direkt innehåller \'fedata\' och \'gamedata\', eller en ZIP med de mapparna. Det du importerar kopieras till appens lagring.</string>
+ <string name="import_image">Importera skivavbild…</string>
+ <string name="data_import_hint">Importera en mapp som direkt innehåller \'fedata\' och \'gamedata\', eller en ZIP med de mapparna. Det du importerar kopieras till appens lagring. En avbild av spelskivan går också (ISO, eller BIN-filen i ett BIN/CUE-par).</string>
  <string name="import_complete">Dataimporten är klar</string>
  <string name="data_error">Dataåtgärden misslyckades: %1$s</string>
  <string name="delete_data_title">Ta bort datauppsättningen?</string>
@@ -140,6 +141,12 @@
  <string name="importer_missing_subfolder">Den valda mappen saknar undermappen \'%1$s\' — välj mappen som direkt innehåller fedata och gamedata (till exempel cd-roten).</string>
  <string name="importer_open_zip_failed">Det gick inte att öppna den valda ZIP-filen</string>
  <string name="importer_zip_missing_files">ZIP-filen saknar de förväntade mapparna fedata/gamedata</string>
+ <string name="data_set_name_image">Importerad skivavbild</string>
+ <string name="importer_open_image_failed">Det gick inte att öppna den valda skivavbilden</string>
+ <string name="importer_image_not_disc">Den valda filen är ingen cd-avbild (ISO, eller BIN-filen i ett BIN/CUE-par)</string>
+ <string name="importer_image_cue">Det här är CUE-filen: välj BIN-filen bredvid</string>
+ <string name="importer_image_missing_files">Skivavbilden saknar mapparna fedata/gamedata</string>
+ <string name="importer_image_truncated">Skivavbilden tar slut för tidigt: filen kopierades inte helt</string>
 
  <string name="faq_layout_modes"><b>Meny eller lopp?</b>\nSpelet avgör det. När du kör får du loppets layout: styrknappar, pedaler, växlar och resten. I menyerna, och så fort en meny öppnas ovanpå ett lopp, visar porten inga knappar alls: menyerna tar emot beröringen själva, telefonens Tillbaka är Escape och tangentbordet kommer upp av sig självt. Det finns inget att växla för hand.</string>
  <string name="faq_mouse"><b>Hur fungerar menyerna?</b>\nGenom beröring. Spelets pekare hamnar där du sätter fingret, så en tryckning trycker på posten under det och ett reglage följer fingret som drar det. Telefonens Tillbaka-knapp eller -gest är Escape, och när spelet ber om ett namn öppnas telefonens tangentbord av sig självt; med tangentbordet uppe stänger Tillbaka det.</string>

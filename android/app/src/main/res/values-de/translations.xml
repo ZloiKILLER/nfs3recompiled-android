@@ -46,7 +46,8 @@
  <string name="delete">Löschen</string>
  <string name="import_folder">Ordner importieren…</string>
  <string name="import_zip">ZIP importieren…</string>
- <string name="data_import_hint">Importiere einen Ordner, der \'fedata\' und \'gamedata\' direkt enthält, oder ein ZIP mit diesen Ordnern. Importiertes wird in den App-Speicher kopiert.</string>
+ <string name="import_image">Disk-Image importieren…</string>
+ <string name="data_import_hint">Importiere einen Ordner, der \'fedata\' und \'gamedata\' direkt enthält, oder ein ZIP mit diesen Ordnern. Importiertes wird in den App-Speicher kopiert. Auch ein Image der Spiel-CD geht (ISO oder die BIN eines BIN/CUE-Paars).</string>
  <string name="import_complete">Datenimport abgeschlossen</string>
  <string name="data_error">Datenvorgang fehlgeschlagen: %1$s</string>
  <string name="delete_data_title">Datensatz löschen?</string>
@@ -142,6 +143,12 @@
  <string name="importer_missing_subfolder">Im gewählten Ordner fehlt der Unterordner \'%1$s\' — wähle den Ordner, der fedata und gamedata direkt enthält (etwa das CD-Stammverzeichnis).</string>
  <string name="importer_open_zip_failed">Das gewählte ZIP lässt sich nicht öffnen</string>
  <string name="importer_zip_missing_files">Im ZIP fehlen die erwarteten Ordner fedata/gamedata</string>
+ <string name="data_set_name_image">Importiertes Disk-Image</string>
+ <string name="importer_open_image_failed">Das gewählte Disk-Image konnte nicht geöffnet werden</string>
+ <string name="importer_image_not_disc">Die gewählte Datei ist kein CD-Image (ISO oder die BIN eines BIN/CUE-Paars)</string>
+ <string name="importer_image_cue">Das ist die CUE-Datei: Wähle die BIN-Datei daneben</string>
+ <string name="importer_image_missing_files">Im Disk-Image fehlen die Ordner fedata/gamedata</string>
+ <string name="importer_image_truncated">Das Disk-Image endet zu früh: Die Datei wurde nicht vollständig kopiert</string>
 
  <string name="faq_layout_modes"><b>Menü oder Rennen?</b>\nDas sagt das Spiel. Beim Fahren bekommst du die Rennanordnung: Lenktasten, Pedale, Gänge und den Rest. In den Menüs, und sobald sich ein Menü über ein Rennen legt, zeigt der Port überhaupt keine Tasten: Die Menüs nehmen die Berührung selbst an, das Zurück des Telefons ist Escape, und die Tastatur kommt von allein. Von Hand ist nichts umzuschalten.</string>
  <string name="faq_mouse"><b>Wie funktionieren die Menüs?</b>\nDurch Berühren. Wo der Finger liegt, ist der Zeiger des Spiels, also drückt ein Tippen den Eintrag darunter und ein Regler folgt dem Finger, der ihn zieht. Die Zurück-Taste oder -Geste des Telefons ist Escape, und wenn das Spiel nach einem Namen fragt, öffnet sich die Tastatur des Telefons von selbst; bei offener Tastatur schließt Zurück sie.</string>

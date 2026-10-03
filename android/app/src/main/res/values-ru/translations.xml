@@ -44,7 +44,8 @@
  <string name="delete">Удалить</string>
  <string name="import_folder">Импорт папки…</string>
  <string name="import_zip">Импорт ZIP…</string>
- <string name="data_import_hint">Импортируйте папку, в которой непосредственно лежат \'fedata\' и \'gamedata\', либо ZIP с этими папками. Импортированное копируется в хранилище приложения.</string>
+ <string name="import_image">Импорт образа диска…</string>
+ <string name="data_import_hint">Импортируйте папку, в которой непосредственно лежат \'fedata\' и \'gamedata\', либо ZIP с этими папками. Импортированное копируется в хранилище приложения. Подойдёт и образ диска игры (ISO или BIN из пары BIN/CUE).</string>
  <string name="import_complete">Импорт данных завершён</string>
  <string name="data_error">Операция с данными не удалась: %1$s</string>
  <string name="delete_data_title">Удалить набор данных?</string>
@@ -140,6 +141,12 @@
  <string name="importer_missing_subfolder">В выбранной папке нет подпапки \'%1$s\' — выберите папку, в которой непосредственно лежат fedata и gamedata (например, корень диска).</string>
  <string name="importer_open_zip_failed">Не удалось открыть выбранный ZIP</string>
  <string name="importer_zip_missing_files">В ZIP нет ожидаемых папок fedata/gamedata</string>
+ <string name="data_set_name_image">Импортированный образ диска</string>
+ <string name="importer_open_image_failed">Не удалось открыть выбранный образ диска</string>
+ <string name="importer_image_not_disc">Выбранный файл — не образ CD (нужен ISO или BIN из пары BIN/CUE)</string>
+ <string name="importer_image_cue">Это файл CUE: выберите лежащий рядом файл BIN</string>
+ <string name="importer_image_missing_files">В образе диска нет папок fedata/gamedata</string>
+ <string name="importer_image_truncated">Образ диска обрывается: файл скопирован не целиком</string>
 
  <string name="faq_layout_modes"><b>Меню или гонка?</b>\nЭто решает игра. Пока вы едете, на экране гоночная раскладка: кнопки поворота, педали, передачи и всё остальное. В меню, а также когда меню открывается поверх гонки, порт не показывает ни одной кнопки: меню сами принимают касание, системная «Назад» работает как Escape, а клавиатура поднимается сама. Переключать вручную нечего.</string>
  <string name="faq_mouse"><b>Как работают меню?</b>\nКасанием. Указатель игры оказывается там, где палец: тап нажимает пункт под ним, а ползунок идёт за пальцем, который его тянет. Системная кнопка или жест «Назад» — это Escape, а когда игра просит имя, клавиатура телефона открывается сама; при открытой клавиатуре «Назад» закрывает её.</string>

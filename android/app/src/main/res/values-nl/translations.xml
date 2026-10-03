@@ -44,7 +44,8 @@
  <string name="delete">Verwijderen</string>
  <string name="import_folder">Map importeren…</string>
  <string name="import_zip">ZIP importeren…</string>
- <string name="data_import_hint">Importeer een map die \'fedata\' en \'gamedata\' rechtstreeks bevat, of een ZIP met die mappen. Wat je importeert wordt naar de app-opslag gekopieerd.</string>
+ <string name="import_image">Schijfkopie importeren…</string>
+ <string name="data_import_hint">Importeer een map die \'fedata\' en \'gamedata\' rechtstreeks bevat, of een ZIP met die mappen. Wat je importeert wordt naar de app-opslag gekopieerd. Een kopie van de spelschijf kan ook (ISO, of de BIN van een BIN/CUE-paar).</string>
  <string name="import_complete">Gegevensimport voltooid</string>
  <string name="data_error">Gegevensbewerking mislukt: %1$s</string>
  <string name="delete_data_title">Gegevensset verwijderen?</string>
@@ -140,6 +141,12 @@
  <string name="importer_missing_subfolder">De gekozen map heeft geen submap \'%1$s\' — kies de map die fedata en gamedata rechtstreeks bevat (bijvoorbeeld de hoofdmap van de cd).</string>
  <string name="importer_open_zip_failed">De gekozen ZIP kan niet worden geopend</string>
  <string name="importer_zip_missing_files">In de ZIP ontbreken de verwachte mappen fedata/gamedata</string>
+ <string name="data_set_name_image">Geïmporteerde schijfkopie</string>
+ <string name="importer_open_image_failed">De gekozen schijfkopie kon niet worden geopend</string>
+ <string name="importer_image_not_disc">Het gekozen bestand is geen cd-kopie (ISO, of de BIN van een BIN/CUE-paar)</string>
+ <string name="importer_image_cue">Dit is het CUE-bestand: kies het BIN-bestand ernaast</string>
+ <string name="importer_image_missing_files">De schijfkopie heeft geen mappen fedata/gamedata</string>
+ <string name="importer_image_truncated">De schijfkopie houdt te vroeg op: het bestand is niet helemaal gekopieerd</string>
 
  <string name="faq_layout_modes"><b>Menu of race?</b>\nDat zegt het spel. Tijdens het rijden krijg je de race-indeling: stuurknoppen, pedalen, versnellingen en de rest. In de menu\'s, en zodra er een menu over een race opent, toont de port helemaal geen knoppen: de menu\'s nemen de aanraking zelf aan, de Terug van de telefoon is Escape en het toetsenbord komt vanzelf op. Er valt niets met de hand om te schakelen.</string>
  <string name="faq_mouse"><b>Hoe werken de menu\'s?</b>\nMet aanraken. Waar je je vinger neerzet, staat de aanwijzer van het spel, dus een tik drukt het item eronder in en een schuifregelaar volgt de vinger die hem sleept. De Terug-knop of -veeg van de telefoon is Escape, en als het spel om een naam vraagt, gaat het toetsenbord van de telefoon vanzelf open; met open toetsenbord sluit Terug het.</string>

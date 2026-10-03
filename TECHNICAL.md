@@ -30,6 +30,12 @@ executables from `nfs3hp/`.
 
 ## Playing on a phone
 
+The game's data is imported once, from a folder holding `FEDATA` and
+`GAMEDATA`, a ZIP of them, or an image of the disc: an `.iso`, or the `.bin`
+(`.img`) of a BIN/CUE pair, read in place (`DiscImage.java`: ISO 9660 in
+2048-byte sectors or whole 2352-byte MODE1/MODE2 ones; the CUE sheet is not
+needed).
+
 Android 8.0 or newer on a 64-bit ARM device (ARMv8, arm64-v8a) with OpenGL ES
 3.0. Testing happens on Android 13, and
 Android 10 was confirmed by a tester; 8 and 9 install but have not been played

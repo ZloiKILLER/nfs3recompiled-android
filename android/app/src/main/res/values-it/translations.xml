@@ -44,7 +44,8 @@
  <string name="delete">Elimina</string>
  <string name="import_folder">Importa cartella…</string>
  <string name="import_zip">Importa ZIP…</string>
- <string name="data_import_hint">Importa una cartella che contenga direttamente \'fedata\' e \'gamedata\', oppure uno ZIP con quelle cartelle. Ciò che importi viene copiato nella memoria dell\'app.</string>
+ <string name="import_image">Importa immagine disco…</string>
+ <string name="data_import_hint">Importa una cartella che contenga direttamente \'fedata\' e \'gamedata\', oppure uno ZIP con quelle cartelle. Ciò che importi viene copiato nella memoria dell\'app. Va bene anche un\'immagine del disco del gioco (ISO, o il BIN di una coppia BIN/CUE).</string>
  <string name="import_complete">Importazione dei dati completata</string>
  <string name="data_error">Operazione sui dati non riuscita: %1$s</string>
  <string name="delete_data_title">Eliminare il set di dati?</string>
@@ -140,6 +141,12 @@
  <string name="importer_missing_subfolder">La cartella selezionata non ha la sottocartella \'%1$s\': scegli la cartella che contiene direttamente fedata e gamedata (per esempio la radice del CD).</string>
  <string name="importer_open_zip_failed">Impossibile aprire lo ZIP selezionato</string>
  <string name="importer_zip_missing_files">Nello ZIP mancano le cartelle fedata/gamedata previste</string>
+ <string name="data_set_name_image">Immagine disco importata</string>
+ <string name="importer_open_image_failed">Impossibile aprire l\'immagine disco selezionata</string>
+ <string name="importer_image_not_disc">Il file selezionato non è un\'immagine CD (ISO, o il BIN di una coppia BIN/CUE)</string>
+ <string name="importer_image_cue">Questo è il file CUE: scegli il file BIN accanto</string>
+ <string name="importer_image_missing_files">L\'immagine disco non contiene le cartelle fedata/gamedata</string>
+ <string name="importer_image_truncated">L\'immagine disco finisce troppo presto: il file non è stato copiato per intero</string>
 
  <string name="faq_layout_modes"><b>Menu o gara?</b>\nLo dice il gioco. Mentre guidi hai la disposizione da gara: pulsanti di sterzo, pedali, marce e il resto. Nei menu, e ogni volta che un menu si apre sopra una gara, il port non mostra alcun pulsante: i menu accettano il tocco da soli, l\'Indietro del telefono è Escape e la tastiera compare da sé. Non c\'è nulla da cambiare a mano.</string>
  <string name="faq_mouse"><b>Come funzionano i menu?</b>\nCon il tocco. Il puntatore del gioco va dove metti il dito, così un tocco preme la voce sottostante e un cursore segue il dito che lo trascina. Il pulsante o il gesto Indietro del telefono è Escape e, quando il gioco chiede un nome, la tastiera del telefono si apre da sola; con la tastiera aperta, Indietro la chiude.</string>

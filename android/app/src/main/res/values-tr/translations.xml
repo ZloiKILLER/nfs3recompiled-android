@@ -44,7 +44,8 @@
  <string name="delete">Sil</string>
  <string name="import_folder">Klasör içe aktar…</string>
  <string name="import_zip">ZIP içe aktar…</string>
- <string name="data_import_hint">Doğrudan \'fedata\' ve \'gamedata\' içeren bir klasörü ya da bu klasörleri barındıran bir ZIP dosyasını içe aktar. İçe aktarılanlar uygulama deposuna kopyalanır.</string>
+ <string name="import_image">Disk görüntüsü içe aktar…</string>
+ <string name="data_import_hint">Doğrudan \'fedata\' ve \'gamedata\' içeren bir klasörü ya da bu klasörleri barındıran bir ZIP dosyasını içe aktar. İçe aktarılanlar uygulama deposuna kopyalanır. Oyun diskinin görüntüsü de olur (ISO ya da BIN/CUE çiftinin BIN dosyası).</string>
  <string name="import_complete">Veri içe aktarma tamamlandı</string>
  <string name="data_error">Veri işlemi başarısız: %1$s</string>
  <string name="delete_data_title">Veri kümesi silinsin mi?</string>
@@ -140,6 +141,12 @@
  <string name="importer_missing_subfolder">Seçilen klasörde \'%1$s\' alt klasörü yok — doğrudan fedata ve gamedata içeren klasörü seç (örneğin CD kökü).</string>
  <string name="importer_open_zip_failed">Seçilen ZIP açılamadı</string>
  <string name="importer_zip_missing_files">ZIP içinde beklenen fedata/gamedata klasörleri yok</string>
+ <string name="data_set_name_image">İçe aktarılan disk görüntüsü</string>
+ <string name="importer_open_image_failed">Seçilen disk görüntüsü açılamadı</string>
+ <string name="importer_image_not_disc">Seçilen dosya bir CD görüntüsü değil (ISO ya da BIN/CUE çiftinin BIN dosyası)</string>
+ <string name="importer_image_cue">Bu CUE dosyası: yanındaki BIN dosyasını seçin</string>
+ <string name="importer_image_missing_files">Disk görüntüsünde fedata/gamedata klasörleri yok</string>
+ <string name="importer_image_truncated">Disk görüntüsü erken bitiyor: dosya tamamen kopyalanmamış</string>
 
  <string name="faq_layout_modes"><b>Menü mü, yarış mı?</b>\nBunu oyun söyler. Sürerken yarış yerleşimini alırsın: direksiyon düğmeleri, pedallar, vitesler ve gerisi. Menülerde ve bir menü yarışın üzerine açıldığında port hiç düğme göstermez: menüler dokunuşu kendileri alır, telefonun Geri tuşu Escape olur ve klavye kendiliğinden açılır. Elle değiştirilecek bir şey yok.</string>
  <string name="faq_mouse"><b>Menüler nasıl çalışır?</b>\nDokunarak. Parmağını nereye koyarsan oyunun imleci oraya gider; dokunuş altındaki öğeye basar, kaydırıcı da onu sürükleyen parmağı izler. Telefonun Geri tuşu ya da hareketi Escape\'tir; oyun bir ad istediğinde telefonun klavyesi kendiliğinden açılır, klavye açıkken Geri onu kapatır.</string>

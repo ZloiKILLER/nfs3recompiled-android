@@ -44,7 +44,8 @@
  <string name="delete">Usuń</string>
  <string name="import_folder">Importuj folder…</string>
  <string name="import_zip">Importuj ZIP…</string>
- <string name="data_import_hint">Zaimportuj folder zawierający bezpośrednio \'fedata\' i \'gamedata\' albo ZIP z tymi folderami. Zaimportowane dane są kopiowane do pamięci aplikacji.</string>
+ <string name="import_image">Importuj obraz płyty…</string>
+ <string name="data_import_hint">Zaimportuj folder zawierający bezpośrednio \'fedata\' i \'gamedata\' albo ZIP z tymi folderami. Zaimportowane dane są kopiowane do pamięci aplikacji. Można też zaimportować obraz płyty z grą (ISO lub BIN z pary BIN/CUE).</string>
  <string name="import_complete">Import danych zakończony</string>
  <string name="data_error">Operacja na danych nie powiodła się: %1$s</string>
  <string name="delete_data_title">Usunąć zestaw danych?</string>
@@ -140,6 +141,12 @@
  <string name="importer_missing_subfolder">Wybrany folder nie zawiera podfolderu \'%1$s\' — wskaż folder zawierający bezpośrednio fedata i gamedata (na przykład katalog główny płyty).</string>
  <string name="importer_open_zip_failed">Nie można otworzyć wybranego ZIP-a</string>
  <string name="importer_zip_missing_files">W ZIP-ie brakuje oczekiwanych folderów fedata/gamedata</string>
+ <string name="data_set_name_image">Zaimportowany obraz płyty</string>
+ <string name="importer_open_image_failed">Nie udało się otworzyć wybranego obrazu płyty</string>
+ <string name="importer_image_not_disc">Wybrany plik nie jest obrazem CD (ISO lub BIN z pary BIN/CUE)</string>
+ <string name="importer_image_cue">To plik CUE: wybierz plik BIN, który leży obok</string>
+ <string name="importer_image_missing_files">W obrazie płyty brak folderów fedata/gamedata</string>
+ <string name="importer_image_truncated">Obraz płyty kończy się za wcześnie: plik nie został skopiowany w całości</string>
 
  <string name="faq_layout_modes"><b>Menu czy wyścig?</b>\nMówi o tym gra. Podczas jazdy masz układ wyścigowy: przyciski skrętu, pedały, biegi i resztę. W menu, a także gdy menu otworzy się na wyścigu, port nie pokazuje żadnych przycisków: menu same przyjmują dotyk, systemowy Wstecz działa jak Escape, a klawiatura pojawia się sama. Nie ma czego przełączać ręcznie.</string>
  <string name="faq_mouse"><b>Jak działa menu?</b>\nDotykiem. Wskaźnik gry idzie tam, gdzie kładziesz palec, więc stuknięcie naciska element pod nim, a suwak podąża za ciągnącym go palcem. Systemowy przycisk lub gest Wstecz to Escape, a gdy gra prosi o imię, klawiatura telefonu otwiera się sama; przy otwartej klawiaturze Wstecz ją zamyka.</string>

@@ -44,7 +44,8 @@
  <string name="delete">Izbriši</string>
  <string name="import_folder">Uvezi mapu…</string>
  <string name="import_zip">Uvezi ZIP…</string>
- <string name="data_import_hint">Uvezi mapu koja izravno sadrži \'fedata\' i \'gamedata\', ili ZIP s tim mapama. Uvezeno se kopira u pohranu aplikacije.</string>
+ <string name="import_image">Uvoz slike diska…</string>
+ <string name="data_import_hint">Uvezi mapu koja izravno sadrži \'fedata\' i \'gamedata\', ili ZIP s tim mapama. Uvezeno se kopira u pohranu aplikacije. Može se uvesti i slika diska igre (ISO ili BIN iz para BIN/CUE).</string>
  <string name="import_complete">Uvoz podataka dovršen</string>
  <string name="data_error">Radnja s podacima nije uspjela: %1$s</string>
  <string name="delete_data_title">Izbrisati skup podataka?</string>
@@ -140,6 +141,12 @@
  <string name="importer_missing_subfolder">Odabrana mapa nema podmapu \'%1$s\' — odaberi mapu koja izravno sadrži fedata i gamedata (na primjer korijen CD-a).</string>
  <string name="importer_open_zip_failed">Odabrani ZIP nije moguće otvoriti</string>
  <string name="importer_zip_missing_files">U ZIP-u nedostaju očekivane mape fedata/gamedata</string>
+ <string name="data_set_name_image">Uvezena slika diska</string>
+ <string name="importer_open_image_failed">Odabranu sliku diska nije moguće otvoriti</string>
+ <string name="importer_image_not_disc">Odabrana datoteka nije slika CD-a (ISO ili BIN iz para BIN/CUE)</string>
+ <string name="importer_image_cue">Ovo je CUE datoteka: odaberite BIN datoteku pokraj nje</string>
+ <string name="importer_image_missing_files">U slici diska nema mapa fedata/gamedata</string>
+ <string name="importer_image_truncated">Slika diska završava prerano: datoteka nije kopirana cijela</string>
 
  <string name="faq_layout_modes"><b>Izbornik ili utrka?</b>\nIgra to govori. Dok voziš imaš utrkivački raspored: gumbe za skretanje, papučice, stupnjeve prijenosa i ostalo. U izbornicima, i kad god se izbornik otvori preko utrke, port ne prikazuje nijedan gumb: izbornici sami primaju dodir, sistemski Natrag je Escape, a tipkovnica se pojavljuje sama. Ručno nema što mijenjati.</string>
  <string name="faq_mouse"><b>Kako rade izbornici?</b>\nDodirom. Gdje staviš prst, ondje je pokazivač igre, pa dodir pritišće stavku ispod njega, a klizač prati prst koji ga vuče. Sistemski gumb ili gesta Natrag je Escape, a kad igra zatraži ime, tipkovnica telefona otvara se sama; dok je tipkovnica otvorena, Natrag je zatvara.</string>

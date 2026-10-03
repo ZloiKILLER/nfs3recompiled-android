@@ -43,7 +43,8 @@
  <string name="delete">Видалити</string>
  <string name="import_folder">Імпорт папки…</string>
  <string name="import_zip">Імпорт ZIP…</string>
- <string name="data_import_hint">Імпортуйте папку, у якій безпосередньо лежать \'fedata\' і \'gamedata\', або ZIP із цими папками. Імпортоване копіюється у сховище застосунку.</string>
+ <string name="import_image">Імпорт образу диска…</string>
+ <string name="data_import_hint">Імпортуйте папку, у якій безпосередньо лежать \'fedata\' і \'gamedata\', або ZIP із цими папками. Імпортоване копіюється у сховище застосунку. Можна імпортувати й образ диска гри (ISO або BIN із пари BIN/CUE).</string>
  <string name="import_complete">Імпорт даних завершено</string>
  <string name="data_error">Операція з даними не вдалася: %1$s</string>
  <string name="delete_data_title">Видалити набір даних?</string>
@@ -139,6 +140,12 @@
  <string name="importer_missing_subfolder">У вибраній папці немає підпапки \'%1$s\' — виберіть папку, у якій безпосередньо лежать fedata і gamedata (наприклад, корінь диска).</string>
  <string name="importer_open_zip_failed">Не вдалося відкрити вибраний ZIP</string>
  <string name="importer_zip_missing_files">У ZIP немає очікуваних папок fedata/gamedata</string>
+ <string name="data_set_name_image">Імпортований образ диска</string>
+ <string name="importer_open_image_failed">Не вдалося відкрити вибраний образ диска</string>
+ <string name="importer_image_not_disc">Вибраний файл — не образ CD (потрібен ISO або BIN із пари BIN/CUE)</string>
+ <string name="importer_image_cue">Це файл CUE: виберіть файл BIN, що лежить поруч</string>
+ <string name="importer_image_missing_files">В образі диска немає тек fedata/gamedata</string>
+ <string name="importer_image_truncated">Образ диска обривається: файл скопійовано не повністю</string>
 
  <string name="faq_layout_modes"><b>Меню чи гонка?</b>\nЦе вирішує гра. Поки ви їдете, на екрані гоночна розкладка: кнопки повороту, педалі, передачі й решта. У меню, а також коли меню відкривається поверх гонки, порт не показує жодної кнопки: меню самі приймають дотик, системна «Назад» працює як Escape, а клавіатура з\'являється сама. Перемикати вручну нема чого.</string>
  <string name="faq_mouse"><b>Як працюють меню?</b>\nДотиком. Вказівник гри опиняється там, де палець: тап натискає пункт під ним, а повзунок іде за пальцем, який його тягне. Системна кнопка або жест «Назад» — це Escape, а коли гра просить ім\'я, клавіатура телефона відкривається сама; при відкритій клавіатурі «Назад» закриває її.</string>

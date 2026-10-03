@@ -44,7 +44,8 @@
  <string name="delete">Eliminar</string>
  <string name="import_folder">Importar pasta…</string>
  <string name="import_zip">Importar ZIP…</string>
- <string name="data_import_hint">Importa uma pasta que contenha diretamente \'fedata\' e \'gamedata\', ou um ZIP com essas pastas. O que for importado é copiado para o armazenamento da aplicação.</string>
+ <string name="import_image">Importar imagem de disco…</string>
+ <string name="data_import_hint">Importa uma pasta que contenha diretamente \'fedata\' e \'gamedata\', ou um ZIP com essas pastas. O que for importado é copiado para o armazenamento da aplicação. Também serve uma imagem do disco do jogo (ISO, ou o BIN de um par BIN/CUE).</string>
  <string name="import_complete">Importação de dados concluída</string>
  <string name="data_error">A operação com os dados falhou: %1$s</string>
  <string name="delete_data_title">Eliminar o conjunto de dados?</string>
@@ -140,6 +141,12 @@
  <string name="importer_missing_subfolder">A pasta selecionada não tem a subpasta \'%1$s\' — escolhe a pasta que contém diretamente fedata e gamedata (por exemplo, a raiz do CD).</string>
  <string name="importer_open_zip_failed">Não foi possível abrir o ZIP selecionado</string>
  <string name="importer_zip_missing_files">Faltam ao ZIP as pastas fedata/gamedata esperadas</string>
+ <string name="data_set_name_image">Imagem de disco importada</string>
+ <string name="importer_open_image_failed">Não foi possível abrir a imagem de disco selecionada</string>
+ <string name="importer_image_not_disc">O ficheiro selecionado não é uma imagem de CD (ISO, ou o BIN de um par BIN/CUE)</string>
+ <string name="importer_image_cue">Este é o ficheiro CUE: escolhe o ficheiro BIN ao lado</string>
+ <string name="importer_image_missing_files">A imagem de disco não tem as pastas fedata/gamedata</string>
+ <string name="importer_image_truncated">A imagem de disco acaba antes do tempo: o ficheiro não foi copiado inteiro</string>
 
  <string name="faq_layout_modes"><b>Menu ou corrida?</b>\nÉ o jogo que o diz. Enquanto conduzes tens a disposição de corrida: botões de direção, pedais, mudanças e o resto. Nos menus, e sempre que um menu abre por cima de uma corrida, o port não mostra botão nenhum: os menus aceitam o toque por si, o Recuar do telemóvel é Escape e o teclado aparece sozinho. Não há nada para trocar à mão.</string>
  <string name="faq_mouse"><b>Como funcionam os menus?</b>\nAo toque. O ponteiro do jogo vai para onde pousas o dedo, por isso um toque carrega no item por baixo e um cursor segue o dedo que o arrasta. O botão ou gesto Recuar do telemóvel é Escape e, quando o jogo pede um nome, o teclado do telemóvel abre sozinho; com o teclado aberto, Recuar fecha-o.</string>

@@ -40,7 +40,8 @@
     <string name="delete">Delete</string>
     <string name="import_folder">Import folder...</string>
     <string name="import_zip">Import ZIP...</string>
-    <string name="data_import_hint">Import a folder that directly contains \'fedata\' and \'gamedata\', or a ZIP containing those folders. Imports are copied into app storage.</string>
+    <string name="import_image">Import disc image...</string>
+    <string name="data_import_hint">Import a folder that directly contains \'fedata\' and \'gamedata\', or a ZIP containing those folders. Imports are copied into app storage. An image of the game disc works too (ISO, or the BIN of a BIN/CUE).</string>
     <string name="import_complete">Data import complete</string>
     <string name="saves_title">Game saves</string>
     <string name="saves_hint">Export the active profile to a ZIP, or import one. Import creates a local backup before replacing existing saves.</string>

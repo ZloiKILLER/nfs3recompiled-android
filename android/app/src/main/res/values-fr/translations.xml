@@ -44,7 +44,8 @@
  <string name="delete">Supprimer</string>
  <string name="import_folder">Importer un dossier…</string>
  <string name="import_zip">Importer un ZIP…</string>
- <string name="data_import_hint">Importez un dossier contenant directement \'fedata\' et \'gamedata\', ou un ZIP contenant ces dossiers. Les données importées sont copiées dans le stockage de l\'application.</string>
+ <string name="import_image">Importer une image disque…</string>
+ <string name="data_import_hint">Importez un dossier contenant directement \'fedata\' et \'gamedata\', ou un ZIP contenant ces dossiers. Les données importées sont copiées dans le stockage de l\'application. Une image du disque du jeu convient aussi (ISO, ou le BIN d\'une paire BIN/CUE).</string>
  <string name="import_complete">Importation des données terminée</string>
  <string name="data_error">L\'opération sur les données a échoué : %1$s</string>
  <string name="delete_data_title">Supprimer ce jeu de données ?</string>
@@ -140,6 +141,12 @@
  <string name="importer_missing_subfolder">Le dossier sélectionné ne contient pas de sous-dossier \'%1$s\' — choisissez le dossier qui contient directement fedata et gamedata (par exemple la racine du CD).</string>
  <string name="importer_open_zip_failed">Impossible d\'ouvrir le ZIP sélectionné</string>
  <string name="importer_zip_missing_files">Le ZIP ne contient pas les dossiers fedata/gamedata attendus</string>
+ <string name="data_set_name_image">Image disque importée</string>
+ <string name="importer_open_image_failed">Impossible d\'ouvrir l\'image disque sélectionnée</string>
+ <string name="importer_image_not_disc">Le fichier sélectionné n\'est pas une image de CD (ISO, ou le BIN d\'une paire BIN/CUE)</string>
+ <string name="importer_image_cue">C\'est le fichier CUE : choisissez le fichier BIN à côté</string>
+ <string name="importer_image_missing_files">L\'image disque ne contient pas les dossiers fedata/gamedata</string>
+ <string name="importer_image_truncated">L\'image disque s\'arrête trop tôt : le fichier n\'a pas été copié en entier</string>
 
  <string name="faq_layout_modes"><b>Menu ou course ?</b>\nC\'est le jeu qui le dit. Au volant, vous avez la disposition de course : boutons de direction, pédales, vitesses et le reste. Dans les menus, et dès qu\'un menu s\'ouvre par-dessus une course, le portage n\'affiche aucun bouton : les menus acceptent le toucher d\'eux-mêmes, le Retour du téléphone fait Échap et le clavier apparaît tout seul. Il n\'y a rien à basculer à la main.</string>
  <string name="faq_mouse"><b>Comment fonctionnent les menus ?</b>\nAu toucher. Le pointeur du jeu va là où se pose le doigt : une tape appuie sur l\'élément en dessous et un curseur suit le doigt qui le fait glisser. Le bouton ou le geste Retour du téléphone fait Échap et, quand le jeu demande un nom, le clavier du téléphone s\'ouvre tout seul ; clavier ouvert, Retour le referme.</string>

@@ -264,8 +264,13 @@ public final class DataSetManager
         if (name == null)
             return fallback;
         String result = name.trim();
-        if (result.toLowerCase(Locale.ROOT).endsWith(".zip"))
-            result = result.substring(0, result.length() - 4).trim();
+        String lower = result.toLowerCase(Locale.ROOT);
+        for (String extension : new String[] { ".zip", ".iso", ".bin", ".img" })
+            if (lower.endsWith(extension))
+            {
+                result = result.substring(0, result.length() - extension.length()).trim();
+                break;
+            }
         return result.isEmpty() ? fallback : result;
     }
 }

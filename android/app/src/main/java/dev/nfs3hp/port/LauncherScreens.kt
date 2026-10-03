@@ -392,6 +392,7 @@ private fun GameDataScreen(a: LauncherActivity) {
         Row(Modifier.widthIn(max = 640.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             MenuButton(stringResource(R.string.import_folder), { a.launchFolderPicker() }, Modifier.weight(1f), enabled = !a.busy)
             MenuButton(stringResource(R.string.import_zip), { a.launchZipPicker() }, Modifier.weight(1f), enabled = !a.busy)
+            MenuButton(stringResource(R.string.import_image), { a.launchImagePicker() }, Modifier.weight(1f), enabled = !a.busy)
         }
         Column(Modifier.widthIn(max = 640.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             OperationStatus(a)

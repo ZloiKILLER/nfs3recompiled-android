@@ -44,7 +44,8 @@
  <string name="delete">Smazat</string>
  <string name="import_folder">Importovat složku…</string>
  <string name="import_zip">Importovat ZIP…</string>
- <string name="data_import_hint">Importuj složku, která přímo obsahuje \'fedata\' a \'gamedata\', nebo ZIP s těmito složkami. Importovaná data se zkopírují do úložiště aplikace.</string>
+ <string name="import_image">Import obrazu disku…</string>
+ <string name="data_import_hint">Importuj složku, která přímo obsahuje \'fedata\' a \'gamedata\', nebo ZIP s těmito složkami. Importovaná data se zkopírují do úložiště aplikace. Lze importovat i obraz herního disku (ISO nebo BIN z dvojice BIN/CUE).</string>
  <string name="import_complete">Import dat dokončen</string>
  <string name="data_error">Operace s daty selhala: %1$s</string>
  <string name="delete_data_title">Smazat datovou sadu?</string>
@@ -140,6 +141,12 @@
  <string name="importer_missing_subfolder">Vybraná složka nemá podsložku \'%1$s\' — vyber složku, která přímo obsahuje fedata a gamedata (například kořen CD).</string>
  <string name="importer_open_zip_failed">Vybraný ZIP nelze otevřít</string>
  <string name="importer_zip_missing_files">V ZIPu chybí očekávané složky fedata/gamedata</string>
+ <string name="data_set_name_image">Importovaný obraz disku</string>
+ <string name="importer_open_image_failed">Vybraný obraz disku nelze otevřít</string>
+ <string name="importer_image_not_disc">Vybraný soubor není obraz CD (ISO nebo BIN z dvojice BIN/CUE)</string>
+ <string name="importer_image_cue">Toto je soubor CUE: vyberte soubor BIN vedle něj</string>
+ <string name="importer_image_missing_files">V obrazu disku chybí složky fedata/gamedata</string>
+ <string name="importer_image_truncated">Obraz disku končí předčasně: soubor se nezkopíroval celý</string>
 
  <string name="faq_layout_modes"><b>Menu, nebo závod?</b>\nŘíká to hra. Při jízdě máš závodní rozložení: tlačítka řízení, pedály, převody a zbytek. V nabídkách, a kdykoli se nabídka otevře přes závod, port nezobrazuje žádná tlačítka: nabídky přijímají dotyk samy, systémové Zpět funguje jako Escape a klávesnice se vysune sama. Ručně není co přepínat.</string>
  <string name="faq_mouse"><b>Jak fungují nabídky?</b>\nDotykem. Kam položíš prst, tam je ukazatel hry, takže ťuknutí stiskne položku pod ním a posuvník jde za prstem, který ho táhne. Systémové tlačítko nebo gesto Zpět je Escape, a když si hra řekne o jméno, klávesnice telefonu se otevře sama; při otevřené klávesnici ji Zpět zavře.</string>

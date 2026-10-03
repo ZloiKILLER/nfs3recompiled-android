@@ -14,6 +14,9 @@ full-colour textures.
 Network races work: phone with phone over Wi-Fi (IPX or TCP/IP), and phone
 with a PC running the Modern Patch over TCP/IP in both directions (host and client).
 
+The game's data comes from your own disc: its folders, a ZIP of them, or an
+image of the disc (ISO or BIN/CUE), which the launcher reads directly.
+
 <img src="screenshots/title.jpg" alt="the title screen" width="49%">
 <img src="screenshots/car-select.jpg" alt="choosing a car" width="49%">
 <img src="screenshots/race-widescreen.jpg" alt="a widescreen race" width="49%">
@@ -29,10 +32,12 @@ You need:
 - a device with Android 8.0 or newer, a 64-bit ARM processor (ARMv8,
   arm64-v8a) and OpenGL ES 3.0 graphics;
 - the game's data from your own copy: the `FEDATA` and `GAMEDATA` folders of
-  the 1998 retail disc.
+  the 1998 retail disc, or an image of that disc (ISO, or BIN/CUE).
 
-1. Copy both folders to the phone, for example to `/sdcard/YOUR_FOLDER`.
-2. Install the app, open it and import that folder.
+1. Copy both folders to the phone, for example to `/sdcard/YOUR_FOLDER`, or
+   copy the disc image there.
+2. Install the app, open it and import that folder, or the image's `.iso` or
+   `.bin`.
 3. Play.
 
 How it works, building it, and every setting: [TECHNICAL.md](TECHNICAL.md).
