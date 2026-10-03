@@ -174,4 +174,12 @@
  <string name="gamepad_vibration">Вибрация геймпада</string>
  <string name="gamepad_vibration_note">По умолчанию выключена. Силу задаёт сама игра: Options → Controllers → Force Feedback.</string>
  <string name="editor_snap_grid">Привязка к сетке</string>
+ <string name="network_title">Сеть</string>
+ <string name="network_address">Адрес устройства в сети: %1$s</string>
+ <string name="network_no_address">Нет подключения к сети</string>
+ <string name="network_port_label">Порт TCP/IP</string>
+ <string name="network_port_modern">9803 · Modern Patch</string>
+ <string name="network_port_original">1030 · оригинальная игра</string>
+ <string name="network_hint">IPX сам находит гонки в этой сети Wi-Fi. TCP/IP соединяет с любым, кто знает адрес хоста, в том числе с ПК с оригинальной игрой или Modern Patch. У всех игроков должен быть один и тот же порт.</string>
+ <string name="fps_unlimited">Без ограничения</string>
 </resources>

@@ -15,6 +15,15 @@
 
     <uses-permission android:name="android.permission.VIBRATE" />
 
+    <!-- Network races: TCP/IP with the original game or the Modern Patch, and
+         IPX carried on UDP inside the Wi-Fi, where a race is found by a
+         broadcast that many phones drop unless the multicast lock is held
+         (src/lib/winapi/wsock32.cpp, NFS3Activity). -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
+
     <!-- resizeableActivity is the default at this target, and is said here
          because a desktop depends on it: in Samsung DeX the app is a window on
          a monitor, and a window the player can size is the point. -->

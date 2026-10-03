@@ -78,6 +78,9 @@ object GameColors {
     val PillEdge = Color(0xFF3A479C)
     val Gold = Color(0xFFE9CF4E)
     val GoldDim = Color(0xFFC8A040)
+    /* The yellow of the game's own menu titles ("PLAYER CAR"), taken from a
+     * screenshot: a shade lighter and paler than Gold. */
+    val MenuYellow = Color(0xFFF0DE6E)
     val MenuBlue = Color(0xFFDCE6FF)
     val Silver = Color(0xFFEEF1F8)
     val Muted = Color(0xFF9FAACB)
@@ -238,6 +241,7 @@ fun GoldButton(
         enabled = enabled,
         modifier = modifier.heightIn(min = height),
         shape = RoundedCornerShape(16.dp),
+        colors = ButtonDefaults.buttonColors(containerColor = GameColors.MenuYellow),
     ) {
         Text(
             text.uppercase(),

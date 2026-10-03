@@ -143,6 +143,9 @@ public final class DataSetManager
         File selected = new File(storage, id);
         if (!DataImporter.isUserDataPresent(selected))
             throw new IOException(context.getString(R.string.error_data_set_incomplete));
+        DataImporter.copyMissingRender(context, selected);
+        // Older stored sets predate per-set install.win; give each its own fallback.
+        DataImporter.copyMissingInstallWin(context, selected);
 
         File parked = null;
         if (!oldId.isEmpty() && DataImporter.isUserDataPresent(root))

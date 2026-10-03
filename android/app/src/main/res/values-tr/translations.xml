@@ -174,4 +174,12 @@
  <string name="gamepad_vibration">Kumanda titreşimi</string>
  <string name="gamepad_vibration_note">Varsayılan olarak kapalı. Gücü oyunda ayarlanır: Options → Controllers → Force Feedback.</string>
  <string name="editor_snap_grid">Izgaraya hizala</string>
+ <string name="network_title">Ağ</string>
+ <string name="network_address">Bu cihazın ağdaki adresi: %1$s</string>
+ <string name="network_no_address">Ağ bağlantısı yok</string>
+ <string name="network_port_label">TCP/IP bağlantı noktası</string>
+ <string name="network_port_modern">9803 · Modern Patch</string>
+ <string name="network_port_original">1030 · orijinal oyun</string>
+ <string name="network_hint">IPX bu Wi-Fi ağındaki yarışları kendisi bulur. TCP/IP, sunucunun adresini bilen herkese bağlanır; orijinal oyunu ya da Modern Patch\'i çalıştıran bir PC\'ye de. Tüm oyuncular aynı bağlantı noktasını kullanır.</string>
+ <string name="fps_unlimited">Sınırsız</string>
 </resources>

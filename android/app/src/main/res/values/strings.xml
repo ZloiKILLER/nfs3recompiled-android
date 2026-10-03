@@ -86,4 +86,12 @@
     <string name="fps_error">Enter a whole number from 1 to 240</string>
     <string name="save">Save</string>
     <string name="settings_saved">Settings saved</string>
+    <string name="network_title">Network</string>
+    <string name="network_address">This device on the network: %1$s</string>
+    <string name="network_no_address">Not connected to a network</string>
+    <string name="network_port_label">TCP/IP port</string>
+    <string name="network_port_modern">9803 · Modern Patch</string>
+    <string name="network_port_original">1030 · original game</string>
+    <string name="network_hint">IPX finds races on this Wi-Fi by itself. TCP/IP races anyone who knows the host\'s address, a PC with the original game or the Modern Patch too. Every player uses the same port.</string>
+    <string name="fps_unlimited">Unlimited</string>
 </resources>

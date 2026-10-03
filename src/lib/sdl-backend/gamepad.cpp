@@ -187,6 +187,13 @@ void Gamepad::update()
      * side is applied on the very next frame instead of waiting it out. */
     static Uint64 s_lastSlotScan = 0;
     const Uint64 now = SDL_GetTicks();
+    /* The pads' state, once a frame, before it is read.  This used to happen
+     * as a side effect of the message pump, which ran SDL_PumpEvents -- and
+     * SDL_UpdateJoysticks with it -- thousands of times a second while it
+     * spun in SDL_WaitEvent (see SDL_HINT_POLL_SENTINEL in nfs3hp_main.cpp).
+     * The pump now sleeps until something happens; a pad read through HIDAPI,
+     * a DualSense among them, still needs its reports taken in. */
+    SDL_UpdateJoysticks();
     if (assignmentChanged() || now - s_lastSlotScan >= 1000)
     {
         s_lastSlotScan = now;

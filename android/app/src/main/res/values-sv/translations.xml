@@ -174,4 +174,12 @@
  <string name="gamepad_vibration">Vibration i handkontrollen</string>
  <string name="gamepad_vibration_note">Av som standard. Styrkan ställs in i spelet: Options → Controllers → Force Feedback.</string>
  <string name="editor_snap_grid">Fäst mot rutnät</string>
+ <string name="network_title">Nätverk</string>
+ <string name="network_address">Enhetens adress i nätverket: %1$s</string>
+ <string name="network_no_address">Ingen nätverksanslutning</string>
+ <string name="network_port_label">TCP/IP-port</string>
+ <string name="network_port_modern">9803 · Modern Patch</string>
+ <string name="network_port_original">1030 · originalspelet</string>
+ <string name="network_hint">IPX hittar själv lopp i det här wifi-nätverket. TCP/IP ansluter till alla som känner värdens adress, även en PC med originalspelet eller Modern Patch. Alla spelare använder samma port.</string>
+ <string name="fps_unlimited">Obegränsat</string>
 </resources>

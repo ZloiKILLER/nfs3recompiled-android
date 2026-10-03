@@ -41,7 +41,7 @@ class LauncherActivity : ComponentActivity() {
     enum class Screen {
         Main, Language, Data, GameData, DataSets, Saves, LauncherSettings,
         Controls, Touch, TouchKeys, Editor, Gamepads, GamepadButtons, ControlsHelp,
-        Faq, Display, Adjustment,
+        Faq, Display, Adjustment, Network,
     }
 
     /** A question put to the player: a title, the question, and what the
@@ -120,7 +120,7 @@ class LauncherActivity : ComponentActivity() {
         try {
             dataSetManager = DataSetManager(this, dataRoot())
         } catch (e: IOException) {
-            Log.e(TAG, "Could not initialize data sets", e)
+            AppLog.e(TAG, "Could not initialize data sets", e)
             Toast.makeText(this, getString(R.string.data_error, e.message), Toast.LENGTH_LONG).show()
         }
         refreshDataSets()
@@ -226,7 +226,7 @@ class LauncherActivity : ComponentActivity() {
         } catch (missing: ControlProfile.NoSettingsException) {
             Toast.makeText(this, R.string.controls_write_no_config, Toast.LENGTH_LONG).show()
         } catch (e: IOException) {
-            Log.e(TAG, "Writing controls failed", e)
+            AppLog.e(TAG, "Writing controls failed", e)
             Toast.makeText(this, getString(R.string.controls_write_failed, e.message), Toast.LENGTH_LONG).show()
         }
     }
@@ -266,7 +266,7 @@ class LauncherActivity : ComponentActivity() {
     }
 
     private fun showDataError(e: Exception) {
-        Log.e(TAG, "Data-set operation failed", e)
+        AppLog.e(TAG, "Data-set operation failed", e)
         Toast.makeText(this, getString(R.string.data_error, e.message), Toast.LENGTH_LONG).show()
     }
 
@@ -334,7 +334,7 @@ class LauncherActivity : ComponentActivity() {
                 try {
                     contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
                 } catch (e: SecurityException) {
-                    Log.w(TAG, "Could not persist folder permission", e)
+                    AppLog.w(TAG, "Could not persist folder permission", e)
                 }
                 val name = DocumentFile.fromTreeUri(this, uri)?.name ?: getString(R.string.data_set_name_folder)
                 startImport(name) { temporary ->
@@ -382,7 +382,7 @@ class LauncherActivity : ComponentActivity() {
                     return cursor.getString(0)
             }
         } catch (e: Exception) {
-            Log.w(TAG, "Could not read document display name", e)
+            AppLog.w(TAG, "Could not read document display name", e)
         }
         return getString(R.string.data_set_name_zip)
     }
@@ -423,7 +423,7 @@ class LauncherActivity : ComponentActivity() {
                     Toast.makeText(this, message, Toast.LENGTH_LONG).show()
                 }
             } catch (failure: IOException) {
-                Log.e(TAG, "Save operation failed", failure)
+                AppLog.e(TAG, "Save operation failed", failure)
                 runOnUiThread {
                     if (worker !== running || isDestroyed) return@runOnUiThread
                     worker = null
@@ -444,10 +444,8 @@ class LauncherActivity : ComponentActivity() {
         val thread = Thread({
             val running = Thread.currentThread()
             try {
-                val missing = ArrayList<String>()
                 manager.importDataSet(displayName) { temporary ->
                     operation(temporary)
-                    missing.addAll(missingGameFiles(applicationContext, temporary))
                 }
                 runOnUiThread {
                     if (worker !== running || isDestroyed) return@runOnUiThread
@@ -456,12 +454,10 @@ class LauncherActivity : ComponentActivity() {
                     status = ""
                     refreshDataSets()
                     Toast.makeText(this, R.string.import_complete, Toast.LENGTH_SHORT).show()
-                    if (missing.isNotEmpty())
-                        dialog = missingFilesDialog(this, missing, null)
                 }
             } catch (e: IOException) {
                 if (running.isInterrupted) return@Thread
-                Log.e(TAG, "Data import failed", e)
+                AppLog.e(TAG, "Data import failed", e)
                 runOnUiThread {
                     if (worker !== running || isDestroyed) return@runOnUiThread
                     worker = null
@@ -484,7 +480,7 @@ class LauncherActivity : ComponentActivity() {
             try {
                 ControlProfile.copMinimapOnce(dataRoot())
             } catch (e: IOException) {
-                Log.w(TAG, "No data root for the cop's minimap", e)
+                AppLog.w(TAG, "No data root for the cop's minimap", e)
             }
         }
         val intent = Intent(this, NFS3Activity::class.java)
@@ -588,25 +584,5 @@ class LauncherActivity : ComponentActivity() {
             return context.getString(R.string.importing_percent, name, percent)
         }
 
-        /* What an import copied without: the game would only find out half way
-         * into loading a race (DataImporter.missingFiles).  A failed check is
-         * no reason to fail the import, so it only goes to the log. */
-        fun missingGameFiles(context: Context, root: File): List<String> = try {
-            DataImporter.missingFiles(context, root)
-        } catch (e: IOException) {
-            Log.w(TAG, "Could not check the imported game data", e)
-            emptyList()
-        }
-
-        /** Which of the game's files an import did not bring; `then` runs when
-         *  the message is closed. */
-        fun missingFilesDialog(context: Context, missing: List<String>, then: (() -> Unit)?): Dialog =
-            Dialog(
-                context.getString(R.string.data_missing_title),
-                DataImporter.describeMissing(context, missing),
-                context.getString(android.R.string.ok),
-                null,
-                then,
-            )
     }
 }

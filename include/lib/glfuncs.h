@@ -41,6 +41,7 @@ extern PFNGLUNIFORMMATRIX4FVPROC        glUniformMatrix4fv;
 extern PFNGLUNIFORM1IPROC               glUniform1i;
 extern PFNGLUNIFORM3FPROC               glUniform3f;
 extern PFNGLUNIFORM1FPROC               glUniform1f;
+extern PFNGLUNIFORM1FVPROC              glUniform1fv;
 typedef void (APIENTRYP NfsCullFaceProc)(GLenum mode);
 typedef void (APIENTRYP NfsFrontFaceProc)(GLenum mode);
 typedef void (APIENTRYP NfsScissorProc)(GLint x, GLint y, GLsizei width, GLsizei height);
@@ -60,6 +61,9 @@ extern PFNGLDELETERENDERBUFFERSPROC     glDeleteRenderbuffers;
 extern PFNGLBINDRENDERBUFFERPROC        glBindRenderbuffer;
 extern PFNGLRENDERBUFFERSTORAGEPROC     glRenderbufferStorage;
 extern PFNGLDRAWBUFFERSPROC             glDrawBuffers;
+extern PFNGLGENSAMPLERSPROC             glGenSamplers;
+extern PFNGLBINDSAMPLERPROC             glBindSampler;
+extern PFNGLSAMPLERPARAMETERIPROC       glSamplerParameteri;
 
 #endif /* NFS_GL_NEEDS_LOADER */
 

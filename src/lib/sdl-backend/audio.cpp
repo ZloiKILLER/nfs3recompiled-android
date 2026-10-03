@@ -61,21 +61,39 @@ AudioDevice::~AudioDevice()
         SDL_CloseAudioDevice(m_device);
 }
 
+/* The list of playing buffers is changed here, on a guest thread, and walked by
+ * audioCallback22050 on SDL's audio thread, which SDL calls with the stream
+ * locked; so the list changes under that lock.  Pausing and resuming the device
+ * stay outside it: the audio thread takes the device's lock before the
+ * stream's, and the other order here could deadlock with it. */
 void AudioDevice::play(AudioBuffer* buffer)
 {
-    if (m_playingBuffers.empty() && m_device)
+    if (m_stream)
+        SDL_LockAudioStream(m_stream);
+    const bool first = m_playingBuffers.empty();
+    if (std::find(m_playingBuffers.begin(), m_playingBuffers.end(), buffer) == m_playingBuffers.end())
+        m_playingBuffers.push_back(buffer);
+    if (m_stream)
+        SDL_UnlockAudioStream(m_stream);
+    if (first && m_device)
         SDL_ResumeAudioDevice(m_device);
-    m_playingBuffers.push_back(buffer);
 }
 
 void AudioDevice::stop(AudioBuffer* buffer)
 {
+    if (m_stream)
+        SDL_LockAudioStream(m_stream);
     m_playingBuffers.erase(std::remove(m_playingBuffers.begin(), m_playingBuffers.end(), buffer), m_playingBuffers.end());
-    if (m_playingBuffers.empty() && m_device)
+    const bool none = m_playingBuffers.empty();
+    if (m_stream)
+        SDL_UnlockAudioStream(m_stream);
+    if (none && m_device)
         SDL_PauseAudioDevice(m_device);
 }
 
 
+/* Every playing buffer mixed into one silence-filled block, each adding to what
+ * the ones before it left, clamped to 16 bits. */
 void AudioDevice::audioCallback22050(void* userdata, SDL_AudioStream* stream, int additional_amount, int /*total_amount*/)
 {
     AudioDevice* audio = reinterpret_cast<AudioDevice*>(userdata);
@@ -124,6 +142,9 @@ void AudioBuffer::stop()
     m_device->stop(this);
 }
 
+/* Adds what is written and not yet played, up to `len` bytes, to `stream`.  The
+ * device's callback hands every buffer the same block: a buffer that zeroed it
+ * first, as this one used to, wiped out the buffers mixed before it. */
 void AudioBuffer::audioCallback22050(x86::reg8* stream, int len)
 {
     x86::sreg16* destData = reinterpret_cast<x86::sreg16*>(stream);
@@ -132,29 +153,17 @@ void AudioBuffer::audioCallback22050(x86::reg8* stream, int len)
     if (stop > m_playStop)
     {
         stop = m_playStop;
-        len = stop - start;
     }
-    if (!len) return;
-    x86::reg32 bufferStart = (start % m_bufferSize) / sizeof(x86::sreg16);
-    x86::reg32 bufferStop = (stop % m_bufferSize) / sizeof(x86::sreg16);
-    memset(destData, 0, len);
-    if (bufferStop <= bufferStart)
+    if (stop <= start) return;
+    x86::reg32 samples = (stop - start) / sizeof(x86::sreg16);
+    x86::reg32 at = (start % m_bufferSize) / sizeof(x86::sreg16);
+    const x86::reg32 ring = m_bufferSize / sizeof(x86::sreg16);
+    for (; samples; --samples, ++destData)
     {
-        for (x86::sreg16* data = m_buffer + bufferStart;
-             data < m_buffer + m_bufferSize/2;
-             ++data, ++destData)
-            *destData += *data;
-        for (x86::sreg16* data = m_buffer;
-             data < m_buffer + bufferStop;
-             ++data, ++destData)
-            *destData += *data;
-    }
-    else
-    {
-        for (x86::sreg16* data = m_buffer + bufferStart;
-             data < m_buffer + bufferStop;
-             ++data, ++destData)
-            *destData += *data;
+        const int mixed = int(*destData) + int(m_buffer[at]);
+        *destData = x86::sreg16(mixed > 32767 ? 32767 : mixed < -32768 ? -32768 : mixed);
+        if (++at == ring)
+            at = 0;
     }
     m_playStart = stop;
     return;
@@ -196,11 +205,19 @@ x86::reg32 AudioBuffer::lock()
     return m_memmap->getBlockStart();
 }
 
+/* The game wrote `bufferWritten` more bytes after the last.  Written may run
+ * more than the buffer's length ahead of played, and that is the game's normal
+ * way in the menus: skipping the difference, as was tried on 2026-09-29, made
+ * the menu's sound run fast and the movies, which keep time by it, run at
+ * several times their speed. */
 void AudioBuffer::unlock(x86::reg32 bufferWritten)
 {
-    SDL_LockAudioStream(m_device->stream());
+    SDL_AudioStream* stream = m_device->stream();
+    if (stream)
+        SDL_LockAudioStream(stream);
     m_playStop += bufferWritten;
-    SDL_UnlockAudioStream(m_device->stream());
+    if (stream)
+        SDL_UnlockAudioStream(stream);
 }
 
 

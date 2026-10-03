@@ -376,6 +376,9 @@ int GetSystemMetrics(WinApplication* app, x86::CPU& cpu,
         return 800;
     case 1: //SM_CYSCREEN
         return 600;
+    case 63: //SM_NETWORK: bit 0, a network is present; without it the game
+             //offers no TCP/IP (0x4f7830)
+        return 1;
     default:
         NFS2_ASSERT(false);
         return 0;
@@ -467,9 +470,10 @@ BOOL PostMessageA(WinApplication* app, x86::CPU& cpu,
 void PostQuitMessage(WinApplication* app, x86::CPU& cpu,
                      int nExitCode)
 {
-    NFS2_USE(app);
-    NFS2_USE(cpu);
-    NFS2_USE(nExitCode);
+    /* Said, with the game's code that asked for it: a game that closes by
+     * itself leaves nothing else behind to tell why. */
+    SDL_Log("[EXIT] PostQuitMessage(%d) from 0x%x", nExitCode,
+            unsigned(app->getMemory<x86::reg32>(cpu.esp)));
     win32::Window::postMessage(0, 0x0012, 0, 0);
 }
 

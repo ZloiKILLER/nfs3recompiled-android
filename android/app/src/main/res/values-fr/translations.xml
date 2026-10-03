@@ -174,4 +174,12 @@
  <string name="gamepad_vibration">Vibration de la manette</string>
  <string name="gamepad_vibration_note">Désactivée par défaut. L\'intensité se règle dans le jeu : Options → Controllers → Force Feedback.</string>
  <string name="editor_snap_grid">Aligner sur la grille</string>
+ <string name="network_title">Réseau</string>
+ <string name="network_address">Adresse de cet appareil sur le réseau : %1$s</string>
+ <string name="network_no_address">Aucune connexion réseau</string>
+ <string name="network_port_label">Port TCP/IP</string>
+ <string name="network_port_modern">9803 · Modern Patch</string>
+ <string name="network_port_original">1030 · jeu original</string>
+ <string name="network_hint">IPX trouve seul les courses sur ce Wi-Fi. TCP/IP relie à quiconque connaît l\'adresse de l\'hôte, y compris un PC avec le jeu original ou le Modern Patch. Tous les joueurs utilisent le même port.</string>
+ <string name="fps_unlimited">Illimité</string>
 </resources>

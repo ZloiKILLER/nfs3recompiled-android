@@ -10,7 +10,7 @@ void sub_a8fb50(win32::WinApplication* app, x86::CPU& cpu)
   NFS2_USE(cpu);
   NFS2_USE(app);
     // 00a8fb50  ff253804a900           -jmp dword ptr [0xa90438]
-    return app->dynamic_call(app->getMemory<x86::reg32>(11076664), cpu);
+    return app->dynamic_call(app->getMemory<x86::reg32>(11076664), cpu.handOver());
 }
 
 /* align: skip  */
@@ -19,7 +19,7 @@ void sub_a8fb56(win32::WinApplication* app, x86::CPU& cpu)
   NFS2_USE(cpu);
   NFS2_USE(app);
     // 00a8fb56  ff255803a900           -jmp dword ptr [0xa90358]
-    return app->dynamic_call(app->getMemory<x86::reg32>(11076440), cpu);
+    return app->dynamic_call(app->getMemory<x86::reg32>(11076440), cpu.handOver());
 }
 
 /* align: skip  */
@@ -28,7 +28,7 @@ void sub_a8fb5c(win32::WinApplication* app, x86::CPU& cpu)
   NFS2_USE(cpu);
   NFS2_USE(app);
     // 00a8fb5c  ff255c03a900           -jmp dword ptr [0xa9035c]
-    return app->dynamic_call(app->getMemory<x86::reg32>(11076444), cpu);
+    return app->dynamic_call(app->getMemory<x86::reg32>(11076444), cpu.handOver());
 }
 
 /* align: skip  */
@@ -37,7 +37,7 @@ void sub_a8fb62(win32::WinApplication* app, x86::CPU& cpu)
   NFS2_USE(cpu);
   NFS2_USE(app);
     // 00a8fb62  ff250404a900           -jmp dword ptr [0xa90404]
-    return app->dynamic_call(app->getMemory<x86::reg32>(11076612), cpu);
+    return app->dynamic_call(app->getMemory<x86::reg32>(11076612), cpu.handOver());
 }
 
 /* align: skip  */
@@ -46,7 +46,7 @@ void sub_a8fb68(win32::WinApplication* app, x86::CPU& cpu)
   NFS2_USE(cpu);
   NFS2_USE(app);
     // 00a8fb68  ff256403a900           -jmp dword ptr [0xa90364]
-    return app->dynamic_call(app->getMemory<x86::reg32>(11076452), cpu);
+    return app->dynamic_call(app->getMemory<x86::reg32>(11076452), cpu.handOver());
 }
 
 /* align: skip  */
@@ -55,7 +55,7 @@ void sub_a8fb6e(win32::WinApplication* app, x86::CPU& cpu)
   NFS2_USE(cpu);
   NFS2_USE(app);
     // 00a8fb6e  ff256803a900           -jmp dword ptr [0xa90368]
-    return app->dynamic_call(app->getMemory<x86::reg32>(11076456), cpu);
+    return app->dynamic_call(app->getMemory<x86::reg32>(11076456), cpu.handOver());
 }
 
 /* align: skip  */
@@ -64,7 +64,7 @@ void sub_a8fb74(win32::WinApplication* app, x86::CPU& cpu)
   NFS2_USE(cpu);
   NFS2_USE(app);
     // 00a8fb74  ff259003a900           -jmp dword ptr [0xa90390]
-    return app->dynamic_call(app->getMemory<x86::reg32>(11076496), cpu);
+    return app->dynamic_call(app->getMemory<x86::reg32>(11076496), cpu.handOver());
 }
 
 /* align: skip  */
@@ -73,7 +73,7 @@ void sub_a8fb7a(win32::WinApplication* app, x86::CPU& cpu)
   NFS2_USE(cpu);
   NFS2_USE(app);
     // 00a8fb7a  ff25d803a900           -jmp dword ptr [0xa903d8]
-    return app->dynamic_call(app->getMemory<x86::reg32>(11076568), cpu);
+    return app->dynamic_call(app->getMemory<x86::reg32>(11076568), cpu.handOver());
 }
 
 /* align: skip  */
@@ -82,7 +82,7 @@ void sub_a8fb80(win32::WinApplication* app, x86::CPU& cpu)
   NFS2_USE(cpu);
   NFS2_USE(app);
     // 00a8fb80  ff25ec03a900           -jmp dword ptr [0xa903ec]
-    return app->dynamic_call(app->getMemory<x86::reg32>(11076588), cpu);
+    return app->dynamic_call(app->getMemory<x86::reg32>(11076588), cpu.handOver());
 }
 
 /* align: skip  */
@@ -91,7 +91,7 @@ void sub_a8fb86(win32::WinApplication* app, x86::CPU& cpu)
   NFS2_USE(cpu);
   NFS2_USE(app);
     // 00a8fb86  ff250004a900           -jmp dword ptr [0xa90400]
-    return app->dynamic_call(app->getMemory<x86::reg32>(11076608), cpu);
+    return app->dynamic_call(app->getMemory<x86::reg32>(11076608), cpu.handOver());
 }
 
 /* align: skip  */
@@ -100,7 +100,7 @@ void sub_a8fb8c(win32::WinApplication* app, x86::CPU& cpu)
   NFS2_USE(cpu);
   NFS2_USE(app);
     // 00a8fb8c  ff258403a900           -jmp dword ptr [0xa90384]
-    return app->dynamic_call(app->getMemory<x86::reg32>(11076484), cpu);
+    return app->dynamic_call(app->getMemory<x86::reg32>(11076484), cpu.handOver());
 }
 
 /* align: skip  */
@@ -109,7 +109,7 @@ void sub_a8fb92(win32::WinApplication* app, x86::CPU& cpu)
   NFS2_USE(cpu);
   NFS2_USE(app);
     // 00a8fb92  ff257003a900           -jmp dword ptr [0xa90370]
-    return app->dynamic_call(app->getMemory<x86::reg32>(11076464), cpu);
+    return app->dynamic_call(app->getMemory<x86::reg32>(11076464), cpu.handOver());
 }
 
 /* align: skip  */
@@ -118,7 +118,7 @@ void sub_a8fb98(win32::WinApplication* app, x86::CPU& cpu)
   NFS2_USE(cpu);
   NFS2_USE(app);
     // 00a8fb98  ff25b003a900           -jmp dword ptr [0xa903b0]
-    return app->dynamic_call(app->getMemory<x86::reg32>(11076528), cpu);
+    return app->dynamic_call(app->getMemory<x86::reg32>(11076528), cpu.handOver());
 }
 
 /* align: skip  */
@@ -127,7 +127,7 @@ void sub_a8fb9e(win32::WinApplication* app, x86::CPU& cpu)
   NFS2_USE(cpu);
   NFS2_USE(app);
     // 00a8fb9e  ff255003a900           -jmp dword ptr [0xa90350]
-    return app->dynamic_call(app->getMemory<x86::reg32>(11076432), cpu);
+    return app->dynamic_call(app->getMemory<x86::reg32>(11076432), cpu.handOver());
 }
 
 /* align: skip  */
@@ -136,7 +136,7 @@ void sub_a8fba4(win32::WinApplication* app, x86::CPU& cpu)
   NFS2_USE(cpu);
   NFS2_USE(app);
     // 00a8fba4  ff25fc03a900           -jmp dword ptr [0xa903fc]
-    return app->dynamic_call(app->getMemory<x86::reg32>(11076604), cpu);
+    return app->dynamic_call(app->getMemory<x86::reg32>(11076604), cpu.handOver());
 }
 
 /* align: skip  */
@@ -145,7 +145,7 @@ void sub_a8fbaa(win32::WinApplication* app, x86::CPU& cpu)
   NFS2_USE(cpu);
   NFS2_USE(app);
     // 00a8fbaa  ff257803a900           -jmp dword ptr [0xa90378]
-    return app->dynamic_call(app->getMemory<x86::reg32>(11076472), cpu);
+    return app->dynamic_call(app->getMemory<x86::reg32>(11076472), cpu.handOver());
 }
 
 /* align: skip  */
@@ -154,7 +154,7 @@ void sub_a8fbb0(win32::WinApplication* app, x86::CPU& cpu)
   NFS2_USE(cpu);
   NFS2_USE(app);
     // 00a8fbb0  ff25a403a900           -jmp dword ptr [0xa903a4]
-    return app->dynamic_call(app->getMemory<x86::reg32>(11076516), cpu);
+    return app->dynamic_call(app->getMemory<x86::reg32>(11076516), cpu.handOver());
 }
 
 /* align: skip  */
@@ -163,7 +163,7 @@ void sub_a8fbb6(win32::WinApplication* app, x86::CPU& cpu)
   NFS2_USE(cpu);
   NFS2_USE(app);
     // 00a8fbb6  ff25c003a900           -jmp dword ptr [0xa903c0]
-    return app->dynamic_call(app->getMemory<x86::reg32>(11076544), cpu);
+    return app->dynamic_call(app->getMemory<x86::reg32>(11076544), cpu.handOver());
 }
 
 /* align: skip  */
@@ -172,7 +172,7 @@ void sub_a8fbbc(win32::WinApplication* app, x86::CPU& cpu)
   NFS2_USE(cpu);
   NFS2_USE(app);
     // 00a8fbbc  ff25f003a900           -jmp dword ptr [0xa903f0]
-    return app->dynamic_call(app->getMemory<x86::reg32>(11076592), cpu);
+    return app->dynamic_call(app->getMemory<x86::reg32>(11076592), cpu.handOver());
 }
 
 /* align: skip  */
@@ -181,7 +181,7 @@ void sub_a8fbc2(win32::WinApplication* app, x86::CPU& cpu)
   NFS2_USE(cpu);
   NFS2_USE(app);
     // 00a8fbc2  ff25b803a900           -jmp dword ptr [0xa903b8]
-    return app->dynamic_call(app->getMemory<x86::reg32>(11076536), cpu);
+    return app->dynamic_call(app->getMemory<x86::reg32>(11076536), cpu.handOver());
 }
 
 /* align: skip  */
@@ -190,7 +190,7 @@ void sub_a8fbc8(win32::WinApplication* app, x86::CPU& cpu)
   NFS2_USE(cpu);
   NFS2_USE(app);
     // 00a8fbc8  ff259803a900           -jmp dword ptr [0xa90398]
-    return app->dynamic_call(app->getMemory<x86::reg32>(11076504), cpu);
+    return app->dynamic_call(app->getMemory<x86::reg32>(11076504), cpu.handOver());
 }
 
 /* align: skip  */
@@ -199,7 +199,7 @@ void sub_a8fbce(win32::WinApplication* app, x86::CPU& cpu)
   NFS2_USE(cpu);
   NFS2_USE(app);
     // 00a8fbce  ff25d403a900           -jmp dword ptr [0xa903d4]
-    return app->dynamic_call(app->getMemory<x86::reg32>(11076564), cpu);
+    return app->dynamic_call(app->getMemory<x86::reg32>(11076564), cpu.handOver());
 }
 
 /* align: skip  */
@@ -208,7 +208,7 @@ void sub_a8fbd4(win32::WinApplication* app, x86::CPU& cpu)
   NFS2_USE(cpu);
   NFS2_USE(app);
     // 00a8fbd4  ff259403a900           -jmp dword ptr [0xa90394]
-    return app->dynamic_call(app->getMemory<x86::reg32>(11076500), cpu);
+    return app->dynamic_call(app->getMemory<x86::reg32>(11076500), cpu.handOver());
 }
 
 /* align: skip  */
@@ -217,7 +217,7 @@ void sub_a8fbda(win32::WinApplication* app, x86::CPU& cpu)
   NFS2_USE(cpu);
   NFS2_USE(app);
     // 00a8fbda  ff25bc03a900           -jmp dword ptr [0xa903bc]
-    return app->dynamic_call(app->getMemory<x86::reg32>(11076540), cpu);
+    return app->dynamic_call(app->getMemory<x86::reg32>(11076540), cpu.handOver());
 }
 
 /* align: skip  */
@@ -226,7 +226,7 @@ void sub_a8fbe0(win32::WinApplication* app, x86::CPU& cpu)
   NFS2_USE(cpu);
   NFS2_USE(app);
     // 00a8fbe0  ff25f803a900           -jmp dword ptr [0xa903f8]
-    return app->dynamic_call(app->getMemory<x86::reg32>(11076600), cpu);
+    return app->dynamic_call(app->getMemory<x86::reg32>(11076600), cpu.handOver());
 }
 
 /* align: skip  */
@@ -235,7 +235,7 @@ void sub_a8fbe6(win32::WinApplication* app, x86::CPU& cpu)
   NFS2_USE(cpu);
   NFS2_USE(app);
     // 00a8fbe6  ff256c03a900           -jmp dword ptr [0xa9036c]
-    return app->dynamic_call(app->getMemory<x86::reg32>(11076460), cpu);
+    return app->dynamic_call(app->getMemory<x86::reg32>(11076460), cpu.handOver());
 }
 
 /* align: skip  */
@@ -244,7 +244,7 @@ void sub_a8fbec(win32::WinApplication* app, x86::CPU& cpu)
   NFS2_USE(cpu);
   NFS2_USE(app);
     // 00a8fbec  ff25a803a900           -jmp dword ptr [0xa903a8]
-    return app->dynamic_call(app->getMemory<x86::reg32>(11076520), cpu);
+    return app->dynamic_call(app->getMemory<x86::reg32>(11076520), cpu.handOver());
 }
 
 /* align: skip  */
@@ -253,7 +253,7 @@ void sub_a8fbf2(win32::WinApplication* app, x86::CPU& cpu)
   NFS2_USE(cpu);
   NFS2_USE(app);
     // 00a8fbf2  ff253c04a900           -jmp dword ptr [0xa9043c]
-    return app->dynamic_call(app->getMemory<x86::reg32>(11076668), cpu);
+    return app->dynamic_call(app->getMemory<x86::reg32>(11076668), cpu.handOver());
 }
 
 /* align: skip  */
@@ -262,7 +262,7 @@ void sub_a8fbf8(win32::WinApplication* app, x86::CPU& cpu)
   NFS2_USE(cpu);
   NFS2_USE(app);
     // 00a8fbf8  ff253004a900           -jmp dword ptr [0xa90430]
-    return app->dynamic_call(app->getMemory<x86::reg32>(11076656), cpu);
+    return app->dynamic_call(app->getMemory<x86::reg32>(11076656), cpu.handOver());
 }
 
 /* align: skip  */
@@ -271,7 +271,7 @@ void sub_a8fbfe(win32::WinApplication* app, x86::CPU& cpu)
   NFS2_USE(cpu);
   NFS2_USE(app);
     // 00a8fbfe  ff258c03a900           -jmp dword ptr [0xa9038c]
-    return app->dynamic_call(app->getMemory<x86::reg32>(11076492), cpu);
+    return app->dynamic_call(app->getMemory<x86::reg32>(11076492), cpu.handOver());
 }
 
 /* align: skip  */
@@ -280,7 +280,7 @@ void sub_a8fc04(win32::WinApplication* app, x86::CPU& cpu)
   NFS2_USE(cpu);
   NFS2_USE(app);
     // 00a8fc04  ff251404a900           -jmp dword ptr [0xa90414]
-    return app->dynamic_call(app->getMemory<x86::reg32>(11076628), cpu);
+    return app->dynamic_call(app->getMemory<x86::reg32>(11076628), cpu.handOver());
 }
 
 /* align: skip  */
@@ -289,7 +289,7 @@ void sub_a8fc0a(win32::WinApplication* app, x86::CPU& cpu)
   NFS2_USE(cpu);
   NFS2_USE(app);
     // 00a8fc0a  ff252804a900           -jmp dword ptr [0xa90428]
-    return app->dynamic_call(app->getMemory<x86::reg32>(11076648), cpu);
+    return app->dynamic_call(app->getMemory<x86::reg32>(11076648), cpu.handOver());
 }
 
 /* align: skip  */
@@ -298,7 +298,7 @@ void sub_a8fc10(win32::WinApplication* app, x86::CPU& cpu)
   NFS2_USE(cpu);
   NFS2_USE(app);
     // 00a8fc10  ff253404a900           -jmp dword ptr [0xa90434]
-    return app->dynamic_call(app->getMemory<x86::reg32>(11076660), cpu);
+    return app->dynamic_call(app->getMemory<x86::reg32>(11076660), cpu.handOver());
 }
 
 /* align: skip  */
@@ -307,7 +307,7 @@ void sub_a8fc16(win32::WinApplication* app, x86::CPU& cpu)
   NFS2_USE(cpu);
   NFS2_USE(app);
     // 00a8fc16  ff25f403a900           -jmp dword ptr [0xa903f4]
-    return app->dynamic_call(app->getMemory<x86::reg32>(11076596), cpu);
+    return app->dynamic_call(app->getMemory<x86::reg32>(11076596), cpu.handOver());
 }
 
 /* align: skip  */
@@ -316,7 +316,7 @@ void sub_a8fc1c(win32::WinApplication* app, x86::CPU& cpu)
   NFS2_USE(cpu);
   NFS2_USE(app);
     // 00a8fc1c  ff25cc03a900           -jmp dword ptr [0xa903cc]
-    return app->dynamic_call(app->getMemory<x86::reg32>(11076556), cpu);
+    return app->dynamic_call(app->getMemory<x86::reg32>(11076556), cpu.handOver());
 }
 
 /* align: skip  */
@@ -325,7 +325,7 @@ void sub_a8fc22(win32::WinApplication* app, x86::CPU& cpu)
   NFS2_USE(cpu);
   NFS2_USE(app);
     // 00a8fc22  ff25dc03a900           -jmp dword ptr [0xa903dc]
-    return app->dynamic_call(app->getMemory<x86::reg32>(11076572), cpu);
+    return app->dynamic_call(app->getMemory<x86::reg32>(11076572), cpu.handOver());
 }
 
 /* align: skip  */
@@ -334,7 +334,7 @@ void sub_a8fc28(win32::WinApplication* app, x86::CPU& cpu)
   NFS2_USE(cpu);
   NFS2_USE(app);
     // 00a8fc28  ff251004a900           -jmp dword ptr [0xa90410]
-    return app->dynamic_call(app->getMemory<x86::reg32>(11076624), cpu);
+    return app->dynamic_call(app->getMemory<x86::reg32>(11076624), cpu.handOver());
 }
 
 /* align: skip  */
@@ -343,7 +343,7 @@ void sub_a8fc2e(win32::WinApplication* app, x86::CPU& cpu)
   NFS2_USE(cpu);
   NFS2_USE(app);
     // 00a8fc2e  ff258803a900           -jmp dword ptr [0xa90388]
-    return app->dynamic_call(app->getMemory<x86::reg32>(11076488), cpu);
+    return app->dynamic_call(app->getMemory<x86::reg32>(11076488), cpu.handOver());
 }
 
 /* align: skip  */
@@ -352,7 +352,7 @@ void sub_a8fc34(win32::WinApplication* app, x86::CPU& cpu)
   NFS2_USE(cpu);
   NFS2_USE(app);
     // 00a8fc34  ff250804a900           -jmp dword ptr [0xa90408]
-    return app->dynamic_call(app->getMemory<x86::reg32>(11076616), cpu);
+    return app->dynamic_call(app->getMemory<x86::reg32>(11076616), cpu.handOver());
 }
 
 /* align: skip  */
@@ -361,7 +361,7 @@ void sub_a8fc3a(win32::WinApplication* app, x86::CPU& cpu)
   NFS2_USE(cpu);
   NFS2_USE(app);
     // 00a8fc3a  ff254004a900           -jmp dword ptr [0xa90440]
-    return app->dynamic_call(app->getMemory<x86::reg32>(11076672), cpu);
+    return app->dynamic_call(app->getMemory<x86::reg32>(11076672), cpu.handOver());
 }
 
 /* align: skip  */
@@ -370,7 +370,7 @@ void sub_a8fc40(win32::WinApplication* app, x86::CPU& cpu)
   NFS2_USE(cpu);
   NFS2_USE(app);
     // 00a8fc40  ff255403a900           -jmp dword ptr [0xa90354]
-    return app->dynamic_call(app->getMemory<x86::reg32>(11076436), cpu);
+    return app->dynamic_call(app->getMemory<x86::reg32>(11076436), cpu.handOver());
 }
 
 /* align: skip  */
@@ -379,7 +379,7 @@ void sub_a8fc46(win32::WinApplication* app, x86::CPU& cpu)
   NFS2_USE(cpu);
   NFS2_USE(app);
     // 00a8fc46  ff251c04a900           -jmp dword ptr [0xa9041c]
-    return app->dynamic_call(app->getMemory<x86::reg32>(11076636), cpu);
+    return app->dynamic_call(app->getMemory<x86::reg32>(11076636), cpu.handOver());
 }
 
 /* align: skip  */
@@ -388,7 +388,7 @@ void sub_a8fc4c(win32::WinApplication* app, x86::CPU& cpu)
   NFS2_USE(cpu);
   NFS2_USE(app);
     // 00a8fc4c  ff252404a900           -jmp dword ptr [0xa90424]
-    return app->dynamic_call(app->getMemory<x86::reg32>(11076644), cpu);
+    return app->dynamic_call(app->getMemory<x86::reg32>(11076644), cpu.handOver());
 }
 
 /* align: skip  */
@@ -397,7 +397,7 @@ void sub_a8fc52(win32::WinApplication* app, x86::CPU& cpu)
   NFS2_USE(cpu);
   NFS2_USE(app);
     // 00a8fc52  ff251804a900           -jmp dword ptr [0xa90418]
-    return app->dynamic_call(app->getMemory<x86::reg32>(11076632), cpu);
+    return app->dynamic_call(app->getMemory<x86::reg32>(11076632), cpu.handOver());
 }
 
 /* align: skip  */
@@ -406,7 +406,7 @@ void sub_a8fc58(win32::WinApplication* app, x86::CPU& cpu)
   NFS2_USE(cpu);
   NFS2_USE(app);
     // 00a8fc58  ff250c04a900           -jmp dword ptr [0xa9040c]
-    return app->dynamic_call(app->getMemory<x86::reg32>(11076620), cpu);
+    return app->dynamic_call(app->getMemory<x86::reg32>(11076620), cpu.handOver());
 }
 
 /* align: skip  */
@@ -415,7 +415,7 @@ void sub_a8fc5e(win32::WinApplication* app, x86::CPU& cpu)
   NFS2_USE(cpu);
   NFS2_USE(app);
     // 00a8fc5e  ff252004a900           -jmp dword ptr [0xa90420]
-    return app->dynamic_call(app->getMemory<x86::reg32>(11076640), cpu);
+    return app->dynamic_call(app->getMemory<x86::reg32>(11076640), cpu.handOver());
 }
 
 /* align: skip  */
@@ -424,7 +424,7 @@ void sub_a8fc64(win32::WinApplication* app, x86::CPU& cpu)
   NFS2_USE(cpu);
   NFS2_USE(app);
     // 00a8fc64  ff25c403a900           -jmp dword ptr [0xa903c4]
-    return app->dynamic_call(app->getMemory<x86::reg32>(11076548), cpu);
+    return app->dynamic_call(app->getMemory<x86::reg32>(11076548), cpu.handOver());
 }
 
 /* align: skip  */
@@ -433,7 +433,7 @@ void sub_a8fc6a(win32::WinApplication* app, x86::CPU& cpu)
   NFS2_USE(cpu);
   NFS2_USE(app);
     // 00a8fc6a  ff25e803a900           -jmp dword ptr [0xa903e8]
-    return app->dynamic_call(app->getMemory<x86::reg32>(11076584), cpu);
+    return app->dynamic_call(app->getMemory<x86::reg32>(11076584), cpu.handOver());
 }
 
 /* align: skip  */
@@ -442,7 +442,7 @@ void sub_a8fc70(win32::WinApplication* app, x86::CPU& cpu)
   NFS2_USE(cpu);
   NFS2_USE(app);
     // 00a8fc70  ff257c03a900           -jmp dword ptr [0xa9037c]
-    return app->dynamic_call(app->getMemory<x86::reg32>(11076476), cpu);
+    return app->dynamic_call(app->getMemory<x86::reg32>(11076476), cpu.handOver());
 }
 
 /* align: skip  */
@@ -451,7 +451,7 @@ void sub_a8fc76(win32::WinApplication* app, x86::CPU& cpu)
   NFS2_USE(cpu);
   NFS2_USE(app);
     // 00a8fc76  ff25ac03a900           -jmp dword ptr [0xa903ac]
-    return app->dynamic_call(app->getMemory<x86::reg32>(11076524), cpu);
+    return app->dynamic_call(app->getMemory<x86::reg32>(11076524), cpu.handOver());
 }
 
 /* align: skip  */
@@ -460,7 +460,7 @@ void sub_a8fc7c(win32::WinApplication* app, x86::CPU& cpu)
   NFS2_USE(cpu);
   NFS2_USE(app);
     // 00a8fc7c  ff257403a900           -jmp dword ptr [0xa90374]
-    return app->dynamic_call(app->getMemory<x86::reg32>(11076468), cpu);
+    return app->dynamic_call(app->getMemory<x86::reg32>(11076468), cpu.handOver());
 }
 
 /* align: skip  */
@@ -469,7 +469,7 @@ void sub_a8fc82(win32::WinApplication* app, x86::CPU& cpu)
   NFS2_USE(cpu);
   NFS2_USE(app);
     // 00a8fc82  ff25e403a900           -jmp dword ptr [0xa903e4]
-    return app->dynamic_call(app->getMemory<x86::reg32>(11076580), cpu);
+    return app->dynamic_call(app->getMemory<x86::reg32>(11076580), cpu.handOver());
 }
 
 /* align: skip  */
@@ -478,7 +478,7 @@ void sub_a8fc88(win32::WinApplication* app, x86::CPU& cpu)
   NFS2_USE(cpu);
   NFS2_USE(app);
     // 00a8fc88  ff252c04a900           -jmp dword ptr [0xa9042c]
-    return app->dynamic_call(app->getMemory<x86::reg32>(11076652), cpu);
+    return app->dynamic_call(app->getMemory<x86::reg32>(11076652), cpu.handOver());
 }
 
 /* align: skip  */
@@ -487,7 +487,7 @@ void sub_a8fc8e(win32::WinApplication* app, x86::CPU& cpu)
   NFS2_USE(cpu);
   NFS2_USE(app);
     // 00a8fc8e  ff25d003a900           -jmp dword ptr [0xa903d0]
-    return app->dynamic_call(app->getMemory<x86::reg32>(11076560), cpu);
+    return app->dynamic_call(app->getMemory<x86::reg32>(11076560), cpu.handOver());
 }
 
 /* align: skip  */
@@ -496,7 +496,7 @@ void sub_a8fc94(win32::WinApplication* app, x86::CPU& cpu)
   NFS2_USE(cpu);
   NFS2_USE(app);
     // 00a8fc94  ff25a003a900           -jmp dword ptr [0xa903a0]
-    return app->dynamic_call(app->getMemory<x86::reg32>(11076512), cpu);
+    return app->dynamic_call(app->getMemory<x86::reg32>(11076512), cpu.handOver());
 }
 
 /* align: skip  */
@@ -505,7 +505,7 @@ void sub_a8fc9a(win32::WinApplication* app, x86::CPU& cpu)
   NFS2_USE(cpu);
   NFS2_USE(app);
     // 00a8fc9a  ff259c03a900           -jmp dword ptr [0xa9039c]
-    return app->dynamic_call(app->getMemory<x86::reg32>(11076508), cpu);
+    return app->dynamic_call(app->getMemory<x86::reg32>(11076508), cpu.handOver());
 }
 
 /* align: skip  */
@@ -514,7 +514,7 @@ void sub_a8fca0(win32::WinApplication* app, x86::CPU& cpu)
   NFS2_USE(cpu);
   NFS2_USE(app);
     // 00a8fca0  ff25c803a900           -jmp dword ptr [0xa903c8]
-    return app->dynamic_call(app->getMemory<x86::reg32>(11076552), cpu);
+    return app->dynamic_call(app->getMemory<x86::reg32>(11076552), cpu.handOver());
 }
 
 /* align: skip  */
@@ -523,7 +523,7 @@ void sub_a8fca6(win32::WinApplication* app, x86::CPU& cpu)
   NFS2_USE(cpu);
   NFS2_USE(app);
     // 00a8fca6  ff25e003a900           -jmp dword ptr [0xa903e0]
-    return app->dynamic_call(app->getMemory<x86::reg32>(11076576), cpu);
+    return app->dynamic_call(app->getMemory<x86::reg32>(11076576), cpu.handOver());
 }
 
 /* align: skip  */
@@ -532,7 +532,7 @@ void sub_a8fcac(win32::WinApplication* app, x86::CPU& cpu)
   NFS2_USE(cpu);
   NFS2_USE(app);
     // 00a8fcac  ff25b403a900           -jmp dword ptr [0xa903b4]
-    return app->dynamic_call(app->getMemory<x86::reg32>(11076532), cpu);
+    return app->dynamic_call(app->getMemory<x86::reg32>(11076532), cpu.handOver());
 }
 
 /* align: skip  */
@@ -541,7 +541,7 @@ void sub_a8fcb2(win32::WinApplication* app, x86::CPU& cpu)
   NFS2_USE(cpu);
   NFS2_USE(app);
     // 00a8fcb2  ff258003a900           -jmp dword ptr [0xa90380]
-    return app->dynamic_call(app->getMemory<x86::reg32>(11076480), cpu);
+    return app->dynamic_call(app->getMemory<x86::reg32>(11076480), cpu.handOver());
 }
 
 /* align: skip  */
@@ -550,12 +550,13 @@ void sub_a8fcb8(win32::WinApplication* app, x86::CPU& cpu)
   NFS2_USE(cpu);
   NFS2_USE(app);
     // 00a8fcb8  ff254804a900           -jmp dword ptr [0xa90448]
-    return app->dynamic_call(app->getMemory<x86::reg32>(11076680), cpu);
+    return app->dynamic_call(app->getMemory<x86::reg32>(11076680), cpu.handOver());
 }
 
 /* align: skip 0x00 0x00 */
-void sub_a8fcc0(win32::WinApplication* app, x86::CPU& cpu)
+void sub_a8fcc0(win32::WinApplication* __restrict app, x86::CPU& cpu_)
 {
+  x86::Local cpu(cpu_);
   NFS2_USE(cpu);
   NFS2_USE(app);
     // 00a8fcc0  0000                   -add byte ptr [eax], al

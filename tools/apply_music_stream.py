@@ -37,7 +37,8 @@ SITES = [
     # sub_410030: the buffer the copy would have gone through.
     ("nfs3hp.2.cpp", "00410089  e892150d00",
      "    cpu.esp -= 4;\n"
-     "    sub_4e1620(app, cpu);",
+     "    sub_4e1620(app, cpu.sync());\n"
+     "    cpu.reload();",
      "    cpu.eax = 0; /* port: no copy buffer, nothing is copied */",
      ""),
     # sub_410030: everything from here on opens the two files and copies.
@@ -49,18 +50,22 @@ SITES = [
     # sub_4107c0: the track's index file, opened by the name the game built.
     ("nfs3hp.3.cpp", "00410908  e8b3050d00",
      "    cpu.esp -= 4;\n"
-     "    sub_4e0ec0(app, cpu);",
+     "    sub_4e0ec0(app, cpu.sync());\n"
+     "    cpu.reload();",
      "    musicIndexOpened(app, cpu.eax); /* port: the track's name, as the game spells it */\n"
      "    cpu.esp -= 4;\n"
-     "    sub_4e0ec0(app, cpu);",
+     "    sub_4e0ec0(app, cpu.sync());\n"
+     "    cpu.reload();",
      "void musicIndexOpened(win32::WinApplication* app, x86::reg32 path);\n"),
     # sub_4107c0: the name queued on the music stream, the copy's until now.
     ("nfs3hp.3.cpp", "00410965  e8a2650d00",
      "    cpu.esp -= 4;\n"
-     "    sub_4e6f0c(app, cpu);",
+     "    sub_4e6f0c(app, cpu.sync());\n"
+     "    cpu.reload();",
      "    musicStreamFile(app, cpu.edx); /* port: the track itself, not a copy of it */\n"
      "    cpu.esp -= 4;\n"
-     "    sub_4e6f0c(app, cpu);",
+     "    sub_4e6f0c(app, cpu.sync());\n"
+     "    cpu.reload();",
      "void musicStreamFile(win32::WinApplication* app, x86::reg32 path);\n"),
 ]
 

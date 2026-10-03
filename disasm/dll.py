@@ -1,5 +1,7 @@
 import os
-from .module import Module
+from .module import Module, function_opening, loop_heads, SAFEPOINT
+from .codegen import fpu as fpu_codegen
+from .codegen import fpu_stack
 
 
 class DLL(Module):
@@ -7,6 +9,15 @@ class DLL(Module):
         Module.__init__(self, application_name, exe_path, rebase_after)
 
     def write(self, owner_name, thread_segments = [], function_names={}):
+        # A driver's arithmetic stays plain double: drawing and sound gain
+        # nothing from the x87's rounding (codegen/fpu.py).
+        fpu_codegen.EXACT = False
+        try:
+            self._write(owner_name, thread_segments, function_names)
+        finally:
+            fpu_codegen.EXACT = True
+
+    def _write(self, owner_name, thread_segments, function_names):
         try:
             os.makedirs('src/%s/disassembly/' % (owner_name))
         except OSError:
@@ -50,10 +61,12 @@ class DLL(Module):
                         for jump_entry in subroutine.jump_table:
                             methods.write('/* jump table: 0x%08x */\n' % jump_entry)
                         h.write('void sub_%x(win32::WinApplication* app, x86::CPU& cpu);\n' % function_entry)
-                        methods.write('void sub_%x(win32::WinApplication* app, x86::CPU& cpu)\n'
+                        parameters, opening = function_opening(subroutine, 'win32::WinApplication')
+                        methods.write('void sub_%x%s\n'
                                       '{\n'
+                                      '%s'
                                       '  NFS2_USE(cpu);\n'
-                                      '  NFS2_USE(app);\n' % function_entry)
+                                      '  NFS2_USE(app);\n' % (function_entry, parameters, opening))
                         if subroutine.thread_unsafe:
                             methods.write('  win32::LockContext lock(*app);\n')
                         if subroutine.dynamic_labels:
@@ -64,12 +77,24 @@ class DLL(Module):
                                             'start:\n')
                         if function_entry != function_start:
                             methods.write('    goto L_entry_0x%08x;\n' % function_entry)
+                        run = fpu_stack.Run()
+                        dynamic_addresses = set(x for _, x in subroutine.dynamic_labels)
+                        static_addresses = set(x for _, x in subroutine.static_labels)
+                        loops = loop_heads(subroutine)
                         for instruction in subroutine.instructions:
-                            if instruction.address in [x for _, x in subroutine.dynamic_labels]:
+                            lines = self.generate(instruction, (function_start, function_end), function_names)
+                            labelled = (instruction.address in dynamic_addresses
+                                        or instruction.address in static_addresses
+                                        or (function_entry != function_start and instruction.address == function_entry))
+                            carried = (fpu_stack.ENABLED and not fpu_stack.Run.boundary(instruction)
+                                       and fpu_stack.Run.understood(lines))
+                            if run.open and (labelled or not carried):
+                                methods.write(fpu_stack.text(run.close()))
+                            if instruction.address in dynamic_addresses:
                                 if fallthrough:
                                     methods.write('  [[fallthrough]];\n')
                                 methods.write('  case 0x%08x:\n' % (instruction.address))
-                            if instruction.address in [x for _, x in subroutine.static_labels]:
+                            if instruction.address in static_addresses:
                                 methods.write('L_0x%08x:\n' % (instruction.address))
                             if function_entry != function_start and instruction.address == function_entry:
                                 methods.write('L_entry_0x%08x:\n' % (instruction.address))
@@ -77,10 +102,16 @@ class DLL(Module):
                                 methods.write('    app->unlockContext(cpu);\n'
                                               '    win32::Thread::sleep(0);\n'
                                               '    app->lockContext(cpu);\n')
+                            if instruction.address in loops:
+                                methods.write(SAFEPOINT)
+                            if carried:
+                                lines = run.transform(lines)
                             methods.write('    // %s\n'
                                             '    %s\n'  % (self._raw(subroutine.section, instruction),
-                                                            '\n    '.join(self.generate(instruction, (function_start, function_end), function_names))))
+                                                            '\n    '.join(lines)))
                             fallthrough = instruction.mnemonic not in ['jmp', 'ret']
+                        if run.open:
+                            methods.write(fpu_stack.text(run.close()))
                         if subroutine.dynamic_labels:
                             methods.write('  default:\n'
                                           '    NFS2_ASSERT(false);\n'

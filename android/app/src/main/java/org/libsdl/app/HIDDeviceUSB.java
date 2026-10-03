@@ -57,7 +57,7 @@ class HIDDeviceUSB implements HIDDevice {
             result = mDevice.getSerialNumber();
         }
         catch (SecurityException exception) {
-            //Log.w(TAG, "App permissions mean we cannot get serial number for device " + getDeviceName() + " message: " + exception.getMessage());
+            //SDLLog.w(TAG, "App permissions mean we cannot get serial number for device " + getDeviceName() + " message: " + exception.getMessage());
         }
         if (result == null) {
             result = "";
@@ -103,14 +103,14 @@ class HIDDeviceUSB implements HIDDevice {
     public boolean open() {
         mConnection = mManager.getUSBManager().openDevice(mDevice);
         if (mConnection == null) {
-            Log.w(TAG, "Unable to open USB device " + getDeviceName());
+            SDLLog.w(TAG, "Unable to open USB device " + getDeviceName());
             return false;
         }
 
         // Force claim our interface
         UsbInterface iface = mDevice.getInterface(mInterfaceIndex);
         if (!mConnection.claimInterface(iface, true)) {
-            Log.w(TAG, "Failed to claim interfaces on USB device " + getDeviceName());
+            SDLLog.w(TAG, "Failed to claim interfaces on USB device " + getDeviceName());
             close();
             return false;
         }
@@ -134,7 +134,7 @@ class HIDDeviceUSB implements HIDDevice {
 
         // Make sure the required endpoints were present
         if (mInputEndpoint == null || mOutputEndpoint == null) {
-            Log.w(TAG, "Missing required endpoint on USB device " + getDeviceName());
+            SDLLog.w(TAG, "Missing required endpoint on USB device " + getDeviceName());
             close();
             return false;
         }
@@ -150,7 +150,7 @@ class HIDDeviceUSB implements HIDDevice {
     @Override
     public int writeReport(byte[] report, boolean feature) {
         if (mConnection == null) {
-            Log.w(TAG, "writeReport() called with no device connection");
+            SDLLog.w(TAG, "writeReport() called with no device connection");
             return -1;
         }
 
@@ -176,7 +176,7 @@ class HIDDeviceUSB implements HIDDevice {
                 1000/*timeout millis*/);
 
             if (res < 0) {
-                Log.w(TAG, "writeFeatureReport() returned " + res + " on device " + getDeviceName());
+                SDLLog.w(TAG, "writeFeatureReport() returned " + res + " on device " + getDeviceName());
                 return -1;
             }
 
@@ -187,7 +187,7 @@ class HIDDeviceUSB implements HIDDevice {
         } else {
             int res = mConnection.bulkTransfer(mOutputEndpoint, report, report.length, 1000);
             if (res != report.length) {
-                Log.w(TAG, "writeOutputReport() returned " + res + " on device " + getDeviceName());
+                SDLLog.w(TAG, "writeOutputReport() returned " + res + " on device " + getDeviceName());
             }
             return res;
         }
@@ -202,7 +202,7 @@ class HIDDeviceUSB implements HIDDevice {
         byte report_number = report[0];
 
         if (mConnection == null) {
-            Log.w(TAG, "readReport() called with no device connection");
+            SDLLog.w(TAG, "readReport() called with no device connection");
             return false;
         }
 
@@ -223,7 +223,7 @@ class HIDDeviceUSB implements HIDDevice {
             1000/*timeout millis*/);
 
         if (res < 0) {
-            Log.w(TAG, "getFeatureReport() returned " + res + " on device " + getDeviceName());
+            SDLLog.w(TAG, "getFeatureReport() returned " + res + " on device " + getDeviceName());
             return false;
         }
 
@@ -289,7 +289,7 @@ class HIDDeviceUSB implements HIDDevice {
                 }
                 catch (Exception e)
                 {
-                    Log.v(TAG, "Exception in UsbDeviceConnection bulktransfer: " + e);
+                    SDLLog.v(TAG, "Exception in UsbDeviceConnection bulktransfer: " + e);
                     break;
                 }
                 if (r < 0) {

@@ -396,7 +396,7 @@ public final class ControlProfile
         }
         catch (IOException couldNotWrite)
         {
-            android.util.Log.w("ControlProfile", "Could not set the controls up for this race", couldNotWrite);
+            AppLog.w("ControlProfile", "Could not set the controls up for this race", couldNotWrite);
             return installed;
         }
         return wanted;
@@ -488,11 +488,11 @@ public final class ControlProfile
         try
         {
             if (!done.exists() && !done.createNewFile())
-                android.util.Log.w("ControlProfile", "Could not mark the cop's minimap as done");
+                AppLog.w("ControlProfile", "Could not mark the cop's minimap as done");
         }
         catch (IOException e)
         {
-            android.util.Log.w("ControlProfile", "Could not mark the cop's minimap as done", e);
+            AppLog.w("ControlProfile", "Could not mark the cop's minimap as done", e);
         }
     }
 
@@ -657,11 +657,11 @@ public final class ControlProfile
             if (copMinimap(config))
                 replace(file, config);
             if (!done.createNewFile())
-                android.util.Log.w("ControlProfile", "Could not mark the cop's minimap as done");
+                AppLog.w("ControlProfile", "Could not mark the cop's minimap as done");
         }
         catch (IOException e)
         {
-            android.util.Log.w("ControlProfile", "Could not set up the cop's minimap", e);
+            AppLog.w("ControlProfile", "Could not set up the cop's minimap", e);
         }
     }
 

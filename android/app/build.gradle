@@ -23,10 +23,16 @@ android {
          * API 21 on, as SDL3 itself does. */
         minSdk = 26
         targetSdk = 36
-        // Kept in step with versionName so the two can never disagree: 0.75 -> 75.
-        versionCode = 75
-        versionName = "0.75"
+        // Kept in step with versionName so the two can never disagree: 0.76 -> 76.
+        versionCode = 76
+        versionName = "0.76"
         testInstrumentationRunner "dev.nfs3hp.port.TouchOverlayInstrumentation"
+        // Only arm64-v8a is packed: Compose brings androidx.graphics.path for
+        // four ABIs, and a phone of another ABI would then install an APK with
+        // no game in it (arm64 only, decided 2026-10-01).
+        ndk {
+            abiFilters 'arm64-v8a'
+        }
         manifestPlaceholders = [launcherAppLabel: "@string/app_name"]
 
         externalNativeBuild {
@@ -54,7 +60,9 @@ android {
                     // that no-MMX path is what left the movie streamer's filename
                     // buffer all zeroes on device.  sse2neon covers every SSE2
                     // intrinsic the disassembly uses (verified in M1).
-                    "-DWITH_MMX=ON"
+                    "-DWITH_MMX=ON",
+                    // -PwideFpu: the long double x87 experiment (include/fpu.h).
+                    "-DWITH_WIDE_FPU=" + (providers.gradleProperty("wideFpu").isPresent() ? "ON" : "OFF")
                 )
                 // Only nfs3hp is wired up for Android (see the NFS_BUILD_NFS2SE
                 // guard in the root CMakeLists.txt); the default is already OFF.
@@ -78,6 +86,14 @@ android {
             }
         }
         release {
+            // No tracing and no logging in a release: the native side keeps
+            // the log shut (NFS_RELEASE, nfs3hp_main.cpp), the Java side
+            // writes through AppLog and takes no diagnostic launch flags.
+            externalNativeBuild {
+                cmake {
+                    arguments "-DNFS_RELEASE=ON"
+                }
+            }
             minifyEnabled = false
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
         }
@@ -90,6 +106,8 @@ android {
 
     buildFeatures {
         compose = true
+        // BuildConfig.DEBUG: AppLog and NFS3Activity's diagnostic launch flags.
+        buildConfig = true
     }
 
     externalNativeBuild {

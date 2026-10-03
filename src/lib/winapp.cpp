@@ -16,14 +16,46 @@
 namespace win32
 {
 
-bool WinApplication::traceApi()
+int WinApplication::s_traceApi = -1;
+
+bool WinApplication::readTraceApi()
 {
-    // read once; SDL_getenv is safe before SDL_Init
-    static const bool s_trace = []() {
-        const char* v = SDL_getenv("NFS_TRACE_API");
-        return v && *v && *v != '0';
-    }();
-    return s_trace;
+    // read once, on first use; SDL_getenv is safe before SDL_Init
+    const char* v = SDL_getenv("NFS_TRACE_API");
+    s_traceApi = v && *v && *v != '0' ? 1 : 0;
+    return s_traceApi != 0;
+}
+
+/* traceNewCalls: 2 in s_traceApi, and the thread and target pairs seen. */
+static SDL_Mutex* s_seenCallsLock = nullptr;
+static std::set<std::uint64_t>* s_seenCalls = nullptr;
+
+void WinApplication::traceNewCalls()
+{
+    if (!s_seenCallsLock)
+    {
+        s_seenCallsLock = SDL_CreateMutex();
+        s_seenCalls = new std::set<std::uint64_t>();
+    }
+    SDL_LockMutex(s_seenCallsLock);
+    s_seenCalls->clear();
+    SDL_UnlockMutex(s_seenCallsLock);
+    s_traceApi = 2;
+}
+
+void WinApplication::traceCall(const Method& method, x86::reg32 address)
+{
+    const unsigned thread = unsigned(SDL_GetCurrentThreadID());
+    if (s_traceApi != 2)
+    {
+        SDL_Log("[API] t%u %s", thread, method.name.c_str());
+        return;
+    }
+    SDL_LockMutex(s_seenCallsLock);
+    const bool first = s_seenCalls->insert(std::uint64_t(thread) << 32 | address).second;
+    SDL_UnlockMutex(s_seenCallsLock);
+    if (first)
+        SDL_Log("[CALL] t%u 0x%08x %s", thread, unsigned(address), method.name.c_str());
 }
 
 static x86::reg32 s_resourceIndex;
@@ -62,8 +94,8 @@ WinApplication::WinApplication(const char* appName, x86::reg32 baseAddress, cons
     ,   m_resourceContext(new Mutex("Resource"))
     ,   m_cpu{}
 {
-    /*m_methods = new Method[sections[0].size+sections[0].baseAddress - 0x400000];
-    memset(m_methods, 0, sizeof(Method)*(sections[0].size+sections[0].baseAddress - 0x400000));*/
+    /* Place 0 of the method list stands for "no method" in the page table. */
+    m_methodList.emplace_back();
     dsetup::s_dSetupRegistry->registerSymbols(this);
     ddraw::s_dDrawRegistry->registerSymbols(this);
     glide2x::s_glide2xRegistry->registerSymbols(this);
@@ -105,7 +137,8 @@ WinApplication::~WinApplication()
     MemMap::fini();
     delete m_resourceContext;
     delete m_executionContext;
-    /*delete[] m_methods;*/
+    for (std::uint16_t* page : m_methodPages)
+        delete[] page;
     NFS2_ASSERT(SDL_GetAtomicInt(&s_resourceCount) == 0);
 }
 
@@ -192,6 +225,36 @@ void WinApplication::registerMethod(x86::reg32 pointer, Method method)
 {
     NFS2_ASSERT(m_methods.find(pointer-0x400000) == m_methods.end());
     m_methods[pointer-0x400000] = method;
+    /* And into the page table dynamic_call reads, while there is room in its
+     * 16-bit places; one past that is found in the map instead. */
+    const x86::reg32 offset = pointer - kMethodBase;
+    if (offset < kMethodSpan && m_methodList.size() <= 0xffff)
+    {
+        std::uint16_t*& page = m_methodPages[offset >> kMethodPageBits];
+        if (!page)
+            page = new std::uint16_t[kMethodPageMask + 1]();
+        page[offset & kMethodPageMask] = std::uint16_t(m_methodList.size());
+        m_methodList.push_back(method);
+    }
+}
+
+void WinApplication::dynamicCallElsewhere(x86::reg32 address, x86::CPU& cpu)
+{
+    std::unordered_map<x86::reg32, Method>::const_iterator it = m_methods.find(address - 0x400000);
+    if (it == m_methods.end())
+    {
+        /* Running the miss used to read the method pointer straight out of
+         * end(), which libc++ represents as a null node -- a SIGSEGV at offset
+         * 0x30 naming neither the caller nor the address it wanted.  Skipping
+         * the call leaves the guest registers as the caller left them, which
+         * is survivable; the crash was not. */
+        reportMissingMethod(address);
+        return;
+    }
+    const Method& m = it->second;
+    if (traceApi())
+        traceCall(m, address);
+    m(this, cpu);
 }
 
 void WinApplication::reportMissingMethod(x86::reg32 address)
@@ -220,19 +283,45 @@ int WinApplication::runThread(x86::CPU& cpu, x86::reg32 entryPoint, x86::reg32 p
     {
         win32::MemMap threadStorage(4096);
         win32::MemMap threadStack(1024 * 1024);
-        cpu.init(threadStorage.getBlockStart(), entryPoint);
-        getMemory<Mutex*>(cpu.efs + 8) = threadLock ? m_executionContext : nullptr;
-        LockContext ctx(*this, cpu);
-        cpu.esp = threadStack.getBlockStart() + threadStack.getBlockSize() - 8;
-        getMemory<x86::reg32>(cpu.esp + 4) = parameter;
-        getMemory<x86::reg32>(cpu.esp) = cpu.ip;
-        dynamic_call(entryPoint, cpu);
-        return int(cpu.eax);
+        return runOn(cpu, threadStorage, threadStack, entryPoint, parameter, threadLock);
     }
     else
     {
         return 0;
     }
+}
+
+int WinApplication::runCallback(x86::CPU& cpu, x86::reg32 entryPoint, x86::reg32 parameter)
+{
+    /* Timer callbacks come back on SDL's timer thread about 126 times a second.
+     * Mapping a fresh 1 MB guest stack and thread block for each and unmapping
+     * it again took half of that thread's time.  Calls never overlap on one
+     * host thread, so each thread keeps its pair for good. */
+    thread_local win32::MemMap* threadStorage = nullptr;
+    thread_local win32::MemMap* threadStack = nullptr;
+    if (m_cpu.terminate)
+    {
+        return 0;
+    }
+    if (!threadStack)
+    {
+        threadStorage = new win32::MemMap(4096);
+        threadStack = new win32::MemMap(1024 * 1024);
+    }
+    return runOn(cpu, *threadStorage, *threadStack, entryPoint, parameter, true);
+}
+
+int WinApplication::runOn(x86::CPU& cpu, const MemMap& threadStorage, const MemMap& threadStack,
+                          x86::reg32 entryPoint, x86::reg32 parameter, bool threadLock)
+{
+    cpu.init(threadStorage.getBlockStart(), entryPoint);
+    getMemory<Mutex*>(cpu.efs + 8) = threadLock ? m_executionContext : nullptr;
+    LockContext ctx(*this, cpu);
+    cpu.esp = threadStack.getBlockStart() + threadStack.getBlockSize() - 8;
+    getMemory<x86::reg32>(cpu.esp + 4) = parameter;
+    getMemory<x86::reg32>(cpu.esp) = cpu.ip;
+    dynamic_call(entryPoint, cpu);
+    return int(cpu.eax);
 }
 
 void WinApplication::lockContext(const x86::CPU& cpu)
@@ -241,8 +330,77 @@ void WinApplication::lockContext(const x86::CPU& cpu)
     NFS2_ASSERT(executionContext);
     if (executionContext)
     {
+        acquireContext(executionContext, 1);
+    }
+}
+
+/* Takes the context `depth` levels deep.  A thread that has to wait for it is
+ * counted while it waits, so that the thread running meets a safepoint and
+ * hands it over (yieldContext). */
+void WinApplication::acquireContext(Mutex* executionContext, x86::reg32 depth)
+{
+    if (!executionContext->tryLock())
+    {
+        if (m_contextWaiters.fetch_add(1, std::memory_order_relaxed) == 0)
+        {
+            m_contextWantedSince.store(SDL_GetTicksNS(), std::memory_order_relaxed);
+        }
+        executionContext->lock();
+        m_contextWaiters.fetch_sub(1, std::memory_order_relaxed);
+        m_contextHandoffs.fetch_add(1, std::memory_order_release);
+    }
+    for (x86::reg32 i = 1; i < depth; ++i)
+    {
         executionContext->lock();
     }
+}
+
+/* A safepoint found a thread waiting for the context (contextWanted).  Once
+ * that thread has waited out a slice, the context goes to it: every level of
+ * this thread's hold let go, a moment for the waiter to wake and take it --
+ * a mutex let go and taken straight back would, more often than not, go to
+ * the same thread again -- then this thread queues for it like any other.
+ * The slice is 2 ms, a tenth of Windows 98's: the sound's timer and mixer come
+ * back quickly, and a thread that computes flat out still hands over rarely.
+ * The clock is read on one check in 64 only, to keep a hot loop cheap while a
+ * waiter's slice runs. */
+void WinApplication::yieldContext(const x86::CPU& cpu)
+{
+    static constexpr std::uint64_t kSliceNs = 2000000;
+    if ((++m_yieldPolls & 63) != 0)
+    {
+        return;
+    }
+    Mutex* executionContext = getMemory<Mutex*>(cpu.efs + 8);
+    if (!executionContext || !contextWanted()
+        || SDL_GetTicksNS() - m_contextWantedSince.load(std::memory_order_relaxed) < kSliceNs)
+    {
+        return;
+    }
+    /* How often this happens, on the 1st, 2nd, 4th, 8th... time: rare in play,
+     * and each line says how long the waiter had waited. */
+    static unsigned s_yields = 0;
+    ++s_yields;
+    if ((s_yields & (s_yields - 1)) == 0)
+    {
+        SDL_Log("[SAFEPOINT] handoff %u, the waiter waited %.1f ms", s_yields,
+                double(SDL_GetTicksNS() - m_contextWantedSince.load(std::memory_order_relaxed)) / 1e6);
+    }
+    const unsigned handoffs = m_contextHandoffs.load(std::memory_order_acquire);
+    const x86::reg32 depth = executionContext->unlockAll();
+    for (int i = 0; i < 200 && contextWanted()
+                    && m_contextHandoffs.load(std::memory_order_acquire) == handoffs; ++i)
+    {
+        if (i < 20)
+        {
+            SDL_CPUPauseInstruction();
+        }
+        else
+        {
+            SDL_DelayNS(20000);
+        }
+    }
+    acquireContext(executionContext, depth);
 }
 
 void WinApplication::unlockContext(const x86::CPU& cpu)

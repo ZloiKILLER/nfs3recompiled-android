@@ -24,13 +24,13 @@ SITES = [
     # sub_494cb0: the loading picture, from its first instruction.
     ("nfs3hp.21.cpp", "00494cb0  53",
      "    app->getMemory<x86::reg32>(cpu.esp-4) = cpu.ebx;",
-     "    loadingScreenFit(app, cpu, true); /* port: the loading screen at 4:3 */\n"
+     "    loadingScreenFit(app, cpu.sync(), true); /* port: the loading screen at 4:3 */\n"
      "    app->getMemory<x86::reg32>(cpu.esp-4) = cpu.ebx;"),
     # sub_4a3400: the race set up and loaded, the way out of it that is not an
     # abort.
     ("nfs3hp.24.cpp", "004a35c4  89ec",
      "    cpu.esp = cpu.ebp;",
-     "    loadingScreenFit(app, cpu, false); /* port: loaded, the whole screen again */\n"
+     "    loadingScreenFit(app, cpu.sync(), false); /* port: loaded, the whole screen again */\n"
      "    cpu.esp = cpu.ebp;"),
 ]
 

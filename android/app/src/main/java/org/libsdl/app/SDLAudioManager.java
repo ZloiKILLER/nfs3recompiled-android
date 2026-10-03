@@ -113,7 +113,7 @@ class SDLAudioManager {
             android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_AUDIO);
 
         } catch (Exception e) {
-            Log.v(TAG, "modify thread properties failed " + e.toString());
+            SDLLog.v(TAG, "modify thread properties failed " + e.toString());
         }
     }
 

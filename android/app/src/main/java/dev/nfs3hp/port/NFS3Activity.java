@@ -48,6 +48,10 @@ public class NFS3Activity extends SDLActivity
     /* A finger works the game's pointer as a touchpad rather than putting it
      * where it lands (GamePreferences.TOUCH_POINTER).  Read once, likewise. */
     private boolean touchpadPointer;
+    /* Frames a second the player chose, 30 or 60 (NFS_FPS_CAP). */
+    private int fpsCap = 30;
+    /* Lets the Wi-Fi hand the game broadcasts: how an IPX race is found. */
+    private android.net.wifi.WifiManager.MulticastLock multicastLock;
 
     /* The port tears its Application down and calls SDL_Quit before main
      * returns, so it can safely be launched again.  Without this opt-in SDL's
@@ -119,15 +123,38 @@ public class NFS3Activity extends SDLActivity
             driving = padForPlayerOne ? ControlProfile.Kind.GAMEPADS : ControlProfile.Kind.TOUCH;
         firstStartKind = driving == ControlProfile.Kind.TOUCH ? driving : ControlProfile.Kind.GAMEPADS;
         setEnv("NFS_TOUCH_DRIVE", driving == ControlProfile.Kind.TOUCH ? "keys" : "axes");
-        Log.i(TAG, "driving with " + (driving == null ? "the player's own controls" : driving)
+        AppLog.i(TAG, "driving with " + (driving == null ? "the player's own controls" : driving)
             + (firstStart ? ", into the settings the game is about to make" : "")
             + (padForPlayerOne ? ", pad in slot 1" : ", no pad"));
 
         String orientation = preferences.getString(GamePreferences.ORIENTATION,
             GamePreferences.ORIENTATION_LANDSCAPE);
-        int fpsCap = preferences.getInt(GamePreferences.FPS_CAP, 30);
+        fpsCap = preferences.getInt(GamePreferences.FPS_CAP, 30);
         setEnv("NFS_ORIENTATION", orientation);
         setEnv("NFS_FPS_CAP", Integer.toString(fpsCap));
+        /* The TCP/IP port of a network race, which every player has to share
+         * (nfs3hp::networkPort). */
+        setEnv("NFS_NET_PORT", Integer.toString(preferences.getInt(GamePreferences.NETWORK_PORT,
+            GamePreferences.NETWORK_PORT_MODERN)));
+        /* An IPX race is found by a broadcast on the Wi-Fi, which many phones
+         * drop while the screen is on as well as off, unless an app holds the
+         * multicast lock.  Held while the game runs; the system lets it go with
+         * the process. */
+        android.net.wifi.WifiManager wifi =
+            (android.net.wifi.WifiManager)getApplicationContext().getSystemService(Context.WIFI_SERVICE);
+        if (wifi != null)
+        {
+            try
+            {
+                multicastLock = wifi.createMulticastLock("nfs3hp-lan");
+                multicastLock.setReferenceCounted(false);
+                multicastLock.acquire();
+            }
+            catch (RuntimeException e)
+            {
+                AppLog.w(TAG, "no multicast lock: " + e);
+            }
+        }
         /* Percent in the settings, a multiplier in the blit shader.  Formatted
          * with the root locale on purpose: a comma decimal separator would not
          * survive SDL_atof on the other side. */
@@ -146,7 +173,7 @@ public class NFS3Activity extends SDLActivity
         if(audio!=null) {
             String nativeRate=audio.getProperty(android.media.AudioManager.PROPERTY_OUTPUT_SAMPLE_RATE);
             if(nativeRate!=null)setEnv("NFS_AUDIO_RATE",nativeRate);
-            Log.i(TAG,"sound: the phone's own rate "+nativeRate+" Hz, a burst of "
+            AppLog.i(TAG,"sound: the phone's own rate "+nativeRate+" Hz, a burst of "
                 +audio.getProperty(android.media.AudioManager.PROPERTY_OUTPUT_FRAMES_PER_BUFFER)
                 +" frames, "+(bluetoothOutput(audio)?"a Bluetooth output connected":"no Bluetooth output"));
         }
@@ -161,8 +188,9 @@ public class NFS3Activity extends SDLActivity
          *   adb shell am start -n dev.nfs3hp.port/.SplashActivity --ez trace_ticks true
          * The ones that speak only when something changes -- the layout, the
          * pads, the steering, text entry -- stay on: they are a handful of
-         * lines a session and they are what makes a report readable. */
-        if (getIntent() != null)
+         * lines a session and they are what makes a report readable.
+         * A release takes none of them: no tracing and no checks there. */
+        if (BuildConfig.DEBUG && getIntent() != null)
         {
             if (getIntent().getBooleanExtra("trace_car_detail", false))
                 setEnv("NFS_CAR_DETAIL_TRACE", "1");
@@ -170,6 +198,72 @@ public class NFS3Activity extends SDLActivity
                 setEnv("NFS_TICK_TRACE", "1");
             if (getIntent().getBooleanExtra("trace_input", false))
                 setEnv("NFS_INPUT_TRACE", "1");
+            // EA's comm library into the log ([COMM]), for network races.
+            if (getIntent().getBooleanExtra("net_trace", false))
+                setEnv("NFS_NET_TRACE", "1");
+            // Every car's memory once a second of a race, to cars.bin (with trace_ticks).
+            if (getIntent().getBooleanExtra("trace_cars", false))
+                setEnv("NFS_CAR_TRACE", "1");
+            // A race without the x87's single-precision rounding, to compare frame rates.
+            if (getIntent().getBooleanExtra("fpu_double", false))
+                setEnv("NFS_FPU_SINGLE", "0");
+            // Each native vertex loop checked against the generated code ([NATIVE]).
+            if (getIntent().getBooleanExtra("native_check", false))
+                setEnv("NFS_NATIVE_CHECK", "1");
+            // Only the clipper checked (sub_4c2cd0, native_vertices.cpp).
+            else if (getIntent().getBooleanExtra("clip_check", false))
+                setEnv("NFS_NATIVE_CHECK", "clip");
+            // Only the THRASH stand-ins checked (native_thrash.cpp).
+            else if (getIntent().getBooleanExtra("thrash_check", false))
+                setEnv("NFS_NATIVE_CHECK", "thrash");
+            // The generated code for all of them instead, to compare speeds.
+            if (!getIntent().getBooleanExtra("natives", true))
+                setEnv("NFS_NATIVES", "0");
+            else if (!getIntent().getBooleanExtra("polygon_natives", true))
+                setEnv("NFS_NATIVES", "vertices");
+            else if (!getIntent().getBooleanExtra("drawtri_native", true))
+                setEnv("NFS_NATIVES", "no-drawtri");
+            else if (!getIntent().getBooleanExtra("rotate_native", true))
+                setEnv("NFS_NATIVES", "no-rotate");
+            else if (!getIntent().getBooleanExtra("clip_native", true))
+                setEnv("NFS_NATIVES", "no-clip");
+            // The rear-view mirror as the original draws it (short and coarse).
+            if (!getIntent().getBooleanExtra("mirror_full", true))
+                setEnv("NFS_MIRROR_FULL", "0");
+            // voodoo2a's THRASH functions as generated rather than native.
+            if (!getIntent().getBooleanExtra("thrash", true))
+                setEnv("NFS_THRASH", "0");
+            // voodoo2a's data after each step of setting up, to set runs side by side.
+            if (getIntent().getBooleanExtra("thrash_init_trace", false))
+                setEnv("NFS_THRASH_INIT_TRACE", "1");
+            // The native driver through the old Voodoo2 renderer (GlideRenderer).
+            if (!getIntent().getBooleanExtra("thrash_gl", true))
+                setEnv("NFS_THRASH_GL", "0");
+            String thrashOff = getIntent().getStringExtra("thrash_off");
+            if (thrashOff != null)
+                setEnv("NFS_THRASH_OFF", thrashOff);
+            // Texture coordinates far from the origin ([TEXCOORD]), and whether
+            // they are brought near it (on unless the launch says false).
+            if (getIntent().getBooleanExtra("trace_texcoords", false))
+                setEnv("NFS_TEXCOORD_TRACE", "1");
+            if (!getIntent().getBooleanExtra("texcoord_rebase", true))
+                setEnv("NFS_TEXCOORD_REBASE", "0");
+            // The depth in the Voodoo's 16-bit steps, which the renderer otherwise
+            // chooses by the depth buffer and the GPU: "off", "on", or "ab" for
+            // turns of five seconds with and without, to weigh the GPU's load ([GPU]).
+            String depth16 = getIntent().getStringExtra("depth16");
+            if ("off".equals(depth16))
+                setEnv("NFS_DEPTH16", "0");
+            else if ("on".equals(depth16))
+                setEnv("NFS_DEPTH16", "1");
+            else if ("ab".equals(depth16))
+                setEnv("NFS_DEPTH16", "ab");
+            // Textures through the shader's own filter alone, to compare pictures.
+            if (!getIntent().getBooleanExtra("gpu_filter", true))
+                setEnv("NFS_GPU_FILTER", "0");
+            // OpenGL on the game's own thread, as before the GL thread.
+            if (!getIntent().getBooleanExtra("gl_thread", true))
+                setEnv("NFS_GL_THREAD", "0");
         }
 
         /* Landscape whatever happens -- portrait is not offered, the game
@@ -188,7 +282,7 @@ public class NFS3Activity extends SDLActivity
                 ? ActivityInfo.SCREEN_ORIENTATION_REVERSE_LANDSCAPE
                 : ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE);
 
-        if (getIntent() != null && getIntent().getBooleanExtra("trace_api", false))
+        if (BuildConfig.DEBUG && getIntent() != null && getIntent().getBooleanExtra("trace_api", false))
         {
             // Bundled together: NFS_TRACE_API covers every win32 call and
             // File::read's own byte counts, SDL_LOGGING=app,error surfaces
@@ -224,6 +318,8 @@ public class NFS3Activity extends SDLActivity
         running = false;
         ((InputManager) getSystemService(Context.INPUT_SERVICE))
             .unregisterInputDeviceListener(gamepadListener);
+        if (multicastLock != null && multicastLock.isHeld())
+            multicastLock.release();
         super.onDestroy();
         /* The game's process ends with the game.  SDL and the machine under it
          * are set up once per process; a second race in the same one died in
@@ -278,7 +374,7 @@ public class NFS3Activity extends SDLActivity
     {
         if (!DesktopMode.active(this))
             return;
-        Log.i(TAG, "desktop mode: the window's shape is the player's");
+        AppLog.i(TAG, "desktop mode: the window's shape is the player's");
         setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED);
     }
 
@@ -360,6 +456,10 @@ public class NFS3Activity extends SDLActivity
      * on the desk still reports its hovering. */
     private static final int INPUT_TOUCH=0,INPUT_PAD=1,INPUT_POINTER=2,INPUT_KEYBOARD=3;
     private int lastInput=INPUT_TOUCH;
+    private boolean movieTouch;
+    private boolean movieTap;
+    private float movieDownX,movieDownY;
+    private long movieDownAt;
 
     /* A keyboard with letters on it, plugged in or paired -- not the phone's own
      * volume keys, and not the on-screen keyboard's keys either. */
@@ -377,6 +477,34 @@ public class NFS3Activity extends SDLActivity
     }
 
     @Override public boolean dispatchTouchEvent(android.view.MotionEvent event) {
+        /* MAD playback has its own event loop and never sees the menu pointer.
+         * Claim only gestures that began while a movie was playing. A short,
+         * stationary tap requests the player's normal cleanup/exit path. */
+        if(isScreenTouch(event)) {
+            int action=event.getActionMasked();
+            if(action==android.view.MotionEvent.ACTION_DOWN&&nativeMoviePlaying()) {
+                movieTouch=true;movieTap=true;
+                movieDownX=event.getX();movieDownY=event.getY();movieDownAt=event.getEventTime();
+                return true;
+            }
+            if(movieTouch) {
+                if(action==android.view.MotionEvent.ACTION_POINTER_DOWN)
+                    movieTap=false;
+                else if(action==android.view.MotionEvent.ACTION_MOVE) {
+                    float slop=android.view.ViewConfiguration.get(this).getScaledTouchSlop();
+                    if(Math.hypot(event.getX()-movieDownX,event.getY()-movieDownY)>slop)
+                        movieTap=false;
+                } else if(action==android.view.MotionEvent.ACTION_UP) {
+                    float slop=android.view.ViewConfiguration.get(this).getScaledTouchSlop();
+                    if(movieTap&&event.getEventTime()-movieDownAt<=300
+                        &&Math.hypot(event.getX()-movieDownX,event.getY()-movieDownY)<=slop)
+                        nativeSkipMovie();
+                    movieTouch=false;
+                } else if(action==android.view.MotionEvent.ACTION_CANCEL)
+                    movieTouch=false;
+                return true;
+            }
+        }
         if(event.getActionMasked()==android.view.MotionEvent.ACTION_DOWN)
             lastInput=isExternalPointer(event)?INPUT_POINTER:(isScreenTouch(event)?INPUT_TOUCH:lastInput);
         /* Only the screen presses the on-screen controls.  A pointer driven from
@@ -581,7 +709,7 @@ public class NFS3Activity extends SDLActivity
             +" device="+(device==null?"?":device.getName());
         if(kind.equals(lastPointerTrace))return;
         lastPointerTrace=kind;
-        Log.i(TAG,"external pointer "+kind+" action="+event.getActionMasked()+" buttons="+event.getButtonState());
+        AppLog.i(TAG,"external pointer "+kind+" action="+event.getActionMasked()+" buttons="+event.getButtonState());
     }
 
     @Override public void onWindowFocusChanged(boolean focus) {
@@ -659,7 +787,7 @@ public class NFS3Activity extends SDLActivity
     public boolean onFirstSettings(byte[] config) {
         boolean laid=ControlProfile.firstStart(config,firstStartKind,
             ControlProfile.touchDriving(GamePreferences.get(this)),getExternalFilesDir(null));
-        Log.i(TAG,laid?"a new player's settings: the phone's, with "+firstStartKind
+        AppLog.i(TAG,laid?"a new player's settings: the phone's, with "+firstStartKind
             :"a new player's settings: not a settings block, left as the game made it");
         return laid;
     }
@@ -693,6 +821,8 @@ public class NFS3Activity extends SDLActivity
      * turns the place the finger reached into the movement the game's cursor
      * needs to get there. */
     private static native void nativeScreenTouch(int action, float x, float y);
+    private static native boolean nativeMoviePlaying();
+    private static native boolean nativeSkipMovie();
     /* The finger on the touchpad instead: how far it slid, in window pixels,
      * and whether it holds the button (bit 0). */
     private static native void nativeTouchpad(float dx, float dy, int buttons);
@@ -721,11 +851,11 @@ public class NFS3Activity extends SDLActivity
         try
         {
             Os.setenv(name, value, true);
-            Log.i(TAG, "set " + name + "=" + value);
+            AppLog.i(TAG, "set " + name + "=" + value);
         }
         catch (Exception e)
         {
-            Log.w(TAG, "Os.setenv(" + name + ") failed", e);
+            AppLog.w(TAG, "Os.setenv(" + name + ") failed", e);
         }
     }
 
@@ -780,6 +910,21 @@ public class NFS3Activity extends SDLActivity
         {
             super.surfaceChanged(holder, format, width, height);
             post(NFS3Activity.this::attachTouchControls);
+            /* The game keeps the frame rate by the clock (Renderer::paceFrame);
+             * the display is asked for the same, so a 120 Hz panel can run at
+             * 60 and each frame land on a refresh of its own. */
+            if (android.os.Build.VERSION.SDK_INT >= 30 && fpsCap > 0)
+            {
+                try
+                {
+                    holder.getSurface().setFrameRate(fpsCap,
+                        android.view.Surface.FRAME_RATE_COMPATIBILITY_FIXED_SOURCE);
+                }
+                catch (RuntimeException e)
+                {
+                    AppLog.w(TAG, "display rate not set: " + e);
+                }
+            }
         }
     }
 }

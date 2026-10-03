@@ -174,4 +174,12 @@
  <string name="gamepad_vibration">Gamepadtrilling</string>
  <string name="gamepad_vibration_note">Standaard uit. De sterkte stel je in het spel in: Options → Controllers → Force Feedback.</string>
  <string name="editor_snap_grid">Uitlijnen op raster</string>
+ <string name="network_title">Netwerk</string>
+ <string name="network_address">Adres van dit apparaat in het netwerk: %1$s</string>
+ <string name="network_no_address">Geen netwerkverbinding</string>
+ <string name="network_port_label">TCP/IP-poort</string>
+ <string name="network_port_modern">9803 · Modern Patch</string>
+ <string name="network_port_original">1030 · origineel spel</string>
+ <string name="network_hint">IPX vindt zelf races op deze wifi. TCP/IP verbindt met iedereen die het adres van de host kent, ook met een pc met het originele spel of de Modern Patch. Alle spelers gebruiken dezelfde poort.</string>
+ <string name="fps_unlimited">Onbeperkt</string>
 </resources>

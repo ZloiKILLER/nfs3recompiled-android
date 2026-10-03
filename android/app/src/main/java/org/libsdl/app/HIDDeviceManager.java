@@ -85,7 +85,7 @@ public class HIDDeviceManager {
             // Bluetooth device was connected. If it was a Steam Controller, handle it
             if (action.equals(BluetoothDevice.ACTION_ACL_CONNECTED)) {
                 BluetoothDevice device = intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE);
-                Log.d(TAG, "Bluetooth device connected: " + device);
+                SDLLog.d(TAG, "Bluetooth device connected: " + device);
 
                 if (isSteamController(device)) {
                     connectBluetoothDevice(device);
@@ -95,7 +95,7 @@ public class HIDDeviceManager {
             // Bluetooth device was disconnected, remove from controller manager (if any)
             if (action.equals(BluetoothDevice.ACTION_ACL_DISCONNECTED)) {
                 BluetoothDevice device = intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE);
-                Log.d(TAG, "Bluetooth device disconnected: " + device);
+                SDLLog.d(TAG, "Bluetooth device disconnected: " + device);
 
                 disconnectBluetoothDevice(device);
             }
@@ -148,44 +148,44 @@ public class HIDDeviceManager {
         /*
         // Logging
         for (UsbDevice device : mUsbManager.getDeviceList().values()) {
-            Log.i(TAG,"Path: " + device.getDeviceName());
-            Log.i(TAG,"Manufacturer: " + device.getManufacturerName());
-            Log.i(TAG,"Product: " + device.getProductName());
-            Log.i(TAG,"ID: " + device.getDeviceId());
-            Log.i(TAG,"Class: " + device.getDeviceClass());
-            Log.i(TAG,"Protocol: " + device.getDeviceProtocol());
-            Log.i(TAG,"Vendor ID " + device.getVendorId());
-            Log.i(TAG,"Product ID: " + device.getProductId());
-            Log.i(TAG,"Interface count: " + device.getInterfaceCount());
-            Log.i(TAG,"---------------------------------------");
+            SDLLog.i(TAG,"Path: " + device.getDeviceName());
+            SDLLog.i(TAG,"Manufacturer: " + device.getManufacturerName());
+            SDLLog.i(TAG,"Product: " + device.getProductName());
+            SDLLog.i(TAG,"ID: " + device.getDeviceId());
+            SDLLog.i(TAG,"Class: " + device.getDeviceClass());
+            SDLLog.i(TAG,"Protocol: " + device.getDeviceProtocol());
+            SDLLog.i(TAG,"Vendor ID " + device.getVendorId());
+            SDLLog.i(TAG,"Product ID: " + device.getProductId());
+            SDLLog.i(TAG,"Interface count: " + device.getInterfaceCount());
+            SDLLog.i(TAG,"---------------------------------------");
 
             // Get interface details
             for (int index = 0; index < device.getInterfaceCount(); index++) {
                 UsbInterface mUsbInterface = device.getInterface(index);
-                Log.i(TAG,"  *****     *****");
-                Log.i(TAG,"  Interface index: " + index);
-                Log.i(TAG,"  Interface ID: " + mUsbInterface.getId());
-                Log.i(TAG,"  Interface class: " + mUsbInterface.getInterfaceClass());
-                Log.i(TAG,"  Interface subclass: " + mUsbInterface.getInterfaceSubclass());
-                Log.i(TAG,"  Interface protocol: " + mUsbInterface.getInterfaceProtocol());
-                Log.i(TAG,"  Endpoint count: " + mUsbInterface.getEndpointCount());
+                SDLLog.i(TAG,"  *****     *****");
+                SDLLog.i(TAG,"  Interface index: " + index);
+                SDLLog.i(TAG,"  Interface ID: " + mUsbInterface.getId());
+                SDLLog.i(TAG,"  Interface class: " + mUsbInterface.getInterfaceClass());
+                SDLLog.i(TAG,"  Interface subclass: " + mUsbInterface.getInterfaceSubclass());
+                SDLLog.i(TAG,"  Interface protocol: " + mUsbInterface.getInterfaceProtocol());
+                SDLLog.i(TAG,"  Endpoint count: " + mUsbInterface.getEndpointCount());
 
                 // Get endpoint details
                 for (int epi = 0; epi < mUsbInterface.getEndpointCount(); epi++)
                 {
                     UsbEndpoint mEndpoint = mUsbInterface.getEndpoint(epi);
-                    Log.i(TAG,"    ++++   ++++   ++++");
-                    Log.i(TAG,"    Endpoint index: " + epi);
-                    Log.i(TAG,"    Attributes: " + mEndpoint.getAttributes());
-                    Log.i(TAG,"    Direction: " + mEndpoint.getDirection());
-                    Log.i(TAG,"    Number: " + mEndpoint.getEndpointNumber());
-                    Log.i(TAG,"    Interval: " + mEndpoint.getInterval());
-                    Log.i(TAG,"    Packet size: " + mEndpoint.getMaxPacketSize());
-                    Log.i(TAG,"    Type: " + mEndpoint.getType());
+                    SDLLog.i(TAG,"    ++++   ++++   ++++");
+                    SDLLog.i(TAG,"    Endpoint index: " + epi);
+                    SDLLog.i(TAG,"    Attributes: " + mEndpoint.getAttributes());
+                    SDLLog.i(TAG,"    Direction: " + mEndpoint.getDirection());
+                    SDLLog.i(TAG,"    Number: " + mEndpoint.getEndpointNumber());
+                    SDLLog.i(TAG,"    Interval: " + mEndpoint.getInterval());
+                    SDLLog.i(TAG,"    Packet size: " + mEndpoint.getMaxPacketSize());
+                    SDLLog.i(TAG,"    Type: " + mEndpoint.getType());
                 }
             }
         }
-        Log.i(TAG," No more devices connected.");
+        SDLLog.i(TAG," No more devices connected.");
         */
 
         // Register for USB broadcasts and permission completions
@@ -366,22 +366,22 @@ public class HIDDeviceManager {
     }
 
     private void initializeBluetooth() {
-        Log.d(TAG, "Initializing Bluetooth");
+        SDLLog.d(TAG, "Initializing Bluetooth");
 
         if (Build.VERSION.SDK_INT >= 31 /* Android 12  */ &&
             mContext.getPackageManager().checkPermission(android.Manifest.permission.BLUETOOTH_CONNECT, mContext.getPackageName()) != PackageManager.PERMISSION_GRANTED) {
-            Log.d(TAG, "Couldn't initialize Bluetooth, missing android.permission.BLUETOOTH_CONNECT");
+            SDLLog.d(TAG, "Couldn't initialize Bluetooth, missing android.permission.BLUETOOTH_CONNECT");
             return;
         }
 
         if (Build.VERSION.SDK_INT <= 30 /* Android 11.0 (R) */ &&
             mContext.getPackageManager().checkPermission(android.Manifest.permission.BLUETOOTH, mContext.getPackageName()) != PackageManager.PERMISSION_GRANTED) {
-            Log.d(TAG, "Couldn't initialize Bluetooth, missing android.permission.BLUETOOTH");
+            SDLLog.d(TAG, "Couldn't initialize Bluetooth, missing android.permission.BLUETOOTH");
             return;
         }
 
         if (!mContext.getPackageManager().hasSystemFeature(PackageManager.FEATURE_BLUETOOTH_LE)) {
-            Log.d(TAG, "Couldn't initialize Bluetooth, this version of Android does not support Bluetooth LE");
+            SDLLog.d(TAG, "Couldn't initialize Bluetooth, this version of Android does not support Bluetooth LE");
             return;
         }
 
@@ -401,7 +401,7 @@ public class HIDDeviceManager {
         // Get our bonded devices.
         for (BluetoothDevice device : btAdapter.getBondedDevices()) {
 
-            Log.d(TAG, "Bluetooth device available: " + device);
+            SDLLog.d(TAG, "Bluetooth device available: " + device);
             if (isSteamController(device)) {
                 connectBluetoothDevice(device);
             }
@@ -483,10 +483,10 @@ public class HIDDeviceManager {
     }
 
     boolean connectBluetoothDevice(BluetoothDevice bluetoothDevice) {
-        Log.v(TAG, "connectBluetoothDevice device=" + bluetoothDevice);
+        SDLLog.v(TAG, "connectBluetoothDevice device=" + bluetoothDevice);
         synchronized (this) {
             if (mBluetoothDevices.containsKey(bluetoothDevice)) {
-                Log.v(TAG, "Steam controller with address " + bluetoothDevice + " already exists, attempting reconnect");
+                SDLLog.v(TAG, "Steam controller with address " + bluetoothDevice + " already exists, attempting reconnect");
 
                 HIDDeviceBLESteamController device = mBluetoothDevices.get(bluetoothDevice);
                 device.reconnect();
@@ -560,8 +560,8 @@ public class HIDDeviceManager {
         synchronized (this) {
             HIDDevice result = mDevicesById.get(id);
             if (result == null) {
-                Log.v(TAG, "No device for id: " + id);
-                Log.v(TAG, "Available devices: " + mDevicesById.keySet());
+                SDLLog.v(TAG, "No device for id: " + id);
+                SDLLog.v(TAG, "Available devices: " + mDevicesById.keySet());
             }
             return result;
         }
@@ -572,7 +572,7 @@ public class HIDDeviceManager {
     //////////////////////////////////////////////////////////////////////////////////////////////////////
 
     boolean initialize(boolean usb, boolean bluetooth) {
-        Log.v(TAG, "initialize(" + usb + ", " + bluetooth + ")");
+        SDLLog.v(TAG, "initialize(" + usb + ", " + bluetooth + ")");
 
         if (usb) {
             initializeUSB();
@@ -584,7 +584,7 @@ public class HIDDeviceManager {
     }
 
     boolean openDevice(int deviceID) {
-        Log.v(TAG, "openDevice deviceID=" + deviceID);
+        SDLLog.v(TAG, "openDevice deviceID=" + deviceID);
         HIDDevice device = getDevice(deviceID);
         if (device == null) {
             HIDDeviceDisconnected(deviceID);
@@ -608,7 +608,7 @@ public class HIDDeviceManager {
                 intent.setPackage(mContext.getPackageName());
                 mUsbManager.requestPermission(usbDevice, PendingIntent.getBroadcast(mContext, 0, intent, flags));
             } catch (Exception e) {
-                Log.v(TAG, "Couldn't request permission for USB device " + usbDevice);
+                SDLLog.v(TAG, "Couldn't request permission for USB device " + usbDevice);
                 HIDDeviceOpenResult(deviceID, false);
             }
             return false;
@@ -617,14 +617,14 @@ public class HIDDeviceManager {
         try {
             return device.open();
         } catch (Exception e) {
-            Log.e(TAG, "Got exception: " + Log.getStackTraceString(e));
+            SDLLog.e(TAG, "Got exception: " + Log.getStackTraceString(e));
         }
         return false;
     }
 
     int writeReport(int deviceID, byte[] report, boolean feature) {
         try {
-            //Log.v(TAG, "writeReport deviceID=" + deviceID + " length=" + report.length);
+            //SDLLog.v(TAG, "writeReport deviceID=" + deviceID + " length=" + report.length);
             HIDDevice device;
             device = getDevice(deviceID);
             if (device == null) {
@@ -634,14 +634,14 @@ public class HIDDeviceManager {
 
             return device.writeReport(report, feature);
         } catch (Exception e) {
-            Log.e(TAG, "Got exception: " + Log.getStackTraceString(e));
+            SDLLog.e(TAG, "Got exception: " + Log.getStackTraceString(e));
         }
         return -1;
     }
 
     boolean readReport(int deviceID, byte[] report, boolean feature) {
         try {
-            //Log.v(TAG, "readReport deviceID=" + deviceID);
+            //SDLLog.v(TAG, "readReport deviceID=" + deviceID);
             HIDDevice device;
             device = getDevice(deviceID);
             if (device == null) {
@@ -651,14 +651,14 @@ public class HIDDeviceManager {
 
             return device.readReport(report, feature);
         } catch (Exception e) {
-            Log.e(TAG, "Got exception: " + Log.getStackTraceString(e));
+            SDLLog.e(TAG, "Got exception: " + Log.getStackTraceString(e));
         }
         return false;
     }
 
     void closeDevice(int deviceID) {
         try {
-            Log.v(TAG, "closeDevice deviceID=" + deviceID);
+            SDLLog.v(TAG, "closeDevice deviceID=" + deviceID);
             HIDDevice device;
             device = getDevice(deviceID);
             if (device == null) {
@@ -668,7 +668,7 @@ public class HIDDeviceManager {
 
             device.close();
         } catch (Exception e) {
-            Log.e(TAG, "Got exception: " + Log.getStackTraceString(e));
+            SDLLog.e(TAG, "Got exception: " + Log.getStackTraceString(e));
         }
     }
 

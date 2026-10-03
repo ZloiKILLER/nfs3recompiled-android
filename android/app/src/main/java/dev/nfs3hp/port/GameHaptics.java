@@ -419,7 +419,7 @@ final class GameHaptics {
         final String phonePlaying = slot != 0 ? "-"
             : phoneHold() > 0 ? "hold " + phoneHold()
             : engineRevs() > 0 ? String.format(Locale.ROOT, "ticks revs=%.2f", engineRevs()) : "silent";
-        Log.i(TAG, String.format(Locale.ROOT,
+        AppLog.i(TAG, String.format(Locale.ROOT,
             "slot %d level=%.3f impact=%.3f road=%.3f@%.2fHz engine=%.3f@%.2fHz turn=%.2f phone=%s pad=%s sends=%d",
             slot, level, impact, road, roadHz, engine, engineHz, slot == 0 ? phoneTurn : 0f, phonePlaying,
             pad.target == null ? "none" : playing, sends - sendsAtTrace));
@@ -428,7 +428,7 @@ final class GameHaptics {
 
     private void reportPhone() {
         if (!verbose) return;
-        Log.i(TAG, "output -> phone, vibrator=" + (phone != null && phone.hasVibrator())
+        AppLog.i(TAG, "output -> phone, vibrator=" + (phone != null && phone.hasVibrator())
             + " amplitudeControl=" + (phone != null && phone.hasAmplitudeControl()));
     }
 
@@ -461,7 +461,7 @@ final class GameHaptics {
         if (!verbose || device == null || device.getId() == reportedControllerId) return;
         reportedControllerId = device.getId();
         Vibrator vibrator = vibratorOf(device);
-        Log.i(TAG, "output -> pad " + device.getId() + " " + device.getName()
+        AppLog.i(TAG, "output -> pad " + device.getId() + " " + device.getName()
             + ", vibrator=" + (vibrator != null && vibrator.hasVibrator())
             + " amplitudeControl=" + (vibrator != null && vibrator.hasAmplitudeControl()));
     }

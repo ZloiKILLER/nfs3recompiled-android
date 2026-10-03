@@ -133,9 +133,174 @@ struct CPU
 
     void cpuid();
     void rdtsc();
+
+    /* What a generated function says around a call (disasm/codegen): here,
+     * where the function works on the CPU itself, there is nothing to hand
+     * over or take back.  See Local for the other kind. */
+    CPU& sync() { return *this; }
+    void reload() {}
+    CPU& handOver() { return *this; }
+
     FPU fpu;
     MMX mmx;
     bool terminate;
+};
+
+#if defined(_MSC_VER) && !defined(__clang__)
+#define X86_LOCAL_INLINE __forceinline
+#else
+#define X86_LOCAL_INLINE inline __attribute__((always_inline))
+#endif
+
+/* The general registers and the flags of a generated function, kept to itself.
+ *
+ * A generated function used to work on the CPU it was handed, a structure in
+ * memory that every callee receives.  To the compiler, every store the guest
+ * makes to its own memory might have changed that structure, so each register
+ * was read back from memory after each such store and written out again after
+ * each change: two to four memory accesses for almost every instruction.  A
+ * Local copies the registers in as the function starts, keeps them where the
+ * compiler can hold them in the host's registers, and puts them back where the
+ * CPU was only where somebody else looks: around a call (sync, then reload),
+ * when the function hands over to another for good (handOver, a jmp to it),
+ * and as it returns.  The names are the CPU's, so the generated code and the
+ * tools/apply_*.py adapters read the same with either.
+ *
+ * Segment registers, ip, the FPU and MMX stay where they were and are reached
+ * through references: they change seldom or not at all, and the FPU is a stack
+ * that needs a Local of its own.
+ *
+ * Everything here is forced inline.  A destructor left out of line, as the
+ * cleanup path of a call can leave it, takes the Local's address, and one taken
+ * address puts the whole of it back in memory. */
+struct Local
+{
+    union
+    {
+        reg64 edx_eax;
+        struct
+        {
+            REGISTER_A(a);
+            REGISTER_A(d);
+        };
+    };
+    REGISTER_A(c);
+    REGISTER_A(b);
+    REGISTER_P(sp);
+    REGISTER_P(bp);
+    REGISTER_P(si);
+    REGISTER_P(di);
+    CPU::Flags flags;
+
+    CPU& real;
+    reg32& ecs;
+    reg16& cs;
+    reg32& eds;
+    reg16& ds;
+    reg32& ees;
+    reg16& es;
+    reg32& efs;
+    reg16& fs;
+    reg32& egs;
+    reg16& gs;
+    reg32& ess;
+    reg16& ss;
+    reg32& ip;
+    FPU& fpu;
+    MMX& mmx;
+    bool& terminate;
+    bool handedOver = false;
+
+    X86_LOCAL_INLINE explicit Local(CPU& cpu)
+        :   real(cpu)
+        ,   ecs(cpu.ecs), cs(cpu.cs), eds(cpu.eds), ds(cpu.ds), ees(cpu.ees), es(cpu.es)
+        ,   efs(cpu.efs), fs(cpu.fs), egs(cpu.egs), gs(cpu.gs), ess(cpu.ess), ss(cpu.ss)
+        ,   ip(cpu.ip), fpu(cpu.fpu), mmx(cpu.mmx), terminate(cpu.terminate)
+    {
+        reload();
+    }
+    X86_LOCAL_INLINE ~Local()
+    {
+        if (!handedOver)
+            store();
+    }
+    Local(const Local&) = delete;
+    Local& operator=(const Local&) = delete;
+
+    /* The registers back where the CPU is, for a callee to find. */
+    X86_LOCAL_INLINE CPU& sync()
+    {
+        store();
+        return real;
+    }
+    /* And what the callee left there, taken up again. */
+    X86_LOCAL_INLINE void reload()
+    {
+        edx_eax = real.edx_eax;
+        ecx = real.ecx;
+        ebx = real.ebx;
+        esp = real.esp;
+        ebp = real.ebp;
+        esi = real.esi;
+        edi = real.edi;
+        flags.eflags = real.flags.eflags;
+    }
+    /* For a jmp to another function, which returns for this one too: the
+     * registers go over, and nothing comes back to be written out after it. */
+    X86_LOCAL_INLINE CPU& handOver()
+    {
+        store();
+        handedOver = true;
+        return real;
+    }
+    /* The port's own lockContext and unlockContext read nothing but fs. */
+    X86_LOCAL_INLINE operator const CPU&() const { return real; }
+
+    X86_LOCAL_INLINE void set_szp(reg8 v)
+    {
+        flags.zf = !v;
+        flags.sf = 1 & (v >> 7);
+    }
+    X86_LOCAL_INLINE void set_szp(reg16 v)
+    {
+        flags.zf = !v;
+        flags.sf = 1 & (v >> 15);
+    }
+    X86_LOCAL_INLINE void set_szp(reg32 v)
+    {
+        flags.zf = !v;
+        flags.sf = 1 & (v >> 31);
+    }
+    X86_LOCAL_INLINE void clear_co()
+    {
+        flags.cf = 0;
+        flags.of = 0;
+    }
+    void cpuid()
+    {
+        store();
+        real.cpuid();
+        reload();
+    }
+    void rdtsc()
+    {
+        store();
+        real.rdtsc();
+        reload();
+    }
+
+private:
+    X86_LOCAL_INLINE void store()
+    {
+        real.edx_eax = edx_eax;
+        real.ecx = ecx;
+        real.ebx = ebx;
+        real.esp = esp;
+        real.ebp = ebp;
+        real.esi = esi;
+        real.edi = edi;
+        real.flags.eflags = flags.eflags;
+    }
 };
 
 }

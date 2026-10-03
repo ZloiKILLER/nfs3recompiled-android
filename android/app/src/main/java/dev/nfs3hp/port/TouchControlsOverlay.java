@@ -265,7 +265,7 @@ public final class TouchControlsOverlay extends View {
             if(c.action.equals(selection))selected=c;
         }
         if(editing)keepLegacyPositions();
-        android.util.Log.i("TouchOverlay",(preview?"preview":"game")+" area "+Math.round(width)+"x"+Math.round(height)
+        AppLog.i("TouchOverlay",(preview?"preview":"game")+" area "+Math.round(width)+"x"+Math.round(height)
             +" px, "+Math.round(areaW)+"x"+Math.round(areaH)+" units, "+(menuMode?"menu":"race"));
         invalidate();
         // A rebuilt layout starts the idle countdown over rather than losing it.

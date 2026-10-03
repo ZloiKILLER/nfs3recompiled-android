@@ -95,14 +95,14 @@ public class SDLSurface extends SurfaceView implements SurfaceHolder.Callback,
     // Called when we have a valid drawing surface
     @Override
     public void surfaceCreated(SurfaceHolder holder) {
-        Log.v("SDL", "surfaceCreated()");
+        SDLLog.v("SDL", "surfaceCreated()");
         SDLActivity.onNativeSurfaceCreated();
     }
 
     // Called when we lose the surface
     @Override
     public void surfaceDestroyed(SurfaceHolder holder) {
-        Log.v("SDL", "surfaceDestroyed()");
+        SDLLog.v("SDL", "surfaceDestroyed()");
 
         // Transition to pause, if needed
         SDLActivity.mNextNativeState = SDLActivity.NativeState.PAUSED;
@@ -116,7 +116,7 @@ public class SDLSurface extends SurfaceView implements SurfaceHolder.Callback,
     @Override
     public void surfaceChanged(SurfaceHolder holder,
                                int format, int width, int height) {
-        Log.v("SDL", "surfaceChanged()");
+        SDLLog.v("SDL", "surfaceChanged()");
 
         if (SDLActivity.mSingleton == null) {
             return;
@@ -143,8 +143,8 @@ public class SDLSurface extends SurfaceView implements SurfaceHolder.Callback,
             SDLActivity.getContext().notifyAll();
         }
 
-        Log.v("SDL", "Window size: " + width + "x" + height);
-        Log.v("SDL", "Device size: " + nDeviceWidth + "x" + nDeviceHeight);
+        SDLLog.v("SDL", "Window size: " + width + "x" + height);
+        SDLLog.v("SDL", "Device size: " + nDeviceWidth + "x" + nDeviceHeight);
         SDLActivity.nativeSetScreenResolution(width, height, nDeviceWidth, nDeviceHeight, density, mDisplay.getRefreshRate());
         SDLActivity.onNativeResize();
 
@@ -169,7 +169,7 @@ public class SDLSurface extends SurfaceView implements SurfaceHolder.Callback,
            double max = Math.max(mWidth, mHeight);
 
            if (max / min < 1.20) {
-              Log.v("SDL", "Don't skip on such aspect-ratio. Could be a square resolution.");
+              SDLLog.v("SDL", "Don't skip on such aspect-ratio. Could be a square resolution.");
               skip = false;
            }
         }
@@ -182,7 +182,7 @@ public class SDLSurface extends SurfaceView implements SurfaceHolder.Callback,
         }
 
         if (skip) {
-           Log.v("SDL", "Skip .. Surface is not ready.");
+           SDLLog.v("SDL", "Skip .. Surface is not ready.");
            mIsSurfaceReady = false;
            return;
         }

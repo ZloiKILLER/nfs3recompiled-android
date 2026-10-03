@@ -176,4 +176,12 @@
  <string name="gamepad_vibration">Gamepad-Vibration</string>
  <string name="gamepad_vibration_note">Standardmäßig aus. Die Stärke legt das Spiel fest: Options → Controllers → Force Feedback.</string>
  <string name="editor_snap_grid">Am Raster ausrichten</string>
+ <string name="network_title">Netzwerk</string>
+ <string name="network_address">Adresse dieses Geräts im Netzwerk: %1$s</string>
+ <string name="network_no_address">Keine Netzwerkverbindung</string>
+ <string name="network_port_label">TCP/IP-Port</string>
+ <string name="network_port_modern">9803 · Modern Patch</string>
+ <string name="network_port_original">1030 · Originalspiel</string>
+ <string name="network_hint">IPX findet Rennen in diesem WLAN von selbst. TCP/IP verbindet mit allen, die die Adresse des Hosts kennen, auch mit einem PC mit dem Originalspiel oder dem Modern Patch. Alle Spieler verwenden denselben Port.</string>
+ <string name="fps_unlimited">Unbegrenzt</string>
 </resources>

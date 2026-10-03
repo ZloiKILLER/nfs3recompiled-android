@@ -1,21 +1,52 @@
-﻿#include <SDL3/SDL_main.h>
+#include <SDL3/SDL_main.h>
 #include <lib/file.h>
 #include <lib/registry.h>
 #include <lib/gamepad.h>
+#include <lib/memmap.h>
+#include <lib/timer.h>
 #include <nfs3hp.h>
 #include <winapi/glide2x.h>
+#include <winapi/version.h>
+#include <lib/gliderenderer.h>
+#include "native_thrash.h"
 #include <SDL3/SDL.h>
 #include <array>
+#include <atomic>
 #include <string>
 #include <unordered_map>
 #include <vector>
 #ifdef __ANDROID__
 #include <SDL3/SDL_system.h>
+#include <fcntl.h>
 #include <jni.h>
+#include <unistd.h>
 #endif
 
 namespace nfs3hp
 {
+/* The MAD player runs on the game thread. Android's UI thread only requests
+ * that its normal cleanup path run at the next frame boundary. */
+static std::atomic_bool s_moviePlaying{false};
+static std::atomic_bool s_movieSkip{false};
+
+void moviePlaying(bool playing)
+{
+    s_movieSkip.store(false, std::memory_order_release);
+    s_moviePlaying.store(playing, std::memory_order_release);
+}
+
+bool movieSkipRequested()
+{
+    return s_movieSkip.load(std::memory_order_acquire);
+}
+
+static bool requestMovieSkip()
+{
+    if (!s_moviePlaying.load(std::memory_order_acquire)) return false;
+    s_movieSkip.store(true, std::memory_order_release);
+    return true;
+}
+
 /* NFS_CAR_DETAIL_FULL, read once: unset or anything but "0" means on.  The
  * generated code patched by tools/apply_car_detail.py asks it too. */
 bool fullCarDetail()
@@ -27,11 +58,27 @@ bool fullCarDetail()
     return full;
 }
 
+/* The TCP/IP port a race is hosted and joined on (tools/apply_network_port.py):
+ * NFS_NET_PORT, read once, 9803 as the Modern Patch has it unless the launcher
+ * says 1030, the original's.  Every player of one race needs the same. */
+x86::reg32 networkPort()
+{
+    static const x86::reg32 port = []() {
+        const char* value = SDL_getenv("NFS_NET_PORT");
+        const int chosen = value ? SDL_atoi(value) : 0;
+        return x86::reg32(chosen > 0 && chosen < 65536 ? chosen : 9803);
+    }();
+    return port;
+}
+
 /* Whether the player is driving.  A race is one call of the game's own -- set
  * up by sub_4a3400, taken down again by sub_4a35d0, each called from one place
  * only -- and tools/apply_race_state.py marks both, so this follows it exactly
  * rather than guessing from the screen or from what the car is doing. */
 static bool s_raceRunning = false;
+/* The race's loading screen is up: the race is running, but nobody drives it
+ * yet, so the touch controls stay hidden (layoutTick). */
+static bool s_loadingScreen = false;
 
 void raceRunning(bool running)
 {
@@ -39,7 +86,10 @@ void raceRunning(bool running)
     /* A load cut short leaves the race without finishing its setup, and so
      * without the end of the loading screen (loadingScreenFit). */
     if (!running)
+    {
         win32::glide2x::fitFourThree(false);
+        s_loadingScreen = false;
+    }
 }
 
 /* The loading screen at 4:3 in the middle of a wide screen, as the Modern Patch
@@ -51,6 +101,24 @@ void loadingScreenFit(win32::WinApplication* app, x86::CPU& cpu, bool on)
     if (on)
         win32::glide2x::clearPicture(app, cpu);
     win32::glide2x::fitFourThree(on);
+    s_loadingScreen = on;
+}
+
+bool loadingScreenUp()
+{
+    return s_loadingScreen;
+}
+
+/* The NFS emblem of a dialog box over a race -- the pause menu's "Quit to:" and
+ * the like (tools/apply_widescreen.py, around its draw in sub_4438d0).  The
+ * game lays the box out for 640x480 and stretches it over the whole picture,
+ * which the box and its buttons bear; the round emblem comes out an oval.  So
+ * for its one draw each triangle narrows by the 4:3 factor towards its own left
+ * edge, and the emblem is round again where it stands, at the box's corner --
+ * the box as the game stretches it, as the Modern Patch has it. */
+void dialogEmblem(bool drawing)
+{
+    win32::glide2x::squeezeToLeft(drawing);
 }
 
 bool raceIsRunning()
@@ -104,6 +172,52 @@ x86::reg32 viewDistanceReduced(win32::WinApplication* app, x86::reg32 reduced)
 x86::reg32 splitFarDistance(win32::WinApplication* app, x86::reg32 distance)
 {
     return viewDistanceFull(app) ? x86::reg32(500) << 16 : distance;
+}
+
+/* NFS_MIRROR_FULL, read once: unset or anything but "0" means the rear-view
+ * mirror draws as the main view does (tools/apply_mirror_detail.py). */
+static bool fullMirror()
+{
+    static const bool full = []() {
+        const char* value = SDL_getenv("NFS_MIRROR_FULL");
+        return !value || SDL_strcmp(value, "0") != 0;
+    }();
+    return full;
+}
+
+/* The rear-view mirror at the main view's distances.  A single-screen race has
+ * two views (sub_41d960): the main one from sub_41df10's first template, the
+ * mirror from its fourth -- polygons culled beyond 150, the far distance 100,
+ * the track's detailed model only to 40 and its middle one to 80, six blocks
+ * of track -- so the mirror showed little behind the car, and the low model's
+ * holes.  sub_41d620 works out the main view's distances from View Distance;
+ * here, before it turns them into floats for every view, the mirror takes the
+ * main view's whole set, +0x20 to +0x4c of its 84-byte record (the camera's
+ * own record at +0x1c stays).  Split screen has no mirror and is left alone. */
+void mirrorFollowsMain(win32::WinApplication* app)
+{
+    if (!fullMirror() || app->getMemory<x86::reg32>(0x6fd3b0) == 1 || app->getMemory<x86::reg32>(0x5dd0dc) != 2)
+        return;
+    const x86::reg32 mainView = 0x5dd0e0;
+    const x86::reg32 mirror = mainView + 0x54;
+    for (x86::reg32 at = 0x20; at < 0x50; at += 4)
+        app->getMemory<x86::reg32>(mirror + at) = app->getMemory<x86::reg32>(mainView + at);
+}
+
+/* A view pass's kind ([0x7a3d14], 1 for the mirror) where the game asks it to
+ * leave something out of the mirror: with the mirror drawn in full, the main
+ * view's 0 (tools/apply_mirror_detail.py). */
+x86::reg32 mirrorAsMain(x86::reg32 kind)
+{
+    return kind == 1 && fullMirror() ? 0 : kind;
+}
+
+/* The mirror's factor on the car level-of-detail distances and the cars' cull
+ * distance (sub_4bb5d0, [0x540138] = 0.6): 1 with the mirror drawn in full, so
+ * the cars in it are the ones the main view would draw at that distance. */
+double mirrorCarScale(double scale)
+{
+    return fullMirror() ? 1.0 : scale;
 }
 
 /* Wheel spin, per car.  The game turns a car's wheels by the frames elapsed
@@ -164,8 +278,13 @@ bool widescreenMode(x86::reg32 width, x86::reg32 height)
  * into ([0x7cdba0]), so split screen's halves each get their own shape. */
 x86::reg32 widescreenHalfAngle(win32::WinApplication* app, x86::reg32 half, x86::reg32 vertical)
 {
-    const x86::sreg32 width = x86::sreg32(app->getMemory<x86::reg32>(0x7cdba0));
-    const x86::sreg32 height = x86::sreg32(app->getMemory<x86::reg32>(0x7cdba4));
+    /* Outside a race the view rectangle is stale: a race leaves its own there
+     * (1920x1080 on a 1080p race) and the menus never set it again, so the
+     * Player Car screen, drawn at 640x480, got Hor+ after the first race --
+     * even one quit on its loading screen.  There the screen is the view. */
+    const x86::reg32 at = raceIsRunning() ? 0x7cdba0 : 0x7cdae0;
+    const x86::sreg32 width = x86::sreg32(app->getMemory<x86::reg32>(at));
+    const x86::sreg32 height = x86::sreg32(app->getMemory<x86::reg32>(at + 4));
     const x86::sreg32 down = x86::sreg32(vertical);
     if (width <= 0 || height <= 0 || down <= 0 || down >= 90 || x86::sreg32(half) <= 0 || half >= 90)
         return half;
@@ -173,6 +292,26 @@ x86::reg32 widescreenHalfAngle(win32::WinApplication* app, x86::reg32 half, x86:
                           * 180.0 / SDL_PI_D;
     const x86::sreg32 rounded = x86::sreg32(SDL_lround(across));
     return rounded > 0 && rounded < 90 ? x86::reg32(rounded) : half;
+}
+
+/* The half width a zoomed camera's x scale is made of (tools/apply_widescreen.py,
+ * in sub_4dbde0).  The replay's and the finish's television cameras set their
+ * projection from their zoom rather than an angle: x scale half the view's width
+ * times the zoom, y scale half its height times the zoom and times 1.34834
+ * ([0x54972c]), the game's 4:3.  Those agree on a 4:3 view; on a 16:9 one the y
+ * scale is a quarter short and the cars come out squashed.  On a view wider than
+ * 4:3 the x scale takes the y scale's size, half the height times 1.34834, so
+ * pixels are square again, the vertical view is the game's and more of the
+ * world shows at the sides.  Only an active race gets Hor+; a 4:3 race keeps
+ * the game's half width.  (The Player Car screen does not come through here, as
+ * a log showed: it takes the angle projection, see widescreenHalfAngle.) */
+float zoomHalfWidth(win32::WinApplication* app)
+{
+    const float halfWidth = app->getMemory<float>(0x5600ac);
+    const float halfHeight = app->getMemory<float>(0x5600b0);
+    if (!raceIsRunning() || !(halfWidth * 3.0f > halfHeight * 4.0f))
+        return halfWidth;
+    return float(double(halfHeight) * app->getMemory<double>(0x54972c));
 }
 
 /* The rectangle the in-car cabin is drawn in (tools/apply_cabin_fit.py): field
@@ -794,6 +933,10 @@ bool firstSettings(win32::WinApplication* app)
     SDL_Log("[SETTINGS] a new player's settings: %s", laid ? "the phone's, over the game's" : "the game's own");
     return laid;
 }
+
+// The most of Render_GetTm's buffer a view pass used since the last call
+// (native_vertices.cpp, at sub_4bbd70).
+x86::reg32 takeArenaPeak();
 }
 
 namespace
@@ -922,6 +1065,13 @@ void steeringTick(win32::WinApplication* app)
         s_last = -1;
         return;
     }
+    /* Nor in a race against another machine ([0x6fd3b0] 2 modem, 3 serial, 4
+     * network): every machine drives every car from the players' inputs alone,
+     * and each learned this flag from the others as the race began (message 9,
+     * sub_43da60), so a flag changed here and nowhere else drives this car
+     * differently on this machine than on the rest. */
+    if (app->getMemory<x86::reg32>(0x6fd3b0) >= 2)
+        return;
     const x86::reg32 car = app->getMemory<x86::reg32>(0x678b54);
     if (!car)
         return;
@@ -1001,23 +1151,212 @@ void traceInput(win32::WinApplication* app)
  * replay plays back.  What the trace says is ticks in the second, frames in the
  * second, and the two divided: if the clock counts frames rather than time,
  * that quotient sits at 1 and everything timed by it follows the frame rate. */
+/* [VIEW], every two seconds of a race: what drawing further than View
+ * Distance's 500 would meet (2026-09-26).
+ *   far      the far distance of a single view and of split screen's halves
+ *            ([0x5dd108], [0x5dd15c], 16.16)
+ *   fog      where the track's vertex fog starts and ends ([0x552e04],
+ *            [0x552e08]): past its end the track is the fog's colour alone
+ *   buffer   the most of Render_GetTm's buffer one view pass took, against its
+ *            size ([0x7a3d04]): past it the rest of the pass is not drawn
+ * and once a race, how far the track's own lists of what each block can see
+ * reach (block records of 0x5c0 bytes at 0x571370, the centre at +0x78, the
+ * list at +0xb4, four bytes an entry, -1 ending it; [0x5dd83c] the last block):
+ * a block no list names is never drawn, however far the view reaches. */
+bool playerDriving(win32::WinApplication* app);
+
+void viewTick(win32::WinApplication* app)
+{
+    static bool reachLogged = false;
+    static Uint64 last = 0;
+    if (!nfs3hp::raceIsRunning())
+    {
+        reachLogged = false;
+        return;
+    }
+    if (!reachLogged && playerDriving(app))
+    {
+        reachLogged = true;
+        const x86::sreg32 lastBlock = x86::sreg32(app->getMemory<x86::reg32>(0x5dd83c));
+        std::vector<float> reach;
+        unsigned longest = 0;
+        for (x86::sreg32 block = 0; block <= lastBlock && block < 2000; ++block)
+        {
+            const x86::reg32 record = 0x571370 + x86::reg32(block) * 0x5c0;
+            const float x = app->getMemory<float>(record + 0x78);
+            const float z = app->getMemory<float>(record + 0x80);
+            float farthest = 0.0f;
+            unsigned listed = 0;
+            for (; listed < 300; ++listed)
+            {
+                const x86::sreg32 other = x86::sreg16(app->getMemory<x86::reg16>(record + 0xb4 + listed * 4));
+                if (other < 0 || other > lastBlock)
+                    break;
+                const x86::reg32 at = 0x571370 + x86::reg32(other) * 0x5c0;
+                const float dx = app->getMemory<float>(at + 0x78) - x;
+                const float dz = app->getMemory<float>(at + 0x80) - z;
+                farthest = std::max(farthest, std::sqrt(dx * dx + dz * dz));
+            }
+            longest = std::max(longest, listed);
+            reach.push_back(farthest);
+        }
+        if (!reach.empty())
+        {
+            std::sort(reach.begin(), reach.end());
+            const std::size_t n = reach.size();
+            unsigned under = 0;
+            for (float r : reach)
+                under += r < 500.0f;
+            SDL_Log("[VIEW] %u blocks; what a block's list reaches: least %.0f, a tenth under %.0f, median %.0f, "
+                    "most %.0f; %u blocks reach less than 500; longest list %u",
+                    unsigned(n), double(reach.front()), double(reach[n / 10]), double(reach[n / 2]),
+                    double(reach.back()), under, longest);
+        }
+    }
+    const Uint64 now = SDL_GetTicks();
+    if (now - last < 2000)
+        return;
+    last = now;
+    const x86::reg32 peak = nfs3hp::takeArenaPeak();
+    SDL_Log("[VIEW] far %.0f, split %.0f; fog %.0f to %.0f; buffer %u of %u KB",
+            double(x86::sreg32(app->getMemory<x86::reg32>(0x5dd108))) / 65536.0,
+            double(x86::sreg32(app->getMemory<x86::reg32>(0x5dd15c))) / 65536.0,
+            double(app->getMemory<float>(0x552e04)), double(app->getMemory<float>(0x552e08)),
+            unsigned(peak >> 10), unsigned(app->getMemory<x86::reg32>(0x7a3d04) >> 10));
+}
+
+bool s_traceCars = false;
+
+/* NFS_CAR_TRACE: once a second of a race, every car the game keeps, appended to
+ * cars.bin in the app's external files, to find the fields that say where each
+ * car is and what its driver is doing.  sub_42c700 clears both arrays as a race
+ * is set up: 16 cars of 0x9ac bytes at 0x5e1120, and 16 records of 0x4ac bytes
+ * at 0x5eabe0 beside them.  Each record: "SCAR", the race clock, the number of
+ * cars in the race [0x6fd510], 0, then the two arrays. */
+void traceCars(win32::WinApplication* app, x86::reg32 clock)
+{
+    static SDL_IOStream* s_file = nullptr;
+    static bool s_failed = false;
+    if (!s_file)
+    {
+#ifdef __ANDROID__
+        const char* root = SDL_GetAndroidExternalStoragePath();
+#else
+        const char* root = ".";
+#endif
+        if (s_failed || !root)
+            return;
+        const std::string path = std::string(root) + "/cars.bin";
+        s_file = SDL_IOFromFile(path.c_str(), "wb");
+        if (!s_file)
+        {
+            s_failed = true;
+            SDL_Log("[CARS] cannot write %s", path.c_str());
+            return;
+        }
+        SDL_Log("[CARS] writing %s", path.c_str());
+    }
+    const x86::reg32 header[4] = { 0x52414353, clock, app->getMemory<x86::reg32>(0x6fd510), 0 };
+    SDL_WriteIO(s_file, header, sizeof header);
+    SDL_WriteIO(s_file, &app->getMemory<x86::reg8>(0x5e1120), 0x9ac0);
+    SDL_WriteIO(s_file, &app->getMemory<x86::reg8>(0x5eabe0), 0x4ac0);
+    static x86::reg32 s_flushed = 0;
+    if (clock / 64 != s_flushed)
+    {
+        s_flushed = clock / 64;
+        SDL_FlushIO(s_file);
+    }
+}
+
+/* NFS_CAR_TRACE, closer: every frame from 26 to 38 s of the race clock (64
+ * ticks a second), where on Aquatica the opponents pile up at the tunnel. */
+void traceCarsCloser(win32::WinApplication* app)
+{
+    const x86::reg32 clock = app->getMemory<x86::reg32>(0x7d3684);
+    static x86::reg32 s_last = 0;
+    if (clock < 26 * 64 || clock > 38 * 64 || clock == s_last)
+        return;
+    s_last = clock;
+    traceCars(app, clock);
+}
+
 struct TickTrace
 {
     x86::reg32 clock = 0;
     x86::reg32 swaps = 0;
     Uint64     at = 0;
+    // The GPU, looked at every frame: load in percent times clock in MHz.
+    double     gpuLoad = 0;
+    double     gpuClock = 0;
+    double     gpuBusy = 0;
+    unsigned   gpuLooks = 0;
+    bool       gpuHidden = false;
+    /* How many of the game's ticks each frame took, 0 to 4 and more: the
+     * race's clock follows a timer the game re-arms itself, and a late timer
+     * shows up here as frames that run several ticks at once. */
+    x86::reg32 frameClock = 0;
+    unsigned   ticksAFrame[5] = {};
 };
 TickTrace s_ticks;
+
+/* A number the kernel shows in a file of its own, such as "  85%"; -1 where
+ * there is no such file or an app may not read it. */
+int readKernelNumber(const char* path)
+{
+#ifdef __ANDROID__
+    const int fd = open(path, O_RDONLY | O_CLOEXEC);
+    if (fd < 0)
+        return -1;
+    char text[32];
+    const ssize_t length = read(fd, text, sizeof text - 1);
+    close(fd);
+    if (length <= 0)
+        return -1;
+    text[length] = 0;
+    return int(SDL_strtol(text, nullptr, 10));
+#else
+    (void)path;
+    return -1;
+#endif
+}
+
+/* How busy the GPU is and how fast the governor runs it, as Samsung's kernels
+ * show them to any app (/sys/kernel/gpu); the clock is in kHz there. */
+void lookAtGpu()
+{
+    if (s_ticks.gpuHidden)
+        return;
+    const int load = readKernelNumber("/sys/kernel/gpu/gpu_busy");
+    const int clock = readKernelNumber("/sys/kernel/gpu/gpu_clock");
+    if (load < 0 || clock < 0)
+    {
+        s_ticks.gpuHidden = true;
+        return;
+    }
+    const double megahertz = clock >= 10000 ? clock / 1000.0 : double(clock);
+    s_ticks.gpuLoad += load;
+    s_ticks.gpuClock += megahertz;
+    s_ticks.gpuBusy += load / 100.0 * megahertz;
+    ++s_ticks.gpuLooks;
+}
 
 void traceTicks(win32::WinApplication* app)
 {
     const Uint64 now = SDL_GetTicks();
     const x86::reg32 clock = app->getMemory<x86::reg32>(0x7d3684);
+    lookAtGpu();
+    if (s_traceCars)
+        traceCarsCloser(app);
+    if (clock >= s_ticks.frameClock)
+        ++s_ticks.ticksAFrame[SDL_min(clock - s_ticks.frameClock, x86::reg32(4))];
+    s_ticks.frameClock = clock;
     if (!s_ticks.at || clock < s_ticks.clock)
     {
         s_ticks.clock = clock;
         s_ticks.swaps = nfs3hp::s_swaps;
         s_ticks.at = now;
+        s_ticks.gpuLoad = s_ticks.gpuClock = s_ticks.gpuBusy = 0;
+        s_ticks.gpuLooks = 0;
         return;
     }
     const Uint64 span = now - s_ticks.at;
@@ -1025,11 +1364,70 @@ void traceTicks(win32::WinApplication* app)
         return;
     const x86::reg32 ticks = clock - s_ticks.clock;
     const x86::reg32 frames = nfs3hp::s_swaps - s_ticks.swaps;
-    SDL_Log("[TICKS] %u in %llu ms (%.1f/s), %u frames (%.1f/s), %.2f ticks a frame, clock %u, mode %u",
+    const win32::GlideCounters glide = win32::GlideRenderer::takeCounters();
+    SDL_Log("[TICKS] %u in %llu ms (%.1f/s), %u frames (%.1f/s), %.2f ticks a frame, clock %u, mode %u; "
+            "%u triangles a frame, %u fogged, %u fog tables, %u batches (%u empty), %u cut",
             unsigned(ticks), (unsigned long long)span, double(ticks) * 1000.0 / double(span),
             unsigned(frames), double(frames) * 1000.0 / double(span),
             frames ? double(ticks) / double(frames) : 0.0, unsigned(clock),
-            unsigned(app->getMemory<x86::reg32>(0x6fd3a0)));
+            unsigned(app->getMemory<x86::reg32>(0x6fd3a0)),
+            frames ? glide.triangles / unsigned(frames) : 0u, frames ? glide.fogged / unsigned(frames) : 0u,
+            glide.fogTables, frames ? glide.drawCalls / unsigned(frames) : 0u,
+            frames ? glide.emptyCalls / unsigned(frames) : 0u, frames ? glide.cut / unsigned(frames) : 0u);
+    /* The GPU's side of the same second: its work is the busy share of its
+     * clock, so M cycles a frame compares seconds the governor ran at
+     * different clocks; the cap is the highest clock it may take just now.
+     * depth16 counts the frames drawn with the Voodoo's 16-bit depth steps
+     * (NFS_DEPTH16=ab takes turns). */
+    if (s_ticks.gpuLooks && frames)
+    {
+        const int cap = readKernelNumber("/sys/kernel/gpu/gpu_max_clock");
+        SDL_Log("[GPU] %.0f%% at %.0f MHz, cap %d MHz, %.2f Mcycles a frame; depth16 %u of %u frames; "
+                "night %u, split %u",
+                s_ticks.gpuLoad / s_ticks.gpuLooks, s_ticks.gpuClock / s_ticks.gpuLooks,
+                cap >= 10000 ? cap / 1000 : cap,
+                s_ticks.gpuBusy / s_ticks.gpuLooks / (double(frames) * 1000.0 / double(span)),
+                glide.depth16Frames, glide.frames,
+                unsigned(app->getMemory<x86::reg32>(0x6fd4c8)), unsigned(app->getMemory<x86::reg32>(0x6fd3b0)));
+    }
+    /* And the x87's special cases this second, all threads together: compares
+     * that met a NaN, and fistp with no integer to store. */
+    static unsigned s_unordered = 0, s_indefinite = 0;
+    const unsigned unordered = x86::FPU::s_unordered, indefinite = x86::FPU::s_indefinite;
+    /* The C runtime's rand() (sub_4eb1fc) keeps its seed at +0xc of the
+     * thread's data, which it finds through the pointer at [0x567764]:
+     * 0x4ff0ec returns the main thread's block [0x9f642c]; once a thread has
+     * been started, 0x51e7a8 looks it up with TlsGetValue([0x567760]). */
+    const x86::reg32 threadData = app->getMemory<x86::reg32>(0x9f642c);
+    if (ticks)
+        SDL_Log("[STEP] frames with 0/1/2/3/4+ ticks: %u/%u/%u/%u/%u; NaN compares %u, fistp indefinite %u; "
+                "thread data by %08x, tls %08x, main seed %08x",
+                s_ticks.ticksAFrame[0], s_ticks.ticksAFrame[1], s_ticks.ticksAFrame[2], s_ticks.ticksAFrame[3],
+                s_ticks.ticksAFrame[4], unordered - s_unordered, indefinite - s_indefinite,
+                unsigned(app->getMemory<x86::reg32>(0x567764)), unsigned(app->getMemory<x86::reg32>(0x567760)),
+                threadData ? unsigned(app->getMemory<x86::reg32>(threadData + 0xc)) : 0u);
+    s_unordered = unordered;
+    s_indefinite = indefinite;
+    if (ticks && s_traceCars)
+    {
+        traceCars(app, clock);
+        /* The opponents' speed table (sub_40e000): speedsF/R.bin read whole to
+         * [0x552558], its second half at [0x55255c]; [0x56f22c] = 1 when it
+         * could not be read.  FNV-1a of the first 2152 bytes, the file's size
+         * on Aquatica, to compare with the file. */
+        const x86::reg32 table = app->getMemory<x86::reg32>(0x552558);
+        std::uint32_t hash = 2166136261u;
+        if (table)
+            for (x86::reg32 i = 0; i < 2152; ++i)
+                hash = (hash ^ app->getMemory<x86::reg8>(table + i)) * 16777619u;
+        SDL_Log("[AIDATA] speeds %08x, half %08x, missing %u, nodes %d, fnv %08x",
+                unsigned(table), unsigned(app->getMemory<x86::reg32>(0x55255c)),
+                unsigned(app->getMemory<x86::reg32>(0x56f22c)),
+                int(x86::sreg32(app->getMemory<x86::reg32>(0x5dd940))), unsigned(hash));
+    }
+    SDL_memset(s_ticks.ticksAFrame, 0, sizeof s_ticks.ticksAFrame);
+    s_ticks.gpuLoad = s_ticks.gpuClock = s_ticks.gpuBusy = 0;
+    s_ticks.gpuLooks = 0;
     s_ticks.clock = clock;
     s_ticks.swaps = nfs3hp::s_swaps;
     s_ticks.at = now;
@@ -1105,94 +1503,6 @@ bool playerDriving(win32::WinApplication* app)
     return nfs3hp::raceIsRunning() && app->getMemory<x86::reg32>(0x7a3d10) == 0
         && app->getMemory<x86::reg32>(0x6fd3a0) != 2;
 }
-
-bool guestNameIs(win32::WinApplication* app, x86::reg32 at, const char* name)
-{
-    for (x86::reg32 i = 0;; ++i)
-    {
-        const char c = char(app->getMemory<x86::reg8>(at + i));
-        if (c != name[i])
-            return false;
-        if (!c)
-            return true;
-    }
-}
-
-/* An item of the menu on the screen, by the codelink its menu file names it
- * with, or 0.  The menu showing is the one at [0x559230], which the front end
- * polls every frame (sub_44b230); its items are a run of the front end's own
- * array -- 0xbc bytes each from 0x604ee0 -- that starts at the index in the
- * menu's word at +0x18 and ends at an item whose type (+0) is 0.  That is how
- * the game looks an item up itself (sub_442a40).  Of an item the port reads the
- * flags at +4 (0x1301 keeps the game's own selection off it, sub_449f30), the
- * place its menu file gave it at +6 and +8, in the 640x480 the menus are laid
- * out in, and the codelink at +0x10 -- where the loader's table at 0x557c00
- * puts x, y and codelink. */
-x86::reg32 menuItem(win32::WinApplication* app, const char* codelink)
-{
-    const x86::reg32 menu = app->getMemory<x86::reg32>(0x559230);
-    if (!menu)
-        return 0;
-    const x86::sreg32 first = x86::sreg16(app->getMemory<x86::reg16>(menu + 0x18));
-    if (first < 0)
-        return 0;
-    for (x86::reg32 i = x86::reg32(first); i < x86::reg32(first) + 256; ++i)
-    {
-        const x86::reg32 item = 0x604ee0 + i * 0xbc;
-        if (app->getMemory<x86::reg32>(item) == 0)
-            break;
-        const x86::reg32 name = app->getMemory<x86::reg32>(item + 0x10);
-        if (name && guestNameIs(app, name, codelink))
-            return item;
-    }
-    return 0;
-}
-
-/* The player's name on the main menu looks like the field it is typed into,
- * but it is a line of text beside the Player Name tab: a [text] item,
- * SHOW_PLAYERNAME1, next to the [button] SET_PLAYERNAME1 (MAIN.MNU, and the
- * same pair for player two on the split screen's and the records' screens).
- * The game takes no click on text, so a finger that lands on the name presses
- * the tab beside it instead, and the game opens its name box as it does for
- * the tab -- and with the box comes the phone's keyboard (textEntryTick).
- *
- * The name's line runs from where the text starts to past the ten letters a
- * name can have (sub_45cef0 allows ten), and is as tall as the row of tabs it
- * sits in, which stand 35 apart; the tab is pressed a little way in from its
- * corner.  Where the name stands, the menu files also put the opponent choice
- * and the assists line, but those are the ones shown when the name is not; the
- * tab being one the game would let the player choose says which it is.  No
- * other box may be up already. */
-bool nameTapTarget(win32::WinApplication* app, x86::sreg32 x, x86::sreg32 y,
-                   x86::sreg32& tabX, x86::sreg32& tabY)
-{
-    if (nfs3hp::raceIsRunning() || app->getMemory<x86::reg8>(0x558b10) != 0)
-        return false;
-    static const char* const kTabs[] = { "SET_PLAYERNAME1", "SET_PLAYERNAME2" };
-    static const char* const kNames[] = { "SHOW_PLAYERNAME1", "SHOW_PLAYERNAME2" };
-    for (int player = 0; player < 2; ++player)
-    {
-        const x86::reg32 tab = menuItem(app, kTabs[player]);
-        const x86::reg32 name = menuItem(app, kNames[player]);
-        if (!tab || !name || (app->getMemory<x86::reg16>(tab + 4) & 0x1301))
-            continue;
-        const x86::sreg32 atX = x86::sreg16(app->getMemory<x86::reg16>(tab + 6));
-        const x86::sreg32 atY = x86::sreg16(app->getMemory<x86::reg16>(tab + 8));
-        const x86::sreg32 nameX = x86::sreg16(app->getMemory<x86::reg16>(name + 6));
-        if (x >= nameX - 8 && x < nameX + 200 && y >= atY - 2 && y < atY + 32)
-        {
-            tabX = atX + 24;
-            tabY = atY + 12;
-            return true;
-        }
-    }
-    return false;
-}
-
-/* A finger that went down on a player's name, and the tab it presses instead,
- * until the finger comes up. */
-bool        s_nameTab;
-x86::sreg32 s_nameTabX, s_nameTabY;
 
 /* NFS3Activity's say in something, by the name of its method taking a boolean;
  * from the game thread, which SDL has attached to the VM.  False while there
@@ -1274,8 +1584,6 @@ void pointerTick(win32::WinApplication* app)
         win32::Mouse::pressPointer(0, false);
         s_touchHeld = false;
     }
-    if (driving)
-        s_nameTab = false;
     SDL_LockMutex(s_touchMutex);
     const int count = s_pointerCount;
     PointerInput inputs[kPointerQueue];
@@ -1353,16 +1661,8 @@ void pointerTick(win32::WinApplication* app)
         if (touch && input.action == kTouchDown && !s_touchHeld)
         {
             textFieldPress(app, toX, toY);
-            s_nameTab = nameTapTarget(app, toX, toY, s_nameTabX, s_nameTabY);
-            if (s_nameTab)
-                SDL_Log("[POINTER] finger on the player's name at %d,%d: the Player Name tab is pressed at %d,%d",
-                        int(toX), int(toY), int(s_nameTabX), int(s_nameTabY));
         }
-        if (touch && s_nameTab)
-        {
-            toX = s_nameTabX;
-            toY = s_nameTabY;
-        }
+        // Preserve the actual hit point: name text can be covered by a dropdown.
         win32::Mouse::movePointer(toX - atX, toY - atY);
         atX = toX;
         atY = toY;
@@ -1390,8 +1690,6 @@ void pointerTick(win32::WinApplication* app)
                 win32::Mouse::pressPointer(0, false);
                 s_touchHeld = false;
             }
-            if (input.action == kTouchUp)
-                s_nameTab = false;
             continue;
         }
         bool pressed = false;
@@ -1602,7 +1900,8 @@ void scriptTick()
 void layoutTick(win32::WinApplication* app)
 {
     static int last = -1;
-    const bool driving = playerDriving(app);
+    // Not while the loading screen is still up: nothing to drive yet.
+    const bool driving = playerDriving(app) && !nfs3hp::loadingScreenUp();
     /* The pads follow the same signal as the on-screen controls: their buttons
      * are the racing ones while a race is being driven, and the menu's -- one
      * to confirm, one to go back, the D-pad to move -- everywhere else, a
@@ -1772,6 +2071,47 @@ void padKeysTick(win32::WinApplication* app)
     win32::Gamepad::muteGameKeys(muted);
 }
 
+/* Diagnostics for the bots (2026-09-29): what decides how hard sub_4064f0 lets a
+ * bot accelerate.  Past a flag, [0x6fd50c], its force is doubled for a bot 3 to
+ * 8 track nodes behind the player or 15 to 30 ahead, and tripled further off
+ * either way -- a catch-up, if that is what the flag is.  Every five seconds of a
+ * race the flags and, for each bot, how far it is from the player in nodes, the
+ * factor that gives, its place and speed. */
+void botForceTick(win32::WinApplication* app)
+{
+    static Uint64 s_last = 0;
+    if (!playerDriving(app))
+        return;
+    const Uint64 now = SDL_GetTicks();
+    if (now - s_last < 5000)
+        return;
+    s_last = now;
+    const x86::reg32 player = app->getMemory<x86::reg32>(0x6fd4f4);
+    const x86::reg32 playerCar = player < 16 ? x86::reg32(app->getMemory<x86::reg32>(0x5efa48 + player * 4)) : 0u;
+    const x86::sreg32 playerNode = playerCar ? x86::sreg32(app->getMemory<x86::reg32>(playerCar + 0x1c)) : 0;
+    std::string bots;
+    const x86::reg32 cars = app->getMemory<x86::reg32>(0x6fd510);
+    for (x86::reg32 i = 0; i < cars && i < 16; ++i)
+    {
+        const x86::reg32 car = 0x5e1120 + i * 0x9ac;
+        if (car == playerCar)
+            continue;
+        const x86::sreg32 d = x86::sreg32(app->getMemory<x86::reg32>(car + 0x1c)) - playerNode;
+        const int factor = (d > -3 && d < 15) ? 1 : (d > -8 && d < 30) ? 2 : 3;
+        char one[96];
+        SDL_snprintf(one, sizeof one, " #%u:d%d x%d p%u v%.0f/%.0f", unsigned(app->getMemory<x86::reg32>(car + 0x1f0)),
+                     int(d), factor, unsigned(app->getMemory<x86::reg32>(car + 0x1fc)),
+                     double(app->getMemory<float>(car + 0x7c4)), double(app->getMemory<float>(car + 0x7b0)));
+        bots += one;
+    }
+    SDL_Log("[BOTFORCE] flag50c=%u 4cc=%u 4f0=%u player=%u node=%d 7a22da=%u 518=%u 508=%u 55eb2e=%02x:%s",
+            unsigned(app->getMemory<x86::reg32>(0x6fd50c)), unsigned(app->getMemory<x86::reg32>(0x6fd4cc)),
+            unsigned(app->getMemory<x86::reg32>(0x6fd4f0)), unsigned(player), int(playerNode),
+            unsigned(app->getMemory<x86::reg16>(0x7a22da)), unsigned(app->getMemory<x86::reg32>(0x6fd518)),
+            unsigned(app->getMemory<x86::reg32>(0x6fd508)), unsigned(app->getMemory<x86::reg8>(0x55eb2e)),
+            bots.c_str());
+}
+
 /* Every buffer swap: the finger and the mouse on the picture, which layout the
  * controls should be showing and which of the race's buttons, whether the pads'
  * keys go out, the phone's cornering, how the touch buttons steer, and the car
@@ -1789,12 +2129,76 @@ void onSwap(win32::WinApplication* app)
     padKeysTick(app);
     phoneTick(app);
     steeringTick(app);
+    viewTick(app);
+    botForceTick(app);
     if (s_traceCarDetail)
         traceCarDetail(app);
     if (s_traceTicks)
         traceTicks(app);
     if (s_traceInput)
         traceInput(app);
+}
+
+/* The app to the background and back, on the thread that pumps the events.
+ *
+ * The game's time stands still in the background (win32::suspendTime): before,
+ * its timer went on counting while the game itself was stopped, and on the
+ * player's return the race made up for every tick at once -- the opponents had
+ * driven on meanwhile.  And a race the player was driving comes back paused,
+ * as a PC game does when it loses the screen: the game's own pause menu, opened
+ * by the game's own key.  Not over a race's loading screen, where Escape would
+ * abandon the load, not over a replay or the pause menu itself, and not in a
+ * network race ([0x6fd3b0] 2 and more), which no one player may stop. */
+bool s_pauseOnReturn = false;
+
+void pushEscape(bool down)
+{
+    SDL_Event event;
+    SDL_zero(event);
+    event.type = down ? SDL_EVENT_KEY_DOWN : SDL_EVENT_KEY_UP;
+    event.key.timestamp = SDL_GetTicksNS();
+    event.key.scancode = SDL_SCANCODE_ESCAPE;
+    event.key.key = SDLK_ESCAPE;
+    event.key.down = down;
+    SDL_PushEvent(&event);
+}
+
+/* Held a little while, as the back gesture holds it (NFS3Activity): the game
+ * reads the key once a frame and a press shorter than that can go unseen.
+ * From SDL's timer thread, outside the event watch that asks for it. */
+Uint32 SDLCALL releaseEscape(void*, SDL_TimerID, Uint32)
+{
+    pushEscape(false);
+    return 0;
+}
+
+Uint32 SDLCALL pressEscape(void*, SDL_TimerID, Uint32)
+{
+    pushEscape(true);
+    SDL_AddTimer(150, releaseEscape, nullptr);
+    return 0;
+}
+
+bool SDLCALL backgroundWatch(void* userdata, SDL_Event* event)
+{
+    win32::WinApplication* app = static_cast<win32::WinApplication*>(userdata);
+    if (event->type == SDL_EVENT_WILL_ENTER_BACKGROUND)
+    {
+        s_pauseOnReturn = playerDriving(app) && !nfs3hp::loadingScreenUp()
+                       && app->getMemory<x86::reg32>(0x6fd3b0) < 2;
+        win32::suspendTime(true);
+        SDL_Log("[TIME] to the background%s", s_pauseOnReturn ? "; the race comes back paused" : "");
+    }
+    else if (event->type == SDL_EVENT_DID_ENTER_FOREGROUND)
+    {
+        win32::suspendTime(false);
+        if (s_pauseOnReturn)
+        {
+            s_pauseOnReturn = false;
+            SDL_AddTimer(50, pressEscape, nullptr);
+        }
+    }
+    return true;
 }
 }
 
@@ -1856,6 +2260,16 @@ int main(int argc, char* argv[])
      * nothing downstream depends on it, and a real fix means moving the
      * pump onto the SDL main thread, which is a much larger change. */
     SDL_SetHint(SDL_HINT_ASSERT, "always_ignore");
+    /* No poll sentinels.  On Android SDL_WaitEvent spins with them: each round
+     * of its wait pumps events, the pump puts a sentinel on the queue, and
+     * anything put on the queue wakes the waiter -- which is itself.  The
+     * game's message pump waits in SDL_WaitEvent for good (GetMessageA), so a
+     * profile showed that thread taking most of a core, polling joysticks and
+     * the clock without end, and the heat of it pulling the big cores' clock
+     * down.  Nothing in the port asks for sentinels: SDL_PollEvent is not
+     * used, and the pump wants real events only.  The pads are updated once a
+     * frame instead (Gamepad::update). */
+    SDL_SetHint(SDL_HINT_POLL_SENTINEL, "0");
     /* Without this the game starts in portrait on Android, and the manifest
      * cannot stop it: SDLActivity.setOrientationBis() calls
      * setRequestedOrientation() at runtime and overrides screenOrientation.
@@ -1880,6 +2294,11 @@ int main(int argc, char* argv[])
     }
     /* SDL_INIT_GAMEPAD is what turns raw joysticks into the mapped
      * SDL_EVENT_GAMEPAD_* stream window.cpp translates into keystrokes. */
+#ifdef NFS_RELEASE
+    /* A release writes nothing to the log: every line below critical -- the
+     * port's diagnostics and SDL's own -- is dropped before it is formatted. */
+    SDL_SetLogPriorities(SDL_LOG_PRIORITY_CRITICAL);
+#endif
     SDL_Init(SDL_INIT_EVENTS|SDL_INIT_VIDEO|SDL_INIT_AUDIO|SDL_INIT_JOYSTICK|SDL_INIT_GAMEPAD);
     /* Window::getMessage consumes key, text, quit and its own registered user
      * events; everything else falls through its switch and is thrown away.  The
@@ -1892,6 +2311,9 @@ int main(int argc, char* argv[])
     SDL_SetJoystickEventsEnabled(false);
     SDL_SetGamepadEventsEnabled(false);
     {
+        /* nfs3.exe's own version resource (StringFileInfo 040904b0,
+         * FileVersion): the version a network race checks between machines. */
+        win32::version::setFileVersion("27, 2.0");
         nfs3hp::Application app("nfs3.exe");
         app.addRegistryKey(win32::HKEY_LOCAL_MACHINE, "SOFTWARE\\Electronic Arts\\Need For Speed III", "3D Device Description", new win32::RegistryValue("3Dfx Voodoo 2"));
         app.addRegistryKey(win32::HKEY_LOCAL_MACHINE, "SOFTWARE\\Electronic Arts\\Need For Speed III", "3D Card", new win32::RegistryValue("3Dfx Voodoo 2"));
@@ -1954,19 +2376,31 @@ int main(int argc, char* argv[])
             if (SDL_GetSystemRAM() >= 3072)
                 win32::glide2x::setPreferredAtlasSize(4096);
         }
+        /* The native THRASH driver draws through a renderer of its own, with
+         * no Voodoo2 emulated under it (native_thrash.cpp). */
+        win32::glide2x::useThrashRenderer(nfs3hp::thrashRendererWanted());
         const char* detailTrace = SDL_getenv("NFS_CAR_DETAIL_TRACE");
         s_traceCarDetail = detailTrace && *detailTrace && *detailTrace != '0';
         const char* pointerTrace = SDL_getenv("NFS_POINTER_TRACE");
         s_tracePointer = pointerTrace && *pointerTrace && *pointerTrace != '0';
         const char* tickTrace = SDL_getenv("NFS_TICK_TRACE");
         s_traceTicks = tickTrace && *tickTrace && *tickTrace != '0';
+        const char* carTrace = SDL_getenv("NFS_CAR_TRACE");
+        s_traceCars = carTrace && *carTrace && *carTrace != '0';
         const char* inputTrace = SDL_getenv("NFS_INPUT_TRACE");
         s_traceInput = inputTrace && *inputTrace && *inputTrace != '0';
+        /* NFS_FPU_SINGLE=0: races without the x87's single-precision rounding
+         * (FPU::s_singlePrecision), for comparing frame rates with and without. */
+        const char* single = SDL_getenv("NFS_FPU_SINGLE");
+        if (single && SDL_strcmp(single, "0") == 0)
+            x86::FPU::s_singlePrecision = 4;
+        SDL_Log("[FPU] races in single precision, as on a PC: %s", x86::FPU::s_singlePrecision == 0 ? "on" : "off");
         s_touchMutex = SDL_CreateMutex();
 #ifndef __ANDROID__
         loadTouchScript();
 #endif
         win32::glide2x::setSwapObserver(onSwap);
+        SDL_AddEventWatch(backgroundWatch, static_cast<win32::WinApplication*>(&app));
 
         /* The screen sizes the Graphics menu offers.  The Voodoo2 driver's mode
          * table (0xa92018, 40 bytes a mode: width, height, depth, LFB format,
@@ -2086,6 +2520,16 @@ extern "C" JNIEXPORT void JNICALL
 Java_dev_nfs3hp_port_NFS3Activity_nativeScreenTouch(JNIEnv*, jclass, jint action, jfloat x, jfloat y)
 {
     queueScreenTouch(int(action), float(x), float(y));
+}
+extern "C" JNIEXPORT jboolean JNICALL
+Java_dev_nfs3hp_port_NFS3Activity_nativeMoviePlaying(JNIEnv*, jclass)
+{
+    return nfs3hp::s_moviePlaying.load(std::memory_order_acquire) ? JNI_TRUE : JNI_FALSE;
+}
+extern "C" JNIEXPORT jboolean JNICALL
+Java_dev_nfs3hp_port_NFS3Activity_nativeSkipMovie(JNIEnv*, jclass)
+{
+    return nfs3hp::requestMovieSkip() ? JNI_TRUE : JNI_FALSE;
 }
 /* A finger on the touchpad (TouchpadPointer.java): how far it slid, in window
  * pixels, and whether it holds the button, bit 0.  Called on the Android UI

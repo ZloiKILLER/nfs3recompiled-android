@@ -211,6 +211,8 @@ x86::reg32 Window::getMessageImpl(const x86::CPU& cpu, MSG* result, Window *wind
                 switch (event.type)
                 {
                 case SDL_EVENT_QUIT:
+                    // Said, because a game that closes by itself leaves nothing else behind.
+                    SDL_Log("[EXIT] SDL asked the game to quit");
                     result->message = WM_QUIT;
                     return 0;
                 case SDL_EVENT_KEY_DOWN:

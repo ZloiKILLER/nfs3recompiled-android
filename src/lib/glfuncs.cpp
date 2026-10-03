@@ -32,6 +32,7 @@ PFNGLUNIFORMMATRIX4FVPROC        glUniformMatrix4fv;
 PFNGLUNIFORM1IPROC               glUniform1i;
 PFNGLUNIFORM3FPROC               glUniform3f;
 PFNGLUNIFORM1FPROC               glUniform1f;
+PFNGLUNIFORM1FVPROC              glUniform1fv;
 NfsCullFaceProc                  glCullFace;
 NfsFrontFaceProc                 glFrontFace;
 NfsScissorProc                   glScissor;
@@ -48,6 +49,9 @@ PFNGLDELETERENDERBUFFERSPROC     glDeleteRenderbuffers;
 PFNGLBINDRENDERBUFFERPROC        glBindRenderbuffer;
 PFNGLRENDERBUFFERSTORAGEPROC     glRenderbufferStorage;
 PFNGLDRAWBUFFERSPROC             glDrawBuffers;
+PFNGLGENSAMPLERSPROC             glGenSamplers;
+PFNGLBINDSAMPLERPROC             glBindSampler;
+PFNGLSAMPLERPARAMETERIPROC       glSamplerParameteri;
 
 namespace
 {
@@ -96,6 +100,7 @@ void loadGlFunctions()
     load(glUniform1i,               "glUniform1i");
     load(glUniform3f,               "glUniform3f");
     load(glUniform1f,               "glUniform1f");
+    load(glUniform1fv,              "glUniform1fv");
     load(glCullFace,                "glCullFace");
     load(glFrontFace,               "glFrontFace");
     load(glScissor,                 "glScissor");
@@ -112,6 +117,9 @@ void loadGlFunctions()
     load(glBindRenderbuffer,        "glBindRenderbuffer");
     load(glRenderbufferStorage,     "glRenderbufferStorage");
     load(glDrawBuffers,             "glDrawBuffers");
+    load(glGenSamplers,             "glGenSamplers");
+    load(glBindSampler,             "glBindSampler");
+    load(glSamplerParameteri,       "glSamplerParameteri");
 
     s_loaded = true;
 }

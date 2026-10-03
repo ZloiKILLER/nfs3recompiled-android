@@ -64,4 +64,17 @@ void Mutex::unlock()
     SDL_UnlockMutex(m_mutex);
 }
 
+x86::reg32 Mutex::unlockAll()
+{
+    NFS2_ASSERT(m_owner == Thread::currentThreadId());
+    const x86::reg32 depth = m_count;
+    m_count = 0;
+    m_owner = 0;
+    for (x86::reg32 i = 0; i < depth; ++i)
+    {
+        SDL_UnlockMutex(m_mutex);
+    }
+    return depth;
+}
+
 }

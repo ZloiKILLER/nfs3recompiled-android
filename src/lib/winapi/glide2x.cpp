@@ -3,19 +3,76 @@
 #include <lib/library.h>
 #include <lib/renderer.h>
 #include <lib/gliderenderer.h>
+#include <lib/thrashrenderer.h>
 #include <lib/window.h>
 #include <SDL3/SDL.h>
+#include <algorithm>
 #include <cmath>
 #include <cstdlib>
+#include <cstring>
+#include <initializer_list>
+#include <vector>
 
 
 namespace win32 { namespace glide2x
 {
 
 static Renderer* s_renderer;
-static GlideRenderer* s_glideRenderer;
+static GlideBackend* s_glideRenderer;
+/* The native THRASH driver draws through its own renderer (useThrashRenderer). */
+static bool s_thrashRenderer = false;
 static SwapObserver s_swapObserver;
 static x86::reg32 s_preferredAtlasSize = 2048;
+
+/* NFS_NATIVE_CHECK: while set, every state call a native THRASH stand-in or
+ * voodoo2a makes is appended here -- its entry's offset in voodoo2a's table of
+ * Glide functions (0x60 grColorCombine, ...), its arguments, and a marker. */
+static std::vector<x86::reg32>* s_callTrace = nullptr;
+
+static void traceCall(x86::reg32 id, std::initializer_list<x86::reg32> args)
+{
+    if (!s_callTrace)
+        return;
+    s_callTrace->push_back(id);
+    s_callTrace->insert(s_callTrace->end(), args.begin(), args.end());
+    s_callTrace->push_back(0xffffffff);
+}
+
+static x86::reg32 floatBits(float value)
+{
+    x86::reg32 bits;
+    std::memcpy(&bits, &value, sizeof bits);
+    return bits;
+}
+
+static void traceTexture(x86::reg32 id, x86::reg32 tmu, x86::reg32 start, x86::reg32 evenOdd, const void* info)
+{
+    if (!s_callTrace)
+        return;
+    // The record as the guest wrote it: four dwords and the guest address of the texels.
+    x86::reg32 record[5];
+    std::memcpy(record, info, sizeof record);
+    traceCall(id, {tmu, start, evenOdd, record[0], record[1], record[2], record[3], record[4]});
+}
+
+static void traceFogTable(const x86::reg8* table)
+{
+    if (!s_callTrace)
+        return;
+    s_callTrace->push_back(0x94);
+    for (int i = 0; i < 64; i += 4)
+        s_callTrace->push_back(x86::reg32(table[i]) | x86::reg32(table[i + 1]) << 8
+                               | x86::reg32(table[i + 2]) << 16 | x86::reg32(table[i + 3]) << 24);
+    s_callTrace->push_back(0xffffffff);
+}
+
+void useThrashRenderer(bool on)
+{
+    s_thrashRenderer = on;
+}
+
+/* The ThrashRenderer, while there is one (direct::thrashRenderer). */
+static ThrashRenderer* s_directRenderer = nullptr;
 
 void setPreferredAtlasSize(x86::reg32 size)
 {
@@ -69,6 +126,37 @@ static const GrVertex* fitted(const GrVertex* vertex, GrVertex& copy)
     copy = *vertex;
     copy.x = s_fitOffset + copy.x * s_fitScale;
     return &copy;
+}
+
+/* squeezeToLeft: each triangle narrowed by the 4:3 factor towards its own
+ * leftmost corner, so a picture laid out for 640x480 and stretched over a wide
+ * one -- the NFS emblem of a dialog box -- keeps its shape where it stands.  Both
+ * triangles of a quad hold one of its left corners, so the quad narrows as one. */
+static float s_squeezeScale = 1.0f;
+
+void squeezeToLeft(bool on)
+{
+    s_squeezeScale = 1.0f;
+    if (!on || !s_renderer)
+        return;
+    const float width = float(s_renderer->getWidth()), height = float(s_renderer->getHeight());
+    if (height > 0 && width * 3 > height * 4)
+        s_squeezeScale = height * 4 / (width * 3);
+}
+
+static void squeezed(const GrVertex*& a, const GrVertex*& b, const GrVertex*& c, GrVertex copies[3])
+{
+    if (s_squeezeScale == 1.0f)
+        return;
+    const float left = std::min(std::min(a->x, b->x), c->x);
+    copies[0] = *a;
+    copies[1] = *b;
+    copies[2] = *c;
+    for (int i = 0; i < 3; ++i)
+        copies[i].x = left + (copies[i].x - left) * s_squeezeScale;
+    a = &copies[0];
+    b = &copies[1];
+    c = &copies[2];
 }
 
 bool screenRect(int& x, int& y, int& w, int& h, int& pictureWidth, int& pictureHeight)
@@ -435,6 +523,7 @@ static void grGlideInit(WinApplication* app, x86::CPU& cpu)
     NFS2_USE(cpu);
     s_renderer = nullptr;
     s_glideRenderer = nullptr;
+    s_directRenderer = nullptr;
 }
 
 static void grGlideShutdown(WinApplication* app, x86::CPU& cpu)
@@ -444,6 +533,7 @@ static void grGlideShutdown(WinApplication* app, x86::CPU& cpu)
     {
         app->freeResource(s_glideRenderer->getResourceIndex());
         s_glideRenderer = nullptr;
+        s_directRenderer = nullptr;
     }
     if (s_renderer)
     {
@@ -569,7 +659,11 @@ static x86::reg32 grSstWinOpen(WinApplication* app, x86::CPU& cpu, HWND hWnd,
     s_renderer = new Renderer(app, dynamic_cast<Window*>(app->getResource(hWnd)));
     s_renderer->setVideoMode(width, height, 16);
     app->allocateResource(s_renderer);
-    s_glideRenderer = new GlideRenderer(s_renderer, s_preferredAtlasSize);
+    s_directRenderer = nullptr;
+    if (s_thrashRenderer)
+        s_glideRenderer = s_directRenderer = new ThrashRenderer(s_renderer);
+    else
+        s_glideRenderer = new GlideRenderer(s_renderer, s_preferredAtlasSize);
     app->allocateResource(s_glideRenderer);
     x86::reg16 data = 0xff;
     s_glideRenderer->setTextureData(0, 0, &data, 8, 8, TF_ARGB_4444);
@@ -583,6 +677,7 @@ static void grSstWinClose(WinApplication* app, x86::CPU& cpu)
     {
         app->freeResource(s_glideRenderer->getResourceIndex());
         s_glideRenderer = nullptr;
+        s_directRenderer = nullptr;
     }
     if (s_renderer)
     {
@@ -593,6 +688,7 @@ static void grSstWinClose(WinApplication* app, x86::CPU& cpu)
 
 static x86::reg32 grSstStatus(WinApplication* app, x86::CPU& cpu)
 {
+    traceCall(0x4c, {});
     NFS2_USE(app);
     NFS2_USE(cpu);
     return 0x0fff03f;
@@ -600,6 +696,7 @@ static x86::reg32 grSstStatus(WinApplication* app, x86::CPU& cpu)
 
 static x86::reg32 grSstVRetraceOn(WinApplication* app, x86::CPU& cpu)
 {
+    traceCall(0x50, {});
     NFS2_USE(app);
     NFS2_USE(cpu);
     return 0;
@@ -607,6 +704,7 @@ static x86::reg32 grSstVRetraceOn(WinApplication* app, x86::CPU& cpu)
 
 static void grSstIdle(WinApplication* app, x86::CPU& cpu)
 {
+    traceCall(0x54, {});
     NFS2_USE(app);
     NFS2_USE(cpu);
     //NFS2_ASSERT(false);
@@ -623,6 +721,7 @@ static void grTexCombineFunction(WinApplication* app, x86::CPU& cpu, GrChipID_t 
 
 static void grChromakeyValue(WinApplication* app, x86::CPU& cpu, GrColor_t  color)
 {
+    traceCall(0x34, {color});
     NFS2_USE(app);
     NFS2_USE(cpu);
     s_glideRenderer->setChromakeyValue(color);
@@ -637,6 +736,7 @@ static void grAlphaTestReferenceValue(WinApplication* app, x86::CPU& cpu, GrAlph
 
 static void grTexDownloadTable(WinApplication* app, x86::CPU& cpu, GrChipID_t tmu, GrTexTable_t type, void *data)
 {
+    traceCall(0x3c, {tmu, type});
     NFS2_USE(app);
     NFS2_USE(cpu);
     NFS2_USE(tmu);
@@ -647,6 +747,7 @@ static void grTexDownloadTable(WinApplication* app, x86::CPU& cpu, GrChipID_t tm
 
 static void grRenderBuffer(WinApplication* app, x86::CPU& cpu, GrBuffer_t buffer)
 {    
+    traceCall(0x40, {buffer});
     NFS2_USE(app);
     NFS2_USE(cpu);
     /* The GL path renders into one FBO texture and ignores this entirely --
@@ -662,6 +763,7 @@ static void grRenderBuffer(WinApplication* app, x86::CPU& cpu, GrBuffer_t buffer
 
 static void grBufferClear(WinApplication* app, x86::CPU& cpu, GrColor_t color, GrAlpha_t alpha, x86::reg16 depth)
 {
+    traceCall(0x44, {color, alpha, depth});
     //NFS2_ASSERT(color == 0);
     NFS2_ASSERT(alpha == 0);
     NFS2_ASSERT(depth == 65535);
@@ -672,6 +774,7 @@ static void grBufferClear(WinApplication* app, x86::CPU& cpu, GrColor_t color, G
 
 static void grBufferSwap(WinApplication* app, x86::CPU& cpu, x86::reg32 swapInterval)
 {
+    traceCall(0x48, {swapInterval});
     NFS2_ASSERT(swapInterval == 1);
     app->unlockContext(cpu);
     s_glideRenderer->swap();
@@ -682,6 +785,7 @@ static void grBufferSwap(WinApplication* app, x86::CPU& cpu, x86::reg32 swapInte
 
 static void grSstIsBusy(WinApplication* app, x86::CPU& cpu)
 {
+    traceCall(0x58, {});
     NFS2_USE(app);
     NFS2_USE(cpu);
     NFS2_ASSERT(false);
@@ -690,6 +794,7 @@ static void grSstIsBusy(WinApplication* app, x86::CPU& cpu)
 static void grClipWindow(WinApplication* app, x86::CPU& cpu,
                          x86::reg32 minX, x86::reg32 minY, x86::reg32 maxX, x86::reg32 maxY)
 {
+    traceCall(0x5c, {minX, minY, maxX, maxY});
     NFS2_USE(app);
     NFS2_USE(cpu);
     s_clipWindow[0] = minX;
@@ -704,6 +809,7 @@ static void grColorCombine(WinApplication* app, x86::CPU& cpu,
                            GrCombineFunction_t function, GrCombineFactor_t factor,
                            GrCombineLocal_t local, GrCombineOther_t other, BOOL invert)
 {
+    traceCall(0x60, {function, factor, local, other, invert});
     NFS2_USE(app);
     NFS2_USE(cpu);
     NFS2_ASSERT(function == GR_COMBINE_FUNCTION_LOCAL || function == GR_COMBINE_FUNCTION_BLEND_OTHER);
@@ -729,6 +835,7 @@ static void grAlphaCombine(WinApplication* app, x86::CPU& cpu,
                            GrCombineFunction_t function, GrCombineFactor_t factor,
                            GrCombineLocal_t local, GrCombineOther_t other, BOOL invert)
 {
+    traceCall(0x64, {function, factor, local, other, invert});
     NFS2_USE(app);
     NFS2_USE(cpu);
     NFS2_ASSERT(function == GR_COMBINE_FUNCTION_LOCAL || function == GR_COMBINE_FUNCTION_BLEND_OTHER);
@@ -751,6 +858,7 @@ static void grAlphaBlendFunction(WinApplication* app, x86::CPU& cpu,
                                  GrAlphaBlendFnc_t rgb_sf, GrAlphaBlendFnc_t rgb_df,
                                  GrAlphaBlendFnc_t alpha_sf, GrAlphaBlendFnc_t alpha_df)
 {
+    traceCall(0x68, {rgb_sf, rgb_df, alpha_sf, alpha_df});
     NFS2_USE(app);
     NFS2_USE(cpu);
     NFS2_ASSERT(rgb_sf == GR_BLEND_SRC_ALPHA);
@@ -771,16 +879,21 @@ static void grAlphaBlendFunction(WinApplication* app, x86::CPU& cpu,
 
 static void grCullMode(WinApplication* app, x86::CPU& cpu, GrCullMode_t mode)
 {
+    traceCall(0x6c, {mode});
     NFS2_USE(app);
     NFS2_USE(cpu);
-    const char* overrideMode = std::getenv("NFS_CULL");
-    if (overrideMode)
-    {
+    /* Read once: this runs for every state change of a race, and a getenv
+     * each time showed in the profile (2026-10-03). */
+    static const int overrideMode = []() {
+        const char* value = std::getenv("NFS_CULL");
+        if (!value)
+            return -1;
         char* end = nullptr;
-        const unsigned long value = std::strtoul(overrideMode, &end, 0);
-        if (end != overrideMode && *end == '\0' && value <= 2)
-            mode = x86::reg32(value);
-    }
+        const unsigned long chosen = std::strtoul(value, &end, 0);
+        return end != value && *end == '\0' && chosen <= 2 ? int(chosen) : -1;
+    }();
+    if (overrideMode >= 0)
+        mode = x86::reg32(overrideMode);
     /* Glide's negative winding is clockwise in the game's screen-space
      * coordinates.  NFS_CULL can select 0/1/2 at runtime for device A/B tests
      * if a backend reports the opposite front-face convention. */
@@ -790,6 +903,7 @@ static void grCullMode(WinApplication* app, x86::CPU& cpu, GrCullMode_t mode)
 static void grTexFilterMode(WinApplication* app, x86::CPU& cpu, GrChipID_t tmu,
                             GrTextureFilterMode_t minfilter_mode, GrTextureFilterMode_t magfilter_mode)
 {
+    traceCall(0x70, {tmu, x86::reg32(minfilter_mode), x86::reg32(magfilter_mode)});
     NFS2_USE(app);
     NFS2_USE(cpu);
     NFS2_USE(tmu);
@@ -801,6 +915,7 @@ static void grTexFilterMode(WinApplication* app, x86::CPU& cpu, GrChipID_t tmu,
 
 static void grDitherMode(WinApplication* app, x86::CPU& cpu, GrDitherMode_t mode)
 {
+    traceCall(0x74, {mode});
     NFS2_USE(app);
     NFS2_USE(cpu);
     /* The RGB565 target quantises the shader result just like the Voodoo FBI;
@@ -810,6 +925,7 @@ static void grDitherMode(WinApplication* app, x86::CPU& cpu, GrDitherMode_t mode
 
 static void grChromakeyMode(WinApplication* app, x86::CPU& cpu, GrChromakeyMode_t mode)
 {
+    traceCall(0x78, {mode});
     NFS2_USE(app);
     NFS2_USE(cpu);
     s_glideRenderer->setChromakeyMode(mode != 0);
@@ -817,6 +933,7 @@ static void grChromakeyMode(WinApplication* app, x86::CPU& cpu, GrChromakeyMode_
 
 static void grAlphaTestFunction(WinApplication* app, x86::CPU& cpu, GrCmpFnc_t function)
 {
+    traceCall(0x7c, {function});
     NFS2_USE(app);
     NFS2_USE(cpu);
     NFS2_ASSERT(function == GR_CMP_GREATER);
@@ -824,6 +941,7 @@ static void grAlphaTestFunction(WinApplication* app, x86::CPU& cpu, GrCmpFnc_t f
 
 static void grDepthBufferMode(WinApplication* app, x86::CPU& cpu, GrDepthBufferMode_t mode)
 {
+    traceCall(0x80, {mode});
     NFS2_USE(app);
     NFS2_USE(cpu);
 #ifdef NFS_TRACE_MSG
@@ -848,6 +966,7 @@ static void grDepthBufferMode(WinApplication* app, x86::CPU& cpu, GrDepthBufferM
 
 static void grDepthBufferFunction(WinApplication* app, x86::CPU& cpu, GrCmpFnc_t function)
 {
+    traceCall(0x84, {function});
     NFS2_USE(app);
     NFS2_USE(cpu);
     NFS2_ASSERT(function == GR_CMP_LEQUAL || function == GR_CMP_ALWAYS);
@@ -872,6 +991,7 @@ static void grDepthBufferFunction(WinApplication* app, x86::CPU& cpu, GrCmpFnc_t
 
 static void grDepthMask(WinApplication* app, x86::CPU& cpu, x86::reg32 mask)
 {
+    traceCall(0x88, {mask});
     NFS2_USE(app);
     NFS2_USE(cpu);
     NFS2_ASSERT(mask == 0 || mask == 1);
@@ -880,6 +1000,7 @@ static void grDepthMask(WinApplication* app, x86::CPU& cpu, x86::reg32 mask)
 
 static void grFogColorValue(WinApplication* app, x86::CPU& cpu, GrColor_t fogcolor)
 {
+    traceCall(0x8c, {fogcolor});
     NFS2_USE(app);
     NFS2_USE(cpu);
     s_glideRenderer->setFogColor(fogcolor);
@@ -887,6 +1008,7 @@ static void grFogColorValue(WinApplication* app, x86::CPU& cpu, GrColor_t fogcol
 
 static void grFogMode(WinApplication* app, x86::CPU& cpu, GrFogMode_t mode)
 {
+    traceCall(0x90, {mode});
     NFS2_USE(app);
     NFS2_USE(cpu);
     s_glideRenderer->setFogMode(mode);
@@ -894,6 +1016,7 @@ static void grFogMode(WinApplication* app, x86::CPU& cpu, GrFogMode_t mode)
 
 static void grFogTable(WinApplication* app, x86::CPU& cpu, const GrFog_t ft[GR_FOG_TABLE_SIZE])
 {
+    traceFogTable(ft);
     NFS2_USE(app);
     NFS2_USE(cpu);
     s_glideRenderer->setFogTable(ft);
@@ -902,6 +1025,7 @@ static void grFogTable(WinApplication* app, x86::CPU& cpu, const GrFog_t ft[GR_F
 static x86::reg32 grLfbLock(WinApplication* app, x86::CPU& cpu, GrLock_t type, GrBuffer_t buffer,
                             GrLfbWriteMode_t writeMode, GrOriginLocation_t origin, BOOL pixelPipeline, GrLfbInfo_t *info)
 {
+    traceCall(0x98, {type, buffer, writeMode, origin, pixelPipeline});
     NFS2_USE(app);
     NFS2_USE(cpu);
     NFS2_USE(pixelPipeline);
@@ -931,6 +1055,7 @@ static x86::reg32 grLfbLock(WinApplication* app, x86::CPU& cpu, GrLock_t type, G
 
 static x86::reg32 grLfbUnlock(WinApplication* app, x86::CPU& cpu, GrLock_t type, GrBuffer_t buffer)
 {
+    traceCall(0x9c, {type, buffer});
     NFS2_USE(app);
     NFS2_USE(cpu);
     if (type == GR_LFB_WRITE_ONLY)
@@ -967,6 +1092,7 @@ static x86::reg32 grLfbReadRegion(WinApplication* app, x86::CPU& cpu,
                                   GrBuffer_t src_buffer, x86::reg32 src_x, x86::reg32 src_y,
                                   x86::reg32 src_width, x86::reg32 src_height, x86::reg32 dst_stride, void *dst_data)
 {
+    traceCall(0xa4, {src_buffer, src_x, src_y, src_width, src_height, dst_stride});
     NFS2_USE(app);
     NFS2_USE(cpu);
     NFS2_USE(src_buffer);
@@ -980,18 +1106,51 @@ static x86::reg32 grLfbReadRegion(WinApplication* app, x86::CPU& cpu,
     return 0;
 }
 
-static void grDrawTriangle(WinApplication* app, x86::CPU& cpu, const GrVertex* a, const GrVertex* b, const GrVertex* c)
+static std::vector<GrVertex>* s_triangleTrace = nullptr;
+
+void traceTriangles(std::vector<GrVertex>* trace)
 {
-    NFS2_USE(app);
-    NFS2_USE(cpu);
+    s_triangleTrace = trace;
+}
+
+bool tracingTriangles()
+{
+    return s_triangleTrace != nullptr;
+}
+
+void drawTriangle(const GrVertex* a, const GrVertex* b, const GrVertex* c)
+{
+    if (s_triangleTrace)
+    {
+        s_triangleTrace->push_back(*a);
+        s_triangleTrace->push_back(*b);
+        s_triangleTrace->push_back(*c);
+    }
+    if (!s_glideRenderer)
+        return;
+    GrVertex narrow[3];
+    squeezed(a, b, c, narrow);
     GrVertex fitA, fitB, fitC;
     s_glideRenderer->drawTriangle(fitted(a, fitA), fitted(b, fitB), fitted(c, fitC));
 }
 
-static void grDrawLine(WinApplication* app, x86::CPU& cpu, const GrVertex *a, const GrVertex *b)
+static void grDrawTriangle(WinApplication* app, x86::CPU& cpu, const GrVertex* a, const GrVertex* b, const GrVertex* c)
 {
     NFS2_USE(app);
     NFS2_USE(cpu);
+    drawTriangle(a, b, c);
+}
+
+void drawLine(const GrVertex* a, const GrVertex* b)
+{
+    if (s_triangleTrace)
+    {
+        s_triangleTrace->push_back(*a);
+        s_triangleTrace->push_back(*b);
+        s_triangleTrace->push_back(*b);
+    }
+    if (!s_glideRenderer)
+        return;
     GrVertex fitA, fitB;
     a = fitted(a, fitA);
     b = fitted(b, fitB);
@@ -1024,6 +1183,13 @@ static void grDrawLine(WinApplication* app, x86::CPU& cpu, const GrVertex *a, co
     s_glideRenderer->drawTriangle(&b2, &b3, &a3);
 }
 
+static void grDrawLine(WinApplication* app, x86::CPU& cpu, const GrVertex *a, const GrVertex *b)
+{
+    NFS2_USE(app);
+    NFS2_USE(cpu);
+    drawLine(a, b);
+}
+
 static void grDrawPoint(WinApplication* app, x86::CPU& cpu, const GrVertex *a)
 {
     NFS2_USE(app);
@@ -1034,6 +1200,7 @@ static void grDrawPoint(WinApplication* app, x86::CPU& cpu, const GrVertex *a)
 
 static void grGammaCorrectionValue(WinApplication* app, x86::CPU& cpu, float correction)
 {
+    traceCall(0xb4, {floatBits(correction)});
     NFS2_USE(app);
     NFS2_USE(cpu);
     /* Apply Glide's display-space correction to 3D output.  The value is
@@ -1043,6 +1210,7 @@ static void grGammaCorrectionValue(WinApplication* app, x86::CPU& cpu, float cor
 
 static void grDepthBiasLevel(WinApplication* app, x86::CPU& cpu, x86::sreg16 bias)
 {
+    traceCall(0xb8, {x86::reg32(x86::sreg32(bias))});
     NFS2_USE(app);
     NFS2_USE(cpu);
     NFS2_USE(bias);
@@ -1051,6 +1219,7 @@ static void grDepthBiasLevel(WinApplication* app, x86::CPU& cpu, x86::sreg16 bia
 
 static void grTexMipMapMode(WinApplication* app, x86::CPU& cpu, GrChipID_t tmu, GrMipMapMode_t mode, BOOL lodBlend)
 {
+    traceCall(0xbc, {tmu, mode, lodBlend});
     NFS2_USE(app);
     NFS2_USE(cpu);
     NFS2_USE(tmu);
@@ -1065,6 +1234,7 @@ static void grTexCombine(WinApplication* app, x86::CPU& cpu, GrChipID_t tmu,
                          GrCombineFunction_t alpha_function, GrCombineFactor_t alpha_factor,
                          BOOL rgb_invert, BOOL alpha_invert)
 {
+    traceCall(0xc0, {tmu, rgb_function, rgb_factor, alpha_function, alpha_factor, rgb_invert, alpha_invert});
     NFS2_USE(app);
     NFS2_USE(cpu);
     NFS2_ASSERT(tmu == 0);
@@ -1077,19 +1247,27 @@ static void grTexCombine(WinApplication* app, x86::CPU& cpu, GrChipID_t tmu,
     //NFS2_ASSERT(false);
 }
 
+/* What a texture takes of the Voodoo's texture memory, whatever its size:
+ * one slot of the renderer's table (GlideRenderer::getTextureMemSize, and
+ * ThrashRenderer's the same), so each address is one texture's.  A constant
+ * here, as THRASH_about asks before any window -- any renderer -- is open. */
+static const x86::reg32 kTextureMemSize = sizeof(void*);
+
 static x86::reg32 grTexCalcMemRequired(WinApplication* app, x86::CPU& cpu,
                                        GrLOD_t lodmin, GrLOD_t lodmax, GrAspectRatio_t aspect, GrTextureFormat_t fmt)
 {
+    traceCall(0xc4, {lodmin, lodmax, aspect, fmt});
     NFS2_USE(app);
     NFS2_USE(cpu);
     NFS2_USE(fmt);
     NFS2_ASSERT(aspect == GR_ASPECT_1x1);
-    return s_glideRenderer->getTextureMemSize(256 >> lodmin, 256 >> lodmax, TF_RGB_565);
+    return kTextureMemSize;
 }
 
 static void grTexDownloadMipMap(WinApplication* app, x86::CPU& cpu, GrChipID_t tmu,
                                 x86::reg32 startAddress, x86::reg32 evenOdd, GrTexInfo* info)
 {
+    traceTexture(0xc8, tmu, startAddress, evenOdd, info);
     /* Rate limited: this is how an image would get from system memory into a
      * texture, i.e. the second half of any "read the frame back and show it in
      * the mirror" scheme. */
@@ -1134,13 +1312,15 @@ static void grTexDownloadMipMap(WinApplication* app, x86::CPU& cpu, GrChipID_t t
 
 static x86::reg32 grTexMinAddress(WinApplication* app, x86::CPU& cpu, GrChipID_t tmu)
 {
+    traceCall(0xcc, {tmu});
     NFS2_USE(app);
     NFS2_USE(cpu);
-    return 16*1024*1024 * tmu + s_glideRenderer->getTextureMemSize(1, 1, TF_RGB_565);
+    return 16*1024*1024 * tmu + kTextureMemSize;
 }
 
 static x86::reg32 grTexMaxAddress(WinApplication* app, x86::CPU& cpu, GrChipID_t tmu)
 {
+    traceCall(0xd0, {tmu});
     NFS2_USE(app);
     NFS2_USE(cpu);
     return 16*1024*1024 * (tmu+1);
@@ -1148,6 +1328,7 @@ static x86::reg32 grTexMaxAddress(WinApplication* app, x86::CPU& cpu, GrChipID_t
 
 static void grTexSource(WinApplication* app, x86::CPU& cpu, GrChipID_t tmu, uint32_t startAddress, uint32_t evenOdd, GrTexInfo *info)
 {
+    traceTexture(0xd4, tmu, startAddress, evenOdd, info);
     NFS2_USE(app);
     NFS2_USE(cpu);
     NFS2_USE(tmu);
@@ -1161,6 +1342,7 @@ static void grTexSource(WinApplication* app, x86::CPU& cpu, GrChipID_t tmu, uint
 
 static void grTexClampMode(WinApplication* app, x86::CPU& cpu, GrChipID_t tmu, GrTextureClampMode_t s_clampmode, GrTextureClampMode_t t_clampmode)
 {
+    traceCall(0xd8, {tmu, s_clampmode, t_clampmode});
     NFS2_USE(app);
     NFS2_USE(cpu);
     NFS2_USE(tmu);
@@ -1216,6 +1398,7 @@ static void grHints(WinApplication* app, x86::CPU& cpu, GrHints_t type, x86::reg
 
 static void grTexLodBiasValue(WinApplication* app, x86::CPU& cpu, GrChipID_t tmu, float bias)
 {
+    traceCall(0xec, {tmu, floatBits(bias)});
     NFS2_USE(app);
     NFS2_USE(cpu);
     NFS2_USE(tmu);
@@ -1240,6 +1423,7 @@ static x86::reg32 grSstScreenHeight(WinApplication* app, x86::CPU& cpu)
 
 static x86::sreg32 grBufferNumPending(WinApplication* app, x86::CPU& cpu)
 {
+    traceCall(0xf8, {});
     NFS2_USE(app);
     NFS2_USE(cpu);
     return 0;
@@ -1247,11 +1431,244 @@ static x86::sreg32 grBufferNumPending(WinApplication* app, x86::CPU& cpu)
 
 static BOOL grSstControl(WinApplication* app, x86::CPU& cpu, x86::reg32 code)
 {
+    traceCall(0xfc, {code});
     NFS2_USE(app);
     NFS2_USE(cpu);
     NFS2_USE(code);
     NFS2_ASSERT(false);
     return 0;
+}
+
+void traceCalls(std::vector<x86::reg32>* trace)
+{
+    s_callTrace = trace;
+}
+
+namespace direct
+{
+
+void chromakeyValue(WinApplication* app, x86::CPU& cpu, x86::reg32 color)
+{
+    grChromakeyValue(app, cpu, color);
+}
+
+void colorCombine(WinApplication* app, x86::CPU& cpu, x86::reg32 function, x86::reg32 factor, x86::reg32 local,
+                  x86::reg32 other, x86::reg32 invert)
+{
+    grColorCombine(app, cpu, function, factor, local, other, invert);
+}
+
+void alphaCombine(WinApplication* app, x86::CPU& cpu, x86::reg32 function, x86::reg32 factor, x86::reg32 local,
+                  x86::reg32 other, x86::reg32 invert)
+{
+    grAlphaCombine(app, cpu, function, factor, local, other, invert);
+}
+
+void alphaBlendFunction(WinApplication* app, x86::CPU& cpu, x86::reg32 rgbSource, x86::reg32 rgbDestination,
+                        x86::reg32 alphaSource, x86::reg32 alphaDestination)
+{
+    grAlphaBlendFunction(app, cpu, rgbSource, rgbDestination, alphaSource, alphaDestination);
+}
+
+void cullMode(WinApplication* app, x86::CPU& cpu, x86::reg32 mode)
+{
+    grCullMode(app, cpu, mode);
+}
+
+void texFilterMode(WinApplication* app, x86::CPU& cpu, x86::reg32 tmu, x86::reg32 minification,
+                   x86::reg32 magnification)
+{
+    grTexFilterMode(app, cpu, tmu, GrTextureFilterMode_t(minification), GrTextureFilterMode_t(magnification));
+}
+
+void ditherMode(WinApplication* app, x86::CPU& cpu, x86::reg32 mode)
+{
+    grDitherMode(app, cpu, mode);
+}
+
+void chromakeyMode(WinApplication* app, x86::CPU& cpu, x86::reg32 mode)
+{
+    grChromakeyMode(app, cpu, mode);
+}
+
+void alphaTestFunction(WinApplication* app, x86::CPU& cpu, x86::reg32 function)
+{
+    grAlphaTestFunction(app, cpu, function);
+}
+
+void depthBufferMode(WinApplication* app, x86::CPU& cpu, x86::reg32 mode)
+{
+    grDepthBufferMode(app, cpu, mode);
+}
+
+void depthBufferFunction(WinApplication* app, x86::CPU& cpu, x86::reg32 function)
+{
+    grDepthBufferFunction(app, cpu, function);
+}
+
+void depthMask(WinApplication* app, x86::CPU& cpu, x86::reg32 mask)
+{
+    grDepthMask(app, cpu, mask);
+}
+
+void fogColorValue(WinApplication* app, x86::CPU& cpu, x86::reg32 colour)
+{
+    grFogColorValue(app, cpu, colour);
+}
+
+void fogMode(WinApplication* app, x86::CPU& cpu, x86::reg32 mode)
+{
+    grFogMode(app, cpu, mode);
+}
+
+void fogTable(WinApplication* app, x86::CPU& cpu, const x86::reg8* table)
+{
+    grFogTable(app, cpu, table);
+}
+
+void gammaCorrectionValue(WinApplication* app, x86::CPU& cpu, float gamma)
+{
+    grGammaCorrectionValue(app, cpu, gamma);
+}
+
+void depthBiasLevel(WinApplication* app, x86::CPU& cpu, x86::sreg16 bias)
+{
+    grDepthBiasLevel(app, cpu, bias);
+}
+
+void texMipMapMode(WinApplication* app, x86::CPU& cpu, x86::reg32 tmu, x86::reg32 mode, x86::reg32 lodBlend)
+{
+    grTexMipMapMode(app, cpu, tmu, mode, lodBlend);
+}
+
+void texCombine(WinApplication* app, x86::CPU& cpu, x86::reg32 tmu, x86::reg32 rgbFunction, x86::reg32 rgbFactor,
+                x86::reg32 alphaFunction, x86::reg32 alphaFactor, x86::reg32 rgbInvert, x86::reg32 alphaInvert)
+{
+    grTexCombine(app, cpu, tmu, rgbFunction, rgbFactor, alphaFunction, alphaFactor, rgbInvert, alphaInvert);
+}
+
+void texClampMode(WinApplication* app, x86::CPU& cpu, x86::reg32 tmu, x86::reg32 s, x86::reg32 t)
+{
+    grTexClampMode(app, cpu, tmu, s, t);
+}
+
+void texLodBiasValue(WinApplication* app, x86::CPU& cpu, x86::reg32 tmu, float bias)
+{
+    grTexLodBiasValue(app, cpu, tmu, bias);
+}
+
+x86::reg32 texCalcMemRequired(WinApplication* app, x86::CPU& cpu, x86::reg32 smallLod, x86::reg32 largeLod,
+                              x86::reg32 aspect, x86::reg32 format)
+{
+    return grTexCalcMemRequired(app, cpu, smallLod, largeLod, aspect, format);
+}
+
+x86::reg32 texMinAddress(WinApplication* app, x86::CPU& cpu, x86::reg32 tmu)
+{
+    return grTexMinAddress(app, cpu, tmu);
+}
+
+x86::reg32 texMaxAddress(WinApplication* app, x86::CPU& cpu, x86::reg32 tmu)
+{
+    return grTexMaxAddress(app, cpu, tmu);
+}
+
+void texSource(WinApplication* app, x86::CPU& cpu, x86::reg32 tmu, x86::reg32 start, x86::reg32 evenOdd, x86::reg32 info)
+{
+    grTexSource(app, cpu, tmu, start, evenOdd, &app->getMemory<GrTexInfo>(info));
+}
+
+void texDownloadMipMap(WinApplication* app, x86::CPU& cpu, x86::reg32 tmu, x86::reg32 start, x86::reg32 evenOdd,
+                       x86::reg32 info)
+{
+    grTexDownloadMipMap(app, cpu, tmu, start, evenOdd, &app->getMemory<GrTexInfo>(info));
+}
+
+void texDownloadTable(WinApplication* app, x86::CPU& cpu, x86::reg32 tmu, x86::reg32 type, x86::reg32 data)
+{
+    grTexDownloadTable(app, cpu, tmu, type, &app->getMemory<void>(data));
+}
+
+void renderBuffer(WinApplication* app, x86::CPU& cpu, x86::reg32 buffer)
+{
+    grRenderBuffer(app, cpu, buffer);
+}
+
+void bufferClear(WinApplication* app, x86::CPU& cpu, x86::reg32 colour, x86::reg8 alpha, x86::reg16 depth)
+{
+    grBufferClear(app, cpu, colour, alpha, depth);
+}
+
+void bufferSwap(WinApplication* app, x86::CPU& cpu, x86::reg32 interval)
+{
+    grBufferSwap(app, cpu, interval);
+}
+
+x86::sreg32 bufferNumPending(WinApplication* app, x86::CPU& cpu)
+{
+    return grBufferNumPending(app, cpu);
+}
+
+x86::reg32 sstStatus(WinApplication* app, x86::CPU& cpu)
+{
+    return grSstStatus(app, cpu);
+}
+
+x86::reg32 sstVRetraceOn(WinApplication* app, x86::CPU& cpu)
+{
+    return grSstVRetraceOn(app, cpu);
+}
+
+void sstIdle(WinApplication* app, x86::CPU& cpu)
+{
+    grSstIdle(app, cpu);
+}
+
+void sstIsBusy(WinApplication* app, x86::CPU& cpu)
+{
+    grSstIsBusy(app, cpu);
+}
+
+void clipWindow(WinApplication* app, x86::CPU& cpu, x86::reg32 minX, x86::reg32 minY, x86::reg32 maxX, x86::reg32 maxY)
+{
+    grClipWindow(app, cpu, minX, minY, maxX, maxY);
+}
+
+x86::reg32 lfbLock(WinApplication* app, x86::CPU& cpu, x86::reg32 type, x86::reg32 buffer, x86::reg32 writeMode,
+                   x86::reg32 origin, x86::reg32 pixelPipeline, x86::reg32 info)
+{
+    return grLfbLock(app, cpu, type, buffer, writeMode, origin, pixelPipeline, &app->getMemory<GrLfbInfo_t>(info));
+}
+
+x86::reg32 lfbUnlock(WinApplication* app, x86::CPU& cpu, x86::reg32 type, x86::reg32 buffer)
+{
+    return grLfbUnlock(app, cpu, type, buffer);
+}
+
+x86::reg32 lfbReadRegion(WinApplication* app, x86::CPU& cpu, x86::reg32 buffer, x86::reg32 x, x86::reg32 y,
+                         x86::reg32 width, x86::reg32 height, x86::reg32 stride, x86::reg32 data)
+{
+    return grLfbReadRegion(app, cpu, buffer, x, y, width, height, stride, &app->getMemory<void>(data));
+}
+
+void resetTextures()
+{
+    if (s_glideRenderer)
+        s_glideRenderer->resetTextures();
+}
+
+x86::reg32 sstControl(WinApplication* app, x86::CPU& cpu, x86::reg32 code)
+{
+    return grSstControl(app, cpu, code);
+}
+
+ThrashRenderer* thrashRenderer()
+{
+    if (!s_directRenderer || s_triangleTrace || s_squeezeScale != 1.0f || s_fitScale != 1.0f || s_fitOffset != 0.0f)
+        return nullptr;
+    return s_directRenderer;
+}
+
 }
 
 

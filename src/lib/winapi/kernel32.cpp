@@ -292,8 +292,9 @@ BOOL EscapeCommFunction(WinApplication* app, x86::CPU& cpu,
 void ExitProcess(WinApplication* app, x86::CPU& cpu,
                  UINT uExitCode)
 {
-    NFS2_USE(app);
-    NFS2_USE(uExitCode);
+    // Said, with the game's code that asked for it (PostQuitMessage has the same).
+    SDL_Log("[EXIT] ExitProcess(%u) from 0x%x", unsigned(uExitCode),
+            unsigned(app->getMemory<x86::reg32>(cpu.esp)));
     win32::Window::postMessage(0, 0x0012, 0, 0);
     cpu.terminate = true;
 }
@@ -732,10 +733,15 @@ FARPROC GetProcAddress(WinApplication* app, x86::CPU& cpu,
                        HMODULE hModule, LPCSTR lpProcName)
 {
     NFS2_USE(cpu);
+    /* NULL for a module or a name the port does not have, as Windows answers;
+     * every caller in the game checks for it. */
     win32::LibraryHandle* libraryHandle = dynamic_cast<win32::LibraryHandle*>(app->getResource(hModule));
-    win32::Library* l = libraryHandle->getLibrary();
+    win32::Library* l = libraryHandle ? libraryHandle->getLibrary() : nullptr;
+    if (!l)
+        return 0;
     win32::Library::Symbol s = (*l)[lpProcName];
-    NFS2_ASSERT(s.first);
+    if (!s.first)
+        SDL_Log("GetProcAddress: no %s in the port", lpProcName);
     return s.first;
 }
 
@@ -989,9 +995,11 @@ HMODULE LoadLibraryA(WinApplication* app, x86::CPU& cpu,
     }
     else
     {
+        /* NULL, as Windows answers a library it cannot load, and as every
+         * caller in the game checks: the TCP/IP screen asks for rasapi32.dll
+         * to show the dial-up address and falls back to the host name. */
         delete lib;
-        //NFS2_ASSERT(false);
-        return -1;
+        return 0;
     }
 }
 

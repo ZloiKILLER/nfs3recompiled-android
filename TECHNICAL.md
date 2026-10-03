@@ -6,7 +6,7 @@ on a virtual x86 CPU, with the Win32, DirectDraw, DirectInput, DirectSound and
 Glide 2x calls it makes reimplemented on top of SDL3 and OpenGL ES.
 
 Based on [motor-dev/nfs-recompiled](https://github.com/motor-dev/nfs-recompiled),
-which does the recompilation itself and targets desktop. This fork adds the
+which does the recompilation itself and targets desktop. This project adds the
 Android target: a launcher, touch controls, gamepad handling, widescreen races,
 and a number of fixes in the Glide layer that only showed up once the game ran
 on a phone.
@@ -147,13 +147,81 @@ shrank them to 16 bits for a Voodoo2; here the Voodoo2 driver takes them too
 on the disc — the track surfaces and most of the menu backgrounds — stays as it
 is. `NFS_TEXTURES32=0` goes back to 16-bit textures.
 
-## Known issues
+### Projected headlights
 
-- **Mosaic artefacts in the headlight-lit area on Mali GPUs.** Blocky patches
-  appear where the projected headlight texture falls on the road, only while
-  moving. Not reproducible on Adreno with the same build, with or without
-  mipmapping, so it looks like a driver difference rather than a bug in the
-  Glide layer. Unresolved.
+With projected headlights the game draws the lit road a second time over
+itself, and that pass hands the Glide layer texture coordinates up to thirty
+repeats of the road texture away from the origin. On Mali GPUs that was enough
+to lose the fraction of a texel per pixel, and the lit area broke into moving
+blocks — the same artefact the Modern Patch shows under dgVoodoo. A triangle
+whose wrapped coordinates lie that far out is moved back by a whole number of
+repeats before it is drawn (worked out in double, so nothing it samples
+changes), and the lit road draws clean. `NFS_TEXCOORD_REBASE=0` turns this off.
+
+The headlights' light pool, a car's shadow and the glow of its lights in the
+rain are laid on the road with a less-or-equal depth test. The Voodoo kept 16
+bits of depth, and a decal came out equal to the road under it; the finer depth
+a phone's GPU keeps differs in the last bits from pixel to pixel, and the decals
+flickered against the road and each other. The fragment shader rounds depth to
+the Voodoo's 16-bit steps, but only where the driver gave a depth buffer of more
+than the 16 bits asked for (Mali gives 24); a real 16-bit buffer already holds
+those steps. Never on an Adreno 5xx: there the shader's depth write broke the
+depth test, and the wheels showed through the body. `NFS_DEPTH16=0` or `1`
+overrides the choice.
+
+### Rear-view mirror
+
+In a single race the mirror is drawn as the main view is: the same draw
+distance, the near track model, cars at full size, the sky with its clouds and
+lightning, the cars' lights and the headlights' light. The original cut all of
+that down for the mirror (a reach of 100 against 500, the far track model, cars
+at 0.6 of their size, a flat sky). There is no menu option;
+`NFS_MIRROR_FULL=0` brings the original's mirror back (`tools/apply_mirror_detail.py`).
+
+### Network races
+
+The game's Connection screen offers IPX and TCP/IP; RaceNet, Modem and Serial
+are hidden, as nothing carries them any more.
+
+- **IPX** finds races on the local network, phone with phone. It is carried on
+  UDP: an IPX socket is the UDP port of the same number (the game's 0x452 is
+  UDP 1106), a node is the phone's IPv4 address, and a broadcast goes to every
+  network's broadcast address. Only the port speaks it; a PC would need an IPX
+  wrapper.
+- **TCP/IP** connects to an address: phone with phone, or phone with a PC
+  running the Modern Patch (tested both ways with 1.6.1). The port is 9803, as
+  the Modern Patch has it; the launcher's Network screen shows the phone's
+  address and switches to the original's 1030 (`NFS_NET_PORT`).
+
+A race is lockstep: every machine simulates every car from the players'
+inputs, so the port rounds the x87 as a PC does in a race, and the game's
+version is checked when a machine joins. The port reports nfs3.exe's own,
+"27, 2.0" — the version resource the phone has no copy of, and the string the
+Modern Patch keeps in its data. Winsock 1.1 is in `src/lib/winapi/wsock32.cpp`
+over the phone's sockets (`src/lib/socket.cpp`); `NFS_NET_TRACE=1` writes a
+join into the log in a debug build.
+
+## Native code
+
+The game runs on a virtual x86 CPU, and the parts that cost the most no longer
+go through it:
+
+- voodoo2a's THRASH driver, the game's renderer, is native C++ for every
+  function the game uses (`src/nfs3hp/native_thrash.cpp`), drawing through its
+  own renderer (`src/lib/thrashrenderer.cpp`): an OpenGL texture for each of
+  the game's, the texture formats as they are, hardware filtering.
+- About fifty of the game's own functions are native
+  (`src/nfs3hp/native_vertices.cpp`): turning and projecting vertices,
+  clipping, the track's and objects' polygons and their depth sorting,
+  particles, the cars' lights and detail, and the small vector helpers called
+  from everywhere. `tools/apply_native_vertices.py` hooks each at the top of its
+  generated function, which stays behind it as the fallback.
+
+Each was compared with the generated code bit for bit before it was switched
+on — memory, registers, flags, the FPU and the triangles drawn
+(`NFS_NATIVE_CHECK`) — and keeps the x87's single-precision rounding. In a race
+this is about three quarters of the game thread's time. `NFS_NATIVES=0`,
+`NFS_THRASH=0` and `NFS_THRASH_GL=0` go back to the generated code.
 
 ## Building
 
@@ -223,8 +291,20 @@ from the phone; the rest matter for a desktop run.
 | `NFS_GAMMA`, `NFS_BRIGHTNESS`, `NFS_CONTRAST` | `1.0` | Applied to the finished frame in the final blit, so menus and movies are covered as well as a race. |
 | `NFS_ORIENTATION` | unset | `auto` allows both landscape directions; anything else pins one. Must be set before `SDL_Init`. |
 | `NFS_CAR_DETAIL_FULL` | on | With Car Detail at High, every car keeps its detailed model and the player's texture size out to the draw distance, in every view, and the limit on how many are drawn at once is lifted. `0` restores the original. |
+| `NFS_MIRROR_FULL` | on | The rear-view mirror is drawn as the main view is: its distances, the track's detailed models, cars at full detail, the sky with clouds and lightning, car lights and the headlights' light. `0` restores the original short, coarse mirror. |
 | `NFS_WIDESCREEN` | on | `0` takes the 1280x720, 1600x900 and 1920x1080 modes back out of the Screen Size list. |
 | `NFS_TEXTURES32` | on | `0` has the Voodoo2 driver refuse 32-bit textures again, so the game shrinks them to 16 bits as it used to. |
+| `NFS_TEXCOORD_REBASE` | on | `0` leaves far-out texture coordinates as the game sends them (see Projected headlights), to compare. |
+| `NFS_DEPTH16` | auto | On where the depth buffer has more than 16 bits and the GPU is not an Adreno 5xx. `0` keeps the GPU's own depth precision, `1` forces the Voodoo's 16-bit steps (see Projected headlights). `ab` switches between the two every 5 s, so both can be compared in one race; the `[GPU]` lines count the frames of each. |
+| `NFS_GPU_FILTER` | on | `0` filters every texel in the shader. By default the GPU's bilinear filter takes a pixel whose 2x2 texels lie inside their atlas tile and have no chroma key. |
+| `NFS_TEXCOORD_CUT` | off | `1` cuts triangles with far-out clamped texture coordinates along the texture's edges. An experiment, not needed for the headlights. |
+| `NFS_NATIVES` | on | `0` runs the generated code instead of every native stand-in for the hot vertex and polygon loops; `vertices` keeps only the three vertex loops; `no-drawtri` all but THRASH_drawtri; `no-clip` all but the clipping of off-screen polygons (`sub_4c2cd0` and its callers `sub_4c11b0`, `sub_4c12e0`). For comparing speeds. |
+| `NFS_THRASH` | on | `0` leaves voodoo2a's THRASH functions (the game's renderer driver) to their generated code instead of the native ones in `src/nfs3hp/native_thrash.cpp`. All of them the game uses: drawing, state, textures, the frame, setting up and video modes. `NFS_THRASH_OFF=THRASH_setstate,...` leaves the named ones generated. `NFS_NATIVE_CHECK=thrash` checks only these. |
+| `NFS_THRASH_GL` | on | `0` draws through the old renderer, the Voodoo2 emulated over a texture atlas with its filtering done in the shader, instead of `ThrashRenderer`, which gives each of the game's textures an OpenGL texture of its own and lets the GPU filter, wrap and clamp it. |
+| *(release)* | | A release build writes nothing to the log and takes none of these flags: the native code is built with `NFS_RELEASE` (log priority critical, SDL's direct Android logging compiled out through `android/app/jni/sdl_quiet.h`), the Java side logs through `AppLog`/`SDLLog` only when `BuildConfig.DEBUG`. Use the debug build (`-Pandroid10`) for diagnostics. |
+| `NFS_NET_PORT` | `9803` | TCP port of network races, as the Modern Patch has it; the launcher's Network screen offers the original's `1030`. |
+| `NFS_NET_TRACE` | off | `1` (extra `net_trace`) writes a network race into the log: EA's comm library events and packet sends (`[COMM]`), up to 400 datagrams per socket instead of 16 (`[NET]`), and each new indirect call target once per thread after the IPX transport opens (`[CALL]`). For finding where two machines stop on the way into a race. |
+| `NFS_NATIVE_CHECK` | off | `1` runs each native stand-in against the generated code and logs any difference (`[NATIVE]`). The polygon and car loops are compared over all of guest memory once a second. Slow, and draws some triangles twice. `clip` checks only the stand-ins of the clipping (both ways to the screen, the car's quad mesh included), the track, the effects, the car lights and detail, the objects and the vector math, every call; the small helpers called from hundreds of places are checked on every 64th call. |
 | `NFS_AUDIO_RATE` | unset | The output's own sample rate. The game mixes at 22050 Hz and SDL converts to this; a device opened at any other rate is resampled by Android, off its low-latency path. Unset, the device opens at SDL's default. |
 | `NFS_TOUCH_STEER_LEFT` etc. | unset | Keys the touch overlay sends for steering and the pedals, so that endpoint can report them as axes. |
 | `NFS_GAMEPAD1_SOUTH` etc. | built-in defaults | What a pad button sends, as `NFS_GAMEPAD<n>_<BUTTON>`: an SDL key name (`Space`, `Return`), `axis:steer_left`, `axis:steer_right`, `axis:accelerate`, `axis:brake`, or empty for nothing. |
@@ -241,6 +321,16 @@ python3 disassemble_nfs3hp.py
 
 It reads `nfs3hp/nfs3.exe` and the three DLLs and rewrites
 `src/nfs3hp/disassembly`.
+
+Between two places where control can arrive or leave — a label, a jump, a
+call, a return — the generator keeps the x87 stack in C++ locals rather than in
+the emulated FPU's memory, and writes it back where the run ends
+(`disasm/codegen/fpu_stack.py`). The arithmetic is the same calls in the same
+order, so the results are the same to the bit; on a phone it is about a quarter
+more frames in the heaviest split-screen races. `NFS_FPU_LOCALS=0` in the
+generator's environment writes every instruction against the emulated FPU as
+before, and `NFS_FPU_LOCALS_CHECK=1` plays every run through both ways,
+symbolically, and stops on the first one that differs.
 
 ## Credits
 

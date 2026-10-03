@@ -174,4 +174,12 @@
  <string name="gamepad_vibration">Δόνηση χειριστηρίου</string>
  <string name="gamepad_vibration_note">Απενεργοποιημένη από προεπιλογή. Η ένταση ρυθμίζεται στο παιχνίδι: Options → Controllers → Force Feedback.</string>
  <string name="editor_snap_grid">Ευθυγράμμιση στο πλέγμα</string>
+ <string name="network_title">Δίκτυο</string>
+ <string name="network_address">Διεύθυνση αυτής της συσκευής στο δίκτυο: %1$s</string>
+ <string name="network_no_address">Χωρίς σύνδεση δικτύου</string>
+ <string name="network_port_label">Θύρα TCP/IP</string>
+ <string name="network_port_modern">9803 · Modern Patch</string>
+ <string name="network_port_original">1030 · αρχικό παιχνίδι</string>
+ <string name="network_hint">Το IPX βρίσκει μόνο του αγώνες σε αυτό το Wi-Fi. Το TCP/IP συνδέει με όποιον γνωρίζει τη διεύθυνση του οικοδεσπότη, ακόμη και με PC με το αρχικό παιχνίδι ή το Modern Patch. Όλοι οι παίκτες χρησιμοποιούν την ίδια θύρα.</string>
+ <string name="fps_unlimited">Χωρίς όριο</string>
 </resources>

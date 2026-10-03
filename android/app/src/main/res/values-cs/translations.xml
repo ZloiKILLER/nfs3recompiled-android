@@ -174,4 +174,12 @@
  <string name="gamepad_vibration">Vibrace gamepadu</string>
  <string name="gamepad_vibration_note">Ve výchozím stavu vypnuto. Sílu nastavuje hra: Options → Controllers → Force Feedback.</string>
  <string name="editor_snap_grid">Přichytit k mřížce</string>
+ <string name="network_title">Síť</string>
+ <string name="network_address">Adresa tohoto zařízení v síti: %1$s</string>
+ <string name="network_no_address">Žádné připojení k síti</string>
+ <string name="network_port_label">Port TCP/IP</string>
+ <string name="network_port_modern">9803 · Modern Patch</string>
+ <string name="network_port_original">1030 · původní hra</string>
+ <string name="network_hint">IPX sám najde závody v této síti Wi-Fi. TCP/IP spojí s každým, kdo zná adresu hostitele, i s PC s původní hrou nebo Modern Patchem. Všichni hráči používají stejný port.</string>
+ <string name="fps_unlimited">Bez omezení</string>
 </resources>

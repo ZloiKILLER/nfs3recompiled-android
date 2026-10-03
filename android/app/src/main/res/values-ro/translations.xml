@@ -174,4 +174,12 @@
  <string name="gamepad_vibration">Vibrațiile gamepadului</string>
  <string name="gamepad_vibration_note">Oprită implicit. Intensitatea se setează în joc: Options → Controllers → Force Feedback.</string>
  <string name="editor_snap_grid">Aliniere la grilă</string>
+ <string name="network_title">Rețea</string>
+ <string name="network_address">Adresa acestui dispozitiv în rețea: %1$s</string>
+ <string name="network_no_address">Nicio conexiune la rețea</string>
+ <string name="network_port_label">Port TCP/IP</string>
+ <string name="network_port_modern">9803 · Modern Patch</string>
+ <string name="network_port_original">1030 · jocul original</string>
+ <string name="network_hint">IPX găsește singur cursele din această rețea Wi-Fi. TCP/IP conectează cu oricine știe adresa gazdei, inclusiv cu un PC cu jocul original sau cu Modern Patch. Toți jucătorii folosesc același port.</string>
+ <string name="fps_unlimited">Nelimitat</string>
 </resources>

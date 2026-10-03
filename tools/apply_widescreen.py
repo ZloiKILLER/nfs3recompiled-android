@@ -33,6 +33,24 @@
   proportions put right where it is not.  The float projection (sub_4bf260) and
   the game's older integer one (sub_4fd3f0) both take the angles from there,
   and nothing reads them before that point.
+- Zoomed cameras.  The television cameras of a replay and of the finish take
+  no angle at all: sub_4dbde0 sets their projection from the camera's zoom
+  (+0x54), the x scale half the view's width times it and the y scale half the
+  height times it and times 1.34834 ([0x54972c]) -- 4:3 written into the code.
+  On a 16:9 view that leaves the y scale a quarter short of the x one, and every
+  car these cameras show is squashed flat.  Where the view is wider than 4:3,
+  nfs3hp::zoomHalfWidth hands the x scale the y scale's half height instead
+  (0x4dbe8f), but only while a race is active: square pixels, the vertical view
+  as the game made it and more of the world at the sides, as the other cameras
+  have it.  The Player Car menu takes the angle projection, not this one; there
+  nfs3hp::widescreenHalfAngle measures the screen rather than the view, which
+  a race leaves at its own size.
+- A dialog's emblem.  Over a race, sub_4438d0 draws a dialog box -- the pause
+  menu's "Quit to:" -- stretched with the rest of the 640x480 layout, and its
+  round NFS emblem ([0x749a38], drawn by sub_4db000 at 0x443a44) with it.
+  nfs3hp::dialogEmblem has that one draw narrowed towards its left edge by the
+  4:3 factor: a round emblem on the box as the game stretches it, which is what
+  the Modern Patch shows.
 - HUD.  sub_480910 turns an element's layout, a fraction of the screen, into
   the pixel rectangle the HUD is drawn in.  After it stores the last edge
   (0x4809eb), nfs3hp::widescreenHudRect gives the elements drawn as pictures
@@ -61,6 +79,16 @@ SITES = [
      "    cpu.esi = widescreenHalfAngle(app, cpu.esi, cpu.eax);"
      " /* port: the horizontal angle the view's own shape asks for */",
      "x86::reg32 widescreenHalfAngle(win32::WinApplication* app, x86::reg32 half, x86::reg32 vertical);\n"),
+    ("nfs3hp.31.cpp", "004dbe8f  d905ac005600",
+     "x86::Float(app->getMemory<float>(x86::reg32(5636268) /* 0x5600ac */))",
+     "x86::Float(zoomHalfWidth(app)) /* port: a racing zoom camera's x scale is its y scale on a wide view */",
+     "float zoomHalfWidth(win32::WinApplication* app);\n"),
+    ("nfs3hp.11.cpp", "00443a44  e8b7750900",
+     "    sub_4db000(app, cpu.sync());",
+     "    dialogEmblem(true); /* port: the dialog's NFS emblem round on a wide screen */\n"
+     "    sub_4db000(app, cpu.sync());\n"
+     "    dialogEmblem(false);",
+     "void dialogEmblem(bool drawing);\n"),
     ("nfs3hp.20.cpp", "004809eb  898264977400",
      "    app->getMemory<x86::reg32>(cpu.edx + x86::reg32(7640932) /* 0x749764 */) = cpu.eax;",
      "    app->getMemory<x86::reg32>(cpu.edx + x86::reg32(7640932) /* 0x749764 */) = cpu.eax;\n"

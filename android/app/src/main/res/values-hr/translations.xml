@@ -174,4 +174,12 @@
  <string name="gamepad_vibration">Vibracija kontrolera</string>
  <string name="gamepad_vibration_note">Zadano isključeno. Jačina se podešava u igri: Options → Controllers → Force Feedback.</string>
  <string name="editor_snap_grid">Poravnaj s mrežom</string>
+ <string name="network_title">Mreža</string>
+ <string name="network_address">Adresa ovog uređaja u mreži: %1$s</string>
+ <string name="network_no_address">Nema mrežne veze</string>
+ <string name="network_port_label">TCP/IP port</string>
+ <string name="network_port_modern">9803 · Modern Patch</string>
+ <string name="network_port_original">1030 · izvorna igra</string>
+ <string name="network_hint">IPX sam pronalazi utrke u ovoj Wi-Fi mreži. TCP/IP povezuje sa svakim tko zna adresu domaćina, i s PC-jem s izvornom igrom ili Modern Patchom. Svi igrači koriste isti port.</string>
+ <string name="fps_unlimited">Bez ograničenja</string>
 </resources>

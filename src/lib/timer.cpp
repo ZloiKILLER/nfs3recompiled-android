@@ -1,5 +1,6 @@
 #include <lib/timer.h>
 #include <lib/window.h>
+#include <atomic>
 #include <time.h>
 #ifdef _WIN32
 # define localtime_r(a,b)  localtime_s(b,a)
@@ -25,9 +26,34 @@ void getSystemTime(SYSTEMTIME* systemTime)
     systemTime->wMilliseconds = 0;
 }
 
+/* suspendTime(): whether the game's time stands still, since when, and how long
+ * it has stood still before, all told -- which the clock leaves out. */
+static std::atomic<bool> s_suspended{false};
+static std::atomic<Uint64> s_suspendedAt{0};
+static std::atomic<Uint64> s_suspendedFor{0};
+
+void suspendTime(bool suspended)
+{
+    if (suspended == s_suspended.load())
+        return;
+    if (suspended)
+    {
+        s_suspendedAt.store(SDL_GetTicks());
+        s_suspended.store(true);
+    }
+    else
+    {
+        const Uint64 stood = SDL_GetTicks() - s_suspendedAt.load();
+        s_suspendedFor.fetch_add(stood);
+        s_suspended.store(false);
+        SDL_Log("[TIME] the game's time stood still for %.1f s in the background", double(stood) / 1000.0);
+    }
+}
+
 x86::reg32 timeGetTickCount()
 {
-    x86::reg32 result = (x86::reg32)SDL_GetTicks();
+    const Uint64 now = s_suspended.load() ? s_suspendedAt.load() : SDL_GetTicks();
+    x86::reg32 result = (x86::reg32)(now - s_suspendedFor.load());
     return result;
 }
 
@@ -55,6 +81,12 @@ Uint32 Timer::timerCallback(void* data, SDL_TimerID /*timerID*/, Uint32 interval
 {
     NFS2_USE(interval);
     Timer* t = (Timer*)data;
+    /* In the background (suspendTime) the timer waits: asked again in 10 ms,
+     * it fires once the app is back.  The game's timers are one-shot and armed
+     * again by what they call, so one that never fired would stop them for
+     * good; one that fires late only runs late. */
+    if (s_suspended.load())
+        return 10;
     x86::CPU cpu;
     //SDL_Log("Timer callback: %d", t->m_id);
 #ifdef NFS_TRACE_MSG
@@ -68,7 +100,7 @@ Uint32 Timer::timerCallback(void* data, SDL_TimerID /*timerID*/, Uint32 interval
         NFS_MSG_TRACE("timer fire    sdl_id=%u proc=0x%08x param=0x%08x (fire %u) -> guest",
                       unsigned(t->m_id), unsigned(t->m_callback), unsigned(t->m_parameter), hits);
 #endif
-    t->m_app->runThread(cpu, t->m_callback, t->m_parameter);
+    t->m_app->runCallback(cpu, t->m_callback, t->m_parameter);
 #ifdef NFS_TRACE_MSG
     if (trace)
         NFS_MSG_TRACE("timer done    sdl_id=%u proc=0x%08x (fire %u), not re-armed by us",

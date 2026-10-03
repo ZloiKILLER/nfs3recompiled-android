@@ -123,13 +123,13 @@ public class SDLControllerManager
         /* This is called for every button press, so let's not spam the logs */
         /*
         if ((sources & InputDevice.SOURCE_CLASS_JOYSTICK) != 0) {
-            Log.v(TAG, "Input device " + device.getName() + " has class joystick.");
+            SDLLog.v(TAG, "Input device " + device.getName() + " has class joystick.");
         }
         if ((sources & InputDevice.SOURCE_DPAD) == InputDevice.SOURCE_DPAD) {
-            Log.v(TAG, "Input device " + device.getName() + " is a dpad.");
+            SDLLog.v(TAG, "Input device " + device.getName() + " is a dpad.");
         }
         if ((sources & InputDevice.SOURCE_GAMEPAD) == InputDevice.SOURCE_GAMEPAD) {
-            Log.v(TAG, "Input device " + device.getName() + " is a gamepad.");
+            SDLLog.v(TAG, "Input device " + device.getName() + " is a gamepad.");
         }
         */
 

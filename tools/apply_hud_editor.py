@@ -82,7 +82,8 @@ MOVSD = (
 
 CALL_FITS = (
     "    cpu.esp -= 4;\n"
-    "    sub_459670(app, cpu);"
+    "    sub_459670(app, cpu.sync());\n"
+    "    cpu.reload();"
 )
 
 # (generated file, address and bytes of the instruction, original code, patched
@@ -101,9 +102,10 @@ SITES = [
     # the player, ebx the element.
     ("nfs3hp.16.cpp", "00459f7a  e8f1f6ffff", CALL_FITS,
      "    cpu.esp -= 4;\n"
-     "    hudLayoutsDrawn(app, cpu, true); /* port: measured against what is drawn */\n"
-     "    sub_459670(app, cpu);\n"
-     "    hudLayoutsDrawn(app, cpu, false);",
+     "    hudLayoutsDrawn(app, cpu.sync(), true); /* port: measured against what is drawn */\n"
+     "    sub_459670(app, cpu.sync());\n"
+     "    cpu.reload();\n"
+     "    hudLayoutsDrawn(app, cpu.sync(), false);",
      "void hudLayoutsDrawn(win32::WinApplication* app, x86::CPU& cpu, bool drawn);\n"),
     # sub_45a120, a drag keeping the element's box on the screen: the right and
     # bottom limits (the screen less the element's size) and the left and top
@@ -153,20 +155,24 @@ SITES = [
     # sub_45ab30 keeps.
     ("nfs3hp.16.cpp", "0045bcc3  e868eeffff",
      "    cpu.esp -= 4;\n"
-     "    sub_45ab30(app, cpu);",
+     "    sub_45ab30(app, cpu.sync());\n"
+     "    cpu.reload();",
      "    cpu.esp -= 4;\n"
      "    hudEditorDraw(app, cpu.ecx, true); /* port: measure what the element draws */\n"
-     "    sub_45ab30(app, cpu);\n"
+     "    sub_45ab30(app, cpu.sync());\n"
+     "    cpu.reload();\n"
      "    hudEditorDraw(app, cpu.ecx, false);",
      "void hudEditorDraw(win32::WinApplication* app, x86::reg32 object, bool begin);\n"),
     # sub_45bcb0: the frame about it, eax and ebx the item, which sub_459440
     # keeps in ebx.
     ("nfs3hp.16.cpp", "0045bd0c  e82fd7ffff",
      "    cpu.esp -= 4;\n"
-     "    sub_459440(app, cpu);",
+     "    sub_459440(app, cpu.sync());\n"
+     "    cpu.reload();",
      "    cpu.esp -= 4;\n"
      "    hudEditorFrame(app, cpu.eax, true); /* port: the frame about what is drawn */\n"
-     "    sub_459440(app, cpu);\n"
+     "    sub_459440(app, cpu.sync());\n"
+     "    cpu.reload();\n"
      "    hudEditorFrame(app, cpu.ebx, false);",
      "void hudEditorFrame(win32::WinApplication* app, x86::reg32 object, bool drawn);\n"),
     # sub_49bd30, a quad into one of the 2D queues: eax the queue, edx, ebx and

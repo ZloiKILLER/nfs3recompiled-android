@@ -52,24 +52,25 @@ HEADER = "// Port (tools/apply_hud_scale.py): defined in nfs3hp_main.cpp.\n"
 WIDTH = "app->getMemory<x86::reg32>(x86::reg32(8182472) /* 0x7cdac8 */)"
 HEIGHT = "app->getMemory<x86::reg32>(x86::reg32(8182476) /* 0x7cdacc */)"
 
-FILD_WIDTH = ("    cpu.fpu.push(x86::Float(x86::sreg32(" + WIDTH + ")));",
-              "    cpu.fpu.push(x86::Float(x86::sreg32(hudReferenceWidth(app))));"
-              " /* port: 4:3 proportions, was [0x7cdac8] */")
-FILD_HEIGHT = ("    cpu.fpu.push(x86::Float(x86::sreg32(" + HEIGHT + ")));",
-               "    cpu.fpu.push(x86::Float(x86::sreg32(hudReferenceHeight(app))));"
-               " /* port: 4:3 proportions, was [0x7cdacc] */")
+# Each pair replaces the value an instruction loads, not the statement it sits
+# in: the generator may keep the x87 stack in locals (disasm/codegen/fpu_stack.py),
+# and then the statement around the value is a local's initialisation rather
+# than cpu.fpu.push(...), while the value itself reads the same.
+FILD_WIDTH = ("x86::Float(x86::sreg32(" + WIDTH + "))",
+              "x86::Float(x86::sreg32(hudReferenceWidth(app) /* port: 4:3 proportions, was [0x7cdac8] */))")
+FILD_HEIGHT = ("x86::Float(x86::sreg32(" + HEIGHT + "))",
+               "x86::Float(x86::sreg32(hudReferenceHeight(app) /* port: 4:3 proportions, was [0x7cdacc] */))")
 # sub_48aa40 keeps the screen's size it is handed as two floats.
-FLD_WIDTH_ARG = ("    cpu.fpu.push(x86::Float(app->getMemory<float>(x86::reg32(5625528) /* 0x55d6b8 */)));",
-                 "    cpu.fpu.push(x86::Float(x86::sreg32(hudReferenceWidth(app))));"
-                 " /* port: 4:3 proportions, was [0x55d6b8], the screen's width */")
-FLD_HEIGHT_ARG = ("    cpu.fpu.push(x86::Float(app->getMemory<float>(x86::reg32(5625532) /* 0x55d6bc */)));",
-                  "    cpu.fpu.push(x86::Float(x86::sreg32(hudReferenceHeight(app))));"
-                  " /* port: 4:3 proportions, was [0x55d6bc], the screen's height */")
+FLD_WIDTH_ARG = ("x86::Float(app->getMemory<float>(x86::reg32(5625528) /* 0x55d6b8 */))",
+                 "x86::Float(x86::sreg32(hudReferenceWidth(app) /* port: 4:3 proportions, was [0x55d6b8],"
+                 " the screen's width */))")
+FLD_HEIGHT_ARG = ("x86::Float(app->getMemory<float>(x86::reg32(5625532) /* 0x55d6bc */))",
+                  "x86::Float(x86::sreg32(hudReferenceHeight(app) /* port: 4:3 proportions, was [0x55d6bc],"
+                  " the screen's height */))")
 # The cop's table, its rows 12.414/13 of a text line apart instead of 20/13.
 COP_ROWS = lambda address: (
-    "    cpu.fpu.st(0) = cpu.fpu.mul(cpu.fpu.st(0), x86::Float(app->getMemory<double>(x86::reg32(%d) /* 0x%x */)));" % (address, address),
-    "    cpu.fpu.st(0) = cpu.fpu.mul(cpu.fpu.st(0), x86::Float(12.414)); /* port: the cop's rows as close as the Modern Patch has them,"
-    " was [0x%x] = 20 */" % address)
+    "x86::Float(app->getMemory<double>(x86::reg32(%d) /* 0x%x */))" % (address, address),
+    "x86::Float(12.414 /* port: the cop's rows as close as the Modern Patch has them, was [0x%x] = 20 */)" % address)
 # The cop table's live speeding row, and its MPH/KPH worst-case width probes.
 # Only the format pointer changes; the game's sprintf call and stack cleanup
 # stay byte-for-byte equivalent to the original call site.

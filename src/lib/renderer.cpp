@@ -5,6 +5,13 @@
 #include <SDL3/SDL.h>
 #include <lib/glcompat.h>
 #include <lib/glfuncs.h>
+#include <lib/glthread.h>
+#include <array>
+#include <vector>
+#ifdef __ANDROID__
+#include <dlfcn.h>
+#include <unistd.h>
+#endif
 
 namespace
 {
@@ -225,10 +232,19 @@ static float displayContrast()
     return s_contrast;
 }
 
+/* A context is created current on the thread that creates it, and a window's
+ * surface can be current on one thread only: the GL thread lets go of its
+ * context first. */
+static SDL_GLContext createContext(SDL_Window* window)
+{
+    glthread::release();
+    return SDL_GL_CreateContext(window);
+}
+
 Renderer::Renderer(WinApplication* application, Window *window)
     :   m_application(application)
     ,   m_window(window)
-    ,   m_renderer(SDL_GL_CreateContext(m_window->m_window))
+    ,   m_renderer(createContext(m_window->m_window))
     ,   m_blitProgram(0)
     ,   m_blitGammaUniform(-1)
     ,   m_blitBrightnessUniform(-1)
@@ -239,8 +255,14 @@ Renderer::Renderer(WinApplication* application, Window *window)
     ,   m_currentBuffer(0)
     ,   m_depth(16)
     ,   m_swapInterval(0)
-    ,   m_extraWaitMs(0)
+    ,   m_frameNs(0)
+    ,   m_nextFrameNs(0)
+    ,   m_frameStartNs(0)
+    ,   m_presentNs(0)
     ,   m_convertBuffer(nullptr)
+    ,   m_frame565(0)
+    ,   m_frameRead(0)
+    ,   m_frameDraw(0)
     ,   m_colorPalette()
     ,   m_lastWindowW(-1)
     ,   m_lastWindowH(-1)
@@ -373,6 +395,7 @@ void Renderer::initBlit()
 Renderer::~Renderer()
 {
     SDL_RemoveEventWatch(keyboardEventWatch, nullptr);
+    glthread::release();
     free(m_convertBuffer);
     SDL_GL_DestroyContext(static_cast<SDL_GLContext>(m_renderer));
 }
@@ -407,29 +430,46 @@ void Renderer::setVideoMode(x86::reg32 w, x86::reg32 h, x86::reg32 bpp)
     /* The per-frame path is glTexSubImage2D, so the storage has to be allocated
      * here and in the format update() will actually upload -- 5_6_5 for the
      * 16-bit surface, RGBA bytes for the palettised one. */
-    setCurrent();
-    glBindTexture(GL_TEXTURE_2D, m_texture);
-    glDisable(GL_DITHER);
-    /* Sized internal format, deliberately, and eight bits per channel for both
-     * guest depths.  This used to ask for the unsized GL_RGB, which each
-     * implementation is free to resolve as it likes: desktop GL picked 8 bits
-     * per channel while GLES on Mali picked a genuine RGB565 -- 32 colour
-     * levels per channel instead of 256.  Everything the Glide renderer draws
-     * lands in this texture, so on the phone the whole 3D image was being
-     * quantised to 16 bits and then dithered on top, which is invisible in a
-     * still frame and crawls as soon as anything moves.  Measured directly:
-     * "render target R8 G8 B8" on Windows against "R5 G6 B5" on the device. */
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, m_width, m_height, 0,
-                 GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    clearCurrent();
+    const x86::reg32 width = w, height = h;
+    glthread::post(this, [this, width, height]() {
+        glBindTexture(GL_TEXTURE_2D, m_texture);
+        glDisable(GL_DITHER);
+        /* Sized internal format, deliberately, and eight bits per channel for
+         * both guest depths.  This used to ask for the unsized GL_RGB, which
+         * each implementation is free to resolve as it likes: desktop GL picked
+         * 8 bits per channel while GLES on Mali picked a genuine RGB565 -- 32
+         * colour levels per channel instead of 256.  Everything the Glide
+         * renderer draws lands in this texture, so on the phone the whole 3D
+         * image was being quantised to 16 bits and then dithered on top, which
+         * is invisible in a still frame and crawls as soon as anything moves.
+         * Measured directly: "render target R8 G8 B8" on Windows against
+         * "R5 G6 B5" on the device. */
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0,
+                     GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
 
-    /* Scratch for the pixel conversion, sized once per mode change.  Needed
-     * for both guest depths now: the target is RGBA8, and neither the 16-bit
-     * nor the palettised guest buffer can be handed to GL directly. */
-    free(m_convertBuffer);
-    m_convertBuffer = reinterpret_cast<x86::reg8*>(malloc(size_t(m_width) * m_height * 4));
+        /* Scratch for the pixel conversion, sized once per mode change.
+         * Needed for both guest depths now: the target is RGBA8, and neither
+         * the 16-bit nor the palettised guest buffer can be handed to GL
+         * directly. */
+        free(m_convertBuffer);
+        m_convertBuffer = reinterpret_cast<x86::reg8*>(malloc(size_t(width) * height * 4));
+
+        /* The 16-bit guest frame goes to the GPU as it is, into a texture of
+         * its own format, and the GPU copies it into the target, widening it
+         * to eight bits a channel on the way (update()). */
+        if (!m_frame565)
+        {
+            glGenTextures(1, &m_frame565);
+            glGenFramebuffers(1, &m_frameRead);
+            glGenFramebuffers(1, &m_frameDraw);
+        }
+        glBindTexture(GL_TEXTURE_2D, m_frame565);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB565, width, height, 0, GL_RGB, GL_UNSIGNED_SHORT_5_6_5, nullptr);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    });
 }
 
 void Renderer::updatePalette(x86::reg32 colorCount, const x86::reg32* colors)
@@ -448,13 +488,25 @@ x86::reg32 Renderer::getBackBuffer() const
     return m_videoMemory->getBlockStart() + (1 - m_currentBuffer) * m_width * m_height * 2;
 }
 
+/* The pads are read on the game's thread, the frame goes to the GL thread, and
+ * the game waits only if that is still a frame behind -- that wait now stands
+ * for the time present() used to spend in the swap (paceFrame). */
 void Renderer::present()
 {
     tick("present");
     Gamepad::update();
+    const x86::reg32 width = m_width, height = m_height;
+    glthread::post(this, [this, width, height]() { presentFrame(width, height); });
+    m_presentNs += glthread::presentPosted(1);
+}
+
+void Renderer::presentFrame(x86::reg32 width, x86::reg32 height)
+{
+    const Uint64 presentStart = SDL_GetTicksNS();
     glBindTexture(GL_TEXTURE_2D, m_texture);
     int w, h;
     SDL_GetWindowSizeInPixels(m_window->m_window, &w, &h);
+    SDL_LockSpinlock(&m_viewportLock);
 
     /* The letterbox math below only ever changes when the window's pixel
      * size does -- window resizes/rotations are rare compared to how often
@@ -463,7 +515,7 @@ void Renderer::present()
      * call from there too rather than recomputing on every present(). */
     if (w != m_lastWindowW || h != m_lastWindowH)
     {
-        float gameAspect = float(m_width) / float(m_height);
+        float gameAspect = float(width) / float(height);
         float windowAspect = float(w) / float(h);
         if (windowAspect > gameAspect)
         {
@@ -488,6 +540,8 @@ void Renderer::present()
     m_keyboardShift = SDL_GetAtomicInt(&s_screenKeyboardVisible)
                     ? int(m_vpH * s_keyboardShiftFraction + 0.5f)
                     : 0;
+    const int vpX = m_vpX, vpY = m_vpY + m_keyboardShift, vpW = m_vpW, vpH = m_vpH;
+    SDL_UnlockSpinlock(&m_viewportLock);
 
     glViewport(0, 0, w, h);
     glClearColor(0.f, 0.f, 0.f, 1.f);
@@ -496,7 +550,7 @@ void Renderer::present()
     /* Render the game texture into the aspect-ratio-correct viewport.  The quad
      * is in NDC, so the letterbox rectangle is expressed purely by the viewport
      * and no projection matrix is needed. */
-    glViewport(m_vpX, m_vpY + m_keyboardShift, m_vpW, m_vpH);
+    glViewport(vpX, vpY, vpW, vpH);
 
     /* The Glide renderer leaves depth test and blending enabled; neither makes
      * sense for the blit, and it re-sets both per draw call. */
@@ -521,66 +575,111 @@ void Renderer::present()
 
     glFlush();
     maybeGrabFrame(w, h);
-    SDL_GL_SwapWindow(m_window->m_window);
+    if (!SDL_GL_SwapWindow(m_window->m_window))
+    {
+        static unsigned s_failures = 0;
+        if (++s_failures <= 8u || (s_failures % 600u) == 0u)
+            SDL_Log("[GFX] swap failed (%u): %s", s_failures, SDL_GetError());
+    }
     /* The single point where a frame actually reaches the screen, for both the
      * DirectDraw/2D menu path and the Glide path (GlideRenderer::swap() ends
      * up here too).  Every message-trace line carries this count, which is how
      * "the game was told about the key" gets tied to "a new frame came out". */
     NFS_MSG_FRAME();
+    /* Mostly waiting: the window's clear on the buffer coming back from the
+     * display, the swap on the GPU.  Not work a faster core would shorten.
+     * On the game's thread only; on the GL thread present() counts the wait. */
+    if (!glthread::on())
+        m_presentNs += SDL_GetTicksNS() - presentStart;
+    glthread::presentDone();
 }
 
 void Renderer::update()
 {
     tick("update");
-    glBindTexture(GL_TEXTURE_2D, m_texture);
-    /* Storage and filtering are set up once in setVideoMode(): they are texture
-     * object state, so re-sending them every frame is pure overhead, and
-     * glTexImage2D would additionally reallocate the storage each time. */
-    if (m_depth == 16 && m_convertBuffer)
-    {
-        /* Expand the guest 5:6:5 buffer to the RGBA8 the target now uses.  The
-         * low bits are replicated rather than zero-filled so white stays white
-         * instead of drifting to 248,252,248.  Only the DirectDraw path comes
-         * through here -- menus and the intro movie -- because the Glide
-         * renderer draws into this texture directly, so a race pays nothing
-         * for this loop. */
-        const x86::reg16* srcData = &m_application->getMemory<x86::reg16>(getFrontBuffer());
-        x86::reg8* screenData = m_convertBuffer;
-        for (x86::reg32 i = 0; i < m_width*m_height; ++i)
+    /* The guest's frame as it is now: the game writes the next one into the
+     * same memory while the GL thread is still converting this one. */
+    const x86::reg32 width = m_width, height = m_height;
+    const bool deep = m_depth == 16;
+    const x86::reg8* front = &m_application->getMemory<x86::reg8>(getFrontBuffer());
+    std::vector<x86::reg8> frame(front, front + size_t(width) * height * (deep ? 2 : 1));
+    std::array<x86::reg32, 256> palette;
+    if (!deep)
+        std::copy(m_colorPalette, m_colorPalette + 256, palette.begin());
+    glthread::post(this, [this, width, height, deep, frame = std::move(frame), palette]() {
+        if (!m_convertBuffer)
+            return;
+        if (deep && m_frame565)
         {
-            const x86::reg16 c = srcData[i];
-            const x86::reg8 r = x86::reg8((c >> 11) & 0x1f);
-            const x86::reg8 g = x86::reg8((c >> 5) & 0x3f);
-            const x86::reg8 b = x86::reg8(c & 0x1f);
-            screenData[i*4 + 0] = x86::reg8(r << 3 | r >> 2);
-            screenData[i*4 + 1] = x86::reg8(g << 2 | g >> 4);
-            screenData[i*4 + 2] = x86::reg8(b << 3 | b >> 2);
-            screenData[i*4 + 3] = 0xff;
+            /* The guest's 5:6:5 frame uploaded as it is, and copied into the
+             * RGBA8 target by the GPU -- which widens five bits to eight as the
+             * conversion loop below did, to within a level, white staying
+             * white.  Menus
+             * and movies used to cost the GL thread that loop over every
+             * pixel of every frame. */
+            glPixelStorei(GL_UNPACK_ALIGNMENT, 2);
+            glBindTexture(GL_TEXTURE_2D, m_frame565);
+            glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, width, height, GL_RGB, GL_UNSIGNED_SHORT_5_6_5, frame.data());
+            glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+            glBindFramebuffer(GL_READ_FRAMEBUFFER, m_frameRead);
+            glFramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, m_frame565, 0);
+            glBindFramebuffer(GL_DRAW_FRAMEBUFFER, m_frameDraw);
+            glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, m_texture, 0);
+            glDisable(GL_SCISSOR_TEST);
+            glBlitFramebuffer(0, 0, GLint(width), GLint(height), 0, 0, GLint(width), GLint(height),
+                              GL_COLOR_BUFFER_BIT, GL_NEAREST);
+            glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+            glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+            return;
         }
-        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, m_width, m_height,
-                        GL_RGBA, GL_UNSIGNED_BYTE, screenData);
-    }
-    else if (m_convertBuffer)
-    {
-        /* Palette entries keep the layout the old GL_UNSIGNED_INT_8_8_8_8 upload
-         * implied -- first component in the most significant byte -- so unpack
-         * them into R,G,B,A memory order and upload as GL_UNSIGNED_BYTE, which
-         * is both endian-independent and available in GLES.  The destination is
-         * a persistent buffer: this used to malloc and free ~1.9 MB every single
-         * frame. */
-        const x86::reg8* srcData = &m_application->getMemory<x86::reg8>(getFrontBuffer());
+        glBindTexture(GL_TEXTURE_2D, m_texture);
+        /* Storage and filtering are set up once in setVideoMode(): they are
+         * texture object state, so re-sending them every frame is pure
+         * overhead, and glTexImage2D would additionally reallocate the storage
+         * each time. */
         x86::reg8* screenData = m_convertBuffer;
-        for (x86::reg32 i = 0; i < m_width*m_height; ++i)
+        if (deep)
         {
-            const x86::reg32 c = m_colorPalette[srcData[i]];
-            screenData[i*4 + 0] = x86::reg8(c >> 24);
-            screenData[i*4 + 1] = x86::reg8(c >> 16);
-            screenData[i*4 + 2] = x86::reg8(c >> 8);
-            screenData[i*4 + 3] = x86::reg8(c);
+            /* Expand the guest 5:6:5 buffer to the RGBA8 the target now uses.
+             * The low bits are replicated rather than zero-filled so white
+             * stays white instead of drifting to 248,252,248.  Only the
+             * DirectDraw path comes through here -- menus and the intro movie
+             * -- because the Glide renderer draws into this texture directly,
+             * so a race pays nothing for this loop. */
+            const x86::reg16* srcData = reinterpret_cast<const x86::reg16*>(frame.data());
+            for (x86::reg32 i = 0; i < width*height; ++i)
+            {
+                const x86::reg16 c = srcData[i];
+                const x86::reg8 r = x86::reg8((c >> 11) & 0x1f);
+                const x86::reg8 g = x86::reg8((c >> 5) & 0x3f);
+                const x86::reg8 b = x86::reg8(c & 0x1f);
+                screenData[i*4 + 0] = x86::reg8(r << 3 | r >> 2);
+                screenData[i*4 + 1] = x86::reg8(g << 2 | g >> 4);
+                screenData[i*4 + 2] = x86::reg8(b << 3 | b >> 2);
+                screenData[i*4 + 3] = 0xff;
+            }
         }
-        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, m_width, m_height,
+        else
+        {
+            /* Palette entries keep the layout the old GL_UNSIGNED_INT_8_8_8_8
+             * upload implied -- first component in the most significant byte
+             * -- so unpack them into R,G,B,A memory order and upload as
+             * GL_UNSIGNED_BYTE, which is both endian-independent and available
+             * in GLES.  The destination is a persistent buffer: this used to
+             * malloc and free ~1.9 MB every single frame. */
+            const x86::reg8* srcData = frame.data();
+            for (x86::reg32 i = 0; i < width*height; ++i)
+            {
+                const x86::reg32 c = palette[srcData[i]];
+                screenData[i*4 + 0] = x86::reg8(c >> 24);
+                screenData[i*4 + 1] = x86::reg8(c >> 16);
+                screenData[i*4 + 2] = x86::reg8(c >> 8);
+                screenData[i*4 + 3] = x86::reg8(c);
+            }
+        }
+        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, width, height,
                         GL_RGBA, GL_UNSIGNED_BYTE, screenData);
-    }
+    });
     present();
 }
 
@@ -594,7 +693,6 @@ void Renderer::unlock(x86::reg32 index)
     tick(index == 0 ? "unlock0" : "unlockN");
     if (index == 0)
     {
-        setCurrent();
         /* This used to be SDL_GL_SetSwapInterval(0) -- presumably to push the
          * unlocked front buffer out without waiting for a refresh.  But the
          * interval is context-global and nothing ever restored it, so one
@@ -602,77 +700,146 @@ void Renderer::unlock(x86::reg32 index)
          * good.  Pace this present like every other one instead. */
         ensureFramePacing();
         update();
-        clearCurrent();
     }
 }
 
-/* The game is paced to 30 Hz.  Upstream got that by presenting the same frame
- * refresh_rate/30 times with vsync on, which on a 120 Hz phone panel costs four
- * full framebuffer uploads, four palette conversions and four presents for a
- * single game frame.  Ask the driver to hold each present for that many
- * refreshes instead: identical pacing, a quarter of the work.
+/* The frame rate the player chose, 30 or 60 (NFS_FPS_CAP), kept by the clock.
  *
- * Negotiating once is not enough on its own, because the swap interval is
- * context-global and other paths used to overwrite it -- unlock() set it to 0
- * and nothing ever put it back, so after the first DirectDraw unlock the whole
- * 2D path (every menu) free-ran at whatever the hardware would produce.  That
- * was the port's main source of heat.  Every presenting path now calls this. */
+ * This used to ask the driver to hold each present for refresh/cap refreshes.
+ * Android takes the request, reports success, and holds each present for one
+ * refresh all the same -- its Surface allows no swap interval above one -- so
+ * nothing capped anything: a phone with a 120 Hz panel drew the game as fast
+ * as it could, 30 or 60 alike, and ran hot doing it.  Now vsync stays at one
+ * refresh and each frame waits for its time before it goes out (paceFrame);
+ * on Android 11 and later the activity asks the display for the same rate
+ * (NFS3Activity), so a 60 on a 120 Hz panel lands on every refresh of a 60 Hz
+ * one instead of every other of a 120 Hz one.
+ *
+ * Only once: the interval belongs to the surface, and a new surface after the
+ * app returns starts at one, which is what is wanted anyway. */
 void Renderer::ensureFramePacing()
 {
     if (m_swapInterval != 0)
-    {
-        /* Already negotiated; just make sure nothing has changed it since. */
-        SDL_GL_SetSwapInterval(m_swapInterval);
         return;
-    }
-
-    const SDL_DisplayMode* mode = SDL_GetCurrentDisplayMode(SDL_GetPrimaryDisplay());
-    /* NFS_FPS_CAP overrides the 30 Hz target without a rebuild, which is the
-     * only way to tell a cap that is too low apart from a machine that is
-     * simply too slow. */
+    glthread::post(this, []() { SDL_GL_SetSwapInterval(1); });
+    m_swapInterval = 1;
     const char* capEnv = SDL_getenv("NFS_FPS_CAP");
     const int cap = capEnv ? SDL_atoi(capEnv) : 30;
-    const int wanted = (mode && cap > 0) ? int(mode->refresh_rate / float(cap)) : 2;
-    const int interval = wanted > 1 ? wanted : 1;
-
-    if (interval > 1 && SDL_GL_SetSwapInterval(interval))
-    {
-        m_swapInterval = interval;
-        m_extraWaitMs = 0;
-    }
+    /* 0: no cap, the display's own refresh the only pace. */
+    m_frameNs = cap > 0 ? SDL_NS_PER_SECOND / Uint64(cap) : 0;
+    if (cap > 0)
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "frame pacing: vsync, %d frames a second by the clock", cap);
     else
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "frame pacing: vsync, no cap");
+}
+
+#ifdef __ANDROID__
+namespace
+{
+
+/* How long each frame's work took, told to Android (ADPF, the performance hint
+ * API: Android 13, libandroid.so) against how long a frame may take.  The phone
+ * runs the game thread on a big core it holds at half its clock; told a frame
+ * went over, it raises that core's clock for the thread, and told they come in
+ * early, lowers it -- instead of guessing from load.  Looked up at run time:
+ * the app starts on Android 8, where none of it exists and nothing happens.
+ * NFS_PERF_HINT=0 turns it off. */
+class PerformanceHint
+{
+public:
+    void report(Uint64 targetNs, Uint64 workNs)
     {
-        /* Driver refused an interval above one.  Upstream paced this by
-         * presenting the same frame `interval` times, which costs that many
-         * full texture uploads and presents for one game frame.  Present once
-         * and wait out the remaining refreshes instead -- same frame rate, one
-         * frame's worth of work. */
-        SDL_GL_SetSwapInterval(1);
-        m_swapInterval = 1;
-        const float refresh = (mode && mode->refresh_rate > 1.0f) ? mode->refresh_rate : 60.0f;
-        m_extraWaitMs = (interval > 1) ? int((interval - 1) * 1000.0f / refresh) : 0;
+        if (!m_tried)
+            start(targetNs);
+        if (!m_session)
+            return;
+        if (targetNs != m_target && m_update)
+        {
+            m_update(m_session, int64_t(targetNs));
+            m_target = targetNs;
+        }
+        if (workNs > 0)
+            m_report(m_session, int64_t(workNs));
     }
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-                "frame pacing: swap interval %d, extra wait %d ms",
-                m_swapInterval, m_extraWaitMs);
+
+private:
+    typedef void* (*GetManager)();
+    typedef void* (*CreateSession)(void*, const int32_t*, size_t, int64_t);
+    typedef int (*ReportWork)(void*, int64_t);
+    typedef int (*UpdateTarget)(void*, int64_t);
+
+    void start(Uint64 targetNs)
+    {
+        m_tried = true;
+        const char* setting = SDL_getenv("NFS_PERF_HINT");
+        if (setting && SDL_strcmp(setting, "0") == 0)
+            return;
+        void* library = dlopen("libandroid.so", RTLD_NOW | RTLD_LOCAL);
+        GetManager getManager = library ? GetManager(dlsym(library, "APerformanceHint_getManager")) : nullptr;
+        CreateSession create = library ? CreateSession(dlsym(library, "APerformanceHint_createSession")) : nullptr;
+        m_report = library ? ReportWork(dlsym(library, "APerformanceHint_reportActualWorkDuration")) : nullptr;
+        m_update = library ? UpdateTarget(dlsym(library, "APerformanceHint_updateTargetWorkDuration")) : nullptr;
+        void* manager = getManager ? getManager() : nullptr;
+        const int32_t thread = int32_t(gettid());
+        if (manager && create && m_report)
+            m_session = create(manager, &thread, 1, int64_t(targetNs));
+        m_target = targetNs;
+        /* Which step it stopped at: no API before Android 13, no manager, or a
+         * device whose power HAL takes no hint sessions (an S20+ on Android 13). */
+        const char* state = m_session ? "on"
+                          : !create ? "not in this Android"
+                          : !manager ? "no manager"
+                          : "not supported by this device";
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "[PERF] performance hint %s (frame %.1f ms, thread %d)",
+                    state, double(targetNs) / 1e6, int(thread));
+    }
+
+    bool m_tried = false;
+    void* m_session = nullptr;
+    ReportWork m_report = nullptr;
+    UpdateTarget m_update = nullptr;
+    Uint64 m_target = 0;
+};
+
+PerformanceHint s_performanceHint;
+
+}
+#endif
+
+void Renderer::paceFrame()
+{
+    const Uint64 now = SDL_GetTicksNS();
+#ifdef __ANDROID__
+    /* The work since the last frame went out, less the waiting in present(). */
+    if (m_frameStartNs && now > m_frameStartNs)
+    {
+        const Uint64 spent = now - m_frameStartNs;
+        s_performanceHint.report(m_frameNs ? m_frameNs : SDL_NS_PER_SECOND / 60,
+                                 spent > m_presentNs ? spent - m_presentNs : 0);
+    }
+#endif
+    m_presentNs = 0;
+    if (m_frameNs)
+    {
+        /* The first frame, or one that came a whole period late or more: count
+         * from now, rather than rush the frames after it to catch up. */
+        if (!m_nextFrameNs || now >= m_nextFrameNs + m_frameNs)
+            m_nextFrameNs = now;
+        else if (now < m_nextFrameNs)
+            SDL_DelayNS(m_nextFrameNs - now);
+        m_nextFrameNs += m_frameNs;
+    }
+    m_frameStartNs = SDL_GetTicksNS();
 }
 
 void Renderer::swap()
 {
     tick("swap");
-    setCurrent();
     ensureFramePacing();
 
     m_currentBuffer = 1 - m_currentBuffer;
+    paceFrame();
     update();
-    clearCurrent();
-
-    /* Only ever non-zero when the driver would not hold a present for more than
-     * one refresh; see ensureFramePacing(). */
-    if (m_extraWaitMs > 0)
-    {
-        SDL_Delay(Uint32(m_extraWaitMs));
-    }
 }
 
 }

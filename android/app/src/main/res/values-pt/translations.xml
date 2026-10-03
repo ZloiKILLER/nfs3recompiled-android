@@ -174,4 +174,12 @@
  <string name="gamepad_vibration">Vibração do comando</string>
  <string name="gamepad_vibration_note">Desligada por predefinição. A intensidade define-se no jogo: Options → Controllers → Force Feedback.</string>
  <string name="editor_snap_grid">Ajustar à grelha</string>
+ <string name="network_title">Rede</string>
+ <string name="network_address">Endereço deste dispositivo na rede: %1$s</string>
+ <string name="network_no_address">Sem ligação à rede</string>
+ <string name="network_port_label">Porta TCP/IP</string>
+ <string name="network_port_modern">9803 · Modern Patch</string>
+ <string name="network_port_original">1030 · jogo original</string>
+ <string name="network_hint">O IPX encontra sozinho as corridas nesta rede Wi-Fi. O TCP/IP liga a quem souber o endereço do anfitrião, incluindo um PC com o jogo original ou o Modern Patch. Todos os jogadores usam a mesma porta.</string>
+ <string name="fps_unlimited">Sem limite</string>
 </resources>

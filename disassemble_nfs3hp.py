@@ -65,7 +65,12 @@ MERGE_ROUTINES = [(0x405740, 0x405791),
                   (0x420840, 0x420aac),
                   (0x420840, 0x420b53),]
 
-KNOWN_SUBROUTINES = [0x4ff3d0,]
+# Methods the game reaches only through its tables, so small (mov eax, 1;
+# ret -- a bare ret -- a jmp) that they read as the tail of the function
+# before them; a call to one found nothing registered and was skipped.
+# 0x4f5fd0 is the IPX transport's (table 0x566e70): skipping it crashed both
+# machines as an IPX race was joined.
+KNOWN_SUBROUTINES = [0x4ff3d0, 0x4f5fd0, 0x505970, 0x509c60,]
 
 SKIP_INSTRUCTIONS = [0x4a3aec]
 
@@ -74,7 +79,13 @@ SPLIT_INSTRUCTIONS = [0x4e08af, 0x4e087a, 0x4eee0f]
 
 
 THREAD_ROUTINES = []
-THREAD_SEGMENTS = [0x43ac67, 0x43ac97, 0x46785e, 0x4f06f7, 0x4f2191, 0x495b68, 0x4d9158, 0x4c4e84, 0x4f7d0e]
+# Busy waits on the main thread that only another thread can end.  Only one
+# guest thread runs at a time, and a loop without API calls never lets go.
+# 0x4e773f: sub_4e7720 waits for the game timer's tick [0x79c1a4] (the IPX
+# library calls it on the main thread); 0x51436a: the IPX library waits for
+# [edx+0xa8] to be cleared.  Without these the IPX lobby hangs.
+THREAD_SEGMENTS = [0x43ac67, 0x43ac97, 0x46785e, 0x4f06f7, 0x4f2191, 0x495b68, 0x4d9158, 0x4c4e84, 0x4f7d0e,
+                   0x4e773f, 0x51436a]
 
 if __name__ == '__main__':
     application = disassembler.disassemble('nfs3hp', 'nfs3hp/nfs3.exe', DATA_SEGMENTS,
@@ -112,6 +123,15 @@ if __name__ == '__main__':
     from tools.apply_hide_download import apply as apply_hide_download
     apply_hide_download(Path(__file__).resolve().parent)
 
+    # RaceNet, Modem and Serial: off the connection screen, EA's server being
+    # gone and a phone having neither of the others.
+    from tools.apply_hide_connections import apply as apply_hide_connections
+    apply_hide_connections(Path(__file__).resolve().parent)
+
+    # TCP/IP port: 9803 as the Modern Patch has it, or 1030 for the original.
+    from tools.apply_network_port import apply as apply_network_port
+    apply_network_port(Path(__file__).resolve().parent)
+
     # Car detail: every car's texture at the player's size, a larger transform
     # buffer and wheel spin kept per car, so split screen and the mirror match.
     from tools.apply_car_detail import apply as apply_car_detail
@@ -121,6 +141,10 @@ if __name__ == '__main__':
     # night included; the other settings stay the game's own.
     from tools.apply_track_detail import apply as apply_track_detail
     apply_track_detail(Path(__file__).resolve().parent)
+
+    # The rear-view mirror at the main view's distances and car detail.
+    from tools.apply_mirror_detail import apply as apply_mirror_detail
+    apply_mirror_detail(Path(__file__).resolve().parent)
 
     # Race state: which of the two on-screen layouts belongs on the screen.
     from tools.apply_race_state import apply as apply_race_state
@@ -145,6 +169,9 @@ if __name__ == '__main__':
     from tools.apply_loading_screen import apply as apply_loading_screen
     apply_loading_screen(Path(__file__).resolve().parent)
 
+    from tools.apply_movie_tap import apply as apply_movie_tap
+    apply_movie_tap(Path(__file__).resolve().parent)
+
     # Alpha intensity: the Advanced Graphics slider, which the original applies
     # on its Direct3D driver only.
     from tools.apply_alpha_intensity import apply as apply_alpha_intensity
@@ -154,6 +181,7 @@ if __name__ == '__main__':
     # interface fitted to the screen it is drawn on.
     from tools.apply_widescreen import apply as apply_widescreen
     apply_widescreen(Path(__file__).resolve().parent)
+
 
     # Music: a track is streamed from its own file instead of from a copy the
     # game makes of it at every race start.
@@ -179,3 +207,13 @@ if __name__ == '__main__':
     # straight off the disc -- gets the phone's, as an import writes them.
     from tools.apply_first_settings import apply as apply_first_settings
     apply_first_settings(Path(__file__).resolve().parent)
+
+    # Native vertex loops: the hottest render functions as float arithmetic in
+    # the x87's order, the generated code kept behind them.
+    from tools.apply_native_vertices import apply as apply_native_vertices
+    apply_native_vertices(Path(__file__).resolve().parent)
+
+    # voodoo2a's THRASH functions native one at a time: the first stage of a
+    # native renderer driver.
+    from tools.apply_native_thrash import apply as apply_native_thrash
+    apply_native_thrash(Path(__file__).resolve().parent)

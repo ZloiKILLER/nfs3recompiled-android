@@ -87,6 +87,12 @@ final class GamePreferences
      * "gamepad_vibration", so a choice made for that old switch does not come
      * back on. */
     static final String GAMEPAD_VIBRATION = "gamepad_force_feedback";
+    /* The TCP/IP port races are hosted and joined on: 9803 as the Modern Patch
+     * has it, or 1030, the original game's.  Every player of a race needs the
+     * same; the game reads it as it starts (NFS_NET_PORT). */
+    static final String NETWORK_PORT = "network_port";
+    static final int NETWORK_PORT_MODERN = 9803;
+    static final int NETWORK_PORT_ORIGINAL = 1030;
 
     static final String ORIENTATION_AUTO = "auto";
     static final String ORIENTATION_LANDSCAPE = "landscape";

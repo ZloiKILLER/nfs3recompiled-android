@@ -141,6 +141,36 @@ def _reduce(subroutines, found_subroutines, merge_hints):
     return result
 
 
+# A function of at least this many instructions keeps the registers to itself
+# (x86::Local, include/cpu.h); a shorter one works on the CPU it is handed,
+# where copying the registers in and out would cost more than it saves.
+LOCAL_MIN_INSTRUCTIONS = 8
+
+
+# A safepoint at the head of every loop: the label a jump goes back to.  While
+# no other guest thread waits for the execution context it costs a load and a
+# branch; when one does, WinApplication::yieldContext hands the context over
+# once its time slice is up, as Windows took the processor away from a thread
+# that ran on (include/lib/winapp.h).  Without it a loop that waits for another
+# guest thread, and makes no call that lets go of the context, waits for good.
+SAFEPOINT = '    if (app->contextWanted()) app->yieldContext(cpu); /* safepoint */\n'
+
+
+def loop_heads(subroutine):
+    """The addresses a jump in `subroutine` goes back to, or to itself."""
+    return set(target for source, target in subroutine.static_labels if target <= source)
+
+
+def function_opening(subroutine, app_type):
+    """The parameter list and first line of a generated function."""
+    if len(subroutine.instructions) >= LOCAL_MIN_INSTRUCTIONS:
+        # __restrict: the guest's memory is never the application object, so
+        # where that memory lies need not be read again after every store.
+        return ('(%s* __restrict app, x86::CPU& cpu_)' % app_type,
+                '  x86::Local cpu(cpu_);\n')
+    return ('(%s* app, x86::CPU& cpu)' % app_type, '')
+
+
 class Module:
     def __init__(self, application_name, exe_path, rebase_address):
         self.application_name = application_name

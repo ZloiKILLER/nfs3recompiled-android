@@ -21,6 +21,10 @@ public:
      * execution context altogether. */
     bool tryLock();
     void unlock();
+    /* Owner only: lets go of every level of a recursive hold at once and says
+     * how many there were, for a yield to take them all back
+     * (WinApplication::yieldContext). */
+    x86::reg32 unlockAll();
 
     x86::reg32 getResourceIndex() const { return m_resourceIndex; }
 

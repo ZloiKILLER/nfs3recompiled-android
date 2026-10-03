@@ -11,6 +11,14 @@ namespace win32
 void getSystemTime(SYSTEMTIME* systemTime);
 x86::reg32 timeGetTickCount();
 
+/* The game's time stops while the app is in the background: the clock it reads
+ * (timeGetTickCount) stands still, and its timers wait to fire until the app is
+ * back.  Otherwise the timer went on counting the game's ticks while the game
+ * itself was stopped, and the game made up for all of them on its return --
+ * a race went on without the player.  Called with true on the way to the
+ * background, false on the way back. */
+void suspendTime(bool suspended);
+
 class Timer : public GenericResource
 {
 public:

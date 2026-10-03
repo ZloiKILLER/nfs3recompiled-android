@@ -51,131 +51,138 @@ def cg_fyl2x(instruction, function_bounds, function_names):
         'cpu.fpu.pop();'
     ]
 
-def cg_fadd(instruction, function_bounds, function_names, *argument):
+# Whether arithmetic rounds as the x87's precision control asks (FPU::add, sub,
+# mul, div).  The game's own code does: it runs its races in single precision,
+# and its physics has to come out as a PC's does.  The driver DLLs -- drawing
+# and sound -- keep plain double arithmetic: rounding there changes nothing on
+# the screen and costs a little on every vertex.  Set per module by the writers
+# (application.py, dll.py).
+EXACT = True
+
+_SYMBOLS = {'add': '+', 'sub': '-', 'mul': '*', 'div': '/'}
+
+
+def _op(name, destination, a, b):
+    """`destination` = `a` name `b`, rounded where EXACT says."""
+    if EXACT:
+        return '%s = cpu.fpu.%s(%s, %s);' % (destination, name, a, b)
+    return '%s = %s %s %s;' % (destination, a, _SYMBOLS[name], b)
+
+
+def _st(instruction, operand):
+    return arguments.get_float(instruction, operand)
+
+
+def _mem(instruction, operand):
+    return 'x86::Float(%s)' % arguments.get_float(instruction, operand)
+
+
+# st(0) op= memory or register (one operand), or first op= second (two).
+def _plain(name, instruction, argument):
     if len(argument) == 1:
-        return ['cpu.fpu.st(0) = cpu.fpu.add(cpu.fpu.st(0), x86::Float(%s));' % arguments.get_float(instruction, *argument)]
+        return [_op(name, 'cpu.fpu.st(0)', 'cpu.fpu.st(0)', _mem(instruction, argument[0]))]
     elif len(argument) == 2:
-        return ['%s = cpu.fpu.add(%s, x86::Float(%s));' % (arguments.get_float(instruction, argument[0]), arguments.get_float(instruction, argument[0]), arguments.get_float(instruction, argument[1]))]
-    else:
-        assert False
+        destination = _st(instruction, argument[0])
+        return [_op(name, destination, destination, _mem(instruction, argument[1]))]
+    assert False
+
+
+# The popping form: st(1), or the named register, op= st(0), then pop.
+def _popping(name, instruction, argument):
+    if len(argument) == 0:
+        return [_op(name, 'cpu.fpu.st(1)', 'cpu.fpu.st(1)', 'cpu.fpu.st(0)'), 'cpu.fpu.pop();']
+    elif len(argument) == 1:
+        destination = _st(instruction, argument[0])
+        return [_op(name, destination, destination, 'cpu.fpu.st(0)'), 'cpu.fpu.pop();']
+    assert False
+
+
+# The reversed form: st(0) = memory op st(0), or first = second op first.
+def _reversed(name, instruction, argument):
+    if len(argument) == 1:
+        return [_op(name, 'cpu.fpu.st(0)', _mem(instruction, argument[0]), 'cpu.fpu.st(0)')]
+    elif len(argument) == 2:
+        destination = _st(instruction, argument[0])
+        return [_op(name, destination, _mem(instruction, argument[1]), 'x86::Float(%s)' % destination)]
+    assert False, instruction.op_str
+
+
+# The reversed popping form: st(1), or the named register, = st(0) op itself, then pop.
+def _reversed_popping(name, instruction, argument):
+    if len(argument) == 0:
+        return [_op(name, 'cpu.fpu.st(1)', 'cpu.fpu.st(0)', 'cpu.fpu.st(1)'), 'cpu.fpu.pop();']
+    elif len(argument) == 1:
+        destination = _st(instruction, argument[0])
+        return [_op(name, destination, 'cpu.fpu.st(0)', 'x86::Float(%s)' % destination), 'cpu.fpu.pop();']
+    assert False
+
+
+def cg_fadd(instruction, function_bounds, function_names, *argument):
+    return _plain('add', instruction, argument)
 
 
 def cg_faddp(instruction, function_bounds, function_names, *argument):
-    if len(argument) == 0:
-        return ['cpu.fpu.st(1) = cpu.fpu.add(cpu.fpu.st(1), cpu.fpu.st(0));', 'cpu.fpu.pop();']
-    elif len(argument) == 1:
-        return ['%s = cpu.fpu.add(%s, cpu.fpu.st(0));' % (arguments.get_float(instruction, *argument), arguments.get_float(instruction, *argument)), 'cpu.fpu.pop();']
-    else:
-        assert False
+    return _popping('add', instruction, argument)
 
 
 def cg_fsub(instruction, function_bounds, function_names, *argument):
-    if len(argument) == 1:
-        return ['cpu.fpu.st(0) = cpu.fpu.sub(cpu.fpu.st(0), x86::Float(%s));' % arguments.get_float(instruction, *argument)]
-    elif len(argument) == 2:
-        return ['%s = cpu.fpu.sub(%s, x86::Float(%s));' % (arguments.get_float(instruction, argument[0]), arguments.get_float(instruction, argument[0]), arguments.get_float(instruction, argument[1]))]
-    else:
-        assert False
+    return _plain('sub', instruction, argument)
 
 
 def cg_fsubp(instruction, function_bounds, function_names, *argument):
-    if len(argument) == 0:
-        return ['cpu.fpu.st(1) = cpu.fpu.sub(cpu.fpu.st(1), cpu.fpu.st(0));', 'cpu.fpu.pop();']
-    elif len(argument) == 1:
-        return ['%s = cpu.fpu.sub(%s, cpu.fpu.st(0));' % (arguments.get_float(instruction, *argument), arguments.get_float(instruction, *argument)), 'cpu.fpu.pop();']
-    else:
-        assert False
+    return _popping('sub', instruction, argument)
 
 
 def cg_fsubr(instruction, function_bounds, function_names, *argument):
-    if len(argument) == 1:
-        return ['cpu.fpu.st(0) = cpu.fpu.sub(x86::Float(%s), cpu.fpu.st(0));' % arguments.get_float(instruction, *argument)]
-    elif len(argument) == 2:
-        return ['%s = cpu.fpu.sub(x86::Float(%s), x86::Float(%s));' % (arguments.get_float(instruction, argument[0]),
-                                   arguments.get_float(instruction, argument[1]),
-                                   arguments.get_float(instruction, argument[0]))]
-    else:
-        assert False
+    return _reversed('sub', instruction, argument)
 
 
 def cg_fsubrp(instruction, function_bounds, function_names, *argument):
-    if len(argument) == 0:
-        return ['cpu.fpu.st(1) = cpu.fpu.sub(cpu.fpu.st(0), cpu.fpu.st(1));', 'cpu.fpu.pop();']
-    elif len(argument) == 1:
-        return ['%s = cpu.fpu.sub(cpu.fpu.st(0), x86::Float(%s));' % (arguments.get_float(instruction, *argument),
-                                              arguments.get_float(instruction, *argument)),
-                'cpu.fpu.pop();']
-    else:
-        assert False
+    return _reversed_popping('sub', instruction, argument)
 
 
 def cg_fmul(instruction, function_bounds, function_names, *argument):
-    if len(argument) == 1:
-        return ['cpu.fpu.st(0) = cpu.fpu.mul(cpu.fpu.st(0), x86::Float(%s));' % arguments.get_float(instruction, *argument)]
-    elif len(argument) == 2:
-        return ['%s = cpu.fpu.mul(%s, %s);' % (arguments.get_float(instruction, argument[0]), arguments.get_float(instruction, argument[0]), arguments.get_float(instruction, argument[1]))]
-    else:
-        assert False
+    if len(argument) == 2:
+        # Register by register, as it always was: no x86::Float around the second.
+        destination = _st(instruction, argument[0])
+        return [_op('mul', destination, destination, _st(instruction, argument[1]))]
+    return _plain('mul', instruction, argument)
 
 
 def cg_fmulp(instruction, function_bounds, function_names, *argument):
-    if len(argument) == 0:
-        return ['cpu.fpu.st(1) = cpu.fpu.mul(cpu.fpu.st(1), cpu.fpu.st(0));', 'cpu.fpu.pop();']
-    elif len(argument) == 1:
-        return ['%s = cpu.fpu.mul(%s, cpu.fpu.st(0));' % (arguments.get_float(instruction, *argument), arguments.get_float(instruction, *argument)), 'cpu.fpu.pop();']
-    else:
-        assert False
+    return _popping('mul', instruction, argument)
 
 
 def cg_fdiv(instruction, function_bounds, function_names, *argument):
-    if len(argument) == 1:
-        return ['cpu.fpu.st(0) = cpu.fpu.div(cpu.fpu.st(0), x86::Float(%s));' % arguments.get_float(instruction, *argument)]
-    elif len(argument) == 2:
-        return ['%s = cpu.fpu.div(%s, x86::Float(%s));' % (arguments.get_float(instruction, argument[0]), arguments.get_float(instruction, argument[0]), arguments.get_float(instruction, argument[1]))]
-    else:
-        assert False
+    return _plain('div', instruction, argument)
 
 
 def cg_fdivp(instruction, function_bounds, function_names, *argument):
-    if len(argument) == 0:
-        return ['cpu.fpu.st(1) = cpu.fpu.div(cpu.fpu.st(1), cpu.fpu.st(0));', 'cpu.fpu.pop();']
-    elif len(argument) == 1:
-        return ['%s = cpu.fpu.div(%s, cpu.fpu.st(0));' % (arguments.get_float(instruction, *argument), arguments.get_float(instruction, *argument)), 'cpu.fpu.pop();']
-    else:
-        assert False
+    return _popping('div', instruction, argument)
 
 
 def cg_fdivr(instruction, function_bounds, function_names, *argument):
-    if len(argument) == 1:
-        return ['cpu.fpu.st(0) = cpu.fpu.div(x86::Float(%s), cpu.fpu.st(0));' % (arguments.get_float(instruction, *argument))]
-    elif len(argument) == 2:
-        return ['%s = cpu.fpu.div(%s, %s);' % (arguments.get_float(instruction, argument[0]),
-                                   arguments.get_float(instruction, argument[1]),
-                                   arguments.get_float(instruction, argument[0]))]
-    else:
-        assert False, instruction.op_str
+    if len(argument) == 2:
+        # As it always was: second / first, with no x86::Float around either.
+        destination = _st(instruction, argument[0])
+        return [_op('div', destination, _st(instruction, argument[1]), destination)]
+    return _reversed('div', instruction, argument)
 
 
 def cg_fdivrp(instruction, function_bounds, function_names, *argument):
-    if len(argument) == 0:
-        return ['cpu.fpu.st(1) = cpu.fpu.div(cpu.fpu.st(0), cpu.fpu.st(1));',
-                'cpu.fpu.pop();']
-    elif len(argument) == 1:
-        return ['%s = cpu.fpu.div(cpu.fpu.st(0), x86::Float(%s));' % (arguments.get_float(instruction, *argument),
-                                          arguments.get_float(instruction, *argument)),
-                'cpu.fpu.pop();']
-    else:
-        assert False
+    return _reversed_popping('div', instruction, argument)
 
 
 def cg_frndint(instruction, function_bounds, function_names):
-    return ['cpu.fpu.st(0) = cpu.fpu.rndint();']
+    return ['cpu.fpu.st(0) = cpu.fpu.rndint(cpu.fpu.st(0));']
 
 
 def cg_fistp(instruction, function_bounds, function_names, destination):
-    return ['%s = x86::reg%d(x86::sreg%s(cpu.fpu.rndint()));' % (arguments.get_value(instruction, destination),
-                                                              destination.size * 8,
-                                                              destination.size * 8),
+    # toInteger stores the x87's integer indefinite for a NaN or a value out of
+    # range, where a plain C++ conversion is undefined (and differs on arm64).
+    return ['%s = x86::reg%d(cpu.fpu.toInteger<x86::sreg%d>(cpu.fpu.st(0)));' % (arguments.get_value(instruction, destination),
+                                                                              destination.size * 8,
+                                                                              destination.size * 8),
             'cpu.fpu.pop();']
 
 
@@ -223,7 +230,7 @@ cg_fstsw = cg_fnstsw
 
 
 def cg_fldcw(instruction, function_bounds, function_names, operand):
-    return ['cpu.fpu.control.word = %s;' % arguments.get_value(instruction, operand)]
+    return ['cpu.fpu.setControl(%s);' % arguments.get_value(instruction, operand)]
 
 
 def cg_fstcw(instruction, function_bounds, function_names, destination):

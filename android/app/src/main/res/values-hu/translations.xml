@@ -174,4 +174,12 @@
  <string name="gamepad_vibration">Kontroller rezgése</string>
  <string name="gamepad_vibration_note">Alapból kikapcsolva. Az erősséget a játékban állítod be: Options → Controllers → Force Feedback.</string>
  <string name="editor_snap_grid">Rácshoz igazítás</string>
+ <string name="network_title">Hálózat</string>
+ <string name="network_address">Az eszköz címe a hálózaton: %1$s</string>
+ <string name="network_no_address">Nincs hálózati kapcsolat</string>
+ <string name="network_port_label">TCP/IP-port</string>
+ <string name="network_port_modern">9803 · Modern Patch</string>
+ <string name="network_port_original">1030 · eredeti játék</string>
+ <string name="network_hint">Az IPX magától megtalálja a versenyeket ezen a Wi-Fi-hálózaton. A TCP/IP bárkivel összeköt, aki ismeri a gazdagép címét, akár az eredeti játékot vagy a Modern Patchet futtató PC-vel is. Minden játékos ugyanazt a portot használja.</string>
+ <string name="fps_unlimited">Korlátlan</string>
 </resources>

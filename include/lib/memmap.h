@@ -37,6 +37,14 @@ public:
     static void fini();
     static MemMap* findBlock(x86::reg32 memIndex);
 
+    /* Every range of guest addresses the game can write, as (start, size):
+     * the image's sections, then each run of allocated blocks.  For
+     * NFS_NATIVE_CHECK, which compares all of it. */
+    static void usedRanges(std::vector<std::pair<x86::reg32, x86::reg32>>& ranges);
+    /* The allocated block an address lies in, as (start, size); (0, 0) when
+     * none does, a section's address included. */
+    static std::pair<x86::reg32, x86::reg32> blockOf(x86::reg32 address);
+
     static void fillDebugGraph(x86::reg16* graph);
     static void fillDebugGraph(x86::reg32* graph);
 private:
@@ -52,6 +60,7 @@ private:
     static x86::reg32           s_addressOffset;
     static Mutex*               s_lock;
     static std::vector<MemMap*> s_memMaps;
+    static std::vector<std::pair<x86::reg32, x86::reg32>> s_sections;
 };
 
 }

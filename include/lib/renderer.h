@@ -13,10 +13,12 @@ namespace win32
 
 class Window;
 class GlideRenderer;
+class ThrashRenderer;
 
 class Renderer: public GenericResource
 {
     friend class GlideRenderer;
+    friend class ThrashRenderer;
 public:
     Renderer(WinApplication* application, Window* window);
     ~Renderer();
@@ -44,20 +46,33 @@ public:
      * the keyboard raised the picture and the finger, mapped through a
      * rectangle that had moved the other way, pressed twice as far above
      * itself as the picture had risen. */
+    /* Worked out on the GL thread and read from the input threads, so under a
+     * lock of its own: a rectangle read half before and half after a resize
+     * would send a tap somewhere neither rectangle has it. */
     void getViewportRect(int& x, int& y, int& w, int& h) const
     {
+        SDL_LockSpinlock(&m_viewportLock);
         x = m_vpX; y = m_lastWindowH - (m_vpY + m_keyboardShift + m_vpH); w = m_vpW; h = m_vpH;
+        SDL_UnlockSpinlock(&m_viewportLock);
     }
+
+    /* This renderer's context current on the calling thread, and let go of --
+     * glthread's business, and the constructor's. */
+    void setCurrent();
+    void clearCurrent();
 
 private: // friend class GlideRenderer
     void present();
-    void setCurrent();
-    void clearCurrent();
-    /* Negotiates the swap interval once and re-asserts it afterwards.  The
-     * interval is context-global state that several code paths used to set
-     * behind each other's backs, so every path that presents has to go
-     * through here instead of calling SDL_GL_SetSwapInterval directly. */
+    /* present()'s GL work: the letterboxed blit of the frame and the swap. */
+    void presentFrame(x86::reg32 width, x86::reg32 height);
+    /* Sets vsync and works out the frame period from NFS_FPS_CAP, once.  Every
+     * path that presents goes through here rather than calling
+     * SDL_GL_SetSwapInterval itself. */
     void ensureFramePacing();
+    /* Holds a new frame back until its time comes: one frame period after the
+     * last one's.  Called by the two paths that swap -- the Glide swap and the
+     * DirectDraw flip -- with the guest lock let go. */
+    void paceFrame();
 
 private:
     void update();
@@ -86,16 +101,26 @@ private:
     x86::reg32      m_width;
     x86::reg32      m_height;
     x86::reg32      m_depth;
-    /* 0 until ensureFramePacing() has negotiated with the driver; >= 1 after. */
+    /* 0 until ensureFramePacing() has set vsync; 1 after. */
     int             m_swapInterval;
-    /* Milliseconds to wait after presenting, to make up the refreshes the swap
-     * interval could not hold.  Zero whenever the driver accepted the interval
-     * we asked for, which is the normal case. */
-    int             m_extraWaitMs;
-    /* Destination of the palette->RGBA conversion in the 8-bit path, sized in
-     * setVideoMode().  Null in 16-bit modes, which upload straight from guest
-     * memory and need no conversion. */
+    /* The frame period NFS_FPS_CAP asks for, in nanoseconds, 0 for none; and
+     * when the next frame is due. */
+    Uint64          m_frameNs;
+    Uint64          m_nextFrameNs;
+    /* For the performance hint (paceFrame): when this frame's work began --
+     * the end of the last wait for its time -- and how much of it since went
+     * waiting on the GPU and the display in present(). */
+    Uint64          m_frameStartNs;
+    Uint64          m_presentNs;
+    /* Destination of the conversion to RGBA of a DirectDraw frame, sized in
+     * setVideoMode().  The GL side's own: the conversion runs there, on the
+     * copy of the guest's frame update() hands it. */
     x86::reg8*      m_convertBuffer;
+    /* The 16-bit guest frame as an RGB565 texture, and the framebuffers that
+     * copy it into m_texture on the GPU (update()). */
+    unsigned int    m_frame565;
+    unsigned int    m_frameRead;
+    unsigned int    m_frameDraw;
     x86::reg32      m_colorPalette[256];
     /* Letterbox viewport, recomputed in present() only when the window's
      * pixel size changes -- see getViewportRect(). m_lastWindowW/H start at
@@ -108,6 +133,7 @@ private:
      * one is cached until the window resizes, and a shift folded into it would
      * outlive the keyboard. */
     int             m_keyboardShift;
+    mutable SDL_SpinLock m_viewportLock = 0;
 };
 
 }

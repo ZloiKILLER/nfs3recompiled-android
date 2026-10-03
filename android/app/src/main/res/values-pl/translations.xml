@@ -174,4 +174,12 @@
  <string name="gamepad_vibration">Wibracje pada</string>
  <string name="gamepad_vibration_note">Domyślnie wyłączone. Siłę ustawia się w grze: Options → Controllers → Force Feedback.</string>
  <string name="editor_snap_grid">Przyciągaj do siatki</string>
+ <string name="network_title">Sieć</string>
+ <string name="network_address">Adres tego urządzenia w sieci: %1$s</string>
+ <string name="network_no_address">Brak połączenia z siecią</string>
+ <string name="network_port_label">Port TCP/IP</string>
+ <string name="network_port_modern">9803 · Modern Patch</string>
+ <string name="network_port_original">1030 · oryginalna gra</string>
+ <string name="network_hint">IPX sam znajduje wyścigi w tej sieci Wi-Fi. TCP/IP łączy z każdym, kto zna adres hosta, także z PC z oryginalną grą lub Modern Patch. Wszyscy gracze używają tego samego portu.</string>
+ <string name="fps_unlimited">Bez limitu</string>
 </resources>

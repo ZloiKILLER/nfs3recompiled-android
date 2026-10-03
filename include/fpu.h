@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <cstring>
 #include <cmath>
+#include <limits>
 
 //#define NFS2SE_X87_DEBUG 1
 
@@ -322,6 +323,15 @@ namespace x86
         result /= arg2;
         return result;
     }
+#elif defined(WITH_WIDE_FPU)
+    /* An experiment (WITH_WIDE_FPU): every value on the x87 stack as a long
+     * double -- IEEE quad on arm64, 113 bits of significand, done in software
+     * and slow -- and never rounded to the race's single precision.  That is
+     * what Modern Patch does on a PC since 1.6.0 ("FPU always uses extended
+     * precision"): its race loop keeps the fninit and drops the fldcw at
+     * 0x4a3ed3.  Only to see whether the opponents drive better with more
+     * precision than a double gives. */
+    typedef long double Float;
 #else
     typedef double Float;
 #endif
@@ -399,9 +409,23 @@ namespace x86
 
         inline void init()
         {
-            control.word = 0x37f;
             status.word = 0;
             count = 0;
+            setControl(0x37f);
+        }
+
+        /* fldcw and init.  Nothing else writes the control word, so what it
+         * asks of the arithmetic below is worked out here, once, rather than
+         * pulled out of its bit fields at every fadd. */
+        inline void setControl(reg16 word)
+        {
+            control.word = word;
+#if defined(WITH_WIDE_FPU)
+            rounding = kRoundNone;   // as Modern Patch: the race's single precision is never taken
+#elif !defined(WITH_PEDANTIC_FPU)
+            rounding = control.pc != s_singlePrecision ? kRoundNone
+                     : control.rc == 0 ? kRoundSingleNearest : kRoundSingleOther;
+#endif
         }
 
         /* The four operations and fsqrt as the x87 rounds them: to the
@@ -427,28 +451,60 @@ namespace x86
          * to know the exact result more closely than the double says. */
         enum class Rounded { Add, Sub, Mul, Div, Sqrt };
 
+        /* The precision control that means single precision: 0, as the x87
+         * has it -- or 4, which two bits never hold, for a run without the
+         * rounding (NFS_FPU_SINGLE=0), to compare frame rates by. */
+#ifdef WITH_WIDE_FPU
+        // No race is ever in single precision, so the native loops stay off too.
+        static inline x86::reg8 s_singlePrecision = 4;
+#else
+        static inline x86::reg8 s_singlePrecision = 0;
+#endif
+
+        /* What setControl found the control word to ask for. */
+        static constexpr x86::reg8 kRoundNone = 0;           // 53 or 64 bits: the double as it is
+        static constexpr x86::reg8 kRoundSingleNearest = 1;  // a race
+        static constexpr x86::reg8 kRoundSingleOther = 2;    // single, a directed mode
+        x86::reg8 rounding = kRoundNone;
+
         inline Float add(const Float &a, const Float &b)
         {
+#ifdef WITH_WIDE_FPU
+            return a + b;
+#else
             const double sum = a + b;
-            return control.pc != 0 ? sum : toSingle(sum, Rounded::Add, a, b);
+            return rounding == kRoundNone ? sum : toSingle(sum, Rounded::Add, a, b);
+#endif
         }
 
         inline Float sub(const Float &a, const Float &b)
         {
+#ifdef WITH_WIDE_FPU
+            return a - b;
+#else
             const double difference = a - b;
-            return control.pc != 0 ? difference : toSingle(difference, Rounded::Sub, a, b);
+            return rounding == kRoundNone ? difference : toSingle(difference, Rounded::Sub, a, b);
+#endif
         }
 
         inline Float mul(const Float &a, const Float &b)
         {
+#ifdef WITH_WIDE_FPU
+            return a * b;
+#else
             const double product = a * b;
-            return control.pc != 0 ? product : toSingle(product, Rounded::Mul, a, b);
+            return rounding == kRoundNone ? product : toSingle(product, Rounded::Mul, a, b);
+#endif
         }
 
         inline Float div(const Float &a, const Float &b)
         {
+#ifdef WITH_WIDE_FPU
+            return a / b;
+#else
             const double quotient = a / b;
-            return control.pc != 0 ? quotient : toSingle(quotient, Rounded::Div, a, b);
+            return rounding == kRoundNone ? quotient : toSingle(quotient, Rounded::Div, a, b);
+#endif
         }
 
         static constexpr std::uint64_t kSingleDropped = (std::uint64_t(1) << 29) - 1;
@@ -457,21 +513,27 @@ namespace x86
 
         /* `value` rounded to a 24-bit significand in the rounding mode of the
          * control word.  It stands in every one of the game's sums, so only the
-         * common case is done here: to nearest, with the value not exactly half
-         * way between two floats.  A tie, a directed mode, an infinity or a NaN
-         * goes to roundSingleSlow, which works out from `a` and `b` which side
-         * of `value` the exact result lies. */
+         * common case is done here: to nearest, not exactly half way between two
+         * floats, and inside a float's normal range short of 2^127 -- where the
+         * host's own double -> float -> double rounds exactly as the x87 would
+         * (and as masking the bits did before), and no rounding up can reach a
+         * float's infinity.  The bits only decide which way to go, so the value
+         * itself never leaves the FPU registers; moving it to the integer unit
+         * and back on every operation was a fifth of a split-screen race.  A
+         * tie, a directed mode, a value past a float's range (the x87 keeps its
+         * own wider exponent), an infinity or a NaN goes to roundSingleSlow,
+         * which works out from `a` and `b` which side of `value` the exact result
+         * lies. */
         inline double toSingle(double value, Rounded op, double a, double b) const
         {
             std::uint64_t bits;
             std::memcpy(&bits, &value, sizeof bits);
-            const std::uint64_t dropped = bits & kSingleDropped;
-            if (control.rc == 0 && dropped != kSingleHalf && ((bits >> 52) & 0x7ff) != 0x7ff)
-            {
-                bits = (bits & ~kSingleDropped) + (dropped > kSingleHalf ? kSingleStep : 0);
-                std::memcpy(&value, &bits, sizeof bits);
-                return value;
-            }
+            const std::uint64_t exponent = (bits >> 52) & 0x7ff;
+            if (rounding == kRoundSingleNearest && (bits & kSingleDropped) != kSingleHalf
+                && exponent - 0x381 < 0x47e - 0x381)
+                return double(float(value));
+            if ((bits << 1) == 0)
+                return value;  // either zero
             return roundSingleSlow(value, op, a, b, control.rc);
         }
 
@@ -568,6 +630,7 @@ namespace x86
             }
             else
             {
+                ++s_unordered;
                 status.c3 = true;
                 status.c2 = true;
                 status.c0 = true;
@@ -587,7 +650,7 @@ namespace x86
 #endif
             return result;
 #else
-            return ::log2(value);
+            return std::log2(value);
 #endif
         }
 
@@ -603,7 +666,7 @@ namespace x86
 #endif
             return result;
 #else
-            return ::sin(value);
+            return std::sin(value);
 #endif
         }
 
@@ -619,7 +682,7 @@ namespace x86
 #endif
             return result;
 #else
-            return ::cos(value);
+            return std::cos(value);
 #endif
         }
 
@@ -635,7 +698,7 @@ namespace x86
 #endif
             return result;
 #else
-            return ::tan(value);
+            return std::tan(value);
 #endif
         }
 
@@ -651,7 +714,7 @@ namespace x86
 #endif
             return result;
 #else
-            return ::fabs(value);
+            return std::fabs(value);
 #endif
         }
 
@@ -667,8 +730,12 @@ namespace x86
 #endif
             return result;
 #else
+#ifdef WITH_WIDE_FPU
+            return std::sqrt(value);
+#else
             const double root = ::sqrt(value);
-            return control.pc != 0 ? root : toSingle(root, Rounded::Sqrt, value, 0.0);
+            return rounding == kRoundNone ? root : toSingle(root, Rounded::Sqrt, value, 0.0);
+#endif
 #endif
         }
 
@@ -684,7 +751,7 @@ namespace x86
 #endif
             return result;
 #else
-            return ::atan2(operand, value);
+            return std::atan2(operand, value);
 #endif
         }
 
@@ -701,7 +768,7 @@ namespace x86
             return result;
 #else
             status.c2 = 0;
-            return fmod(val1, val2);
+            return std::fmod(val1, val2);
 #endif
         }
 
@@ -717,7 +784,7 @@ namespace x86
 #endif
             return result;
 #else
-            return val1 * ::pow(2, ::trunc(val2));
+            return val1 * std::pow(Float(2), std::trunc(val2));
 #endif
         }
 
@@ -733,14 +800,17 @@ namespace x86
 #endif
             return result;
 #else
-            return ::pow(2, value) - 1.0;
+            return std::pow(Float(2), value) - Float(1);
 #endif
         }
 
-        Float rndint()
+        /* st(0) rounded to an integer in the control word's mode -- frndint,
+         * and fistp before the store.  The value is passed in, so the code
+         * generator can hand over a value it keeps in a local. */
+        Float rndint(const Float& value)
         {
 #ifdef WITH_PEDANTIC_FPU
-            Float result = st(0);
+            Float result = value;
             round80(&result.f80value.data, control.rc);
 #ifdef NFS2SE_X87_DEBUG
             convert80x32(&result.f80value.data, &result.dbgValue);
@@ -750,17 +820,50 @@ namespace x86
             switch (control.rc)
             {
             case 0:
-                return Float(nearbyint(double(st(0))));
+                return std::nearbyint(value);
             case 1:
-                return Float(floor(double(st(0))));
+                return std::floor(value);
             case 2:
-                return Float(ceil(double(st(0))));
+                return std::ceil(value);
             case 3:
-                return Float(trunc(double(st(0))));
+                return std::trunc(value);
             default:
                 NFS2_ASSERT(false);
-                return Float(trunc(double(st(0))));
+                return std::trunc(value);
             }
+#endif
+        }
+
+        Float rndint()
+        {
+            return rndint(st(0));
+        }
+
+        /* How often, since the start, a compare met a NaN and an fistp had no
+         * integer to store -- told apart from the game's normal run by the
+         * tick trace ([STEP]). */
+        static inline unsigned s_unordered = 0;
+        static inline unsigned s_indefinite = 0;
+
+        /* fist/fistp: st(0) rounded in the control word's mode and stored as
+         * an integer of `Int`'s size.  A NaN, or a value past the integer's
+         * range, stores the x87's "integer indefinite", the lowest integer --
+         * the host's conversion would be undefined there, and arm64 clamps a
+         * value to the nearest end and turns a NaN into 0. */
+        template <typename Int>
+        Int toInteger(const Float& value)
+        {
+#ifdef WITH_PEDANTIC_FPU
+            return Int(rndint(value));
+#else
+            const Float rounded = rndint(value);
+            const Float lowest = Float(std::numeric_limits<Int>::min());
+            if (!(rounded >= lowest && rounded < -lowest))
+            {
+                ++s_indefinite;
+                return std::numeric_limits<Int>::min();
+            }
+            return Int(rounded);
 #endif
         }
     };

@@ -16,13 +16,21 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # options
 option(WITH_PEDANTIC_FPU "Compile pedantic FPU implementation" OFF)
+option(WITH_WIDE_FPU "Experiment: x87 values as long double, never single precision (include/fpu.h)" OFF)
 option(WITH_MMX "Enable MMX support" ON)
 option(NFS_TRACE_MSG "Trace the win32 message pump to the log" OFF)
+option(NFS_RELEASE "A release build: nothing written to the log" OFF)
 option(NFS2_ASSERT_TRAP "Make NFS2_ASSERT a hard trap (debugger break) instead of logging and continuing" OFF)
 
 # add compile definitions based on options
 if(WITH_PEDANTIC_FPU)
     add_compile_definitions(WITH_PEDANTIC_FPU)
+endif()
+if(WITH_WIDE_FPU)
+    add_compile_definitions(WITH_WIDE_FPU)
+endif()
+if(NFS_RELEASE)
+    add_compile_definitions(NFS_RELEASE)
 endif()
 if(WITH_MMX)
     add_compile_definitions(WITH_MMX)
@@ -170,7 +178,7 @@ function(add_game_exe name)
     set(game_src_dir "${NFS_ROOT_DIR}/src/${name}")
 
     # collect sources
-    file(GLOB GAME_SOURCES "${game_src_dir}/*.cpp")
+    file(GLOB GAME_SOURCES CONFIGURE_DEPENDS "${game_src_dir}/*.cpp")
 
     # pick the hardcoded disasm set for this game
     if(name STREQUAL "nfs3hp")
@@ -194,10 +202,29 @@ function(add_game_exe name)
         # of what page size this build's host happens to use; see
         # src/lib/memmap.cpp for the matching runtime-side fix.
         target_link_options(${name} PRIVATE "-Wl,-z,max-page-size=16384")
+        # A call from one function of the game to another stays inside the
+        # library, and the linker is told so: without this every one of them
+        # -- a guest call is a C++ call -- went through the PLT, an extra
+        # indirect jump each, since the library exports every symbol and any
+        # of them might have been replaced by another library's.  Nothing is
+        # ever interposed on it; SDL_main is still exported for SDL to find.
+        target_link_options(${name} PRIVATE "-Wl,-Bsymbolic-functions")
     else()
         add_executable(${name} ${GAME_SOURCES} ${DISASM_SOURCES} ${DISASM_HEADERS})
     endif()
     set_source_files_properties(${DISASM_HEADERS} PROPERTIES HEADER_FILE_ONLY TRUE)
+    # The generated code has no use for C++ exceptions, and they cost it its
+    # speed: every call gets a cleanup path that runs x86::Local's destructor,
+    # which keeps the registers the function holds alive across the call and
+    # in memory (include/cpu.h).  Nothing in it throws or catches; an exception
+    # from the port's own code could only ever have ended the game anyway.
+    if(NOT MSVC)
+        set_property(SOURCE ${DISASM_SOURCES} APPEND PROPERTY COMPILE_OPTIONS -fno-exceptions)
+        # A function that can run off its end without returning a value is
+        # undefined behaviour the optimiser turns into anything at all: a
+        # native stand-in missing its "return true" drew without end (2026-10-03).
+        set_property(SOURCE ${GAME_SOURCES} APPEND PROPERTY COMPILE_OPTIONS -Werror=return-type)
+    endif()
     target_include_directories(${name} PRIVATE
         ${game_src_dir}
         ${NFS_ROOT_DIR}/src/${name}/disassembly

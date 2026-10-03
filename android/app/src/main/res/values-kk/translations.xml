@@ -174,4 +174,12 @@
  <string name="gamepad_vibration">Геймпад дірілі</string>
  <string name="gamepad_vibration_note">Әдепкі бойынша өшірулі. Күші ойында бапталады: Options → Controllers → Force Feedback.</string>
  <string name="editor_snap_grid">Торға тіркеу</string>
+ <string name="network_title">Желі</string>
+ <string name="network_address">Құрылғының желідегі мекенжайы: %1$s</string>
+ <string name="network_no_address">Желіге қосылмаған</string>
+ <string name="network_port_label">TCP/IP порты</string>
+ <string name="network_port_modern">9803 · Modern Patch</string>
+ <string name="network_port_original">1030 · түпнұсқа ойын</string>
+ <string name="network_hint">IPX осы Wi-Fi желісіндегі жарыстарды өзі табады. TCP/IP хост мекенжайын білетін кез келген адаммен, соның ішінде түпнұсқа ойын немесе Modern Patch орнатылған ДК-мен байланыстырады. Барлық ойыншы бір портты пайдаланады.</string>
+ <string name="fps_unlimited">Шектеусіз</string>
 </resources>

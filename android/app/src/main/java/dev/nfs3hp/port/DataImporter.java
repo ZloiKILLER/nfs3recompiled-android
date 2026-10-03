@@ -43,7 +43,8 @@ import java.util.zip.ZipInputStream;
  *    voodoo2a.dll, softtria.dll (the original 1998 binaries this project's
  *    disassembly was generated from -- NOT the user's own nfs3.exe, which is
  *    typically a newer repack the recompiled logic does not expect) plus a
- *    pre-generated install.win (see tools/make_install_win.py).  The game's
+ *    fallback install.win (see tools/make_install_win.py), used only when
+ *    the imported data does not supply its own file.  The game's
  *    own integrity check stat()s/open()s these by name next to the data
  *    directory even though their *code* never runs on Android; without them
  *    it reports "files are corrupted" exactly as it did before install.win
@@ -73,7 +74,11 @@ final class DataImporter
     private static final String[] BUNDLED_ASSET_FILES = {
         "nfs3.exe", "eacsnd.dll", "voodoo2a.dll", "softtria.dll", "install.win",
     };
+    private static final String INSTALL_WIN = "install.win";
+    private static final String[] USER_DATA_ENTRIES = { "fedata", "gamedata", "drivers", INSTALL_WIN };
     private static final String ASSET_DIR = "gamefiles";
+    /** Retail render resources bundled to complete otherwise partial imports. */
+    private static final String RENDER_ASSET_DIR = ASSET_DIR + "/render/pc";
     private static final String USER_DATA_COMPLETE = ".user-data-complete";
     private static final String BUNDLED_ASSETS_COMPLETE = ".bundled-assets-complete";
 
@@ -123,7 +128,7 @@ final class DataImporter
             return false;
         for (String name : BUNDLED_ASSET_FILES)
         {
-            if (!new File(root, name).isFile())
+            if (!holdsFile(root, name))
                 return false;
         }
         return true;
@@ -140,6 +145,11 @@ final class DataImporter
         removeCompletionMarker(root, BUNDLED_ASSETS_COMPLETE);
         for (String name : BUNDLED_ASSET_FILES)
         {
+            if (INSTALL_WIN.equals(name))
+            {
+                copyMissingInstallWin(context, root);
+                continue;
+            }
             File dst = new File(root, name);
             File part = new File(root, name + ".part");
             try (InputStream in = context.getAssets().open(ASSET_DIR + "/" + name))
@@ -148,6 +158,22 @@ final class DataImporter
             }
         }
         writeCompletionMarker(root, BUNDLED_ASSETS_COMPLETE);
+    }
+
+    /** The path table belongs to the data set; never overwrite an existing one. */
+    static void copyMissingInstallWin(Context context, File root) throws IOException
+    {
+        File dst = childIgnoringCase(root, INSTALL_WIN);
+        if (dst.exists())
+        {
+            if (!dst.isFile())
+                throw new IOException("Install path table is not a file: " + dst);
+            return;
+        }
+        try (InputStream in = context.getAssets().open(ASSET_DIR + "/" + INSTALL_WIN))
+        {
+            copyFileAtomically(in, new File(root, INSTALL_WIN + ".part"), dst, null);
+        }
     }
 
     interface ProgressListener
@@ -208,6 +234,19 @@ final class DataImporter
         for (int i = 0; i < USER_DATA_DIRS.length; ++i)
             if (sources[i] != null)
                 copyTree(resolver, sources[i], new File(destRoot, USER_DATA_DIRS[i]), listener, bytesCopied, total);
+        DocumentFile install = findChildCaseInsensitive(pickedRoot, INSTALL_WIN);
+        if (install != null && install.isFile())
+        {
+            try (InputStream in = resolver.openInputStream(install.getUri()))
+            {
+                if (in == null)
+                    throw new IOException("Could not open: " + INSTALL_WIN);
+                copyFileAtomically(in, new File(destRoot, INSTALL_WIN + ".part"),
+                    new File(destRoot, INSTALL_WIN), null);
+            }
+        }
+        copyMissingInstallWin(context, destRoot);
+        copyMissingRender(context, destRoot);
         writeImportDefaults(destRoot);
         writeCompletionMarker(destRoot, USER_DATA_COMPLETE);
     }
@@ -225,6 +264,9 @@ final class DataImporter
      *  calling thread: a walk of about a thousand files. */
     static List<String> missingFiles(Context context, File root) throws IOException
     {
+        // Also repair sets imported by an older APK. The helper preserves files
+        // supplied by the player and follows their directory letter case.
+        copyMissingRender(context, root);
         Set<String> present = new HashSet<>();
         File[] tops = root.listFiles();
         if (tops != null)
@@ -247,6 +289,50 @@ final class DataImporter
             }
         }
         return missing;
+    }
+
+    private static File childIgnoringCase(File parent, String name)
+    {
+        File exact = new File(parent, name);
+        if (exact.exists())
+            return exact;
+        String[] children = parent.list();
+        if (children != null)
+            for (String child : children)
+                if (child.equalsIgnoreCase(name))
+                    return new File(parent, child);
+        return exact;
+    }
+
+    /** Fill missing PC render files from the original disc. Imported versions
+     * always take precedence, including when their names use upper case. */
+    static void copyMissingRender(Context context, File root) throws IOException
+    {
+        File gameData = childIgnoringCase(root, "gamedata");
+        if (!gameData.isDirectory())
+            return;
+        File render = childIgnoringCase(gameData, "render");
+        File pc = childIgnoringCase(render, "pc");
+        if (!pc.isDirectory() && !pc.mkdirs())
+            throw new IOException("Could not create render directory: " + pc);
+        String[] names = context.getAssets().list(RENDER_ASSET_DIR);
+        if (names == null || names.length == 0)
+            throw new IOException("Bundled render files are missing from the APK");
+        for (String name : names)
+        {
+            File dst = childIgnoringCase(pc, name);
+            if (dst.exists())
+            {
+                if (!dst.isFile())
+                    throw new IOException("Render destination is not a file: " + dst);
+                continue;
+            }
+            File part = new File(pc, name + ".part");
+            try (InputStream in = context.getAssets().open(RENDER_ASSET_DIR + "/" + name))
+            {
+                copyFileAtomically(in, part, dst, null);
+            }
+        }
     }
 
     private static void collect(File folder, String path, Set<String> into)
@@ -291,7 +377,7 @@ final class DataImporter
         }
         catch (IOException e)
         {
-            android.util.Log.w("DataImporter", "Could not write the imported game's starting settings", e);
+            AppLog.w("DataImporter", "Could not write the imported game's starting settings", e);
         }
     }
 
@@ -349,6 +435,8 @@ final class DataImporter
             }
         }
 
+        copyMissingInstallWin(context, destRoot);
+        copyMissingRender(context, destRoot);
         writeImportDefaults(destRoot);
         writeCompletionMarker(destRoot, USER_DATA_COMPLETE);
         if (!isUserDataPresent(destRoot))
@@ -366,14 +454,19 @@ final class DataImporter
             throw new IOException("Could not create directory: " + destRoot);
 
         List<String> moved = new ArrayList<>();
+        File previousInstall = childIgnoringCase(destRoot, INSTALL_WIN);
+        byte[] previousInstallBytes = previousInstall.isFile()
+            ? Files.readAllBytes(previousInstall.toPath()) : null;
         try
         {
-            for (String name : USER_DATA_DIRS)
+            for (String name : USER_DATA_ENTRIES)
             {
-                File source = new File(sourceRoot, name);
+                File source = childIgnoringCase(sourceRoot, name);
                 if (!source.exists())
                     continue;
                 File destination = new File(destRoot, name);
+                if (INSTALL_WIN.equals(name) && previousInstallBytes != null)
+                    Files.delete(previousInstall.toPath());
                 if (destination.exists())
                     throw new IOException("Data-set destination already exists: " + destination);
                 Files.move(source.toPath(), destination.toPath(), StandardCopyOption.ATOMIC_MOVE);
@@ -403,14 +496,19 @@ final class DataImporter
                     // refuse to launch if rollback could not restore a marker.
                 }
             }
+            if (previousInstallBytes != null)
+            {
+                try { Files.write(previousInstall.toPath(), previousInstallBytes); }
+                catch (IOException restoreError) { e.addSuppressed(restoreError); }
+            }
             throw e;
         }
     }
 
     static void deleteUserData(File root) throws IOException
     {
-        for (String name : USER_DATA_DIRS)
-            deleteRecursively(new File(root, name));
+        for (String name : USER_DATA_ENTRIES)
+            deleteRecursively(childIgnoringCase(root, name));
         File marker = new File(root, USER_DATA_COMPLETE);
         if (marker.exists() && !marker.delete())
             throw new IOException("Could not delete: " + marker);
@@ -466,7 +564,8 @@ final class DataImporter
                 break;
         }
         if (dataIndex < 0)
-            return null;
+            return !parts.isEmpty() && INSTALL_WIN.equalsIgnoreCase(parts.get(parts.size() - 1))
+                ? INSTALL_WIN : null;
 
         StringBuilder relative = new StringBuilder(dataDir);
         for (int i = dataIndex + 1; i < parts.size(); ++i)

@@ -38,18 +38,22 @@ SITES = [
     # sub_4730d0: the game has just chosen what suits the machine (sub_472d10),
     # on the first front end after it started its settings over.
     ("nfs3hp.18.cpp", "00473195  e876fbffff",
-     "    sub_472d10(app, cpu);\n"
+     "    sub_472d10(app, cpu.sync());\n"
+     "    cpu.reload();\n"
      "    if (cpu.terminate) return;",
-     "    sub_472d10(app, cpu);\n"
+     "    sub_472d10(app, cpu.sync());\n"
+     "    cpu.reload();\n"
      "    if (cpu.terminate) return;\n"
      "    if (firstSettings(app)) /* port: the phone's settings over the new player's */\n"
      "    {\n"
      "        const x86::reg32 kept = cpu.eax;\n"
      "        cpu.esp -= 4;\n"
-     "        sub_43c040(app, cpu); /* the game takes up the new bindings */\n"
+     "        sub_43c040(app, cpu.sync()); /* the game takes up the new bindings */\n"
+     "        cpu.reload();\n"
      "        if (cpu.terminate) return;\n"
      "        cpu.esp -= 4;\n"
-     "        sub_472820(app, cpu); /* and saves them, as it does leaving the front end */\n"
+     "        sub_472820(app, cpu.sync()); /* and saves them, as it does leaving the front end */\n"
+     "        cpu.reload();\n"
      "        if (cpu.terminate) return;\n"
      "        cpu.eax = kept;\n"
      "    }"),

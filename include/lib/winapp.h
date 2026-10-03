@@ -5,9 +5,12 @@
 #include    <cpu.h>
 #include    <fpu.h>
 #include    <lib/memmap.h>
+#include    <atomic>
+#include    <cstdint>
 #include    <map>
 #include    <string>
 #include    <unordered_map>
+#include    <vector>
 #include    <SDL3/SDL.h>
 
 namespace win32
@@ -15,6 +18,7 @@ namespace win32
 
 class WinApplication;
 class Mutex;
+class MemMap;
 class RegistryValue;
 
 typedef void (*MethodPtr)(WinApplication* application, x86::CPU& cpu);
@@ -166,18 +170,47 @@ public:
     void registerMethod(x86::reg32 pointer, Method method);
 
     int runThread(x86::CPU& cpu, x86::reg32 entryPoint, x86::reg32 parameter = 0, bool threadLock = true);
+    /* runThread for callbacks a host thread makes over and over (the timer):
+     * the guest stack and thread block stay mapped between calls. */
+    int runCallback(x86::CPU& cpu, x86::reg32 entryPoint, x86::reg32 parameter);
 
     void lockContext(const x86::CPU& cpu);
     void unlockContext(const x86::CPU& cpu);
     void unmarkContext(const x86::CPU& cpu);
+
+    /* Safepoints.  One guest thread runs at a time, holding the execution
+     * context, and it only let go of it inside some API calls; a loop that
+     * waits for another guest thread without calling one of those -- the
+     * showcase's exit waiting for the sound thread to stop the narration
+     * (sub_4e7b28) -- could keep that thread out for good, where Windows 98
+     * would have taken the processor away from it at the end of its time slice.
+     * The generator puts a check at the head of every loop: whether a thread is
+     * waiting for the context, a load and a branch; and when one is, and has
+     * waited longer than a slice, yieldContext hands the context over. */
+    inline bool contextWanted() const
+    {
+        return m_contextWaiters.load(std::memory_order_relaxed) != 0;
+    }
+    void yieldContext(const x86::CPU& cpu);
 
     void terminate();
 
 public:
     // Set NFS_TRACE_API=1 in the environment to log every win32 call by name.
     // Compiled in unconditionally so it can be toggled without a full rebuild of
-    // the ~60 MB of generated code that includes this header.
-    static bool traceApi();
+    // the ~60 MB of generated code that includes this header.  Read once, on
+    // first use; after that a load and a compare, since dynamic_call asks it on
+    // every indirect call.
+    static bool traceApi()
+    {
+        return (s_traceApi < 0 ? readTraceApi() : s_traceApi) != 0;
+    }
+
+    /* From now on each indirect call's target into the log once per thread
+     * ([CALL]), instead of nothing or (NFS_TRACE_API) every call: what a
+     * network race runs, to compare two machines.  Starts the list over. */
+    static void traceNewCalls();
+    void traceCall(const Method& method, x86::reg32 address);
 
     /* Reports an indirect call whose target is in no table.  Out of line and
      * cold on purpose: dynamic_call is inlined into tens of thousands of
@@ -185,25 +218,28 @@ public:
      * any of them. */
     void reportMissingMethod(x86::reg32 address);
 
+    /* An indirect call: a function pointer, a vtable or an import.  It is on
+     * the hot path -- every triangle takes at least two, the game's pointer to
+     * the driver and the driver's import of Glide -- so the target comes out of
+     * a table of pages, two loads, rather than the hash map it used to be
+     * looked up in, a division and a chase along a bucket's nodes. */
     inline void dynamic_call(uint32_t address, x86::CPU& cpu)
     {
-        std::unordered_map<x86::reg32, Method>::const_iterator it = m_methods.find(address-0x400000);
-        if (it == m_methods.end())
+        const x86::reg32 offset = address - kMethodBase;
+        if (offset < kMethodSpan)
         {
-            /* Running the miss used to read the method pointer straight out of
-             * end(), which libc++ represents as a null node -- a SIGSEGV at
-             * offset 0x30 naming neither the caller nor the address it wanted.
-             * Skipping the call leaves the guest registers as the caller left
-             * them, which is survivable; the crash was not. */
-            reportMissingMethod(x86::reg32(address));
-            return;
+            const std::uint16_t* page = m_methodPages[offset >> kMethodPageBits];
+            const std::uint16_t index = page ? page[offset & kMethodPageMask] : 0;
+            if (index)
+            {
+                const win32::Method& m = m_methodList[index];
+                if (traceApi())
+                    traceCall(m, address);
+                m(this, cpu);
+                return;
+            }
         }
-        const win32::Method& m = it->second;
-        if (traceApi())
-        {
-            SDL_Log("[API] t%u %s", unsigned(SDL_GetCurrentThreadID()), m.name.c_str());
-        }
-        m(this, cpu);
+        dynamicCallElsewhere(address, cpu);
     }
 
 protected:
@@ -213,6 +249,24 @@ protected:
     x86::reg32 allocateResourceFixed(GenericResource *resource, x86::reg32 fixedHandle);
 
 private:
+    static bool readTraceApi();
+    int runOn(x86::CPU& cpu, const MemMap& threadStorage, const MemMap& threadStack,
+              x86::reg32 entryPoint, x86::reg32 parameter, bool threadLock);
+    /* A target outside the page table, or not in it: the map, and the report
+     * when that has nothing either. */
+    void dynamicCallElsewhere(x86::reg32 address, x86::CPU& cpu);
+
+    /* Guest code, and the addresses the port gives the methods of its own
+     * libraries, lie between 0x400000 and 0xc00000: the exe from its base and
+     * the recompiled DLLs rebased after it. */
+    static constexpr x86::reg32 kMethodBase = 0x400000;
+    static constexpr x86::reg32 kMethodSpan = 0x800000;
+    static constexpr x86::reg32 kMethodPageBits = 12;
+    static constexpr x86::reg32 kMethodPageMask = (1u << kMethodPageBits) - 1;
+
+    static int                              s_traceApi;
+
+private:
     x86::reg8*                              m_memory;
     MemMap*                                 m_appName;
     MemMap*                                 m_appNameW;
@@ -220,10 +274,26 @@ private:
     std::map<x86::reg32, GenericResource*>  m_resources;
     Mutex*                                  m_executionContext;
     Mutex*                                  m_resourceContext;
+    /* Safepoints (contextWanted): threads blocked taking the context, since
+     * when the first of them waits, and how many times it changed hands after a
+     * wait -- which is how a yield knows the waiter got in. */
+    std::atomic<unsigned>                   m_contextWaiters{0};
+    std::atomic<std::uint64_t>              m_contextWantedSince{0};
+    std::atomic<unsigned>                   m_contextHandoffs{0};
+    unsigned                                m_yieldPolls = 0;
+    void acquireContext(Mutex* executionContext, x86::reg32 depth);
 
 protected:
     std::unordered_map<x86::reg32, Method>  m_methods;
     x86::CPU                                m_cpu;
+
+private:
+    /* Every registered method once more, for dynamic_call: a page of 4096
+     * guest addresses holds, for each, the method's place in m_methodList, 0
+     * for none; a page with no method is not allocated.  Filled as methods are
+     * registered, which is all done while the application is built. */
+    std::vector<Method>                     m_methodList;
+    std::uint16_t*                          m_methodPages[kMethodSpan >> kMethodPageBits] = {};
 };
 
 class LockContext

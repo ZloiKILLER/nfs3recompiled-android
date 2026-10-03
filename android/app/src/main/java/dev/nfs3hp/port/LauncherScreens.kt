@@ -29,6 +29,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -106,7 +107,7 @@ fun LauncherScreens(a: LauncherActivity) {
 private fun depth(screen: LauncherActivity.Screen): Int = when (screen) {
     LauncherActivity.Screen.Main -> 0
     LauncherActivity.Screen.Controls, LauncherActivity.Screen.Display, LauncherActivity.Screen.Data,
-    LauncherActivity.Screen.Language, LauncherActivity.Screen.Faq -> 1
+    LauncherActivity.Screen.Language, LauncherActivity.Screen.Faq, LauncherActivity.Screen.Network -> 1
     LauncherActivity.Screen.TouchKeys, LauncherActivity.Screen.GamepadButtons,
     LauncherActivity.Screen.ControlsHelp, LauncherActivity.Screen.DataSets, LauncherActivity.Screen.Editor -> 3
     else -> 2
@@ -132,6 +133,7 @@ private fun Screen(a: LauncherActivity, screen: LauncherActivity.Screen) {
         LauncherActivity.Screen.Faq -> FaqScreen(a)
         LauncherActivity.Screen.Display -> DisplayScreen(a)
         LauncherActivity.Screen.Adjustment -> AdjustmentScreen(a)
+        LauncherActivity.Screen.Network -> NetworkScreen(a)
     }
 }
 
@@ -188,7 +190,9 @@ private fun MainScreen(a: LauncherActivity) {
                 verticalArrangement = Arrangement.Center,
             ) {
                 GameTitle()
-                Spacer(Modifier.height(24.dp))
+                /* Room enough that the name sits high and Play low, each
+                 * with the card's space about it. */
+                Spacer(Modifier.height(40.dp))
                 GoldButton(
                     stringResource(R.string.play),
                     onClick = { a.startGame() },
@@ -205,14 +209,15 @@ private fun MainScreen(a: LauncherActivity) {
         val menu = @Composable { each: Modifier ->
             MainMenuButton(stringResource(R.string.controls_hub), each) { a.go(LauncherActivity.Screen.Controls) }
             MainMenuButton(stringResource(R.string.display_settings), each) { a.go(LauncherActivity.Screen.Display) }
+            MainMenuButton(stringResource(R.string.network_title), each) { a.go(LauncherActivity.Screen.Network) }
             MainMenuButton(stringResource(R.string.data_settings), each) { a.go(LauncherActivity.Screen.Data) }
             MainMenuButton(stringResource(R.string.language_label), each) { a.go(LauncherActivity.Screen.Language) }
             MainMenuButton(stringResource(R.string.faq_title), each) { a.go(LauncherActivity.Screen.Faq) }
         }
-        val version = @Composable {
+        val version = @Composable { modifier: Modifier ->
             Text(
                 a.versionLabel(),
-                modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                modifier = modifier,
                 color = GameColors.Muted,
                 fontSize = 12.sp,
                 letterSpacing = 1.sp,
@@ -223,23 +228,43 @@ private fun MainScreen(a: LauncherActivity) {
             Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 card(Modifier.fillMaxWidth())
                 menu(Modifier.fillMaxWidth())
-                version()
+                version(Modifier.fillMaxWidth().padding(top = 8.dp))
             }
         } else {
-            /* One block, one height: the card fills it and the five buttons
-             * share it, so the first button's top is the card's top and the
+            /* One block, one height: the card fills it and the buttons share
+             * it, so the first button's top is the card's top and the
              * last one's bottom the card's bottom, whatever the window --
              * never measured from what the buttons happen to hold, which is
-             * what let the two drift apart once the window settled. */
-            val block = (maxHeight - 32.dp).coerceIn(260.dp, 440.dp)
-            Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.Center) {
-                Row(Modifier.fillMaxWidth().height(block), horizontalArrangement = Arrangement.spacedBy(24.dp)) {
+             * what let the two drift apart once the window settled.
+             *
+             * Centred on its own, the same room above it as below: the build's
+             * version sits in the corner of the room below and moves nothing,
+             * where as a line under the block it used to push it up. */
+            val block = (maxHeight - 48.dp).coerceIn(260.dp, 440.dp)
+            /* Below the block down to the screen's edge: the block's share of
+             * the room, and the 24 dp of padding round it all. */
+            val below = (maxHeight - block) / 2 + 24.dp
+            /* Letter spacing leaves half a space after the last letter; moved
+             * over by that, the version ends where the buttons end. */
+            val trailing = with(LocalDensity.current) { 0.5.sp.toDp() }
+            Box(Modifier.fillMaxSize()) {
+                Row(
+                    Modifier.align(Alignment.Center).fillMaxWidth().height(block),
+                    horizontalArrangement = Arrangement.spacedBy(24.dp),
+                ) {
                     card(Modifier.weight(1.25f).fillMaxHeight())
                     Column(Modifier.weight(1f).fillMaxHeight(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                         menu(Modifier.fillMaxWidth().weight(1f))
                     }
                 }
-                version()
+                /* The version halfway down that room, its end under the
+                 * buttons' right edge. */
+                Box(
+                    Modifier.align(Alignment.BottomEnd).offset(x = trailing, y = 24.dp).height(below),
+                    contentAlignment = Alignment.CenterEnd,
+                ) {
+                    version(Modifier)
+                }
             }
         }
     }
@@ -254,29 +279,22 @@ private fun MainMenuButton(text: String, modifier: Modifier = Modifier.fillMaxWi
     MenuButton(text, onClick, modifier, height = 44.dp)
 }
 
-/* The name as the game's title card has it: two lines of heavy white
- * capitals, centred, each fitted to the card's width. */
+/* The name as the game's title card has it: heavy white capitals, centred,
+ * in two lines of one text -- so both come out in the same face and the same
+ * size, fitted to the card's width by the longer. */
 @Composable
 private fun GameTitle() {
-    val style = TextStyle(
-        fontWeight = FontWeight.Black,
-        letterSpacing = 0.5.sp,
-        color = GameColors.Silver,
-        textAlign = androidx.compose.ui.text.style.TextAlign.Center,
-    )
     BasicText(
-        "NEED FOR SPEED III",
+        "NEED FOR SPEED III\nHOT PURSUIT",
         modifier = Modifier.fillMaxWidth(),
-        style = style,
-        maxLines = 1,
+        style = TextStyle(
+            fontWeight = FontWeight.Black,
+            letterSpacing = 0.5.sp,
+            color = GameColors.Silver,
+            textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+        ),
+        maxLines = 2,
         autoSize = TextAutoSize.StepBased(minFontSize = 16.sp, maxFontSize = 46.sp),
-    )
-    BasicText(
-        "HOT PURSUIT",
-        modifier = Modifier.fillMaxWidth(),
-        style = style.copy(letterSpacing = 3.sp),
-        maxLines = 1,
-        autoSize = TextAutoSize.StepBased(minFontSize = 14.sp, maxFontSize = 34.sp),
     )
 }
 
@@ -848,7 +866,11 @@ private fun DisplayScreen(a: LauncherActivity) {
         mutableIntStateOf(GamePreferences.indexOf(orientations,
             preferences.getString(GamePreferences.ORIENTATION, GamePreferences.ORIENTATION_LANDSCAPE)).coerceAtLeast(1))
     }
-    var fps by remember { mutableIntStateOf(if (preferences.getInt(GamePreferences.FPS_CAP, 30) >= 60) 1 else 0) }
+    /* 30, 60, or 0 for no cap but the display's own refresh. */
+    val fpsCaps = intArrayOf(30, 60, 0)
+    var fps by remember {
+        mutableIntStateOf(fpsCaps.indexOf(preferences.getInt(GamePreferences.FPS_CAP, 30)).coerceAtLeast(0))
+    }
     ScreenFrame(stringResource(R.string.display_settings), onBack = { a.go(LauncherActivity.Screen.Main) }) {
         TwoPanes(
             scrollNarrow = false,
@@ -869,18 +891,102 @@ private fun DisplayScreen(a: LauncherActivity) {
             second = { modifier, _ ->
                 Panel(modifier) {
                     Label(stringResource(R.string.fps_cap_label))
-                    /* Offered rather than typed: only divisors of the refresh
-                     * rate are reachable, and a free number would quietly round
-                     * to one of them. */
-                    ChoiceList(listOf(stringResource(R.string.fps_30), stringResource(R.string.fps_60)), fps) { index ->
+                    /* Offered rather than typed: the display is asked for the
+                     * same rate the game keeps (NFS3Activity), and 30 and 60
+                     * are the ones every panel runs at or divides into.  No
+                     * cap leaves the pace to the display's own refresh. */
+                    ChoiceList(
+                        listOf(stringResource(R.string.fps_30), stringResource(R.string.fps_60),
+                            stringResource(R.string.fps_unlimited)),
+                        fps,
+                    ) { index ->
                         fps = index
-                        preferences.edit().putInt(GamePreferences.FPS_CAP, if (index == 1) 60 else 30).apply()
+                        preferences.edit().putInt(GamePreferences.FPS_CAP, fpsCaps[index]).apply()
                     }
                     MenuButton(stringResource(R.string.screen_adjustment), { a.go(LauncherActivity.Screen.Adjustment) }, Modifier.fillMaxWidth())
                 }
             },
         )
     }
+}
+
+// ---- Network ----
+
+/* Where the others find this phone, and the TCP/IP port every player of a race
+ * has to share.  IPX needs neither: the game finds a race on the Wi-Fi itself. */
+@Composable
+private fun NetworkScreen(a: LauncherActivity) {
+    val preferences = remember { GamePreferences.get(a) }
+    var port by remember {
+        mutableIntStateOf(
+            if (preferences.getInt(GamePreferences.NETWORK_PORT, GamePreferences.NETWORK_PORT_MODERN)
+                == GamePreferences.NETWORK_PORT_ORIGINAL) 1 else 0
+        )
+    }
+    val address = remember { localNetworkAddress() }
+    ScreenFrame(stringResource(R.string.network_title), onBack = { a.go(LauncherActivity.Screen.Main) }) {
+        Panel(Modifier.widthIn(max = 640.dp)) {
+            if (address != null) {
+                val line = stringResource(R.string.network_address, address)
+                val at = line.indexOf(address)
+                Text(
+                    buildAnnotatedString {
+                        append(line)
+                        if (at >= 0)
+                            addStyle(SpanStyle(color = GameColors.Gold, fontWeight = FontWeight.Bold), at, at + address.length)
+                    },
+                    color = GameColors.Silver,
+                    style = MaterialTheme.typography.titleMedium,
+                )
+            } else {
+                Hint(stringResource(R.string.network_no_address), color = GameColors.Silver)
+            }
+        }
+        Panel(Modifier.widthIn(max = 640.dp)) {
+            Label(stringResource(R.string.network_port_label))
+            ChoiceList(
+                listOf(stringResource(R.string.network_port_modern), stringResource(R.string.network_port_original)),
+                port,
+            ) { index ->
+                port = index
+                preferences.edit().putInt(
+                    GamePreferences.NETWORK_PORT,
+                    if (index == 1) GamePreferences.NETWORK_PORT_ORIGINAL else GamePreferences.NETWORK_PORT_MODERN,
+                ).apply()
+            }
+        }
+        Hint(stringResource(R.string.network_hint), Modifier.widthIn(max = 640.dp))
+    }
+}
+
+/* This phone's address on the local network, picked as the game picks the one
+ * it gives the others (Socket::localAddress): of the interfaces up, the one that
+ * broadcasts, on a private network, named as Wi-Fi, a hotspot or a cable is. */
+private fun localNetworkAddress(): String? {
+    var best: String? = null
+    var bestScore = -1
+    try {
+        val interfaces = java.net.NetworkInterface.getNetworkInterfaces() ?: return null
+        for (network in interfaces) {
+            if (!network.isUp || network.isLoopback)
+                continue
+            val name = network.name ?: ""
+            for (entry in network.interfaceAddresses) {
+                val address = entry.address as? java.net.Inet4Address ?: continue
+                var score = 0
+                if (entry.broadcast != null) score += 4
+                if (address.isSiteLocalAddress) score += 2
+                if (listOf("wlan", "swlan", "ap", "eth", "en").any { name.startsWith(it) }) score += 1
+                if (score > bestScore) {
+                    best = address.hostAddress
+                    bestScore = score
+                }
+            }
+        }
+    } catch (e: java.net.SocketException) {
+        AppLog.w("NFS3Launcher", "no network interfaces: $e")
+    }
+    return best
 }
 
 /* Gamma, brightness and contrast over two sample frames -- one daylight, one

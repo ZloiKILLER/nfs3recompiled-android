@@ -52,6 +52,7 @@ final class LauncherSettings {
         GamePreferences.TOUCH_HIDE_SECONDS,
         GamePreferences.TOUCH_VIBRATION,
         GamePreferences.SAVES_INCLUDE_SETTINGS,
+        GamePreferences.NETWORK_PORT,
     };
 
     /** Families whose every member travels: control geometry and mappings.

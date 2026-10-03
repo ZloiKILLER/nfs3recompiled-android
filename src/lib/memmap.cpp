@@ -25,6 +25,7 @@ x86::reg32 MemMap::s_sectionSize = 0;
 x86::reg32 MemMap::s_addressOffset = 0;
 Mutex*     MemMap::s_lock = nullptr;
 std::vector<MemMap*> MemMap::s_memMaps;
+std::vector<std::pair<x86::reg32, x86::reg32>> MemMap::s_sections;
 
 x86::reg32 MemMap::pageSize()
 {
@@ -169,6 +170,43 @@ MemMap* MemMap::findBlock(x86::reg32 memIndex)
     return result;
 }
 
+void MemMap::usedRanges(std::vector<std::pair<x86::reg32, x86::reg32>>& ranges)
+{
+    ranges = s_sections;
+    const x86::reg32 g = granularity();
+    s_lock->lock();
+    for (x86::reg32 b = 0; b < s_blockCount;)
+    {
+        if (!s_blocks[b])
+        {
+            ++b;
+            continue;
+        }
+        x86::reg32 end = b;
+        while (end < s_blockCount && s_blocks[end])
+            ++end;
+        ranges.emplace_back(s_addressOffset + b * g, (end - b) * g);
+        b = end;
+    }
+    s_lock->unlock();
+}
+
+std::pair<x86::reg32, x86::reg32> MemMap::blockOf(x86::reg32 address)
+{
+    std::pair<x86::reg32, x86::reg32> result(0, 0);
+    s_lock->lock();
+    for (const MemMap* map : s_memMaps)
+    {
+        if (map->getBlockStart() <= address && address - map->getBlockStart() < map->getBlockSize())
+        {
+            result = std::make_pair(map->getBlockStart(), map->getBlockSize());
+            break;
+        }
+    }
+    s_lock->unlock();
+    return result;
+}
+
 x86::reg8* MemMap::init(x86::reg32 baseAddress, const std::vector<Section>& sections)
 {
     const x86::reg32 g = granularity();
@@ -198,6 +236,7 @@ x86::reg8* MemMap::init(x86::reg32 baseAddress, const std::vector<Section>& sect
         NFS2_ASSERT(it->baseAddress >= baseAddress);
         NFS2_ASSERT(it->baseAddress + it->size <= s_sectionSize);
         enable(s_memory + it->baseAddress, it->size);
+        s_sections.emplace_back(it->baseAddress, it->size);
         if (it->data)
         {
             memcpy(s_memory + it->baseAddress, it->data, it->size);
@@ -215,6 +254,7 @@ void MemMap::fini()
         delete *it;
     }
     NFS2_ASSERT(s_memMaps.empty());
+    s_sections.clear();
     s_blocks = nullptr;
     s_blockCount = 0;
     s_blockSize = 0;

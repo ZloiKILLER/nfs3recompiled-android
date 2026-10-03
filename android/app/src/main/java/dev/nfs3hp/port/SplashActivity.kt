@@ -19,10 +19,8 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -47,7 +45,6 @@ class SplashActivity : ComponentActivity() {
     private var canPick by mutableStateOf(false)
     private var importing by mutableStateOf(false)
     private var importPercent by mutableIntStateOf(-1)
-    private var missing by mutableStateOf<List<String>?>(null)
     private var pickerOpen = false
     private var worker: Thread? = null
 
@@ -96,27 +93,16 @@ class SplashActivity : ComponentActivity() {
                 else
                     LinearProgressIndicator({ importPercent / 100f }, bar, color = GameColors.Gold, trackColor = GameColors.Pill)
             }
-            if (canPick)
-                GoldButton(getString(R.string.pick_data_folder), { launchFolderPicker() }, Modifier.widthIn(min = 320.dp))
+            if (canPick) {
+                Column(
+                    Modifier.widthIn(max = 440.dp).fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    MenuButton(getString(R.string.import_folder), { launchFolderPicker() }, Modifier.fillMaxWidth())
+                    MenuButton(getString(R.string.import_zip), { launchZipPicker() }, Modifier.fillMaxWidth())
+                }
+            }
         }
-        missing?.let { files ->
-            AlertDialog(
-                onDismissRequest = { closeMissing() },
-                confirmButton = {
-                    TextButton({ closeMissing() }) { Text(getString(android.R.string.ok), color = GameColors.Gold) }
-                },
-                title = { Text(getString(R.string.data_missing_title), color = GameColors.Gold, fontWeight = FontWeight.Bold) },
-                text = {
-                    Text(DataImporter.describeMissing(this, files), color = GameColors.Silver,
-                        modifier = Modifier.verticalScroll(rememberScrollState()))
-                },
-            )
-        }
-    }
-
-    private fun closeMissing() {
-        missing = null
-        startLauncher()
     }
 
     private fun dataRoot(): File =
@@ -128,15 +114,16 @@ class SplashActivity : ComponentActivity() {
             val root = dataRoot()
             DataImporter.copyBundledAssets(this, root)
             if (DataImporter.isUserDataPresent(root)) {
+                DataImporter.copyMissingRender(this, root)
                 startLauncher()
                 return
             }
         } catch (e: IOException) {
-            Log.e(TAG, "Failed to copy bundled game files", e)
+            AppLog.e(TAG, "Failed to copy bundled game files", e)
             status = getString(R.string.import_failed, e.message)
             return
         }
-        status = getString(R.string.import_hint)
+        status = getString(R.string.data_import_hint)
         canPick = true
     }
 
@@ -148,24 +135,34 @@ class SplashActivity : ComponentActivity() {
         startActivityForResult(intent, REQUEST_PICK_FOLDER)
     }
 
+    private fun launchZipPicker() {
+        if (pickerOpen || importing) return
+        pickerOpen = true
+        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE)
+            .setType("application/zip").addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        startActivityForResult(intent, REQUEST_PICK_ZIP)
+    }
+
     @Deprecated("Deprecated in Java")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
-        if (requestCode != REQUEST_PICK_FOLDER) return
+        if (requestCode != REQUEST_PICK_FOLDER && requestCode != REQUEST_PICK_ZIP) return
         pickerOpen = false
-        val treeUri = data?.data
-        if (resultCode != Activity.RESULT_OK || treeUri == null) return
-        try {
-            contentResolver.takePersistableUriPermission(treeUri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
-        } catch (e: SecurityException) {
-            // Not fatal -- the permission still holds for this session, it just
-            // will not survive a process restart if the import is interrupted.
-            Log.w(TAG, "Could not persist folder permission", e)
+        val uri = data?.data
+        if (resultCode != Activity.RESULT_OK || uri == null) return
+        if (requestCode == REQUEST_PICK_FOLDER) {
+            try {
+                contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            } catch (e: SecurityException) {
+                // Not fatal -- the permission still holds for this session, it just
+                // will not survive a process restart if the import is interrupted.
+                AppLog.w(TAG, "Could not persist folder permission", e)
+            }
         }
-        startImport(treeUri)
+        startImport(uri, fromZip = requestCode == REQUEST_PICK_ZIP)
     }
 
-    private fun startImport(treeUri: Uri) {
+    private fun startImport(uri: Uri, fromZip: Boolean) {
         if (importing) return
         val root = try {
             dataRoot()
@@ -180,24 +177,25 @@ class SplashActivity : ComponentActivity() {
         val thread = Thread({
             val running = Thread.currentThread()
             try {
-                DataImporter.importFromTree(applicationContext, treeUri, root) { done, total, currentPath ->
+                val progress = DataImporter.ProgressListener { done, total, currentPath ->
                     runOnUiThread {
                         if (worker !== running || isDestroyed) return@runOnUiThread
                         importPercent = DataImporter.ProgressListener.percent(done, total)
                         status = LauncherActivity.importStatus(this, importPercent, currentPath)
                     }
                 }
-                val lacking = LauncherActivity.missingGameFiles(applicationContext, root)
+                if (fromZip)
+                    DataImporter.importFromZip(applicationContext, uri, root, progress)
+                else
+                    DataImporter.importFromTree(applicationContext, uri, root, progress)
                 runOnUiThread {
                     if (worker !== running || isDestroyed) return@runOnUiThread
                     worker = null
                     importing = false
                     if (DataImporter.isUserDataPresent(root)) {
-                        // What the copy is short of, before the launcher takes over.
-                        if (lacking.isEmpty()) startLauncher() else missing = lacking
+                        startLauncher()
                     } else {
-                        // The picked folder had fedata/gamedata subfolders (importFromTree
-                        // would have thrown otherwise) but the copy still doesn't match the
+                        // The import completed but the copy still doesn't match the
                         // expected layout -- surface that instead of silently retrying.
                         canPick = true
                         status = getString(R.string.import_failed, getString(R.string.error_import_incomplete))
@@ -205,7 +203,7 @@ class SplashActivity : ComponentActivity() {
                 }
             } catch (e: IOException) {
                 if (running.isInterrupted) return@Thread
-                Log.e(TAG, "Import failed", e)
+                AppLog.e(TAG, "Import failed", e)
                 runOnUiThread {
                     if (worker !== running || isDestroyed) return@runOnUiThread
                     worker = null
@@ -244,5 +242,6 @@ class SplashActivity : ComponentActivity() {
     companion object {
         private const val TAG = "NFS3Splash"
         private const val REQUEST_PICK_FOLDER = 1
+        private const val REQUEST_PICK_ZIP = 2
     }
 }

@@ -66,8 +66,9 @@ SITES = [
 NAMESPACE = "namespace nfs3hp\n{\n"
 
 
-def apply(root):
-    for name in dict.fromkeys(site[0] for site in SITES):
+def apply(root, sites=None, header=HEADER):
+    sites_all = SITES if sites is None else sites
+    for name in dict.fromkeys(site[0] for site in sites_all):
         path = root / "src/nfs3hp/disassembly" / name
         text = path.read_text(newline="")
         eol = "\r\n" if text.count("\r\n") * 2 > text.count("\n") else "\n"
@@ -75,9 +76,9 @@ def apply(root):
         def native(s):
             return eol.join(s.split("\n"))
 
-        sites = [site for site in SITES if site[0] == name]
+        sites = [site for site in sites_all if site[0] == name]
         needed = "".join(site[4] for site in sites)
-        declarations = native(HEADER + needed)
+        declarations = native(header + needed)
         if needed and declarations not in text:
             namespace = native(NAMESPACE)
             if text.count(namespace) != 1:
@@ -91,10 +92,17 @@ def apply(root):
             if start < 0:
                 raise RuntimeError("%s: no instruction %s" % (name, instruction))
             # Everything this one instruction generated: from its own address
-            # comment up to the next one.
-            stop = text.find(eol + "    // 00", start + len(anchor))
-            if stop < 0:
-                raise RuntimeError("%s: runaway block at %s" % (name, instruction))
+            # comment up to the next one.  The comment can come twice, once
+            # outside the block that keeps the x87 stack in locals and once in
+            # it; the code is under the second.
+            while True:
+                stop = text.find(eol + "    // 00", start + len(anchor))
+                if stop < 0:
+                    raise RuntimeError("%s: runaway block at %s" % (name, instruction))
+                if text.startswith(anchor, stop + len(eol)) and old not in text[start:stop]:
+                    start = stop + len(eol)
+                    continue
+                break
             block = text[start:stop]
             if new in block:
                 continue

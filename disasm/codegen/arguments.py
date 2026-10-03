@@ -116,17 +116,20 @@ def get_address(instruction, operand):
         assert False, operand.type
 
 
+# A jmp out of the function hands its registers over for good
+# (cpu.handOver()): the other function returns for this one too, and nothing
+# comes back to be written out after it (x86::Local, include/cpu.h).
 def get_goto_address(instruction, function_bounds, function_names, operand):
     if operand.type == x86.X86_OP_IMM:
         if operand.imm >= function_bounds[0] and operand.imm < function_bounds[1]:
             return 'goto L_0x%08x;' % operand.imm
         else:
             if operand.imm in function_names:
-                return 'return %s(app, cpu);' % function_names[operand.imm]
+                return 'return %s(app, cpu.handOver());' % function_names[operand.imm]
             else:
-                return 'return sub_%x(app, cpu);' % operand.imm
+                return 'return sub_%x(app, cpu.handOver());' % operand.imm
     elif operand.type == x86.X86_OP_REG:
-        return 'return app->dynamic_call(cpu.%s, cpu);' % (instruction.reg_name(operand.reg))
+        return 'return app->dynamic_call(cpu.%s, cpu.handOver());' % (instruction.reg_name(operand.reg))
     elif operand.type == x86.X86_OP_MEM:
         offsets = []
         if operand.mem.base != 0:
@@ -142,12 +145,12 @@ def get_goto_address(instruction, function_bounds, function_names, operand):
         for dest in instruction.potential_destinations:
             if dest < function_bounds[0] or dest > function_bounds[1]:
                 print('error! switch/case with at least one jump out of reach; function 0x%x/0x%x, jump to 0x%x' % (function_bounds[0], function_bounds[1], dest))
-                return 'return app->dynamic_call(app->getMemory<x86::reg32>(%s), cpu);' % (' + '.join(offsets))
+                return 'return app->dynamic_call(app->getMemory<x86::reg32>(%s), cpu.handOver());' % (' + '.join(offsets))
         else:
             if instruction.potential_destinations:
                 return 'cpu.ip = app->getMemory<x86::reg32>(%s); goto dynamic_jump;' % (' + '.join(offsets))
             else:
-                return 'return app->dynamic_call(app->getMemory<x86::reg32>(%s), cpu);' % (' + '.join(offsets))
+                return 'return app->dynamic_call(app->getMemory<x86::reg32>(%s), cpu.handOver());' % (' + '.join(offsets))
     else:
         assert False, operand.type
 

@@ -7,9 +7,12 @@ It is not an emulator. The original Windows executable is recompiled into
 portable C++ — a static recompilation, built on
 [motor-dev/nfs-recompiled](https://github.com/motor-dev/nfs-recompiled) — and
 the Windows, DirectX and Glide calls it makes are reimplemented on SDL3 and
-OpenGL ES. This fork makes it a phone game: a launcher, touch controls, two
+OpenGL ES. This project makes it a phone game: a launcher, touch controls, two
 gamepads with split screen, vibration, widescreen races up to 1920x1080 and
 full-colour textures.
+
+Network races work: phone with phone over Wi-Fi (IPX or TCP/IP), and phone
+with a PC running the Modern Patch over TCP/IP.
 
 <img src="screenshots/title.jpg" alt="the title screen" width="49%">
 <img src="screenshots/car-select.jpg" alt="choosing a car" width="49%">
