@@ -150,6 +150,12 @@ if __name__ == '__main__':
     from tools.apply_race_state import apply as apply_race_state
     apply_race_state(Path(__file__).resolve().parent)
 
+    # Races at the x87's extended precision, as the Modern Patch runs them:
+    # the race loop's fldcw down to single precision goes through
+    # nfs3hp::raceControl (NFS_FPU_EXTENDED).
+    from tools.apply_race_precision import apply as apply_race_precision
+    apply_race_precision(Path(__file__).resolve().parent)
+
     # HUD scale: the parts of a HUD element keep their proportions on a wide
     # screen instead of growing with its width.
     from tools.apply_hud_scale import apply as apply_hud_scale
@@ -213,7 +219,40 @@ if __name__ == '__main__':
     from tools.apply_native_vertices import apply as apply_native_vertices
     apply_native_vertices(Path(__file__).resolve().parent)
 
+    # The opponents' pull and steering, decompiled into C++ that comes out as
+    # the generated code to the bit (src/nfs3hp/native_ai.h).
+    from tools.apply_native_ai import apply as apply_native_ai
+    apply_native_ai(Path(__file__).resolve().parent)
+
     # voodoo2a's THRASH functions native one at a time: the first stage of a
     # native renderer driver.
     from tools.apply_native_thrash import apply as apply_native_thrash
     apply_native_thrash(Path(__file__).resolve().parent)
+
+    # The rest of the drawing native, function by function, behind the same
+    # kind of hook.
+    from tools.apply_native_render import apply as apply_native_render
+    apply_native_render(Path(__file__).resolve().parent)
+
+    # eacsnd's sound driver native: the game's mix straight onto an SDL stream.
+    from tools.apply_native_sound import apply as apply_native_sound
+    apply_native_sound(Path(__file__).resolve().parent)
+
+    # The game's sound mixer native: decoding, resampling, volume and pan.
+    from tools.apply_native_mixer import apply as apply_native_mixer
+    apply_native_mixer(Path(__file__).resolve().parent)
+
+    # The loading native: RefPack, the FSH textures' alpha scans, an FCE's
+    # polygon records and a track's FRD.
+    from tools.apply_native_loading import apply as apply_native_loading
+    apply_native_loading(Path(__file__).resolve().parent)
+
+    # The movies native: the MAD player, decoder and display (decomp/mad), after
+    # apply_movie_tap's MovieSession.
+    from tools.apply_native_movie import apply as apply_native_movie
+    apply_native_movie(Path(__file__).resolve().parent)
+
+    # The menus decompiled a screen at a time, the generated code kept behind
+    # them: first the main menu.
+    from tools.apply_native_frontend import apply as apply_native_frontend
+    apply_native_frontend(Path(__file__).resolve().parent)

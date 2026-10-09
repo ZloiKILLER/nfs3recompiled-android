@@ -3,6 +3,16 @@
 
 namespace nfs3hp
 {
+// Port (tools/apply_native_render.py): defined in native_render.cpp.
+bool viewDistances(win32::WinApplication* app, x86::CPU& cpu);
+// Port (tools/apply_native_render.py): defined in native_render.cpp.
+bool viewRecord(win32::WinApplication* app, x86::CPU& cpu);
+// Port (tools/apply_native_render.py): defined in native_render.cpp.
+bool raceViews(win32::WinApplication* app, x86::CPU& cpu);
+// Port (tools/apply_native_render.py): defined in native_render.cpp.
+bool viewPass(win32::WinApplication* app, x86::CPU& cpu);
+// Port (tools/apply_native_loading.py): defined in native_loading.cpp.
+bool frd(win32::WinApplication* app, x86::CPU& cpu);
 // Port (tools/apply_native_vertices.py): defined in native_vertices.cpp.
 bool objectRecords(win32::WinApplication* app, x86::CPU& cpu);
 // Port (tools/apply_native_vertices.py): defined in native_vertices.cpp.
@@ -5047,6 +5057,11 @@ void Application::sub_419c20(WinApplication* __restrict app, x86::CPU& cpu_)
   x86::Local cpu(cpu_);
   NFS2_USE(cpu);
   NFS2_USE(app);
+    if (frd(app, cpu.sync())) /* port: native (tools/apply_native_loading.py) */
+    {
+        cpu.reload();
+        return;
+    }
     // 00419c20  53                     -push ebx
     app->getMemory<x86::reg32>(cpu.esp-4) = cpu.ebx;
     cpu.esp -= 4;
@@ -12618,6 +12633,11 @@ void Application::sub_41b9b0(WinApplication* __restrict app, x86::CPU& cpu_)
   x86::Local cpu(cpu_);
   NFS2_USE(cpu);
   NFS2_USE(app);
+    if (viewPass(app, cpu.sync())) /* port: native (tools/apply_native_render.py) */
+    {
+        cpu.reload();
+        return;
+    }
     // 0041b9b0  53                     -push ebx
     app->getMemory<x86::reg32>(cpu.esp-4) = cpu.ebx;
     cpu.esp -= 4;
@@ -20173,6 +20193,11 @@ void Application::sub_41d620(WinApplication* __restrict app, x86::CPU& cpu_)
   x86::Local cpu(cpu_);
   NFS2_USE(cpu);
   NFS2_USE(app);
+    if (viewDistances(app, cpu.sync())) /* port: native (tools/apply_native_render.py) */
+    {
+        cpu.reload();
+        return;
+    }
     // 0041d620  53                     -push ebx
     app->getMemory<x86::reg32>(cpu.esp-4) = cpu.ebx;
     cpu.esp -= 4;
@@ -21089,6 +21114,11 @@ void Application::sub_41d960(WinApplication* __restrict app, x86::CPU& cpu_)
   x86::Local cpu(cpu_);
   NFS2_USE(cpu);
   NFS2_USE(app);
+    if (raceViews(app, cpu.sync())) /* port: native (tools/apply_native_render.py) */
+    {
+        cpu.reload();
+        return;
+    }
     // 0041d960  53                     -push ebx
     app->getMemory<x86::reg32>(cpu.esp-4) = cpu.ebx;
     cpu.esp -= 4;
@@ -22725,6 +22755,11 @@ void Application::sub_41df10(WinApplication* __restrict app, x86::CPU& cpu_)
   x86::Local cpu(cpu_);
   NFS2_USE(cpu);
   NFS2_USE(app);
+    if (viewRecord(app, cpu.sync())) /* port: native (tools/apply_native_render.py) */
+    {
+        cpu.reload();
+        return;
+    }
   goto start;
 dynamic_jump:
   switch(cpu.ip)

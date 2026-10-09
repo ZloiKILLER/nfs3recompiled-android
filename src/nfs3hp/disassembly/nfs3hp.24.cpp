@@ -3,6 +3,10 @@
 
 namespace nfs3hp
 {
+// Port (tools/apply_native_render.py): defined in native_render.cpp.
+bool bouncers(win32::WinApplication* app, x86::CPU& cpu);
+// Port (tools/apply_race_precision.py): defined in nfs3hp_main.cpp.
+x86::reg16 raceControl(x86::reg16 word);
 // Port (tools/apply_loading_screen.py): defined in nfs3hp_main.cpp.
 void loadingScreenFit(win32::WinApplication* app, x86::CPU& cpu, bool on);
 // Port (tools/apply_race_state.py): defined in nfs3hp_main.cpp.
@@ -11828,7 +11832,7 @@ L_0x004a3e34:
     // 004a3e88  a3ecf37900             -mov dword ptr [0x79f3ec], eax
     app->getMemory<x86::reg32>(x86::reg32(7992300) /* 0x79f3ec */) = cpu.eax;
     // 004a3e8d  d92decf37900           -fldcw word ptr [0x79f3ec]
-    cpu.fpu.setControl(app->getMemory<x86::reg16>(x86::reg32(7992300) /* 0x79f3ec */));
+    cpu.fpu.setControl(raceControl(app->getMemory<x86::reg16>(x86::reg32(7992300) /* 0x79f3ec */))); /* port: extended races as the Modern Patch has them */
     // 004a3e93  9b                     -wait 
     /*nothing*/;
     // 004a3e94  31c0                   +xor eax, eax
@@ -11884,7 +11888,7 @@ L_0x004a3e34:
     // 004a3ece  a3ecf37900             -mov dword ptr [0x79f3ec], eax
     app->getMemory<x86::reg32>(x86::reg32(7992300) /* 0x79f3ec */) = cpu.eax;
     // 004a3ed3  d92decf37900           -fldcw word ptr [0x79f3ec]
-    cpu.fpu.setControl(app->getMemory<x86::reg16>(x86::reg32(7992300) /* 0x79f3ec */));
+    cpu.fpu.setControl(raceControl(app->getMemory<x86::reg16>(x86::reg32(7992300) /* 0x79f3ec */))); /* port: extended races as the Modern Patch has them */
     // 004a3ed9  9b                     -wait 
     /*nothing*/;
     // 004a3eda  8955f4                 -mov dword ptr [ebp - 0xc], edx
@@ -13028,6 +13032,11 @@ void Application::sub_4a4410(WinApplication* __restrict app, x86::CPU& cpu_)
   x86::Local cpu(cpu_);
   NFS2_USE(cpu);
   NFS2_USE(app);
+    if (bouncers(app, cpu.sync())) /* port: native (tools/apply_native_render.py) */
+    {
+        cpu.reload();
+        return;
+    }
     // 004a4410  53                     -push ebx
     app->getMemory<x86::reg32>(cpu.esp-4) = cpu.ebx;
     cpu.esp -= 4;

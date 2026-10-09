@@ -2,6 +2,7 @@ package dev.nfs3hp.port
 
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -54,6 +55,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalDensity
@@ -362,6 +364,36 @@ fun ChoiceList(options: List<String>, selected: Int, onSelect: (Int) -> Unit) {
                 RadioButton(selected = index == selected, onClick = null)
                 Spacer(Modifier.width(8.dp))
                 Text(option, style = MaterialTheme.typography.bodyLarge, color = GameColors.Silver)
+            }
+        }
+    }
+}
+
+/** One of two or three choices side by side, a pill each: the chosen one
+ *  filled in gold, the others drawn as the menus draw a button. */
+@Composable
+fun SegmentedChoice(options: List<String>, selected: Int, onSelect: (Int) -> Unit, modifier: Modifier = Modifier) {
+    Row(modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        options.forEachIndexed { index, option ->
+            val chosen = index == selected
+            Box(
+                Modifier
+                    .weight(1f)
+                    .heightIn(min = 44.dp)
+                    .clip(PillShape)
+                    .background(if (chosen) GameColors.Gold else GameColors.Pill)
+                    .border(1.dp, if (chosen) GameColors.Gold else GameColors.PillEdge, PillShape)
+                    .selectable(selected = chosen, role = Role.RadioButton, onClick = { onSelect(index) })
+                    .padding(horizontal = 10.dp, vertical = 8.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    option,
+                    color = if (chosen) GameColors.Night else GameColors.MenuBlue,
+                    fontWeight = if (chosen) FontWeight.Bold else FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
             }
         }
     }

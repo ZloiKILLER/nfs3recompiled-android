@@ -80,6 +80,10 @@ public:
     static void setCurrentDirectory(const char* path);
     static void setDataDirectory(const char* path);
     static void setCdDirectory(const char* path);
+    /* Called with the path of every file opened only to be read; a path back
+     * is opened in its place, an empty string leaves the file as it is. */
+    using ReadSubstitute = std::string (*)(const std::string& path);
+    static void setReadSubstitute(ReadSubstitute substitute);
     static x86::reg32 remove(const char* filename);
     /* Win32 CreateDirectory: creates the leaf only, and reports failure when
      * the directory is already there, exactly as the original does. */

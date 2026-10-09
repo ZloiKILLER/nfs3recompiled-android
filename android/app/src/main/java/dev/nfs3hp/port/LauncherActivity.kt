@@ -41,7 +41,7 @@ class LauncherActivity : ComponentActivity() {
     enum class Screen {
         Main, Language, Data, GameData, DataSets, Saves, LauncherSettings,
         Controls, Touch, TouchKeys, Editor, Gamepads, GamepadButtons, ControlsHelp,
-        Faq, Display, Adjustment, Network,
+        ForceFeedback, Faq, Display, Adjustment, Network,
     }
 
     /** A question put to the player: a title, the question, and what the
@@ -541,7 +541,7 @@ class LauncherActivity : ComponentActivity() {
             }
             Screen.Editor -> closeEditor()
             Screen.TouchKeys -> go(Screen.Touch)
-            Screen.Touch, Screen.Gamepads -> go(Screen.Controls)
+            Screen.Touch, Screen.Gamepads, Screen.ForceFeedback -> go(Screen.Controls)
             // Split screen help and a pad's buttons both open from the Gamepads screen.
             Screen.GamepadButtons, Screen.ControlsHelp -> go(Screen.Gamepads)
             // The Data screens are a level deeper than the rest.

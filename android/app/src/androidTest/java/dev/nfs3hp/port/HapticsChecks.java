@@ -12,6 +12,7 @@ final class HapticsChecks {
         boolean saved=prefs.getBoolean(GamePreferences.TOUCH_VIBRATION,false);
         boolean padPresent=prefs.contains(GamePreferences.GAMEPAD_VIBRATION);
         boolean padSaved=prefs.getBoolean(GamePreferences.GAMEPAD_VIBRATION,false);
+        String savedOutput=prefs.getString(GamePreferences.FORCE_FEEDBACK,null);
         Throwable[] failure={null};
         test.runOnMainSync(()->{
             GameHaptics h=new GameHaptics(test.getTargetContext());
@@ -26,10 +27,25 @@ final class HapticsChecks {
                 Field outputField=GameHaptics.class.getDeclaredField("phoneOutput");outputField.setAccessible(true);
                 Object output=outputField.get(h);
                 Field sendsField=output.getClass().getDeclaredField("sends");sendsField.setAccessible(true);
-                prefs.edit().putBoolean(GamePreferences.TOUCH_VIBRATION,false).commit();
+                /* Until the player picks an output, the two switches it
+                 * replaced decide: the pad's if it was on, else the phone's. */
+                prefs.edit().remove(GamePreferences.FORCE_FEEDBACK).putBoolean(GamePreferences.TOUCH_VIBRATION,false)
+                    .putBoolean(GamePreferences.GAMEPAD_VIBRATION,false).commit();
+                if(!GamePreferences.FORCE_FEEDBACK_OFF.equals(GamePreferences.forceFeedback(prefs)))throw new AssertionError("both switches off: nothing vibrates");
+                prefs.edit().putBoolean(GamePreferences.TOUCH_VIBRATION,true).commit();
+                if(!GamePreferences.FORCE_FEEDBACK_PHONE.equals(GamePreferences.forceFeedback(prefs)))throw new AssertionError("the phone's switch on: the phone");
+                prefs.edit().putBoolean(GamePreferences.GAMEPAD_VIBRATION,true).commit();
+                if(!GamePreferences.FORCE_FEEDBACK_GAMEPAD.equals(GamePreferences.forceFeedback(prefs)))throw new AssertionError("both switches on: the pad");
+                prefs.edit().putString(GamePreferences.FORCE_FEEDBACK,GamePreferences.FORCE_FEEDBACK_OFF).commit();
+                if(!GamePreferences.FORCE_FEEDBACK_OFF.equals(GamePreferences.forceFeedback(prefs)))throw new AssertionError("a choice made wins over the old switches");
                 h.resume();h.setLevel(0,.5f);h.setEffects(0,.1f,0,0,0,.1f,28f);h.setTurn(.9f);
                 if(active.contains(phone))throw new AssertionError("disabled phone must stay silent");
-                prefs.edit().putBoolean(GamePreferences.TOUCH_VIBRATION,true).commit();
+                /* The gamepad chosen, the phone stays silent: never both at once. */
+                prefs.edit().putString(GamePreferences.FORCE_FEEDBACK,GamePreferences.FORCE_FEEDBACK_GAMEPAD).commit();
+                h.setLevel(0,.5f);h.setEffects(0,.1f,0,0,0,.1f,28f);h.setTurn(.9f);
+                if(active.contains(phone))throw new AssertionError("the phone stays silent while the gamepad is the output");
+                h.setLevel(0,0);
+                prefs.edit().putString(GamePreferences.FORCE_FEEDBACK,GamePreferences.FORCE_FEEDBACK_PHONE).commit();
                 h.pause();h.setLevel(0,.5f);h.setTurn(.9f);
                 if(!active.isEmpty())throw new AssertionError("background must stay silent");
                 h.resume();
@@ -90,9 +106,9 @@ final class HapticsChecks {
                 Field padsField=GameHaptics.class.getDeclaredField("padOutputs");padsField.setAccessible(true);
                 if(((Object[])padsField.get(h)).length!=GameHaptics.SLOTS)throw new AssertionError("one output per pad slot");
                 h.setLevel(1,0);
-                /* A pad vibrates only once its switch in Controls -> Gamepads is on:
-                 * off, it is never so much as picked as a target. */
-                prefs.edit().putBoolean(GamePreferences.GAMEPAD_VIBRATION,false).commit();
+                /* A pad vibrates only while Controls -> Force Feedback is set to
+                 * the gamepad: with the phone chosen, it is never so much as
+                 * picked as a target. */
                 h.setLevel(0,.9f);
                 Object firstPad=((Object[])padsField.get(h))[0];
                 Field targetField=firstPad.getClass().getDeclaredField("target");targetField.setAccessible(true);
@@ -118,6 +134,7 @@ final class HapticsChecks {
                 h.pause();SharedPreferences.Editor edit=prefs.edit();
                 if(present)edit.putBoolean(GamePreferences.TOUCH_VIBRATION,saved);else edit.remove(GamePreferences.TOUCH_VIBRATION);
                 if(padPresent)edit.putBoolean(GamePreferences.GAMEPAD_VIBRATION,padSaved);else edit.remove(GamePreferences.GAMEPAD_VIBRATION);
+                if(savedOutput!=null)edit.putString(GamePreferences.FORCE_FEEDBACK,savedOutput);else edit.remove(GamePreferences.FORCE_FEEDBACK);
                 edit.commit();
             }
         });

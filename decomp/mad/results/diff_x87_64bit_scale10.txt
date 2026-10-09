@@ -1,0 +1,52 @@
+x87 control word 0x37f, seed 1998, 25 s
+test                                                              cases  fails  notes
+sub_4f30d0 build tables                                               1      0  empty first-9 entries: 0; clamp[127]=0
+sub_4f3560 + sub_4f3350 + sub_4f33b0 bit reader                     200      0  200 random reads each
+sub_510e48 coefficients (+ sub_4f33e0 / sub_510cbd)                1500     33  8 blocks a stream, every code of tables A and B, escapes
+sub_510e48 coefficients (+ sub_4f33e0 / sub_510cbd) -- random bytes      600      9  40 streams stopped where the original writes outside the block
+sub_510cbd / sub_510a50 / sub_510bb3 IDCT                         20000    110  x87 control word 0x37f
+IDCT rows where an FMA would round differently                       35      0  x87 control word 0x37f
+sub_510ff8 output row, sub_4f3420 / sub_4f34f0 prediction          4000      0  
+sub_4f3600 macroblocks, whole 64x48 frames                           60      1  23 macroblocks, key and predicted frames
+sub_4f3600 macroblocks, whole 320x240 frames                         30      1  37 macroblocks, key and predicted frames
+FAIL blocks case 57: ['state.luma', 'idct_tmp']
+FAIL blocks case 63: ['state.luma']
+FAIL blocks case 65: ['state.luma', 'idct_tmp']
+FAIL blocks case 83: ['state.luma', 'idct_tmp']
+FAIL blocks case 176: ['state.luma', 'idct_tmp']
+FAIL blocks case 188: ['state.luma']
+FAIL blocks case 203: ['state.luma']
+FAIL blocks case 271: ['state.luma']
+FAIL blocks case 291: ['state.luma', 'idct_tmp']
+FAIL blocks case 414: ['state.luma', 'idct_tmp']
+FAIL blocks case 524: ['state.luma', 'idct_tmp']
+FAIL blocks case 534: ['state.luma']
+FAIL blocks case 546: ['state.luma', 'idct_tmp']
+FAIL blocks case 573: ['state.luma']
+FAIL blocks case 622: ['state.luma', 'idct_tmp']
+FAIL blocks case 632: ['state.luma', 'idct_tmp']
+FAIL blocks case 662: ['state.luma']
+FAIL blocks case 687: ['state.luma', 'idct_tmp']
+FAIL blocks case 719: ['state.luma']
+FAIL blocks case 722: ['state.luma']
+FAIL blocks case 737: ['state.luma']
+FAIL blocks case 780: ['state.luma']
+FAIL blocks case 781: ['state.luma', 'idct_tmp']
+FAIL blocks case 792: ['state.luma', 'idct_tmp']
+FAIL blocks case 815: ['state.luma']
+FAIL blocks case 826: ['state.luma']
+FAIL blocks case 902: ['state.luma']
+FAIL blocks case 1041: ['state.luma']
+FAIL blocks case 1135: ['state.luma', 'idct_tmp']
+FAIL blocks case 1145: ['state.luma']
+FAIL blocks case 1333: ['state.luma']
+FAIL blocks case 1335: ['state.luma', 'idct_tmp']
+FAIL blocks case 1370: ['state.luma', 'idct_tmp']
+FAIL garbage blocks case 20: ['state.luma', 'idct_tmp']
+FAIL garbage blocks case 97: ['state.luma', 'idct_tmp']
+FAIL garbage blocks case 333: ['state.luma', 'idct_tmp']
+FAIL garbage blocks case 353: ['state.luma']
+FAIL garbage blocks case 367: ['state.luma', 'idct_tmp']
+FAIL garbage blocks case 481: ['state.luma', 'idct_tmp']
+FAIL garbage blocks case 492: ['state.luma', 'idct_tmp']
+EXIT 1

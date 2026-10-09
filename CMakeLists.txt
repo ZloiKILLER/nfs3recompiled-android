@@ -142,25 +142,18 @@ file(GLOB LIB_CPP_SOURCES CONFIGURE_DEPENDS
      "${NFS_ROOT_DIR}/src/lib/winapi/dinput/*.cpp"
      "${NFS_ROOT_DIR}/src/lib/winapi/dsound/*.cpp")
 
-# x87.asm provides 80-bit extended-precision FPU helpers and is only needed
-# (and only supported) on Linux with WITH_PEDANTIC_FPU=ON.
-if(WITH_PEDANTIC_FPU AND TARGET_WINDOWS)
+# src/lib/x87soft.cpp is WITH_PEDANTIC_FPU's 80-bit arithmetic: the x87's,
+# exact, in portable C++ -- an arm64 phone as well as a PC (it replaces
+# x87.asm, which ran on the host's own x87 and so only on x86).  It needs
+# unsigned __int128, which GCC and Clang have and MSVC does not.  Without
+# WITH_PEDANTIC_FPU nothing calls it, so it is left out.
+if(WITH_PEDANTIC_FPU AND MSVC)
     message(FATAL_ERROR
-        "WITH_PEDANTIC_FPU is not supported on Windows: the x87 NASM helper "
-        "relies on Linux-specific 80-bit long double ABI conventions.")
+        "WITH_PEDANTIC_FPU needs GCC or Clang: src/lib/x87soft.cpp uses "
+        "unsigned __int128.")
 endif()
-
-if(WITH_PEDANTIC_FPU AND NOT TARGET_WINDOWS)
-    set(X87_OBJ "${CMAKE_CURRENT_BINARY_DIR}/x87.o")
-    add_custom_command(
-        OUTPUT ${X87_OBJ}
-        COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_CURRENT_BINARY_DIR}
-        COMMAND nasm -f elf64 -o ${X87_OBJ} ${NFS_ROOT_DIR}/src/lib/x87.asm
-        DEPENDS ${NFS_ROOT_DIR}/src/lib/x87.asm
-        COMMENT "Assembling x87.asm (elf64, pedantic FPU)"
-        VERBATIM
-    )
-    list(APPEND LIB_CPP_SOURCES ${X87_OBJ})
+if(NOT WITH_PEDANTIC_FPU)
+    list(REMOVE_ITEM LIB_CPP_SOURCES "${NFS_ROOT_DIR}/src/lib/x87soft.cpp")
 endif()
 
 add_library(nfs_core STATIC ${LIB_CPP_SOURCES})
@@ -179,6 +172,19 @@ function(add_game_exe name)
 
     # collect sources
     file(GLOB GAME_SOURCES CONFIGURE_DEPENDS "${game_src_dir}/*.cpp")
+
+    # The movies: the MAD decoder and player decompiled to C (decomp/mad),
+    # called from src/nfs3hp/native_movie.cpp.  Without fused multiply-adds:
+    # the inverse DCT rounds through x87 arithmetic it has to match.
+    if(name STREQUAL "nfs3hp")
+        set(MAD_SOURCES
+            "${NFS_ROOT_DIR}/decomp/mad/src/mad_decoder.c"
+            "${NFS_ROOT_DIR}/decomp/mad/src/mad_player.c")
+        if(NOT MSVC)
+            set_source_files_properties(${MAD_SOURCES} PROPERTIES COMPILE_OPTIONS "-ffp-contract=off")
+        endif()
+        list(APPEND GAME_SOURCES ${MAD_SOURCES})
+    endif()
 
     # pick the hardcoded disasm set for this game
     if(name STREQUAL "nfs3hp")
@@ -228,6 +234,7 @@ function(add_game_exe name)
     target_include_directories(${name} PRIVATE
         ${game_src_dir}
         ${NFS_ROOT_DIR}/src/${name}/disassembly
+        ${NFS_ROOT_DIR}/decomp/mad/src
         ${NFS_ROOT_DIR}/include)
     target_link_libraries(${name} PRIVATE ${SDL3_MAIN_TARGET} nfs_core ${SDL3_LIB_TARGET} ${NFS_GL_LIBS})
     if(WITH_PEDANTIC_FPU)

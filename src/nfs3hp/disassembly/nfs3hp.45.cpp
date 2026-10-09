@@ -3,6 +3,8 @@
 
 namespace nfs3hp
 {
+// Port (tools/apply_native_loading.py): defined in native_loading.cpp.
+bool refpack(win32::WinApplication* app, x86::CPU& cpu);
 // Port (tools/apply_native_vertices.py): defined in native_vertices.cpp.
 bool commEventTrace(win32::WinApplication* app, x86::CPU& cpu);
 
@@ -7674,6 +7676,11 @@ void Application::sub_5102a4(WinApplication* __restrict app, x86::CPU& cpu_)
   x86::Local cpu(cpu_);
   NFS2_USE(cpu);
   NFS2_USE(app);
+    if (refpack(app, cpu.sync())) /* port: native (tools/apply_native_loading.py) */
+    {
+        cpu.reload();
+        return;
+    }
     // 005102a4  55                     -push ebp
     app->getMemory<x86::reg32>(cpu.esp-4) = cpu.ebp;
     cpu.esp -= 4;

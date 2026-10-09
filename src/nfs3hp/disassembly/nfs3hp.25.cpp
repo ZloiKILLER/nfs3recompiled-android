@@ -3,6 +3,14 @@
 
 namespace nfs3hp
 {
+// Port (tools/apply_native_render.py): defined in native_render.cpp.
+bool carTextures(win32::WinApplication* app, x86::CPU& cpu);
+// Port (tools/apply_native_render.py): defined in native_render.cpp.
+bool startDriver(win32::WinApplication* app, x86::CPU& cpu);
+// Port (tools/apply_native_render.py): defined in native_render.cpp.
+bool transformBuffer(win32::WinApplication* app, x86::CPU& cpu);
+// Port (tools/apply_race_precision.py): defined in nfs3hp_main.cpp.
+x86::reg16 raceControl(x86::reg16 word);
 // Port (tools/apply_car_detail.py): defined in nfs3hp_main.cpp.
 bool fullCarDetail();
 x86::reg32 carWheelStamp(win32::WinApplication* app, x86::reg32 car, x86::reg32 which);
@@ -44625,6 +44633,11 @@ void Application::sub_4b56e0(WinApplication* __restrict app, x86::CPU& cpu_)
   x86::Local cpu(cpu_);
   NFS2_USE(cpu);
   NFS2_USE(app);
+    if (transformBuffer(app, cpu.sync())) /* port: native (tools/apply_native_render.py) */
+    {
+        cpu.reload();
+        return;
+    }
     // 004b56e0  53                     -push ebx
     app->getMemory<x86::reg32>(cpu.esp-4) = cpu.ebx;
     cpu.esp -= 4;
@@ -45596,6 +45609,11 @@ void Application::sub_4b59c0(WinApplication* __restrict app, x86::CPU& cpu_)
   x86::Local cpu(cpu_);
   NFS2_USE(cpu);
   NFS2_USE(app);
+    if (startDriver(app, cpu.sync())) /* port: native (tools/apply_native_render.py) */
+    {
+        cpu.reload();
+        return;
+    }
   goto start;
 dynamic_jump:
   switch(cpu.ip)
@@ -47793,7 +47811,7 @@ L_0x004b61d6:
     // 004b6234  a3ecf37900             -mov dword ptr [0x79f3ec], eax
     app->getMemory<x86::reg32>(x86::reg32(7992300) /* 0x79f3ec */) = cpu.eax;
     // 004b6239  d92decf37900           -fldcw word ptr [0x79f3ec]
-    cpu.fpu.setControl(app->getMemory<x86::reg16>(x86::reg32(7992300) /* 0x79f3ec */));
+    cpu.fpu.setControl(raceControl(app->getMemory<x86::reg16>(x86::reg32(7992300) /* 0x79f3ec */))); /* port: extended races as the Modern Patch has them */
     // 004b623f  9b                     -wait 
     /*nothing*/;
     // 004b6240  5d                     -pop ebp
@@ -55483,6 +55501,11 @@ void Application::sub_4b7d30(WinApplication* __restrict app, x86::CPU& cpu_)
   x86::Local cpu(cpu_);
   NFS2_USE(cpu);
   NFS2_USE(app);
+    if (carTextures(app, cpu.sync())) /* port: native (tools/apply_native_render.py) */
+    {
+        cpu.reload();
+        return;
+    }
     // 004b7d30  53                     -push ebx
     app->getMemory<x86::reg32>(cpu.esp-4) = cpu.ebx;
     cpu.esp -= 4;

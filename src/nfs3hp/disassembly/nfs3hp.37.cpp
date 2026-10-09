@@ -3,6 +3,10 @@
 
 namespace nfs3hp
 {
+// Port (tools/apply_native_movie.py): defined in native_movie.cpp.
+bool madMacroblock(win32::WinApplication* app, x86::CPU& cpu);
+// Port (tools/apply_native_movie.py): defined in native_movie.cpp.
+bool madBeginFrame(win32::WinApplication* app, x86::CPU& cpu);
 
 /* align: skip 0x00 0x00 0x00 0x00 0x00 0x00 0x00 0x00 0x00 0x00 */
 void Application::sub_4f0880(WinApplication* app, x86::CPU& cpu)
@@ -13221,6 +13225,11 @@ void Application::sub_4f3560(WinApplication* __restrict app, x86::CPU& cpu_)
   x86::Local cpu(cpu_);
   NFS2_USE(cpu);
   NFS2_USE(app);
+    if (madBeginFrame(app, cpu.sync())) /* port: native (tools/apply_native_movie.py) */
+    {
+        cpu.reload();
+        return;
+    }
     // 004f3560  51                     -push ecx
     app->getMemory<x86::reg32>(cpu.esp-4) = cpu.ecx;
     cpu.esp -= 4;
@@ -13376,6 +13385,11 @@ void Application::sub_4f3600(WinApplication* __restrict app, x86::CPU& cpu_)
   x86::Local cpu(cpu_);
   NFS2_USE(cpu);
   NFS2_USE(app);
+    if (madMacroblock(app, cpu.sync())) /* port: native (tools/apply_native_movie.py) */
+    {
+        cpu.reload();
+        return;
+    }
     // 004f3600  56                     -push esi
     app->getMemory<x86::reg32>(cpu.esp-4) = cpu.esi;
     cpu.esp -= 4;

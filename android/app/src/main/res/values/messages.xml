@@ -5,7 +5,6 @@
       what broke, not the player what to do. -->
 
  <!-- Settings the launcher builds in code rather than in a layout. -->
- <string name="pref_phone_vibration">Phone vibration (game effects; restart game)</string>
  <string name="pref_show_gears">Show gear − / + buttons</string>
  <string name="auto_hide_delay">Auto-hide delay: %1$d s</string>
 

@@ -3,6 +3,8 @@
 
 namespace nfs3hp
 {
+// Port (tools/apply_native_render.py): defined in native_render.cpp.
+bool detailSettings(win32::WinApplication* app, x86::CPU& cpu);
 // Port (tools/apply_first_settings.py): defined in nfs3hp_main.cpp.
 bool firstSettings(win32::WinApplication* app);
 
@@ -18915,6 +18917,11 @@ void Application::sub_472d10(WinApplication* __restrict app, x86::CPU& cpu_)
   x86::Local cpu(cpu_);
   NFS2_USE(cpu);
   NFS2_USE(app);
+    if (detailSettings(app, cpu.sync())) /* port: native (tools/apply_native_render.py) */
+    {
+        cpu.reload();
+        return;
+    }
     // 00472d10  53                     -push ebx
     app->getMemory<x86::reg32>(cpu.esp-4) = cpu.ebx;
     cpu.esp -= 4;

@@ -24,6 +24,9 @@
 
 namespace nfs3hp
 {
+// menu_data.cpp: the port's versions of menu files, read in place of the game's.
+void installMenuData();
+
 /* The MAD player runs on the game thread. Android's UI thread only requests
  * that its normal cleanup path run at the next frame boundary. */
 static std::atomic_bool s_moviePlaying{false};
@@ -69,6 +72,29 @@ x86::reg32 networkPort()
         return x86::reg32(chosen > 0 && chosen < 65536 ? chosen : 9803);
     }();
     return port;
+}
+
+/* Races at the x87's extended precision, as the Modern Patch runs them
+ * (tools/apply_race_precision.py): NFS_FPU_EXTENDED, on unless it is 0.  The
+ * race loop takes the precision control down to single precision before each
+ * race, as a PC of 1998 had it, and so do four functions that call out
+ * mid-race; the Modern Patch drops that fldcw and races at the 64 bits fninit
+ * leaves.  With it on, the word the game loads keeps its
+ * rounding and exception bits and gets its precision control back at 64 bits.
+ * Every player of a network race needs the same: the race is simulated on
+ * every machine. */
+bool extendedRaces()
+{
+    static const bool on = []() {
+        const char* value = SDL_getenv("NFS_FPU_EXTENDED");
+        return !(value && SDL_strcmp(value, "0") == 0);
+    }();
+    return on;
+}
+
+x86::reg16 raceControl(x86::reg16 word)
+{
+    return extendedRaces() ? x86::reg16(word | 0x0300) : word;
 }
 
 /* Whether the player is driving.  A race is one call of the game's own -- set
@@ -2253,6 +2279,7 @@ int main(int argc, char* argv[])
         win32::File::setCdDirectory(exeDir.c_str());
     }
 #endif
+    nfs3hp::installMenuData();
     /* The game pumps its message queue from a guest thread, which is not
      * the thread SDL considers "main" on Android.  SDL only warns about
      * it, but the warning is a modal dialog that has to be dismissed on
@@ -2394,7 +2421,14 @@ int main(int argc, char* argv[])
         const char* single = SDL_getenv("NFS_FPU_SINGLE");
         if (single && SDL_strcmp(single, "0") == 0)
             x86::FPU::s_singlePrecision = 4;
-        SDL_Log("[FPU] races in single precision, as on a PC: %s", x86::FPU::s_singlePrecision == 0 ? "on" : "off");
+        SDL_Log("[FPU] single-precision rounding where the game asks for it: %s", x86::FPU::s_singlePrecision == 0 ? "on" : "off");
+#ifdef WITH_PEDANTIC_FPU
+        SDL_Log("[FPU] x87 arithmetic: 80 bits, exact (src/lib/x87soft.cpp); races at %s precision",
+                nfs3hp::extendedRaces() ? "extended, as the Modern Patch" : "single, as the original");
+#else
+        SDL_Log("[FPU] x87 arithmetic: doubles; races at %s precision",
+                nfs3hp::extendedRaces() ? "extended (53 bits), as the Modern Patch" : "single, as the original");
+#endif
         s_touchMutex = SDL_CreateMutex();
 #ifndef __ANDROID__
         loadTouchScript();

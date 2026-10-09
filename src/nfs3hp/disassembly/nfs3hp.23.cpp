@@ -3,6 +3,10 @@
 
 namespace nfs3hp
 {
+// Port (tools/apply_native_render.py): defined in native_render.cpp.
+bool glareColours(win32::WinApplication* app, x86::CPU& cpu);
+// Port (tools/apply_native_loading.py): defined in native_loading.cpp.
+bool fceRecords(win32::WinApplication* app, x86::CPU& cpu);
 // Port (tools/apply_native_vertices.py): defined in native_vertices.cpp.
 bool objectVerticesNearest(win32::WinApplication* app, x86::CPU& cpu);
 // Port (tools/apply_native_vertices.py): defined in native_vertices.cpp.
@@ -4296,6 +4300,11 @@ void Application::sub_49cfa0(WinApplication* __restrict app, x86::CPU& cpu_)
   x86::Local cpu(cpu_);
   NFS2_USE(cpu);
   NFS2_USE(app);
+    if (fceRecords(app, cpu.sync())) /* port: native (tools/apply_native_loading.py) */
+    {
+        cpu.reload();
+        return;
+    }
     // 0049cfa0  53                     -push ebx
     app->getMemory<x86::reg32>(cpu.esp-4) = cpu.ebx;
     cpu.esp -= 4;
@@ -6516,6 +6525,11 @@ void Application::sub_49d800(WinApplication* __restrict app, x86::CPU& cpu_)
   x86::Local cpu(cpu_);
   NFS2_USE(cpu);
   NFS2_USE(app);
+    if (glareColours(app, cpu.sync())) /* port: native (tools/apply_native_render.py) */
+    {
+        cpu.reload();
+        return;
+    }
     // 0049d800  53                     -push ebx
     app->getMemory<x86::reg32>(cpu.esp-4) = cpu.ebx;
     cpu.esp -= 4;

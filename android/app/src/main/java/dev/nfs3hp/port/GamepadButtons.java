@@ -15,6 +15,11 @@ import java.util.Locale;
  * settings.  That is what lets both pads share one list of actions and one
  * set of defaults.
  *
+ * A pad set to Digital drives a race as a keyboard does instead: its D-pad
+ * steers, accelerates and brakes and its triggers work the pedals, each one
+ * sending its player's key for that (ControlProfile.drivingKeys), whatever the
+ * D-pad is set to here.  Only in a race: the menus are the same either way.
+ *
  * Resolved here into final values for the native side, which reads them as
  * NFS_GAMEPAD<n>_<BUTTON> (s_padButtons in sdl-backend/gamepad.cpp).
  */
@@ -26,6 +31,23 @@ final class GamepadButtons
         "left_stick", "right_stick", "back", "start",
         "dpad_up", "dpad_down", "dpad_left", "dpad_right",
     };
+
+    /* What the D-pad does in a race on a pad set to Digital, parallel to
+     * BUTTON_IDS: null for a button that keeps what it is set to. */
+    private static final String[] DIGITAL_ACTIONS = {
+        null, null, null, null, null, null,
+        null, null, null, null,
+        "accelerate", "brake", "steer_left", "steer_right",
+    };
+
+    /* The triggers, which the native table lists after the buttons.  They are
+     * the pedals' axis and no button -- except on a pad set to Digital, where
+     * in a race they press its player's brake and accelerate keys. */
+    static final String[] TRIGGER_IDS = { "left_trigger", "right_trigger" };
+    private static final String[] TRIGGER_ACTIONS = { "brake", "accelerate" };
+
+    /* The four driving actions in the order ControlProfile keeps their keys. */
+    private static final String[] DRIVING_ACTIONS = { "steer_right", "steer_left", "accelerate", "brake" };
 
     static final String NONE = "none";
 
@@ -116,6 +138,71 @@ final class GamepadButtons
         for (String button : BUTTON_IDS)
             edit.remove(preferenceKey(slot, button));
         edit.apply();
+    }
+
+    /** Whether the pad in this slot drives a race on keys (Digital) rather than
+     *  on its stick and triggers (Analog, the default). */
+    static boolean digital(SharedPreferences preferences, int slot)
+    {
+        return preferences.getBoolean(GamePreferences.GAMEPAD_DIGITAL[slot], false);
+    }
+
+    static void setDigital(SharedPreferences preferences, int slot, boolean digital)
+    {
+        preferences.edit().putBoolean(GamePreferences.GAMEPAD_DIGITAL[slot], digital).apply();
+    }
+
+    /** What a button does in a race on a pad set to Digital, in place of what
+     *  it is set to; null for a button that keeps its own. */
+    static String digitalAction(int button)
+    {
+        return DIGITAL_ACTIONS[button];
+    }
+
+    /** What a button sends while a race is driven (NFS_GAMEPAD&lt;n&gt;_&lt;BUTTON&gt;):
+     *  the action set for it, as its player's key -- or, on a pad set to
+     *  Digital, the D-pad's driving.  Digital, steering and the pedals are
+     *  keys wherever they are set, never the pad's axes.
+     *
+     *  The second pad never sends a key player one drives with.  Its D-pad's
+     *  menu actions are the arrows, and the arrows steer player one whenever
+     *  player one drives on keys -- on the touch controls, or with a first pad
+     *  set to Digital: sent in split screen they would steer the other car. */
+    static String raceValue(SharedPreferences preferences, int slot, int button)
+    {
+        String action = action(preferences, slot, button);
+        if (digital(preferences, slot) && DIGITAL_ACTIONS[button] != null)
+            action = DIGITAL_ACTIONS[button];
+        return forPlayer(preferences, slot, drivingValue(preferences, slot, action));
+    }
+
+    /** What a trigger sends in a race: its pedal's key on a pad set to Digital,
+     *  nothing otherwise -- the trigger then works the pedals' axis. */
+    static String triggerRaceValue(SharedPreferences preferences, int slot, int trigger)
+    {
+        if (!digital(preferences, slot))
+            return "";
+        return forPlayer(preferences, slot, drivingValue(preferences, slot, TRIGGER_ACTIONS[trigger]));
+    }
+
+    /* Steering and the pedals as keys on a pad set to Digital, and every other
+     * action as it always is. */
+    private static String drivingValue(SharedPreferences preferences, int slot, String action)
+    {
+        if (digital(preferences, slot))
+            for (int i = 0; i < DRIVING_ACTIONS.length; ++i)
+                if (DRIVING_ACTIONS[i].equals(action))
+                    return ControlProfile.drivingKeys(preferences, slot)[i].sdlName;
+        return environmentValue(slot, action);
+    }
+
+    private static String forPlayer(SharedPreferences preferences, int slot, String value)
+    {
+        if (slot != 0)
+            for (ControlProfile.Key key : ControlProfile.drivingKeys(preferences, 0))
+                if (key.sdlName.equals(value))
+                    return "";
+        return value;
     }
 
     static String environmentName(int slot, String buttonId)

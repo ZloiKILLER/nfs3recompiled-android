@@ -1,0 +1,5 @@
+x87 control word 0x37f vs decompiled (double), 20 frames 320x240
+macroblocks with any difference: 0 of 6000
+luma samples different: 0 of 1536000 (0.0000%)
+chroma bytes different: 0
+largest difference: 0 (of 0..127)

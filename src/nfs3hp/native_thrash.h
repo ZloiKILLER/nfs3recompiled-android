@@ -33,6 +33,13 @@ bool nativeChecking();
 bool nativesEnabled();
 bool nativeOriginalRunning();
 
+/* From native_vertices.cpp, for native_render.cpp: NFS_NATIVE_CHECK's
+ * whole-memory check of `native` against the generated function at `address`,
+ * once a second, the triangles it hands THRASH compared when `triangles`;
+ * `state` (null at first) keeps the function's counts. */
+void nativeCheckWhole(win32::WinApplication* app, x86::CPU& cpu, const char* name, x86::reg32 address,
+                      void*& state, void (*native)(win32::WinApplication*, x86::CPU&), bool triangles);
+
 }
 
 #endif

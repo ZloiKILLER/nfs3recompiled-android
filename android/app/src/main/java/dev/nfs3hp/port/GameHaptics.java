@@ -15,11 +15,13 @@ import java.util.Locale;
 import java.util.Objects;
 
 /** Routes finite effects to the motors of the device slot they were created on:
- *  slot 0 is player one -- the phone and the first pad, both of which can play
- *  at once -- and slot 1 is the second pad.  The phone and a pad each have a
- *  switch in the launcher, and each plays in its own way: a pad what the game
- *  sends, as strong as the game's Force Feedback menu says; the phone only
- *  jolts, the engine's revs and cornering. */
+ *  slot 0 is player one -- the phone or the first pad -- and slot 1 is the
+ *  second pad.  Which of the two kinds plays at all is one choice in the
+ *  launcher, Controls -> Force Feedback (GamePreferences.FORCE_FEEDBACK): the
+ *  phone, the gamepads, or nothing, never the phone and a pad at once.  Each
+ *  plays in its own way: a pad what the game sends, as strong as the game's
+ *  Force Feedback menu says; the phone only jolts, the engine's revs and
+ *  cornering. */
 final class GameHaptics {
     private static final String TAG = "GameHaptics";
     /** Matches win32::Gamepad::kSlotCount on the native side. */
@@ -158,13 +160,12 @@ final class GameHaptics {
         final long now=SystemClock.uptimeMillis();
         InputDevice pad=gamepadForSlot(slot);
         if(pad!=null)reportController(pad);
-        /* Both outputs, not one: the phone belongs to player one whether or not
-         * a pad is also in their hands.  The phone answers to its own switch in
-         * the launcher and picks out what suits it (drivePhone).  A pad answers
-         * to a switch of its own, in Controls -> Gamepads and off until the
-         * player turns it on, and plays what the game sends: how strong is the
-         * game's Force Feedback menu's to decide.  Switched off, a pad that was
-         * vibrating is let go at once. */
+        /* Both outputs are kept up to date, and the player's one choice in
+         * Controls -> Force Feedback lets at most one kind of them play: the
+         * phone, which belongs to player one and picks out what suits it
+         * (drivePhone), or the pads, which play what the game sends -- how
+         * strong is the game's Force Feedback menu's to decide.  An output that
+         * is not the chosen one is let go at once if it was vibrating. */
         if(slot==0) {
             phoneImpact=impact;
             phoneEngine=engine;
@@ -173,7 +174,7 @@ final class GameHaptics {
             traceLevel=level;traceRoad=road;traceRoadHz=roadHz;
             drivePhone(now);
         }
-        final boolean padOn=preferences.getBoolean(GamePreferences.GAMEPAD_VIBRATION,false);
+        final boolean padOn=GamePreferences.FORCE_FEEDBACK_GAMEPAD.equals(GamePreferences.forceFeedback(preferences));
         drivePad(padOutputs[slot],padOn&&pad!=null&&GamepadSlots.isGamepad(pad)?vibratorOf(pad):null,
                  impact,road,roadHz,engine,engineHz,now);
         if(level>0)trace(slot,level,impact,road,roadHz,engine,engineHz);
@@ -196,7 +197,7 @@ final class GameHaptics {
      * after the last send.  With nothing steady to play, the engine ticks. */
     private void drivePhone(long now) {
         if (phone == null) return;
-        if (!preferences.getBoolean(GamePreferences.TOUCH_VIBRATION, false)) {
+        if (!phoneOn()) {
             if (phoneOutput.amplitude > 0) cancel(phone);
             phoneOutput.amplitude = 0;
             return;
@@ -466,10 +467,14 @@ final class GameHaptics {
             + " amplitudeControl=" + (vibrator != null && vibrator.hasAmplitudeControl()));
     }
 
-    /** One effect on the phone, while its switch is on. */
+    /** Whether the phone is where the game's effects are felt. */
+    private boolean phoneOn() {
+        return GamePreferences.FORCE_FEEDBACK_PHONE.equals(GamePreferences.forceFeedback(preferences));
+    }
+
+    /** One effect on the phone, while it is the chosen output. */
     boolean phonePulse(long duration, int amplitude) {
-        return preferences.getBoolean(GamePreferences.TOUCH_VIBRATION, false)
-            && pulse(phone, duration, amplitude);
+        return phoneOn() && pulse(phone, duration, amplitude);
     }
 
     /** A pad plays the game's level as it arrives.  How strong is the game's to

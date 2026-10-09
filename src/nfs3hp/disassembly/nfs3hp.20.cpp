@@ -3,6 +3,34 @@
 
 namespace nfs3hp
 {
+// Port (tools/apply_native_render.py): defined in native_render.cpp.
+bool hud(win32::WinApplication* app, x86::CPU& cpu);
+// Port (tools/apply_native_render.py): defined in native_render.cpp.
+bool hudBand(win32::WinApplication* app, x86::CPU& cpu);
+// Port (tools/apply_native_render.py): defined in native_render.cpp.
+bool segmentMeter(win32::WinApplication* app, x86::CPU& cpu);
+// Port (tools/apply_native_render.py): defined in native_render.cpp.
+bool cockpit(win32::WinApplication* app, x86::CPU& cpu);
+// Port (tools/apply_native_render.py): defined in native_render.cpp.
+bool barGauges(win32::WinApplication* app, x86::CPU& cpu);
+// Port (tools/apply_native_render.py): defined in native_render.cpp.
+bool needles(win32::WinApplication* app, x86::CPU& cpu);
+// Port (tools/apply_native_render.py): defined in native_render.cpp.
+bool startLights(win32::WinApplication* app, x86::CPU& cpu);
+// Port (tools/apply_native_render.py): defined in native_render.cpp.
+bool hudInset(win32::WinApplication* app, x86::CPU& cpu);
+// Port (tools/apply_native_render.py): defined in native_render.cpp.
+bool hudTable(win32::WinApplication* app, x86::CPU& cpu);
+// Port (tools/apply_native_render.py): defined in native_render.cpp.
+bool hudPanel(win32::WinApplication* app, x86::CPU& cpu);
+// Port (tools/apply_native_render.py): defined in native_render.cpp.
+bool hudDial(win32::WinApplication* app, x86::CPU& cpu);
+// Port (tools/apply_native_render.py): defined in native_render.cpp.
+bool hudPicture(win32::WinApplication* app, x86::CPU& cpu);
+// Port (tools/apply_native_render.py): defined in native_render.cpp.
+bool hudRect(win32::WinApplication* app, x86::CPU& cpu);
+// Port (tools/apply_native_render.py): defined in native_render.cpp.
+bool countdown(win32::WinApplication* app, x86::CPU& cpu);
 // Port (tools/apply_widescreen.py): defined in nfs3hp_main.cpp.
 void widescreenHudRect(win32::WinApplication* app, x86::reg32 slot);
 // Port (tools/apply_hud_editor.py): defined in nfs3hp_main.cpp.
@@ -841,6 +869,11 @@ void Application::sub_4800a0(WinApplication* __restrict app, x86::CPU& cpu_)
   x86::Local cpu(cpu_);
   NFS2_USE(cpu);
   NFS2_USE(app);
+    if (hudBand(app, cpu.sync())) /* port: native (tools/apply_native_render.py) */
+    {
+        cpu.reload();
+        return;
+    }
     // 004800a0  53                     -push ebx
     app->getMemory<x86::reg32>(cpu.esp-4) = cpu.ebx;
     cpu.esp -= 4;
@@ -3531,6 +3564,11 @@ void Application::sub_480910(WinApplication* __restrict app, x86::CPU& cpu_)
   x86::Local cpu(cpu_);
   NFS2_USE(cpu);
   NFS2_USE(app);
+    if (hudRect(app, cpu.sync())) /* port: native (tools/apply_native_render.py) */
+    {
+        cpu.reload();
+        return;
+    }
     // 00480910  56                     -push esi
     app->getMemory<x86::reg32>(cpu.esp-4) = cpu.esi;
     cpu.esp -= 4;
@@ -5168,6 +5206,11 @@ void Application::sub_480fc0(WinApplication* __restrict app, x86::CPU& cpu_)
   x86::Local cpu(cpu_);
   NFS2_USE(cpu);
   NFS2_USE(app);
+    if (hudPicture(app, cpu.sync())) /* port: native (tools/apply_native_render.py) */
+    {
+        cpu.reload();
+        return;
+    }
     // 00480fc0  53                     -push ebx
     app->getMemory<x86::reg32>(cpu.esp-4) = cpu.ebx;
     cpu.esp -= 4;
@@ -5729,6 +5772,11 @@ void Application::sub_4812e0(WinApplication* __restrict app, x86::CPU& cpu_)
   x86::Local cpu(cpu_);
   NFS2_USE(cpu);
   NFS2_USE(app);
+    if (hudDial(app, cpu.sync())) /* port: native (tools/apply_native_render.py) */
+    {
+        cpu.reload();
+        return;
+    }
     // 004812e0  53                     -push ebx
     app->getMemory<x86::reg32>(cpu.esp-4) = cpu.ebx;
     cpu.esp -= 4;
@@ -7203,6 +7251,11 @@ void Application::sub_481aa0(WinApplication* __restrict app, x86::CPU& cpu_)
   x86::Local cpu(cpu_);
   NFS2_USE(cpu);
   NFS2_USE(app);
+    if (hudPanel(app, cpu.sync())) /* port: native (tools/apply_native_render.py) */
+    {
+        cpu.reload();
+        return;
+    }
     // 00481aa0  53                     -push ebx
     app->getMemory<x86::reg32>(cpu.esp-4) = cpu.ebx;
     cpu.esp -= 4;
@@ -7519,6 +7572,11 @@ void Application::sub_481c50(WinApplication* __restrict app, x86::CPU& cpu_)
   x86::Local cpu(cpu_);
   NFS2_USE(cpu);
   NFS2_USE(app);
+    if (hudTable(app, cpu.sync())) /* port: native (tools/apply_native_render.py) */
+    {
+        cpu.reload();
+        return;
+    }
     // 00481c50  53                     -push ebx
     app->getMemory<x86::reg32>(cpu.esp-4) = cpu.ebx;
     cpu.esp -= 4;
@@ -10164,6 +10222,11 @@ void Application::sub_482620(WinApplication* __restrict app, x86::CPU& cpu_)
   x86::Local cpu(cpu_);
   NFS2_USE(cpu);
   NFS2_USE(app);
+    if (countdown(app, cpu.sync())) /* port: native (tools/apply_native_render.py) */
+    {
+        cpu.reload();
+        return;
+    }
     // 00482620  53                     -push ebx
     app->getMemory<x86::reg32>(cpu.esp-4) = cpu.ebx;
     cpu.esp -= 4;
@@ -11246,6 +11309,11 @@ void Application::sub_482b00(WinApplication* __restrict app, x86::CPU& cpu_)
   x86::Local cpu(cpu_);
   NFS2_USE(cpu);
   NFS2_USE(app);
+    if (hud(app, cpu.sync())) /* port: native (tools/apply_native_render.py) */
+    {
+        cpu.reload();
+        return;
+    }
   goto start;
 dynamic_jump:
   switch(cpu.ip)
@@ -28344,6 +28412,11 @@ void Application::sub_487210(WinApplication* __restrict app, x86::CPU& cpu_)
   x86::Local cpu(cpu_);
   NFS2_USE(cpu);
   NFS2_USE(app);
+    if (hudInset(app, cpu.sync())) /* port: native (tools/apply_native_render.py) */
+    {
+        cpu.reload();
+        return;
+    }
     // 00487210  53                     -push ebx
     app->getMemory<x86::reg32>(cpu.esp-4) = cpu.ebx;
     cpu.esp -= 4;
@@ -32581,6 +32654,11 @@ void Application::sub_4880b0(WinApplication* __restrict app, x86::CPU& cpu_)
   x86::Local cpu(cpu_);
   NFS2_USE(cpu);
   NFS2_USE(app);
+    if (needles(app, cpu.sync())) /* port: native (tools/apply_native_render.py) */
+    {
+        cpu.reload();
+        return;
+    }
     // 004880b0  53                     -push ebx
     app->getMemory<x86::reg32>(cpu.esp-4) = cpu.ebx;
     cpu.esp -= 4;
@@ -33314,6 +33392,11 @@ void Application::sub_488470(WinApplication* __restrict app, x86::CPU& cpu_)
   x86::Local cpu(cpu_);
   NFS2_USE(cpu);
   NFS2_USE(app);
+    if (barGauges(app, cpu.sync())) /* port: native (tools/apply_native_render.py) */
+    {
+        cpu.reload();
+        return;
+    }
     // 00488470  53                     -push ebx
     app->getMemory<x86::reg32>(cpu.esp-4) = cpu.ebx;
     cpu.esp -= 4;
@@ -36686,6 +36769,11 @@ void Application::sub_489240(WinApplication* __restrict app, x86::CPU& cpu_)
   x86::Local cpu(cpu_);
   NFS2_USE(cpu);
   NFS2_USE(app);
+    if (cockpit(app, cpu.sync())) /* port: native (tools/apply_native_render.py) */
+    {
+        cpu.reload();
+        return;
+    }
     // 00489240  53                     -push ebx
     app->getMemory<x86::reg32>(cpu.esp-4) = cpu.ebx;
     cpu.esp -= 4;
@@ -48072,6 +48160,11 @@ void Application::sub_48c0e0(WinApplication* __restrict app, x86::CPU& cpu_)
   x86::Local cpu(cpu_);
   NFS2_USE(cpu);
   NFS2_USE(app);
+    if (segmentMeter(app, cpu.sync())) /* port: native (tools/apply_native_render.py) */
+    {
+        cpu.reload();
+        return;
+    }
     // 0048c0e0  56                     -push esi
     app->getMemory<x86::reg32>(cpu.esp-4) = cpu.esi;
     cpu.esp -= 4;
@@ -49127,6 +49220,11 @@ void Application::sub_48c7c0(WinApplication* __restrict app, x86::CPU& cpu_)
   x86::Local cpu(cpu_);
   NFS2_USE(cpu);
   NFS2_USE(app);
+    if (startLights(app, cpu.sync())) /* port: native (tools/apply_native_render.py) */
+    {
+        cpu.reload();
+        return;
+    }
     // 0048c7c0  56                     -push esi
     app->getMemory<x86::reg32>(cpu.esp-4) = cpu.esi;
     cpu.esp -= 4;

@@ -116,7 +116,6 @@
  <string name="touch_keys_title">Dokunmatik kontrol tuşları</string>
  <string name="touch_keys_hint">Her ekran kontrolünün gönderdiği klavye tuşu. Oyunda ayarlanan tuşla eşleşmelidir.</string>
 
- <string name="pref_phone_vibration">Telefon titreşimi (oyun efektleri; oyunu yeniden başlat)</string>
  <string name="pref_show_gears">Vites düğmelerini − / + göster</string>
  <string name="auto_hide_delay">Gecikme: %1$d sn</string>
  <string name="editor_button_size">Düğme: %1$d%%</string>
@@ -153,7 +152,7 @@
  <string name="faq_size"><b>Boyut neyi değiştirir?</b>\nDüğme boyutu varsayılan kontrolleri ölçekler. Konumları ve boyutları düzenle ekranında bir kontrolü sürükle ve boyut kaydırıcısıyla boyutunu değiştir; kontrol tam çizildiği yerde tepki verir ve yüzdeler varsayılan kontrole göredir. Değişiklikler kendiliğinden kaydedilir. Düzenleyici bir ızgara gösterir; Izgaraya hizala açıkken sürüklenen kontrol ızgaraya oturur.</string>
  <string name="faq_edges"><b>Kenarlar ve yükseklik</b>\nKenarlardan uzaklık varsayılan düğmeleri içe kaydırır. Sistem çentikleri gözetilir. Elle yerleştirilen düğmeler kayıtlı konumlarını korur.</string>
  <string name="faq_hiding"><b>Saydamlık ve otomatik gizleme</b>\nSaydamlık normal görünürlüğü belirler. Otomatik gizleme tüm parmaklar kaldırıldıktan sonra, 1–30 saniyelik gecikmeyle başlar. Gizli düğmeler ilk dokunuşta zaten tepki verir ve yeniden görünür olur. Bir düğmeyi basılı tutmak gizlemeyi engeller. 1. oyuncunun kumandasında bir tuşa basmak düğmeleri hemen gizler; bir sonraki dokunuş onları geri getirir. 2. oyuncunun kumandası onlara dokunmaz, böylece biri ekrandan sürerken diğeri kumandayla oynayabilir.</string>
- <string name="faq_vibration"><b>Titreşim</b>\nOyunun Force Feedback efektleri telefona ve Kumanda 1\'e ulaşır. Oyun yalnızca bir force feedback cihazını sürer, bu yüzden Kumanda 2 hiç titreşmez. Telefon titreşimi Kontroller → Dokunma bölümünde açılıp kapatılır. Kumanda titreşimi Kontroller → Kumandalar bölümünde açılana kadar kapalıdır; gücü oyunun kendisinde ayarlanır: Options → Controllers → Force Feedback. Efektler oyundan gelir, asla düğmeye basmaktan gelmez.</string>
+ <string name="faq_vibration"><b>Titreşim</b>\nOyunun Force Feedback efektleri telefonda ya da Kumanda 1\'de hissedilir, asla ikisinde birden değil: Kontroller → Force Feedback bölümünde Kapalı, Telefon ya da Kumanda\'yı seç. Oyun yalnızca bir force feedback cihazını sürer, bu yüzden Kumanda 2 hiç titreşmez. Kumandanın titreşim gücü oyunun kendisinde ayarlanır: Options → Controllers → Force Feedback. Efektler oyundan gelir, asla düğmeye basmaktan gelmez.</string>
  <string name="faq_mapping"><b>Kumandalar</b>\nOyun her zaman iki kumanda görür: Kumanda 1, dokunmatik kontrollerle birlikte 1. oyuncudur, Kumanda 2 ise 2. oyuncudur. Kontroller → Kumandalar bölümünde üzerindeki bir düğmeye basarak hangi kumandanın hangisi olduğunu seç, her düğmenin ne yaptığını ayarla, ardından Kumanda AÇIK düğmesine bir kez bas. Bu, uygun kontrolleri oyun ayarlarına yazar ve eski dosyanın yedeğini alır. Sol çubuk direksiyonu çevirir, tetikler gaz verir ve fren yapar. Kumandanın iki düğme takımı vardır, tıpkı dokunmatik kontrollerin iki yerleşimi olduğu gibi: burada ayarladığın yarış takımı ve menülerle tekrarlar için sabit olan takım — orada Cross / A onaylar, Circle / B geri gider, yön tuşları seçimi taşır. Klavyeyle oynamak için bunun yerine Oyun varsayılanı seçeneğini yaz.</string>
  <string name="faq_lights"><b>Farlar ve piste dönüş</b>\n☼ L gönderir. ↻ piste dönmek için R gönderir. Tuşlar Kontroller → Dokunma → Tuşlar bölümünde değiştirilebilir.</string>
  <string name="faq_screen_data"><b>Ekran ve oyun verileri</b>\nYatay oyunu yatayda kilitler; Otomatik dönüşe izin verir. FPS sınırı kare hızını kısar; daha düşük bir değer saniyedeki işi azaltır. «Oyun verileri» içe aktarmaları yönetir ve hangi kümenin etkin olduğunu gösterir. Bir küme hazır olduğunda «Oyna» etkinleşir.</string>
@@ -177,9 +176,20 @@
  <string name="help_split_write"><b>2. Kontrolleri oyuna yaz</b>\nAynı ekranda Kumanda AÇIK düğmesine bas ve onayla. Bu bir kez gerekir; tekrar yalnızca başka oyun verileri kurduktan ya da kontrolleri oyunun içinde değiştirdikten sonra gerekir. Önceki ayarların yedeği alınır.</string>
  <string name="help_split_race"><b>3. Bölünmüş ekranda yarış başlat</b>\nOyunu başlat ve Two Players… seçeneğini seç. 1. oyuncu Kumanda 1 ya da dokunmatik kontrollerle, 2. oyuncu Kumanda 2 ile sürer. Menülerde iki kumandadan biriyle gezinilebilir: yön tuşları seçimi taşır, Cross / A ya da Options / Menu onaylar, Circle / B ya da Create / View geri gider.</string>
  <string name="help_split_driving"><b>Sürüş</b>\nSol çubuk direksiyonu çevirir, sağ tetik gaz verir, sol tetik fren yapar. Varsayılan olarak Circle / B el freni, Square / X çivili şerit bırakır, Cross / A arkaya bakar, Triangle / Y kamerayı değiştirir, R1 / L1 vites değiştirir, Create / View arabayı piste geri koyar, Options / Menu yarışı duraklatır, L3 korna çalar, R3 farları yakar.</string>
- <string name="help_split_notes"><b>Bilmekte fayda var</b>\nYalnızca Kumanda 1 ve telefon titreşir: oyun yalnızca bir force feedback cihazını sürer. Kontroller artık uyuşmazsa, örneğin oyunun içinde sıfırladıktan sonra, Kumanda AÇIK düğmesine yeniden bas. Klavyeyle oynamak için bunun yerine Oyun varsayılanı düğmesine bas. Dokunmatik kontroller Kontroller → Dokunma bölümünden kapatılır.</string>
- <string name="gamepad_vibration">Kumanda titreşimi</string>
- <string name="gamepad_vibration_note">Varsayılan olarak kapalı. Gücü oyunda ayarlanır: Options → Controllers → Force Feedback.</string>
+ <string name="help_split_digital"><b>Analog ya da Dijital</b>\nHer kumandanın Kontroller → Kumandalar bölümünde kendi Analog / Dijital anahtarı vardır. Dijital, yarışı klavye gibi sürer: yön tuşları sol ve sağ direksiyonu çevirir, yön tuşu yukarı ve sağ tetik gaz verir, yön tuşu aşağı ve sol tetik fren yapar, çubuk ise direksiyonu çevirmez. Menüler iki durumda da aynı çalışır. İki kumanda hiçbir tuşu paylaşmaz, bu yüzden bölünmüş ekranda her biri yalnızca kendi arabasını sürer.</string>
+ <string name="help_split_notes"><b>Bilmekte fayda var</b>\nKontroller → Force Feedback bölümünde hangisi seçildiyse yalnızca Kumanda 1 ya da telefon titreşir: oyun yalnızca bir force feedback cihazını sürer. Kontroller artık uyuşmazsa, örneğin oyunun içinde sıfırladıktan sonra, Kumanda AÇIK düğmesine yeniden bas. Klavyeyle oynamak için bunun yerine Oyun varsayılanı düğmesine bas. Dokunmatik kontroller Kontroller → Dokunma bölümünden kapatılır.</string>
+ <string name="gamepad_mode_analog">Analog</string>
+ <string name="gamepad_mode_digital">Dijital</string>
+ <string name="gamepad_analog_note">Yarışta sol çubuk direksiyonu çevirir, sağ tetik gaz verir, sol tetik fren yapar.</string>
+ <string name="gamepad_digital_note">Yarışta yön tuşları tuş gibi direksiyonu çevirir, gaz verir ve fren yapar; tetikler de gaz verir ve fren yapar. Çubuk direksiyonu çevirmez.</string>
+ <string name="gamepad_buttons_digital_note">Bu kumanda Dijital\'de: yarışta yön tuşları, burada onlara ne atanmış olursa olsun direksiyonu çevirir, gaz verir ve fren yapar.</string>
+ <string name="force_feedback_hint">Oyunun Force Feedback efektlerinin hissedildiği yer: telefon ya da kumanda, asla ikisi birden değil. Oyun bir sonraki açılışında geçerli olur.</string>
+ <string name="force_feedback_off">Kapalı</string>
+ <string name="force_feedback_phone">Telefon</string>
+ <string name="force_feedback_gamepad">Kumanda</string>
+ <string name="force_feedback_off_note">Hiçbir şey titreşmez.</string>
+ <string name="force_feedback_phone_note">Telefon çarpışmaları, inişleri ve vites değişimlerini, yüksek devirde motoru ve keskin virajları verir.</string>
+ <string name="force_feedback_gamepad_note">Kumanda 1, oyunun efektlerini olduğu gibi verir. Güçleri oyunda ayarlanır: Options → Controllers → Force Feedback.</string>
  <string name="editor_snap_grid">Izgaraya hizala</string>
  <string name="network_title">Ağ</string>
  <string name="network_address">Bu cihazın ağdaki adresi: %1$s</string>

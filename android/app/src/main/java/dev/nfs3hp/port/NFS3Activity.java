@@ -91,26 +91,38 @@ public class NFS3Activity extends SDLActivity
                 GamePreferences.keyName(GamePreferences.getTouchKey(preferences,action)));
         }
         /* What every pad button sends, for both slots: the right player's key,
-         * an axis, or nothing.  Resolved here, so the native side only ever
-         * sees final values. */
+         * an axis, or nothing -- on a pad set to Digital, the D-pad's driving
+         * keys.  Resolved here, so the native side only ever sees final
+         * values. */
         for(int slot=0;slot<GamepadSlots.COUNT;slot++)
+        {
             for(int button=0;button<GamepadButtons.BUTTON_IDS.length;button++)
             {
                 setEnv(GamepadButtons.environmentName(slot,GamepadButtons.BUTTON_IDS[button]),
-                    GamepadButtons.environmentValue(slot,GamepadButtons.action(preferences,slot,button)));
+                    GamepadButtons.raceValue(preferences,slot,button));
                 /* And what the same button sends while a menu or a replay is on
                  * the screen, where driving actions mean nothing. */
                 setEnv(GamepadButtons.menuEnvironmentName(slot,GamepadButtons.BUTTON_IDS[button]),
                     GamepadButtons.menuEnvironmentValue(button));
             }
+            /* The triggers: the pedals' axis, and in a race on a pad set to
+             * Digital the pedals' keys too.  Nothing in the menus. */
+            for(int trigger=0;trigger<GamepadButtons.TRIGGER_IDS.length;trigger++)
+            {
+                setEnv(GamepadButtons.environmentName(slot,GamepadButtons.TRIGGER_IDS[trigger]),
+                    GamepadButtons.triggerRaceValue(preferences,slot,trigger));
+                setEnv(GamepadButtons.menuEnvironmentName(slot,GamepadButtons.TRIGGER_IDS[trigger]),"");
+            }
+        }
         /* How player one is about to drive, decided before the game reads its
          * settings.  With a pad in the first slot the game steers on that pad's
          * axes and the on-screen controls reach them through the port; with no
-         * pad the on-screen controls are bound as the keyboard they are, and
-         * the game steers them itself -- which is what makes a race driven on
-         * them one the game can replay.  The native side is told which it is,
-         * because in the second case it must keep out of the way: no folding
-         * those keys into axes, and no holding the game's steering flag up. */
+         * pad, or a pad set to Digital, the on-screen controls and the pad are
+         * bound as the keyboard they are, and the game steers them itself --
+         * which is what makes a race driven on them one the game can replay.
+         * The native side is told which it is, because in the second case it
+         * must keep out of the way: no folding those keys into axes, and no
+         * holding the game's steering flag up. */
         boolean padForPlayerOne = GamepadSlots.resolve(preferences)[0] != null;
         java.io.File dataRoot = getExternalFilesDir(null);
         ControlProfile.Kind driving = dataRoot == null ? null
@@ -120,12 +132,14 @@ public class NFS3Activity extends SDLActivity
          * (onFirstSettings). */
         final boolean firstStart = driving == null && dataRoot != null && !ControlProfile.hasSettings(dataRoot);
         if (firstStart)
-            driving = padForPlayerOne ? ControlProfile.Kind.GAMEPADS : ControlProfile.Kind.TOUCH;
+            driving = ControlProfile.wantedKind(preferences, padForPlayerOne);
         firstStartKind = driving == ControlProfile.Kind.TOUCH ? driving : ControlProfile.Kind.GAMEPADS;
         setEnv("NFS_TOUCH_DRIVE", driving == ControlProfile.Kind.TOUCH ? "keys" : "axes");
         AppLog.i(TAG, "driving with " + (driving == null ? "the player's own controls" : driving)
             + (firstStart ? ", into the settings the game is about to make" : "")
-            + (padForPlayerOne ? ", pad in slot 1" : ", no pad"));
+            + (padForPlayerOne ? ", pad in slot 1" : ", no pad")
+            + (GamepadButtons.digital(preferences,0) ? ", Gamepad 1 digital" : "")
+            + (GamepadButtons.digital(preferences,1) ? ", Gamepad 2 digital" : ""));
 
         String orientation = preferences.getString(GamePreferences.ORIENTATION,
             GamePreferences.ORIENTATION_LANDSCAPE);
@@ -207,6 +221,12 @@ public class NFS3Activity extends SDLActivity
             // A race without the x87's single-precision rounding, to compare frame rates.
             if (getIntent().getBooleanExtra("fpu_double", false))
                 setEnv("NFS_FPU_SINGLE", "0");
+            // Races at the original's single precision, not the Modern Patch's extended one.
+            if (getIntent().getBooleanExtra("fpu_single_races", false))
+                setEnv("NFS_FPU_EXTENDED", "0");
+            // The opponents' pull and steering on their generated code (native_ai.cpp off).
+            if (getIntent().getBooleanExtra("native_ai_off", false))
+                setEnv("NFS_NATIVE_AI", "0");
             // Each native vertex loop checked against the generated code ([NATIVE]).
             if (getIntent().getBooleanExtra("native_check", false))
                 setEnv("NFS_NATIVE_CHECK", "1");
@@ -216,6 +236,9 @@ public class NFS3Activity extends SDLActivity
             // Only the THRASH stand-ins checked (native_thrash.cpp).
             else if (getIntent().getBooleanExtra("thrash_check", false))
                 setEnv("NFS_NATIVE_CHECK", "thrash");
+            // Only the loading stand-ins checked (native_loading.cpp).
+            else if (getIntent().getBooleanExtra("load_check", false))
+                setEnv("NFS_NATIVE_CHECK", "load");
             // The generated code for all of them instead, to compare speeds.
             if (!getIntent().getBooleanExtra("natives", true))
                 setEnv("NFS_NATIVES", "0");
@@ -230,6 +253,9 @@ public class NFS3Activity extends SDLActivity
             // The rear-view mirror as the original draws it (short and coarse).
             if (!getIntent().getBooleanExtra("mirror_full", true))
                 setEnv("NFS_MIRROR_FULL", "0");
+            // The loading (RefPack, FSH, FCE, FRD) as generated rather than native.
+            if (!getIntent().getBooleanExtra("load_native", true))
+                setEnv("NFS_NATIVE_LOAD", "0");
             // voodoo2a's THRASH functions as generated rather than native.
             if (!getIntent().getBooleanExtra("thrash", true))
                 setEnv("NFS_THRASH", "0");
@@ -239,6 +265,29 @@ public class NFS3Activity extends SDLActivity
             // The native driver through the old Voodoo2 renderer (GlideRenderer).
             if (!getIntent().getBooleanExtra("thrash_gl", true))
                 setEnv("NFS_THRASH_GL", "0");
+            // eacsnd's sound driver as generated (DirectSound) rather than native into SDL.
+            if (!getIntent().getBooleanExtra("snd_native", true))
+                setEnv("NFS_SND_NATIVE", "0");
+            // The game's mixer functions in use, each set once ([SND]).
+            if (getIntent().getBooleanExtra("snd_trace", false))
+                setEnv("NFS_SND_TRACE", "1");
+            // The game's sound mixer as generated rather than native.
+            if (!getIntent().getBooleanExtra("snd_mix", true))
+                setEnv("NFS_SND_MIX", "0");
+            // Every mix both ways, native and generated, compared ([SNDCHK]).
+            if (getIntent().getBooleanExtra("snd_check", false))
+                setEnv("NFS_SND_CHECK", "1");
+            // The movies (MAD player, decoder, display) as generated rather than native,
+            // or each part: the player, the full-colour output.
+            if (!getIntent().getBooleanExtra("mad", true))
+                setEnv("NFS_MAD", "0");
+            if (!getIntent().getBooleanExtra("mad_player", true))
+                setEnv("NFS_MAD_PLAYER", "0");
+            if (!getIntent().getBooleanExtra("mad_gl", true))
+                setEnv("NFS_MAD_GL", "0");
+            // The native decoder checked against the generated one ([MAD]).
+            if (getIntent().getBooleanExtra("mad_check", false))
+                setEnv("NFS_MAD_CHECK", "1");
             String thrashOff = getIntent().getStringExtra("thrash_off");
             if (thrashOff != null)
                 setEnv("NFS_THRASH_OFF", thrashOff);
@@ -718,7 +767,8 @@ public class NFS3Activity extends SDLActivity
     }
     /** JNI entry point, invoked only for effects issued by the game.  `slot` is
      *  the DirectInput device the effect was created on: 0 is player one (the
-     *  phone and the first pad), 1 the second pad. */
+     *  phone or the first pad, whichever Controls -> Force Feedback chose), 1
+     *  the second pad. */
     public void onForceFeedback(int slot, float level, float impact, float road, float roadHz,
                                 float engine, float engineHz) {
         long sent=android.os.SystemClock.uptimeMillis();
@@ -785,8 +835,9 @@ public class NFS3Activity extends SDLActivity
      *  the game then saves the file itself.  On the game's thread, before its
      *  first menu is drawn.  Returns whether the block was changed. */
     public boolean onFirstSettings(byte[] config) {
-        boolean laid=ControlProfile.firstStart(config,firstStartKind,
-            ControlProfile.touchDriving(GamePreferences.get(this)),getExternalFilesDir(null));
+        SharedPreferences preferences=GamePreferences.get(this);
+        boolean laid=ControlProfile.firstStart(config,firstStartKind,ControlProfile.touchDriving(preferences),
+            GamepadButtons.digital(preferences,1),getExternalFilesDir(null));
         AppLog.i(TAG,laid?"a new player's settings: the phone's, with "+firstStartKind
             :"a new player's settings: not a settings block, left as the game made it");
         return laid;

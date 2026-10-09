@@ -3,6 +3,28 @@
 
 namespace nfs3hp
 {
+// Port (tools/apply_native_render.py): defined in native_render.cpp.
+bool cabinTextures(win32::WinApplication* app, x86::CPU& cpu);
+// Port (tools/apply_native_render.py): defined in native_render.cpp.
+bool pieceTexture(win32::WinApplication* app, x86::CPU& cpu);
+// Port (tools/apply_native_render.py): defined in native_render.cpp.
+bool paletteTexture(win32::WinApplication* app, x86::CPU& cpu);
+// Port (tools/apply_native_render.py): defined in native_render.cpp.
+bool squareTexture(win32::WinApplication* app, x86::CPU& cpu);
+// Port (tools/apply_native_render.py): defined in native_render.cpp.
+bool pictureTexture(win32::WinApplication* app, x86::CPU& cpu);
+// Port (tools/apply_native_loading.py): defined in native_loading.cpp.
+bool alpha565(win32::WinApplication* app, x86::CPU& cpu);
+// Port (tools/apply_native_loading.py): defined in native_loading.cpp.
+bool alpha1555(win32::WinApplication* app, x86::CPU& cpu);
+// Port (tools/apply_native_loading.py): defined in native_loading.cpp.
+bool alphaPaletted(win32::WinApplication* app, x86::CPU& cpu);
+// Port (tools/apply_native_loading.py): defined in native_loading.cpp.
+bool alphaNibbles(win32::WinApplication* app, x86::CPU& cpu);
+// Port (tools/apply_native_loading.py): defined in native_loading.cpp.
+bool alpha8888(win32::WinApplication* app, x86::CPU& cpu);
+// Port (tools/apply_native_loading.py): defined in native_loading.cpp.
+bool alpha4444(win32::WinApplication* app, x86::CPU& cpu);
 
 /* align: skip 0x8d 0x80 0x00 0x00 0x00 0x00 0x8d 0x92 0x00 0x00 0x00 0x00 0x8d 0x40 0x00 */
 void Application::sub_4d03c0(WinApplication* __restrict app, x86::CPU& cpu_)
@@ -1559,6 +1581,11 @@ void Application::sub_4d0a10(WinApplication* __restrict app, x86::CPU& cpu_)
   x86::Local cpu(cpu_);
   NFS2_USE(cpu);
   NFS2_USE(app);
+    if (pictureTexture(app, cpu.sync())) /* port: native (tools/apply_native_render.py) */
+    {
+        cpu.reload();
+        return;
+    }
     // 004d0a10  53                     -push ebx
     app->getMemory<x86::reg32>(cpu.esp-4) = cpu.ebx;
     cpu.esp -= 4;
@@ -5672,6 +5699,11 @@ void Application::sub_4d18e0(WinApplication* __restrict app, x86::CPU& cpu_)
   x86::Local cpu(cpu_);
   NFS2_USE(cpu);
   NFS2_USE(app);
+    if (alpha4444(app, cpu.sync())) /* port: native (tools/apply_native_loading.py) */
+    {
+        cpu.reload();
+        return;
+    }
     // 004d18e0  51                     -push ecx
     app->getMemory<x86::reg32>(cpu.esp-4) = cpu.ecx;
     cpu.esp -= 4;
@@ -5866,6 +5898,11 @@ void Application::sub_4d1950(WinApplication* __restrict app, x86::CPU& cpu_)
   x86::Local cpu(cpu_);
   NFS2_USE(cpu);
   NFS2_USE(app);
+    if (alpha8888(app, cpu.sync())) /* port: native (tools/apply_native_loading.py) */
+    {
+        cpu.reload();
+        return;
+    }
     // 004d1950  51                     -push ecx
     app->getMemory<x86::reg32>(cpu.esp-4) = cpu.ecx;
     cpu.esp -= 4;
@@ -6036,6 +6073,11 @@ void Application::sub_4d19b0(WinApplication* __restrict app, x86::CPU& cpu_)
   x86::Local cpu(cpu_);
   NFS2_USE(cpu);
   NFS2_USE(app);
+    if (alphaNibbles(app, cpu.sync())) /* port: native (tools/apply_native_loading.py) */
+    {
+        cpu.reload();
+        return;
+    }
     // 004d19b0  51                     -push ecx
     app->getMemory<x86::reg32>(cpu.esp-4) = cpu.ecx;
     cpu.esp -= 4;
@@ -6202,6 +6244,11 @@ void Application::sub_4d1a00(WinApplication* __restrict app, x86::CPU& cpu_)
   x86::Local cpu(cpu_);
   NFS2_USE(cpu);
   NFS2_USE(app);
+    if (alphaPaletted(app, cpu.sync())) /* port: native (tools/apply_native_loading.py) */
+    {
+        cpu.reload();
+        return;
+    }
     // 004d1a00  51                     -push ecx
     app->getMemory<x86::reg32>(cpu.esp-4) = cpu.ecx;
     cpu.esp -= 4;
@@ -6451,6 +6498,11 @@ void Application::sub_4d1a90(WinApplication* __restrict app, x86::CPU& cpu_)
   x86::Local cpu(cpu_);
   NFS2_USE(cpu);
   NFS2_USE(app);
+    if (alpha1555(app, cpu.sync())) /* port: native (tools/apply_native_loading.py) */
+    {
+        cpu.reload();
+        return;
+    }
     // 004d1a90  51                     -push ecx
     app->getMemory<x86::reg32>(cpu.esp-4) = cpu.ecx;
     cpu.esp -= 4;
@@ -6585,6 +6637,11 @@ void Application::sub_4d1ad0(WinApplication* __restrict app, x86::CPU& cpu_)
   x86::Local cpu(cpu_);
   NFS2_USE(cpu);
   NFS2_USE(app);
+    if (alpha565(app, cpu.sync())) /* port: native (tools/apply_native_loading.py) */
+    {
+        cpu.reload();
+        return;
+    }
     // 004d1ad0  51                     -push ecx
     app->getMemory<x86::reg32>(cpu.esp-4) = cpu.ecx;
     cpu.esp -= 4;
@@ -16769,6 +16826,11 @@ void Application::sub_4d3f50(WinApplication* __restrict app, x86::CPU& cpu_)
   x86::Local cpu(cpu_);
   NFS2_USE(cpu);
   NFS2_USE(app);
+    if (squareTexture(app, cpu.sync())) /* port: native (tools/apply_native_render.py) */
+    {
+        cpu.reload();
+        return;
+    }
     // 004d3f50  56                     -push esi
     app->getMemory<x86::reg32>(cpu.esp-4) = cpu.esi;
     cpu.esp -= 4;
@@ -17475,6 +17537,11 @@ void Application::sub_4d41a0(WinApplication* __restrict app, x86::CPU& cpu_)
   x86::Local cpu(cpu_);
   NFS2_USE(cpu);
   NFS2_USE(app);
+    if (paletteTexture(app, cpu.sync())) /* port: native (tools/apply_native_render.py) */
+    {
+        cpu.reload();
+        return;
+    }
     // 004d41a0  53                     -push ebx
     app->getMemory<x86::reg32>(cpu.esp-4) = cpu.ebx;
     cpu.esp -= 4;
@@ -18391,6 +18458,11 @@ void Application::sub_4d4580(WinApplication* __restrict app, x86::CPU& cpu_)
   x86::Local cpu(cpu_);
   NFS2_USE(cpu);
   NFS2_USE(app);
+    if (pieceTexture(app, cpu.sync())) /* port: native (tools/apply_native_render.py) */
+    {
+        cpu.reload();
+        return;
+    }
     // 004d4580  56                     -push esi
     app->getMemory<x86::reg32>(cpu.esp-4) = cpu.esi;
     cpu.esp -= 4;
@@ -19611,6 +19683,11 @@ void Application::sub_4d4ae0(WinApplication* __restrict app, x86::CPU& cpu_)
   x86::Local cpu(cpu_);
   NFS2_USE(cpu);
   NFS2_USE(app);
+    if (cabinTextures(app, cpu.sync())) /* port: native (tools/apply_native_render.py) */
+    {
+        cpu.reload();
+        return;
+    }
     // 004d4ae0  56                     -push esi
     app->getMemory<x86::reg32>(cpu.esp-4) = cpu.esi;
     cpu.esp -= 4;

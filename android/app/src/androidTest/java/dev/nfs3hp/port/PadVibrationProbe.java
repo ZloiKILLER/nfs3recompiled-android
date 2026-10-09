@@ -107,9 +107,9 @@ final class PadVibrationProbe {
         boolean saved = preferences.getBoolean(GamePreferences.TOUCH_VIBRATION, false);
         boolean padPresent = preferences.contains(GamePreferences.GAMEPAD_VIBRATION);
         boolean padSaved = preferences.getBoolean(GamePreferences.GAMEPAD_VIBRATION, false);
-        // The phone would join in on slot 0; this run is about the pad alone, switched on.
-        preferences.edit().putBoolean(GamePreferences.TOUCH_VIBRATION, false)
-            .putBoolean(GamePreferences.GAMEPAD_VIBRATION, true).commit();
+        String output = preferences.getString(GamePreferences.FORCE_FEEDBACK, null);
+        // This run is about the pad alone, chosen as the output.
+        preferences.edit().putString(GamePreferences.FORCE_FEEDBACK, GamePreferences.FORCE_FEEDBACK_GAMEPAD).commit();
         GameHaptics haptics = new GameHaptics(context);
         haptics.resume();
         try {
@@ -130,6 +130,8 @@ final class PadVibrationProbe {
             else edit.remove(GamePreferences.TOUCH_VIBRATION);
             if (padPresent) edit.putBoolean(GamePreferences.GAMEPAD_VIBRATION, padSaved);
             else edit.remove(GamePreferences.GAMEPAD_VIBRATION);
+            if (output != null) edit.putString(GamePreferences.FORCE_FEEDBACK, output);
+            else edit.remove(GamePreferences.FORCE_FEEDBACK);
             edit.commit();
         }
     }

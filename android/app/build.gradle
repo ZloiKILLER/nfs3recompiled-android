@@ -23,9 +23,9 @@ android {
          * API 21 on, as SDL3 itself does. */
         minSdk = 26
         targetSdk = 36
-        // Kept in step with versionName so the two can never disagree: 0.76 -> 76.
-        versionCode = 76
-        versionName = "0.76"
+        // Kept in step with versionName so the two can never disagree: 0.77 -> 77.
+        versionCode = 77
+        versionName = "0.77"
         testInstrumentationRunner "dev.nfs3hp.port.TouchOverlayInstrumentation"
         // Only arm64-v8a is packed: Compose brings androidx.graphics.path for
         // four ABIs, and a phone of another ABI would then install an APK with
@@ -62,7 +62,11 @@ android {
                     // intrinsic the disassembly uses (verified in M1).
                     "-DWITH_MMX=ON",
                     // -PwideFpu: the long double x87 experiment (include/fpu.h).
-                    "-DWITH_WIDE_FPU=" + (providers.gradleProperty("wideFpu").isPresent() ? "ON" : "OFF")
+                    "-DWITH_WIDE_FPU=" + (providers.gradleProperty("wideFpu").isPresent() ? "ON" : "OFF"),
+                    // -Px87Exact: every x87 value in 80 bits and the x87's own
+                    // arithmetic to the bit (src/lib/x87soft.cpp) -- extended
+                    // races exactly as the Modern Patch's PCs run them.
+                    "-DWITH_PEDANTIC_FPU=" + (providers.gradleProperty("x87Exact").isPresent() ? "ON" : "OFF")
                 )
                 // Only nfs3hp is wired up for Android (see the NFS_BUILD_NFS2SE
                 // guard in the root CMakeLists.txt); the default is already OFF.

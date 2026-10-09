@@ -152,6 +152,21 @@ public:
     };
     void rumble(float strength);
     void rumble(float strength, const RumbleDetail& detail);
+    /* DirectInput's dead zone and saturation for each of the eight DIJOYSTATE
+     * axes, lX at offset 0 to the second slider at 28, in its own units: 0 to
+     * 10000 of the way from the centre to either end.  The game's Dead Zone
+     * screen sets them per axis (DIPROP_DEADZONE, DIPROP_SATURATION), reads
+     * them back when it opens a device and applies its saved ones at startup;
+     * on Windows the driver did the rest, here getState() does.  A new device
+     * starts where a DirectInput one does: no dead zone, saturation at the end. */
+    static const x86::reg32 kDirectInputAxes = 8;
+    struct AxisResponse
+    {
+        x86::reg32 deadZone = 0;
+        x86::reg32 saturation = 10000;
+    };
+    AxisResponse axisResponse(x86::reg32 axis) const;
+    void setAxisResponse(x86::reg32 axis, const AxisResponse& response);
     GamepadState getState() const;
     /* Once a frame, from the renderer: follows pads as they come and go, turns
      * their buttons into the keys the launcher assigned, and runs the
@@ -191,6 +206,7 @@ private:
     SDL_Joystick* joystick() const;
 
     x86::reg32 m_slot;
+    AxisResponse m_axisResponse[kDirectInputAxes];
 };
 
 }

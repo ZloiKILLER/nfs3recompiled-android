@@ -116,7 +116,6 @@
  <string name="touch_keys_title">Klawisze sterowania dotykiem</string>
  <string name="touch_keys_hint">Klawisz klawiatury wysyłany przez każdy przycisk na ekranie. Musi zgadzać się z klawiszem ustawionym w grze.</string>
 
- <string name="pref_phone_vibration">Wibracje telefonu (efekty gry; uruchom grę ponownie)</string>
  <string name="pref_show_gears">Pokaż przyciski biegów − / +</string>
  <string name="auto_hide_delay">Opóźnienie: %1$d s</string>
  <string name="editor_button_size">Przycisk: %1$d%%</string>
@@ -153,7 +152,7 @@
  <string name="faq_size"><b>Co zmienia wielkość?</b>\nWielkość przycisków skaluje domyślne sterowanie. W Edytuj pozycje i rozmiary przeciągnij element i zmień jego wielkość suwakiem rozmiaru; element reaguje dokładnie tam, gdzie jest narysowany, a procenty odnoszą się do elementu domyślnego. Zmiany zapisują się same. Edytor pokazuje siatkę; przy włączonym Przyciągaj do siatki przeciągany element na nią wskakuje.</string>
  <string name="faq_edges"><b>Krawędzie i wysokość</b>\nOdstęp od krawędzi przesuwa domyślne elementy do środka. Wycięcia systemowe są uwzględniane. Elementy ustawione ręcznie zachowują zapisane pozycje.</string>
  <string name="faq_hiding"><b>Krycie i automatyczne ukrywanie</b>\nKrycie ustala zwykłą widoczność. Ukrywanie zaczyna się po oderwaniu wszystkich palców, po 1–30 sekundach. Ukryte przyciski reagują już na pierwsze dotknięcie i znów stają się widoczne. Przytrzymanie elementu wstrzymuje ukrywanie. Naciśnięcie przycisku na padzie gracza 1 od razu ukrywa przyciski; następny dotyk je przywraca. Pad gracza 2 ich nie rusza, więc jeden może jechać po ekranie, a drugi na padzie.</string>
- <string name="faq_vibration"><b>Wibracje</b>\nEfekty Force Feedback gry trafiają do telefonu i do pada 1. Gra obsługuje tylko jedno urządzenie z force feedbackiem, więc pad 2 nigdy nie wibruje. Wibracje telefonu włącza się i wyłącza w Sterowanie → Dotyk. Wibracje pada są wyłączone, dopóki nie zostaną włączone w Sterowanie → Pady; ich siłę ustawia się w samej grze: Options → Controllers → Force Feedback. Efekty pochodzą z gry, nigdy z naciskania przycisków.</string>
+ <string name="faq_vibration"><b>Wibracje</b>\nEfekty Force Feedback gry czuć na telefonie albo na padzie 1, nigdy na obu naraz: wybierz Wyłączone, Telefon lub Pad w Sterowanie → Force Feedback. Gra obsługuje tylko jedno urządzenie z force feedbackiem, więc pad 2 nigdy nie wibruje. Siłę wibracji pada ustawia się w samej grze: Options → Controllers → Force Feedback. Efekty pochodzą z gry, nigdy z naciskania przycisków.</string>
  <string name="faq_mapping"><b>Pady</b>\nGra zawsze widzi dwa pady: pad 1 to gracz 1 razem ze sterowaniem dotykiem, pad 2 to gracz 2. W Sterowanie → Pady wybierz, który pad jest który, naciskając na nim przycisk, ustaw, co robi każdy przycisk, a potem raz naciśnij Pad WŁĄCZONY. Zapisze to pasujące sterowanie w ustawieniach gry i zrobi kopię starego pliku. Lewa gałka skręca, spusty przyspieszają i hamują. Pad ma dwa zestawy przycisków, tak jak sterowanie dotykiem ma dwa układy: wyścigowy, ustawiany tutaj, i stały dla menu i powtórek, gdzie Cross / A zatwierdza, Circle / B cofa, a krzyżak przesuwa wybór. Aby grać na klawiaturze, zapisz zamiast tego Domyślne w grze.</string>
  <string name="faq_lights"><b>Światła i powrót na tor</b>\n☼ wysyła L. ↻ wysyła R, aby wrócić na tor. Klawisze można zmienić w Sterowanie → Dotyk → Klawisze.</string>
  <string name="faq_screen_data"><b>Ekran i dane gry</b>\nPozioma blokuje grę w poziomie; Automatyczna pozwala na obrót. Limit FPS ogranicza liczbę klatek; niższa wartość zmniejsza obciążenie. «Dane gry» zarządzają importami i pokazują aktywny zestaw. Przycisk «Graj» włącza się, gdy zestaw jest gotowy.</string>
@@ -177,9 +176,20 @@
  <string name="help_split_write"><b>2. Zapisz sterowanie w grze</b>\nNa tym samym ekranie naciśnij Pad WŁĄCZONY i potwierdź. Wystarczy raz, a ponownie tylko po zainstalowaniu innych danych gry lub zmianie sterowania w samej grze. Poprzednie ustawienia trafiają do kopii zapasowej.</string>
  <string name="help_split_race"><b>3. Rozpocznij wyścig na podzielonym ekranie</b>\nUruchom grę i wybierz Two Players…. Gracz 1 jedzie padem 1 lub sterowaniem dotykowym, gracz 2 padem 2. Po menu można poruszać się dowolnym padem: krzyżak przesuwa wybór, Cross / A lub Options / Menu zatwierdza, Circle / B lub Create / View cofa.</string>
  <string name="help_split_driving"><b>Jazda</b>\nLewa gałka skręca, prawy spust przyspiesza, a lewy hamuje. Domyślnie Circle / B to hamulec ręczny, Square / X rzuca kolczatkę, Cross / A patrzy do tyłu, Triangle / Y zmienia kamerę, R1 / L1 zmieniają biegi, Create / View przywraca auto na trasę, Options / Menu wstrzymuje wyścig, L3 trąbi, a R3 włącza światła.</string>
- <string name="help_split_notes"><b>Warto wiedzieć</b>\nWibrują tylko pad 1 i telefon: gra obsługuje tylko jedno urządzenie z force feedbackiem. Jeśli sterowanie przestanie pasować, na przykład po przywróceniu domyślnego w grze, ponownie naciśnij Pad WŁĄCZONY. Aby grać na klawiaturze, naciśnij zamiast tego Domyślne w grze. Sterowanie dotykowe wyłącza się w Sterowanie → Dotyk.</string>
- <string name="gamepad_vibration">Wibracje pada</string>
- <string name="gamepad_vibration_note">Domyślnie wyłączone. Siłę ustawia się w grze: Options → Controllers → Force Feedback.</string>
+ <string name="help_split_digital"><b>Analogowe czy cyfrowe</b>\nKażdy pad ma własny przełącznik Analogowe / Cyfrowe w Sterowanie → Pady. Cyfrowe prowadzi wyścig jak klawiatura: krzyżak w lewo i w prawo skręca, krzyżak w górę i prawy spust przyspieszają, krzyżak w dół i lewy spust hamują, a gałka nie skręca. Menu działa tak samo w obu przypadkach. Dwa pady nigdy nie dzielą żadnego klawisza, więc na podzielonym ekranie każdy prowadzi tylko swój samochód.</string>
+ <string name="help_split_notes"><b>Warto wiedzieć</b>\nWibruje tylko pad 1 albo telefon, zależnie od wyboru w Sterowanie → Force Feedback: gra obsługuje tylko jedno urządzenie z force feedbackiem. Jeśli sterowanie przestanie pasować, na przykład po przywróceniu domyślnego w grze, ponownie naciśnij Pad WŁĄCZONY. Aby grać na klawiaturze, naciśnij zamiast tego Domyślne w grze. Sterowanie dotykowe wyłącza się w Sterowanie → Dotyk.</string>
+ <string name="gamepad_mode_analog">Analogowe</string>
+ <string name="gamepad_mode_digital">Cyfrowe</string>
+ <string name="gamepad_analog_note">W wyścigu lewa gałka skręca, prawy spust przyspiesza, a lewy hamuje.</string>
+ <string name="gamepad_digital_note">W wyścigu krzyżak skręca, przyspiesza i hamuje jak klawisze, a spusty przyspieszają i hamują. Gałka nie skręca.</string>
+ <string name="gamepad_buttons_digital_note">Ten pad jest ustawiony na Cyfrowe: w wyścigu krzyżak skręca, przyspiesza i hamuje niezależnie od tego, co jest tu dla niego ustawione.</string>
+ <string name="force_feedback_hint">Gdzie czuć efekty Force Feedback gry: na telefonie albo na padzie, nigdy na obu naraz. Zmiana działa od następnego uruchomienia gry.</string>
+ <string name="force_feedback_off">Wyłączone</string>
+ <string name="force_feedback_phone">Telefon</string>
+ <string name="force_feedback_gamepad">Pad</string>
+ <string name="force_feedback_off_note">Nic nie wibruje.</string>
+ <string name="force_feedback_phone_note">Telefon odtwarza zderzenia, lądowania i zmiany biegów, silnik na wysokich obrotach i ostre zakręty.</string>
+ <string name="force_feedback_gamepad_note">Pad 1 odtwarza efekty gry takie, jakie są. Ich siłę ustawia się w grze: Options → Controllers → Force Feedback.</string>
  <string name="editor_snap_grid">Przyciągaj do siatki</string>
  <string name="network_title">Sieć</string>
  <string name="network_address">Adres tego urządzenia w sieci: %1$s</string>

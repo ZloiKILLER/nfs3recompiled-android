@@ -116,7 +116,6 @@
  <string name="touch_keys_title">Klávesy dotykových tlačítek</string>
  <string name="touch_keys_hint">Klávesa, kterou posílá každé tlačítko na obrazovce. Musí odpovídat klávese nastavené ve hře.</string>
 
- <string name="pref_phone_vibration">Vibrace telefonu (herní efekty; restartuj hru)</string>
  <string name="pref_show_gears">Zobrazit tlačítka převodů − / +</string>
  <string name="auto_hide_delay">Prodleva: %1$d s</string>
  <string name="editor_button_size">Tlačítko: %1$d%%</string>
@@ -153,7 +152,7 @@
  <string name="faq_size"><b>Co mění velikost?</b>\nVelikost tlačítek škáluje výchozí ovládání. V Upravit pozice a velikosti přetáhni prvek a změň jeho velikost posuvníkem velikosti; prvek reaguje na dotyk přesně tam, kde je vykreslen, a procenta jsou vztažena k výchozímu prvku. Změny se ukládají samy. Editor ukazuje mřížku; se zapnutým Přichytit k mřížce na ni tažený prvek dosedne.</string>
  <string name="faq_edges"><b>Okraje a výška</b>\nOdstup od okrajů posouvá výchozí prvky dovnitř. Systémové výřezy se respektují. Ručně umístěné prvky si drží uložené pozice.</string>
  <string name="faq_hiding"><b>Krytí a automatické skrývání</b>\nKrytí určuje běžnou viditelnost. Skrývání začne po zvednutí všech prstů, po 1–30 sekundách. Skrytá tlačítka reagují už na první dotek a znovu se zobrazí. Podržení prvku skrývání zabrání. Stisk na padu prvního hráče ovládání okamžitě skryje; další dotyk ho vrátí. Pad druhého hráče se ho nedotkne, takže jeden hráč může jezdit po displeji, zatímco druhý hraje na padu.</string>
- <string name="faq_vibration"><b>Vibrace</b>\nEfekty Force Feedback hry dorazí do telefonu a do gamepadu 1. Hra ovládá jen jedno zařízení se silovou zpětnou vazbou, takže gamepad 2 nikdy nevibruje. Vibrace telefonu se zapínají a vypínají v Ovládání → Dotyk. Vibrace gamepadu jsou vypnuté, dokud je nezapnete v Ovládání → Gamepady; jejich síla se nastavuje přímo ve hře: Options → Controllers → Force Feedback. Efekty přicházejí ze hry, nikdy ze stisku tlačítek.</string>
+ <string name="faq_vibration"><b>Vibrace</b>\nEfekty Force Feedback hry se projeví na telefonu, nebo na gamepadu 1, nikdy na obou zároveň: v Ovládání → Force Feedback zvolte Vypnuto, Telefon nebo Gamepad. Hra ovládá jen jedno zařízení se silovou zpětnou vazbou, takže gamepad 2 nikdy nevibruje. Síla vibrací gamepadu se nastavuje přímo ve hře: Options → Controllers → Force Feedback. Efekty přicházejí ze hry, nikdy ze stisku tlačítek.</string>
  <string name="faq_mapping"><b>Gamepady</b>\nHra vždy vidí dva gamepady: gamepad 1 je první hráč spolu s dotykovým ovládáním, gamepad 2 je druhý hráč. V Ovládání → Gamepady stiskem tlačítka vyberte, který ovladač je který, nastavte, co dělá každé tlačítko, a pak jednou stiskněte Gamepad ZAPNUTO. Tím se do nastavení hry zapíše odpovídající ovládání a starý soubor se zálohuje. Levá páčka zatáčí, spouště přidávají plyn a brzdí. Pad má dvě sady tlačítek, stejně jako má dotykové ovládání dvě rozložení: závodní, kterou nastavíte zde, a pevnou pro nabídky a záznamy, kde Cross / A potvrzuje, Circle / B se vrací a kříž posouvá výběr. Pro hru na klávesnici zapište místo toho Výchozí ve hře.</string>
  <string name="faq_lights"><b>Světla a návrat na trať</b>\n☼ posílá L. ↻ posílá R pro návrat na trať. Klávesy lze změnit v Ovládání → Dotyk → Klávesy.</string>
  <string name="faq_screen_data"><b>Obrazovka a herní data</b>\nNa šířku uzamkne hru vodorovně; Automaticky povolí otáčení. Limit FPS omezuje snímkovou frekvenci; nižší hodnota sníží zátěž. «Herní data» spravují importy a ukazují aktivní sadu. Tlačítko «Hrát» se zpřístupní, jakmile je sada připravená.</string>
@@ -177,9 +176,20 @@
  <string name="help_split_write"><b>2. Zapište ovládání do hry</b>\nNa stejné obrazovce stiskněte Gamepad ZAPNUTO a potvrďte. Stačí to jednou a znovu jen po instalaci jiných herních dat nebo po změně ovládání přímo ve hře. Předchozí nastavení se zálohuje.</string>
  <string name="help_split_race"><b>3. Spusťte závod na rozdělené obrazovce</b>\nSpusťte hru a zvolte Two Players…. První hráč řídí gamepadem 1 nebo dotykovým ovládáním, druhý gamepadem 2. Nabídkami lze procházet kterýmkoli ovladačem: kříž posouvá výběr, Cross / A nebo Options / Menu potvrzuje, Circle / B nebo Create / View se vrací zpět.</string>
  <string name="help_split_driving"><b>Řízení</b>\nLevá páčka zatáčí, pravá spoušť přidává plyn a levá brzdí. Ve výchozím nastavení je Circle / B ruční brzda, Square / X pokládá pás s hroty, Cross / A se ohlédne dozadu, Triangle / Y přepíná kameru, R1 / L1 řadí, Create / View vrací vůz na trať, Options / Menu pozastaví závod, L3 troubí a R3 zapíná světla.</string>
- <string name="help_split_notes"><b>Dobré vědět</b>\nVibruje jen gamepad 1 a telefon: hra ovládá jen jedno zařízení se silovou zpětnou vazbou. Pokud ovládání přestane odpovídat, například po obnovení výchozího ovládání ve hře, stiskněte znovu Gamepad ZAPNUTO. Pro hru na klávesnici stiskněte místo toho Výchozí ve hře. Dotykové ovládání lze vypnout v Ovládání → Dotyk.</string>
- <string name="gamepad_vibration">Vibrace gamepadu</string>
- <string name="gamepad_vibration_note">Ve výchozím stavu vypnuto. Sílu nastavuje hra: Options → Controllers → Force Feedback.</string>
+ <string name="help_split_digital"><b>Analogové, nebo digitální</b>\nKaždý gamepad má v Ovládání → Gamepady vlastní přepínač Analogové / Digitální. Digitální řídí závod jako klávesnice: kříž doleva a doprava zatáčí, kříž nahoru a pravá spoušť přidávají plyn, kříž dolů a levá spoušť brzdí a páčka nezatáčí. Nabídky fungují v obou režimech stejně. Oba gamepady nikdy nesdílejí žádnou klávesu, takže při rozdělené obrazovce každý řídí jen své auto.</string>
+ <string name="help_split_notes"><b>Dobré vědět</b>\nVibruje jen gamepad 1, nebo telefon – podle volby v Ovládání → Force Feedback: hra ovládá jen jedno zařízení se silovou zpětnou vazbou. Pokud ovládání přestane odpovídat, například po obnovení výchozího ovládání ve hře, stiskněte znovu Gamepad ZAPNUTO. Pro hru na klávesnici stiskněte místo toho Výchozí ve hře. Dotykové ovládání lze vypnout v Ovládání → Dotyk.</string>
+ <string name="gamepad_mode_analog">Analogové</string>
+ <string name="gamepad_mode_digital">Digitální</string>
+ <string name="gamepad_analog_note">V závodě levá páčka zatáčí, pravá spoušť přidává plyn a levá brzdí.</string>
+ <string name="gamepad_digital_note">V závodě kříž zatáčí, přidává plyn a brzdí jako klávesy a spouště přidávají plyn a brzdí. Páčka nezatáčí.</string>
+ <string name="gamepad_buttons_digital_note">Tento gamepad je nastaven na Digitální: v závodě kříž zatáčí, přidává plyn a brzdí bez ohledu na to, co je pro něj nastaveno zde.</string>
+ <string name="force_feedback_hint">Kde se projeví efekty Force Feedback hry: na telefonu, nebo na gamepadu, nikdy na obou zároveň. Změna platí od příštího spuštění hry.</string>
+ <string name="force_feedback_off">Vypnuto</string>
+ <string name="force_feedback_phone">Telefon</string>
+ <string name="force_feedback_gamepad">Gamepad</string>
+ <string name="force_feedback_off_note">Nic nevibruje.</string>
+ <string name="force_feedback_phone_note">Telefon přehrává nárazy, dopady a řazení, motor ve vysokých otáčkách a ostré zatáčení.</string>
+ <string name="force_feedback_gamepad_note">Gamepad 1 přehrává efekty hry tak, jak jsou. Jejich síla se nastavuje ve hře: Options → Controllers → Force Feedback.</string>
  <string name="editor_snap_grid">Přichytit k mřížce</string>
  <string name="network_title">Síť</string>
  <string name="network_address">Adresa tohoto zařízení v síti: %1$s</string>

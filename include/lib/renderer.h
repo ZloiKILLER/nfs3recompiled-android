@@ -4,6 +4,7 @@
 #include <lib/winapp.h>
 #include <winapi/types.h>
 #include <lib/memmap.h>
+#include <vector>
 
 struct SDL_Renderer;
 struct SDL_Texture;
@@ -55,6 +56,17 @@ public:
         x = m_vpX; y = m_lastWindowH - (m_vpY + m_keyboardShift + m_vpH); w = m_vpW; h = m_vpH;
         SDL_UnlockSpinlock(&m_viewportLock);
     }
+
+    /* A frame of a movie, RGBA w x h, shown at (x, y) as dw x dh of the
+     * game's picture (scaled by the GPU, filtered), the rest of it black.
+     * The MAD player's software output skips the 16-bit surface for this
+     * (native_movie.cpp). */
+    void presentMovieFrame(std::vector<x86::reg8> rgba, x86::reg32 w, x86::reg32 h,
+                           int x, int y, int dw, int dh);
+
+    /* The renderer that last showed the game's DirectDraw picture: the one a
+     * movie is shown through. */
+    static Renderer* active();
 
     /* This renderer's context current on the calling thread, and let go of --
      * glthread's business, and the constructor's. */
@@ -121,6 +133,10 @@ private:
     unsigned int    m_frame565;
     unsigned int    m_frameRead;
     unsigned int    m_frameDraw;
+    /* A movie frame, and its size (presentMovieFrame). */
+    unsigned int    m_movieTexture = 0;
+    x86::reg32      m_movieWidth = 0;
+    x86::reg32      m_movieHeight = 0;
     x86::reg32      m_colorPalette[256];
     /* Letterbox viewport, recomputed in present() only when the window's
      * pixel size changes -- see getViewportRect(). m_lastWindowW/H start at

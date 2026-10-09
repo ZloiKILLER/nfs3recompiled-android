@@ -107,9 +107,15 @@ private:
 public:
     MemoryAccessor(const MemoryAccessor& other) = default;
     MemoryAccessor& operator=(const MemoryAccessor& other) = delete;
+#ifdef WITH_PEDANTIC_FPU
+    /* fld and fstp of 80 bits keep all of them: the x87 stack is 80 bits wide here. */
+    operator x86::Float() const { x86::IEEEf80Data result; memcpy(&result, address, sizeof(x86::IEEEf80Data)); return x86::Float(x86::IEEEf80(result)); }
+    MemoryAccessor& operator=(x86::Float value) { memcpy(address, &value.f80value.data, sizeof(x86::IEEEf80Data)); return *this; }
+#else
     operator x86::Float() const { x86::IEEEf80Data result; memcpy(&result, address, sizeof(x86::IEEEf80Data)); return double(x86::IEEEf80(result)); }
-    operator x86::IEEEf80() const { x86::IEEEf80Data result; memcpy(&result, address, sizeof(x86::IEEEf80Data)); return x86::IEEEf80(result); }
     MemoryAccessor& operator=(x86::Float value) { x86::IEEEf80 f80value(value); memcpy(address, &f80value.data, sizeof(x86::IEEEf80Data)); return *this; }
+#endif
+    operator x86::IEEEf80() const { x86::IEEEf80Data result; memcpy(&result, address, sizeof(x86::IEEEf80Data)); return x86::IEEEf80(result); }
     MemoryAccessor& operator=(x86::IEEEf80 value) { memcpy(address, &value.data, sizeof(x86::IEEEf80Data)); return *this; }
 };
 

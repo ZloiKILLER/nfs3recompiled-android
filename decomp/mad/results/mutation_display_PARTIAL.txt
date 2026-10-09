@@ -1,0 +1,2 @@
+rounded and truncated halves swapped     caught
+chroma bias +0.5 dropped                 caught

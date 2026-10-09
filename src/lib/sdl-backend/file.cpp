@@ -33,6 +33,7 @@ namespace win32
 static std::string s_currentDirectory = "c:\\nfs2se\\";
 static std::string s_dataDirectory = "./";
 static std::string s_cdDirectory = "./";
+static File::ReadSubstitute s_readSubstitute = nullptr;
 
 static std::string moveToRoot(const std::string& path)
 {
@@ -428,6 +429,14 @@ File::File(const char* path, x86::reg32 mode, x86::reg32 flags, x86::reg32 creat
         invalidateCaseInsensitiveCache();
     }
 #endif
+    /* A file the port hands over in its own version (File::setReadSubstitute):
+     * only when opened to be read, never to be written or made. */
+    if (s_readSubstitute && openFlags == (O_RDONLY | O_BINARY))
+    {
+        std::string substitute = s_readSubstitute(m_filename);
+        if (!substitute.empty())
+            m_filename = std::move(substitute);
+    }
     m_file = _open(m_filename.c_str(), openFlags, 0664);
 #ifndef _WIN32
     /* The original install had its directory tree laid down by the installer,
@@ -586,6 +595,11 @@ void File::setDataDirectory(const char* path)
     s_dataDirectory = path;
     if (s_dataDirectory.back() != '/')
         s_dataDirectory.append("/");
+}
+
+void File::setReadSubstitute(ReadSubstitute substitute)
+{
+    s_readSubstitute = substitute;
 }
 
 void File::setCdDirectory(const char* path)

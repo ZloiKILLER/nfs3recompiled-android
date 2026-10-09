@@ -1,0 +1,14 @@
+[equivalent] row IDCT zero test includes DC passes, as it should
+[equivalent] mask byte masked to six bits passes, as it should
+clamp writes index 127 too               caught
+IDCT outputs 1 and 6 swapped             caught
+IDCT rounding term changed               caught
+fused product (x87 rounds twice)         caught
+half-pixel luma source off by one        caught
+refill threshold 15 instead of 16        caught
+Q16 multiply without rounding            caught
+motion x halved with / instead of sar    caught
+chroma planes swapped in output          caught
+DC dequantised like AC                   caught
+escape run/level fields swapped          caught
+11 of 11 mutations caught, 2 of 2 equivalent rewrites pass

@@ -1,0 +1,12 @@
+x87 control word 0x27f, seed 42, 84 s
+test                                                              cases  fails  notes
+sub_4f30d0 build tables                                               1      0  empty first-9 entries: 0; clamp[127]=0
+sub_4f3560 + sub_4f3350 + sub_4f33b0 bit reader                     600      0  200 random reads each
+sub_510e48 coefficients (+ sub_4f33e0 / sub_510cbd)                4500      0  8 blocks a stream, every code of tables A and B, escapes
+sub_510e48 coefficients (+ sub_4f33e0 / sub_510cbd) -- random bytes     1800      0  126 streams stopped where the original writes outside the block
+sub_510cbd / sub_510a50 / sub_510bb3 IDCT                         60000      0  x87 control word 0x27f
+IDCT rows where an FMA would round differently                       35      0  x87 control word 0x27f
+sub_510ff8 output row, sub_4f3420 / sub_4f34f0 prediction         12000      0  
+sub_4f3600 macroblocks, whole 64x48 frames                          180      0  2160 macroblocks, key and predicted frames
+sub_4f3600 macroblocks, whole 320x240 frames                         90      0  27000 macroblocks, key and predicted frames
+EXIT 0

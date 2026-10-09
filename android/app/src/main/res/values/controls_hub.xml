@@ -33,7 +33,20 @@
  <string name="help_split_write"><b>2. Write the controls into the game</b>\nOn the same screen press Gamepad ON and confirm. This is needed once, and again only after installing other game data or changing the controls inside the game. The previous settings are backed up.</string>
  <string name="help_split_race"><b>3. Start a split-screen race</b>\nStart the game and choose Two Players…. Player 1 drives with Gamepad 1 or the touch controls, player 2 with Gamepad 2. Either pad moves through the menus: the D-pad moves the selection, Cross / A or Options / Menu confirms, Circle / B or Create / View goes back.</string>
  <string name="help_split_driving"><b>Driving</b>\nThe left stick steers, the right trigger accelerates and the left trigger brakes. By default Circle / B is the handbrake, Square / X drops a spike strip, Cross / A looks behind, Triangle / Y changes the camera, R1 / L1 shift gears, Create / View puts the car back on the track, Options / Menu pauses the race, L3 sounds the horn and R3 switches the headlights.</string>
- <string name="help_split_notes"><b>Good to know</b>\nOnly Gamepad 1 and the phone vibrate: the game drives a single force-feedback device. If the controls stop matching, for example after resetting them in the game, press Gamepad ON again. To play on a keyboard instead, press Default in game. Touch controls can be switched off in Controls → Touch.</string>
- <string name="gamepad_vibration">Gamepad vibration</string>
- <string name="gamepad_vibration_note">Off by default. Its strength is set in the game: Options → Controllers → Force Feedback.</string>
+ <string name="help_split_digital"><b>Analog or Digital</b>\nEach gamepad has its own Analog / Digital switch in Controls → Gamepads. Digital drives a race like a keyboard: D-pad left and right steer, D-pad up and the right trigger accelerate, D-pad down and the left trigger brake, and the stick does not steer. The menus work the same either way. The two gamepads never share a key, so in split screen each drives only its own car.</string>
+ <string name="help_split_notes"><b>Good to know</b>\nOnly Gamepad 1 or the phone vibrates, whichever is chosen in Controls → Force Feedback: the game drives a single force-feedback device. If the controls stop matching, for example after resetting them in the game, press Gamepad ON again. To play on a keyboard instead, press Default in game. Touch controls can be switched off in Controls → Touch.</string>
+ <string name="gamepad_mode_analog">Analog</string>
+ <string name="gamepad_mode_digital">Digital</string>
+ <string name="gamepad_analog_note">In a race the left stick steers, the right trigger accelerates and the left trigger brakes.</string>
+ <string name="gamepad_digital_note">In a race the D-pad steers, accelerates and brakes like keys, and the triggers accelerate and brake. The stick does not steer.</string>
+ <string name="gamepad_buttons_digital_note">This gamepad is set to Digital: in a race the D-pad steers, accelerates and brakes, whatever is set for it here.</string>
+ <!-- The game's own name for it, as its Options menu has it. -->
+ <string name="controls_force_feedback" translatable="false">Force Feedback</string>
+ <string name="force_feedback_hint">Where the game\'s Force Feedback effects are felt: on the phone or on the gamepad, never both at once. Takes effect the next time the game starts.</string>
+ <string name="force_feedback_off">Off</string>
+ <string name="force_feedback_phone">Phone</string>
+ <string name="force_feedback_gamepad">Gamepad</string>
+ <string name="force_feedback_off_note">Nothing vibrates.</string>
+ <string name="force_feedback_phone_note">The phone plays collisions, landings and gear changes, the engine at high revs and hard cornering.</string>
+ <string name="force_feedback_gamepad_note">Gamepad 1 plays the game\'s effects as they are. Their strength is set in the game: Options → Controllers → Force Feedback.</string>
 </resources>

@@ -116,7 +116,6 @@
  <string name="touch_keys_title">Tangenter för pekkontroller</string>
  <string name="touch_keys_hint">Tangenten som varje kontroll på skärmen skickar. Den måste stämma med tangenten som är inställd i spelet.</string>
 
- <string name="pref_phone_vibration">Telefonens vibration (speleffekter; starta om spelet)</string>
  <string name="pref_show_gears">Visa växelknappar − / +</string>
  <string name="auto_hide_delay">Fördröjning: %1$d s</string>
  <string name="editor_button_size">Knapp: %1$d%%</string>
@@ -153,7 +152,7 @@
  <string name="faq_size"><b>Vad ändrar storleken?</b>\nKnappstorleken skalar standardkontrollerna. Dra en kontroll under Redigera positioner och storlekar och ändra dess storlek med storleksreglaget; en kontroll svarar exakt där den ritas och procenten är i förhållande till standardkontrollen. Ändringarna sparas av sig själva. Redigeraren visar ett rutnät; med Fäst mot rutnät på hamnar en dragen kontroll på det.</string>
  <string name="faq_edges"><b>Kanter och höjd</b>\nAvståndet från kanterna flyttar standardknapparna inåt. Systemets urtag respekteras. Manuellt placerade knappar behåller sina sparade positioner.</string>
  <string name="faq_hiding"><b>Opacitet och automatisk döljning</b>\nOpaciteten anger den vanliga synligheten. Döljningen börjar när alla fingrar lyfts, efter 1–30 sekunder. Dolda knappar svarar redan vid första beröringen och blir synliga igen. Att hålla en knapp nedtryckt hindrar döljningen. Ett tryck på spelare 1:s handkontroll döljer knapparna direkt; nästa beröring tar tillbaka dem. Spelare 2:s handkontroll rör dem inte, så den ene kan köra på skärmen medan den andre spelar med kontroll.</string>
- <string name="faq_vibration"><b>Vibration</b>\nSpelets Force Feedback-effekter når telefonen och handkontroll 1. Spelet driver bara en enhet med force feedback, så handkontroll 2 vibrerar aldrig. Telefonens vibration slås på och av under Kontroller → Pek. Handkontrollens vibration är av tills du slår på den under Kontroller → Handkontroller; styrkan ställs in i själva spelet: Options → Controllers → Force Feedback. Effekterna kommer från spelet, aldrig från knapptryck.</string>
+ <string name="faq_vibration"><b>Vibration</b>\nSpelets Force Feedback-effekter känns i telefonen eller i handkontroll 1, aldrig i båda samtidigt: välj Av, Telefon eller Handkontroll under Kontroller → Force Feedback. Spelet driver bara en enhet med force feedback, så handkontroll 2 vibrerar aldrig. Handkontrollens styrka ställs in i själva spelet: Options → Controllers → Force Feedback. Effekterna kommer från spelet, aldrig från knapptryck.</string>
  <string name="faq_mapping"><b>Handkontroller</b>\nSpelet ser alltid två handkontroller: handkontroll 1 är spelare 1 tillsammans med pekkontrollerna, handkontroll 2 är spelare 2. Välj under Kontroller → Handkontroller vilken kontroll som är vilken genom att trycka på en knapp på den, ställ in vad varje knapp gör och tryck sedan en gång på Handkontroll PÅ. Det skriver in motsvarande styrning i spelets inställningar och säkerhetskopierar den gamla filen. Vänster spak styr, avtryckarna gasar och bromsar. En handkontroll har två uppsättningar knappar, precis som pekkontrollerna har två layouter: loppets, som du ställer in här, och en fast för menyer och repriser, där Cross / A bekräftar, Circle / B går tillbaka och styrkorset flyttar markeringen. För att spela med tangentbord skriver du i stället Spelets standard.</string>
  <string name="faq_lights"><b>Ljus och tillbaka till banan</b>\n☼ skickar L. ↻ skickar R för att komma tillbaka till banan. Tangenterna kan ändras under Kontroller → Pek → Tangenter.</string>
  <string name="faq_screen_data"><b>Skärm och speldata</b>\nLiggande låser spelet horisontellt; Automatisk tillåter rotation. FPS-gränsen begränsar bildfrekvensen; ett lägre värde minskar arbetet per sekund. «Speldata» hanterar importer och visar vilken uppsättning som är aktiv. «Spela» blir tillgängligt när en uppsättning är klar.</string>
@@ -177,9 +176,20 @@
  <string name="help_split_write"><b>2. Skriv in styrningen i spelet</b>\nTryck på samma skärm på Handkontroll PÅ och bekräfta. Det behövs en gång, och igen bara efter att du installerat annan speldata eller ändrat styrningen inne i spelet. De tidigare inställningarna säkerhetskopieras.</string>
  <string name="help_split_race"><b>3. Starta ett lopp med delad skärm</b>\nStarta spelet och välj Two Players…. Spelare 1 kör med handkontroll 1 eller pekkontrollerna, spelare 2 med handkontroll 2. Menyerna går att styra med vilken av kontrollerna som helst: styrkorset flyttar markeringen, Cross / A eller Options / Menu bekräftar, Circle / B eller Create / View går tillbaka.</string>
  <string name="help_split_driving"><b>Körning</b>\nVänster spak styr, höger avtryckare gasar och vänster bromsar. Som standard är Circle / B handbromsen, Square / X lägger ut en spikmatta, Cross / A tittar bakåt, Triangle / Y byter kamera, R1 / L1 växlar, Create / View sätter tillbaka bilen på banan, Options / Menu pausar loppet, L3 tutar och R3 tänder ljuset.</string>
- <string name="help_split_notes"><b>Bra att veta</b>\nBara handkontroll 1 och telefonen vibrerar: spelet driver bara en enhet med force feedback. Om styrningen slutar stämma, till exempel efter en återställning inne i spelet, tryck på Handkontroll PÅ igen. För att spela med tangentbord trycker du i stället på Spelets standard. Pekkontrollerna stängs av under Kontroller → Pek.</string>
- <string name="gamepad_vibration">Vibration i handkontrollen</string>
- <string name="gamepad_vibration_note">Av som standard. Styrkan ställs in i spelet: Options → Controllers → Force Feedback.</string>
+ <string name="help_split_digital"><b>Analog eller Digital</b>\nVarje handkontroll har en egen omkopplare Analog / Digital under Kontroller → Handkontroller. Digital kör ett lopp som ett tangentbord: styrkorset åt vänster och höger styr, styrkorset upp och höger avtryckare gasar, styrkorset ner och vänster avtryckare bromsar, och spaken styr inte. Menyerna fungerar likadant i båda lägena. De två handkontrollerna delar aldrig någon tangent, så i delad skärm kör var och en bara sin egen bil.</string>
+ <string name="help_split_notes"><b>Bra att veta</b>\nBara handkontroll 1 eller telefonen vibrerar, beroende på valet under Kontroller → Force Feedback: spelet driver bara en enhet med force feedback. Om styrningen slutar stämma, till exempel efter en återställning inne i spelet, tryck på Handkontroll PÅ igen. För att spela med tangentbord trycker du i stället på Spelets standard. Pekkontrollerna stängs av under Kontroller → Pek.</string>
+ <string name="gamepad_mode_analog">Analog</string>
+ <string name="gamepad_mode_digital">Digital</string>
+ <string name="gamepad_analog_note">I ett lopp styr vänster spak, höger avtryckare gasar och vänster bromsar.</string>
+ <string name="gamepad_digital_note">I ett lopp styr, gasar och bromsar styrkorset som tangenter, och avtryckarna gasar och bromsar. Spaken styr inte.</string>
+ <string name="gamepad_buttons_digital_note">Den här handkontrollen står på Digital: i ett lopp styr, gasar och bromsar styrkorset, vad som än är inställt för det här.</string>
+ <string name="force_feedback_hint">Var spelets Force Feedback-effekter känns: i telefonen eller i handkontrollen, aldrig i båda samtidigt. Gäller från nästa gång spelet startar.</string>
+ <string name="force_feedback_off">Av</string>
+ <string name="force_feedback_phone">Telefon</string>
+ <string name="force_feedback_gamepad">Handkontroll</string>
+ <string name="force_feedback_off_note">Ingenting vibrerar.</string>
+ <string name="force_feedback_phone_note">Telefonen spelar krockar, landningar och växlingar, motorn på höga varv och skarpa kurvor.</string>
+ <string name="force_feedback_gamepad_note">Handkontroll 1 spelar spelets effekter som de är. Styrkan ställs in i spelet: Options → Controllers → Force Feedback.</string>
  <string name="editor_snap_grid">Fäst mot rutnät</string>
  <string name="network_title">Nätverk</string>
  <string name="network_address">Enhetens adress i nätverket: %1$s</string>

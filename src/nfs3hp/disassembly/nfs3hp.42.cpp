@@ -3,6 +3,8 @@
 
 namespace nfs3hp
 {
+// Port (tools/apply_native_mixer.py): defined in native_mixer.cpp.
+bool soundMix(win32::WinApplication* app, x86::CPU& cpu);
 
 /* align: skip  */
 void Application::sub_4ffce0(WinApplication* __restrict app, x86::CPU& cpu_)
@@ -2685,6 +2687,11 @@ void Application::sub_500864(WinApplication* __restrict app, x86::CPU& cpu_)
   x86::Local cpu(cpu_);
   NFS2_USE(cpu);
   NFS2_USE(app);
+    if (soundMix(app, cpu.sync())) /* port: native (tools/apply_native_mixer.py) */
+    {
+        cpu.reload();
+        return;
+    }
     // 00500864  53                     -push ebx
     app->getMemory<x86::reg32>(cpu.esp-4) = cpu.ebx;
     cpu.esp -= 4;

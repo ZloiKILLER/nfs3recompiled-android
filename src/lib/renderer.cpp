@@ -7,6 +7,7 @@
 #include <lib/glfuncs.h>
 #include <lib/glthread.h>
 #include <array>
+#include <atomic>
 #include <vector>
 #ifdef __ANDROID__
 #include <dlfcn.h>
@@ -594,9 +595,64 @@ void Renderer::presentFrame(x86::reg32 width, x86::reg32 height)
     glthread::presentDone();
 }
 
+namespace
+{
+std::atomic<Renderer*>* activeSlot()
+{
+    static std::atomic<Renderer*> slot{nullptr};
+    return &slot;
+}
+}
+
+Renderer* Renderer::active()
+{
+    return activeSlot()->load();
+}
+
+void Renderer::presentMovieFrame(std::vector<x86::reg8> rgba, x86::reg32 w, x86::reg32 h,
+                                 int x, int y, int dw, int dh)
+{
+    const x86::reg32 width = m_width, height = m_height;
+    glthread::post(this, [this, w, h, x, y, dw, dh, width, height, rgba = std::move(rgba)]() {
+        if (!m_frameRead || !m_frameDraw)
+            return;
+        if (!m_movieTexture)
+            glGenTextures(1, &m_movieTexture);
+        glBindTexture(GL_TEXTURE_2D, m_movieTexture);
+        if (w != m_movieWidth || h != m_movieHeight)
+        {
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, GLsizei(w), GLsizei(h), 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+            m_movieWidth = w;
+            m_movieHeight = h;
+        }
+        glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, GLsizei(w), GLsizei(h), GL_RGBA, GL_UNSIGNED_BYTE, rgba.data());
+        /* Into the picture's texture: black, and the frame scaled onto its
+         * place by the GPU.  Both textures have their first row at the top,
+         * which a framebuffer blit keeps. */
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, m_frameRead);
+        glFramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, m_movieTexture, 0);
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, m_frameDraw);
+        glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, m_texture, 0);
+        glDisable(GL_SCISSOR_TEST);
+        glViewport(0, 0, GLsizei(width), GLsizei(height));
+        glClearColor(0.f, 0.f, 0.f, 1.f);
+        glClear(GL_COLOR_BUFFER_BIT);
+        glBlitFramebuffer(0, 0, GLint(w), GLint(h), x, y, x + dw, y + dh, GL_COLOR_BUFFER_BIT, GL_LINEAR);
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+    });
+    present();
+}
+
 void Renderer::update()
 {
     tick("update");
+    activeSlot()->store(this);
     /* The guest's frame as it is now: the game writes the next one into the
      * same memory while the GL thread is still converting this one. */
     const x86::reg32 width = m_width, height = m_height;

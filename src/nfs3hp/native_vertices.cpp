@@ -61,6 +61,8 @@ bool projectedTriangle(win32::WinApplication* app, x86::CPU& cpu);
 bool clipQuad(win32::WinApplication* app, x86::CPU& cpu);
 bool clipTriangleByZ(win32::WinApplication* app, x86::CPU& cpu);
 bool sortedBuckets(win32::WinApplication* app, x86::CPU& cpu);
+// nfs3hp_main.cpp: races at extended precision, as the Modern Patch (tools/apply_race_precision.py).
+bool extendedRaces();
 // nfs3hp_main.cpp: a view pass's kind as the main view's where the mirror is drawn in full.
 x86::reg32 mirrorAsMain(x86::reg32 kind);
 double mirrorCarScale(double scale);
@@ -310,6 +312,24 @@ inline bool singlePrecision(const x86::CPU& cpu)
     return cpu.fpu.control.rc == 0 && nativesOn();
 #else
     return cpu.fpu.control.pc == x86::FPU::s_singlePrecision && cpu.fpu.control.rc == 0 && nativesOn();
+#endif
+}
+
+/* The stand-ins that only draw -- vertices, colours, polygons, the clipper,
+ * the lights -- stay on in a race at extended precision (extendedRaces, as
+ * the Modern Patch runs one): what they work out in float reaches the picture
+ * and nothing else, a last bit of a pixel at most, while every stand-in the
+ * physics and the opponents' driving can reach (the vector helpers, the
+ * nearest block, the ground's height, the particles with their share of the
+ * random numbers) steps aside for the generated code and its extended
+ * arithmetic. */
+inline bool drawingPrecision(const x86::CPU& cpu)
+{
+#if defined(WITH_PEDANTIC_FPU) || defined(WITH_WIDE_FPU)
+    return cpu.fpu.control.rc == 0 && nativesOn();
+#else
+    return cpu.fpu.control.rc == 0 && nativesOn()
+        && (cpu.fpu.control.pc == x86::FPU::s_singlePrecision || (cpu.fpu.control.pc == 3 && extendedRaces()));
 #endif
 }
 
@@ -5723,6 +5743,11 @@ void checkClip(win32::WinApplication* app, x86::CPU& cpu, CheckCounts& counts, c
  * function in every kWholeEveryMs is checked and the rest run natively.  A
  * callee's own effects outside guest memory (a triangle drawn) happen twice. */
 constexpr Uint64 kWholeEveryMs = 1000;
+/* Set while a whole-memory check runs a call: a native it calls that has a
+ * check of its own (sub_480fc0's sub_47f650) runs unchecked, as its check would
+ * take over the copies the outer one puts memory back from.  The outer check
+ * covers what it does. */
+thread_local bool t_wholeChecking = false;
 
 void checkWholeMemory(win32::WinApplication* app, x86::CPU& cpu, const char* name, x86::reg32 address,
                       x86::reg32 items, CheckCounts& counts, Uint64& last,
@@ -5733,7 +5758,7 @@ void checkWholeMemory(win32::WinApplication* app, x86::CPU& cpu, const char* nam
     mineTraced.clear();
     originalTraced.clear();
     const Uint64 now = SDL_GetTicks();
-    if (now - last < kWholeEveryMs)
+    if (t_wholeChecking || now - last < kWholeEveryMs)
     {
         native(app, cpu);
         return;
@@ -5767,6 +5792,7 @@ void checkWholeMemory(win32::WinApplication* app, x86::CPU& cpu, const char* nam
     stamps[1] = SDL_GetTicksNS();
     const x86::CPU entry = cpu;
     t_tracing = triangles;
+    t_wholeChecking = true;
     if (triangles)
         win32::glide2x::traceTriangles(&mineTraced);
     native(app, cpu);
@@ -5790,6 +5816,7 @@ void checkWholeMemory(win32::WinApplication* app, x86::CPU& cpu, const char* nam
     t_original = false;
     win32::glide2x::traceTriangles(nullptr);
     t_tracing = false;
+    t_wholeChecking = false;
     stamps[5] = SDL_GetTicksNS();
     if (timed++ < 6)
         SDL_Log("[NATIVE] %s whole-memory check: copy %u ms, native %u us, copy %u ms, restore %u ms, original %u us",
@@ -5864,9 +5891,23 @@ bool nativeOriginalRunning()
     return originalRunning();
 }
 
+void nativeCheckWhole(win32::WinApplication* app, x86::CPU& cpu, const char* name, x86::reg32 address,
+                      void*& state, void (*native)(win32::WinApplication*, x86::CPU&), bool triangles)
+{
+    struct State
+    {
+        CheckCounts counts;
+        Uint64 last = 0;
+    };
+    if (!state)
+        state = new State;
+    State& checked = *static_cast<State*>(state);
+    checkWholeMemory(app, cpu, name, address, 1, checked.counts, checked.last, native, triangles);
+}
+
 bool trackVertices(win32::WinApplication* app, x86::CPU& cpu)
 {
-    if (originalRunning() || !singlePrecision(cpu))
+    if (originalRunning() || !drawingPrecision(cpu))
         return false;
     if (checking() && cpu.edx < 0x10000)
     {
@@ -5881,7 +5922,7 @@ bool trackVertices(win32::WinApplication* app, x86::CPU& cpu)
 
 bool objectVertices(win32::WinApplication* app, x86::CPU& cpu)
 {
-    if (originalRunning() || !singlePrecision(cpu))
+    if (originalRunning() || !drawingPrecision(cpu))
         return false;
     if (checking())
     {
@@ -5915,7 +5956,7 @@ bool rotateVectors(win32::WinApplication* app, x86::CPU& cpu)
 
 bool envMapCoords(win32::WinApplication* app, x86::CPU& cpu)
 {
-    if (originalRunning() || !singlePrecision(cpu) || !polygonNativesOn())
+    if (originalRunning() || !drawingPrecision(cpu) || !polygonNativesOn())
         return false;
     if (checking())
     {
@@ -5930,7 +5971,7 @@ bool envMapCoords(win32::WinApplication* app, x86::CPU& cpu)
 
 bool shadeNormals(win32::WinApplication* app, x86::CPU& cpu)
 {
-    if (originalRunning() || !singlePrecision(cpu) || !polygonNativesOn())
+    if (originalRunning() || !drawingPrecision(cpu) || !polygonNativesOn())
         return false;
     if (checking())
     {
@@ -5945,7 +5986,7 @@ bool shadeNormals(win32::WinApplication* app, x86::CPU& cpu)
 
 bool cullPolygons(win32::WinApplication* app, x86::CPU& cpu)
 {
-    if (originalRunning() || !singlePrecision(cpu) || !polygonNativesOn())
+    if (originalRunning() || !drawingPrecision(cpu) || !polygonNativesOn())
         return false;
     if (checking())
     {
@@ -6115,7 +6156,7 @@ x86::reg32 takeArenaPeak()
 
 bool thrashDrawTri(win32::WinApplication* app, x86::CPU& cpu)
 {
-    if (originalRunning() || !singlePrecision(cpu) || !drawTriNativeOn() || !thrashPlainTriangles(app))
+    if (originalRunning() || !drawingPrecision(cpu) || !drawTriNativeOn() || !thrashPlainTriangles(app))
         return false;
     if (checking() && !t_tracing)
     {
@@ -6129,7 +6170,7 @@ bool thrashDrawTri(win32::WinApplication* app, x86::CPU& cpu)
 
 bool submitPolygons(win32::WinApplication* app, x86::CPU& cpu)
 {
-    if (originalRunning() || !singlePrecision(cpu) || !polygonNativesOn())
+    if (originalRunning() || !drawingPrecision(cpu) || !polygonNativesOn())
         return false;
     if (checking())
     {
@@ -6144,7 +6185,7 @@ bool submitPolygons(win32::WinApplication* app, x86::CPU& cpu)
 
 bool clipPolygon(win32::WinApplication* app, x86::CPU& cpu)
 {
-    if (originalRunning() || !singlePrecision(cpu) || !clipNativeOn())
+    if (originalRunning() || !drawingPrecision(cpu) || !clipNativeOn())
         return false;
     if (clipChecking() && !t_tracing && !win32::glide2x::tracingTriangles())
     {
@@ -6158,7 +6199,7 @@ bool clipPolygon(win32::WinApplication* app, x86::CPU& cpu)
 
 bool clipTriangle(win32::WinApplication* app, x86::CPU& cpu)
 {
-    if (originalRunning() || !singlePrecision(cpu) || !clipNativeOn())
+    if (originalRunning() || !drawingPrecision(cpu) || !clipNativeOn())
         return false;
     if (clipChecking() && !t_tracing && !win32::glide2x::tracingTriangles())
     {
@@ -6173,7 +6214,7 @@ bool clipTriangle(win32::WinApplication* app, x86::CPU& cpu)
 
 bool clipTriangleByZ(win32::WinApplication* app, x86::CPU& cpu)
 {
-    if (originalRunning() || !singlePrecision(cpu) || !clipNativeOn())
+    if (originalRunning() || !drawingPrecision(cpu) || !clipNativeOn())
         return false;
     if (clipChecking() && !t_tracing && !win32::glide2x::tracingTriangles())
     {
@@ -6188,7 +6229,7 @@ bool clipTriangleByZ(win32::WinApplication* app, x86::CPU& cpu)
 
 bool quadMesh(win32::WinApplication* app, x86::CPU& cpu)
 {
-    if (originalRunning() || !singlePrecision(cpu) || !clipNativeOn())
+    if (originalRunning() || !drawingPrecision(cpu) || !clipNativeOn())
         return false;
     if (clipChecking() && !t_tracing && !win32::glide2x::tracingTriangles())
     {
@@ -6208,7 +6249,7 @@ bool quadMesh(win32::WinApplication* app, x86::CPU& cpu)
 
 bool clipQuad(win32::WinApplication* app, x86::CPU& cpu)
 {
-    if (originalRunning() || !singlePrecision(cpu) || !clipNativeOn())
+    if (originalRunning() || !drawingPrecision(cpu) || !clipNativeOn())
         return false;
     if (clipChecking() && !t_tracing && !win32::glide2x::tracingTriangles())
     {
@@ -6296,7 +6337,7 @@ bool gatherBuckets(win32::WinApplication* app, x86::CPU& cpu)
 
 bool objectVerticesNearest(win32::WinApplication* app, x86::CPU& cpu)
 {
-    if (originalRunning() || !singlePrecision(cpu) || !polygonNativesOn())
+    if (originalRunning() || !drawingPrecision(cpu) || !polygonNativesOn())
         return false;
     if (targetedCheck())
     {
@@ -6312,7 +6353,7 @@ bool objectVerticesNearest(win32::WinApplication* app, x86::CPU& cpu)
 
 bool trackRecords(win32::WinApplication* app, x86::CPU& cpu)
 {
-    if (originalRunning() || !singlePrecision(cpu) || !polygonNativesOn())
+    if (originalRunning() || !drawingPrecision(cpu) || !polygonNativesOn())
         return false;
     if (targetedCheck() && !win32::glide2x::tracingTriangles())
     {
@@ -6342,7 +6383,7 @@ bool trackRecords(win32::WinApplication* app, x86::CPU& cpu)
 
 bool boxOutside(win32::WinApplication* app, x86::CPU& cpu)
 {
-    if (originalRunning() || !singlePrecision(cpu) || !polygonNativesOn())
+    if (originalRunning() || !drawingPrecision(cpu) || !polygonNativesOn())
         return false;
     if (targetedCheck())
     {
@@ -6356,7 +6397,7 @@ bool boxOutside(win32::WinApplication* app, x86::CPU& cpu)
 
 bool projectedTriangle(win32::WinApplication* app, x86::CPU& cpu)
 {
-    if (originalRunning() || !singlePrecision(cpu) || !polygonNativesOn())
+    if (originalRunning() || !drawingPrecision(cpu) || !polygonNativesOn())
         return false;
     if (targetedCheck() && !win32::glide2x::tracingTriangles())
     {
@@ -6414,7 +6455,7 @@ void bucketRanges(win32::WinApplication* app, Ranges& ranges, bool depthBucketsT
 
 bool triangleList(win32::WinApplication* app, x86::CPU& cpu)
 {
-    if (originalRunning() || !singlePrecision(cpu) || !polygonNativesOn())
+    if (originalRunning() || !drawingPrecision(cpu) || !polygonNativesOn())
         return false;
     if (targetedCheck() && !win32::glide2x::tracingTriangles())
     {
@@ -6438,7 +6479,7 @@ bool triangleList(win32::WinApplication* app, x86::CPU& cpu)
 
 bool quadList(win32::WinApplication* app, x86::CPU& cpu)
 {
-    if (originalRunning() || !singlePrecision(cpu) || !polygonNativesOn())
+    if (originalRunning() || !drawingPrecision(cpu) || !polygonNativesOn())
         return false;
     if (targetedCheck() && !win32::glide2x::tracingTriangles())
     {
@@ -6462,7 +6503,7 @@ bool quadList(win32::WinApplication* app, x86::CPU& cpu)
 
 bool sortedBuckets(win32::WinApplication* app, x86::CPU& cpu)
 {
-    if (originalRunning() || !singlePrecision(cpu) || !polygonNativesOn())
+    if (originalRunning() || !drawingPrecision(cpu) || !polygonNativesOn())
         return false;
     if (targetedCheck() && !win32::glide2x::tracingTriangles())
     {
@@ -6479,7 +6520,7 @@ bool sortedBuckets(win32::WinApplication* app, x86::CPU& cpu)
 
 bool depthBuckets(win32::WinApplication* app, x86::CPU& cpu)
 {
-    if (originalRunning() || !singlePrecision(cpu) || !polygonNativesOn())
+    if (originalRunning() || !drawingPrecision(cpu) || !polygonNativesOn())
         return false;
     if (targetedCheck() && !win32::glide2x::tracingTriangles())
     {
@@ -6497,11 +6538,16 @@ bool depthBuckets(win32::WinApplication* app, x86::CPU& cpu)
 /* Small helpers called from everywhere: under NFS_NATIVE_CHECK=clip one call
  * in 64 is checked against the generated code -- every call of the float to
  * integer step alone ran to millions a race and stopped the game. */
+/* What a small stand-in needs of the FPU: nothing (integers only, false),
+ * the race's single precision (true), or only to draw (kDrawing). */
+const int kDrawing = 2;
+
 template <void (*Native)(win32::WinApplication*, x86::CPU&)>
-bool smallNative(win32::WinApplication* app, x86::CPU& cpu, bool precise, const char* name, x86::reg32 address,
+bool smallNative(win32::WinApplication* app, x86::CPU& cpu, int precise, const char* name, x86::reg32 address,
                  x86::reg32 out, x86::reg32 size, CheckCounts& counts)
 {
-    if (originalRunning() || !nativesOn() || (precise && !singlePrecision(cpu)))
+    if (originalRunning() || !nativesOn() || (precise == 1 && !singlePrecision(cpu))
+        || (precise == kDrawing && !drawingPrecision(cpu)))
         return false;
     static unsigned s_calls = 0;
     if (targetedCheck() && (++s_calls & 63) == 0)
@@ -6577,7 +6623,7 @@ bool moveParticles(win32::WinApplication* app, x86::CPU& cpu)
 
 bool lightGlow(win32::WinApplication* app, x86::CPU& cpu)
 {
-    if (originalRunning() || !singlePrecision(cpu) || !polygonNativesOn())
+    if (originalRunning() || !drawingPrecision(cpu) || !polygonNativesOn())
         return false;
     if (targetedCheck() && !win32::glide2x::tracingTriangles())
     {
@@ -6594,7 +6640,7 @@ bool lightGlow(win32::WinApplication* app, x86::CPU& cpu)
 
 bool headlightBeam(win32::WinApplication* app, x86::CPU& cpu)
 {
-    if (originalRunning() || !singlePrecision(cpu) || !polygonNativesOn())
+    if (originalRunning() || !drawingPrecision(cpu) || !polygonNativesOn())
         return false;
     if (targetedCheck() && !win32::glide2x::tracingTriangles())
     {
@@ -6611,7 +6657,7 @@ bool headlightBeam(win32::WinApplication* app, x86::CPU& cpu)
 
 bool carDetail(win32::WinApplication* app, x86::CPU& cpu)
 {
-    if (originalRunning() || !singlePrecision(cpu) || !polygonNativesOn())
+    if (originalRunning() || !drawingPrecision(cpu) || !polygonNativesOn())
         return false;
     if (targetedCheck() && !win32::glide2x::tracingTriangles())
     {
@@ -6627,14 +6673,14 @@ bool carDetail(win32::WinApplication* app, x86::CPU& cpu)
 bool objectVerticesList(win32::WinApplication* app, x86::CPU& cpu)
 {
     static CheckCounts counts;
-    return smallNative<objectVerticesListNative>(app, cpu, true, "sub_4dbef0", 0x4dbef0,
+    return smallNative<objectVerticesListNative>(app, cpu, kDrawing, "sub_4dbef0", 0x4dbef0,
                                                  app->getMemory<x86::reg32>(cpu.esp + 8), checkItems(cpu.ebx) * 0x20,
                                                  counts);
 }
 
 bool objectRecords(win32::WinApplication* app, x86::CPU& cpu)
 {
-    if (originalRunning() || !singlePrecision(cpu) || !polygonNativesOn())
+    if (originalRunning() || !drawingPrecision(cpu) || !polygonNativesOn())
         return false;
     if (targetedCheck() && !win32::glide2x::tracingTriangles())
     {
@@ -6731,7 +6777,7 @@ bool nearestBlock(win32::WinApplication* app, x86::CPU& cpu)
 bool objectVerticesColoured(win32::WinApplication* app, x86::CPU& cpu)
 {
     static CheckCounts counts;
-    return smallNative<objectVerticesColouredNative>(app, cpu, true, "sub_41a970", 0x41a970,
+    return smallNative<objectVerticesColouredNative>(app, cpu, kDrawing, "sub_41a970", 0x41a970,
                                                      app->getMemory<x86::reg32>(cpu.esp + 4),
                                                      checkItems(cpu.edx) * 0x20, counts);
 }
@@ -6783,7 +6829,7 @@ bool gatherSorted(win32::WinApplication* app, x86::CPU& cpu)
 
 bool trackPolygons(win32::WinApplication* app, x86::CPU& cpu)
 {
-    if (originalRunning() || !singlePrecision(cpu) || !polygonNativesOn())
+    if (originalRunning() || !drawingPrecision(cpu) || !polygonNativesOn())
         return false;
     if (checking())
     {

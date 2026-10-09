@@ -116,7 +116,6 @@
  <string name="touch_keys_title">Tastele comenzilor tactile</string>
  <string name="touch_keys_hint">Tasta trimisă de fiecare comandă de pe ecran. Trebuie să corespundă cu tasta setată în joc.</string>
 
- <string name="pref_phone_vibration">Vibrația telefonului (efecte din joc; repornește jocul)</string>
  <string name="pref_show_gears">Arată butoanele de treaptă − / +</string>
  <string name="auto_hide_delay">Întârziere: %1$d s</string>
  <string name="editor_button_size">Buton: %1$d%%</string>
@@ -153,7 +152,7 @@
  <string name="faq_size"><b>Ce schimbă mărimea?</b>\nMărimea butoanelor scalează comenzile implicite. În Editează pozițiile și mărimile trage o comandă și schimbă-i mărimea cu cursorul de mărime; o comandă răspunde exact unde este desenată, iar procentele sunt raportate la comanda implicită. Modificările se salvează singure. Editorul arată o grilă; cu Aliniere la grilă activă, comanda trasă se așază pe ea.</string>
  <string name="faq_edges"><b>Margini și înălțime</b>\nDistanța față de margini mută comenzile implicite spre interior. Decupajele sistemului sunt respectate. Comenzile plasate manual își păstrează pozițiile salvate.</string>
  <string name="faq_hiding"><b>Opacitate și ascundere automată</b>\nOpacitatea stabilește vizibilitatea normală. Ascunderea automată începe după ce ridici toate degetele, cu o întârziere de 1–30 de secunde. Butoanele ascunse răspund deja la prima atingere și redevin vizibile. Ținerea apăsată a unei comenzi împiedică ascunderea. O apăsare pe gamepadul jucătorului 1 ascunde imediat butoanele; următoarea atingere le readuce. Gamepadul jucătorului 2 nu le atinge, așa că unul poate conduce pe ecran în timp ce celălalt joacă pe gamepad.</string>
- <string name="faq_vibration"><b>Vibrații</b>\nEfectele Force Feedback ale jocului ajung la telefon și la gamepadul 1. Jocul controlează un singur dispozitiv force feedback, așa că gamepadul 2 nu vibrează niciodată. Vibrațiile telefonului se pornesc și se opresc în Comenzi → Atingere. Vibrațiile gamepadului sunt oprite până când le pornești în Comenzi → Gamepaduri; intensitatea lor se setează în joc: Options → Controllers → Force Feedback. Efectele vin din joc, niciodată din apăsarea butoanelor.</string>
+ <string name="faq_vibration"><b>Vibrații</b>\nEfectele Force Feedback ale jocului se simt pe telefon sau pe gamepadul 1, niciodată pe amândouă deodată: alege Oprit, Telefon sau Gamepad în Comenzi → Force Feedback. Jocul controlează un singur dispozitiv force feedback, așa că gamepadul 2 nu vibrează niciodată. Intensitatea gamepadului se setează în joc: Options → Controllers → Force Feedback. Efectele vin din joc, niciodată din apăsarea butoanelor.</string>
  <string name="faq_mapping"><b>Gamepaduri</b>\nJocul vede mereu două gamepaduri: gamepadul 1 este jucătorul 1, împreună cu comenzile tactile, gamepadul 2 este jucătorul 2. În Comenzi → Gamepaduri alegi care gamepad e care apăsând un buton pe el și setezi ce face fiecare buton, apoi apeși o dată Gamepad ACTIV. Acesta scrie comenzile potrivite în setările jocului și face o copie a fișierului vechi. Stick-ul stâng virează, trăgaciele accelerează și frânează. Un gamepad are două seturi de butoane, așa cum comenzile tactile au două aranjamente: cel de cursă, pe care îl setezi aici, și unul fix pentru meniuri și reluări, unde Cross / A confirmă, Circle / B revine, iar crucea mută selecția. Pentru a juca de la tastatură, scrie în schimb Implicit în joc.</string>
  <string name="faq_lights"><b>Faruri și revenire pe pistă</b>\n☼ trimite L. ↻ trimite R pentru a reveni pe pistă. Tastele se pot schimba în Comenzi → Atingere → Taste.</string>
  <string name="faq_screen_data"><b>Ecran și datele jocului</b>\nPeisaj blochează jocul pe orizontală; Automat permite rotirea. Limita FPS restrânge rata de cadre; o valoare mai mică reduce munca pe secundă. «Datele jocului» gestionează importurile și arată setul activ. «Joacă» devine disponibil când un set este gata.</string>
@@ -177,9 +176,20 @@
  <string name="help_split_write"><b>2. Scrie comenzile în joc</b>\nPe același ecran apasă Gamepad ACTIV și confirmă. E nevoie o dată și din nou doar după instalarea altor date de joc sau după schimbarea comenzilor în joc. Setările anterioare sunt salvate într-o copie de rezervă.</string>
  <string name="help_split_race"><b>3. Pornește o cursă pe ecran împărțit</b>\nPornește jocul și alege Two Players…. Jucătorul 1 conduce cu gamepadul 1 sau cu comenzile tactile, jucătorul 2 cu gamepadul 2. Prin meniuri te poți deplasa cu oricare gamepad: crucea mută selecția, Cross / A sau Options / Menu confirmă, Circle / B sau Create / View revine.</string>
  <string name="help_split_driving"><b>Condus</b>\nStick-ul stâng virează, trăgaciul drept accelerează, iar cel stâng frânează. Implicit Circle / B este frâna de mână, Square / X aruncă o bandă cu țepi, Cross / A privește în spate, Triangle / Y schimbă camera, R1 / L1 schimbă treptele, Create / View readuce mașina pe pistă, Options / Menu pune cursa pe pauză, L3 claxonează, iar R3 aprinde farurile.</string>
- <string name="help_split_notes"><b>Bine de știut</b>\nVibrează doar gamepadul 1 și telefonul: jocul controlează un singur dispozitiv force feedback. Dacă comenzile nu se mai potrivesc, de exemplu după resetarea lor în joc, apasă din nou Gamepad ACTIV. Pentru a juca de la tastatură, apasă în schimb Implicit în joc. Comenzile tactile se opresc în Comenzi → Atingere.</string>
- <string name="gamepad_vibration">Vibrațiile gamepadului</string>
- <string name="gamepad_vibration_note">Oprită implicit. Intensitatea se setează în joc: Options → Controllers → Force Feedback.</string>
+ <string name="help_split_digital"><b>Analogic sau Digital</b>\nFiecare gamepad are propriul comutator Analogic / Digital în Comenzi → Gamepaduri. Digital conduce cursa ca o tastatură: crucea stânga și dreapta virează, crucea sus și trăgaciul drept accelerează, crucea jos și trăgaciul stâng frânează, iar stick-ul nu virează. Meniurile funcționează la fel în ambele cazuri. Cele două gamepaduri nu împart niciodată o tastă, așa că pe ecranul împărțit fiecare conduce doar propria mașină.</string>
+ <string name="help_split_notes"><b>Bine de știut</b>\nVibrează doar gamepadul 1 sau telefonul, după alegerea din Comenzi → Force Feedback: jocul controlează un singur dispozitiv force feedback. Dacă comenzile nu se mai potrivesc, de exemplu după resetarea lor în joc, apasă din nou Gamepad ACTIV. Pentru a juca de la tastatură, apasă în schimb Implicit în joc. Comenzile tactile se opresc în Comenzi → Atingere.</string>
+ <string name="gamepad_mode_analog">Analogic</string>
+ <string name="gamepad_mode_digital">Digital</string>
+ <string name="gamepad_analog_note">În cursă stick-ul stâng virează, trăgaciul drept accelerează, iar cel stâng frânează.</string>
+ <string name="gamepad_digital_note">În cursă crucea virează, accelerează și frânează ca tastele, iar trăgaciele accelerează și frânează. Stick-ul nu virează.</string>
+ <string name="gamepad_buttons_digital_note">Acest gamepad este pe Digital: în cursă crucea virează, accelerează și frânează, orice i s-ar fi setat aici.</string>
+ <string name="force_feedback_hint">Unde se simt efectele Force Feedback ale jocului: pe telefon sau pe gamepad, niciodată pe amândouă deodată. Se aplică de la următoarea pornire a jocului.</string>
+ <string name="force_feedback_off">Oprit</string>
+ <string name="force_feedback_phone">Telefon</string>
+ <string name="force_feedback_gamepad">Gamepad</string>
+ <string name="force_feedback_off_note">Nimic nu vibrează.</string>
+ <string name="force_feedback_phone_note">Telefonul redă ciocnirile, aterizările și schimbările de viteză, motorul la turații mari și virajele strânse.</string>
+ <string name="force_feedback_gamepad_note">Gamepadul 1 redă efectele jocului așa cum sunt. Intensitatea lor se setează în joc: Options → Controllers → Force Feedback.</string>
  <string name="editor_snap_grid">Aliniere la grilă</string>
  <string name="network_title">Rețea</string>
  <string name="network_address">Adresa acestui dispozitiv în rețea: %1$s</string>

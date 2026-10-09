@@ -116,7 +116,6 @@
  <string name="touch_keys_title">Tipke upravljanja dodirom</string>
  <string name="touch_keys_hint">Tipka tipkovnice koju šalje svaka kontrola na zaslonu. Mora odgovarati tipki postavljenoj u igri.</string>
 
- <string name="pref_phone_vibration">Vibracija telefona (efekti igre; ponovno pokreni igru)</string>
  <string name="pref_show_gears">Prikaži gumbe stupnjeva − / +</string>
  <string name="auto_hide_delay">Odgoda: %1$d s</string>
  <string name="editor_button_size">Gumb: %1$d%%</string>
@@ -153,7 +152,7 @@
  <string name="faq_size"><b>Što mijenja veličina?</b>\nVeličina gumba skalira zadano upravljanje. U Uredi položaje i veličine povuci gumb i promijeni mu veličinu klizačem veličine; gumb reagira točno ondje gdje je nacrtan, a postoci su u odnosu na zadani gumb. Promjene se spremaju same. Uređivač prikazuje mrežu; uz uključeno Poravnaj s mrežom povučeni gumb sjeda na nju.</string>
  <string name="faq_edges"><b>Rubovi i visina</b>\nUdaljenost od rubova pomiče zadane gumbe prema unutra. Sistemski izrezi se poštuju. Ručno postavljeni gumbi zadržavaju spremljene položaje.</string>
  <string name="faq_hiding"><b>Neprozirnost i automatsko skrivanje</b>\nNeprozirnost određuje uobičajenu vidljivost. Skrivanje počinje kad podigneš sve prste, nakon 1–30 sekundi. Skriveni gumbi reagiraju već na prvi dodir i ponovno postaju vidljivi. Držanje gumba sprječava skrivanje. Pritisak na kontroleru igrača 1 odmah skriva gumbe; sljedeći dodir ih vraća. Kontroler igrača 2 ih ne dira, pa jedan može voziti po zaslonu dok drugi igra kontrolerom.</string>
- <string name="faq_vibration"><b>Vibracija</b>\nEfekti Force Feedback igre dolaze do telefona i do kontrolera 1. Igra pokreće samo jedan uređaj s povratnom silom, pa kontroler 2 nikad ne vibrira. Vibracija telefona uključuje se i isključuje u Upravljanje → Dodir. Vibracija kontrolera isključena je dok je ne uključite u Upravljanje → Kontroleri; njezina jačina podešava se u samoj igri: Options → Controllers → Force Feedback. Efekti dolaze iz igre, nikad od pritisaka tipki.</string>
+ <string name="faq_vibration"><b>Vibracija</b>\nEfekti Force Feedback igre osjete se na telefonu ili na kontroleru 1, nikad na oba odjednom: odaberite Isključeno, Telefon ili Kontroler u Upravljanje → Force Feedback. Igra pokreće samo jedan uređaj s povratnom silom, pa kontroler 2 nikad ne vibrira. Jačina vibracije kontrolera podešava se u samoj igri: Options → Controllers → Force Feedback. Efekti dolaze iz igre, nikad od pritisaka tipki.</string>
  <string name="faq_mapping"><b>Kontroleri</b>\nIgra uvijek vidi dva kontrolera: kontroler 1 je igrač 1 zajedno s upravljanjem dodirom, kontroler 2 je igrač 2. U Upravljanje → Kontroleri pritiskom tipke odaberi koji je kontroler čiji i podesi što radi svaka tipka, zatim jednom pritisni Kontroler UKLJUČEN. To u postavke igre zapisuje odgovarajuće upravljanje i sigurnosno kopira staru datoteku. Lijeva palica skreće, okidači ubrzavaju i koče. Kontroler ima dva skupa tipki, kao što upravljanje dodirom ima dva rasporeda: utrkivački, koji ovdje podesiš, i nepromjenjiv za izbornike i snimke, gdje Cross / A potvrđuje, Circle / B vraća natrag, a križ pomiče odabir. Za igranje tipkovnicom umjesto toga zapiši Zadano u igri.</string>
  <string name="faq_lights"><b>Svjetla i povratak na stazu</b>\n☼ šalje L. ↻ šalje R za povratak na stazu. Tipke se mogu promijeniti u Upravljanje → Dodir → Tipke.</string>
  <string name="faq_screen_data"><b>Zaslon i podaci igre</b>\nVodoravno zaključava igru vodoravno; Automatski dopušta rotaciju. Ograničenje FPS-a smanjuje broj sličica; niža vrijednost smanjuje opterećenje. «Podaci igre» upravljaju uvozima i pokazuju koji je skup aktivan. «Igraj» se omogućuje kad je skup spreman.</string>
@@ -177,9 +176,20 @@
  <string name="help_split_write"><b>2. Zapiši upravljanje u igru</b>\nNa istom zaslonu pritisni Kontroler UKLJUČEN i potvrdi. Potrebno je jednom, a ponovno samo nakon instaliranja drugih podataka igre ili promjene upravljanja u samoj igri. Prethodne postavke sigurnosno se kopiraju.</string>
  <string name="help_split_race"><b>3. Pokreni utrku na podijeljenom zaslonu</b>\nPokreni igru i odaberi Two Players…. Igrač 1 vozi kontrolerom 1 ili upravljanjem dodirom, igrač 2 kontrolerom 2. Izbornicima se kreće bilo kojim kontrolerom: križ pomiče odabir, Cross / A ili Options / Menu potvrđuje, Circle / B ili Create / View vraća natrag.</string>
  <string name="help_split_driving"><b>Vožnja</b>\nLijeva palica skreće, desni okidač ubrzava, a lijevi koči. Zadano je Circle / B ručna kočnica, Square / X baca traku sa šiljcima, Cross / A gleda unatrag, Triangle / Y mijenja kameru, R1 / L1 mijenjaju brzine, Create / View vraća auto na stazu, Options / Menu pauzira utrku, L3 trubi, a R3 pali svjetla.</string>
- <string name="help_split_notes"><b>Dobro je znati</b>\nVibriraju samo kontroler 1 i telefon: igra pokreće samo jedan uređaj s povratnom silom. Ako upravljanje prestane odgovarati, na primjer nakon vraćanja zadanog u igri, ponovno pritisni Kontroler UKLJUČEN. Za igranje tipkovnicom umjesto toga pritisni Zadano u igri. Upravljanje dodirom isključuje se u Upravljanje → Dodir.</string>
- <string name="gamepad_vibration">Vibracija kontrolera</string>
- <string name="gamepad_vibration_note">Zadano isključeno. Jačina se podešava u igri: Options → Controllers → Force Feedback.</string>
+ <string name="help_split_digital"><b>Analogno ili digitalno</b>\nSvaki kontroler ima vlastiti prekidač Analogno / Digitalno u Upravljanje → Kontroleri. Digitalno vozi utrku kao tipkovnica: križ lijevo i desno skreće, križ gore i desni okidač ubrzavaju, križ dolje i lijevi okidač koče, a palica ne skreće. Izbornici rade jednako u oba slučaja. Dva kontrolera nikad ne dijele nijednu tipku, pa na podijeljenom zaslonu svaki vozi samo svoj automobil.</string>
+ <string name="help_split_notes"><b>Dobro je znati</b>\nVibrira samo kontroler 1 ili telefon, ovisno o odabiru u Upravljanje → Force Feedback: igra pokreće samo jedan uređaj s povratnom silom. Ako upravljanje prestane odgovarati, na primjer nakon vraćanja zadanog u igri, ponovno pritisni Kontroler UKLJUČEN. Za igranje tipkovnicom umjesto toga pritisni Zadano u igri. Upravljanje dodirom isključuje se u Upravljanje → Dodir.</string>
+ <string name="gamepad_mode_analog">Analogno</string>
+ <string name="gamepad_mode_digital">Digitalno</string>
+ <string name="gamepad_analog_note">U utrci lijeva palica skreće, desni okidač ubrzava, a lijevi koči.</string>
+ <string name="gamepad_digital_note">U utrci križ skreće, ubrzava i koči kao tipke, a okidači ubrzavaju i koče. Palica ne skreće.</string>
+ <string name="gamepad_buttons_digital_note">Ovaj je kontroler postavljen na Digitalno: u utrci križ skreće, ubrzava i koči, bez obzira na to što je ovdje za njega postavljeno.</string>
+ <string name="force_feedback_hint">Gdje se osjećaju efekti Force Feedback igre: na telefonu ili na kontroleru, nikad na oba odjednom. Vrijedi od sljedećeg pokretanja igre.</string>
+ <string name="force_feedback_off">Isključeno</string>
+ <string name="force_feedback_phone">Telefon</string>
+ <string name="force_feedback_gamepad">Kontroler</string>
+ <string name="force_feedback_off_note">Ništa ne vibrira.</string>
+ <string name="force_feedback_phone_note">Telefon reproducira sudare, doskoke i promjene brzina, motor na visokim okretajima i oštra skretanja.</string>
+ <string name="force_feedback_gamepad_note">Kontroler 1 reproducira efekte igre kakvi jesu. Njihova se jačina podešava u igri: Options → Controllers → Force Feedback.</string>
  <string name="editor_snap_grid">Poravnaj s mrežom</string>
  <string name="network_title">Mreža</string>
  <string name="network_address">Adresa ovog uređaja u mreži: %1$s</string>

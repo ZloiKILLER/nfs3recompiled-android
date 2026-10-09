@@ -1,6 +1,30 @@
 #include "eacsnd.h"
 #include <lib/thread.h>
 
+// Port (tools/apply_native_sound.py): defined in native_sound.cpp.
+namespace nfs3hp
+{
+bool soundCaps(win32::WinApplication* app, x86::CPU& cpu);
+}
+
+// Port (tools/apply_native_sound.py): defined in native_sound.cpp.
+namespace nfs3hp
+{
+bool soundStart(win32::WinApplication* app, x86::CPU& cpu);
+}
+
+// Port (tools/apply_native_sound.py): defined in native_sound.cpp.
+namespace nfs3hp
+{
+bool soundStop(win32::WinApplication* app, x86::CPU& cpu);
+}
+
+// Port (tools/apply_native_sound.py): defined in native_sound.cpp.
+namespace nfs3hp
+{
+bool soundServe(win32::WinApplication* app, x86::CPU& cpu);
+}
+
 namespace eacsnd
 {
 
@@ -1204,6 +1228,11 @@ void sub_a32c28(win32::WinApplication* __restrict app, x86::CPU& cpu_)
   x86::Local cpu(cpu_);
   NFS2_USE(cpu);
   NFS2_USE(app);
+    if (nfs3hp::soundCaps(app, cpu.sync())) /* port: native (tools/apply_native_sound.py) */
+    {
+        cpu.reload();
+        return;
+    }
     // 00a32c28  55                     -push ebp
     app->getMemory<x86::reg32>(cpu.esp-4) = cpu.ebp;
     cpu.esp -= 4;
@@ -3776,6 +3805,11 @@ void sub_a3382c(win32::WinApplication* __restrict app, x86::CPU& cpu_)
   x86::Local cpu(cpu_);
   NFS2_USE(cpu);
   NFS2_USE(app);
+    if (nfs3hp::soundStart(app, cpu.sync())) /* port: native (tools/apply_native_sound.py) */
+    {
+        cpu.reload();
+        return;
+    }
     // 00a3382c  53                     -push ebx
     app->getMemory<x86::reg32>(cpu.esp-4) = cpu.ebx;
     cpu.esp -= 4;
@@ -3894,6 +3928,11 @@ void sub_a3387c(win32::WinApplication* __restrict app, x86::CPU& cpu_)
   x86::Local cpu(cpu_);
   NFS2_USE(cpu);
   NFS2_USE(app);
+    if (nfs3hp::soundStop(app, cpu.sync())) /* port: native (tools/apply_native_sound.py) */
+    {
+        cpu.reload();
+        return;
+    }
     // 00a3387c  53                     -push ebx
     app->getMemory<x86::reg32>(cpu.esp-4) = cpu.ebx;
     cpu.esp -= 4;
@@ -4660,6 +4699,11 @@ void sub_a33b24(win32::WinApplication* __restrict app, x86::CPU& cpu_)
   x86::Local cpu(cpu_);
   NFS2_USE(cpu);
   NFS2_USE(app);
+    if (nfs3hp::soundServe(app, cpu.sync())) /* port: native (tools/apply_native_sound.py) */
+    {
+        cpu.reload();
+        return;
+    }
     // 00a33b24  53                     -push ebx
     app->getMemory<x86::reg32>(cpu.esp-4) = cpu.ebx;
     cpu.esp -= 4;

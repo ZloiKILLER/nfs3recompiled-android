@@ -1,0 +1,14 @@
+variant                                      movies  fails    shown    calls
+software display, sound                          40      0      144     4496
+software display, stalls                         40      0      179     4673
+no sound (channel drained)                       40      0      166     2982
+overlay display: MADe decoded unless late        40      0      186     4713
+key pressed mid-movie                            40      0      134     2941
+quality 0 placement                              40      0      191     4695
+sub_4960e0, 2 GHz                                40      0      169     4834
+sub_4960e0, 150 MHz                              40      0      177     4662
+sub_4960e0, 100 MHz (starts skipping)            40      0      183     4949
+sub_4960e0, -nomovie                              3      0        0        0
+sub_4960e0, file missing                          3      0        0        3
+95 s
+EXIT 0

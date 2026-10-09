@@ -49,6 +49,28 @@ enum DirectInputDeviceHow
     DIPH_BYUSAGE    = 3
 };
 
+/* MAKEDIPROP() packs the property id into the GUID pointer itself, so the
+ * "pointer" is the small integer dinput.h defines.  What the game sets: the
+ * mouse's buffer size, each joystick axis's dead zone and saturation from the
+ * Dead Zone screen, the device's force-feedback strength (Stick Volume in the
+ * Force Feedback menu, sub_435df0) and its autocentre spring. */
+enum DirectInputDeviceProperty
+{
+    DIPROP_BUFFERSIZE       = 1,
+    DIPROP_AXISMODE         = 2,
+    DIPROP_GRANULARITY      = 3,
+    DIPROP_RANGE            = 4,
+    DIPROP_DEADZONE         = 5,
+    DIPROP_SATURATION       = 6,
+    DIPROP_FFGAIN           = 7,
+    DIPROP_FFLOAD           = 8,
+    DIPROP_AUTOCENTER       = 9,
+    DIPROP_CALIBRATIONMODE  = 10
+};
+
+static const HRESULT DIERR_INVALIDPARAM   = HRESULT(0x80070057);
+static const HRESULT DIERR_OBJECTNOTFOUND = HRESULT(0x80070002);
+
 enum DirectInputDeviceForceFeedbackState
 {
     DIGFFS_EMPTY           = 0x00000001,
@@ -150,14 +172,51 @@ HRESULT IDirectInputDevice::EnumObjects(WinApplication* app, x86::CPU& cpu,
     return 1;
 }
 
+/* The axes a dead zone or saturation header names, as a range of
+ * Gamepad::kDirectInputAxes: one axis by its DIJOYSTATE offset -- the only way
+ * the game names one (its table at 0x434ed4 lists the offsets 0 to 28) -- or
+ * all of them for the device.  False for anything else. */
+static bool propertyAxes(const IDirectInputDevice::DIPROPHEADER* header, x86::reg32& first, x86::reg32& last)
+{
+    if (header->dwHow == DIPH_DEVICE && header->dwObj == 0)
+    {
+        first = 0;
+        last = Gamepad::kDirectInputAxes - 1;
+        return true;
+    }
+    if (header->dwHow == DIPH_BYOFFSET && header->dwObj % 4 == 0
+        && header->dwObj / 4 < Gamepad::kDirectInputAxes)
+    {
+        first = last = header->dwObj / 4;
+        return true;
+    }
+    return false;
+}
+
 HRESULT IDirectInputDevice::GetProperty(WinApplication* app, x86::CPU& cpu,
                                         Packed<const GUID> rguidProp, LPDIPROPHEADER pdiph)
 {
     NFS2_USE(app);
     NFS2_USE(cpu);
-    NFS2_USE(rguidProp);
-    NFS2_USE(pdiph);
-    //NFS2_ASSERT(false);
+    const x86::reg32 property = x86::reg32(rguidProp);
+    /* The game asks for one thing: each axis's dead zone and saturation, when
+     * it opens a joystick (sub_435ae0), to start its Dead Zone screen from.  It
+     * checks only for a negative result before reading the value back, so the
+     * 1 this used to return for everything passed, and the screen started from
+     * whatever was left on the game's stack. */
+    if (property == DIPROP_DEADZONE || property == DIPROP_SATURATION)
+    {
+        const Gamepad* pad = dynamic_cast<Gamepad*>(m_resource);
+        x86::reg32 first, last;
+        if (!pdiph || pdiph->dwSize < 20)
+            return DIERR_INVALIDPARAM;
+        if (!pad || !propertyAxes(pdiph, first, last))
+            return DIERR_OBJECTNOTFOUND;
+        const Gamepad::AxisResponse response = pad->axisResponse(first);
+        const DWORD value = property == DIPROP_DEADZONE ? response.deadZone : response.saturation;
+        std::memcpy(reinterpret_cast<char*>(pdiph) + 16, &value, 4);
+        return 0;
+    }
     return 1;
 }
 
@@ -166,19 +225,49 @@ HRESULT IDirectInputDevice::SetProperty(WinApplication* app, x86::CPU& cpu,
 {
     NFS2_USE(app);
     NFS2_USE(cpu);
+    const x86::reg32 property = x86::reg32(rguidProp);
     // Which properties the game actually sets is only answerable at runtime.
     if(WinApplication::traceApi())
-        SDL_Log("[API] SetProperty prop=%u",unsigned(x86::reg32(rguidProp)));
-    /* MAKEDIPROP() packs the property id into the GUID pointer itself, so the
-     * "pointer" is the small integer dinput.h defines.  8 is DIPROP_FFGAIN, the
-     * device's force-feedback strength.  This used to read 7, DIPROP_SATURATION
-     * -- an axis calibration property -- so the game's own strength setting was
-     * dropped on the floor while an unrelated number scaled every effect. */
-    if(x86::reg32(rguidProp)==8) {
-        if(!pdiph||pdiph->dwSize<20)return 0x80070057;
-        DWORD value;std::memcpy(&value,reinterpret_cast<const char*>(pdiph)+16,4);
-        if(value>10000)return 0x80070057;
-        IDirectInputEffect::gain(dynamic_cast<Gamepad*>(m_resource),value);
+        SDL_Log("[API] SetProperty prop=%u",unsigned(property));
+    /* All three arrive as a DIPROPDWORD, the value right after the header, 0
+     * to 10000. */
+    if (property == DIPROP_DEADZONE || property == DIPROP_SATURATION || property == DIPROP_FFGAIN)
+    {
+        if (!pdiph || pdiph->dwSize < 20)
+            return DIERR_INVALIDPARAM;
+        DWORD value;
+        std::memcpy(&value, reinterpret_cast<const char*>(pdiph) + 16, 4);
+        if (value > 10000)
+            return DIERR_INVALIDPARAM;
+        Gamepad* pad = dynamic_cast<Gamepad*>(m_resource);
+        /* The device's force-feedback strength: Stick Volume.  This read 8
+         * for a while, which is DIPROP_FFLOAD -- a read-only property nothing
+         * ever sets -- so the game's own strength setting never arrived. */
+        if (property == DIPROP_FFGAIN)
+        {
+            IDirectInputEffect::gain(pad, value);
+            return 0;
+        }
+        /* A dead zone or saturation, for one axis or the whole device: the
+         * game's Dead Zone screen (sub_442dd0), and its saved settings at
+         * startup (sub_472b60).  On Windows the driver applied them; here the pad's
+         * own read does (Gamepad::getState).  The mouse and keyboard have no
+         * joystick axes to shape, and are let be as before. */
+        if (!pad)
+            return 0;
+        x86::reg32 first, last;
+        if (!propertyAxes(pdiph, first, last))
+            return DIERR_OBJECTNOTFOUND;
+        for (x86::reg32 axis = first; axis <= last; ++axis)
+        {
+            Gamepad::AxisResponse response = pad->axisResponse(axis);
+            (property == DIPROP_DEADZONE ? response.deadZone : response.saturation) = value;
+            pad->setAxisResponse(axis, response);
+        }
+        if (WinApplication::traceApi())
+            SDL_Log("[API] SetProperty %s axes %u-%u = %u",
+                    property == DIPROP_DEADZONE ? "deadzone" : "saturation",
+                    unsigned(first), unsigned(last), unsigned(value));
     }
     return 0;
 }

@@ -73,6 +73,9 @@ namespace x86
     extern "C" x86::reg32 f2xm180(IEEEf80Data *result);
     extern "C" x86::reg32 scale80(IEEEf80Data *result, const IEEEf80Data *operand);
     extern "C" x86::reg32 rem80(IEEEf80Data *result, const IEEEf80Data *operand);
+    /* The control word the helpers above round by: precision control and
+     * rounding mode, per thread as the x87's (src/lib/x87soft.cpp). */
+    extern "C" void control80(x86::reg16 word);
 
     inline IEEEf80::IEEEf80()
         : data{0, 0, 0, 0, 0}
@@ -420,7 +423,9 @@ namespace x86
         inline void setControl(reg16 word)
         {
             control.word = word;
-#if defined(WITH_WIDE_FPU)
+#if defined(WITH_PEDANTIC_FPU)
+            control80(word);   // the 80-bit arithmetic rounds as the word says
+#elif defined(WITH_WIDE_FPU)
             rounding = kRoundNone;   // as Modern Patch: the race's single precision is never taken
 #elif !defined(WITH_PEDANTIC_FPU)
             rounding = control.pc != s_singlePrecision ? kRoundNone
@@ -442,6 +447,9 @@ namespace x86
          * as close as the port comes to either.  The disassembler emits these
          * for fadd, fsub, fsubr, fmul, fdiv and fdivr (disasm/codegen/fpu.py). */
 #ifdef WITH_PEDANTIC_FPU
+        /* Every precision control is the x87's own here (x87soft.cpp); kept
+         * for NFS_FPU_SINGLE's log line. */
+        static inline x86::reg8 s_singlePrecision = 0;
         inline Float add(const Float &a, const Float &b) { return a + b; }
         inline Float sub(const Float &a, const Float &b) { return a - b; }
         inline Float mul(const Float &a, const Float &b) { return a * b; }

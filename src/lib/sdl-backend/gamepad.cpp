@@ -4,6 +4,7 @@
 #include <jni.h>
 #endif
 #include <SDL3/SDL.h>
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <cstdlib>
@@ -473,6 +474,49 @@ static void blendAxis(GamepadState& state, x86::reg32 axis, int value)
         state.axes[axis] = x86::sreg16(value);
 }
 
+/* What a DirectInput driver did with an axis before the game saw it, on a
+ * value measured from the centre: nothing inside the dead zone, the far end
+ * from the saturation point on, and a straight line between the two, so the
+ * end of the dead zone is not a jump.  Left alone at the defaults, the value
+ * stays exactly as read.
+ *
+ * A saturation at or inside the dead zone is not applied.  DirectInput would
+ * make the axis a switch, but the game's Dead Zone screen cannot ask for one:
+ * its two handles always stay a tenth of the travel apart (sub_442ef0).  What
+ * does ask for one is every config.dat written while GetProperty answered
+ * nothing: the game saved the stack garbage it read back as "saturation 0"
+ * (100 in the file), and the launcher took that for the game's default
+ * (ControlProfile).  It sends it again at every start (sub_472b60). */
+static int shapeAxis(int value, const Gamepad::AxisResponse& response)
+{
+    if (response.deadZone == 0 && (response.saturation >= 10000 || response.saturation == 0))
+        return value;
+    const int full = 32767;
+    const int deadZone = int(response.deadZone) * full / 10000;
+    const int saturation = response.saturation > response.deadZone
+        ? int(response.saturation) * full / 10000 : full;
+    const int magnitude = std::min(std::abs(value), full);
+    int shaped;
+    if (magnitude <= deadZone)
+        shaped = 0;
+    else if (magnitude >= saturation)
+        shaped = full;
+    else
+        shaped = (magnitude - deadZone) * full / (saturation - deadZone);
+    return value < 0 ? -shaped : shaped;
+}
+
+Gamepad::AxisResponse Gamepad::axisResponse(x86::reg32 axis) const
+{
+    return axis < kDirectInputAxes ? m_axisResponse[axis] : AxisResponse();
+}
+
+void Gamepad::setAxisResponse(x86::reg32 axis, const AxisResponse& response)
+{
+    if (axis < kDirectInputAxes)
+        m_axisResponse[axis] = response;
+}
+
 /* ----------------------------------------------------------------------
  * Buttons.  A slot has none as far as the game is concerned; each of a pad's
  * buttons sends a keyboard key instead, picked per slot in the launcher
@@ -482,6 +526,12 @@ static void blendAxis(GamepadState& state, x86::reg32 axis, int value)
  * in a race, in split screen and in the menus, with no mode to keep track of.
  * A value "axis:<action>" pushes the slot's own axis instead, for a player who
  * wants to steer or accelerate with a button; an empty value sends nothing.
+ *
+ * The triggers are the pedals' axis and no button at all -- unless the
+ * launcher gives them a key, which it does for a pad set to Digital
+ * (GamepadButtons.java): that pad drives on keys in a race, the way a keyboard
+ * does, its D-pad steering and its triggers working the pedals.  A trigger
+ * then counts as a button held down past a third of its travel.
  *
  * The keys go out as SDL events, not through SDL's keyboard state: window.cpp
  * turns them into the game's key messages exactly as it does a real
@@ -502,6 +552,9 @@ struct PadButton
 {
     const char*       name;         // the <BUTTON> in NFS_GAMEPAD<n>_<BUTTON>
     SDL_GamepadButton button;
+    /* A trigger has no button (SDL_GAMEPAD_BUTTON_INVALID) and is read off
+     * its axis instead (buttonDown). */
+    SDL_GamepadAxis   trigger;
     /* Only for a variable that is not set at all -- a build without the
      * launcher.  The launcher's own defaults, GamepadButtons.java. */
     const char*       defaults[Gamepad::kSlotCount];
@@ -510,22 +563,38 @@ struct PadButton
 
 const PadButton s_padButtons[] =
 {
-    { "SOUTH",          SDL_GAMEPAD_BUTTON_SOUTH,          { "B",      "E"      }, "Return" },
-    { "EAST",           SDL_GAMEPAD_BUTTON_EAST,           { "Space",  "D"      }, "Escape" },
-    { "WEST",           SDL_GAMEPAD_BUTTON_WEST,           { "S",      "P"      }, ""       },
-    { "NORTH",          SDL_GAMEPAD_BUTTON_NORTH,          { "C",      "Q"      }, ""       },
-    { "LEFT_SHOULDER",  SDL_GAMEPAD_BUTTON_LEFT_SHOULDER,  { "Z",      "G"      }, ""       },
-    { "RIGHT_SHOULDER", SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER, { "A",      "F"      }, ""       },
-    { "LEFT_STICK",     SDL_GAMEPAD_BUTTON_LEFT_STICK,     { "H",      "W"      }, ""       },
-    { "RIGHT_STICK",    SDL_GAMEPAD_BUTTON_RIGHT_STICK,    { "L",      "Y"      }, ""       },
-    { "BACK",           SDL_GAMEPAD_BUTTON_BACK,           { "R",      "X"      }, "Escape" },
-    { "START",          SDL_GAMEPAD_BUTTON_START,          { "Escape", "Escape" }, "Return" },
-    { "DPAD_UP",        SDL_GAMEPAD_BUTTON_DPAD_UP,        { "Up",     "Up"     }, "Up"     },
-    { "DPAD_DOWN",      SDL_GAMEPAD_BUTTON_DPAD_DOWN,      { "Down",   "Down"   }, "Down"   },
-    { "DPAD_LEFT",      SDL_GAMEPAD_BUTTON_DPAD_LEFT,      { "Left",   "Left"   }, "Left"   },
-    { "DPAD_RIGHT",     SDL_GAMEPAD_BUTTON_DPAD_RIGHT,     { "Right",  "Right"  }, "Right"  },
+    { "SOUTH",          SDL_GAMEPAD_BUTTON_SOUTH,          SDL_GAMEPAD_AXIS_INVALID,       { "B",      "E"      }, "Return" },
+    { "EAST",           SDL_GAMEPAD_BUTTON_EAST,           SDL_GAMEPAD_AXIS_INVALID,       { "Space",  "D"      }, "Escape" },
+    { "WEST",           SDL_GAMEPAD_BUTTON_WEST,           SDL_GAMEPAD_AXIS_INVALID,       { "S",      "P"      }, ""       },
+    { "NORTH",          SDL_GAMEPAD_BUTTON_NORTH,          SDL_GAMEPAD_AXIS_INVALID,       { "C",      "Q"      }, ""       },
+    { "LEFT_SHOULDER",  SDL_GAMEPAD_BUTTON_LEFT_SHOULDER,  SDL_GAMEPAD_AXIS_INVALID,       { "Z",      "G"      }, ""       },
+    { "RIGHT_SHOULDER", SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER, SDL_GAMEPAD_AXIS_INVALID,       { "A",      "F"      }, ""       },
+    { "LEFT_STICK",     SDL_GAMEPAD_BUTTON_LEFT_STICK,     SDL_GAMEPAD_AXIS_INVALID,       { "H",      "W"      }, ""       },
+    { "RIGHT_STICK",    SDL_GAMEPAD_BUTTON_RIGHT_STICK,    SDL_GAMEPAD_AXIS_INVALID,       { "L",      "Y"      }, ""       },
+    { "BACK",           SDL_GAMEPAD_BUTTON_BACK,           SDL_GAMEPAD_AXIS_INVALID,       { "R",      "X"      }, "Escape" },
+    { "START",          SDL_GAMEPAD_BUTTON_START,          SDL_GAMEPAD_AXIS_INVALID,       { "Escape", "Escape" }, "Return" },
+    { "DPAD_UP",        SDL_GAMEPAD_BUTTON_DPAD_UP,        SDL_GAMEPAD_AXIS_INVALID,       { "Up",     "Up"     }, "Up"     },
+    { "DPAD_DOWN",      SDL_GAMEPAD_BUTTON_DPAD_DOWN,      SDL_GAMEPAD_AXIS_INVALID,       { "Down",   "Down"   }, "Down"   },
+    { "DPAD_LEFT",      SDL_GAMEPAD_BUTTON_DPAD_LEFT,      SDL_GAMEPAD_AXIS_INVALID,       { "Left",   "Left"   }, "Left"   },
+    { "DPAD_RIGHT",     SDL_GAMEPAD_BUTTON_DPAD_RIGHT,     SDL_GAMEPAD_AXIS_INVALID,       { "Right",  "Right"  }, "Right"  },
+    /* Nothing by default, in a race or a menu: the triggers are the pedals'
+     * axis, and only a pad set to Digital has them send keys. */
+    { "LEFT_TRIGGER",   SDL_GAMEPAD_BUTTON_INVALID,        SDL_GAMEPAD_AXIS_LEFT_TRIGGER,  { "",       ""       }, ""       },
+    { "RIGHT_TRIGGER",  SDL_GAMEPAD_BUTTON_INVALID,        SDL_GAMEPAD_AXIS_RIGHT_TRIGGER, { "",       ""       }, ""       },
 };
 constexpr size_t kPadButtons = SDL_arraysize(s_padButtons);
+
+/* A trigger counts as held from a third of its travel, and as let go only
+ * below a sixth: a finger resting near the point cannot chatter the key. */
+const Sint16 kTriggerDown = 32767 / 3;
+const Sint16 kTriggerUp = 32767 / 6;
+
+bool buttonDown(SDL_Gamepad* pad, const PadButton& button, bool held)
+{
+    if (button.button != SDL_GAMEPAD_BUTTON_INVALID)
+        return SDL_GetGamepadButton(pad, button.button);
+    return SDL_GetGamepadAxis(pad, button.trigger) > (held ? kTriggerUp : kTriggerDown);
+}
 
 ButtonBinding parseBinding(const char* value)
 {
@@ -693,7 +762,7 @@ void updateButtonKeys()
                 sendKey(buttons.sentAs[i], false);
                 buttons.sent[i] = false;
             }
-            const bool down = SDL_GetGamepadButton(source.gamepad, s_padButtons[i].button);
+            const bool down = buttonDown(source.gamepad, s_padButtons[i], buttons.held[i]);
             const bool changed = down != buttons.held[i];
             buttons.held[i] = down;
             if (down && !buttons.sent[i] && changed && !(muted && muteable(binding)))
@@ -774,24 +843,34 @@ GamepadState Gamepad::getState() const
      * (the game enumerates its DirectInput devices before a frame is drawn),
      * and SDL3 derives gamepad events from joystick events, so neither ever
      * arrives -- but the state queried below stays current regardless. */
+    /* The game's dead zone and saturation go on what the pad itself reports,
+     * before the buttons and the touch overlay are blended in: those only ever
+     * ask for the centre or full travel, which no dead zone changes anyway. */
+    const AxisResponse& steerResponse = m_axisResponse[kAxisSteer];
+    const AxisResponse& pedalResponse = m_axisResponse[kAxisPedals];
     const Slot* slot = m_slot < kSlotCount ? &s_slots[m_slot] : nullptr;
     if (slot && slot->gamepad)
     {
-        result.axes[kAxisSteer] = SDL_GetGamepadAxis(slot->gamepad, SDL_GAMEPAD_AXIS_LEFTX);
+        result.axes[kAxisSteer] = x86::sreg16(shapeAxis(
+            SDL_GetGamepadAxis(slot->gamepad, SDL_GAMEPAD_AXIS_LEFTX), steerResponse));
         /* Both triggers share one axis, the way combined pedals did on wheels
          * of the time: the right trigger pulls it up, towards accelerate, the
          * left one down, towards brake.  SDL's standard layout rests a trigger
          * at 0 and takes it to 32767, so the difference always fits -- and
-         * pressing both cancels out, as those pedals did. */
+         * pressing both cancels out, as those pedals did.  Each trigger is
+         * half of that axis, from its centre to one end, so the pedals' dead
+         * zone goes on each before they are combined: on the difference it
+         * would swallow a light press of one whenever the other rested on its
+         * trigger too. */
         result.axes[kAxisPedals] = x86::sreg16(
-              int(SDL_GetGamepadAxis(slot->gamepad, SDL_GAMEPAD_AXIS_LEFT_TRIGGER))
-            - int(SDL_GetGamepadAxis(slot->gamepad, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER)));
+              shapeAxis(SDL_GetGamepadAxis(slot->gamepad, SDL_GAMEPAD_AXIS_LEFT_TRIGGER), pedalResponse)
+            - shapeAxis(SDL_GetGamepadAxis(slot->gamepad, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER), pedalResponse));
         /* A button put on an axis steers or works a pedal, which is a racing
          * thing whatever else is on the screen. */
         for (size_t i = 0; i < kPadButtons; ++i)
         {
             const ButtonBinding& binding = buttonBinding(m_slot, i, Context::Race);
-            if (binding.axis >= 0 && SDL_GetGamepadButton(slot->gamepad, s_padButtons[i].button))
+            if (binding.axis >= 0 && buttonDown(slot->gamepad, s_padButtons[i], false))
                 blendAxis(result, x86::reg32(binding.axis), binding.direction * 32767);
         }
     }
@@ -801,9 +880,9 @@ GamepadState Gamepad::getState() const
          * a plain joystick keeps them. */
         const int axes = SDL_GetNumJoystickAxes(pad);
         if (axes > 0)
-            result.axes[kAxisSteer] = SDL_GetJoystickAxis(pad, 0);
+            result.axes[kAxisSteer] = x86::sreg16(shapeAxis(SDL_GetJoystickAxis(pad, 0), steerResponse));
         if (axes > 1)
-            result.axes[kAxisPedals] = SDL_GetJoystickAxis(pad, 1);
+            result.axes[kAxisPedals] = x86::sreg16(shapeAxis(SDL_GetJoystickAxis(pad, 1), pedalResponse));
     }
 
     if (m_slot == 0 && !touchDrivesAsKeys())

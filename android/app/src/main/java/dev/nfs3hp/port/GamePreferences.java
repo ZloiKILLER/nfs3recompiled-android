@@ -68,8 +68,9 @@ final class GamePreferences
      * the system file picker returns, which used to blank the box and make a
      * working export look like it had ignored the choice. */
     static final String SAVES_INCLUDE_SETTINGS = "saves_include_settings";
-    /* The phone's vibration, only on or off: what it plays, and how strong, is
-     * GameHaptics' own. */
+    /* The phone's vibration as 0.76 and before kept it, a switch of its own
+     * under Controls -> Touch; read now only to carry that choice over to
+     * FORCE_FEEDBACK, and still taken from a settings file exported then. */
     static final String TOUCH_VIBRATION = "touch_vibration";
     static final String TOUCH_HIDE_SECONDS = "touch_hide_seconds";
     /* Whether a control dragged in the layout editor lands on its grid
@@ -81,12 +82,27 @@ final class GamePreferences
      * alone, so never carried in a settings file. */
     static final String TOUCH_GAME_WIDTH = "touch_game_area_width";
     static final String TOUCH_GAME_HEIGHT = "touch_game_area_height";
-    /* Whether the first gamepad vibrates at all: off until the player turns it
-     * on in Controls -> Gamepads, while how strong stays the game's Force
-     * Feedback menu's to say.  A key of its own rather than 0.72's
-     * "gamepad_vibration", so a choice made for that old switch does not come
-     * back on. */
+    /* The pad's vibration switch as 0.76 and before kept it, under Controls ->
+     * Gamepads; read now only to carry that choice over to FORCE_FEEDBACK. */
     static final String GAMEPAD_VIBRATION = "gamepad_force_feedback";
+    /* Where the game's Force Feedback effects are felt: nowhere, on the phone,
+     * or on the gamepad -- one of them, never both at once.  Chosen under
+     * Controls -> Force Feedback; what each one plays, and how, is GameHaptics'
+     * own, and how strong a pad plays stays the game's Force Feedback menu's to
+     * say.  Read as the game starts. */
+    static final String FORCE_FEEDBACK = "force_feedback_output";
+    static final String FORCE_FEEDBACK_OFF = "off";
+    static final String FORCE_FEEDBACK_PHONE = "phone";
+    static final String FORCE_FEEDBACK_GAMEPAD = "gamepad";
+    static final String[] FORCE_FEEDBACK_OUTPUTS = {
+        FORCE_FEEDBACK_OFF, FORCE_FEEDBACK_PHONE, FORCE_FEEDBACK_GAMEPAD,
+    };
+    /* Per pad, whether it drives a race as a keyboard does -- the D-pad steers,
+     * accelerates and brakes and the triggers work the pedals, all of them as
+     * keys -- rather than on its stick and triggers as axes.  Off: Analog.
+     * GamepadButtons resolves what that makes each button send, ControlProfile
+     * what it makes the game's settings bind. */
+    static final String[] GAMEPAD_DIGITAL = { "gamepad1_digital", "gamepad2_digital" };
     /* The TCP/IP port races are hosted and joined on: 9803 as the Modern Patch
      * has it, or 1030, the original game's.  Every player of a race needs the
      * same; the game reads it as it starts (NFS_NET_PORT). */
@@ -169,6 +185,30 @@ final class GamePreferences
     static SharedPreferences get(Context context)
     {
         return context.getSharedPreferences(FILE_NAME, Context.MODE_PRIVATE);
+    }
+
+    /** Where the game's effects are felt (FORCE_FEEDBACK_OUTPUTS).  Until the
+     *  player picks, it is what the two switches it replaced said: the pad if
+     *  its switch was on -- the one of the two a player had to go and find --
+     *  otherwise the phone if its switch was, otherwise nowhere. */
+    static String forceFeedback(SharedPreferences preferences)
+    {
+        String output = preferences.getString(FORCE_FEEDBACK, null);
+        for (String known : FORCE_FEEDBACK_OUTPUTS)
+            if (known.equals(output))
+                return known;
+        if (preferences.getBoolean(GAMEPAD_VIBRATION, false))
+            return FORCE_FEEDBACK_GAMEPAD;
+        if (preferences.getBoolean(TOUCH_VIBRATION, false))
+            return FORCE_FEEDBACK_PHONE;
+        return FORCE_FEEDBACK_OFF;
+    }
+
+    /** The old switches go with the choice, so neither can speak again. */
+    static void setForceFeedback(SharedPreferences preferences, String output)
+    {
+        preferences.edit().putString(FORCE_FEEDBACK, output)
+            .remove(TOUCH_VIBRATION).remove(GAMEPAD_VIBRATION).apply();
     }
 
     static String touchKey(String actionId)

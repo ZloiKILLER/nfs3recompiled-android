@@ -33,9 +33,12 @@ import java.util.Locale;
 public final class ControlProfile
 {
     /** GAMEPADS: the pads drive, steering and pedals on their axes, and the
-     *  on-screen controls reach those axes through the port.  TOUCH: the
-     *  on-screen controls drive, as the keyboard they really are.  KEYBOARD:
-     *  the game's own defaults, for a player who wants them. */
+     *  on-screen controls reach those axes through the port.  TOUCH: player one
+     *  drives on keys -- the on-screen controls, as the keyboard they really
+     *  are, and a first pad set to Digital, which sends the same keys.  Either
+     *  way split screen's second player drives on Gamepad 2: on its axes, or on
+     *  keys of its own (SECOND_DRIVING) while that pad is set to Digital.
+     *  KEYBOARD: the game's own defaults, for a player who wants them. */
     public enum Kind { GAMEPADS, TOUCH, KEYBOARD }
 
     /** There is no settings file to write into: the game creates it the first
@@ -69,10 +72,19 @@ public final class ControlProfile
     private static final int BUTTONS_OFFSET = 0x38, HATS_OFFSET = 0x3C, AXES_OFFSET = 0x40;
     /* What the game's own menus change about a device: force-feedback strength
      * and each axis's settings.  Kept when the record already describes the
-     * slot; otherwise the values the game gives a device it has just found. */
+     * slot; otherwise the values the game gives a device it has just found.
+     * An axis's settings are two percentages from its Dead Zone screen: the
+     * dead zone around the centre, then how far short of the end the axis
+     * already reads full -- DirectInput's saturation, counted from the other
+     * side -- so a fresh axis is 0 and 0.  These used to be 0 and 100, which
+     * is what the game saved while the port answered none of its questions
+     * about the axes; with the port now honouring the settings, 100 would make
+     * the axis a switch.  The game's own screen keeps the two a tenth of the
+     * travel apart, so a pair that meets cannot be the player's: the second
+     * one is put back to 0. */
     static final int GAIN_OFFSET = 0x44, AXIS_SETTINGS_OFFSET = 0x48;
     static final int DEFAULT_GAIN = 75;
-    private static final int[] DEFAULT_AXIS_SETTINGS = { 0, 100, 0, 100 };
+    private static final int[] DEFAULT_AXIS_SETTINGS = { 0, 0, 0, 0 };
 
     /** A keyboard key as a table stores it -- DirectInput scan code, and the
      *  character if it has one -- and as SDL names it for the pad layer. */
@@ -119,6 +131,21 @@ public final class ControlProfile
     private static final Key KEYPAD_0 = special(0x52, "Keypad 0"), KEYPAD_1 = special(0x4F, "Keypad 1"),
         KEYPAD_3 = special(0x51, "Keypad 3"), KEYPAD_7 = special(0x47, "Keypad 7"),
         KEYPAD_9 = special(0x49, "Keypad 9");
+    /* The same four keypad keys as the game sees them from the keys beside
+     * them -- it reads the scan code alone, and End is the keypad's 1 without
+     * the extended bit -- but named for SDL by the key it never confuses with
+     * anything else. */
+    private static final Key END = special(0x4F, "End"), PAGE_DOWN = special(0x51, "PageDown"),
+        HOME = special(0x47, "Home"), PAGE_UP = special(0x49, "PageUp");
+
+    /** What split screen's second player steers and works the pedals with when
+     *  Gamepad 2 is set to Digital -- the keys that pad's D-pad and triggers
+     *  then send -- in the order the tables want them: right, left,
+     *  accelerate, brake.  No other set binds them for a car, nor does the
+     *  touch overlay send them, so the two players never share a key.  And all
+     *  four are keys the game itself hands out in its own split-screen
+     *  defaults, so none is special to it. */
+    static final Key[] SECOND_DRIVING = { PAGE_DOWN, END, PAGE_UP, HOME };
 
     /* The key behind each of the nine functions that stay keys, HANDBRAKE to
      * HEADLIGHTS, per player.  Player one keeps the game's own defaults, which
@@ -180,6 +207,22 @@ public final class ControlProfile
         };
     }
 
+    /** The four keys a pad set to Digital drives its player's car with, in the
+     *  same order: player one's are the touch controls' own, so the first pad
+     *  and the screen stay one player; player two's are SECOND_DRIVING. */
+    static Key[] drivingKeys(SharedPreferences preferences, int player)
+    {
+        return player == 0 ? touchDriving(preferences) : SECOND_DRIVING.clone();
+    }
+
+    /** Whether player one drives on keys rather than on the first pad's axes:
+     *  with no pad of their own, on the touch controls, and with a pad set to
+     *  Digital. */
+    static Kind wantedKind(SharedPreferences preferences, boolean padForPlayerOne)
+    {
+        return padForPlayerOne && !GamepadButtons.digital(preferences, 0) ? Kind.GAMEPADS : Kind.TOUCH;
+    }
+
     private static Key touchDrivingKey(SharedPreferences preferences, String action, Key fallback)
     {
         Key key = androidKey(GamePreferences.getTouchKey(preferences, action));
@@ -219,6 +262,29 @@ public final class ControlProfile
 
     static int[][] tables(Kind kind, Key[] touchDriving)
     {
+        return tables(kind, touchDriving, false);
+    }
+
+    /* A player's table with the four that drive on keys instead of on a pad's
+     * axes. */
+    private static int[] drivingOnKeys(int[] table, Key[] driving)
+    {
+        table[STEER_RIGHT] = driving[0].record();
+        table[STEER_LEFT] = driving[1].record();
+        table[ACCELERATE] = driving[2].record();
+        table[BRAKE] = driving[3].record();
+        return table;
+    }
+
+    /** `secondDigital`: split screen's second player drives on SECOND_DRIVING,
+     *  which Gamepad 2 sends while it is set to Digital, rather than on that
+     *  pad's axes.  The game's own defaults (KEYBOARD) are the same either way. */
+    static int[][] tables(Kind kind, Key[] touchDriving, boolean secondDigital)
+    {
+        /* Split screen's second player keeps the second pad either way: two
+         * players on one screen means a pad.  On keys it is driven the way the
+         * game drives a keyboard, as player one is on keys below. */
+        int[] two = secondDigital ? drivingOnKeys(gamepadTable(1, 1), SECOND_DRIVING) : gamepadTable(1, 1);
         if (kind == Kind.TOUCH)
         {
             /* The on-screen controls as the keyboard they are: the four that
@@ -229,20 +295,16 @@ public final class ControlProfile
              * driven on them is a race the game can replay, which one driven
              * through a pad's axes by a port holding a flag up is not.  The
              * nine that are not driving stay the player's keys, which the
-             * buttons send as they are.  Split screen's second player keeps
-             * the second pad: two players on one screen means a pad. */
-            int[] one = gamepadTable(0, 0);
-            one[STEER_RIGHT] = touchDriving[0].record();
-            one[STEER_LEFT] = touchDriving[1].record();
-            one[ACCELERATE] = touchDriving[2].record();
-            one[BRAKE] = touchDriving[3].record();
-            return new int[][] { one, one.clone(), gamepadTable(1, 1) };
+             * buttons send as they are.  A first pad set to Digital sends the
+             * same four keys (drivingKeys), and is driven the same way. */
+            int[] one = drivingOnKeys(gamepadTable(0, 0), touchDriving);
+            return new int[][] { one, one.clone(), two };
         }
         if (kind == Kind.GAMEPADS)
         {
             /* Split screen player one is exactly the one-player set, so the
              * first player's controls do not change between the two modes. */
-            return new int[][] { gamepadTable(0, 0), gamepadTable(0, 0), gamepadTable(1, 1) };
+            return new int[][] { gamepadTable(0, 0), gamepadTable(0, 0), two };
         }
         // The game's own keyboard defaults, as nfs3.exe carries them from 0x490430.
         return new int[][] {
@@ -262,6 +324,26 @@ public final class ControlProfile
 
     static Kind installedKind(File dataRoot, Key[] touchDriving)
     {
+        Installed installed = installed(dataRoot, touchDriving);
+        return installed == null ? null : installed.kind;
+    }
+
+    /** One of the sets as the settings file holds it: which kind, and whether
+     *  split screen's second player drives on keys. */
+    static final class Installed
+    {
+        final Kind kind;
+        final boolean secondDigital;
+
+        Installed(Kind kind, boolean secondDigital)
+        {
+            this.kind = kind;
+            this.secondDigital = secondDigital;
+        }
+    }
+
+    static Installed installed(File dataRoot, Key[] touchDriving)
+    {
         try
         {
             File file = settingsFile(dataRoot);
@@ -272,15 +354,16 @@ public final class ControlProfile
                 return null;
             ByteBuffer buffer = ByteBuffer.wrap(config).order(ByteOrder.LITTLE_ENDIAN);
             for (Kind kind : Kind.values())
-            {
-                int[][] tables = tables(kind, touchDriving);
-                boolean same = true;
-                for (int table = 0; table < TABLES.length && same; ++table)
-                    for (int function = 0; function < FUNCTIONS && same; ++function)
-                        same = buffer.getInt(TABLES[table] + 4 * function) == tables[table][function];
-                if (same)
-                    return kind;
-            }
+                for (boolean secondDigital : new boolean[] { false, true })
+                {
+                    int[][] tables = tables(kind, touchDriving, secondDigital);
+                    boolean same = true;
+                    for (int table = 0; table < TABLES.length && same; ++table)
+                        for (int function = 0; function < FUNCTIONS && same; ++function)
+                            same = buffer.getInt(TABLES[table] + 4 * function) == tables[table][function];
+                    if (same)
+                        return new Installed(kind, secondDigital);
+                }
         }
         catch (IOException ignored)
         {
@@ -303,6 +386,11 @@ public final class ControlProfile
 
     static void apply(byte[] config, Kind kind, Key[] touchDriving)
     {
+        apply(config, kind, touchDriving, false);
+    }
+
+    static void apply(byte[] config, Kind kind, Key[] touchDriving, boolean secondDigital)
+    {
         if (!isSettingsFile(config))
             throw new IllegalArgumentException("not a config.dat");
         ByteBuffer buffer = ByteBuffer.wrap(config).order(ByteOrder.LITTLE_ENDIAN);
@@ -310,7 +398,7 @@ public final class ControlProfile
             describeSlot(buffer, slot);
         buffer.putInt(DEVICE_COUNT, GamepadSlots.COUNT);
         buffer.putInt(FORCE_FEEDBACK_DEVICES, GamepadSlots.COUNT);
-        int[][] tables = tables(kind, touchDriving);
+        int[][] tables = tables(kind, touchDriving, secondDigital);
         for (int table = 0; table < TABLES.length; ++table)
             for (int function = 0; function < FUNCTIONS; ++function)
                 buffer.putInt(TABLES[table] + 4 * function, tables[table][function]);
@@ -332,6 +420,9 @@ public final class ControlProfile
         for (int i = 0; i < axisSettings.length; ++i)
             axisSettings[i] = described ? config.getInt(base + AXIS_SETTINGS_OFFSET + 4 * i)
                                         : DEFAULT_AXIS_SETTINGS[i];
+        for (int i = 0; i + 1 < axisSettings.length; i += 2)
+            if (axisSettings[i] + axisSettings[i + 1] >= 100)
+                axisSettings[i + 1] = 0;
 
         for (int i = 0; i < DEVICE_RECORD_SIZE; ++i)
             config.put(base + i, (byte) 0);
@@ -362,6 +453,11 @@ public final class ControlProfile
 
     static String writeToGame(File dataRoot, Kind kind, Key[] touchDriving) throws IOException
     {
+        return writeToGame(dataRoot, kind, touchDriving, false);
+    }
+
+    static String writeToGame(File dataRoot, Kind kind, Key[] touchDriving, boolean secondDigital) throws IOException
+    {
         File file = settingsFile(dataRoot);
         if (file == null)
             throw new NoSettingsException();
@@ -369,35 +465,38 @@ public final class ControlProfile
         if (!isSettingsFile(config))
             throw new NoSettingsException();
         String backup = backup(dataRoot, config);
-        apply(config, kind, touchDriving);
+        apply(config, kind, touchDriving, secondDigital);
         replace(file, config);
         return backup;
     }
 
-    /** The set that belongs in the settings file for how the player is about to
-     *  drive, written there if it is not what the file already holds.  A pad
-     *  assigned to player one steers on its axes (GAMEPADS); with no pad, the
-     *  on-screen controls drive as the keyboard they are (TOUCH), which is what
-     *  lets the game record and replay a race driven on them.  Settings the
-     *  player made themselves, in the game's own Controls screen, are not one of
-     *  the sets and are left exactly as they are.  Returns the set in force. */
+    /** The set that belongs in the settings file for how the players are about
+     *  to drive, written there if it is not what the file already holds.  A pad
+     *  assigned to player one steers on its axes (GAMEPADS); with no pad, or a
+     *  pad set to Digital, player one drives on keys (TOUCH), which is what lets
+     *  the game steer them as it steers a keyboard and record and replay a race
+     *  driven on them (wantedKind).  Split screen's second player drives on
+     *  keys of their own while Gamepad 2 is set to Digital.  Settings the player
+     *  made themselves, in the game's own Controls screen, are not one of the
+     *  sets and are left exactly as they are.  Returns the set in force. */
     static Kind driveWith(File dataRoot, SharedPreferences preferences, boolean padForPlayerOne)
     {
         Key[] touchDriving = touchDriving(preferences);
-        Kind installed = installedKind(dataRoot, touchDriving);
-        if (installed == null || installed == Kind.KEYBOARD)
-            return installed;
-        Kind wanted = padForPlayerOne ? Kind.GAMEPADS : Kind.TOUCH;
-        if (installed == wanted)
+        Installed installed = installed(dataRoot, touchDriving);
+        if (installed == null || installed.kind == Kind.KEYBOARD)
+            return installed == null ? null : installed.kind;
+        Kind wanted = wantedKind(preferences, padForPlayerOne);
+        boolean secondDigital = GamepadButtons.digital(preferences, 1);
+        if (installed.kind == wanted && installed.secondDigital == secondDigital)
             return wanted;
         try
         {
-            writeToGame(dataRoot, wanted, touchDriving);
+            writeToGame(dataRoot, wanted, touchDriving, secondDigital);
         }
         catch (IOException couldNotWrite)
         {
             AppLog.w("ControlProfile", "Could not set the controls up for this race", couldNotWrite);
-            return installed;
+            return installed.kind;
         }
         return wanted;
     }
@@ -431,7 +530,7 @@ public final class ControlProfile
         byte[] config = Files.readAllBytes(file.toPath());
         if (!isSettingsFile(config))
             return;
-        newGame(config, Kind.GAMEPADS, new Key[] { RIGHT, LEFT, UP, DOWN });
+        newGame(config, Kind.GAMEPADS, new Key[] { RIGHT, LEFT, UP, DOWN }, false);
         replace(file, config);
         // Done as part of the import: the launcher's one-off pass leaves it be.
         copMinimapDone(file.getParentFile());
@@ -441,14 +540,14 @@ public final class ControlProfile
      *  straight off the disc, which has none: the game makes a new player's
      *  settings as it first starts and chooses what suits the machine
      *  (sub_472d10), and this goes over them before the game saves them
-     *  (NFS3Activity.onFirstSettings).  The controls are the set for how player
-     *  one is about to drive, as the launch decided.  Returns whether the block
-     *  was a settings block to change at all. */
-    static boolean firstStart(byte[] config, Kind kind, Key[] touchDriving, File dataRoot)
+     *  (NFS3Activity.onFirstSettings).  The controls are the set for how the
+     *  players are about to drive, as the launch decided.  Returns whether the
+     *  block was a settings block to change at all. */
+    static boolean firstStart(byte[] config, Kind kind, Key[] touchDriving, boolean secondDigital, File dataRoot)
     {
         if (!isSettingsFile(config))
             return false;
-        newGame(config, kind, touchDriving);
+        newGame(config, kind, touchDriving, secondDigital);
         File fedata = dataRoot == null ? null : child(dataRoot, "fedata");
         File folder = fedata == null ? null : child(fedata, "config");
         if (folder != null)
@@ -457,9 +556,9 @@ public final class ControlProfile
     }
 
     /* What a new game starts with, into a settings block held in memory. */
-    private static void newGame(byte[] config, Kind kind, Key[] touchDriving)
+    private static void newGame(byte[] config, Kind kind, Key[] touchDriving, boolean secondDigital)
     {
-        apply(config, kind, touchDriving);
+        apply(config, kind, touchDriving, secondDigital);
         ByteBuffer buffer = ByteBuffer.wrap(config).order(ByteOrder.LITTLE_ENDIAN);
         buffer.putInt(VIEW_DISTANCE, 0);
         buffer.putInt(SCREEN_WIDTH, IMPORT_SCREEN_WIDTH);

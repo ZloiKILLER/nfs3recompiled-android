@@ -50,7 +50,10 @@ final class LauncherSettings {
         GamePreferences.TOUCH_OPACITY, GamePreferences.TOUCH_SIZE,
         GamePreferences.TOUCH_AUTO_HIDE, GamePreferences.TOUCH_EDGE,
         GamePreferences.TOUCH_HIDE_SECONDS,
+        // Still read from a file exported before Force Feedback had a screen of its own.
         GamePreferences.TOUCH_VIBRATION,
+        GamePreferences.FORCE_FEEDBACK,
+        GamePreferences.GAMEPAD_DIGITAL[0], GamePreferences.GAMEPAD_DIGITAL[1],
         GamePreferences.SAVES_INCLUDE_SETTINGS,
         GamePreferences.NETWORK_PORT,
     };

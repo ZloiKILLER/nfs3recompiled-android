@@ -137,7 +137,14 @@ OPENING = {
                  "  x86::Local cpu(cpu_);\n"
                  "  NFS2_USE(cpu);\n"
                  "  NFS2_USE(app);\n"),
+    "eacsnd": ("void %s(win32::WinApplication* __restrict app, x86::CPU& cpu_)\n"
+               "{\n"
+               "  x86::Local cpu(cpu_);\n"
+               "  NFS2_USE(cpu);\n"
+               "  NFS2_USE(app);\n"),
 }
+
+GUARD = "  MovieSession movieSession;\n"
 
 CALL = ("    if (%s(app, cpu.sync())) /* port: native (tools/apply_native_vertices.py) */\n"
         "    {\n"
@@ -163,13 +170,15 @@ PLAIN_CALL = ("    if (%s(app, cpu)) /* port: native (tools/apply_native_vertice
               "    }\n")
 
 # The natives live in namespace nfs3hp: declared inside it in nfs3hp's files,
-# in a namespace block of their own ahead of voodoo2a's.
-NAMESPACE = {"nfs3hp": "namespace nfs3hp\n{\n", "voodoo2a": "namespace voodoo2a\n{\n"}
+# in a namespace block of their own ahead of voodoo2a's and eacsnd's.
+NAMESPACE = {"nfs3hp": "namespace nfs3hp\n{\n", "voodoo2a": "namespace voodoo2a\n{\n",
+             "eacsnd": "namespace eacsnd\n{\n"}
 DECLARATION = {
     "nfs3hp": "bool %s(win32::WinApplication* app, x86::CPU& cpu);\n",
     "voodoo2a": "namespace nfs3hp\n{\nbool %s(win32::WinApplication* app, x86::CPU& cpu);\n}\n\n",
+    "eacsnd": "namespace nfs3hp\n{\nbool %s(win32::WinApplication* app, x86::CPU& cpu);\n}\n\n",
 }
-CALLEE = {"nfs3hp": "%s", "voodoo2a": "nfs3hp::%s"}
+CALLEE = {"nfs3hp": "%s", "voodoo2a": "nfs3hp::%s", "eacsnd": "nfs3hp::%s"}
 
 
 def apply(root, sites=SITES, header=HEADER, marker="tools/apply_native_vertices.py"):
@@ -189,6 +198,10 @@ def apply(root, sites=SITES, header=HEADER, marker="tools/apply_native_vertices.
 
             opening = local(OPENING[module] % function)
             call = local(marked(CALL) % (CALLEE[module] % native))
+            if opening not in text:
+                # sub_495bc0 opens with tools/apply_movie_tap.py's guard, which
+                # then holds for the native as well.
+                opening = local((OPENING[module] % function).replace("{\n", "{\n" + GUARD, 1))
             if opening not in text:
                 opening = local(PLAIN_OPENING[module] % function)
                 call = local(marked(PLAIN_CALL) % (CALLEE[module] % native))

@@ -130,6 +130,7 @@ private fun Screen(a: LauncherActivity, screen: LauncherActivity.Screen) {
         LauncherActivity.Screen.Gamepads -> GamepadsScreen(a)
         LauncherActivity.Screen.GamepadButtons -> GamepadButtonsScreen(a)
         LauncherActivity.Screen.ControlsHelp -> ControlsHelpScreen(a)
+        LauncherActivity.Screen.ForceFeedback -> ForceFeedbackScreen(a)
         LauncherActivity.Screen.Faq -> FaqScreen(a)
         LauncherActivity.Screen.Display -> DisplayScreen(a)
         LauncherActivity.Screen.Adjustment -> AdjustmentScreen(a)
@@ -473,6 +474,38 @@ private fun ControlsScreen(a: LauncherActivity) {
         Column(Modifier.widthIn(max = MENU_WIDTH), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             MainMenuButton(stringResource(R.string.controls_touch)) { a.go(LauncherActivity.Screen.Touch) }
             MainMenuButton(stringResource(R.string.controls_gamepad)) { a.go(LauncherActivity.Screen.Gamepads) }
+            MainMenuButton(stringResource(R.string.controls_force_feedback)) { a.go(LauncherActivity.Screen.ForceFeedback) }
+        }
+    }
+}
+
+/* Where the game's Force Feedback effects are felt: nowhere, on the phone or on
+ * the gamepad -- one of them, never two at once.  What each one plays, and how,
+ * is GameHaptics' own; how strong a pad plays is the game's own menu's. */
+@Composable
+private fun ForceFeedbackScreen(a: LauncherActivity) {
+    val preferences = remember { GamePreferences.get(a) }
+    val outputs = GamePreferences.FORCE_FEEDBACK_OUTPUTS
+    var output by remember {
+        mutableIntStateOf(GamePreferences.indexOf(outputs, GamePreferences.forceFeedback(preferences)))
+    }
+    ScreenFrame(stringResource(R.string.controls_force_feedback), onBack = { a.go(LauncherActivity.Screen.Controls) }) {
+        Hint(stringResource(R.string.force_feedback_hint), Modifier.widthIn(max = 640.dp))
+        Panel(Modifier.widthIn(max = 640.dp)) {
+            SegmentedChoice(
+                listOf(stringResource(R.string.force_feedback_off), stringResource(R.string.force_feedback_phone),
+                    stringResource(R.string.force_feedback_gamepad)),
+                output,
+                { index ->
+                    output = index
+                    GamePreferences.setForceFeedback(preferences, outputs[index])
+                },
+            )
+            Hint(stringResource(when (outputs[output]) {
+                GamePreferences.FORCE_FEEDBACK_PHONE -> R.string.force_feedback_phone_note
+                GamePreferences.FORCE_FEEDBACK_GAMEPAD -> R.string.force_feedback_gamepad_note
+                else -> R.string.force_feedback_off_note
+            }))
         }
     }
 }
@@ -555,7 +588,6 @@ private fun TouchScreen(a: LauncherActivity) {
                         stringResource(R.string.touch_dim_label), stringResource(R.string.touch_dim_note)) { refresh() }
                     val delayLabel = stringResource(R.string.auto_hide_delay)
                     IntSetting(preferences, GamePreferences.TOUCH_HIDE_SECONDS, 4, 1..30, "", { "" }, { delayLabel.format(it) }) { refresh() }
-                    BooleanSetting(preferences, GamePreferences.TOUCH_VIBRATION, false, stringResource(R.string.pref_phone_vibration), null) { refresh() }
                 }
             },
         )
@@ -662,10 +694,11 @@ private fun TouchKeysScreen(a: LauncherActivity) {
     }
 }
 
-/* Which physical pad is Gamepad 1 and which is Gamepad 2, what their buttons
- * do, and writing the port's controls into the game.  A pad is picked by
- * pressing a button on it rather than from a list, because two pads of the
- * same model share a name and a list could not tell them apart. */
+/* Which physical pad is Gamepad 1 and which is Gamepad 2, how each drives a
+ * race -- Analog or Digital -- what their buttons do, and writing the port's
+ * controls into the game.  A pad is picked by pressing a button on it rather
+ * than from a list, because two pads of the same model share a name and a list
+ * could not tell them apart. */
 @Composable
 private fun GamepadsScreen(a: LauncherActivity) {
     val preferences = remember { GamePreferences.get(a) }
@@ -673,7 +706,6 @@ private fun GamepadsScreen(a: LauncherActivity) {
     val changes = a.padsChanged + edits  // read, so pads coming and going redraw this
     val pads = remember(changes, a.capturingSlot) { GamepadSlots.resolve(preferences) }
     val keyboard = remember(changes) { a.keyboardControlsInstalled() }
-    var vibration by remember { mutableStateOf(preferences.getBoolean(GamePreferences.GAMEPAD_VIBRATION, false)) }
     ScreenFrame(
         stringResource(R.string.gamepads_title),
         onBack = { a.go(LauncherActivity.Screen.Controls) },
@@ -707,6 +739,19 @@ private fun GamepadsScreen(a: LauncherActivity) {
                         }, Modifier.weight(1f))
                     }
                     QuietButton(stringResource(R.string.gamepad_buttons), { a.openGamepadButtons(slot) }, Modifier.fillMaxWidth())
+                    /* How this pad drives a race: its stick and triggers as
+                     * axes, or its D-pad and triggers as keys. */
+                    var digital by remember(slot) { mutableStateOf(GamepadButtons.digital(preferences, slot)) }
+                    SegmentedChoice(
+                        listOf(stringResource(R.string.gamepad_mode_analog), stringResource(R.string.gamepad_mode_digital)),
+                        if (digital) 1 else 0,
+                        { index ->
+                            digital = index == 1
+                            GamepadButtons.setDigital(preferences, slot, digital)
+                        },
+                    )
+                    Text(stringResource(if (digital) R.string.gamepad_digital_note else R.string.gamepad_analog_note),
+                        color = GameColors.Muted, minLines = 3, style = MaterialTheme.typography.bodyMedium)
                 }
             }
         }
@@ -715,12 +760,6 @@ private fun GamepadsScreen(a: LauncherActivity) {
                 Column(verticalArrangement = Arrangement.spacedBy(12.dp)) { slots(Modifier.fillMaxWidth()) }
             else
                 Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) { slots(Modifier.weight(1f)) }
-        }
-        Panel {
-            SwitchRow(stringResource(R.string.gamepad_vibration), vibration, { on ->
-                vibration = on
-                preferences.edit().putBoolean(GamePreferences.GAMEPAD_VIBRATION, on).apply()
-            }, stringResource(R.string.gamepad_vibration_note))
         }
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             MenuButton(stringResource(R.string.controls_write_gamepads), { a.confirmWriteControls(ControlProfile.Kind.GAMEPADS) }, Modifier.weight(1f))
@@ -738,6 +777,7 @@ private fun GamepadButtonsScreen(a: LauncherActivity) {
     val buttons = remember { GamepadButtons.buttonLabels(a) }
     val actions = remember { GamepadButtons.actionLabels(a).toList() }
     var generation by remember { mutableIntStateOf(0) }  // Defaults redraws every row
+    val digital = remember(slot) { GamepadButtons.digital(preferences, slot) }
     ScreenFrame(
         stringResource(R.string.gamepad_buttons_title, slot + 1),
         onBack = { a.go(LauncherActivity.Screen.Gamepads) },
@@ -749,6 +789,8 @@ private fun GamepadButtonsScreen(a: LauncherActivity) {
         },
     ) {
         Hint(stringResource(R.string.gamepad_buttons_hint))
+        if (digital)
+            Hint(stringResource(R.string.gamepad_buttons_digital_note), color = GameColors.Gold)
         key(generation) {
             Panel(Modifier.widthIn(max = 720.dp)) {
                 GamepadButtons.BUTTON_IDS.indices.forEach { button ->
@@ -756,12 +798,20 @@ private fun GamepadButtonsScreen(a: LauncherActivity) {
                         mutableIntStateOf(GamePreferences.indexOf(GamepadButtons.ACTION_IDS,
                             GamepadButtons.action(preferences, slot, button)))
                     }
+                    /* Digital, the D-pad drives a race whatever it is set to, so
+                     * its rows say so instead of offering a choice. */
+                    val drives = if (digital) GamepadButtons.digitalAction(button) else null
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text(buttons[button], Modifier.weight(1f), color = GameColors.Silver, style = MaterialTheme.typography.bodyLarge)
-                        DropdownPill(actions, action, { index ->
-                            action = index
-                            GamepadButtons.setAction(preferences, slot, button, GamepadButtons.ACTION_IDS[index])
-                        }, Modifier.width(240.dp))
+                        if (drives != null)
+                            Text(actions[GamePreferences.indexOf(GamepadButtons.ACTION_IDS, drives)],
+                                Modifier.width(240.dp).padding(horizontal = 16.dp), color = GameColors.Gold,
+                                style = MaterialTheme.typography.bodyLarge, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+                        else
+                            DropdownPill(actions, action, { index ->
+                                action = index
+                                GamepadButtons.setAction(preferences, slot, button, GamepadButtons.ACTION_IDS[index])
+                            }, Modifier.width(240.dp))
                     }
                 }
             }
@@ -772,7 +822,7 @@ private fun GamepadButtonsScreen(a: LauncherActivity) {
 /** Order of the split-screen help page: one resource per step, like the FAQ. */
 private val CONTROLS_HELP_SECTIONS = intArrayOf(
     R.string.help_split_setup, R.string.help_split_write, R.string.help_split_race,
-    R.string.help_split_driving, R.string.help_split_notes,
+    R.string.help_split_driving, R.string.help_split_digital, R.string.help_split_notes,
 )
 
 /** Order of the help page.  One resource per question so that editing one

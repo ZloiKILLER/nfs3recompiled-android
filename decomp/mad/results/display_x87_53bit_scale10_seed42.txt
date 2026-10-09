@@ -1,0 +1,7 @@
+x87 control word 0x27f, seed 42, 83 s
+test                                                  cases  fails  notes
+sub_4fda20 colour tables, 15-bit                          1      0  
+sub_4fda20 colour tables, 16-bit                          1      0  
+sub_4fd61c/6ef/7b6/892/8ee row converters              3000      0  1x, 2x, 2x between rows, widen, widen between
+sub_4fdc90 whole frames to a 640x480 surface           1200      0  modes 0-3, clipping, 15/16-bit, misaligned origin
+EXIT 0
