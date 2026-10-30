@@ -35,6 +35,15 @@
         android:resizeableActivity="true"
         android:hardwareAccelerated="true" >
 
+        <!-- The logs' zip, for the Logs screen's Share and Send to the developer. -->
+        <provider android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.logs"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/log_paths" />
+        </provider>
+
         <!-- Launcher entry point: checks for imported game data and, on first
              run, walks the user through picking their NFS3 CD-data folder
              (see DataImporter.java) before handing off to LauncherActivity. -->

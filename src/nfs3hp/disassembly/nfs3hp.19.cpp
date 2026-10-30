@@ -18689,7 +18689,7 @@ L_0x0047d502:
     cpu.eax = cpu.esi;
     // 0047d509  e8e2e00000             -call 0x48b5f0
     cpu.esp -= 4;
-    sub_48b5f0(app, cpu.sync());
+    nfs3hp::port::hud::markersSet(app, cpu.sync());
     cpu.reload();
     if (cpu.terminate) return;
     // 0047d50e  8904b530027000         -mov dword ptr [esi*4 + 0x700230], eax
@@ -18759,7 +18759,7 @@ L_0x0047d515:
     cpu.eax = cpu.esi;
     // 0047d560  e8eb9d0000             -call 0x487350
     cpu.esp -= 4;
-    sub_487350(app, cpu.sync());
+    nfs3hp::port::hud::fourIntegersAppended(app, cpu.sync());
     cpu.reload();
     if (cpu.terminate) return;
     // 0047d565  eb07                   -jmp 0x47d56e
@@ -26680,7 +26680,7 @@ L_0x0047ef56:
     cpu.eax = app->getMemory<x86::reg32>(cpu.ebp + x86::reg32(-4) /* -0x4 */);
     // 0047ef79  e8e26a0000             -call 0x485a60
     cpu.esp -= 4;
-    sub_485a60(app, cpu.sync());
+    nfs3hp::port::hud::standingsGapMeasured(app, cpu.sync());
     cpu.reload();
     if (cpu.terminate) return;
     // 0047ef7e  f7d8                   +neg eax
@@ -26704,7 +26704,7 @@ L_0x0047ef82:
     cpu.eax = app->getMemory<x86::reg32>(cpu.eax + x86::reg32(6224968) /* 0x5efc48 */);
     // 0047ef8b  e8d06a0000             -call 0x485a60
     cpu.esp -= 4;
-    sub_485a60(app, cpu.sync());
+    nfs3hp::port::hud::standingsGapMeasured(app, cpu.sync());
     cpu.reload();
     if (cpu.terminate) return;
 L_0x0047ef90:

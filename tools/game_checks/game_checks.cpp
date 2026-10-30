@@ -293,6 +293,15 @@ const std::pair<x86::reg32, x86::reg32> kWindows[] = {
 #define DIALOGS_WINDOWS
 #include "dialogs.inc"
 #undef DIALOGS_WINDOWS
+#define VIEW_WINDOWS
+#include "view.inc"
+#undef VIEW_WINDOWS
+#define HUD_WINDOWS
+#include "hud.inc"
+#undef HUD_WINDOWS
+#define CONV_WINDOWS
+#include "conv.inc"
+#undef CONV_WINDOWS
 #define SOUND_WINDOWS
 #include "sound_lib.inc"
 #undef SOUND_WINDOWS
@@ -422,6 +431,15 @@ enum Effect
 #define DIALOGS_EFFECTS
 #include "dialogs.inc"
 #undef DIALOGS_EFFECTS
+#define VIEW_EFFECTS
+#include "view.inc"
+#undef VIEW_EFFECTS
+#define HUD_EFFECTS
+#include "hud.inc"
+#undef HUD_EFFECTS
+#define CONV_EFFECTS
+#include "conv.inc"
+#undef CONV_EFFECTS
 #define RACESTART_EFFECTS
 #include "racestart.inc"
 #undef RACESTART_EFFECTS
@@ -627,6 +645,15 @@ const StandIn kGameFunctions[] = {
 #define DIALOGS_GAME_FUNCTIONS
 #include "dialogs.inc"
 #undef DIALOGS_GAME_FUNCTIONS
+#define VIEW_GAME_FUNCTIONS
+#include "view.inc"
+#undef VIEW_GAME_FUNCTIONS
+#define HUD_GAME_FUNCTIONS
+#include "hud.inc"
+#undef HUD_GAME_FUNCTIONS
+#define CONV_GAME_FUNCTIONS
+#include "conv.inc"
+#undef CONV_GAME_FUNCTIONS
 // What the decompiled functions call that has no stand-in above (generate.py).
 #include "decompiled_standins.inc"
 };
@@ -1055,6 +1082,15 @@ const Promise kPromises[] = {
 #define DIALOGS_PROMISES
 #include "dialogs.inc"
 #undef DIALOGS_PROMISES
+#define VIEW_PROMISES
+#include "view.inc"
+#undef VIEW_PROMISES
+#define HUD_PROMISES
+#include "hud.inc"
+#undef HUD_PROMISES
+#define CONV_PROMISES
+#include "conv.inc"
+#undef CONV_PROMISES
     // The Watcom runtime's (native_watcom.cpp).
     {"watcom::CHP", true, false, 0, true},
     {"watcom::GetThreadPtr", true, true},
@@ -1519,8 +1555,32 @@ public:
             break;
         case kPrint:
             result = r % 0x50;  // within the caller's buffer (the speech's name's, 0x64, with its ending)
+            if (word(0x30e004) == 0x4c42414c)
+                result = r % 0x14;  // port::hud's label rows: a buffer of 0x18 below its locals
             if (words[1] == 0x537330)
                 result = r % 0x10;  // "%sp": a car's folder's name, into 0x14 bytes (raceload::loadRaceCar)
+            if (words[1] == 0x53b7f4)
+                result = r % 0x0c;  // port::hud's percent text, into 0x10 bytes
+            if (words[1] == 0x53b820)
+            {
+                // port::hud's row number, into 4 bytes: a digit, which the real text function can draw.
+                getMemory<char>(words[0]) = char('1' + (r >> 4) % 9);
+                getMemory<char>(words[0] + 1) = 0;
+                result = 1;
+                break;
+            }
+            if (words[1] == 0x53b8b0)
+            {
+                // port::hud's " of 8", into the same buffer: the text the real text function can draw.
+                getMemory<char>(words[0]) = ' ';
+                getMemory<char>(words[0] + 1) = 'o';
+                getMemory<char>(words[0] + 2) = 'f';
+                getMemory<char>(words[0] + 3) = ' ';
+                getMemory<char>(words[0] + 4) = char('1' + (r >> 4) % 9);
+                getMemory<char>(words[0] + 5) = 0;
+                result = 5;
+                break;
+            }
             text(words[0], result, random64(id));
             break;
         case kLoad:
@@ -1826,6 +1886,14 @@ public:
             result = r % 4 == 0 ? 1 : 0;
             break;
         case kBlock:
+            if (word(0x30e000) == 0x57454956)
+            {
+                // The view's glyph resource (view.inc): blocks that follow one another, as large as asked
+                // (edx), so that what it moves from one to the next does not run over itself.
+                result = word(0x30e004);
+                word(0x30e004) += (cpu.edx + 15) & ~x86::reg32(15);
+                break;
+            }
             result = r % 6 == 0 ? 0 : kBlocks + 0x400 * ((r >> 8) % 8);
             break;
 #define CONTROLS_EFFECT_CASES
@@ -1868,6 +1936,15 @@ public:
 #define DIALOGS_EFFECT_CASES
 #include "dialogs.inc"
 #undef DIALOGS_EFFECT_CASES
+#define VIEW_EFFECT_CASES
+#include "view.inc"
+#undef VIEW_EFFECT_CASES
+#define HUD_EFFECT_CASES
+#include "hud.inc"
+#undef HUD_EFFECT_CASES
+#define CONV_EFFECT_CASES
+#include "conv.inc"
+#undef CONV_EFFECT_CASES
 #define RACESTART_EFFECT_CASES
 #include "racestart.inc"
 #undef RACESTART_EFFECT_CASES
@@ -2019,6 +2096,9 @@ public:
             }
             break;
         case kNothing:
+            // The view's glyph resource (view.inc): whether the cache file is there, half and half.
+            if (word(0x30e000) == 0x57454956 && s.address == 0x4e0e60)
+                result = (r >> 12) % 2 == 0 ? 0 : r | 1;
             break;
         }
         // What it may leave otherwise, it does now and then.
@@ -2141,6 +2221,12 @@ void MemMap::usedRanges(std::vector<std::pair<x86::reg32, x86::reg32>>& ranges)
 #define DIALOGS_HOOKS
 #include "dialogs.inc"
 #undef DIALOGS_HOOKS
+#define HUD_HOOKS
+#include "hud.inc"
+#undef HUD_HOOKS
+#define CONV_HOOKS
+#include "conv.inc"
+#undef CONV_HOOKS
 
 /* The game's functions the generated code calls by address: their stand-ins. */
 #define STAND_IN(a)                                                                      \
@@ -5264,6 +5350,15 @@ x86::reg32 decompiledValue()
 #define DIALOGS_ARGUMENTS
 #include "dialogs.inc"
 #undef DIALOGS_ARGUMENTS
+#define VIEW_ARGUMENTS
+#include "view.inc"
+#undef VIEW_ARGUMENTS
+#define HUD_ARGUMENTS
+#include "hud.inc"
+#undef HUD_ARGUMENTS
+#define CONV_ARGUMENTS
+#include "conv.inc"
+#undef CONV_ARGUMENTS
 
 /* The menus' widgets that hold a value rewritten (fields.inc). */
 #define FIELDS_ARGUMENTS
@@ -5317,7 +5412,7 @@ void makeDecompiledArguments(CheckApp& g, const std::string& name, x86::CPU& cpu
 
 void makeArguments(CheckApp& g, const Tested& t, x86::reg32 esp, x86::CPU& cpu)
 {
-    x86::reg32 a[9];
+    x86::reg32 a[16];   // (nine words of the stack's arguments, but for port::hud's, which take up to sixteen)
     for (x86::reg32& w : a)
         w = random32();
     const std::string name = t.name;
@@ -5442,7 +5537,16 @@ void makeArguments(CheckApp& g, const Tested& t, x86::reg32 esp, x86::CPU& cpu)
     // The dialogs rewritten (dialogs.inc): their own world.
     if (name.compare(0, 15, "port::dialogs::") == 0)
         makeDialogsArguments(g, name.substr(15), cpu, a);
-    for (x86::reg32 i = 0; i < 9; ++i)
+    // The pan-and-zoom view rewritten (view.inc): its own world, over the sound's.
+    if (name.compare(0, 12, "port::view::") == 0)
+        makeViewArguments(g, name.substr(12), cpu, a);
+    // The race HUD rewritten (hud.inc): its own world.
+    if (name.compare(0, 11, "port::hud::") == 0)
+        makeHudArguments(g, name.substr(11), cpu, a);
+    // The functions tools/decomp.py rewrote (conv.inc): a generic world, then their own.
+    if (name.compare(0, 12, "port::conv::") == 0)
+        makeConvArguments(g, name.substr(12), cpu, a);
+    for (x86::reg32 i = 0; i < (name.compare(0, 11, "port::hud::") == 0 || name.compare(0, 12, "port::conv::") == 0 ? 16 : 9); ++i)
         g.word(esp + 4 + 4 * i) = a[i];
 }
 
@@ -5666,6 +5770,20 @@ bool compareRuns(const Tested& t, CheckApp& g, CheckApp& n, const x86::CPU& gene
         {
             std::snprintf(what, sizeof what, "memory at %08x: %02x generated, %02x native", at, *bytes(g, at),
                           *bytes(n, at));
+            if (std::getenv("DUMPMEM"))
+            {
+                const x86::reg32 from0 = (at & ~0xfu) - 0x20;
+                for (x86::reg32 row = from0; row < from0 + 0x60; row += 0x10)
+                {
+                    std::printf("    %08x  g:", row);
+                    for (x86::reg32 k = 0; k < 16; ++k)
+                        std::printf(" %02x", *bytes(g, row + k));
+                    std::printf("   n:");
+                    for (x86::reg32 k = 0; k < 16; ++k)
+                        std::printf(" %02x", *bytes(n, row + k));
+                    std::printf("\n");
+                }
+            }
             return report(counts, what);
         }
     }

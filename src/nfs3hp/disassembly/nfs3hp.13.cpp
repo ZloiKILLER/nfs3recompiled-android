@@ -7729,7 +7729,7 @@ L_0x0044d72f:
     cpu.eax ^= x86::reg32(x86::sreg32(cpu.eax));
     // 0044d731  e88a6d0300             -call 0x4844c0
     cpu.esp -= 4;
-    sub_4844c0(app, cpu.sync());
+    nfs3hp::port::hud::hudPaneSet(app, cpu.sync());
     cpu.reload();
     if (cpu.terminate) return;
     // 0044d736  8b5318                 -mov edx, dword ptr [ebx + 0x18]
@@ -8520,7 +8520,7 @@ L_0x0044da5f:
     cpu.eax ^= x86::reg32(x86::sreg32(cpu.eax));
     // 0044da61  e85a6a0300             -call 0x4844c0
     cpu.esp -= 4;
-    sub_4844c0(app, cpu.sync());
+    nfs3hp::port::hud::hudPaneSet(app, cpu.sync());
     cpu.reload();
     if (cpu.terminate) return;
     // 0044da66  8b5318                 -mov edx, dword ptr [ebx + 0x18]
@@ -9329,7 +9329,7 @@ L_0x0044dd92:
     cpu.eax = 1 /*0x1*/;
     // 0044dd97  e824670300             -call 0x4844c0
     cpu.esp -= 4;
-    sub_4844c0(app, cpu.sync());
+    nfs3hp::port::hud::hudPaneSet(app, cpu.sync());
     cpu.reload();
     if (cpu.terminate) return;
     // 0044dd9c  8b5318                 -mov edx, dword ptr [ebx + 0x18]
@@ -10488,14 +10488,14 @@ L_0x0044e10c:
     cpu.eax ^= x86::reg32(x86::sreg32(cpu.eax));
     // 0044e119  e8a2630300             -call 0x4844c0
     cpu.esp -= 4;
-    sub_4844c0(app, cpu.sync());
+    nfs3hp::port::hud::hudPaneSet(app, cpu.sync());
     cpu.reload();
     if (cpu.terminate) return;
     // 0044e11e  89c8                   -mov eax, ecx
     cpu.eax = cpu.ecx;
     // 0044e120  e89b630300             -call 0x4844c0
     cpu.esp -= 4;
-    sub_4844c0(app, cpu.sync());
+    nfs3hp::port::hud::hudPaneSet(app, cpu.sync());
     cpu.reload();
     if (cpu.terminate) return;
 L_0x0044e125:

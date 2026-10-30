@@ -2312,7 +2312,7 @@ void Application::sub_454cf0(WinApplication* __restrict app, x86::CPU& cpu_)
     }
     // 00454d01  e8daf90000             -call 0x4646e0
     cpu.esp -= 4;
-    sub_4646e0(app, cpu.sync());
+    nfs3hp::port::view::storeIncremented(app, cpu.sync());
     cpu.reload();
     if (cpu.terminate) return;
     // 00454d06  5d                     -pop ebp

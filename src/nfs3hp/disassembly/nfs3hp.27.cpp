@@ -3645,7 +3645,7 @@ void Application::sub_4c45f0(WinApplication* __restrict app, x86::CPU& cpu_)
     cpu.eax = x86::reg32(cpu.ebp + x86::reg32(-128) /* -0x80 */);
     // 004c46af  e88c0bfbff             -call 0x475240
     cpu.esp -= 4;
-    sub_475240(app, cpu.sync());
+    nfs3hp::port::view::glyphResource(app, cpu.sync());
     cpu.reload();
     if (cpu.terminate) return;
     // 004c46b4  e817edfdff             -call 0x4a33d0

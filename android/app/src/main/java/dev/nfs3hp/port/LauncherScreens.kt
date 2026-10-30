@@ -5,6 +5,7 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Typeface
 import android.text.Spanned
+import android.text.format.Formatter
 import android.text.style.StyleSpan
 import android.widget.FrameLayout
 import androidx.compose.animation.AnimatedContent
@@ -123,6 +124,7 @@ private fun Screen(a: LauncherActivity, screen: LauncherActivity.Screen) {
         LauncherActivity.Screen.DataSets -> DataSetsScreen(a)
         LauncherActivity.Screen.Saves -> SavesScreen(a)
         LauncherActivity.Screen.LauncherSettings -> LauncherSettingsScreen(a)
+        LauncherActivity.Screen.Logs -> LogsScreen(a)
         LauncherActivity.Screen.Controls -> ControlsScreen(a)
         LauncherActivity.Screen.Touch -> TouchScreen(a)
         LauncherActivity.Screen.TouchKeys -> TouchKeysScreen(a)
@@ -354,6 +356,7 @@ private fun DataScreen(a: LauncherActivity) {
             MainMenuButton(stringResource(R.string.game_data_title)) { a.go(LauncherActivity.Screen.GameData) }
             MainMenuButton(stringResource(R.string.saves_title)) { a.go(LauncherActivity.Screen.Saves) }
             MainMenuButton(stringResource(R.string.launcher_settings_title)) { a.go(LauncherActivity.Screen.LauncherSettings) }
+            MainMenuButton(stringResource(R.string.logs_title)) { a.go(LauncherActivity.Screen.Logs) }
         }
     }
 }
@@ -464,6 +467,32 @@ private fun SavesScreen(a: LauncherActivity) {
         Row(Modifier.widthIn(max = 640.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             MenuButton(stringResource(R.string.import_saves), { a.launchSaveImport() }, Modifier.weight(1f), enabled = available)
             MenuButton(stringResource(R.string.export_saves), { a.launchSaveExport() }, Modifier.weight(1f), enabled = available)
+        }
+        Column(Modifier.widthIn(max = 640.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            OperationStatus(a)
+        }
+    }
+}
+
+/* The logs the game and the app have written: to a file, to another app, to
+ * the developer, or gone.  Sorted out in LogBundle. */
+@Composable
+private fun LogsScreen(a: LauncherActivity) {
+    val files = remember(a.logsChanged, a.busy) { LogBundle.files(a) }
+    val toDeveloper = stringResource(R.string.developer_email).isNotEmpty()
+    ScreenFrame(stringResource(R.string.logs_title), onBack = { a.go(LauncherActivity.Screen.Data) }, backEnabled = !a.busy) {
+        Hint(stringResource(R.string.logs_hint), Modifier.widthIn(max = 640.dp))
+        Hint(if (files.isEmpty()) stringResource(R.string.logs_no_files)
+             else stringResource(R.string.logs_files, files.size, Formatter.formatShortFileSize(a, LogBundle.bytes(files))),
+             Modifier.widthIn(max = 640.dp), color = GameColors.Gold)
+        Row(Modifier.widthIn(max = 640.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            MenuButton(stringResource(R.string.logs_export), { a.launchLogExport() }, Modifier.weight(1f), enabled = !a.busy)
+            MenuButton(stringResource(R.string.logs_share), { a.sendLogs(false) }, Modifier.weight(1f), enabled = !a.busy)
+        }
+        Row(Modifier.widthIn(max = 640.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            if (toDeveloper)
+                MenuButton(stringResource(R.string.logs_send), { a.sendLogs(true) }, Modifier.weight(1f), enabled = !a.busy)
+            MenuButton(stringResource(R.string.logs_clear), { a.confirmClearLogs() }, Modifier.weight(1f), enabled = !a.busy)
         }
         Column(Modifier.widthIn(max = 640.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             OperationStatus(a)

@@ -85,6 +85,56 @@ diagnostic variables below when the game next starts. Each switch keeps its
 launch-extra name, and a launch extra wins over the screen for that start:
 `adb shell am start -n dev.nfs3hp.port/.SplashActivity --ez debug true --ez trace_ticks true`.
 
+**Live functions log** (`live_counter`, under Traces) records
+which of the game's functions run. With it on (and debug mode) the game starts
+a timer, `ITIMER_PROF`, that every 4 ms of CPU time interrupts the running
+thread; the handler walks its frame-pointer chain and counts the addresses in
+`libmain.so` (`src/nfs3hp/func_log.cpp`): the function the time is spent in, and
+every function with a call in progress. Nothing is added to the game's code and
+with the switch off none of it exists. A thread appends what changed to
+`functions.bin` in the game's `logs` folder
+(`/sdcard/Android/data/dev.nfs3hp.port/files/logs/`) every two seconds, and
+the log's `[FUNCS]` lines say how it goes. It is a sample: a function that runs a few
+times in a session may not be in it. Play a session -- menus, a race, its replay
+-- leave the game, then:
+
+```bash
+adb pull /sdcard/Android/data/dev.nfs3hp.port/files/logs/functions.bin
+python tools/profile_report.py functions.bin [libmain.so] [report.md]
+```
+
+The report sorts the functions into generated code, natives (`native_*.cpp`) and
+the typed port (`port_*.cpp`) by the source files in the library's debug info,
+and says how many of each were seen, how the time divides, and what runs in
+each 20 seconds. The log also notes the x87's precision: every control word the
+game sets reaches `FPU::s_controlHook` (`include/fpu.h`, null otherwise), each
+thread's last one is kept, and each sample carries the precision control its
+thread was under, so the report divides the time between 24, 53 and 64 bits and
+counts the words set. These are the words as they reach the emulated x87: with
+`fpu_extended_races` on, the race's single precision has already been turned into
+64 bits by `raceControl`.
+
+The report needs the unstripped `libmain.so` of the build the APK was
+made from (`android/app/build/intermediates/cxx/*/*/obj/arm64-v8a/`); the build
+id in `functions.bin` is checked against it. A first measurement (0.78, 252 s,
+by counting every call in an instrumented build): 859 of 2239 generated
+functions ran, and in a race generated code was about 8% of the calls to the
+original's functions.
+
+**Logs** (Data -> Logs, in English in every language like Advanced) gathers what
+the diagnostics have written (`LogBundle.java`): the files in the game's `logs`
+folder -- `functions.bin` and what other traces put there -- plus `cars.bin` and
+`ai.bin` beside it, the app's own lines of the system log (`logcat -d`, which
+Android lets an app read for itself; there are lines only in debug mode), and
+`device.txt` (the build, the phone, the debug switches). *Export to a file* asks for a
+place with the system's file picker; *Share* opens the share menu with the zip
+attached; *Send to the developer* opens a letter to the address in
+`developer_email` (`res/values/strings.xml`; the button is gone if it is empty)
+with the zip attached. The zip for Share and Send is made in the cache and
+reached through `FileProvider` (`res/xml/log_paths.xml`). *Clear logs* deletes
+the files and runs `logcat -c`, which the system may refuse; it will not run
+while the game is, since the game has the files open.
+
 The menus carry one button of the port's, the keyboard in the top-right corner:
 a finger works them as a pointer, and the system's own back is the game's
 Escape. The button is there for typing the game takes with no box on the
@@ -277,10 +327,18 @@ x87's precision control down to 24 bits (fldcw at 0x4a3e8d and 0x4a3ed3), and
 every sum, product and quotient of the physics and of the opponents' driving
 keeps a float's significand. Four functions that step out to the system mid-race
 come back the same way (0x495179, 0x4955e9, 0x4b6239, 0x4bc811). The Modern
-Patch drops that fldcw and races at the 64 bits fninit leaves. The port does as
-the Modern Patch does at all six (`tools/apply_race_precision.py`);
-`NFS_FPU_EXTENDED=0` brings back the original's single precision. Every machine
-of a network race needs the same.
+Patch drops that fldcw and races at the 64 bits fninit leaves. The port races as
+the original does; `NFS_FPU_EXTENDED=1` (Advanced: `fpu_extended_races`) does as
+the Modern Patch does at all six (`tools/apply_race_precision.py`). Every machine
+of a network race needs the same. The single precision starts as the game leaves
+its menus, so a race's loading and its replay run in it too; the menus stay at the
+64 bits fninit leaves. Single precision rounds sums, products, quotients and roots
+only: sin, cos and atan2 (fsin, fcos, fpatan) keep the x87's full width, as on the
+x87, until the next operation or a float store rounds them. The contact-physics
+functions `tools/decomp.py` converted (`port_conv`) do their sums, products and
+quotients through the emulated x87's operations and round as a race asks; the HUD
+and view rewrites (`port_view`, `port_hud`) compute in doubles, which only what is
+drawn sees.
 
 How wide "extended" is depends on the build. The default keeps the x87's
 values in doubles: 53 bits. `WITH_PEDANTIC_FPU` (`./gradlew -Px87Exact
@@ -942,13 +1000,14 @@ from the phone; the rest matter for a desktop run.
 | `NFS_NATIVES` | on | `0` runs the generated code instead of the car-specs native, to compare speeds. The loading, movie, vertex, polygon and drawing natives always run. |
 | `NFS_MAD_CHECK` | off | `1` (debug) runs the generated MAD player and checks the native decoder (`src/nfs3hp/native_movie.cpp`) against the generated one ([MAD]). |
 | `NFS_LOG` | on | `0` (debug mode off, the launcher's Advanced screen) writes nothing to the log: log priority critical, and SDL's direct Android logging held back (`android/app/jni/sdl_quiet.h`). With debug mode off the launcher sets none of the diagnostic variables. |
-| `NFS_FPU_EXTENDED` | on | Races at the x87's extended precision, as the Modern Patch runs them; `0` races in single precision, as the original (see The x87's precision). Every player of a network race needs the same. Debug mode takes it from its screen or a launch: `adb shell am start -n dev.nfs3hp.port/.SplashActivity --ez fpu_single_races true`. |
+| `NFS_FPU_EXTENDED` | off | `1` races at the x87's extended precision, as the Modern Patch runs them; otherwise races in single precision, as the original (see The x87's precision). Every player of a network race needs the same. Debug mode takes it from its screen or a launch: `adb shell am start -n dev.nfs3hp.port/.SplashActivity --ez fpu_extended_races true`. |
 | `NFS_FPU_FLOAT` | off | `1` rounds every x87 operation of the whole game to a float's 24 bits, the menus too, and races in single precision (`NFS_FPU_EXTENDED=0`): the game as it would run on the host's float. An experiment. Debug mode takes it from its screen or a launch: `--ez fpu_float true`. |
 | `NFS_NATIVE_AI` | on | `0` runs the generated sub_4064f0 and sub_4070c0 instead of their decompiled C++ (`src/nfs3hp/native_ai.h`). Debug mode takes it from its screen or a launch: `--ez native_ai_off true`. |
 | `NFS_NET_PORT` | `9803` | TCP port of network races, as the Modern Patch has it; the launcher's Network screen offers the original's `1030`. |
 | `NFS_NET_TRACE` | off | `1` (extra `net_trace`) writes a network race into the log: EA's comm library events and packet sends (`[COMM]`), up to 400 datagrams per socket instead of 16 (`[NET]`), and each new indirect call target once per thread after the IPX transport opens (`[CALL]`). For finding where two machines stop on the way into a race. |
 | `NFS_FE_NATIVE` | on | `0` leaves every hooked decompiled menu function, the screens' and the engine's, to the generated code (see Decompiled menus); the main menu, what it calls of the menu loop and the dialogs, and the controls' screens are native whole and stay native. |
 | `NFS_FE_NATIVE_OFF` | unset | A list of generated functions, `sub_437e00,sub_438260`, left to the generated code while the other decompiled ones run. |
+| `NFS_FUNC_LOG` | off | `1` (debug mode, switch `live_counter`) samples which functions run, to `functions.bin` (see Live functions log). |
 | `NFS_NATIVE_CHECK` | off | `1` (or `load`) runs each call of the loading natives (`src/nfs3hp/native_loading.cpp`: RefPack, FCE models, FRD tracks) both ways -- the native, everything it wrote put back, then the generated code -- and logs any difference in memory, registers or flags (`[NATIVE]`), holding the guest context meanwhile (`WinApplication::KeepContext`). The vertex, polygon and drawing natives have no generated code left in the game to be held against: their checks are on the desktop (`tools/game_checks/vertices`, `tools/game_checks/render`). Launch extras: `--ez native_check true`, `--ez load_check true`. |
 | `NFS_AUDIO_RATE` | unset | The output's own sample rate. The game mixes at 22050 Hz and SDL converts to this; a device opened at any other rate is resampled by Android, off its low-latency path. Unset, the device opens at SDL's default. |
 | `NFS_TOUCH_STEER_LEFT` etc. | unset | Keys the touch overlay sends for steering and the pedals, so that endpoint can report them as axes. |

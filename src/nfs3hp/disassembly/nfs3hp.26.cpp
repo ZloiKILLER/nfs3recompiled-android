@@ -12148,7 +12148,7 @@ void Application::sub_4bc830(WinApplication* __restrict app, x86::CPU& cpu_)
     if (cpu.terminate) return;
     // 004bc851  e81a78fcff             -call 0x484070
     cpu.esp -= 4;
-    sub_484070(app, cpu.sync());
+    nfs3hp::port::hud::hudStarted(app, cpu.sync());
     cpu.reload();
     if (cpu.terminate) return;
     // 004bc856  e8756bfeff             -call 0x4a33d0

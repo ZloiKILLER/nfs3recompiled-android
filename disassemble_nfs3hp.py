@@ -2258,6 +2258,91 @@ PORT_DIALOGS_NATIVES = {
 }
 GAME_NATIVES.update(PORT_DIALOGS_NATIVES)
 
+# The pan-and-zoom view over the maps, rewritten as the port's own, without the
+# x87 (src/nfs3hp/port_view.{h,cpp}, nfs3hp::port::view): the participant
+# record's floats, the pan's base, the lap-metric popup and the view's pan,
+# grid and keys.  No generated code behind them; tools/game_checks holds each
+# against it (view.inc).
+PORT_VIEW_NATIVES = {
+    0x420ff0: "port::view::sectionAheadIsTwo",
+    0x4646e0: "port::view::storeIncremented",
+    0x4733c0: "port::view::colourNearest",
+    0x474db0: "port::view::edgeTriangles",
+    0x475240: "port::view::glyphResource",
+    0x464840: "port::view::gridDrawn",
+    0x464fd0: "port::view::viewFrame",
+    0x4651e0: "port::view::panKey",
+    0x469580: "port::view::recordFloat",
+    0x46b030: "port::view::recordFloatAt",
+    0x46ca70: "port::view::recordFloatByKind",
+    0x46cf30: "port::view::metricPopup",
+}
+GAME_NATIVES.update(PORT_VIEW_NATIVES)
+
+# The race HUD, rewritten as the port's own, without the x87 (src/nfs3hp/port_hud.{h,cpp},
+# nfs3hp::port::hud): its gauges, needles and the track's map, a function at a time.  No
+# generated code behind them; tools/game_checks holds each against it (hud.inc).
+PORT_HUD_NATIVES = {
+    0x484040: "port::hud::loadingTextPrepared",
+    0x485c20: "port::hud::floatsSwapped",
+    0x487350: "port::hud::fourIntegersAppended",
+    0x48cb50: "port::hud::pointTransformed",
+    0x48cc60: "port::hud::boxDrawn",
+    0x48a220: "port::hud::indicatorGeometryUpdated",
+    0x4897f0: "port::hud::textAlignedDrawn",
+    0x489d70: "port::hud::percentTextDrawn",
+    0x489b30: "port::hud::listRowsDrawn",
+    0x489c40: "port::hud::timeTextDrawn",
+    0x48ea20: "port::hud::viewZoomStepped",
+    0x48e790: "port::hud::viewPaneStepped",
+    0x484b70: "port::hud::screenScalesSet",
+    0x4870c0: "port::hud::rectangleQuadSet",
+    0x486f70: "port::hud::stackQuadSet",
+    0x485180: "port::hud::labelTextSet",
+    0x485c30: "port::hud::pointClipped",
+    0x485f20: "port::hud::segmentClippedToRect",
+    0x4860b0: "port::hud::segmentCutIntoPieces",
+    0x4873e0: "port::hud::strokeClippedDrawn",
+    0x485a60: "port::hud::standingsGapMeasured",
+    0x486df0: "port::hud::floatsQuadSet",
+    0x484070: "port::hud::hudStarted",
+    0x48a3a0: "port::hud::rankTextDrawn",
+    0x48a660: "port::hud::labelRowsDrawn",
+    0x48ae70: "port::hud::standingsDrawn",
+    0x48aa40: "port::hud::columnsStarted",
+    0x48cdb0: "port::hud::mapOutlineStarted",
+    0x48d110: "port::hud::hudViewsSet",
+    0x4844c0: "port::hud::hudPaneSet",
+    0x484c10: "port::hud::hudTablesStarted",
+    0x489e00: "port::hud::indicatorQuadSet",
+    0x487620: "port::hud::gaugeQuadClipped",
+    0x486340: "port::hud::segmentsMet",
+    0x487a30: "port::hud::boxQuadsSet",
+    0x48b5f0: "port::hud::markersSet",
+    0x48d4c0: "port::hud::mapPointsDrawn",
+}
+GAME_NATIVES.update(PORT_HUD_NATIVES)
+
+# Functions of the game's that use the x87, rewritten from their code by tools/decomp.py (src/nfs3hp/port_conv.{h,cpp},
+# nfs3hp::port::conv); tools/game_checks/conv.inc holds each against the game's code.
+PORT_CONV_NATIVES = {
+    0x49fe70: "port::conv::fn49fe70",
+    0x4a00d0: "port::conv::fn4a00d0",
+    0x4a0440: "port::conv::fn4a0440",
+    0x4a0980: "port::conv::fn4a0980",
+    0x4a0a10: "port::conv::fn4a0a10",
+    0x4a0d20: "port::conv::fn4a0d20",
+    0x4a0f30: "port::conv::fn4a0f30",
+    0x4a1090: "port::conv::fn4a1090",
+    0x4a20c0: "port::conv::fn4a20c0",
+    0x4a2630: "port::conv::fn4a2630",
+    0x4a2830: "port::conv::fn4a2830",
+    0x4a2c60: "port::conv::fn4a2c60",
+    0x4a2e20: "port::conv::fn4a2e20",
+    # @@NATIVES@@
+}
+GAME_NATIVES.update(PORT_CONV_NATIVES)
+
 
 
 # The menus' screens that are native whole, no generated code behind them:

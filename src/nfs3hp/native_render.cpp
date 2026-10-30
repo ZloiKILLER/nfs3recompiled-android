@@ -21,8 +21,8 @@
  * back on.  Each does the original's arithmetic in the original's order
  * through the emulated FPU's own operations (FpuMath, on the FPU of the CPU it
  * was handed: ExactFpu), so it rounds as the generated code does in every mode
- * the game runs in -- a race at single precision, the menus and the races at
- * extended precision (the default, extendedRaces), NFS_FPU_FLOAT -- and
+ * the game runs in -- a race at single precision (the default), the menus and
+ * the races at extended precision (extendedRaces), NFS_FPU_FLOAT -- and
  * converts to integers by the control word's rounding (FPU::toInteger), as
  * fistp does.  The experiments' builds (WITH_PEDANTIC_FPU, WITH_WIDE_FPU) run
  * them too, in doubles: not to the bit there.  Where the original copies with

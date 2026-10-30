@@ -10,6 +10,7 @@
 #include "native_thrash.h"
 #include "port_thrash.h"
 #include "dynamic_fullscreen.h"
+#include "func_log.h"
 #include <SDL3/SDL.h>
 #include <array>
 #include <atomic>
@@ -76,19 +77,19 @@ x86::reg32 networkPort()
 }
 
 /* Races at the x87's extended precision, as the Modern Patch runs them
- * (tools/apply_race_precision.py): NFS_FPU_EXTENDED, on unless it is 0.  The
- * race loop takes the precision control down to single precision before each
- * race, as a PC of 1998 had it, and so do four functions that call out
- * mid-race; the Modern Patch drops that fldcw and races at the 64 bits fninit
- * leaves.  With it on, the word the game loads keeps its
- * rounding and exception bits and gets its precision control back at 64 bits.
- * Every player of a network race needs the same: the race is simulated on
- * every machine. */
+ * (tools/apply_race_precision.py): NFS_FPU_EXTENDED=1 only.  By default a race
+ * runs as the original's did: on leaving the menus the game takes the precision
+ * control down to single (24 bits) for the loading, the race and its replay,
+ * and so do four functions that call out mid-race; the Modern Patch drops that
+ * fldcw and races at the 64 bits fninit leaves.  With it on, the word the game
+ * loads keeps its rounding and exception bits and gets its precision control
+ * back at 64 bits.  Every player of a network race needs the same: the race is
+ * simulated on every machine. */
 bool extendedRaces()
 {
     static const bool on = []() {
         const char* value = SDL_getenv("NFS_FPU_EXTENDED");
-        return !(value && SDL_strcmp(value, "0") == 0);
+        return value && SDL_strcmp(value, "1") == 0;
     }();
     return on;
 }
@@ -2445,6 +2446,12 @@ int main(int argc, char* argv[])
      * SDL's own -- is dropped before it is formatted. */
     if (const char* log = SDL_getenv("NFS_LOG"); log && SDL_strcmp(log, "0") == 0)
         SDL_SetLogPriorities(SDL_LOG_PRIORITY_CRITICAL);
+    /* Debug mode's "Live functions log": which functions run, sampled, to
+     * functions.bin (func_log.cpp). */
+#ifdef __ANDROID__
+    if (const char* funcLog = SDL_getenv("NFS_FUNC_LOG"); funcLog && *funcLog && *funcLog != '0')
+        nfs3hp::startFunctionLog();
+#endif
     SDL_Init(SDL_INIT_EVENTS|SDL_INIT_VIDEO|SDL_INIT_AUDIO|SDL_INIT_JOYSTICK|SDL_INIT_GAMEPAD);
     /* Window::getMessage consumes key, text, quit and its own registered user
      * events; everything else falls through its switch and is thrown away.  The

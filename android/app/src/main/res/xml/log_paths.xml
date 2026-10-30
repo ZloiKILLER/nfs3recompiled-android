@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The zip of the logs the Logs screen hands to another app (FileProvider). -->
+<paths>
+    <cache-path name="logs" path="logs/" />
+</paths>

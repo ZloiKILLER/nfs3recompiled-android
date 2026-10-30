@@ -59,6 +59,11 @@ final class DebugOptions
         new Option("trace_pointer", false, "The game's cursor and the touch pointer", "NFS_POINTER_TRACE", "1"),
         // Every car's memory once a second of a race, to cars.bin (with trace_ticks).
         new Option("trace_cars", false, "Every car's memory to cars.bin (with ticks)", "NFS_CAR_TRACE", "1"),
+        /* Samples which of the game's functions run, to functions.bin in the
+         * game's folder (func_log.cpp); tools/profile_report.py reads it. */
+        new Option("live_counter", false,
+            "Live functions log: writes which of the game's functions are running to functions.bin as it plays",
+            "NFS_FUNC_LOG", "1"),
         new Option("net_trace", false, "EA's comm library, for network races [COMM]", "NFS_NET_TRACE", "1"),
         /* Every win32 call and File::read's byte counts, and SDL's "opening
          * file %s" (SDL_LogDebug, silent by default), so a read burst can be
@@ -76,7 +81,8 @@ final class DebugOptions
         new Option("load_check", false, "Check the loading natives [NATIVE]", "NFS_NATIVE_CHECK", "load"),
         new Option("native_check", false, "Check every checked native [NATIVE]", "NFS_NATIVE_CHECK", "1"),
         new Option("mad_check", false, "Check the movie decoder [MAD]", "NFS_MAD_CHECK", "1"),
-        new Option("fpu_single_races", false, "Races at single precision, not extended", "NFS_FPU_EXTENDED", "0"),
+        // Races are single precision, as the original's; this is the Modern Patch's way.
+        new Option("fpu_extended_races", false, "Races at extended precision, as the Modern Patch", "NFS_FPU_EXTENDED", "1"),
         new Option("fpu_double", false, "No x87 single-precision rounding", "NFS_FPU_SINGLE", "0"),
         new Option("fpu_float", false, "The whole game in single precision",
             "NFS_FPU_FLOAT", "1", "NFS_FPU_EXTENDED", "0"),

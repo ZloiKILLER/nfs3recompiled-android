@@ -380,11 +380,11 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
             loadLibraries();
             mBrokenLibraries = false; /* success */
         } catch(UnsatisfiedLinkError e) {
-            System.err.println(e.getMessage());
+            SDLLog.e(TAG, String.valueOf(e.getMessage()));
             mBrokenLibraries = true;
             errorMsgBrokenLib = e.getMessage();
         } catch(Exception e) {
-            System.err.println(e.getMessage());
+            SDLLog.e(TAG, String.valueOf(e.getMessage()));
             mBrokenLibraries = true;
             errorMsgBrokenLib = e.getMessage();
         }
@@ -1040,7 +1040,7 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
                     try {
                         getContext().wait(500);
                     } catch (InterruptedException ie) {
-                        ie.printStackTrace();
+                        SDLLog.e(TAG, "interrupted", ie);
                     }
                 }
             }
@@ -1630,7 +1630,7 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
             try {
                 messageboxSelection.wait();
             } catch (InterruptedException ex) {
-                ex.printStackTrace();
+                SDLLog.e(TAG, "message box interrupted", ex);
                 return -1;
             }
         }
@@ -2048,7 +2048,7 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
             ParcelFileDescriptor pfd = mSingleton.getContentResolver().openFileDescriptor(Uri.parse(uri), mode);
             return pfd != null ? pfd.detachFd() : -1;
         } catch (FileNotFoundException e) {
-            e.printStackTrace();
+            SDLLog.e(TAG, "cannot open " + uri, e);
             return -1;
         }
     }

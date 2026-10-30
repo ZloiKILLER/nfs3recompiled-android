@@ -109,4 +109,23 @@
     <string name="debug_depth16_on" translatable="false">On</string>
     <string name="debug_depth16_ab" translatable="false">Five seconds each, in turns [GPU]</string>
     <string name="debug_reset" translatable="false">Reset every switch</string>
+    <!-- The Logs screen under Data: in English in every language, like Advanced
+         (it is for sending a report). -->
+    <string name="logs_title" translatable="false">Logs</string>
+    <string name="logs_hint" translatable="false">What the game and the app have written down: the files of the traces (Advanced), the app\'s lines of the system log and a few lines about the phone. Debug mode has to be on for there to be much. Export them to a file, share them, or send them to the developer; clearing deletes the files and asks the system to forget the lines.</string>
+    <string name="logs_files" translatable="false">%1$d files, %2$s</string>
+    <string name="logs_no_files" translatable="false">No log files</string>
+    <string name="logs_export" translatable="false">Export to a file</string>
+    <string name="logs_share" translatable="false">Share</string>
+    <string name="logs_send" translatable="false">Send to the developer</string>
+    <string name="logs_clear" translatable="false">Clear logs</string>
+    <string name="logs_clear_message" translatable="false">Delete the log files and clear the app\'s lines of the system log? This cannot be undone.</string>
+    <string name="logs_clear_game_running" translatable="false">Close the game first: it is writing to these files.</string>
+    <string name="logs_exported" translatable="false">Logs exported (%1$d files)</string>
+    <string name="logs_packed" translatable="false">Logs packed (%1$d files)</string>
+    <string name="logs_cleared" translatable="false">Logs cleared (%1$d files)</string>
+    <string name="logs_share_title" translatable="false">Send the logs</string>
+    <string name="logs_mail_subject" translatable="false">NFS3 logs %1$s</string>
+    <string name="logs_mail_text" translatable="false">Logs from the phone, attached.\n\nWhat happened:\n</string>
+    <string name="developer_email" translatable="false">rendymann0592@gmail.com</string>
 </resources>

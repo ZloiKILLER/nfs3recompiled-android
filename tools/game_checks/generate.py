@@ -157,7 +157,32 @@ STOOD_IN = {
     0x444910: (0x445e60,), 0x444b20: (0x445e60,), 0x444f50: (0x445e60,), 0x445520: (0x445e60,),
     0x4449d0: (0x445f50,), 0x444b60: (0x445f50,), 0x4450c0: (0x445f50,), 0x445680: (0x445f50,),
     0x445ac0: (0x445f50,),
+    # The view's grid (port::view), which the view's frame calls by address: stood in there, held on its own.
+    0x464840: (),
+    # The edge pair emitter (port::view), which the glyph geometry's builder calls by address.
+    0x474db0: (),
+    # The HUD's aligned text (port::hud), which the HUD's other texts call by address.
+    0x4897f0: (),
+    # The HUD's tables' and map's starters and view fitter (port::hud), which the HUD's start and its panes call by
+    # address: stood in there, held on their own.
+    0x48aa40: (),
+    0x48cdb0: (),
+    0x48d110: (),
+    0x4844c0: (),
+    0x484c10: (),
+    0x4e8f28: (),
+    0x485c20: (),
+    0x4870c0: (),
+    0x486f70: (),
+    0x485f20: (0x4873e0,),   # (the stroke's own clip: port::hud::strokeClippedDrawn calls it as C++)
+    0x4873e0: (),
+    0x48cb50: (),
+    0x48cc60: (),
+    0x486df0: (),
 }
+# The car's colour count (port_fields), which the view's nearest colour calls by address: stood in there,
+# held on its own; the fields' entries each call it as C++.
+STOOD_IN[0x439760] = tuple(sorted(nfs3hp.PORT_FIELDS_NATIVES))
 
 
 def force_feedback_car(text):
@@ -279,7 +304,14 @@ def hud_scale(text):
     """tools/apply_hud_scale.py's changes, which render's HUD frame and the
     layouts inside it have: the HUD's sizes from a 4:3 screen."""
     from tools.apply_hud_scale import READS
-    return port_sites([(None, address + "  ", old, new) for address, (old, new) in READS])(text)
+    changed = port_sites([(None, address + "  ", old, new) for address, (old, new) in READS])(text)
+    if "hudReference" in changed and "x86::reg32 hudReferenceWidth(" not in changed:
+        # (Inside the function: the generated file is cut into parts at each function's signature.)
+        declarations = ("    x86::reg32 hudReferenceWidth(win32::WinApplication* app);\n"
+                        "    x86::reg32 hudReferenceHeight(win32::WinApplication* app);\n")
+        brace = changed.index("\n{\n") + 3
+        changed = changed[:brace] + declarations + changed[brace:]
+    return changed
 
 
 def cabin_fit(text):
@@ -408,6 +440,8 @@ PORT_CHANGES.update({
     0x4b7d30: car_detail, 0x4bef50: dynamic_fullscreen_mode,
     0x4b9bc0: mirror_detail, 0x4bae00: mirror_detail, 0x4bb200: mirror_detail,
     0x4ddb40: alpha_intensity, 0x4de070: alpha_intensity, 0x4de700: alpha_intensity})
+# port_hud.cpp's: the HUD's, with the changes of the HUD's scale in them.
+PORT_CHANGES.update({0x484b70: hud_scale, 0x485180: hud_scale, 0x48a660: hud_scale, 0x48ae70: hud_scale, 0x48aa40: hud_scale, 0x48d110: hud_scale})
 # native_vertices.cpp's, for tools/game_checks/vertices (gen_vertices.py).
 PORT_CHANGES.update({0x492370: alpha_intensity, 0x492980: alpha_intensity, 0x4cb750: alpha_intensity,
                      0x4cbc90: alpha_intensity, 0x41ae90: mirror_detail, 0x4bb5d0: mirror_detail})

@@ -427,9 +427,17 @@ namespace x86
         /* fldcw and init.  Nothing else writes the control word, so what it
          * asks of the arithmetic below is worked out here, once, rather than
          * pulled out of its bit fields at every fadd. */
+        /* Told of every control word as it is set, when something listens:
+         * the live functions log (src/nfs3hp/func_log.cpp) notes each
+         * thread's precision.  Null, as it nearly always is, it costs a test
+         * at each fldcw. */
+        static inline void (*s_controlHook)(reg16 word) = nullptr;
+
         inline void setControl(reg16 word)
         {
             control.word = word;
+            if (s_controlHook)
+                s_controlHook(word);
 #if defined(WITH_PEDANTIC_FPU)
             control80(word);   // the 80-bit arithmetic rounds as the word says
 #elif defined(WITH_WIDE_FPU)
