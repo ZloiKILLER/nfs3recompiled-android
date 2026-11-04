@@ -39,8 +39,9 @@ The game's data is imported once, from a folder holding `FEDATA` and
 2048-byte sectors or whole 2352-byte MODE1/MODE2 ones; the CUE sheet is not
 needed).
 
-Android 8.0 or newer on a 64-bit ARM device (ARMv8, arm64-v8a) with OpenGL ES
-3.0. Testing happens on Android 13, and
+Android 8.0 or newer on an ARM device with OpenGL ES 3.0: one APK holds
+arm64-v8a and armeabi-v7a, and the installer takes the device's first, so 64-bit
+Android always runs arm64-v8a. Testing happens on Android 13, and
 Android 10 was confirmed by a tester; 8 and 9 install but have not been played
 on yet.
 
@@ -937,8 +938,8 @@ are native whole have none to go back to.
 ### Android
 
 Requires Android SDK with **NDK 28.2.13676358**, build-tools 36.0.0, compileSdk
-36, and a JDK (Android Studio's bundled JBR works). The app is arm64-v8a only,
-minSdk 26, so it installs on Android 8.0 and later. The floor is `java.nio.file`,
+36, and a JDK (Android Studio's bundled JBR works). The app is arm64-v8a and armeabi-v7a (the second with `-fmax-type-align=1`: 32-bit
+ARM faults on a float at an unaligned address, where the game keeps some), minSdk 26, so it installs on Android 8.0 and later. The floor is `java.nio.file`,
 which the launcher reads and writes the game's files with; every platform call
 above 26 is behind a version check with a fallback.
 

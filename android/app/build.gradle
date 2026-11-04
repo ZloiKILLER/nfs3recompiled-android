@@ -27,11 +27,12 @@ android {
         versionCode = 78
         versionName = "0.78"
         testInstrumentationRunner "dev.nfs3hp.port.TouchOverlayInstrumentation"
-        // Only arm64-v8a is packed: Compose brings androidx.graphics.path for
-        // four ABIs, and a phone of another ABI would then install an APK with
-        // no game in it (arm64 only, decided 2026-10-01).
+        // Both packed in one APK; the installer takes the device's first ABI it
+        // finds here, so a 64-bit Android always gets arm64-v8a and only a 32-bit
+        // one gets armeabi-v7a.  Named, as Compose brings androidx.graphics.path
+        // for four ABIs, and a device of another would install an APK with no game.
         ndk {
-            abiFilters 'arm64-v8a'
+            abiFilters 'arm64-v8a', 'armeabi-v7a'
         }
         manifestPlaceholders = [launcherAppLabel: "@string/app_name"]
 
@@ -59,7 +60,7 @@ android {
                 )
                 // Only nfs3hp is wired up for Android (see the NFS_BUILD_NFS2SE
                 // guard in the root CMakeLists.txt); the default is already OFF.
-                abiFilters 'arm64-v8a'
+                abiFilters 'arm64-v8a', 'armeabi-v7a'
             }
         }
     }

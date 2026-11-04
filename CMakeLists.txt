@@ -83,6 +83,14 @@ endif()
 
 # Android has no desktop OpenGL: link GLESv3 directly instead of going through
 # find_package(OpenGL), which has no Android-CMake config to find anyway.
+# The game's data keeps floats at any address, as x86 allows.  32-bit ARM faults
+# on a float or a pair of words loaded from one that is not aligned (arm64 does
+# not), and the natives read through float pointers: every pointer is taken as
+# possibly unaligned, on this ABI only.
+if(ANDROID AND ANDROID_ABI STREQUAL "armeabi-v7a")
+    add_compile_options(-fmax-type-align=1)
+endif()
+
 if(ANDROID)
     set(NFS_GL_LIBS GLESv3)
 else()

@@ -155,8 +155,14 @@ void onSample(int, siginfo_t*, void* context)
     const auto& r = ((ucontext_t*)context)->uc_mcontext;
     uintptr_t frames[kMaxFrames];
     int n = 0;
+#if defined(__aarch64__)
     frames[n++] = (uintptr_t)r.pc;
     uintptr_t fp = (uintptr_t)r.regs[29];
+#else
+    // armeabi-v7a: only the function it is in; Thumb code keeps no frame chain to walk.
+    frames[n++] = (uintptr_t)r.arm_pc;
+    uintptr_t fp = 0;
+#endif
     while (n < kMaxFrames && fp && (fp & 15) == 0)
     {
         uintptr_t rec[2];
