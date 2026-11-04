@@ -13,7 +13,7 @@ gamepads with split screen, vibration, widescreen races and
 full-colour textures.
 
 Network races work: phone with phone over Wi-Fi (IPX or TCP/IP), and phone
-with a PC running the Modern Patch over TCP/IP in both directions (host and client).
+with a PC original game over TCP/IP in both directions (host and client).
 
 The game's data comes from your own disc: its folders, a ZIP of them, or an
 image of the disc (ISO or BIN/CUE), which the launcher reads directly.
@@ -32,13 +32,11 @@ image of the disc (ISO or BIN/CUE), which the launcher reads directly.
 
 You need:
 
-- a device with Android 8.0 or newer, a 64-bit ARM processor (ARMv8,
-  arm64-v8a) and OpenGL ES 3.0 graphics;
-- the game's data from your own copy: the `FEDATA` and `GAMEDATA` folders of
-  the 1998 retail disc, or an image of that disc (ISO, or BIN/CUE).
+- a device with Android 8.0 or newer, ARMv7 and ARMv8 CPU, and OpenGL ES 3.0 graphics;
+- the game's data from your own copy: the original ISO or BIN\CUE dump, or the `FEDATA` and `GAMEDATA` folders of
+  the 1998 retail disc.
 
-1. Copy both folders to the phone, for example to `/sdcard/YOUR_FOLDER`, or
-   copy the disc image there.
+1. Copy image or both FEDATA and GAMEDATA folders to the phone, for example to `/sdcard/YOUR_FOLDER`.
 2. Install the app, open it and import that folder, or the image's `.iso` or
    `.bin`.
 3. Play.
