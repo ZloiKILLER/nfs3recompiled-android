@@ -152,17 +152,17 @@ namespace nfs3hp
 
 /* sub_5030d0: native, nfs3hp::port::SNDfxlevel */
 
-/* sub_503280: native, nfs3hp::ea::fpuCopySwapped */
+/* sub_503280: native, nfs3hp::dead::stub_0x503280 */
 
-/* sub_503281: native, nfs3hp::ea::fpuCopy */
+/* sub_503281: native, nfs3hp::dead::stub_0x503281 */
 
-/* sub_5033e4: native, nfs3hp::mmx::copySwapped */
+/* sub_5033e4: native, nfs3hp::mix::copySwapped */
 
-/* sub_5033e5: native, nfs3hp::mmx::copy */
+/* sub_5033e5: native, nfs3hp::mix::copy */
 
-/* sub_50356c: native, nfs3hp::ea::dwordCopySwapped */
+/* sub_50356c: native, nfs3hp::dead::stub_0x50356c */
 
-/* sub_50356d: native, nfs3hp::ea::dwordCopy */
+/* sub_50356d: native, nfs3hp::dead::stub_0x50356d */
 
 /* sub_503670: native, nfs3hp::port::mul64 */
 

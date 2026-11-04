@@ -19,13 +19,8 @@
  * no code for it: the game's callers call it by name, dynamic_call by address.
  * Since phase 2 there is no hook and no generated code behind them to fall
  * back on.  Each does the original's arithmetic in the original's order
- * through the emulated FPU's own operations (FpuMath, on the FPU of the CPU it
- * was handed: ExactFpu), so it rounds as the generated code does in every mode
- * the game runs in -- a race at single precision (the default), the menus and
- * the races at extended precision (extendedRaces), NFS_FPU_FLOAT -- and
- * converts to integers by the control word's rounding (FPU::toInteger), as
- * fistp does.  The experiments' builds (WITH_PEDANTIC_FPU, WITH_WIDE_FPU) run
- * them too, in doubles: not to the bit there.  Where the original copies with
+ * through fp:: (FpuMath), so it rounds as the generated code does, at single
+ * precision, and converts to integers as fistp does.  Where the original copies with
  * movs they copy forwards: the game never leaves the direction flag set (its
  * one std, in memmove at 0x518640, is undone by the cld before it returns).
  * An integer divide by zero (lightning, sparks) gives what the generated
@@ -81,49 +76,16 @@ inline x86::reg32 asBits(float value)
     return bits;
 }
 
-/* The FPU the natives' arithmetic rounds by: the one of the CPU a native was
- * handed, set as it starts (ExactFpu) and given back as it ends, so that a
- * native another one calls through the game's code leaves its caller's.  A
- * pointer per thread, as the game's threads each have their CPU. */
-thread_local x86::FPU* t_fpu = nullptr;
-
-/* At the top of every native: the arithmetic below follows `cpu`'s FPU. */
-struct ExactFpu
-{
-    x86::FPU* const outer;
-    explicit ExactFpu(x86::CPU& cpu) : outer(t_fpu) { t_fpu = &cpu.fpu; }
-    ~ExactFpu() { t_fpu = outer; }
-    ExactFpu(const ExactFpu&) = delete;
-    ExactFpu& operator=(const ExactFpu&) = delete;
-};
-
-/* The arithmetic as the generated code does it: the emulated FPU's own
- * operations (FPU::add .. sqrt), which round as the control word the game has
- * at that moment asks -- to a float's significand in a race at single
- * precision, in the direction its rounding control says, or not at all at 53
- * or 64 bits (the menus, and the races at extended precision) -- and as
- * NFS_FPU_FLOAT asks.  The mode is read at each operation, so a callee's fldcw
- * counts from its return on, as it does for the generated code.  The operands
- * go in the order the generated code hands them to the FPU, which decides a
- * NaN's payload.  WITH_PEDANTIC_FPU's 80 bits and WITH_WIDE_FPU's long double
- * are not a double's: there the natives do their arithmetic in doubles, close
- * to the generated code's but not to the bit. */
+/* The arithmetic as the generated code does it (fp::).  The operands go in the
+ * order the generated code has them, which decides a NaN's payload. */
 struct FpuMath
 {
     typedef double Value;
-#if defined(WITH_PEDANTIC_FPU) || defined(WITH_WIDE_FPU)
-    static Value add(Value a, Value b) { return a + b; }
-    static Value sub(Value a, Value b) { return a - b; }
-    static Value mul(Value a, Value b) { return a * b; }
-    static Value div(Value a, Value b) { return a / b; }
-    static Value sqrt(Value a) { return std::sqrt(a); }
-#else
-    static Value add(Value a, Value b) { return t_fpu->add(a, b); }
-    static Value sub(Value a, Value b) { return t_fpu->sub(a, b); }
-    static Value mul(Value a, Value b) { return t_fpu->mul(a, b); }
-    static Value div(Value a, Value b) { return t_fpu->div(a, b); }
-    static Value sqrt(Value a) { return t_fpu->sqrt(a); }
-#endif
+    static Value add(Value a, Value b) { return fp::add(a, b); }
+    static Value sub(Value a, Value b) { return fp::sub(a, b); }
+    static Value mul(Value a, Value b) { return fp::mul(a, b); }
+    static Value div(Value a, Value b) { return fp::div(a, b); }
+    static Value sqrt(Value a) { return fp::sqrt(a); }
 };
 typedef FpuMath M;
 
@@ -534,7 +496,7 @@ x86::reg32 hudBorder(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 k0, x
 {
     const Memory m{app};
     const double width = double(x86::sreg32(hudReferenceWidth(app)));
-    return x86::reg32(cpu.fpu.toInteger<x86::sreg32>(x86::Float(M::mul(M::mul(width, m.load(k0)), m.load(k1)))));
+    return x86::reg32(fp::toInteger<x86::sreg32>(x86::Float(M::mul(M::mul(width, m.load(k0)), m.load(k1)))));
 }
 
 }
@@ -564,7 +526,6 @@ namespace render
  * in eax and ebx when a pass leaves fewer than three corners. */
 void clipByZ(win32::WinApplication* app, x86::CPU& cpu)
 {
-    const ExactFpu exact(cpu);
     const Memory m{app};
     const x86::reg32 entry = cpu.esp;
     const x86::reg32 saved[] = { cpu.ecx, cpu.esi, cpu.edi, cpu.ebp };
@@ -656,7 +617,7 @@ void clipByZ(win32::WinApplication* app, x86::CPU& cpu)
             const x86::reg32 from = (ca >> shift) & 0xff;
             const x86::reg32 to = (cb >> shift) & 0xff;
             const double product = M::mul(double(x86::sreg32(from - to)), t);
-            channels[i] = from - x86::reg32(cpu.fpu.toInteger<x86::sreg32>(x86::Float(product)));
+            channels[i] = from - x86::reg32(fp::toInteger<x86::sreg32>(x86::Float(product)));
         }
         return (channels[0] << 24) | (channels[1] << 16) | (channels[2] << 8) | channels[3];
     };
@@ -890,7 +851,6 @@ void clipByZ(win32::WinApplication* app, x86::CPU& cpu)
  * the callees' included, and so do the flags and the FPU status. */
 void quadByZ(win32::WinApplication* app, x86::CPU& cpu)
 {
-    const ExactFpu exact(cpu);
     const Memory m{app};
     const x86::reg32 entry = cpu.esp;
     const x86::reg32 saved[] = { cpu.esi, cpu.edi, cpu.ebp };
@@ -1215,7 +1175,6 @@ void quadByZ(win32::WinApplication* app, x86::CPU& cpu)
  * sub_4c3ad0 gets them. */
 void triangleRecords(win32::WinApplication* app, x86::CPU& cpu)
 {
-    const ExactFpu exact(cpu);
     const Memory m{app};
     const x86::reg32 entry = cpu.esp;
     const x86::reg32 saved[] = { cpu.ebx, cpu.ecx, cpu.edx, cpu.esi, cpu.edi, cpu.ebp };
@@ -1473,7 +1432,6 @@ void triangleRecords(win32::WinApplication* app, x86::CPU& cpu)
  * is drawn). */
 void nearTriangle(win32::WinApplication* app, x86::CPU& cpu)
 {
-    const ExactFpu exact(cpu);
     const Memory m{app};
     const x86::reg32 entry = cpu.esp;
     const x86::reg32 saved[] = { cpu.ebx, cpu.ecx, cpu.esi, cpu.edi, cpu.ebp };
@@ -1742,7 +1700,6 @@ void nearTriangle(win32::WinApplication* app, x86::CPU& cpu)
  * edx, ebx, ecx.  Returns the record it stopped at (0 at the end) in eax. */
 void quadRecords(win32::WinApplication* app, x86::CPU& cpu)
 {
-    const ExactFpu exact(cpu);
     const Memory m{app};
     const x86::reg32 entry = cpu.esp;
     const x86::reg32 saved[] = { cpu.ebx, cpu.ecx, cpu.edx, cpu.esi, cpu.edi, cpu.ebp };
@@ -1991,7 +1948,6 @@ void quadRecords(win32::WinApplication* app, x86::CPU& cpu)
  * again, each unless its corners share a clip bit.  stdcall: ret 0x14. */
 void subdivideQuad(win32::WinApplication* app, x86::CPU& cpu)
 {
-    const ExactFpu exact(cpu);
     const Memory m{app};
     const x86::reg32 entry = cpu.esp;
     const x86::reg32 saved[] = { cpu.esi, cpu.edi, cpu.ebp };
@@ -2250,7 +2206,6 @@ void subdivideQuad(win32::WinApplication* app, x86::CPU& cpu)
  * is off the left).  eax, ebx, ecx and edx come out as the path leaves them. */
 void quadSubdivided(win32::WinApplication* app, x86::CPU& cpu)
 {
-    const ExactFpu exact(cpu);
     const Memory m{app};
     const x86::reg32 entry = cpu.esp;
     const x86::reg32 saved[] = { cpu.esi, cpu.edi, cpu.ebp };
@@ -2412,7 +2367,6 @@ void quadSubdivided(win32::WinApplication* app, x86::CPU& cpu)
  * to sub_4c11b0.  Returns the record it stopped at (0 at the end) in eax. */
 void colouredTriangles(win32::WinApplication* app, x86::CPU& cpu)
 {
-    const ExactFpu exact(cpu);
     const Memory m{app};
     const x86::reg32 entry = cpu.esp;
     const x86::reg32 saved[] = { cpu.ebx, cpu.ecx, cpu.edx, cpu.esi, cpu.edi, cpu.ebp };
@@ -2688,7 +2642,6 @@ void colouredTriangles(win32::WinApplication* app, x86::CPU& cpu)
  * callees leave come out as the generated code leaves them. */
 void sky(win32::WinApplication* app, x86::CPU& cpu)
 {
-    const ExactFpu exact(cpu);
     const Memory m{app};
     const x86::reg32 entry = cpu.esp;
     const x86::reg32 saved[] = { cpu.edx, cpu.ebp };
@@ -2763,7 +2716,6 @@ void sky(win32::WinApplication* app, x86::CPU& cpu)
  * generated code moves them. */
 void viewSky(win32::WinApplication* app, x86::CPU& cpu)
 {
-    const ExactFpu exact(cpu);
     const Memory m{app};
     const x86::reg32 entry = cpu.esp;
     const x86::reg32 saved[] = { cpu.ebx, cpu.ecx, cpu.edx, cpu.edi, cpu.ebp };
@@ -2782,7 +2734,7 @@ void viewSky(win32::WinApplication* app, x86::CPU& cpu)
     cpu.esi = cpu.eax;
     const double detail = M::mul(M::mul(M::sub(1.0, m.load(0x55d268)), m.load(0x55d1c8)), m.loadDouble(0x53b2f8));
     cpu.ebx = ebp - 4;
-    const x86::reg32 level = x86::reg32(cpu.fpu.toInteger<x86::sreg32>(x86::Float(detail)));
+    const x86::reg32 level = x86::reg32(fp::toInteger<x86::sreg32>(x86::Float(detail)));
     m.word(frameEsp - 4, level);
     cpu.edi = level;
     cpu.eax = cpu.esi;
@@ -2889,7 +2841,6 @@ void viewSky(win32::WinApplication* app, x86::CPU& cpu)
  * allocator wrote it). */
 void flatSky(win32::WinApplication* app, x86::CPU& cpu)
 {
-    const ExactFpu exact(cpu);
     const Memory m{app};
     const x86::reg32 entry = cpu.esp;
     const x86::reg32 saved[] = { cpu.ebx, cpu.ecx, cpu.edx, cpu.esi, cpu.edi, cpu.ebp };
@@ -2976,7 +2927,6 @@ void flatSky(win32::WinApplication* app, x86::CPU& cpu)
  * texture record 0x55d21c, closed by sub_4bbde0 and drawn by sub_4bbf40. */
 void skyDome(win32::WinApplication* app, x86::CPU& cpu)
 {
-    const ExactFpu exact(cpu);
     const Memory m{app};
     const x86::reg32 entry = cpu.esp;
     const x86::reg32 saved[] = { cpu.ebx, cpu.ecx, cpu.edx, cpu.esi, cpu.edi, cpu.ebp };
@@ -3168,7 +3118,6 @@ void skyDome(win32::WinApplication* app, x86::CPU& cpu)
  * a pixel right and down. */
 void lightning(win32::WinApplication* app, x86::CPU& cpu)
 {
-    const ExactFpu exact(cpu);
     const Memory m{app};
     const x86::reg32 entry = cpu.esp;
     const x86::reg32 saved[] = { cpu.ebx, cpu.ecx, cpu.edx, cpu.esi, cpu.edi, cpu.ebp };
@@ -3329,7 +3278,6 @@ void lightning(win32::WinApplication* app, x86::CPU& cpu)
  * word), its height from the screen's height ([0x53b5d8], 40 or 80). */
 void countdown(win32::WinApplication* app, x86::CPU& cpu)
 {
-    const ExactFpu exact(cpu);
     const Memory m{app};
     const x86::reg32 entry = cpu.esp;
     const x86::reg32 saved[] = { cpu.ebx, cpu.ecx, cpu.edx, cpu.esi, cpu.edi, cpu.ebp };
@@ -3417,7 +3365,7 @@ void countdown(win32::WinApplication* app, x86::CPU& cpu)
     cpu.fpu.st(0) = x86::Float(top);
     if (!callTo(0x4dfd56))
         return;
-    m.word(ebp - 0x10, x86::reg32(cpu.fpu.toInteger<x86::sreg32>(cpu.fpu.st(0))));
+    m.word(ebp - 0x10, x86::reg32(fp::toInteger<x86::sreg32>(cpu.fpu.st(0))));
     flags.logic8(x86::reg8(r.edx));
     cpu.fpu.count -= 1;
     if (x86::reg8(r.edx))
@@ -3516,7 +3464,6 @@ void countdown(win32::WinApplication* app, x86::CPU& cpu)
  * [0x5400f8]. */
 void carLights(win32::WinApplication* app, x86::CPU& cpu)
 {
-    const ExactFpu exact(cpu);
     const Memory m{app};
     const x86::reg32 entry = cpu.esp;
     const x86::reg32 saved[] = { cpu.ebx, cpu.ecx, cpu.esi, cpu.edi, cpu.ebp };
@@ -3757,7 +3704,6 @@ void carLights(win32::WinApplication* app, x86::CPU& cpu)
  * not masked in [car+0x99c]; sub_4e0280, sub_4b8740 and sub_4b81a0 last. */
 void detailedCarLights(win32::WinApplication* app, x86::CPU& cpu)
 {
-    const ExactFpu exact(cpu);
     const Memory m{app};
     const x86::reg32 entry = cpu.esp;
     const x86::reg32 saved[] = { cpu.ebx, cpu.ecx, cpu.esi, cpu.edi, cpu.ebp };
@@ -4012,7 +3958,6 @@ void detailedCarLights(win32::WinApplication* app, x86::CPU& cpu)
  * letters are drawn flat, depth 1. */
 void solidText(win32::WinApplication* app, x86::CPU& cpu)
 {
-    const ExactFpu exact(cpu);
     const Memory m{app};
     const x86::reg32 entry = cpu.esp;
     const x86::reg32 saved[] = { cpu.ecx, cpu.esi, cpu.edi, cpu.ebp };
@@ -4047,7 +3992,7 @@ void solidText(win32::WinApplication* app, x86::CPU& cpu)
         cpu.fpu.st(0) = x86::Float(value);
         if (!callTo(0x4dfd56))
             return false;
-        m.word(at, x86::reg32(cpu.fpu.toInteger<x86::sreg32>(cpu.fpu.st(0))));
+        m.word(at, x86::reg32(fp::toInteger<x86::sreg32>(cpu.fpu.st(0))));
         cpu.fpu.count -= 1;
         return true;
     };
@@ -5378,7 +5323,6 @@ flat:
  * sub_4b8740 and sub_4b81a0 last. */
 void mediumCarLights(win32::WinApplication* app, x86::CPU& cpu)
 {
-    const ExactFpu exact(cpu);
     const Memory m{app};
     const x86::reg32 entry = cpu.esp;
     const x86::reg32 saved[] = { cpu.ebx, cpu.ecx, cpu.esi, cpu.edi, cpu.ebp };
@@ -5655,7 +5599,6 @@ void mediumCarLights(win32::WinApplication* app, x86::CPU& cpu)
  * colour's channels, each held to 0..255, alpha opaque. */
 void nightColour(win32::WinApplication* app, x86::CPU& cpu)
 {
-    const ExactFpu exact(cpu);
     const Memory m{app};
     const x86::reg32 entry = cpu.esp;
     const x86::reg32 saved[] = { cpu.ebx, cpu.ecx, cpu.esi, cpu.edi, cpu.ebp };
@@ -5683,7 +5626,7 @@ void nightColour(win32::WinApplication* app, x86::CPU& cpu)
     };
     // fistp to the stack and pop eax
     auto integer = [&](double value) {
-        const x86::reg32 bits = x86::reg32(cpu.fpu.toInteger<x86::sreg32>(x86::Float(value)));
+        const x86::reg32 bits = x86::reg32(fp::toInteger<x86::sreg32>(x86::Float(value)));
         m.word(esp - 4, bits);
         return bits;
     };
@@ -5916,7 +5859,6 @@ void nightColour(win32::WinApplication* app, x86::CPU& cpu)
  * sub_4c7790s, sub_41b8c0, the two sub_4c7940s, sub_4217e0 and sub_494170. */
 void viewPass(win32::WinApplication* app, x86::CPU& cpu)
 {
-    const ExactFpu exact(cpu);
     const Memory m{app};
     const x86::reg32 entry = cpu.esp;
     const x86::reg32 saved[] = { cpu.ebx, cpu.ecx, cpu.edx, cpu.esi, cpu.ebp };
@@ -5951,7 +5893,7 @@ void viewPass(win32::WinApplication* app, x86::CPU& cpu)
         cpu.flags.lo = x86::reg8(0x02 | ((cpu.fpu.status.word >> 8) & 0xd7));
         if (cpu.flags.cf || cpu.flags.zf)
             goto cars;
-        const x86::reg32 scale = x86::reg32(cpu.fpu.toInteger<x86::sreg32>(x86::Float(M::mul(glare, m.loadDouble(0x536cac)))));
+        const x86::reg32 scale = x86::reg32(fp::toInteger<x86::sreg32>(x86::Float(M::mul(glare, m.loadDouble(0x536cac)))));
         m.word(esp - 4, scale);
         r.edx = m.word(0x552e1c);
         r.ecx = scale;
@@ -6073,7 +6015,6 @@ cars:
  * ([0x7a3a58]): the five pointers at 0x5f0780.. and 0x5f0788. */
 void polygonDrawers(win32::WinApplication* app, x86::CPU& cpu)
 {
-    const ExactFpu exact(cpu);
     const Memory m{app};
     IntegerFlags flags;
     m.word(0x5f0788, 0x433d40);
@@ -6120,7 +6061,6 @@ void polygonDrawers(win32::WinApplication* app, x86::CPU& cpu)
  * 1 (on every driver, a port). */
 void glareColours(win32::WinApplication* app, x86::CPU& cpu)
 {
-    const ExactFpu exact(cpu);
     const Memory m{app};
     const x86::reg32 entry = cpu.esp;
     const x86::reg32 saved[] = { cpu.ebx, cpu.ecx, cpu.esi, cpu.edi, cpu.ebp };
@@ -6137,11 +6077,11 @@ void glareColours(win32::WinApplication* app, x86::CPU& cpu)
     app->getMemory<double>(ebp - 8) = glare;
     if (glareBelowOne(cpu, flags, r, glare))
     {
-        const x86::reg32 first = x86::reg32(cpu.fpu.toInteger<x86::sreg32>(x86::Float(M::mul(glare, m.loadDouble(0x53c698)))));
+        const x86::reg32 first = x86::reg32(fp::toInteger<x86::sreg32>(x86::Float(M::mul(glare, m.loadDouble(0x53c698)))));
         m.word(esp - 4, first);
         darken(flags, r, r.edi, first);
         const x86::reg32 second =
-            x86::reg32(cpu.fpu.toInteger<x86::sreg32>(x86::Float(M::mul(m.load(0x6fbc38), m.loadDouble(0x53c698)))));
+            x86::reg32(fp::toInteger<x86::sreg32>(x86::Float(M::mul(m.load(0x6fbc38), m.loadDouble(0x53c698)))));
         r.edi = r.eax;
         m.word(esp - 4, second);
         darken(flags, r, r.esi, second);
@@ -6160,8 +6100,8 @@ void glareColours(win32::WinApplication* app, x86::CPU& cpu)
     cpu.esp = entry + 4;
 }
 
-/* sub_472d10: the detail settings for the machine's speed (sub_4f1ef0 in
- * MHz: up to 166, 200, 233, 266 or above), halved on a driver with bit 6 of
+/* sub_472d10: the detail settings, the game's highest of the five it chose by
+ * the machine's speed, halved on a driver with bit 6 of
  * [0x7a3a58]: the eight words of each of the tables at 0x472168.. to
  * 0x6fbc28 (the view distance, kept full: a port), 0x6fbc2c, 0x6fbc1c,
  * 0x6fbc30, 0x6fbc20, 0x6fbc24, 0x6fbc3c and 0x791b28; the glare at 1 (0.5
@@ -6169,7 +6109,6 @@ void glareColours(win32::WinApplication* app, x86::CPU& cpu)
  * for sub_4bee80, and sub_4483a0, sub_448330's choice of 0x6fbc34. */
 void detailSettings(win32::WinApplication* app, x86::CPU& cpu)
 {
-    const ExactFpu exact(cpu);
     const Memory m{app};
     const x86::reg32 entry = cpu.esp;
     const x86::reg32 saved[] = { cpu.ebx, cpu.ecx, cpu.edx, cpu.esi, cpu.edi, cpu.ebp };
@@ -6198,39 +6137,8 @@ void detailSettings(win32::WinApplication* app, x86::CPU& cpu)
     }
     r.edi = ebp - 0x18 + 10;
     r.esi = 0x472168 + 80;
-    if (!callTo(0x4f1c70))
-        return;
-    r.ebx = m.word(0x5643ac);
+    // The detail for the fastest machine the game knows of: no phone is slower.
     r.ecx = 4;
-    flags.logic(r.ebx);
-    bool measure = r.ebx != 0;
-    if (!measure)
-    {
-        flags.compare(m.word(0x5643b0), 0);
-        measure = m.word(0x5643b0) != 0;
-    }
-    if (measure)
-    {
-        if (!callTo(0x4f1ef0))
-            return;
-        r.esi = 1000000;
-        const x86::sreg32 ticks = x86::sreg32(r.eax);
-        r.edx = x86::reg32(ticks % 1000000);
-        r.eax = x86::reg32(ticks / 1000000);
-        const x86::sreg32 mhz = x86::sreg32(r.eax);
-        flags.compare(r.eax, 0x10a);
-        if (mhz <= 0x10a)
-            r.ecx = 3;
-        flags.compare(r.eax, 0xe9);
-        if (mhz <= 0xe9)
-            r.ecx = 2;
-        flags.compare(r.eax, 0xc8);
-        if (mhz <= 0xc8)
-            r.ecx = 1;
-        flags.compare(r.eax, 0xa6);
-        if (mhz <= 0xa6)
-            r.ecx = 0;
-    }
     flags.logic8(m.byte(0x7a3a58) & 6);
     if (m.byte(0x7a3a58) & 6)
     {
@@ -6322,7 +6230,6 @@ void detailSettings(win32::WinApplication* app, x86::CPU& cpu)
  * port), depth 0.1, 1/w 0.9, with the corners' clip codes. */
 void sparks(win32::WinApplication* app, x86::CPU& cpu)
 {
-    const ExactFpu exact(cpu);
     const Memory m{app};
     const x86::reg32 entry = cpu.esp;
     const x86::reg32 saved[] = { cpu.ebx, cpu.ecx, cpu.edx, cpu.esi, cpu.edi, cpu.ebp };
@@ -6352,7 +6259,7 @@ void sparks(win32::WinApplication* app, x86::CPU& cpu)
         r.eax = m.word(r.eax + 4);
         r.edx = 0;
         m.word(ebp - 0x20, r.eax);
-        r.eax = x86::reg32(cpu.fpu.toInteger<x86::sreg32>(x86::Float(scaled)));
+        r.eax = x86::reg32(fp::toInteger<x86::sreg32>(x86::Float(scaled)));
         m.word(esp - 4, r.eax);
         m.word(ebp - 0x18, r.edx);
         m.word(ebp - 0x44, r.eax);
@@ -6501,7 +6408,6 @@ void sparks(win32::WinApplication* app, x86::CPU& cpu)
  * second linked to the first and handed to sub_4c7610. */
 void glow(win32::WinApplication* app, x86::CPU& cpu)
 {
-    const ExactFpu exact(cpu);
     const Memory m{app};
     const x86::reg32 entry = cpu.esp;
     const x86::reg32 saved[] = { cpu.ebx, cpu.ecx, cpu.edx, cpu.esi, cpu.edi, cpu.ebp };
@@ -6656,7 +6562,7 @@ void glow(win32::WinApplication* app, x86::CPU& cpu)
         if (glareBelowOne(cpu, flags, r, glare))
         {
             const x86::reg32 scale =
-                x86::reg32(cpu.fpu.toInteger<x86::sreg32>(x86::Float(M::mul(glare, m.loadDouble(0x53bc98)))));
+                x86::reg32(fp::toInteger<x86::sreg32>(x86::Float(M::mul(glare, m.loadDouble(0x53bc98)))));
             m.word(esp - 4, scale);
             darken(flags, r, m.word(ebp + 0x66), scale);
             m.word(ebp + 0x66, r.eax);
@@ -6721,7 +6627,7 @@ void glow(win32::WinApplication* app, x86::CPU& cpu)
     {
         // The inner glow: the colour darkened by the depth too.
         r.ecx = 0x100;
-        const x86::reg32 depth = x86::reg32(cpu.fpu.toInteger<x86::sreg32>(x86::Float(m.load(ebp + 0xa))));
+        const x86::reg32 depth = x86::reg32(fp::toInteger<x86::sreg32>(x86::Float(m.load(ebp + 0xa))));
         m.word(esp - 4, depth);
         r.ecx = (r.ecx - depth) << 8;
         darken(flags, r, m.word(ebp + 0x66), r.ecx);
@@ -6814,7 +6720,6 @@ void glow(win32::WinApplication* app, x86::CPU& cpu)
  * each) darkened by the sun's glare [0x6fbc38] times [0x53b418]. */
 void glareVertices(win32::WinApplication* app, x86::CPU& cpu)
 {
-    const ExactFpu exact(cpu);
     const Memory m{app};
     const x86::reg32 entry = cpu.esp;
     const x86::reg32 saved[] = { cpu.ebx, cpu.ecx, cpu.esi, cpu.edi, cpu.ebp };
@@ -6825,7 +6730,7 @@ void glareVertices(win32::WinApplication* app, x86::CPU& cpu)
     IntegerFlags flags;
     r.edi = r.eax;
     r.esi = r.edx;
-    r.eax = x86::reg32(cpu.fpu.toInteger<x86::sreg32>(x86::Float(M::mul(m.load(0x6fbc38), m.loadDouble(0x53b418)))));
+    r.eax = x86::reg32(fp::toInteger<x86::sreg32>(x86::Float(M::mul(m.load(0x6fbc38), m.loadDouble(0x53b418)))));
     m.word(esp - 4, r.eax);
     m.word(ebp - 4, r.eax);
     for (;;)
@@ -6856,7 +6761,6 @@ void glareVertices(win32::WinApplication* app, x86::CPU& cpu)
  * [0x7a3a58], 0x7f6fd0 and 0x7f6fd4 cleared. */
 void clearBuffers(win32::WinApplication* app, x86::CPU& cpu)
 {
-    const ExactFpu exact(cpu);
     const Memory m{app};
     const x86::reg32 entry = cpu.esp;
     const x86::reg32 saved[] = { cpu.ecx, cpu.edx, cpu.ebp };
@@ -6907,7 +6811,6 @@ void clearBuffers(win32::WinApplication* app, x86::CPU& cpu)
  * scaled width. */
 void bouncers(win32::WinApplication* app, x86::CPU& cpu)
 {
-    const ExactFpu exact(cpu);
     const Memory m{app};
     const x86::reg32 entry = cpu.esp;
     const x86::reg32 saved[] = { cpu.ebx, cpu.ecx, cpu.edx, cpu.esi, cpu.edi, cpu.ebp };
@@ -6931,7 +6834,7 @@ void bouncers(win32::WinApplication* app, x86::CPU& cpu)
         cpu.fpu.st(0) = x86::Float(value);
         if (!callTo(0x4dfd56))
             return false;
-        m.word(at, x86::reg32(cpu.fpu.toInteger<x86::sreg32>(cpu.fpu.st(0))));
+        m.word(at, x86::reg32(fp::toInteger<x86::sreg32>(cpu.fpu.st(0))));
         cpu.fpu.count -= 1;
         return true;
     };
@@ -7184,7 +7087,6 @@ void bouncers(win32::WinApplication* app, x86::CPU& cpu)
  * driver, a port).  Returns the record, or 0. */
 void roadLight(win32::WinApplication* app, x86::CPU& cpu)
 {
-    const ExactFpu exact(cpu);
     const Memory m{app};
     const x86::reg32 entry = cpu.esp;
     const x86::reg32 saved[] = { cpu.ebx, cpu.ecx, cpu.edx, cpu.esi, cpu.edi, cpu.ebp };
@@ -7209,7 +7111,7 @@ void roadLight(win32::WinApplication* app, x86::CPU& cpu)
         return value;
     };
     auto integer = [&](double value) {
-        const x86::reg32 bits = x86::reg32(cpu.fpu.toInteger<x86::sreg32>(x86::Float(value)));
+        const x86::reg32 bits = x86::reg32(fp::toInteger<x86::sreg32>(x86::Float(value)));
         m.word(esp - 4, bits);
         return bits;
     };
@@ -7610,7 +7512,6 @@ void roadLight(win32::WinApplication* app, x86::CPU& cpu)
  * [0x536d6c] as floats.  Returns the record's number. */
 void viewRecord(win32::WinApplication* app, x86::CPU& cpu)
 {
-    const ExactFpu exact(cpu);
     const Memory m{app};
     IntegerFlags flags;
     const x86::reg32 kind = cpu.eax, screen = cpu.edx;
@@ -7683,7 +7584,6 @@ void viewRecord(win32::WinApplication* app, x86::CPU& cpu)
  * sub_41d900. */
 void raceViews(win32::WinApplication* app, x86::CPU& cpu)
 {
-    const ExactFpu exact(cpu);
     const Memory m{app};
     const x86::reg32 entry = cpu.esp;
     const x86::reg32 saved[] = { cpu.ebx, cpu.edx, cpu.esi, cpu.ebp };
@@ -7762,7 +7662,6 @@ void raceViews(win32::WinApplication* app, x86::CPU& cpu)
  * none). */
 void smoke(win32::WinApplication* app, x86::CPU& cpu)
 {
-    const ExactFpu exact(cpu);
     const Memory m{app};
     const x86::reg32 entry = cpu.esp;
     const x86::reg32 saved[] = { cpu.ebx, cpu.ecx, cpu.edi, cpu.ebp };
@@ -7830,7 +7729,7 @@ void smoke(win32::WinApplication* app, x86::CPU& cpu)
         app->getMemory<double>(ebp - 0x54) = glare;
         if (glareBelowOne(cpu, flags, r, glare))
         {
-            const x86::reg32 scale = x86::reg32(cpu.fpu.toInteger<x86::sreg32>(x86::Float(M::mul(glare, m.loadDouble(0x5497e4)))));
+            const x86::reg32 scale = x86::reg32(fp::toInteger<x86::sreg32>(x86::Float(M::mul(glare, m.loadDouble(0x5497e4)))));
             m.word(esp - 4, scale);
             darken(flags, r, r.edx, scale);
             m.word(ebp - 0x24, r.eax);
@@ -8058,7 +7957,6 @@ done:
  * streak's width. */
 void streaks(win32::WinApplication* app, x86::CPU& cpu)
 {
-    const ExactFpu exact(cpu);
     const Memory m{app};
     const x86::reg32 entry = cpu.esp;
     const x86::reg32 saved[] = { cpu.ecx, cpu.edi, cpu.ebp };
@@ -8135,7 +8033,7 @@ void streaks(win32::WinApplication* app, x86::CPU& cpu)
         app->getMemory<double>(ebp - 0x50) = glare;
         if (glareBelowOne(cpu, flags, r, glare))
         {
-            const x86::reg32 scale = x86::reg32(cpu.fpu.toInteger<x86::sreg32>(x86::Float(M::mul(glare, m.loadDouble(0x54980c)))));
+            const x86::reg32 scale = x86::reg32(fp::toInteger<x86::sreg32>(x86::Float(M::mul(glare, m.loadDouble(0x54980c)))));
             m.word(esp - 4, scale);
             darken(flags, r, m.word(ebp - 0x14), scale);
             m.word(ebp - 0x14, r.eax);
@@ -8365,7 +8263,6 @@ done:
  * distances as floats times [0x536ce4]. */
 void viewDistances(win32::WinApplication* app, x86::CPU& cpu)
 {
-    const ExactFpu exact(cpu);
     const Memory m{app};
     const x86::reg32 entry = cpu.esp;
     // push ebx, ecx, edx, esi, edi, ebp; mov ebp, esp; sub esp, 0x18
@@ -8468,7 +8365,6 @@ void viewDistances(win32::WinApplication* app, x86::CPU& cpu)
  * port) to [eax] and edx, sub_4e1620 for 0x53ec28. */
 void transformBuffer(win32::WinApplication* app, x86::CPU& cpu)
 {
-    const ExactFpu exact(cpu);
     const Memory m{app};
     const x86::reg32 entry = cpu.esp;
     const x86::reg32 saved[] = { cpu.ebx, cpu.edx, cpu.ebp };
@@ -8501,7 +8397,6 @@ void transformBuffer(win32::WinApplication* app, x86::CPU& cpu)
  * window and [0x7a3a68] by the buffering. */
 void screenMode(win32::WinApplication* app, x86::CPU& cpu)
 {
-    const ExactFpu exact(cpu);
     const Memory m{app};
     const x86::reg32 entry = cpu.esp;
     const x86::reg32 saved[] = { cpu.ebx, cpu.ecx, cpu.edx, cpu.esi, cpu.edi, cpu.ebp };
@@ -8675,7 +8570,6 @@ constexpr x86::reg32 kListingMemory = 0x2000000;
  * or more, those not built in with a message and sub_4f2a7d. */
 void startDriver(win32::WinApplication* app, x86::CPU& cpu)
 {
-    const ExactFpu exact(cpu);
     const Memory m{app};
     const x86::reg32 entry = cpu.esp;
     const x86::reg32 saved[] = { cpu.ebx, cpu.ecx, cpu.esi, cpu.edi, cpu.ebp };
@@ -8922,7 +8816,6 @@ void startDriver(win32::WinApplication* app, x86::CPU& cpu)
  * of hudBorder outside it.  ret 4. */
 void hudFrame(win32::WinApplication* app, x86::CPU& cpu)
 {
-    const ExactFpu exact(cpu);
     const Memory m{app};
     const x86::reg32 entry = cpu.esp;
     const x86::reg32 quads = cpu.eax;
@@ -8975,7 +8868,6 @@ void hudFrame(win32::WinApplication* app, x86::CPU& cpu)
  * tools/apply_widescreen.py). */
 void hudRect(win32::WinApplication* app, x86::CPU& cpu)
 {
-    const ExactFpu exact(cpu);
     const Memory m{app};
     const x86::reg32 entry = cpu.esp;
     const x86::reg32 saved[] = { cpu.esi, cpu.edi, cpu.ebp };
@@ -9028,10 +8920,10 @@ void hudRect(win32::WinApplication* app, x86::CPU& cpu)
         return;
     r.eax <<= 4;
     // fxch st(2), then four fistp: st(2), st(1), st(3), st(0) as they are now
-    const x86::reg32 x0 = x86::reg32(cpu.fpu.toInteger<x86::sreg32>(cpu.fpu.st(2)));
-    const x86::reg32 x1 = x86::reg32(cpu.fpu.toInteger<x86::sreg32>(cpu.fpu.st(1)));
-    const x86::reg32 y0 = x86::reg32(cpu.fpu.toInteger<x86::sreg32>(cpu.fpu.st(3)));
-    const x86::reg32 y1 = x86::reg32(cpu.fpu.toInteger<x86::sreg32>(cpu.fpu.st(0)));
+    const x86::reg32 x0 = x86::reg32(fp::toInteger<x86::sreg32>(cpu.fpu.st(2)));
+    const x86::reg32 x1 = x86::reg32(fp::toInteger<x86::sreg32>(cpu.fpu.st(1)));
+    const x86::reg32 y0 = x86::reg32(fp::toInteger<x86::sreg32>(cpu.fpu.st(3)));
+    const x86::reg32 y1 = x86::reg32(fp::toInteger<x86::sreg32>(cpu.fpu.st(0)));
     const x86::reg32 slot = r.edx + r.eax;
     m.word(slot + 0x749758, x0);
     m.word(slot + 0x749760, x1);
@@ -9058,7 +8950,6 @@ void hudRect(win32::WinApplication* app, x86::CPU& cpu)
  * the corners of its quad, the same inset, and its centre at +0xc0. */
 void hudPicture(win32::WinApplication* app, x86::CPU& cpu)
 {
-    const ExactFpu exact(cpu);
     const Memory m{app};
     const x86::reg32 entry = cpu.esp;
     const x86::reg32 saved[] = { cpu.ebx, cpu.ecx, cpu.edx, cpu.esi, cpu.edi, cpu.ebp };
@@ -9121,7 +9012,6 @@ void hudPicture(win32::WinApplication* app, x86::CPU& cpu)
  * view, sub_422bd0) is 3, its centre times [0x53b52c] to 0x724768. */
 void hudDial(win32::WinApplication* app, x86::CPU& cpu)
 {
-    const ExactFpu exact(cpu);
     const Memory m{app};
     const x86::reg32 entry = cpu.esp;
     const x86::reg32 saved[] = { cpu.ebx, cpu.ecx, cpu.edx, cpu.esi, cpu.edi, cpu.ebp };
@@ -9196,7 +9086,6 @@ void hudDial(win32::WinApplication* app, x86::CPU& cpu)
  * (0x80 bytes a player) the same inset, and 0x700230..3c cleared. */
 void hudPanel(win32::WinApplication* app, x86::CPU& cpu)
 {
-    const ExactFpu exact(cpu);
     const Memory m{app};
     const x86::reg32 entry = cpu.esp;
     const x86::reg32 saved[] = { cpu.ebx, cpu.ecx, cpu.edx, cpu.esi, cpu.edi, cpu.ebp };
@@ -9267,7 +9156,6 @@ void hudPanel(win32::WinApplication* app, x86::CPU& cpu)
  * the cop's), the quad at 0x791ad4 inside it, and hudTablePanel (a port). */
 void hudTable(win32::WinApplication* app, x86::CPU& cpu)
 {
-    const ExactFpu exact(cpu);
     const Memory m{app};
     const x86::reg32 entry = cpu.esp;
     const x86::reg32 saved[] = { cpu.ebx, cpu.ecx, cpu.edx, cpu.esi, cpu.edi, cpu.ebp };
@@ -9293,7 +9181,7 @@ void hudTable(win32::WinApplication* app, x86::CPU& cpu)
         cpu.fpu.st(0) = x86::Float(value);
         if (!callTo(0x4dfd56))
             return false;
-        out = x86::reg32(cpu.fpu.toInteger<x86::sreg32>(cpu.fpu.st(0)));
+        out = x86::reg32(fp::toInteger<x86::sreg32>(cpu.fpu.st(0)));
         cpu.fpu.count -= 1;
         return true;
     };
@@ -9466,7 +9354,6 @@ void hudTable(win32::WinApplication* app, x86::CPU& cpu)
  * ported: these are the screen's) is moved in by one. */
 void hudInset(win32::WinApplication* app, x86::CPU& cpu)
 {
-    const ExactFpu exact(cpu);
     const Memory m{app};
     const x86::reg32 entry = cpu.esp;
     const x86::reg32 saved[] = { cpu.ebx, cpu.ecx, cpu.ebp };
@@ -9538,7 +9425,6 @@ void hudInset(win32::WinApplication* app, x86::CPU& cpu)
  * 1, 1 and 3.  ret 4. */
 void startLights(win32::WinApplication* app, x86::CPU& cpu)
 {
-    const ExactFpu exact(cpu);
     const Memory m{app};
     const x86::reg32 entry = cpu.esp;
     const x86::reg32 saved[] = { cpu.esi, cpu.edi, cpu.ebp };
@@ -9655,7 +9541,6 @@ void startLights(win32::WinApplication* app, x86::CPU& cpu)
  * by THRASH_drawquad under the texture state [0x7922e4] (sub_431900). */
 void needles(win32::WinApplication* app, x86::CPU& cpu)
 {
-    const ExactFpu exact(cpu);
     const Memory m{app};
     const x86::reg32 entry = cpu.esp;
     const x86::reg32 saved[] = { cpu.ebx, cpu.ecx, cpu.edx, cpu.esi, cpu.edi, cpu.ebp };
@@ -9801,7 +9686,6 @@ void needles(win32::WinApplication* app, x86::CPU& cpu)
  * sub_4c12e0 between sub_4bed70's clip rectangles 0x7cdb88 and 0x7cdac0. */
 void barGauges(win32::WinApplication* app, x86::CPU& cpu)
 {
-    const ExactFpu exact(cpu);
     const Memory m{app};
     const x86::reg32 entry = cpu.esp;
     const x86::reg32 saved[] = { cpu.ebx, cpu.ecx, cpu.edx, cpu.esi, cpu.edi, cpu.ebp };
@@ -10059,7 +9943,6 @@ void barGauges(win32::WinApplication* app, x86::CPU& cpu)
  * [0x55d69c], [0x55d6a0] of the cabin, and the bar gauges (sub_488470). */
 void cockpit(win32::WinApplication* app, x86::CPU& cpu)
 {
-    const ExactFpu exact(cpu);
     const Memory m{app};
     const x86::reg32 entry = cpu.esp;
     const x86::reg32 saved[] = { cpu.ebx, cpu.ecx, cpu.edx, cpu.esi, cpu.edi, cpu.ebp };
@@ -10315,7 +10198,6 @@ void cockpit(win32::WinApplication* app, x86::CPU& cpu)
  * [0x7d34dc]) against the other's original, codes cleared, depths as above. */
 void line(win32::WinApplication* app, x86::CPU& cpu)
 {
-    const ExactFpu exact(cpu);
     const Memory m{app};
     const x86::reg32 entry = cpu.esp;
     const x86::reg32 saved[] = { cpu.ebx, cpu.ecx, cpu.esi, cpu.edi, cpu.ebp };
@@ -10488,7 +10370,6 @@ void line(win32::WinApplication* app, x86::CPU& cpu)
  * ret 0xc. */
 void segmentMeter(win32::WinApplication* app, x86::CPU& cpu)
 {
-    const ExactFpu exact(cpu);
     const Memory m{app};
     const x86::reg32 entry = cpu.esp;
     const x86::reg32 saved[] = { cpu.esi, cpu.edi, cpu.ebp };
@@ -10859,7 +10740,6 @@ void segmentMeter(win32::WinApplication* app, x86::CPU& cpu)
  * (0x380 bytes a player) shaded down the band by [0x53b508], [0x53b50c]. */
 void hudBand(win32::WinApplication* app, x86::CPU& cpu)
 {
-    const ExactFpu exact(cpu);
     const Memory m{app};
     const x86::reg32 entry = cpu.esp;
     const x86::reg32 saved[] = { cpu.ebx, cpu.ecx, cpu.edx, cpu.esi, cpu.edi, cpu.ebp };
@@ -11454,7 +11334,7 @@ void hudBand(win32::WinApplication* app, x86::CPU& cpu)
         }
         fxch(2);
         auto fistp = [&](x86::reg32 at) {
-            m.word(at, x86::reg32(cpu.fpu.toInteger<x86::sreg32>(cpu.fpu.st(0))));
+            m.word(at, x86::reg32(fp::toInteger<x86::sreg32>(cpu.fpu.st(0))));
             cpu.fpu.count -= 1;
         };
         fistp(ebp + 0x66);
@@ -11692,7 +11572,6 @@ void hudBand(win32::WinApplication* app, x86::CPU& cpu)
  * handed are the ones the generated code leaves, stale ones too. */
 void hud(win32::WinApplication* app, x86::CPU& cpu)
 {
-    const ExactFpu exact(cpu);
     const Memory m{app};
     const x86::reg32 entry = cpu.esp;
     const x86::reg32 saved[] = { cpu.ebx, cpu.ecx, cpu.edx, cpu.esi, cpu.edi, cpu.ebp };
@@ -11728,7 +11607,7 @@ void hud(win32::WinApplication* app, x86::CPU& cpu)
         cpu.fpu.st(0) = x86::Float(value);
         if (!callTo(0x4dfd56))
             return false;
-        m.word(ebp - 0x40, x86::reg32(cpu.fpu.toInteger<x86::sreg32>(cpu.fpu.st(0))));
+        m.word(ebp - 0x40, x86::reg32(fp::toInteger<x86::sreg32>(cpu.fpu.st(0))));
         cpu.fpu.count -= 1;
         return true;
     };
@@ -12742,7 +12621,7 @@ void hud(win32::WinApplication* app, x86::CPU& cpu)
             cpu.fpu.st(1) = x86::Float(m.load(ebp - 0x24));
             if (!callTo(0x4dfd56))
                 return;
-            m.word(ebp - 0x40, x86::reg32(cpu.fpu.toInteger<x86::sreg32>(cpu.fpu.st(0))));
+            m.word(ebp - 0x40, x86::reg32(fp::toInteger<x86::sreg32>(cpu.fpu.st(0))));
             cpu.fpu.count -= 1;
             if (redline)
                 r.ebx = m.word(ebp - 0x40);
@@ -12753,7 +12632,7 @@ void hud(win32::WinApplication* app, x86::CPU& cpu)
             if (redline)
             {
                 push(r.ebx);
-                m.word(ebp - 0x40, x86::reg32(cpu.fpu.toInteger<x86::sreg32>(cpu.fpu.st(0))));
+                m.word(ebp - 0x40, x86::reg32(fp::toInteger<x86::sreg32>(cpu.fpu.st(0))));
                 r.eax = m.word(ebp - 0x40);
                 push(r.eax);
                 push(0xffa01010);
@@ -12763,7 +12642,7 @@ void hud(win32::WinApplication* app, x86::CPU& cpu)
             else
             {
                 push(r.edx);
-                m.word(ebp - 0x40, x86::reg32(cpu.fpu.toInteger<x86::sreg32>(cpu.fpu.st(0))));
+                m.word(ebp - 0x40, x86::reg32(fp::toInteger<x86::sreg32>(cpu.fpu.st(0))));
                 r.ecx = m.word(ebp - 0x40);
                 push(r.ecx);
                 r.ebx = m.word(ebp - 8);
@@ -13391,7 +13270,6 @@ void hud(win32::WinApplication* app, x86::CPU& cpu)
  * when [0x55d000] is 1. */
 void carTextures(win32::WinApplication* app, x86::CPU& cpu)
 {
-    const ExactFpu exact(cpu);
     const Memory m{app};
     const x86::reg32 entry = cpu.esp;
     const x86::reg32 saved[] = { cpu.ebx, cpu.ecx, cpu.esi, cpu.edi, cpu.ebp };
@@ -13553,7 +13431,6 @@ void carTextures(win32::WinApplication* app, x86::CPU& cpu)
  * whole picture is fitted to 4:3 first (a port: loadingScreenFit). */
 void loadingScreen(win32::WinApplication* app, x86::CPU& cpu)
 {
-    const ExactFpu exact(cpu);
     // port (apply_loading_screen): the loading screen at 4:3
     loadingScreenFit(app, cpu, true);
     const Memory m{app};
@@ -13720,10 +13597,10 @@ void loadingScreen(win32::WinApplication* app, x86::CPU& cpu)
             if (!callTo(0x4dfd56))
                 return;
             // fxch, fistp four times: st(1), st(2), st(3), st(0) as they are now
-            m.word(ebp + 0x5e, x86::reg32(cpu.fpu.toInteger<x86::sreg32>(cpu.fpu.st(1))));
-            m.word(ebp + 0x7e, x86::reg32(cpu.fpu.toInteger<x86::sreg32>(cpu.fpu.st(2))));
-            m.word(ebp + 0x62, x86::reg32(cpu.fpu.toInteger<x86::sreg32>(cpu.fpu.st(3))));
-            m.word(ebp + 0x5a, x86::reg32(cpu.fpu.toInteger<x86::sreg32>(cpu.fpu.st(0))));
+            m.word(ebp + 0x5e, x86::reg32(fp::toInteger<x86::sreg32>(cpu.fpu.st(1))));
+            m.word(ebp + 0x7e, x86::reg32(fp::toInteger<x86::sreg32>(cpu.fpu.st(2))));
+            m.word(ebp + 0x62, x86::reg32(fp::toInteger<x86::sreg32>(cpu.fpu.st(3))));
+            m.word(ebp + 0x5a, x86::reg32(fp::toInteger<x86::sreg32>(cpu.fpu.st(0))));
             cpu.fpu.count -= 4;
             r.ecx = m.word(ebp + 0x5e);
             r.edx = m.word(ebp + 0x5a);
@@ -13772,12 +13649,12 @@ void loadingScreen(win32::WinApplication* app, x86::CPU& cpu)
     if (!callTo(0x4dfd56))
         return;
     m.store(ebp + 0x62, double(cpu.fpu.st(1)));
-    m.word(ebp + 0x7e, x86::reg32(cpu.fpu.toInteger<x86::sreg32>(cpu.fpu.st(0))));
+    m.word(ebp + 0x7e, x86::reg32(fp::toInteger<x86::sreg32>(cpu.fpu.st(0))));
     cpu.fpu.count -= 1;
     if (!callTo(0x4dfd56))
         return;
     r.ebx = m.word(ebp + 0x7e);
-    m.word(ebp + 0x7e, x86::reg32(cpu.fpu.toInteger<x86::sreg32>(cpu.fpu.st(0))));
+    m.word(ebp + 0x7e, x86::reg32(fp::toInteger<x86::sreg32>(cpu.fpu.st(0))));
     cpu.fpu.count -= 1;
     r.edx = m.word(ebp + 0x7e);
     if (!callTo(0x4d1000))
@@ -13818,7 +13695,6 @@ void loadingScreen(win32::WinApplication* app, x86::CPU& cpu)
  * then THRASH_talloc and THRASH_tupdate. */
 void pictureTexture(win32::WinApplication* app, x86::CPU& cpu)
 {
-    const ExactFpu exact(cpu);
     const Memory m{app};
     const x86::reg32 entry = cpu.esp;
     const x86::reg32 saved[] = { cpu.ebx, cpu.ecx, cpu.edx, cpu.esi, cpu.edi, cpu.ebp };
@@ -14071,7 +13947,6 @@ void pictureTexture(win32::WinApplication* app, x86::CPU& cpu)
  * ret 4. */
 void squareTexture(win32::WinApplication* app, x86::CPU& cpu)
 {
-    const ExactFpu exact(cpu);
     const Memory m{app};
     const x86::reg32 entry = cpu.esp;
     const x86::reg32 saved[] = { cpu.esi, cpu.edi, cpu.ebp };
@@ -14199,7 +14074,6 @@ void squareTexture(win32::WinApplication* app, x86::CPU& cpu)
  * (format 2 with flag 4). */
 void paletteTexture(win32::WinApplication* app, x86::CPU& cpu)
 {
-    const ExactFpu exact(cpu);
     const Memory m{app};
     const x86::reg32 entry = cpu.esp;
     const x86::reg32 saved[] = { cpu.ebx, cpu.ecx, cpu.esi, cpu.edi, cpu.ebp };
@@ -14394,7 +14268,6 @@ void paletteTexture(win32::WinApplication* app, x86::CPU& cpu)
  * eax 1 when no texture could be had, else 0.  ret 8. */
 void pieceTexture(win32::WinApplication* app, x86::CPU& cpu)
 {
-    const ExactFpu exact(cpu);
     const Memory m{app};
     const x86::reg32 entry = cpu.esp;
     const x86::reg32 saved[] = { cpu.esi, cpu.edi, cpu.ebp };
@@ -14488,7 +14361,7 @@ void pieceTexture(win32::WinApplication* app, x86::CPU& cpu)
     cpu.fpu.st(0) = x86::Float(rowBytes);
     if (!callTo(0x4dfd56))
         return;
-    m.word(ebp - 0x48, x86::reg32(cpu.fpu.toInteger<x86::sreg32>(cpu.fpu.st(0))));
+    m.word(ebp - 0x48, x86::reg32(fp::toInteger<x86::sreg32>(cpu.fpu.st(0))));
     cpu.fpu.count -= 1;
     if (!callTo(0x4e1620))
         return;
@@ -14579,7 +14452,7 @@ void pieceTexture(win32::WinApplication* app, x86::CPU& cpu)
             r.edx += r.eax;
             r.eax = m.word(ebp - 0xc);
             r.edx <<= 2;
-            m.word(ebp - 8, x86::reg32(cpu.fpu.toInteger<x86::sreg32>(cpu.fpu.st(0))));
+            m.word(ebp - 8, x86::reg32(fp::toInteger<x86::sreg32>(cpu.fpu.st(0))));
             m.word(r.edx + 0x792090, r.eax);
             r.eax = m.word(ebp - 8);
             const double rest = M::sub(double(cpu.fpu.st(1)), double(cpu.fpu.st(2)));
@@ -14604,7 +14477,7 @@ void pieceTexture(win32::WinApplication* app, x86::CPU& cpu)
             if (!callTo(0x4dfd56))
                 return;
             r.eax = r.edx * 8;
-            m.word(ebp - 8, x86::reg32(cpu.fpu.toInteger<x86::sreg32>(cpu.fpu.st(0))));
+            m.word(ebp - 8, x86::reg32(fp::toInteger<x86::sreg32>(cpu.fpu.st(0))));
             cpu.fpu.count -= 1;
             r.edx = (r.edx + r.eax) << 2;
             r.eax = m.word(ebp - 8);
@@ -14656,7 +14529,7 @@ void pieceTexture(win32::WinApplication* app, x86::CPU& cpu)
                 r.edi = 0;
                 m.word(r.edx + 0x7920a0, r.esi);
                 const double room = fild32(m, ebp - 4);
-                m.word(ebp - 8, x86::reg32(cpu.fpu.toInteger<x86::sreg32>(cpu.fpu.st(0))));
+                m.word(ebp - 8, x86::reg32(fp::toInteger<x86::sreg32>(cpu.fpu.st(0))));
                 m.word(r.edx + 0x792090, r.eax);
                 m.store(ebp - 0x40, room);
                 m.word(r.edx + 0x79209c, r.edi);
@@ -14678,7 +14551,7 @@ void pieceTexture(win32::WinApplication* app, x86::CPU& cpu)
                 if (!callTo(0x4dfd56))
                     return;
                 r.eax = r.edx * 8;
-                m.word(ebp - 8, x86::reg32(cpu.fpu.toInteger<x86::sreg32>(cpu.fpu.st(0))));
+                m.word(ebp - 8, x86::reg32(fp::toInteger<x86::sreg32>(cpu.fpu.st(0))));
                 cpu.fpu.count -= 1;
                 r.edx = (r.edx + r.eax) << 2;
                 r.eax = m.word(ebp - 8);
@@ -14718,7 +14591,7 @@ void pieceTexture(win32::WinApplication* app, x86::CPU& cpu)
                     return;
                 m.word(r.edx + 0x7920a4, r.ebx);
                 r.eax = 0;
-                m.word(ebp - 8, x86::reg32(cpu.fpu.toInteger<x86::sreg32>(cpu.fpu.st(0))));
+                m.word(ebp - 8, x86::reg32(fp::toInteger<x86::sreg32>(cpu.fpu.st(0))));
                 cpu.fpu.count -= 1;
                 m.word(r.edx + 0x792098, r.eax);
                 r.eax = m.word(ebp - 8);
@@ -14738,7 +14611,7 @@ void pieceTexture(win32::WinApplication* app, x86::CPU& cpu)
                 if (!callTo(0x4dfd56))
                     return;
                 m.word(r.edx + 0x7920a8, r.ecx);
-                m.word(ebp - 8, x86::reg32(cpu.fpu.toInteger<x86::sreg32>(cpu.fpu.st(0))));
+                m.word(ebp - 8, x86::reg32(fp::toInteger<x86::sreg32>(cpu.fpu.st(0))));
                 cpu.fpu.count -= 1;
                 m.word(r.edx + 0x7920b0, r.esi);
                 r.eax = m.word(ebp - 8);
@@ -14764,7 +14637,7 @@ void pieceTexture(win32::WinApplication* app, x86::CPU& cpu)
         cpu.fpu.st(0) = top;
         if (!callTo(0x4dfd56))
             return;
-        m.word(0x8b441c, x86::reg32(cpu.fpu.toInteger<x86::sreg32>(cpu.fpu.st(0))));
+        m.word(0x8b441c, x86::reg32(fp::toInteger<x86::sreg32>(cpu.fpu.st(0))));
         cpu.fpu.count -= 1;
     }
     // the texture
@@ -14844,7 +14717,6 @@ void pieceTexture(win32::WinApplication* app, x86::CPU& cpu)
  * number of records used, 0 when a texture could not be had.  ret 8. */
 void cabinTextures(win32::WinApplication* app, x86::CPU& cpu)
 {
-    const ExactFpu exact(cpu);
     const Memory m{app};
     const x86::reg32 entry = cpu.esp;
     const x86::reg32 saved[] = { cpu.esi, cpu.edi, cpu.ebp };

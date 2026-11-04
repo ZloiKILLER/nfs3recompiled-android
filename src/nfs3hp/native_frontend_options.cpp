@@ -1029,8 +1029,8 @@ x86::reg32 onAxisMoved(Guest& guest, x86::reg32 item)
     const float first = float(sliderValue(guest, item, 0));
     const float second = float(sliderValue(guest, item, 1));
     x86::FPU& fpu = guest.fpu();
-    const x86::Float firstFromBottom = fpu.sub(x86::Float(1.0), x86::Float(first));
-    const float gap = float(fpu.abs(fpu.sub(firstFromBottom, x86::Float(second))));
+    const x86::Float firstFromBottom = fp::sub(x86::Float(1.0), x86::Float(first));
+    const float gap = float(fp::abs(fp::sub(firstFromBottom, x86::Float(second))));
     fe::X87 x87(guest);
     if (x87.below(firstFromBottom, x86::Float(second)) || x87.below(x86::Float(gap), x86::Float(kMinimumGap)))
     {
@@ -1039,13 +1039,13 @@ x86::reg32 onAxisMoved(Guest& guest, x86::reg32 item)
         if (!same(guest, x86::Float(first), x86::Float(guest.floatAt(last))))
         {
             const float moved =
-                float(fpu.add(fpu.sub(x86::Float(1.0), x86::Float(second)), x86::Float(kMinusMinimumGap)));
+                float(fp::add(fp::sub(x86::Float(1.0), x86::Float(second)), x86::Float(kMinusMinimumGap)));
             guest.call(kSliderSetValue, fe::args({ item }, { floatBits(moved), 0 }));
         }
         else if (!same(guest, x86::Float(second), x86::Float(guest.floatAt(last + 4))))
         {
             const float moved =
-                float(fpu.add(fpu.sub(x86::Float(1.0), x86::Float(first)), x86::Float(kMinusMinimumGap)));
+                float(fp::add(fp::sub(x86::Float(1.0), x86::Float(first)), x86::Float(kMinusMinimumGap)));
             guest.call(kSliderSetValue, fe::args({ item }, { floatBits(moved), 1 }));
         }
         guest.call(kSliderSetOnMove, fe::args({ item, onMove }));
@@ -1626,34 +1626,9 @@ constexpr std::uint8_t kEcxEdx = fe::kRestoreEcx | fe::kRestoreEdx;
 constexpr std::uint8_t kAllButEbx = fe::kRestoreEcx | fe::kRestoreEdx | fe::kRestoreEsi | fe::kRestoreEdi;
 constexpr std::uint8_t kAllButEdx = fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEsi | fe::kRestoreEdi;
 
-/* A screen's handler: the screen in eax. */
-template <typename Body>
-bool runForMenu(win32::WinApplication* app, x86::CPU& cpu, fe::Site& site, Body body)
-{
-    const x86::reg32 menu = cpu.eax;
-    return fe::run(app, cpu, site, [&](Guest& guest) { return body(guest, menu); });
-}
-
-/* An item's key handler: the item in eax, the screen in edx, the key in bx. */
-template <typename Body>
-bool runForKey(win32::WinApplication* app, x86::CPU& cpu, fe::Site& site, Body body)
-{
-    const x86::reg32 item = cpu.eax;
-    const x86::reg32 menu = cpu.edx;
-    const std::uint16_t key = std::uint16_t(cpu.ebx);
-    return fe::run(app, cpu, site, [&](Guest& guest) { return body(guest, item, menu, key); });
-}
-
-/* A slider's function: the item in eax, and for a drawing one edx. */
-template <typename Body>
-bool runForItem(win32::WinApplication* app, x86::CPU& cpu, fe::Site& site, Body body)
-{
-    const x86::reg32 item = cpu.eax;
-    const x86::reg32 edx = cpu.edx;
-    return fe::run(app, cpu, site, [&](Guest& guest) { return body(guest, item, edx); });
-}
-
-/* The same, native whole: no generated code to step aside to. */
+/* A screen's handler: the screen in eax; an item's key handler: the item in eax,
+ * the screen in edx, the key in bx; a slider's function: the item in eax, and for
+ * a drawing one edx. */
 template <typename Body>
 void wholeForMenu(win32::WinApplication* app, x86::CPU& cpu, fe::Site& site, Body body)
 {
@@ -1683,29 +1658,29 @@ void wholeForItem(win32::WinApplication* app, x86::CPU& cpu, fe::Site& site, Bod
 /* Each stand-in: the generated function, what its ret pops, what its prologue
  * pushes, the strings it hands to the game and the registers it pushes. */
 
-bool optionsOnEnter(win32::WinApplication* app, x86::CPU& cpu)
+void frontend::optionsOnEnter(win32::WinApplication* app, x86::CPU& cpu)
 {
     static fe::Site site{ "sub_442aa0", 0, 12, kOptionsStrings, std::size(kOptionsStrings), kEcxEdx };
-    return runForMenu(app, cpu, site, onOptionsEnter);
+    wholeForMenu(app, cpu, site, onOptionsEnter);
 }
 
-bool feedOnEnter(win32::WinApplication* app, x86::CPU& cpu)
+void frontend::feedOnEnter(win32::WinApplication* app, x86::CPU& cpu)
 {
     static fe::Site site{ "sub_4374b0", 0, 12, kFeedEnterStrings, std::size(kFeedEnterStrings), kEcxEdx };
-    return runForMenu(app, cpu, site, onFeedEnter);
+    wholeForMenu(app, cpu, site, onFeedEnter);
 }
 
-bool feedOnExit(win32::WinApplication* app, x86::CPU& cpu)
+void frontend::feedOnExit(win32::WinApplication* app, x86::CPU& cpu)
 {
     static fe::Site site{ "sub_437590", 0, 8, kFeedExitStrings, std::size(kFeedExitStrings), fe::kRestoreEdx };
-    return runForMenu(app, cpu, site, onFeedExit);
+    wholeForMenu(app, cpu, site, onFeedExit);
 }
 
-bool feedSeparate(win32::WinApplication* app, x86::CPU& cpu)
+void frontend::feedSeparate(win32::WinApplication* app, x86::CPU& cpu)
 {
     static fe::Site site{ "sub_437250", 0, 16, nullptr, 0,
                           fe::kRestoreEbx | fe::kRestoreEdx | fe::kRestoreEdi };
-    return fe::run(app, cpu, site, [](Guest& guest) { return separateFeeds(guest); });
+    fe::runWhole(app, cpu, site, [](Guest& guest) { return separateFeeds(guest); });
 }
 
 namespace
@@ -1713,159 +1688,159 @@ namespace
 constexpr std::uint8_t kButtonKeyRestores = fe::kRestoreEcx | fe::kRestoreEsi | fe::kRestoreEdi;
 }
 
-bool feedTimeButtonKey(win32::WinApplication* app, x86::CPU& cpu)
+void frontend::feedTimeButtonKey(win32::WinApplication* app, x86::CPU& cpu)
 {
     static fe::Site site{ "sub_437300", 0, 16, nullptr, 0, kButtonKeyRestores };
-    return runForKey(app, cpu, site, [](Guest& g, x86::reg32 i, x86::reg32 m, std::uint16_t k) {
+    wholeForKey(app, cpu, site, [](Guest& g, x86::reg32 i, x86::reg32 m, std::uint16_t k) {
         return onFeedButtonKey(g, i, m, k, kFeedTime, kFeedPosition, kFeedSpeed);
     });
 }
 
-bool feedPositionButtonKey(win32::WinApplication* app, x86::CPU& cpu)
+void frontend::feedPositionButtonKey(win32::WinApplication* app, x86::CPU& cpu)
 {
     static fe::Site site{ "sub_437390", 0, 16, nullptr, 0, kButtonKeyRestores };
-    return runForKey(app, cpu, site, [](Guest& g, x86::reg32 i, x86::reg32 m, std::uint16_t k) {
+    wholeForKey(app, cpu, site, [](Guest& g, x86::reg32 i, x86::reg32 m, std::uint16_t k) {
         return onFeedButtonKey(g, i, m, k, kFeedPosition, kFeedTime, kFeedSpeed);
     });
 }
 
-bool feedSpeedButtonKey(win32::WinApplication* app, x86::CPU& cpu)
+void frontend::feedSpeedButtonKey(win32::WinApplication* app, x86::CPU& cpu)
 {
     static fe::Site site{ "sub_437420", 0, 16, nullptr, 0, kButtonKeyRestores };
-    return runForKey(app, cpu, site, [](Guest& g, x86::reg32 i, x86::reg32 m, std::uint16_t k) {
+    wholeForKey(app, cpu, site, [](Guest& g, x86::reg32 i, x86::reg32 m, std::uint16_t k) {
         return onFeedButtonKey(g, i, m, k, kFeedSpeed, kFeedTime, kFeedPosition);
     });
 }
 
-bool feedTimeListKey(win32::WinApplication* app, x86::CPU& cpu)
+void frontend::feedTimeListKey(win32::WinApplication* app, x86::CPU& cpu)
 {
     static fe::Site site{ "sub_437350", 0, 8, nullptr, 0, fe::kRestoreEcx };
-    return runForKey(app, cpu, site, [](Guest& g, x86::reg32 i, x86::reg32 m, std::uint16_t k) {
+    wholeForKey(app, cpu, site, [](Guest& g, x86::reg32 i, x86::reg32 m, std::uint16_t k) {
         return onFeedListKey(g, i, m, k, kFeedTime, kFeedPosition, kFeedSpeed);
     });
 }
 
-bool feedPositionListKey(win32::WinApplication* app, x86::CPU& cpu)
+void frontend::feedPositionListKey(win32::WinApplication* app, x86::CPU& cpu)
 {
     static fe::Site site{ "sub_4373e0", 0, 8, nullptr, 0, fe::kRestoreEcx };
-    return runForKey(app, cpu, site, [](Guest& g, x86::reg32 i, x86::reg32 m, std::uint16_t k) {
+    wholeForKey(app, cpu, site, [](Guest& g, x86::reg32 i, x86::reg32 m, std::uint16_t k) {
         return onFeedListKey(g, i, m, k, kFeedPosition, kFeedTime, kFeedSpeed);
     });
 }
 
-bool feedSpeedListKey(win32::WinApplication* app, x86::CPU& cpu)
+void frontend::feedSpeedListKey(win32::WinApplication* app, x86::CPU& cpu)
 {
     static fe::Site site{ "sub_437470", 0, 8, nullptr, 0, fe::kRestoreEcx };
-    return runForKey(app, cpu, site, [](Guest& g, x86::reg32 i, x86::reg32 m, std::uint16_t k) {
+    wholeForKey(app, cpu, site, [](Guest& g, x86::reg32 i, x86::reg32 m, std::uint16_t k) {
         return onFeedListKey(g, i, m, k, kFeedSpeed, kFeedTime, kFeedPosition);
     });
 }
 
-bool audioOnEnter(win32::WinApplication* app, x86::CPU& cpu)
+void frontend::audioOnEnter(win32::WinApplication* app, x86::CPU& cpu)
 {
     static fe::Site site{ "sub_437e00", 0, 36, kAudioEnterStrings, std::size(kAudioEnterStrings), kAllButEbx };
-    return runForMenu(app, cpu, site, onAudioEnter);
+    wholeForMenu(app, cpu, site, onAudioEnter);
 }
 
-bool audioOnExit(win32::WinApplication* app, x86::CPU& cpu)
+void frontend::audioOnExit(win32::WinApplication* app, x86::CPU& cpu)
 {
     static fe::Site site{ "sub_438070", 0, 24, kAudioExitStrings, std::size(kAudioExitStrings) };
-    return runForMenu(app, cpu, site, onAudioExit);
+    wholeForMenu(app, cpu, site, onAudioExit);
 }
 
-bool audioOnFrame(win32::WinApplication* app, x86::CPU& cpu)
+void frontend::audioOnFrame(win32::WinApplication* app, x86::CPU& cpu)
 {
     static fe::Site site{ "sub_438260", 0, 24, nullptr, 0 };
-    return fe::run(app, cpu, site, [](Guest& guest) { return onAudioFrame(guest); });
+    fe::runWhole(app, cpu, site, [](Guest& guest) { return onAudioFrame(guest); });
 }
 
-bool audioVolumeDraw(win32::WinApplication* app, x86::CPU& cpu)
+void frontend::audioVolumeDraw(win32::WinApplication* app, x86::CPU& cpu)
 {
     static fe::Site site{ "sub_437a90", 0, 20, nullptr, 0, kAllButEdx };
-    return runForItem(app, cpu, site, onVolumeSliderDraw);
+    wholeForItem(app, cpu, site, onVolumeSliderDraw);
 }
 
-bool audioMenuMusicMoved(win32::WinApplication* app, x86::CPU& cpu)
+void frontend::audioMenuMusicMoved(win32::WinApplication* app, x86::CPU& cpu)
 {
     static fe::Site site{ "sub_437990", 0, 8, nullptr, 0, fe::kRestoreEdx };
-    return runForItem(app, cpu, site, [](Guest& g, x86::reg32 item, x86::reg32) {
+    wholeForItem(app, cpu, site, [](Guest& g, x86::reg32 item, x86::reg32) {
         return onVolumeMoved(g, item, kMenuMusicVolume, 0);
     });
 }
 
-bool audioRaceMusicMoved(win32::WinApplication* app, x86::CPU& cpu)
+void frontend::audioRaceMusicMoved(win32::WinApplication* app, x86::CPU& cpu)
 {
     static fe::Site site{ "sub_4379b0", 0, 8, nullptr, 0, fe::kRestoreEdx };
-    return runForItem(app, cpu, site, [](Guest& g, x86::reg32 item, x86::reg32) {
+    wholeForItem(app, cpu, site, [](Guest& g, x86::reg32 item, x86::reg32) {
         return onVolumeMoved(g, item, kRaceMusicVolume, 0);
     });
 }
 
-bool audioEffectsMoved(win32::WinApplication* app, x86::CPU& cpu)
+void frontend::audioEffectsMoved(win32::WinApplication* app, x86::CPU& cpu)
 {
     static fe::Site site{ "sub_4379d0", 0, 12, nullptr, 0, fe::kRestoreEdx };
-    return runForItem(app, cpu, site, [](Guest& g, x86::reg32 item, x86::reg32) {
+    wholeForItem(app, cpu, site, [](Guest& g, x86::reg32 item, x86::reg32) {
         return onVolumeMoved(g, item, kEffectsVolume, kRaceEffectsVolume);
     });
 }
 
-bool audioEngineMoved(win32::WinApplication* app, x86::CPU& cpu)
+void frontend::audioEngineMoved(win32::WinApplication* app, x86::CPU& cpu)
 {
     static fe::Site site{ "sub_437a20", 0, 12, nullptr, 0, fe::kRestoreEdx };
-    return runForItem(app, cpu, site, [](Guest& g, x86::reg32 item, x86::reg32) {
+    wholeForItem(app, cpu, site, [](Guest& g, x86::reg32 item, x86::reg32) {
         return onVolumeMoved(g, item, kEngineVolume, kRaceEngineVolume);
     });
 }
 
-bool audioSpeechMoved(win32::WinApplication* app, x86::CPU& cpu)
+void frontend::audioSpeechMoved(win32::WinApplication* app, x86::CPU& cpu)
 {
     static fe::Site site{ "sub_437a70", 0, 8, nullptr, 0, fe::kRestoreEdx };
-    return runForItem(app, cpu, site, [](Guest& g, x86::reg32 item, x86::reg32) {
+    wholeForItem(app, cpu, site, [](Guest& g, x86::reg32 item, x86::reg32) {
         return onVolumeMoved(g, item, kSpeechVolume, 0);
     });
 }
 
-bool graphicsOnEnter(win32::WinApplication* app, x86::CPU& cpu)
+void frontend::graphicsOnEnter(win32::WinApplication* app, x86::CPU& cpu)
 {
     static fe::Site site{ "sub_448440", 0, 24, kGraphicsEnterStrings, std::size(kGraphicsEnterStrings) };
-    return runForMenu(app, cpu, site, onGraphicsEnter);
+    wholeForMenu(app, cpu, site, onGraphicsEnter);
 }
 
-bool graphicsOnExit(win32::WinApplication* app, x86::CPU& cpu)
+void frontend::graphicsOnExit(win32::WinApplication* app, x86::CPU& cpu)
 {
     static fe::Site site{ "sub_4484e0", 0, 20, kGraphicsExitStrings, std::size(kGraphicsExitStrings), kAllButEbx };
-    return runForMenu(app, cpu, site, onGraphicsExit);
+    wholeForMenu(app, cpu, site, onGraphicsExit);
 }
 
-bool graphicsOnFrame(win32::WinApplication* app, x86::CPU& cpu)
+void frontend::graphicsOnFrame(win32::WinApplication* app, x86::CPU& cpu)
 {
     // sub_448430: nothing.
     static fe::Site site{ "sub_448430", 0, 4, nullptr, 0, kRestoreNone };
-    return fe::run(app, cpu, site, [](Guest&) { return x86::reg32(0); });
+    fe::runWhole(app, cpu, site, [](Guest&) { return x86::reg32(0); });
 }
 
-bool advancedOnEnter(win32::WinApplication* app, x86::CPU& cpu)
+void frontend::advancedOnEnter(win32::WinApplication* app, x86::CPU& cpu)
 {
     static fe::Site site{ "sub_448610", 0, 0x12c, kAdvancedEnterStrings, std::size(kAdvancedEnterStrings) };
-    return runForMenu(app, cpu, site, onAdvancedEnter);
+    wholeForMenu(app, cpu, site, onAdvancedEnter);
 }
 
-bool advancedOnExit(win32::WinApplication* app, x86::CPU& cpu)
+void frontend::advancedOnExit(win32::WinApplication* app, x86::CPU& cpu)
 {
     static fe::Site site{ "sub_448770", 0, 20, kAdvancedExitStrings, std::size(kAdvancedExitStrings), kAllButEbx };
-    return runForMenu(app, cpu, site, onAdvancedExit);
+    wholeForMenu(app, cpu, site, onAdvancedExit);
 }
 
-bool advancedOnFrame(win32::WinApplication* app, x86::CPU& cpu)
+void frontend::advancedOnFrame(win32::WinApplication* app, x86::CPU& cpu)
 {
     static fe::Site site{ "sub_4485a0", 0, 12, kAdvancedFrameStrings, std::size(kAdvancedFrameStrings), kEcxEdx };
-    return runForMenu(app, cpu, site, onAdvancedFrame);
+    wholeForMenu(app, cpu, site, onAdvancedFrame);
 }
 
-bool advancedIntensityMoved(win32::WinApplication* app, x86::CPU& cpu)
+void frontend::advancedIntensityMoved(win32::WinApplication* app, x86::CPU& cpu)
 {
     static fe::Site site{ "sub_448570", 0, 12, nullptr, 0, kEcxEdx };
-    return runForItem(app, cpu, site,
+    wholeForItem(app, cpu, site,
                       [](Guest& g, x86::reg32 item, x86::reg32) { return onEffectsIntensityMoved(g, item); });
 }
 

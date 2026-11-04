@@ -182,19 +182,19 @@ void logisticCurve(App* app, CPU& cpu)
         cpu.esp += 4 + 4;
     };
     fpu.push(f32(app, cpu.ebp + 0x20));
-    fpu.st(0) = fpu.add(fpu.st(0), f64(app, 0x53ddf4));
-    fpu.st(0) = fpu.mul(fpu.st(0), f64(app, 0x53ddfc));
+    fpu.st(0) = fp::add(fpu.st(0), f64(app, 0x53ddf4));
+    fpu.st(0) = fp::mul(fpu.st(0), f64(app, 0x53ddfc));
     cpu.esp -= 8;
     app->getMemory<double>(cpu.esp) = double(fpu.st(0));
     fpu.pop();
     if (!byAddress(app, cpu, kExp))
         return;
     fpu.push(1.0);
-    fpu.st(1) = fpu.add(fpu.st(1), fpu.st(0));
+    fpu.st(1) = fp::add(fpu.st(1), fpu.st(0));
     fpu.pop();
-    fpu.st(0) = fpu.div(f64(app, 0x53de04), fpu.st(0));
+    fpu.st(0) = fp::div(f64(app, 0x53de04), fpu.st(0));
     fpu.push(1.0);
-    fpu.st(1) = fpu.sub(fpu.st(0), fpu.st(1));
+    fpu.st(1) = fp::sub(fpu.st(0), fpu.st(1));
     fpu.pop();
     app->getMemory<float>(cpu.ebp - 4) = float(fpu.st(0));
     fpu.pop();
@@ -236,7 +236,7 @@ void steeringGrip(App* app, CPU& cpu)
         cpu.eax = at(app, cpu.ebp - 0x10);
         fpu.push(x86::Float(i32(at(app, cpu.eax + 0x514))));
         fpu.push(x86::Float(i32(at(app, cpu.ebp - 4))));
-        fpu.st(1) = fpu.div(fpu.st(1), fpu.st(0));
+        fpu.st(1) = fp::div(fpu.st(1), fpu.st(0));
         fpu.pop();
         app->getMemory<float>(cpu.ebp - 8) = float(fpu.st(0));
         fpu.pop();
@@ -249,7 +249,7 @@ void steeringGrip(App* app, CPU& cpu)
         app->getMemory<float>(cpu.ebp - 8) = float(fpu.st(0));
         fpu.pop();
         fpu.push(f32(app, cpu.ebp - 8));
-        fpu.st(0) = fpu.mul(fpu.st(0), f32(app, 0x53de0c));
+        fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53de0c));
         app->getMemory<float>(cpu.ebp - 8) = float(fpu.st(0));
         fpu.pop();
     }
@@ -292,14 +292,14 @@ void setupSlipLimit(App* app, CPU& cpu)
     }
     cpu.eax = at(app, cpu.ebp - 0xc);
     fpu.push(f32(app, cpu.eax));
-    fpu.st(0) = fpu.mul(fpu.st(0), f32(app, 0x53ddb4));
-    fpu.st(0) = fpu.sub(f32(app, 0x53ddb8), fpu.st(0));
+    fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53ddb4));
+    fpu.st(0) = fp::sub(f32(app, 0x53ddb8), fpu.st(0));
     app->getMemory<float>(cpu.ebp - 4) = float(fpu.st(0));
     fpu.pop();
     fpu.push(f32(app, cpu.ebp - 4));
     if (!byAddress(app, cpu, kChop))
         return;
-    put(app, cpu.ebp - 8, reg32(fpu.toInteger<i32>(fpu.st(0))));
+    put(app, cpu.ebp - 8, reg32(fp::toInteger<i32>(fpu.st(0))));
     fpu.pop();
     cpu.eax = at(app, cpu.ebp - 8);
     return leave();
@@ -344,18 +344,18 @@ void setupGripLoss(App* app, CPU& cpu)
         {
             cpu.eax = at(app, cpu.ebp - 0xc);
             fpu.push(f32(app, cpu.eax));
-            fpu.st(0) = fpu.add(fpu.st(0), f32(app, 0x53dd4c));
-            fpu.st(0) = fpu.mul(fpu.st(0), f32(app, 0x53dd50));
-            fpu.st(0) = fpu.sub(f32(app, 0x53dd54), fpu.st(0));
+            fpu.st(0) = fp::add(fpu.st(0), f32(app, 0x53dd4c));
+            fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53dd50));
+            fpu.st(0) = fp::sub(f32(app, 0x53dd54), fpu.st(0));
             fcomp(cpu, f32(app, 0x53dd58));
             cpu.ax = fpu.status.word;
             if (!below(cpu) && !equal(cpu))
             {
                 cpu.eax = at(app, cpu.ebp - 0xc);
                 fpu.push(f32(app, cpu.eax));
-                fpu.st(0) = fpu.add(fpu.st(0), f32(app, 0x53dd4c));
-                fpu.st(0) = fpu.mul(fpu.st(0), f32(app, 0x53dd50));
-                fpu.st(0) = fpu.sub(f32(app, 0x53dd54), fpu.st(0));
+                fpu.st(0) = fp::add(fpu.st(0), f32(app, 0x53dd4c));
+                fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53dd50));
+                fpu.st(0) = fp::sub(f32(app, 0x53dd54), fpu.st(0));
                 app->getMemory<float>(cpu.ebp - 0x14) = float(fpu.st(0));
                 fpu.pop();
             }
@@ -364,11 +364,11 @@ void setupGripLoss(App* app, CPU& cpu)
                 put(app, cpu.ebp - 0x14, 0x40800000);
             }
             fpu.push(1.0);
-            fpu.st(0) = fpu.div(fpu.st(0), f32(app, cpu.ebp - 0x14));
+            fpu.st(0) = fp::div(fpu.st(0), f32(app, cpu.ebp - 0x14));
             app->getMemory<float>(cpu.ebp - 4) = float(fpu.st(0));
             fpu.pop();
             fpu.push(f32(app, cpu.ebp - 4));
-            fpu.st(0) = fpu.mul(fpu.st(0), f32(app, 0x53dd5c));
+            fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53dd5c));
             app->getMemory<float>(cpu.ebp - 4) = float(fpu.st(0));
             fpu.pop();
         }
@@ -379,18 +379,18 @@ void setupGripLoss(App* app, CPU& cpu)
             {
                 cpu.eax = at(app, cpu.ebp - 0xc);
                 fpu.push(f32(app, cpu.eax));
-                fpu.st(0) = fpu.add(fpu.st(0), f32(app, 0x53dd60));
-                fpu.st(0) = fpu.mul(fpu.st(0), f32(app, 0x53dd64));
-                fpu.st(0) = fpu.sub(f32(app, 0x53dd68), fpu.st(0));
+                fpu.st(0) = fp::add(fpu.st(0), f32(app, 0x53dd60));
+                fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53dd64));
+                fpu.st(0) = fp::sub(f32(app, 0x53dd68), fpu.st(0));
                 fcomp(cpu, f32(app, 0x53dd6c));
                 cpu.ax = fpu.status.word;
                 if (!below(cpu) && !equal(cpu))
                 {
                     cpu.eax = at(app, cpu.ebp - 0xc);
                     fpu.push(f32(app, cpu.eax));
-                    fpu.st(0) = fpu.add(fpu.st(0), f32(app, 0x53dd60));
-                    fpu.st(0) = fpu.mul(fpu.st(0), f32(app, 0x53dd64));
-                    fpu.st(0) = fpu.sub(f32(app, 0x53dd68), fpu.st(0));
+                    fpu.st(0) = fp::add(fpu.st(0), f32(app, 0x53dd60));
+                    fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53dd64));
+                    fpu.st(0) = fp::sub(f32(app, 0x53dd68), fpu.st(0));
                     app->getMemory<float>(cpu.ebp - 0x18) = float(fpu.st(0));
                     fpu.pop();
                 }
@@ -399,11 +399,11 @@ void setupGripLoss(App* app, CPU& cpu)
                     put(app, cpu.ebp - 0x18, 0x40c00000);
                 }
                 fpu.push(1.0);
-                fpu.st(0) = fpu.div(fpu.st(0), f32(app, cpu.ebp - 0x18));
+                fpu.st(0) = fp::div(fpu.st(0), f32(app, cpu.ebp - 0x18));
                 app->getMemory<float>(cpu.ebp - 4) = float(fpu.st(0));
                 fpu.pop();
                 fpu.push(f32(app, cpu.ebp - 4));
-                fpu.st(0) = fpu.mul(fpu.st(0), f32(app, 0x53dd70));
+                fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53dd70));
                 app->getMemory<float>(cpu.ebp - 4) = float(fpu.st(0));
                 fpu.pop();
             }
@@ -411,18 +411,18 @@ void setupGripLoss(App* app, CPU& cpu)
             {
                 cpu.eax = at(app, cpu.ebp - 0xc);
                 fpu.push(f32(app, cpu.eax));
-                fpu.st(0) = fpu.add(fpu.st(0), f32(app, 0x53dd74));
-                fpu.st(0) = fpu.mul(fpu.st(0), f32(app, 0x53dd78));
-                fpu.st(0) = fpu.sub(f32(app, 0x53dd7c), fpu.st(0));
+                fpu.st(0) = fp::add(fpu.st(0), f32(app, 0x53dd74));
+                fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53dd78));
+                fpu.st(0) = fp::sub(f32(app, 0x53dd7c), fpu.st(0));
                 fcomp(cpu, f32(app, 0x53dd80));
                 cpu.ax = fpu.status.word;
                 if (!below(cpu) && !equal(cpu))
                 {
                     cpu.eax = at(app, cpu.ebp - 0xc);
                     fpu.push(f32(app, cpu.eax));
-                    fpu.st(0) = fpu.add(fpu.st(0), f32(app, 0x53dd74));
-                    fpu.st(0) = fpu.mul(fpu.st(0), f32(app, 0x53dd78));
-                    fpu.st(0) = fpu.sub(f32(app, 0x53dd7c), fpu.st(0));
+                    fpu.st(0) = fp::add(fpu.st(0), f32(app, 0x53dd74));
+                    fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53dd78));
+                    fpu.st(0) = fp::sub(f32(app, 0x53dd7c), fpu.st(0));
                     app->getMemory<float>(cpu.ebp - 0x1c) = float(fpu.st(0));
                     fpu.pop();
                 }
@@ -431,7 +431,7 @@ void setupGripLoss(App* app, CPU& cpu)
                     put(app, cpu.ebp - 0x1c, 0x41800000);
                 }
                 fpu.push(1.0);
-                fpu.st(0) = fpu.div(fpu.st(0), f32(app, cpu.ebp - 0x1c));
+                fpu.st(0) = fp::div(fpu.st(0), f32(app, cpu.ebp - 0x1c));
                 app->getMemory<float>(cpu.ebp - 4) = float(fpu.st(0));
                 fpu.pop();
             }
@@ -444,18 +444,18 @@ void setupGripLoss(App* app, CPU& cpu)
         {
             cpu.eax = at(app, cpu.ebp - 0xc);
             fpu.push(f32(app, cpu.eax));
-            fpu.st(0) = fpu.add(fpu.st(0), f32(app, 0x53dd84));
-            fpu.st(0) = fpu.mul(fpu.st(0), f32(app, 0x53dd88));
-            fpu.st(0) = fpu.sub(f32(app, 0x53dd8c), fpu.st(0));
+            fpu.st(0) = fp::add(fpu.st(0), f32(app, 0x53dd84));
+            fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53dd88));
+            fpu.st(0) = fp::sub(f32(app, 0x53dd8c), fpu.st(0));
             fcomp(cpu, f32(app, 0x53dd90));
             cpu.ax = fpu.status.word;
             if (!below(cpu) && !equal(cpu))
             {
                 cpu.eax = at(app, cpu.ebp - 0xc);
                 fpu.push(f32(app, cpu.eax));
-                fpu.st(0) = fpu.add(fpu.st(0), f32(app, 0x53dd84));
-                fpu.st(0) = fpu.mul(fpu.st(0), f32(app, 0x53dd88));
-                fpu.st(0) = fpu.sub(f32(app, 0x53dd8c), fpu.st(0));
+                fpu.st(0) = fp::add(fpu.st(0), f32(app, 0x53dd84));
+                fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53dd88));
+                fpu.st(0) = fp::sub(f32(app, 0x53dd8c), fpu.st(0));
                 app->getMemory<float>(cpu.ebp - 0x20) = float(fpu.st(0));
                 fpu.pop();
             }
@@ -464,7 +464,7 @@ void setupGripLoss(App* app, CPU& cpu)
                 put(app, cpu.ebp - 0x20, 0x40800000);
             }
             fpu.push(1.0);
-            fpu.st(0) = fpu.div(fpu.st(0), f32(app, cpu.ebp - 0x20));
+            fpu.st(0) = fp::div(fpu.st(0), f32(app, cpu.ebp - 0x20));
             app->getMemory<float>(cpu.ebp - 4) = float(fpu.st(0));
             fpu.pop();
         }
@@ -475,18 +475,18 @@ void setupGripLoss(App* app, CPU& cpu)
             {
                 cpu.eax = at(app, cpu.ebp - 0xc);
                 fpu.push(f32(app, cpu.eax));
-                fpu.st(0) = fpu.add(fpu.st(0), f32(app, 0x53dd94));
-                fpu.st(0) = fpu.mul(fpu.st(0), f32(app, 0x53dd98));
-                fpu.st(0) = fpu.sub(f32(app, 0x53dd9c), fpu.st(0));
+                fpu.st(0) = fp::add(fpu.st(0), f32(app, 0x53dd94));
+                fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53dd98));
+                fpu.st(0) = fp::sub(f32(app, 0x53dd9c), fpu.st(0));
                 fcomp(cpu, f32(app, 0x53dda0));
                 cpu.ax = fpu.status.word;
                 if (!below(cpu) && !equal(cpu))
                 {
                     cpu.eax = at(app, cpu.ebp - 0xc);
                     fpu.push(f32(app, cpu.eax));
-                    fpu.st(0) = fpu.add(fpu.st(0), f32(app, 0x53dd94));
-                    fpu.st(0) = fpu.mul(fpu.st(0), f32(app, 0x53dd98));
-                    fpu.st(0) = fpu.sub(f32(app, 0x53dd9c), fpu.st(0));
+                    fpu.st(0) = fp::add(fpu.st(0), f32(app, 0x53dd94));
+                    fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53dd98));
+                    fpu.st(0) = fp::sub(f32(app, 0x53dd9c), fpu.st(0));
                     app->getMemory<float>(cpu.ebp - 0x24) = float(fpu.st(0));
                     fpu.pop();
                 }
@@ -495,7 +495,7 @@ void setupGripLoss(App* app, CPU& cpu)
                     put(app, cpu.ebp - 0x24, 0x40c00000);
                 }
                 fpu.push(1.0);
-                fpu.st(0) = fpu.div(fpu.st(0), f32(app, cpu.ebp - 0x24));
+                fpu.st(0) = fp::div(fpu.st(0), f32(app, cpu.ebp - 0x24));
                 app->getMemory<float>(cpu.ebp - 4) = float(fpu.st(0));
                 fpu.pop();
             }
@@ -503,18 +503,18 @@ void setupGripLoss(App* app, CPU& cpu)
             {
                 cpu.eax = at(app, cpu.ebp - 0xc);
                 fpu.push(f32(app, cpu.eax));
-                fpu.st(0) = fpu.add(fpu.st(0), f32(app, 0x53dda4));
-                fpu.st(0) = fpu.mul(fpu.st(0), f32(app, 0x53dda8));
-                fpu.st(0) = fpu.sub(f32(app, 0x53ddac), fpu.st(0));
+                fpu.st(0) = fp::add(fpu.st(0), f32(app, 0x53dda4));
+                fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53dda8));
+                fpu.st(0) = fp::sub(f32(app, 0x53ddac), fpu.st(0));
                 fcomp(cpu, f32(app, 0x53ddb0));
                 cpu.ax = fpu.status.word;
                 if (!below(cpu) && !equal(cpu))
                 {
                     cpu.eax = at(app, cpu.ebp - 0xc);
                     fpu.push(f32(app, cpu.eax));
-                    fpu.st(0) = fpu.add(fpu.st(0), f32(app, 0x53dda4));
-                    fpu.st(0) = fpu.mul(fpu.st(0), f32(app, 0x53dda8));
-                    fpu.st(0) = fpu.sub(f32(app, 0x53ddac), fpu.st(0));
+                    fpu.st(0) = fp::add(fpu.st(0), f32(app, 0x53dda4));
+                    fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53dda8));
+                    fpu.st(0) = fp::sub(f32(app, 0x53ddac), fpu.st(0));
                     app->getMemory<float>(cpu.ebp - 0x28) = float(fpu.st(0));
                     fpu.pop();
                 }
@@ -523,7 +523,7 @@ void setupGripLoss(App* app, CPU& cpu)
                     put(app, cpu.ebp - 0x28, 0x41800000);
                 }
                 fpu.push(1.0);
-                fpu.st(0) = fpu.div(fpu.st(0), f32(app, cpu.ebp - 0x28));
+                fpu.st(0) = fp::div(fpu.st(0), f32(app, cpu.ebp - 0x28));
                 app->getMemory<float>(cpu.ebp - 4) = float(fpu.st(0));
                 fpu.pop();
             }
@@ -603,7 +603,7 @@ void tyreGrip(App* app, CPU& cpu)
     cpu.eax = at(app, cpu.ebp - 0x24);
     fpu.push(f32(app, cpu.eax + 4));
     cpu.eax = at(app, cpu.ebp - 0x24);
-    fpu.st(0) = fpu.mul(fpu.st(0), f32(app, cpu.eax + 8));
+    fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.eax + 8));
     app->getMemory<float>(cpu.ebp - 0x10) = float(fpu.st(0));
     fpu.pop();
     cpu.eax = at(app, cpu.ebp - 0x24);
@@ -652,16 +652,16 @@ void tyreGrip(App* app, CPU& cpu)
     if (!below(cpu) && !equal(cpu))
     {
         fpu.push(f32(app, cpu.ebp - 0x14));
-        fpu.st(0) = fpu.mul(fpu.st(0), f32(app, 0x53ddbc));
-        fpu.st(0) = fpu.add(fpu.st(0), f32(app, cpu.ebp - 0x18));
+        fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53ddbc));
+        fpu.st(0) = fp::add(fpu.st(0), f32(app, cpu.ebp - 0x18));
         app->getMemory<float>(cpu.ebp - 0x2c) = float(fpu.st(0));
         fpu.pop();
     }
     else
     {
         fpu.push(f32(app, cpu.ebp - 0x18));
-        fpu.st(0) = fpu.mul(fpu.st(0), f32(app, 0x53ddbc));
-        fpu.st(0) = fpu.add(fpu.st(0), f32(app, cpu.ebp - 0x14));
+        fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53ddbc));
+        fpu.st(0) = fp::add(fpu.st(0), f32(app, cpu.ebp - 0x14));
         app->getMemory<float>(cpu.ebp - 0x2c) = float(fpu.st(0));
         fpu.pop();
     }
@@ -677,8 +677,8 @@ void tyreGrip(App* app, CPU& cpu)
             cpu.eax = at(app, cpu.ebp - 0x28);
             cpu.eax = at(app, cpu.eax + 0x220);
             fpu.push(f32(app, cpu.eax + 0x58));
-            fpu.st(0) = fpu.mul(fpu.st(0), f32(app, 0x53ddc0));
-            fpu.st(0) = fpu.sub(f32(app, 0x53ddc4), fpu.st(0));
+            fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53ddc0));
+            fpu.st(0) = fp::sub(f32(app, 0x53ddc4), fpu.st(0));
             app->getMemory<float>(cpu.ebp - 4) = float(fpu.st(0));
             fpu.pop();
         }
@@ -699,12 +699,12 @@ void tyreGrip(App* app, CPU& cpu)
         put(app, cpu.ebp - 4, cpu.eax);
         cpu.eax = at(app, cpu.ebp - 0x24);
         fpu.push(f32(app, cpu.eax + 0x2c));
-        fpu.st(0) = fpu.mul(fpu.st(0), f32(app, cpu.ebp - 4));
+        fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.ebp - 4));
         fpu.push(f32(app, cpu.ebp - 0x1c));
-        fpu.st(0) = fpu.sub(fpu.st(0), f32(app, cpu.ebp - 0x10));
-        fpu.st(0) = fpu.mul(fpu.st(0), f32(app, cpu.ebp - 4));
+        fpu.st(0) = fp::sub(fpu.st(0), f32(app, cpu.ebp - 0x10));
+        fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.ebp - 4));
         cpu.eax = at(app, cpu.ebp - 0x24);
-        fpu.st(1) = fpu.add(fpu.st(1), fpu.st(0));
+        fpu.st(1) = fp::add(fpu.st(1), fpu.st(0));
         fpu.pop();
         app->getMemory<float>(cpu.eax + 0x2c) = float(fpu.st(0));
         fpu.pop();
@@ -750,8 +750,8 @@ void tyreGrip(App* app, CPU& cpu)
     app->getMemory<float>(cpu.ebp - 8) = float(fpu.st(0));
     fpu.pop();
     fpu.push(f32(app, cpu.ebp - 0x10));
-    fpu.st(0) = fpu.mul(fpu.st(0), f32(app, cpu.ebp - 8));
-    fpu.st(0) = fpu.sub(f32(app, cpu.ebp - 0x10), fpu.st(0));
+    fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.ebp - 8));
+    fpu.st(0) = fp::sub(f32(app, cpu.ebp - 0x10), fpu.st(0));
     app->getMemory<float>(cpu.ebp - 0x14) = float(fpu.st(0));
     fpu.pop();
     fpu.push(0.0);
@@ -790,14 +790,14 @@ void tyreGrip(App* app, CPU& cpu)
     if (!below(cpu) && !equal(cpu))
     {
         fpu.push(f32(app, cpu.ebp - 0x14));
-        fpu.st(0) = fpu.div(fpu.st(0), f32(app, cpu.ebp - 0x1c));
+        fpu.st(0) = fp::div(fpu.st(0), f32(app, cpu.ebp - 0x1c));
         fpu.push(0.0);
         fcompp(cpu);
         cpu.ax = fpu.status.word;
         if (!below(cpu) && !equal(cpu))
         {
             fpu.push(f32(app, cpu.ebp - 0x14));
-            fpu.st(0) = fpu.div(fpu.st(0), f32(app, cpu.ebp - 0x1c));
+            fpu.st(0) = fp::div(fpu.st(0), f32(app, cpu.ebp - 0x1c));
             fpu.st(0) = -fpu.st(0);
             app->getMemory<float>(cpu.ebp - 0x4c) = float(fpu.st(0));
             fpu.pop();
@@ -805,7 +805,7 @@ void tyreGrip(App* app, CPU& cpu)
         else
         {
             fpu.push(f32(app, cpu.ebp - 0x14));
-            fpu.st(0) = fpu.div(fpu.st(0), f32(app, cpu.ebp - 0x1c));
+            fpu.st(0) = fp::div(fpu.st(0), f32(app, cpu.ebp - 0x1c));
             app->getMemory<float>(cpu.ebp - 0x4c) = float(fpu.st(0));
             fpu.pop();
         }
@@ -818,21 +818,21 @@ void tyreGrip(App* app, CPU& cpu)
     }
     cpu.eax = at(app, cpu.ebp - 0x24);
     fpu.push(f32(app, cpu.eax + 0x10));
-    fpu.st(0) = fpu.mul(fpu.st(0), f32(app, cpu.ebp - 0x18));
+    fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.ebp - 0x18));
     app->getMemory<float>(cpu.ebp - 0x48) = float(fpu.st(0));
     fpu.pop();
     cpu.eax = at(app, cpu.ebp - 0x28);
     if (!direct(app, cpu, steeringGrip))
         return;
     cpu.eax = at(app, cpu.ebp - 0x24);
-    fpu.st(0) = fpu.mul(fpu.st(0), f32(app, cpu.ebp - 0x48));
+    fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.ebp - 0x48));
     app->getMemory<float>(cpu.eax + 0x1c) = float(fpu.st(0));
     fpu.pop();
     cpu.eax = at(app, cpu.ebp - 0x24);
     put(app, cpu.eax + 0x20, 0);
     cpu.eax = at(app, cpu.ebp - 0x24);
     fpu.push(f32(app, cpu.eax));
-    fpu.st(0) = fpu.mul(fpu.st(0), f32(app, cpu.ebp - 0x18));
+    fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.ebp - 0x18));
     cpu.eax = at(app, cpu.ebp - 0x24);
     app->getMemory<float>(cpu.eax + 0x24) = float(fpu.st(0));
     fpu.pop();
@@ -841,12 +841,12 @@ void tyreGrip(App* app, CPU& cpu)
     {
         cpu.eax = at(app, cpu.ebp - 0x24);
         fpu.push(f32(app, cpu.eax + 0x1c));
-        fpu.st(0) = fpu.mul(fpu.st(0), f32(app, 0x53ddc8));
+        fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53ddc8));
         app->getMemory<float>(cpu.eax + 0x1c) = float(fpu.st(0));
         fpu.pop();
         cpu.eax = at(app, cpu.ebp - 0x24);
         fpu.push(f32(app, cpu.eax + 0x24));
-        fpu.st(0) = fpu.mul(fpu.st(0), f32(app, 0x53ddc8));
+        fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53ddc8));
         app->getMemory<float>(cpu.eax + 0x24) = float(fpu.st(0));
         fpu.pop();
     }
@@ -967,7 +967,7 @@ void tyreSlide(App* app, CPU& cpu)
             put(app, cpu.ebp - 0x18, cpu.eax);
         }
         fpu.push(f32(app, cpu.ebp - 0x18));
-        fpu.st(0) = fpu.mul(fpu.st(0), f32(app, 0x53ddcc));
+        fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53ddcc));
         app->getMemory<float>(cpu.ebp - 0x14) = float(fpu.st(0));
         fpu.pop();
         cpu.eax = at(app, cpu.ebp - 0x4c);
@@ -989,7 +989,7 @@ void tyreSlide(App* app, CPU& cpu)
             put(app, cpu.ebp - 0x10, cpu.eax);
         }
         fpu.push(f32(app, cpu.ebp - 0x10));
-        fpu.st(0) = fpu.add(fpu.st(0), f32(app, cpu.ebp - 0x14));
+        fpu.st(0) = fp::add(fpu.st(0), f32(app, cpu.ebp - 0x14));
         app->getMemory<float>(cpu.ebp - 0x1c) = float(fpu.st(0));
         fpu.pop();
     }
@@ -1014,7 +1014,7 @@ void tyreSlide(App* app, CPU& cpu)
             put(app, cpu.ebp - 0xc, cpu.eax);
         }
         fpu.push(f32(app, cpu.ebp - 0xc));
-        fpu.st(0) = fpu.mul(fpu.st(0), f32(app, 0x53ddcc));
+        fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53ddcc));
         app->getMemory<float>(cpu.ebp - 8) = float(fpu.st(0));
         fpu.pop();
         cpu.eax = at(app, cpu.ebp - 0x4c);
@@ -1036,7 +1036,7 @@ void tyreSlide(App* app, CPU& cpu)
             put(app, cpu.ebp - 4, cpu.eax);
         }
         fpu.push(f32(app, cpu.ebp - 4));
-        fpu.st(0) = fpu.add(fpu.st(0), f32(app, cpu.ebp - 8));
+        fpu.st(0) = fp::add(fpu.st(0), f32(app, cpu.ebp - 8));
         app->getMemory<float>(cpu.ebp - 0x1c) = float(fpu.st(0));
         fpu.pop();
     }
@@ -1068,8 +1068,8 @@ void tyreSlide(App* app, CPU& cpu)
     cpu.eax = at(app, cpu.ebp - 0x50);
     if (!direct(app, cpu, setupGripLoss))
         return;
-    fpu.st(0) = fpu.mul(fpu.st(0), f32(app, cpu.ebp - 0x40));
-    fpu.st(0) = fpu.sub(f32(app, cpu.ebp - 0x40), fpu.st(0));
+    fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.ebp - 0x40));
+    fpu.st(0) = fp::sub(f32(app, cpu.ebp - 0x40), fpu.st(0));
     app->getMemory<float>(cpu.ebp - 0x40) = float(fpu.st(0));
     fpu.pop();
     cpu.eax = at(app, cpu.ebp - 0x50);
@@ -1106,7 +1106,7 @@ void tyreSlide(App* app, CPU& cpu)
             if ((at(app, cpu.ebp - 0x44) & 0x7fffffff) != 0)
             {
                 fpu.push(f32(app, cpu.ebp - 0x40));
-                fpu.st(0) = fpu.div(fpu.st(0), f32(app, cpu.ebp - 0x44));
+                fpu.st(0) = fp::div(fpu.st(0), f32(app, cpu.ebp - 0x44));
                 app->getMemory<float>(cpu.ebp - 0x34) = float(fpu.st(0));
                 fpu.pop();
             }
@@ -1128,7 +1128,7 @@ void tyreSlide(App* app, CPU& cpu)
             {
                 cpu.eax = at(app, cpu.ebp - 0x4c);
                 fpu.push(f32(app, cpu.ebp - 0x40));
-                fpu.st(0) = fpu.mul(fpu.st(0), f32(app, 0x53ddd0));
+                fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53ddd0));
                 app->getMemory<float>(cpu.eax + 0x2c) = float(fpu.st(0));
                 fpu.pop();
             }
@@ -1137,13 +1137,13 @@ void tyreSlide(App* app, CPU& cpu)
             {
                 cpu.eax = at(app, cpu.ebp - 0x4c);
                 fpu.push(f32(app, cpu.eax + 0x1c));
-                fpu.st(0) = fpu.mul(fpu.st(0), f32(app, cpu.ebp - 0x34));
+                fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.ebp - 0x34));
                 app->getMemory<float>(cpu.eax + 0x1c) = float(fpu.st(0));
                 fpu.pop();
             }
             cpu.eax = at(app, cpu.ebp - 0x4c);
             fpu.push(f32(app, cpu.eax + 0x24));
-            fpu.st(0) = fpu.mul(fpu.st(0), f32(app, cpu.ebp - 0x34));
+            fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.ebp - 0x34));
             app->getMemory<float>(cpu.eax + 0x24) = float(fpu.st(0));
             fpu.pop();
         }
@@ -1172,7 +1172,7 @@ L_4ac67d:
             {
                 cpu.eax = at(app, cpu.ebp - 0x4c);
                 fpu.push(f32(app, cpu.ebp - 0x44));
-                fpu.st(0) = fpu.sub(fpu.st(0), f32(app, cpu.ebp - 0x40));
+                fpu.st(0) = fp::sub(fpu.st(0), f32(app, cpu.ebp - 0x40));
                 app->getMemory<float>(cpu.eax + 0x2c) = float(fpu.st(0));
                 fpu.pop();
             }
@@ -1180,29 +1180,29 @@ L_4ac67d:
             if (at(app, cpu.eax + 0x160) == 1)
             {
                 fpu.push(f32(app, cpu.ebp - 0x44));
-                fpu.st(0) = fpu.sub(fpu.st(0), f32(app, cpu.ebp - 0x40));
-                fpu.st(0) = fpu.mul(fpu.st(0), f32(app, cpu.ebp - 0x38));
+                fpu.st(0) = fp::sub(fpu.st(0), f32(app, cpu.ebp - 0x40));
+                fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.ebp - 0x38));
                 fpu.push(f32(app, cpu.ebp - 0x40));
-                fpu.st(0) = fpu.mul(fpu.st(0), f32(app, cpu.ebp - 0x38));
+                fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.ebp - 0x38));
                 fcompp(cpu);
                 cpu.ax = fpu.status.word;
                 if (!below(cpu) && !equal(cpu))
                 {
                     fpu.push(f32(app, cpu.ebp - 0x44));
-                    fpu.st(0) = fpu.sub(fpu.st(0), f32(app, cpu.ebp - 0x40));
-                    fpu.st(0) = fpu.mul(fpu.st(0), f32(app, cpu.ebp - 0x38));
+                    fpu.st(0) = fp::sub(fpu.st(0), f32(app, cpu.ebp - 0x40));
+                    fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.ebp - 0x38));
                     app->getMemory<float>(cpu.ebp - 0x64) = float(fpu.st(0));
                     fpu.pop();
                 }
                 else
                 {
                     fpu.push(f32(app, cpu.ebp - 0x40));
-                    fpu.st(0) = fpu.mul(fpu.st(0), f32(app, cpu.ebp - 0x38));
+                    fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.ebp - 0x38));
                     app->getMemory<float>(cpu.ebp - 0x64) = float(fpu.st(0));
                     fpu.pop();
                 }
                 fpu.push(f32(app, cpu.ebp - 0x64));
-                fpu.st(0) = fpu.mul(fpu.st(0), f32(app, 0x53ddd4));
+                fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53ddd4));
                 app->getMemory<float>(cpu.ebp - 0x3c) = float(fpu.st(0));
                 fpu.pop();
             }
@@ -1212,53 +1212,53 @@ L_4ac67d:
                 if (at(app, cpu.eax + 0x160) == 2)
                 {
                     fpu.push(f32(app, cpu.ebp - 0x44));
-                    fpu.st(0) = fpu.sub(fpu.st(0), f32(app, cpu.ebp - 0x40));
-                    fpu.st(0) = fpu.mul(fpu.st(0), f32(app, cpu.ebp - 0x38));
+                    fpu.st(0) = fp::sub(fpu.st(0), f32(app, cpu.ebp - 0x40));
+                    fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.ebp - 0x38));
                     fpu.push(f32(app, cpu.ebp - 0x40));
-                    fpu.st(0) = fpu.mul(fpu.st(0), f32(app, cpu.ebp - 0x38));
+                    fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.ebp - 0x38));
                     fcompp(cpu);
                     cpu.ax = fpu.status.word;
                     if (!below(cpu) && !equal(cpu))
                     {
                         fpu.push(f32(app, cpu.ebp - 0x44));
-                        fpu.st(0) = fpu.sub(fpu.st(0), f32(app, cpu.ebp - 0x40));
-                        fpu.st(0) = fpu.mul(fpu.st(0), f32(app, cpu.ebp - 0x38));
+                        fpu.st(0) = fp::sub(fpu.st(0), f32(app, cpu.ebp - 0x40));
+                        fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.ebp - 0x38));
                         app->getMemory<float>(cpu.ebp - 0x68) = float(fpu.st(0));
                         fpu.pop();
                     }
                     else
                     {
                         fpu.push(f32(app, cpu.ebp - 0x40));
-                        fpu.st(0) = fpu.mul(fpu.st(0), f32(app, cpu.ebp - 0x38));
+                        fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.ebp - 0x38));
                         app->getMemory<float>(cpu.ebp - 0x68) = float(fpu.st(0));
                         fpu.pop();
                     }
                     fpu.push(f32(app, cpu.ebp - 0x68));
-                    fpu.st(0) = fpu.mul(fpu.st(0), f32(app, 0x53ddd8));
+                    fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53ddd8));
                     app->getMemory<float>(cpu.ebp - 0x3c) = float(fpu.st(0));
                     fpu.pop();
                 }
                 else
                 {
                     fpu.push(f32(app, cpu.ebp - 0x44));
-                    fpu.st(0) = fpu.sub(fpu.st(0), f32(app, cpu.ebp - 0x40));
-                    fpu.st(0) = fpu.mul(fpu.st(0), f32(app, cpu.ebp - 0x38));
+                    fpu.st(0) = fp::sub(fpu.st(0), f32(app, cpu.ebp - 0x40));
+                    fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.ebp - 0x38));
                     fpu.push(f32(app, cpu.ebp - 0x40));
-                    fpu.st(0) = fpu.mul(fpu.st(0), f32(app, cpu.ebp - 0x38));
+                    fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.ebp - 0x38));
                     fcompp(cpu);
                     cpu.ax = fpu.status.word;
                     if (!below(cpu) && !equal(cpu))
                     {
                         fpu.push(f32(app, cpu.ebp - 0x44));
-                        fpu.st(0) = fpu.sub(fpu.st(0), f32(app, cpu.ebp - 0x40));
-                        fpu.st(0) = fpu.mul(fpu.st(0), f32(app, cpu.ebp - 0x38));
+                        fpu.st(0) = fp::sub(fpu.st(0), f32(app, cpu.ebp - 0x40));
+                        fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.ebp - 0x38));
                         app->getMemory<float>(cpu.ebp - 0x6c) = float(fpu.st(0));
                         fpu.pop();
                     }
                     else
                     {
                         fpu.push(f32(app, cpu.ebp - 0x40));
-                        fpu.st(0) = fpu.mul(fpu.st(0), f32(app, cpu.ebp - 0x38));
+                        fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.ebp - 0x38));
                         app->getMemory<float>(cpu.ebp - 0x6c) = float(fpu.st(0));
                         fpu.pop();
                     }
@@ -1267,7 +1267,7 @@ L_4ac67d:
                 }
             }
             fpu.push(f32(app, cpu.ebp - 0x40));
-            fpu.st(0) = fpu.sub(fpu.st(0), f32(app, cpu.ebp - 0x3c));
+            fpu.st(0) = fp::sub(fpu.st(0), f32(app, cpu.ebp - 0x3c));
             app->getMemory<float>(cpu.ebp - 0x2c) = float(fpu.st(0));
             fpu.pop();
             fpu.push(0.0);
@@ -1306,7 +1306,7 @@ L_4ac67d:
                     put(app, cpu.ebp - 0x74, cpu.eax);
                 }
                 fpu.push(f32(app, cpu.ebp - 0x2c));
-                fpu.st(0) = fpu.div(fpu.st(0), f32(app, cpu.ebp - 0x74));
+                fpu.st(0) = fp::div(fpu.st(0), f32(app, cpu.ebp - 0x74));
                 app->getMemory<float>(cpu.ebp - 0x34) = float(fpu.st(0));
                 fpu.pop();
             }
@@ -1319,8 +1319,8 @@ L_4ac67d:
                 cpu.eax = at(app, cpu.ebp - 0x50);
                 cpu.eax = at(app, cpu.eax + 0x220);
                 fpu.push(f32(app, cpu.eax + 0x58));
-                fpu.st(0) = fpu.mul(fpu.st(0), f32(app, 0x53dddc));
-                fpu.st(0) = fpu.sub(f32(app, 0x53dde0), fpu.st(0));
+                fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53dddc));
+                fpu.st(0) = fp::sub(f32(app, 0x53dde0), fpu.st(0));
                 app->getMemory<float>(cpu.ebp - 0x28) = float(fpu.st(0));
                 fpu.pop();
             }
@@ -1341,12 +1341,12 @@ L_4ac67d:
             put(app, cpu.ebp - 0x28, cpu.eax);
             cpu.eax = at(app, cpu.ebp - 0x4c);
             fpu.push(f32(app, cpu.eax + 0x2c));
-            fpu.st(0) = fpu.mul(fpu.st(0), f32(app, cpu.ebp - 0x28));
+            fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.ebp - 0x28));
             fpu.push(f32(app, cpu.ebp - 0x44));
-            fpu.st(0) = fpu.sub(fpu.st(0), f32(app, cpu.ebp - 0x40));
-            fpu.st(0) = fpu.mul(fpu.st(0), f32(app, cpu.ebp - 0x28));
+            fpu.st(0) = fp::sub(fpu.st(0), f32(app, cpu.ebp - 0x40));
+            fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.ebp - 0x28));
             cpu.eax = at(app, cpu.ebp - 0x4c);
-            fpu.st(1) = fpu.add(fpu.st(1), fpu.st(0));
+            fpu.st(1) = fp::add(fpu.st(1), fpu.st(0));
             fpu.pop();
             app->getMemory<float>(cpu.eax + 0x2c) = float(fpu.st(0));
             fpu.pop();
@@ -1356,7 +1356,7 @@ L_4ac67d:
                 cpu.eax = at(app, cpu.ebp - 0x50);
                 cpu.eax = at(app, cpu.eax + 0x528);
                 fpu.push(x86::Float(i32(at(app, cpu.eax + 0x1c4))));
-                fpu.st(0) = fpu.mul(fpu.st(0), f32(app, 0x53dde4));
+                fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53dde4));
                 cpu.eax = at(app, cpu.ebp - 0x50);
                 fpu.push(x86::Float(i32(at(app, cpu.eax + 0x590))));
                 fcompp(cpu);
@@ -1365,23 +1365,23 @@ L_4ac67d:
                 {
                     cpu.eax = at(app, cpu.ebp - 0x4c);
                     fpu.push(f32(app, cpu.eax + 0x1c));
-                    fpu.st(0) = fpu.mul(fpu.st(0), f32(app, cpu.ebp - 0x34));
+                    fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.ebp - 0x34));
                     app->getMemory<float>(cpu.eax + 0x1c) = float(fpu.st(0));
                     fpu.pop();
                     if (at(app, kAssist) != 0)
                     {
                         cpu.eax = at(app, cpu.ebp - 0x4c);
                         fpu.push(f32(app, cpu.eax + 0x24));
-                        fpu.st(0) = fpu.mul(fpu.st(0), f32(app, cpu.ebp - 0x34));
+                        fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.ebp - 0x34));
                         app->getMemory<float>(cpu.eax + 0x24) = float(fpu.st(0));
                         fpu.pop();
                     }
                     else
                     {
                         fpu.push(f32(app, cpu.ebp - 0x34));
-                        fpu.st(0) = fpu.mul(fpu.st(0), f32(app, 0x53dde8));
+                        fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53dde8));
                         cpu.eax = at(app, cpu.ebp - 0x4c);
-                        fpu.st(0) = fpu.mul(fpu.st(0), f32(app, cpu.eax + 0x24));
+                        fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.eax + 0x24));
                         app->getMemory<float>(cpu.eax + 0x24) = float(fpu.st(0));
                         fpu.pop();
                     }
@@ -1400,7 +1400,7 @@ L_4ac67d:
         {
             cpu.eax = at(app, cpu.ebp - 0x4c);
             fpu.push(f32(app, cpu.eax + 0x2c));
-            fpu.st(0) = fpu.mul(fpu.st(0), f32(app, 0x53ddec));
+            fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53ddec));
             app->getMemory<float>(cpu.eax + 0x2c) = float(fpu.st(0));
             fpu.pop();
         }
@@ -1484,8 +1484,8 @@ void axleForces(App* app, CPU& cpu)
     cpu.eax = at(app, cpu.ebp - 0x1c);
     if (!direct(app, cpu, setupGripLoss))
         return;
-    fpu.st(0) = fpu.mul(fpu.st(0), f32(app, cpu.ebp - 0x10));
-    fpu.st(0) = fpu.sub(f32(app, cpu.ebp - 0x10), fpu.st(0));
+    fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.ebp - 0x10));
+    fpu.st(0) = fp::sub(f32(app, cpu.ebp - 0x10), fpu.st(0));
     app->getMemory<float>(cpu.ebp - 0x10) = float(fpu.st(0));
     fpu.pop();
     cpu.eax = at(app, cpu.ebp - 0x18);
@@ -1607,7 +1607,7 @@ L_4acb65:
     cpu.eax = at(app, cpu.eax + 0x528);
     fpu.push(f32(app, cpu.eax + 0x248));
     cpu.eax = at(app, cpu.ebp - 0x18);
-    fpu.st(0) = fpu.mul(fpu.st(0), f32(app, cpu.eax));
+    fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.eax));
     app->getMemory<float>(cpu.eax) = float(fpu.st(0));
     fpu.pop();
     cpu.eax = at(app, cpu.ebp - 0x1c);
@@ -1828,28 +1828,28 @@ L_4acd3c:
     if (byte(app, cpu.eax + 0x50b) == 0)
     {
         fpu.push(f32(app, cpu.ebp - 0xc));
-        fpu.st(0) = fpu.mul(fpu.st(0), f32(app, 0x53de10));
+        fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53de10));
         cpu.esp -= 4;
         app->getMemory<float>(cpu.esp) = float(fpu.st(0));
         fpu.pop();
         if (!byAddress(app, cpu, kSine))
             return;
-        fpu.st(0) = fpu.mul(fpu.st(0), f32(app, cpu.ebp - 0x10));
-        fpu.st(0) = fpu.mul(fpu.st(0), f32(app, 0x53de14));
+        fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.ebp - 0x10));
+        fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53de14));
         fpu.push(0.0);
         fcompp(cpu);
         cpu.ax = fpu.status.word;
         if (!below(cpu) && !equal(cpu))
         {
             fpu.push(f32(app, cpu.ebp - 0xc));
-            fpu.st(0) = fpu.mul(fpu.st(0), f32(app, 0x53de10));
+            fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53de10));
             cpu.esp -= 4;
             app->getMemory<float>(cpu.esp) = float(fpu.st(0));
             fpu.pop();
             if (!byAddress(app, cpu, kSine))
                 return;
-            fpu.st(0) = fpu.mul(fpu.st(0), f32(app, cpu.ebp - 0x10));
-            fpu.st(0) = fpu.mul(fpu.st(0), f32(app, 0x53de14));
+            fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.ebp - 0x10));
+            fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53de14));
             fpu.st(0) = -fpu.st(0);
             app->getMemory<float>(cpu.ebp - 0x48) = float(fpu.st(0));
             fpu.pop();
@@ -1857,14 +1857,14 @@ L_4acd3c:
         else
         {
             fpu.push(f32(app, cpu.ebp - 0xc));
-            fpu.st(0) = fpu.mul(fpu.st(0), f32(app, 0x53de10));
+            fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53de10));
             cpu.esp -= 4;
             app->getMemory<float>(cpu.esp) = float(fpu.st(0));
             fpu.pop();
             if (!byAddress(app, cpu, kSine))
                 return;
-            fpu.st(0) = fpu.mul(fpu.st(0), f32(app, cpu.ebp - 0x10));
-            fpu.st(0) = fpu.mul(fpu.st(0), f32(app, 0x53de14));
+            fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.ebp - 0x10));
+            fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53de14));
             app->getMemory<float>(cpu.ebp - 0x48) = float(fpu.st(0));
             fpu.pop();
         }
@@ -1874,28 +1874,28 @@ L_4acd3c:
     else
     {
         fpu.push(f32(app, cpu.ebp - 0xc));
-        fpu.st(0) = fpu.mul(fpu.st(0), f32(app, 0x53de18));
+        fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53de18));
         cpu.esp -= 4;
         app->getMemory<float>(cpu.esp) = float(fpu.st(0));
         fpu.pop();
         if (!byAddress(app, cpu, kSine))
             return;
-        fpu.st(0) = fpu.mul(fpu.st(0), f32(app, cpu.ebp - 0x10));
-        fpu.st(0) = fpu.mul(fpu.st(0), f32(app, 0x53de1c));
+        fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.ebp - 0x10));
+        fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53de1c));
         fpu.push(0.0);
         fcompp(cpu);
         cpu.ax = fpu.status.word;
         if (!below(cpu) && !equal(cpu))
         {
             fpu.push(f32(app, cpu.ebp - 0xc));
-            fpu.st(0) = fpu.mul(fpu.st(0), f32(app, 0x53de18));
+            fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53de18));
             cpu.esp -= 4;
             app->getMemory<float>(cpu.esp) = float(fpu.st(0));
             fpu.pop();
             if (!byAddress(app, cpu, kSine))
                 return;
-            fpu.st(0) = fpu.mul(fpu.st(0), f32(app, cpu.ebp - 0x10));
-            fpu.st(0) = fpu.mul(fpu.st(0), f32(app, 0x53de1c));
+            fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.ebp - 0x10));
+            fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53de1c));
             fpu.st(0) = -fpu.st(0);
             app->getMemory<float>(cpu.ebp - 0x4c) = float(fpu.st(0));
             fpu.pop();
@@ -1903,14 +1903,14 @@ L_4acd3c:
         else
         {
             fpu.push(f32(app, cpu.ebp - 0xc));
-            fpu.st(0) = fpu.mul(fpu.st(0), f32(app, 0x53de18));
+            fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53de18));
             cpu.esp -= 4;
             app->getMemory<float>(cpu.esp) = float(fpu.st(0));
             fpu.pop();
             if (!byAddress(app, cpu, kSine))
                 return;
-            fpu.st(0) = fpu.mul(fpu.st(0), f32(app, cpu.ebp - 0x10));
-            fpu.st(0) = fpu.mul(fpu.st(0), f32(app, 0x53de1c));
+            fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.ebp - 0x10));
+            fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53de1c));
             app->getMemory<float>(cpu.ebp - 0x4c) = float(fpu.st(0));
             fpu.pop();
         }
@@ -1920,7 +1920,7 @@ L_4acd3c:
     cpu.eax = at(app, cpu.ebp - 0x1c);
     cpu.eax = at(app, cpu.eax + 0x528);
     fpu.push(f32(app, cpu.eax + 0x23c));
-    fpu.st(0) = fpu.mul(fpu.st(0), f32(app, 0x53de20));
+    fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53de20));
     fcomp(cpu, f32(app, cpu.ebp - 8));
     cpu.ax = fpu.status.word;
     if (below(cpu))
@@ -1928,7 +1928,7 @@ L_4acd3c:
         cpu.eax = at(app, cpu.ebp - 0x1c);
         cpu.eax = at(app, cpu.eax + 0x528);
         fpu.push(f32(app, cpu.eax + 0x23c));
-        fpu.st(0) = fpu.mul(fpu.st(0), f32(app, 0x53de20));
+        fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53de20));
         app->getMemory<float>(cpu.ebp - 0x5c) = float(fpu.st(0));
         fpu.pop();
     }
@@ -1996,7 +1996,7 @@ L_4acd3c:
         if (i32(at(app, cpu.ebp - 0x50)) < 0x7f)
             goto L_4ad022;
         fpu.push(f32(app, cpu.ebp - 8));
-        fpu.st(0) = fpu.mul(fpu.st(0), f32(app, 0x53de24));
+        fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53de24));
         app->getMemory<float>(cpu.ebp - 8) = float(fpu.st(0));
         fpu.pop();
     }
@@ -2044,7 +2044,7 @@ L_4ad022:
             if (i32(at(app, cpu.ebp - 0x60)) < 0x41566666)
             {
                 fpu.push(f32(app, cpu.ebp - 8));
-                fpu.st(0) = fpu.mul(fpu.st(0), f32(app, 0x53de28));
+                fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53de28));
                 app->getMemory<float>(cpu.ebp - 8) = float(fpu.st(0));
                 fpu.pop();
             }
@@ -2128,7 +2128,7 @@ L_4ad022:
         }
         cpu.eax = at(app, cpu.ebp - 0x18);
         fpu.push(f32(app, cpu.ebp - 8));
-        fpu.st(0) = fpu.mul(fpu.st(0), f32(app, 0x53de2c));
+        fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53de2c));
         app->getMemory<float>(cpu.eax + 0x1c) = float(fpu.st(0));
         fpu.pop();
     }
@@ -2183,7 +2183,7 @@ L_4ad022:
         }
         cpu.eax = at(app, cpu.ebp - 0x18);
         fpu.push(f32(app, cpu.ebp - 8));
-        fpu.st(0) = fpu.mul(fpu.st(0), f32(app, 0x53de30));
+        fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53de30));
         app->getMemory<float>(cpu.eax + 0x1c) = float(fpu.st(0));
         fpu.pop();
     }
@@ -2380,20 +2380,20 @@ void applyTuning(App* app, CPU& cpu)
         cpu.eax = at(app, cpu.eax + 0x528);
         cpu.edx = at(app, cpu.ebp - 4);
         fpu.push(f32(app, cpu.edx + 8));
-        fpu.st(0) = fpu.mul(fpu.st(0), f32(app, cpu.eax + 0x23c));
+        fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.eax + 0x23c));
         app->getMemory<float>(cpu.eax + 0x23c) = float(fpu.st(0));
         fpu.pop();
         cpu.eax = at(app, cpu.ebp - 4);
         fpu.push(f32(app, cpu.eax + 8));
-        fpu.st(0) = fpu.sub(fpu.st(0), f32(app, 0x55d02c));
-        fpu.st(0) = fpu.mul(fpu.st(0), f32(app, 0x53dc4c));
-        fpu.st(0) = fpu.add(fpu.st(0), f32(app, 0x55d02c));
+        fpu.st(0) = fp::sub(fpu.st(0), f32(app, 0x55d02c));
+        fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53dc4c));
+        fpu.st(0) = fp::add(fpu.st(0), f32(app, 0x55d02c));
         app->getMemory<float>(cpu.ebp - 8) = float(fpu.st(0));
         fpu.pop();
         cpu.eax = at(app, cpu.ebp - 0x1c);
         cpu.eax = at(app, cpu.eax + 0x528);
         fpu.push(f32(app, cpu.eax + 0x234));
-        fpu.st(0) = fpu.mul(fpu.st(0), f32(app, cpu.ebp - 8));
+        fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.ebp - 8));
         app->getMemory<float>(cpu.eax + 0x234) = float(fpu.st(0));
         fpu.pop();
         cpu.eax = at(app, cpu.ebp - 0x1c);
@@ -2432,20 +2432,20 @@ void applyTuning(App* app, CPU& cpu)
         put(app, cpu.edx + 0x234, cpu.eax);
         cpu.eax = at(app, cpu.ebp - 4);
         fpu.push(1.0);
-        fpu.st(0) = fpu.sub(fpu.st(0), f32(app, cpu.eax + 8));
-        fpu.st(0) = fpu.mul(fpu.st(0), f32(app, 0x53dc50));
+        fpu.st(0) = fp::sub(fpu.st(0), f32(app, cpu.eax + 8));
+        fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53dc50));
         app->getMemory<float>(cpu.ebp - 8) = float(fpu.st(0));
         fpu.pop();
         cpu.eax = at(app, cpu.ebp - 0x1c);
         cpu.eax = at(app, cpu.eax + 0x528);
         fpu.push(f32(app, cpu.ebp - 8));
-        fpu.st(0) = fpu.mul(fpu.st(0), f32(app, cpu.eax + 0x258));
+        fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.eax + 0x258));
         app->getMemory<float>(cpu.ebp - 8) = float(fpu.st(0));
         fpu.pop();
         cpu.eax = at(app, cpu.ebp - 0x1c);
         cpu.eax = at(app, cpu.eax + 0x528);
         fpu.push(f32(app, cpu.eax + 0x258));
-        fpu.st(0) = fpu.add(fpu.st(0), f32(app, cpu.ebp - 8));
+        fpu.st(0) = fp::add(fpu.st(0), f32(app, cpu.ebp - 8));
         app->getMemory<float>(cpu.eax + 0x258) = float(fpu.st(0));
         fpu.pop();
     }
@@ -2459,7 +2459,7 @@ void applyTuning(App* app, CPU& cpu)
         cpu.eax = at(app, cpu.eax + 0x528);
         cpu.edx = at(app, cpu.ebp - 4);
         fpu.push(f32(app, cpu.edx + 4));
-        fpu.st(0) = fpu.sub(f32(app, cpu.eax + 0x1dc), fpu.st(0));
+        fpu.st(0) = fp::sub(f32(app, cpu.eax + 0x1dc), fpu.st(0));
         app->getMemory<float>(cpu.eax + 0x1dc) = float(fpu.st(0));
         fpu.pop();
     }
@@ -2468,7 +2468,7 @@ void applyTuning(App* app, CPU& cpu)
         cpu.eax = at(app, cpu.ebp - 0x1c);
         cpu.eax = at(app, cpu.eax + 0x528);
         fpu.push(f32(app, cpu.eax + 0x1dc));
-        fpu.st(0) = fpu.add(fpu.st(0), f32(app, 0x53dc54));
+        fpu.st(0) = fp::add(fpu.st(0), f32(app, 0x53dc54));
         app->getMemory<float>(cpu.eax + 0x1dc) = float(fpu.st(0));
         fpu.pop();
     }
@@ -2516,7 +2516,7 @@ void applyTuning(App* app, CPU& cpu)
         cpu.eax = at(app, cpu.eax + 0x528);
         cpu.edx = at(app, cpu.ebp - 4);
         fpu.push(f32(app, cpu.edx + 0x10));
-        fpu.st(0) = fpu.mul(fpu.st(0), f32(app, cpu.eax + 0x254));
+        fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.eax + 0x254));
         app->getMemory<float>(cpu.eax + 0x254) = float(fpu.st(0));
         fpu.pop();
         cpu.eax = at(app, cpu.ebp - 0x1c);
@@ -2559,7 +2559,7 @@ void applyTuning(App* app, CPU& cpu)
         push(app, cpu, at(app, cpu.eax + 0x10));
         if (!byAddress(app, cpu, kSqrt))
             return;
-        fpu.st(0) = fpu.div(f32(app, cpu.edx + 0x294), fpu.st(0));
+        fpu.st(0) = fp::div(f32(app, cpu.edx + 0x294), fpu.st(0));
         app->getMemory<float>(cpu.edx + 0x294) = float(fpu.st(0));
         fpu.pop();
     }
@@ -2568,7 +2568,7 @@ void applyTuning(App* app, CPU& cpu)
         cpu.eax = at(app, cpu.ebp - 0x1c);
         cpu.eax = at(app, cpu.eax + 0x528);
         fpu.push(f32(app, cpu.eax + 0x254));
-        fpu.st(0) = fpu.add(fpu.st(0), f32(app, 0x53dc58));
+        fpu.st(0) = fp::add(fpu.st(0), f32(app, 0x53dc58));
         app->getMemory<float>(cpu.eax + 0x254) = float(fpu.st(0));
         fpu.pop();
     }
@@ -2580,29 +2580,29 @@ void applyTuning(App* app, CPU& cpu)
     {
         cpu.eax = at(app, cpu.ebp - 4);
         fpu.push(f32(app, cpu.eax + 0x14));
-        fpu.st(0) = fpu.add(fpu.st(0), f32(app, 0x53dc5c));
-        fpu.st(0) = fpu.mul(fpu.st(0), f32(app, 0x53dc60));
+        fpu.st(0) = fp::add(fpu.st(0), f32(app, 0x53dc5c));
+        fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53dc60));
         fpu.push(1.0);
-        fpu.st(1) = fpu.add(fpu.st(1), fpu.st(0));
+        fpu.st(1) = fp::add(fpu.st(1), fpu.st(0));
         fpu.pop();
         app->getMemory<float>(cpu.ebp - 8) = float(fpu.st(0));
         fpu.pop();
         cpu.eax = at(app, cpu.ebp - 0x1c);
         cpu.eax = at(app, cpu.eax + 0x528);
         fpu.push(f32(app, cpu.eax + 0x24c));
-        fpu.st(0) = fpu.mul(fpu.st(0), f32(app, cpu.ebp - 8));
+        fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.ebp - 8));
         app->getMemory<float>(cpu.eax + 0x24c) = float(fpu.st(0));
         fpu.pop();
         cpu.eax = at(app, cpu.ebp - 0x1c);
         cpu.eax = at(app, cpu.eax + 0x528);
         cpu.edx = at(app, cpu.ebp - 4);
         fpu.push(f32(app, cpu.edx + 0x14));
-        fpu.st(0) = fpu.sub(fpu.st(0), f32(app, kDefaultSetup));
-        fpu.st(0) = fpu.mul(fpu.st(0), f32(app, 0x53dc64));
+        fpu.st(0) = fp::sub(fpu.st(0), f32(app, kDefaultSetup));
+        fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53dc64));
         fpu.push(1.0);
-        fpu.st(1) = fpu.add(fpu.st(1), fpu.st(0));
+        fpu.st(1) = fp::add(fpu.st(1), fpu.st(0));
         fpu.pop();
-        fpu.st(0) = fpu.div(f32(app, cpu.eax + 0x1c8), fpu.st(0));
+        fpu.st(0) = fp::div(f32(app, cpu.eax + 0x1c8), fpu.st(0));
         app->getMemory<float>(cpu.eax + 0x1c8) = float(fpu.st(0));
         fpu.pop();
     }
@@ -2659,9 +2659,9 @@ void applyTuning(App* app, CPU& cpu)
             cpu.edx += cpu.eax;
             cpu.eax = at(app, cpu.ebp - 4);
             fpu.push(f32(app, cpu.eax));
-            fpu.st(0) = fpu.add(fpu.st(0), f32(app, 0x53dc68));
-            fpu.st(0) = fpu.mul(fpu.st(0), f32(app, 0x53dc6c));
-            fpu.st(0) = fpu.mul(fpu.st(0), f32(app, cpu.edx + 0x114));
+            fpu.st(0) = fp::add(fpu.st(0), f32(app, 0x53dc68));
+            fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53dc6c));
+            fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.edx + 0x114));
             app->getMemory<float>(cpu.ebp - 0x38) = float(fpu.st(0));
             fpu.pop();
             cpu.eax = at(app, cpu.ebp - 0x40);
@@ -2672,9 +2672,9 @@ void applyTuning(App* app, CPU& cpu)
             cpu.eax -= at(app, cpu.ebp - 0x40);
             put(app, cpu.ebp - 0x44, cpu.eax);
             fpu.push(x86::Float(i32(at(app, cpu.ebp - 0x44))));
-            fpu.st(1) = fpu.div(fpu.st(1), fpu.st(0));
+            fpu.st(1) = fp::div(fpu.st(1), fpu.st(0));
             fpu.pop();
-            fpu.st(0) = fpu.mul(fpu.st(0), f32(app, cpu.ebp - 0x38));
+            fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.ebp - 0x38));
             app->getMemory<float>(cpu.ebp - 0x38) = float(fpu.st(0));
             fpu.pop();
             cpu.eax = at(app, cpu.ebp - 0x1c);
@@ -2683,7 +2683,7 @@ void applyTuning(App* app, CPU& cpu)
             cpu.eax <<= 2;
             cpu.eax += cpu.edx;
             fpu.push(f32(app, cpu.eax + 0x114));
-            fpu.st(0) = fpu.add(fpu.st(0), f32(app, cpu.ebp - 0x38));
+            fpu.st(0) = fp::add(fpu.st(0), f32(app, cpu.ebp - 0x38));
             app->getMemory<float>(cpu.eax + 0x114) = float(fpu.st(0));
             fpu.pop();
             cpu.eax = at(app, cpu.ebp - 0x14);
@@ -2693,12 +2693,12 @@ void applyTuning(App* app, CPU& cpu)
         cpu.eax = at(app, cpu.eax + 0x528);
         cpu.edx = at(app, cpu.ebp - 4);
         fpu.push(f32(app, cpu.edx));
-        fpu.st(0) = fpu.sub(fpu.st(0), f32(app, kDefaultSetup));
-        fpu.st(0) = fpu.mul(fpu.st(0), f32(app, 0x53dc70));
+        fpu.st(0) = fp::sub(fpu.st(0), f32(app, kDefaultSetup));
+        fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53dc70));
         fpu.push(1.0);
-        fpu.st(1) = fpu.add(fpu.st(1), fpu.st(0));
+        fpu.st(1) = fp::add(fpu.st(1), fpu.st(0));
         fpu.pop();
-        fpu.st(0) = fpu.mul(fpu.st(0), f32(app, cpu.eax + 0x1c8));
+        fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.eax + 0x1c8));
         app->getMemory<float>(cpu.eax + 0x1c8) = float(fpu.st(0));
         fpu.pop();
     }
@@ -2713,7 +2713,7 @@ void applyTuning(App* app, CPU& cpu)
             cpu.edx <<= 2;
             cpu.eax += cpu.edx;
             fpu.push(f32(app, cpu.eax + 0x114));
-            fpu.st(0) = fpu.mul(fpu.st(0), f32(app, 0x53dc74));
+            fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53dc74));
             app->getMemory<float>(cpu.eax + 0x114) = float(fpu.st(0));
             fpu.pop();
             cpu.eax = at(app, cpu.ebp - 0x14);
@@ -2722,7 +2722,7 @@ void applyTuning(App* app, CPU& cpu)
         cpu.eax = at(app, cpu.ebp - 0x1c);
         cpu.eax = at(app, cpu.eax + 0x528);
         fpu.push(f32(app, cpu.eax + 0x1c8));
-        fpu.st(0) = fpu.mul(fpu.st(0), f32(app, 0x53dc78));
+        fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53dc78));
         app->getMemory<float>(cpu.eax + 0x1c8) = float(fpu.st(0));
         fpu.pop();
     }
@@ -2776,7 +2776,7 @@ void applyTuning(App* app, CPU& cpu)
             cpu.eax += cpu.edx;
             cpu.edx = at(app, cpu.ebp - 4);
             fpu.push(f32(app, cpu.edx + 0xc));
-            fpu.st(0) = fpu.mul(fpu.st(0), f32(app, cpu.eax + 0x94));
+            fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.eax + 0x94));
             app->getMemory<float>(cpu.eax + 0x94) = float(fpu.st(0));
             fpu.pop();
         }
@@ -2793,7 +2793,7 @@ void applyTuning(App* app, CPU& cpu)
             cpu.eax <<= 2;
             cpu.eax += cpu.edx;
             fpu.push(1.0);
-            fpu.st(0) = fpu.div(fpu.st(0), f32(app, cpu.eax + 0x94));
+            fpu.st(0) = fp::div(fpu.st(0), f32(app, cpu.eax + 0x94));
             cpu.eax = at(app, cpu.ebp - 0x14);
             cpu.eax <<= 2;
             cpu.eax += at(app, cpu.ebp - 0x1c);
@@ -2815,8 +2815,8 @@ void applyTuning(App* app, CPU& cpu)
         cpu.eax = at(app, cpu.ebp - 0x1c);
         cpu.eax = at(app, cpu.eax + 0x528);
         fpu.push(f32(app, cpu.edx + 0x94));
-        fpu.st(0) = fpu.div(fpu.st(0), f32(app, cpu.eax + 4));
-        fpu.st(0) = fpu.mul(fpu.st(0), f32(app, 0x53dc7c));
+        fpu.st(0) = fp::div(fpu.st(0), f32(app, cpu.eax + 4));
+        fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53dc7c));
         cpu.eax = at(app, cpu.ebp - 0x14);
         cpu.eax <<= 2;
         cpu.eax += at(app, cpu.ebp - 0x1c);
@@ -2831,7 +2831,7 @@ void applyTuning(App* app, CPU& cpu)
         cpu.ecx <<= 2;
         cpu.edx += cpu.ecx;
         fpu.push(f32(app, cpu.edx + 0xd4));
-        fpu.st(0) = fpu.mul(fpu.st(0), f32(app, cpu.eax + 0x56c));
+        fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.eax + 0x56c));
         app->getMemory<float>(cpu.eax + 0x56c) = float(fpu.st(0));
         fpu.pop();
         cpu.edx = at(app, cpu.ebp - 0x14);
@@ -2840,9 +2840,9 @@ void applyTuning(App* app, CPU& cpu)
         cpu.eax = at(app, cpu.ebp - 0x1c);
         cpu.eax = at(app, cpu.eax + 0x528);
         fpu.push(x86::Float(i32(at(app, cpu.eax + 0x1c4))));
-        fpu.st(0) = fpu.mul(fpu.st(0), f32(app, cpu.edx + 0x54c));
+        fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.edx + 0x54c));
         fpu.push(1.0);
-        fpu.st(1) = fpu.div(fpu.st(0), fpu.st(1));
+        fpu.st(1) = fp::div(fpu.st(0), fpu.st(1));
         fpu.pop();
         cpu.eax = at(app, cpu.ebp - 0x14);
         cpu.eax <<= 2;
@@ -2862,7 +2862,7 @@ void applyTuning(App* app, CPU& cpu)
         cpu.eax = at(app, cpu.eax + 0x528);
         cpu.edx = at(app, cpu.ebp - 4);
         fpu.push(f32(app, cpu.edx + 0xc));
-        fpu.st(0) = fpu.div(f32(app, cpu.eax + 0x1c8), fpu.st(0));
+        fpu.st(0) = fp::div(f32(app, cpu.eax + 0x1c8), fpu.st(0));
         app->getMemory<float>(cpu.eax + 0x1c8) = float(fpu.st(0));
         fpu.pop();
     }
@@ -2877,9 +2877,9 @@ void applyTuning(App* app, CPU& cpu)
     cpu.eax = at(app, cpu.ebp - 0x1c);
     cpu.eax = at(app, cpu.eax + 0x528);
     fpu.push(f32(app, cpu.eax + 0x1c8));
-    fpu.st(0) = fpu.mul(fpu.st(0), f32(app, cpu.edx + 0x90));
+    fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.edx + 0x90));
     cpu.esp -= 4;
-    put(app, cpu.esp, reg32(fpu.toInteger<i32>(fpu.st(0))));
+    put(app, cpu.esp, reg32(fp::toInteger<i32>(fpu.st(0))));
     fpu.pop();
     cpu.eax = pop(app, cpu);
     put(app, cpu.ebp - 0x10, cpu.eax);
@@ -2897,7 +2897,7 @@ void applyTuning(App* app, CPU& cpu)
     put(app, cpu.ebp - 0x44, cpu.eax);
     fpu.push(x86::Float(i32(at(app, cpu.ebp - 0x44))));
     cpu.esp -= 4;
-    put(app, cpu.esp, reg32(fpu.toInteger<i32>(fpu.st(0))));
+    put(app, cpu.esp, reg32(fp::toInteger<i32>(fpu.st(0))));
     fpu.pop();
     cpu.eax = pop(app, cpu);
     cpu.eax <<= 2;
@@ -2910,7 +2910,7 @@ void applyTuning(App* app, CPU& cpu)
     cpu.eax <<= 2;
     cpu.eax += at(app, cpu.ebp - 0x1c);
     fpu.push(f32(app, cpu.ebp - 0xc));
-    fpu.st(0) = fpu.mul(fpu.st(0), f32(app, cpu.eax + 0x568));
+    fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.eax + 0x568));
     app->getMemory<float>(cpu.ebp - 0xc) = float(fpu.st(0));
     fpu.pop();
     cpu.eax = at(app, cpu.ebp - 0x1c);
@@ -2922,7 +2922,7 @@ void applyTuning(App* app, CPU& cpu)
     cpu.eax = at(app, cpu.eax + 0x528);
     cpu.eax += cpu.edx;
     fpu.push(f32(app, cpu.ebp - 0xc));
-    fpu.st(0) = fpu.div(fpu.st(0), f32(app, cpu.eax + 0xd0));
+    fpu.st(0) = fp::div(fpu.st(0), f32(app, cpu.eax + 0xd0));
     app->getMemory<float>(cpu.ebp - 0xc) = float(fpu.st(0));
     fpu.pop();
     if (i32(at(app, kPlayMode)) <= 1 && at(app, kRaceType) != 1 && at(app, kRaceType) != 2)
@@ -2930,10 +2930,10 @@ void applyTuning(App* app, CPU& cpu)
         cpu.eax = at(app, cpu.ebp - 0x1c);
         cpu.eax = at(app, cpu.eax + 0x220);
         fpu.push(1.0);
-        fpu.st(0) = fpu.add(fpu.st(0), f32(app, cpu.eax + 0x54));
-        fpu.st(0) = fpu.div(fpu.st(0), f32(app, 0x53dc80));
+        fpu.st(0) = fp::add(fpu.st(0), f32(app, cpu.eax + 0x54));
+        fpu.st(0) = fp::div(fpu.st(0), f32(app, 0x53dc80));
         cpu.eax = at(app, cpu.ebp - 0x1c);
-        fpu.st(0) = fpu.div(f32(app, cpu.ebp - 0xc), fpu.st(0));
+        fpu.st(0) = fp::div(f32(app, cpu.ebp - 0xc), fpu.st(0));
         app->getMemory<float>(cpu.eax + 0x58c) = float(fpu.st(0));
         fpu.pop();
     }
@@ -2941,27 +2941,27 @@ void applyTuning(App* app, CPU& cpu)
     {
         cpu.eax = at(app, cpu.ebp - 0x1c);
         fpu.push(f32(app, cpu.ebp - 0xc));
-        fpu.st(0) = fpu.div(fpu.st(0), f32(app, 0x53dc84));
+        fpu.st(0) = fp::div(fpu.st(0), f32(app, 0x53dc84));
         app->getMemory<float>(cpu.eax + 0x58c) = float(fpu.st(0));
         fpu.pop();
     }
     cpu.eax = at(app, cpu.ebp - 0x1c);
     cpu.eax = at(app, cpu.eax + 0x528);
     fpu.push(f32(app, cpu.eax + 0x1c8));
-    fpu.st(0) = fpu.mul(fpu.st(0), f32(app, 0x53dc88));
+    fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53dc88));
     cpu.eax = at(app, cpu.ebp - 0x1c);
     cpu.eax = at(app, cpu.eax + 0x528);
-    fpu.st(0) = fpu.mul(fpu.st(0), f32(app, cpu.eax + 0x1c8));
+    fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.eax + 0x1c8));
     cpu.eax = at(app, cpu.ebp - 0x1c);
     cpu.eax = at(app, cpu.eax + 0x528);
-    fpu.st(0) = fpu.mul(fpu.st(0), f32(app, cpu.eax + 0x1c8));
+    fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.eax + 0x1c8));
     cpu.eax = at(app, cpu.ebp - 0x1c);
-    fpu.st(0) = fpu.div(f32(app, cpu.eax + 0x58c), fpu.st(0));
+    fpu.st(0) = fp::div(f32(app, cpu.eax + 0x58c), fpu.st(0));
     app->getMemory<float>(cpu.eax + 0x58c) = float(fpu.st(0));
     fpu.pop();
     cpu.eax = at(app, cpu.ebp - 0x1c);
     fpu.push(f32(app, cpu.eax + 0x58c));
-    fpu.st(0) = fpu.mul(fpu.st(0), f32(app, 0x53dc8c));
+    fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53dc8c));
     app->getMemory<float>(cpu.eax + 0x58c) = float(fpu.st(0));
     fpu.pop();
     return leave();
@@ -3077,7 +3077,7 @@ void automaticGear(App* app, CPU& cpu)
             cpu.eax = at(app, cpu.ebp - 0x3c);
             cpu.eax = at(app, cpu.eax + 0x528);
             fpu.push(x86::Float(i32(at(app, cpu.eax + 0x1c4))));
-            fpu.st(0) = fpu.mul(fpu.st(0), f32(app, cpu.edx + 0x544));
+            fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.edx + 0x544));
             cpu.eax = at(app, cpu.ebp - 0x3c);
             cpu.eax = at(app, cpu.eax + 0x528);
             fcomp(cpu, f32(app, cpu.eax + 0x1c8));
@@ -3156,9 +3156,9 @@ void automaticGear(App* app, CPU& cpu)
             cpu.edx += cpu.eax;
             cpu.eax = at(app, cpu.ebp - 0x3c);
             fpu.push(f32(app, cpu.eax + 0x5a4));
-            fpu.st(0) = fpu.mul(fpu.st(0), f32(app, cpu.edx + 0x94));
+            fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.edx + 0x94));
             cpu.esp -= 4;
-            put(app, cpu.esp, reg32(fpu.toInteger<i32>(fpu.st(0))));
+            put(app, cpu.esp, reg32(fp::toInteger<i32>(fpu.st(0))));
             fpu.pop();
             cpu.eax = pop(app, cpu);
             put(app, cpu.ebp - 0x34, cpu.eax);
@@ -3169,9 +3169,9 @@ void automaticGear(App* app, CPU& cpu)
             cpu.edx += cpu.eax;
             cpu.eax = at(app, cpu.ebp - 0x3c);
             fpu.push(f32(app, cpu.eax + 0x5a4));
-            fpu.st(0) = fpu.mul(fpu.st(0), f32(app, cpu.edx + 0x94));
+            fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.edx + 0x94));
             cpu.esp -= 4;
-            put(app, cpu.esp, reg32(fpu.toInteger<i32>(fpu.st(0))));
+            put(app, cpu.esp, reg32(fp::toInteger<i32>(fpu.st(0))));
             fpu.pop();
             cpu.eax = pop(app, cpu);
             put(app, cpu.ebp - 0x30, cpu.eax);
@@ -3182,9 +3182,9 @@ void automaticGear(App* app, CPU& cpu)
             cpu.edx += cpu.eax;
             cpu.eax = at(app, cpu.ebp - 0x3c);
             fpu.push(f32(app, cpu.eax + 0x5a4));
-            fpu.st(0) = fpu.mul(fpu.st(0), f32(app, cpu.edx + 0x94));
+            fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.edx + 0x94));
             cpu.esp -= 4;
-            put(app, cpu.esp, reg32(fpu.toInteger<i32>(fpu.st(0))));
+            put(app, cpu.esp, reg32(fp::toInteger<i32>(fpu.st(0))));
             fpu.pop();
             cpu.eax = pop(app, cpu);
             put(app, cpu.ebp - 0x2c, cpu.eax);
@@ -3195,9 +3195,9 @@ void automaticGear(App* app, CPU& cpu)
             cpu.edx += cpu.eax;
             cpu.eax = at(app, cpu.ebp - 0x3c);
             fpu.push(f32(app, cpu.eax + 0x5a4));
-            fpu.st(0) = fpu.mul(fpu.st(0), f32(app, cpu.edx + 0x94));
+            fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.edx + 0x94));
             cpu.esp -= 4;
-            put(app, cpu.esp, reg32(fpu.toInteger<i32>(fpu.st(0))));
+            put(app, cpu.esp, reg32(fp::toInteger<i32>(fpu.st(0))));
             fpu.pop();
             cpu.eax = pop(app, cpu);
             put(app, cpu.ebp - 0x28, cpu.eax);
@@ -3417,11 +3417,11 @@ void matchRevsToSpeed(App* app, CPU& cpu)
             cpu.edx += at(app, cpu.ebp - 0xc);
             cpu.eax = at(app, cpu.ebp - 0xc);
             fpu.push(f32(app, cpu.eax + 0x4f4));
-            fpu.st(0) = fpu.mul(fpu.st(0), f32(app, cpu.edx + 0x52c));
+            fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.edx + 0x52c));
             cpu.eax = at(app, cpu.ebp - 0xc);
             cpu.eax = at(app, cpu.eax + 0x528);
             fpu.push(x86::Float(i32(at(app, cpu.eax + 0x1c4))));
-            fpu.st(1) = fpu.mul(fpu.st(1), fpu.st(0));
+            fpu.st(1) = fp::mul(fpu.st(1), fpu.st(0));
             fpu.pop();
             cpu.eax = at(app, cpu.ebp - 0xc);
             cpu.eax = at(app, cpu.eax + 0x528);
@@ -3437,11 +3437,11 @@ void matchRevsToSpeed(App* app, CPU& cpu)
                 cpu.edx += at(app, cpu.ebp - 0xc);
                 cpu.eax = at(app, cpu.ebp - 0xc);
                 fpu.push(f32(app, cpu.eax + 0x4f4));
-                fpu.st(0) = fpu.mul(fpu.st(0), f32(app, cpu.edx + 0x52c));
+                fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.edx + 0x52c));
                 cpu.eax = at(app, cpu.ebp - 0xc);
                 cpu.eax = at(app, cpu.eax + 0x528);
                 fpu.push(x86::Float(i32(at(app, cpu.eax + 0x1c4))));
-                fpu.st(1) = fpu.mul(fpu.st(1), fpu.st(0));
+                fpu.st(1) = fp::mul(fpu.st(1), fpu.st(0));
                 fpu.pop();
                 app->getMemory<float>(cpu.ebp - 0x10) = float(fpu.st(0));
                 fpu.pop();
@@ -3458,7 +3458,7 @@ void matchRevsToSpeed(App* app, CPU& cpu)
             fpu.push(f32(app, cpu.ebp - 0x10));
             if (!byAddress(app, cpu, kChop))
                 return;
-            put(app, cpu.eax + 0x590, reg32(fpu.toInteger<i32>(fpu.st(0))));
+            put(app, cpu.eax + 0x590, reg32(fp::toInteger<i32>(fpu.st(0))));
             fpu.pop();
         }
     }
@@ -3671,19 +3671,19 @@ void settleAtRest(App* app, CPU& cpu)
     else
     {
         fpu.push(f32(app, cpu.ebp - 0x20));
-        fpu.st(0) = fpu.add(fpu.st(0), f32(app, cpu.ebp - 0xc));
+        fpu.st(0) = fp::add(fpu.st(0), f32(app, cpu.ebp - 0xc));
         fcomp(cpu, f32(app, 0x53dccc));
         cpu.ax = fpu.status.word;
         if (below(cpu) || equal(cpu))
         {
             fpu.push(f32(app, cpu.ebp - 0x20));
-            fpu.st(0) = fpu.add(fpu.st(0), f32(app, cpu.ebp - 0x1c));
+            fpu.st(0) = fp::add(fpu.st(0), f32(app, cpu.ebp - 0x1c));
             fcomp(cpu, f32(app, 0x53dccc));
             cpu.ax = fpu.status.word;
             if (below(cpu) || equal(cpu))
             {
                 fpu.push(f32(app, cpu.ebp - 0xc));
-                fpu.st(0) = fpu.add(fpu.st(0), f32(app, cpu.ebp - 0x1c));
+                fpu.st(0) = fp::add(fpu.st(0), f32(app, cpu.ebp - 0x1c));
                 fcomp(cpu, f32(app, 0x53dccc));
                 cpu.ax = fpu.status.word;
                 if (below(cpu) || equal(cpu))

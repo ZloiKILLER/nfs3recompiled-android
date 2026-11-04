@@ -11,9 +11,9 @@ of the flags byte at +5 -- so it is neither drawn nor reached by the keys.  It
 is the last tab in its column, so nothing below it moves up into a gap.  The
 menu files themselves come with the player's game data and stay as they are.
 """
-from pathlib import Path
-
 # (generated file, address and bytes of the instruction, original code, patched code)
+# sub_426d60 is native whole, the change made in it (native_frontend_cars.cpp);
+# tools/frontend_checks/generate.py makes it to the game's code it is held against.
 SITES = [
     # sub_426d60: CAR_DOWNLOAD found; hidden rather than given its handler.
     ("nfs3hp.6.cpp", "00426dfb  c74064602e4500",
@@ -23,35 +23,3 @@ SITES = [
 ]
 
 
-def apply(root):
-    for name in dict.fromkeys(site[0] for site in SITES):
-        path = root / "src/nfs3hp/disassembly" / name
-        text = path.read_text(newline="")
-        eol = "\r\n" if text.count("\r\n") * 2 > text.count("\n") else "\n"
-
-        def native(s):
-            return eol.join(s.split("\n"))
-
-        for _, instruction, old, new in [site for site in SITES if site[0] == name]:
-            old, new = native(old), native(new)
-            anchor = "    // " + instruction
-            start = text.find(anchor)
-            if start < 0:
-                raise RuntimeError("%s: no instruction %s" % (name, instruction))
-            # Everything this one instruction generated: from its own address
-            # comment up to the next one.
-            stop = text.find(eol + "    // 00", start + len(anchor))
-            if stop < 0:
-                raise RuntimeError("%s: runaway block at %s" % (name, instruction))
-            block = text[start:stop]
-            if new in block:
-                continue
-            if block.count(old) != 1:
-                raise RuntimeError("%s: unexpected shape at %s" % (name, instruction))
-            text = text[:start] + block.replace(old, new, 1) + text[stop:]
-
-        path.write_text(text, newline="")
-
-
-if __name__ == "__main__":
-    apply(Path(__file__).resolve().parents[1])

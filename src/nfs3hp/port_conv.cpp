@@ -26,7 +26,7 @@ namespace
 /* fistp as the code does it without __CHP: `value` rounded the way the x87's control word says. */
 int32_t stored(CPU& cpu, double value)
 {
-    return cpu.fpu.toInteger<int32_t>(x86::Float(value));
+    return fp::toInteger<int32_t>(x86::Float(value));
 }
 
 /* A tiny x87 stack of doubles: the functions move floats through the x87 (a store rounds to float). */
@@ -50,10 +50,10 @@ struct X87
 /* The x87's sums, differences, products and quotients as it rounds them: to
  * the precision its control word asks for -- a race's single precision, the
  * menus' extended -- by the emulated FPU's own operations (include/fpu.h). */
-double xadd(CPU& cpu, double a, double b) { return double(cpu.fpu.add(x86::Float(a), x86::Float(b))); }
-double xsub(CPU& cpu, double a, double b) { return double(cpu.fpu.sub(x86::Float(a), x86::Float(b))); }
-double xmul(CPU& cpu, double a, double b) { return double(cpu.fpu.mul(x86::Float(a), x86::Float(b))); }
-double xdiv(CPU& cpu, double a, double b) { return double(cpu.fpu.div(x86::Float(a), x86::Float(b))); }
+double xadd(CPU& cpu, double a, double b) { return double(fp::add(x86::Float(a), x86::Float(b))); }
+double xsub(CPU& cpu, double a, double b) { return double(fp::sub(x86::Float(a), x86::Float(b))); }
+double xmul(CPU& cpu, double a, double b) { return double(fp::mul(x86::Float(a), x86::Float(b))); }
+double xdiv(CPU& cpu, double a, double b) { return double(fp::div(x86::Float(a), x86::Float(b))); }
 
 /* The flags the last instruction left, for the conditional jump after it. */
 struct Flags

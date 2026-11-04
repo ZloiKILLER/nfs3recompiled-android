@@ -3,109 +3,12 @@
 
 namespace nfs3hp
 {
-// Port (tools/apply_native_frontend.py): defined in native_frontend_cars.cpp.
-bool carMenuMusicBack(win32::WinApplication* app, x86::CPU& cpu);
 
 /* sub_4103a0: native, nfs3hp::port::musicAfterSetting */
 
 /* sub_410460: native, nfs3hp::port::musicMenuSix */
 
-/* align: skip 0x8d 0x80 0x00 0x00 0x00 0x00 0x8d 0x92 0x00 0x00 0x00 0x00 0x8d 0x40 0x00 */
-void Application::sub_4104b0(WinApplication* __restrict app, x86::CPU& cpu_)
-{
-  x86::Local cpu(cpu_);
-  NFS2_USE(cpu);
-  NFS2_USE(app);
-    if (carMenuMusicBack(app, cpu.sync())) /* port: native (tools/apply_native_frontend.py) */
-    {
-        cpu.reload();
-        return;
-    }
-    // 004104b0  53                     -push ebx
-    app->getMemory<x86::reg32>(cpu.esp-4) = cpu.ebx;
-    cpu.esp -= 4;
-    // 004104b1  51                     -push ecx
-    app->getMemory<x86::reg32>(cpu.esp-4) = cpu.ecx;
-    cpu.esp -= 4;
-    // 004104b2  52                     -push edx
-    app->getMemory<x86::reg32>(cpu.esp-4) = cpu.edx;
-    cpu.esp -= 4;
-    // 004104b3  55                     -push ebp
-    app->getMemory<x86::reg32>(cpu.esp-4) = cpu.ebp;
-    cpu.esp -= 4;
-    // 004104b4  89e5                   -mov ebp, esp
-    cpu.ebp = cpu.esp;
-    // 004104b6  833d9425550000         +cmp dword ptr [0x552594], 0
-    {
-        x86::reg32 tmp1 = app->getMemory<x86::reg32>(x86::reg32(5580180) /* 0x552594 */);
-        x86::reg32 tmp2 = x86::reg32(x86::sreg32(0 /*0x0*/));
-        x86::reg32 result = tmp1 - tmp2;
-        cpu.flags.cf = tmp1 < tmp2;
-        cpu.flags.of = 1 & (tmp1 >> 31);
-        cpu.flags.of ^= 1 & (result >> 31);
-        cpu.flags.of &= (1 & (tmp1 >> 31)) != (1 & (tmp2 >> 31));
-        cpu.set_szp(result);
-    }
-    // 004104bd  742a                   -je 0x4104e9
-    if (cpu.flags.zf)
-    {
-        goto L_0x004104e9;
-    }
-    // 004104bf  31c9                   -xor ecx, ecx
-    cpu.ecx ^= x86::reg32(x86::sreg32(cpu.ecx));
-    // 004104c1  8b1decbb6f00           -mov ebx, dword ptr [0x6fbbec]
-    cpu.ebx = app->getMemory<x86::reg32>(x86::reg32(7322604) /* 0x6fbbec */);
-    // 004104c7  890d94255500           -mov dword ptr [0x552594], ecx
-    app->getMemory<x86::reg32>(x86::reg32(5580180) /* 0x552594 */) = cpu.ecx;
-    // 004104cd  83fb06                 +cmp ebx, 6
-    {
-        x86::reg32 tmp1 = cpu.ebx;
-        x86::reg32 tmp2 = x86::reg32(x86::sreg32(6 /*0x6*/));
-        x86::reg32 result = tmp1 - tmp2;
-        cpu.flags.cf = tmp1 < tmp2;
-        cpu.flags.of = 1 & (tmp1 >> 31);
-        cpu.flags.of ^= 1 & (result >> 31);
-        cpu.flags.of &= (1 & (tmp1 >> 31)) != (1 & (tmp2 >> 31));
-        cpu.set_szp(result);
-    }
-    // 004104d0  7417                   -je 0x4104e9
-    if (cpu.flags.zf)
-    {
-        goto L_0x004104e9;
-    }
-    // 004104d2  e8f9040000             -call 0x4109d0
-    cpu.esp -= 4;
-    nfs3hp::port::musicStop(app, cpu.sync());
-    cpu.reload();
-    if (cpu.terminate) return;
-    // 004104d7  b816000000             -mov eax, 0x16
-    cpu.eax = 22 /*0x16*/;
-    // 004104dc  8b15e8bb6f00           -mov edx, dword ptr [0x6fbbe8]
-    cpu.edx = app->getMemory<x86::reg32>(x86::reg32(7322600) /* 0x6fbbe8 */);
-    // 004104e2  31db                   -xor ebx, ebx
-    cpu.ebx ^= x86::reg32(x86::sreg32(cpu.ebx));
-    // 004104e4  e807000000             -call 0x4104f0
-    cpu.esp -= 4;
-    nfs3hp::port::musicStart(app, cpu.sync());
-    cpu.reload();
-    if (cpu.terminate) return;
-L_0x004104e9:
-    // 004104e9  5d                     -pop ebp
-    cpu.ebp = app->getMemory<x86::reg32>(cpu.esp);
-    cpu.esp += 4;
-    // 004104ea  5a                     -pop edx
-    cpu.edx = app->getMemory<x86::reg32>(cpu.esp);
-    cpu.esp += 4;
-    // 004104eb  59                     -pop ecx
-    cpu.ecx = app->getMemory<x86::reg32>(cpu.esp);
-    cpu.esp += 4;
-    // 004104ec  5b                     -pop ebx
-    cpu.ebx = app->getMemory<x86::reg32>(cpu.esp);
-    cpu.esp += 4;
-    // 004104ed  c3                     -ret 
-    cpu.esp += 4;
-    return;
-}
+/* sub_4104b0: native, nfs3hp::frontend::carMenuMusicBack */
 
 /* sub_4104f0: native, nfs3hp::port::musicStart */
 

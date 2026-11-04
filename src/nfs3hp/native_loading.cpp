@@ -387,10 +387,6 @@ struct FrdReader
 {
     win32::WinApplication* app;
     x86::reg8* m;
-    // Whether a read went sub_4ea4f0's way through sub_5033e5, whose emms
-    // clears the MMX registers.
-    bool mmx = false;
-
     x86::reg32 word(x86::reg32 at) const { return read32(m, at); }
 
     /* sub_419bf0: `count` bytes from the file to `to`, through sub_4ea4f0 (a
@@ -399,8 +395,6 @@ struct FrdReader
     {
         const x86::reg32 from = word(0x5dd078);
         std::memmove(m + to, m + from, count);
-        if (!(to > from && to < from + count))
-            mmx = true;
         write32(m, 0x5dd078, from + count);
     }
 
@@ -597,8 +591,6 @@ void frdNative(win32::WinApplication* app, x86::CPU& cpu)
     }
     r.objects(0x5dd070);
     cpu.eax = r.lights();
-    if (r.mmx && r.word(0x5643b4) != 0)
-        cpu.mmx.init();
 
     // The file freed (sub_4e1890).
     const x86::reg32 file = r.word(0x5dd07c);
@@ -654,10 +646,6 @@ void describeLoadState(const x86::CPU& mine, const x86::CPU& cpu, char* what, st
     {
         SDL_snprintf(what, size, "fpu status %04x/%04x depth %u/%u", unsigned(mine.fpu.status.word),
                      unsigned(cpu.fpu.status.word), unsigned(mine.fpu.count), unsigned(cpu.fpu.count));
-    }
-    else if (std::memcmp(&mine.mmx, &cpu.mmx, sizeof cpu.mmx) != 0)
-    {
-        SDL_snprintf(what, size, "mmx registers");
     }
 }
 
@@ -874,10 +862,7 @@ void extendNeighbours(win32::WinApplication* app)
 
 bool frd(win32::WinApplication* app, x86::CPU& cpu)
 {
-    // sub_4ea4f0's copy by the FPU (sub_503281), on a processor without MMX,
-    // leaves the FPU's state behind as a memmove would not.
-    const x86::reg8* m = guest(app);
-    if (stepAside() || (read32(m, 0x5643b4) == 0 && read32(m, 0x5643ac) != 0))
+    if (stepAside())
         return false;
     if (loadChecking())
     {

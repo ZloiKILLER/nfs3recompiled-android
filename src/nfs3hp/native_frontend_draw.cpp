@@ -154,7 +154,7 @@ x86::Float halfInteger(win32::WinApplication* app, reg32 address)
 /* fistp: st(0) as the control word rounds it, popped. */
 void storeInteger(win32::WinApplication* app, x86::CPU& cpu, reg32 address)
 {
-    put(app, address, reg32(cpu.fpu.toInteger<sreg32>(cpu.fpu.st(0))));
+    put(app, address, reg32(fp::toInteger<sreg32>(cpu.fpu.st(0))));
     cpu.fpu.count -= 1;
 }
 
@@ -166,7 +166,7 @@ void exchange(x86::CPU& cpu, int i)
 /* fdivp st(i): st(i) = st(i) / st(0), popped. */
 void divPop(x86::CPU& cpu, int i)
 {
-    cpu.fpu.st(i) = cpu.fpu.div(cpu.fpu.st(i), cpu.fpu.st(0));
+    cpu.fpu.st(i) = fp::div(cpu.fpu.st(i), cpu.fpu.st(0));
     cpu.fpu.count -= 1;
 }
 

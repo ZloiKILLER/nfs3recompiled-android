@@ -1,0 +1,6 @@
+# address name kind: the functions native whole in src/nfs3hp/native_frontend_view.cpp, frontend::name.
+# kind: how frontend_checks enters it (Menu, Key, Item, None).
+464700 viewMakeTiles None
+4647a0 viewFillTiles None
+464eb0 viewLoadInterior None
+4652f0 viewWidgetState None

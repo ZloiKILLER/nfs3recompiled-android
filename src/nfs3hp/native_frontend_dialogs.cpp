@@ -612,7 +612,7 @@ void dialogPlaceButtons(win32::WinApplication* app, x86::CPU& cpu)
     auto high = [&](reg32 address) { return reg32(sreg32(at(app, address)) >> 16); };  // mov, sar 0x10
     auto loadFloat = [&](reg32 address) { return Float(app->getMemory<float>(address)); };
     auto fistp = [&](reg32 address) {
-        put(app, address, reg32(cpu.fpu.toInteger<sreg32>(cpu.fpu.st(0))));
+        put(app, address, reg32(fp::toInteger<sreg32>(cpu.fpu.st(0))));
         cpu.fpu.count -= 1;
     };
     auto half = [](reg32 value) { return reg32((sreg32(value) - (sreg32(value) >> 31)) >> 1); };  // cdq, sub, sar 1
@@ -637,7 +637,7 @@ void dialogPlaceButtons(win32::WinApplication* app, x86::CPU& cpu)
         // A column, up from the box's bottom.
         cpu.fpu.push(loadFloat(cpu.ecx + kBottom));
         cpu.edi = 0x280;
-        cpu.fpu.st(0) = cpu.fpu.add(cpu.fpu.st(0), loadFloat(kMinus15));
+        cpu.fpu.st(0) = fp::add(cpu.fpu.st(0), loadFloat(kMinus15));
         cpu.ecx = cpu.esi - 1;
         if (!chop())
             return;
@@ -686,7 +686,7 @@ void dialogPlaceButtons(win32::WinApplication* app, x86::CPU& cpu)
     {
         // A row, spread evenly across the box.
         cpu.fpu.push(loadFloat(cpu.ebx + kRight));
-        cpu.fpu.st(0) = cpu.fpu.sub(cpu.fpu.st(0), loadFloat(cpu.ecx + kLeft));
+        cpu.fpu.st(0) = fp::sub(cpu.fpu.st(0), loadFloat(cpu.ecx + kLeft));
         if (!chop())
             return;
         fistp(ebp - 0x14);
@@ -699,8 +699,8 @@ void dialogPlaceButtons(win32::WinApplication* app, x86::CPU& cpu)
             cpu.eax = reg32(dividend / divisor);
             cpu.edx = reg32(dividend % divisor);
         }
-        cpu.fpu.st(0) = cpu.fpu.add(cpu.fpu.st(0), loadFloat(kMinus15));
-        cpu.fpu.st(0) = cpu.fpu.add(cpu.fpu.st(0), loadFloat(kMinus30));
+        cpu.fpu.st(0) = fp::add(cpu.fpu.st(0), loadFloat(kMinus15));
+        cpu.fpu.st(0) = fp::add(cpu.fpu.st(0), loadFloat(kMinus30));
         if (!chop())
             return;
         fistp(ebp - 8);

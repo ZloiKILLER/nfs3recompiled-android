@@ -3,7 +3,9 @@
 
 #include <x86.h>
 #include <fpu.h>
+#ifdef WITH_MMX
 #include <mmx.h>
+#endif
 
 #define REGISTER_A(n)       \
 union                       \
@@ -131,8 +133,12 @@ struct CPU
         this->ip = ip;
     }
 
+#ifdef WITH_MMX
+    /* The game's code in tools/game_checks still has these: the port has none of
+     * them (native_mix.cpp, nfs3hp::removed). */
     void cpuid();
     void rdtsc();
+#endif
 
     /* What a generated function says around a call (disasm/codegen): here,
      * where the function works on the CPU itself, there is nothing to hand
@@ -142,7 +148,9 @@ struct CPU
     CPU& handOver() { return *this; }
 
     FPU fpu;
+#ifdef WITH_MMX
     MMX mmx;
+#endif
     bool terminate;
 };
 
@@ -207,7 +215,9 @@ struct Local
     reg16& ss;
     reg32& ip;
     FPU& fpu;
+#ifdef WITH_MMX
     MMX& mmx;
+#endif
     bool& terminate;
     bool handedOver = false;
 
@@ -215,7 +225,11 @@ struct Local
         :   real(cpu)
         ,   ecs(cpu.ecs), cs(cpu.cs), eds(cpu.eds), ds(cpu.ds), ees(cpu.ees), es(cpu.es)
         ,   efs(cpu.efs), fs(cpu.fs), egs(cpu.egs), gs(cpu.gs), ess(cpu.ess), ss(cpu.ss)
-        ,   ip(cpu.ip), fpu(cpu.fpu), mmx(cpu.mmx), terminate(cpu.terminate)
+        ,   ip(cpu.ip), fpu(cpu.fpu)
+#ifdef WITH_MMX
+        ,   mmx(cpu.mmx)
+#endif
+        ,   terminate(cpu.terminate)
     {
         reload();
     }
@@ -276,6 +290,7 @@ struct Local
         flags.cf = 0;
         flags.of = 0;
     }
+#ifdef WITH_MMX
     void cpuid()
     {
         store();
@@ -288,6 +303,7 @@ struct Local
         real.rdtsc();
         reload();
     }
+#endif
 
 private:
     X86_LOCAL_INLINE void store()

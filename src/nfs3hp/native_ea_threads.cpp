@@ -978,7 +978,7 @@ void axisRotation(win32::WinApplication* app, x86::CPU& cpu)
     // t x at esp + 0x1c, the cosine at esp + 0x34.
     const reg32 x = cpu.esp + 8, y = cpu.esp + 0xc, z = cpu.esp + 0x10;
     const reg32 sine = cpu.esp + 0x14, tx = cpu.esp + 0x1c, cosine = cpu.esp + 0x34;
-    const auto timesTop = [&](reg32 at) { fpu.st(0) = fpu.mul(fpu.st(0), loadFloat(app, at)); };
+    const auto timesTop = [&](reg32 at) { fpu.st(0) = fp::mul(fpu.st(0), loadFloat(app, at)); };
     fpu.push(loadFloat(app, sine));
     timesTop(x);
     fpu.push(loadFloat(app, sine));
@@ -986,7 +986,7 @@ void axisRotation(win32::WinApplication* app, x86::CPU& cpu)
     fpu.push(loadFloat(app, sine));
     timesTop(z);
     fpu.push(1.0);
-    fpu.st(0) = fpu.sub(fpu.st(0), loadFloat(app, cosine));
+    fpu.st(0) = fp::sub(fpu.st(0), loadFloat(app, cosine));
     fpu.push(fpu.st(0));
     timesTop(x);
     fpu.push(fpu.st(1));
@@ -997,49 +997,49 @@ void axisRotation(win32::WinApplication* app, x86::CPU& cpu)
     exchange(cpu, 2);
     timesTop(z);
     exchange(cpu, 2);
-    fpu.st(0) = fpu.add(fpu.st(0), loadFloat(app, cosine));
+    fpu.st(0) = fp::add(fpu.st(0), loadFloat(app, cosine));
     fpu.push(loadFloat(app, tx));
     exchange(cpu, 1);
     storePop(app, cpu, cpu.edi);
     timesTop(y);
-    fpu.st(0) = fpu.add(fpu.st(0), fpu.st(3));               // fadd st(3)
+    fpu.st(0) = fp::add(fpu.st(0), fpu.st(3));               // fadd st(3)
     storePop(app, cpu, cpu.edi + 4);
     fpu.push(loadFloat(app, tx));
     timesTop(z);
-    fpu.st(0) = fpu.sub(fpu.st(0), fpu.st(4));               // fsub st(4)
+    fpu.st(0) = fp::sub(fpu.st(0), fpu.st(4));               // fsub st(4)
     fpu.push(fpu.st(1));
     exchange(cpu, 1);
     storePop(app, cpu, cpu.edi + 8);
     timesTop(x);
-    fpu.st(3) = fpu.sub(fpu.st(0), fpu.st(3));               // fsubrp st(3)
+    fpu.st(3) = fp::sub(fpu.st(0), fpu.st(3));               // fsubrp st(3)
     fpu.pop();
     fpu.push(fpu.st(0));
     exchange(cpu, 3);
     storePop(app, cpu, cpu.edi + 0xc);
     exchange(cpu, 2);
     timesTop(y);
-    fpu.st(0) = fpu.add(fpu.st(0), loadFloat(app, cosine));
+    fpu.st(0) = fp::add(fpu.st(0), loadFloat(app, cosine));
     storePop(app, cpu, cpu.edi + 0x10);
     exchange(cpu, 1);
     timesTop(z);
-    fpu.st(0) = fpu.add(fpu.st(0), fpu.st(3));               // fadd st(3)
+    fpu.st(0) = fp::add(fpu.st(0), fpu.st(3));               // fadd st(3)
     fpu.push(fpu.st(1));
     exchange(cpu, 1);
     storePop(app, cpu, cpu.edi + 0x14);
     timesTop(x);
-    fpu.st(2) = fpu.add(fpu.st(2), fpu.st(0));               // faddp st(2)
+    fpu.st(2) = fp::add(fpu.st(2), fpu.st(0));               // faddp st(2)
     fpu.pop();
     fpu.push(fpu.st(0));
     exchange(cpu, 2);
     storePop(app, cpu, cpu.edi + 0x18);
     exchange(cpu, 1);
     timesTop(y);
-    fpu.st(2) = fpu.sub(fpu.st(0), fpu.st(2));               // fsubrp st(2)
+    fpu.st(2) = fp::sub(fpu.st(0), fpu.st(2));               // fsubrp st(2)
     fpu.pop();
     exchange(cpu, 1);
     storePop(app, cpu, cpu.edi + 0x1c);
     timesTop(z);
-    fpu.st(0) = fpu.add(fpu.st(0), loadFloat(app, cosine));
+    fpu.st(0) = fp::add(fpu.st(0), loadFloat(app, cosine));
     storePop(app, cpu, cpu.edi + 0x20);
     cpu.ebx = pop(app, cpu);
     cpu.edx = pop(app, cpu);
@@ -1064,7 +1064,7 @@ void randomFraction(win32::WinApplication* app, x86::CPU& cpu)
     put(app, cpu.esp + 4, cpu.edx);
     put(app, cpu.esp, cpu.eax);
     cpu.fpu.push(x86::Float(x86::sreg64(app->getMemory<x86::reg64>(cpu.esp))));
-    cpu.fpu.st(0) = cpu.fpu.mul(cpu.fpu.st(0), x86::Float(app->getMemory<double>(kOneIn65536)));
+    cpu.fpu.st(0) = fp::mul(cpu.fpu.st(0), x86::Float(app->getMemory<double>(kOneIn65536)));
     cpu.esp += 8;
     cpu.edx = pop(app, cpu);
     cpu.eax = pop(app, cpu);

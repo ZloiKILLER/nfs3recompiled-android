@@ -131,7 +131,6 @@ typedef struct MadMovieHost
     void *user;
     int32_t movies_off;             /* [0x7a1fdc], set by -nomovie */
     const char *movie_dir;          /* 0x7a32b4, "<cd>\fedata\movies\" from install.win */
-    uint32_t cpu_hz;                /* [0x5652a4], measured at start-up */
     int32_t (*file_exists)(void *user, const char *path);   /* sub_4e0e60 */
     void (*flush_input)(void *user);                         /* sub_4f0240 */
     void (*sound_pause)(void *user);                         /* sub_4d5d30 */

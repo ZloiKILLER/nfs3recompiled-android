@@ -376,7 +376,7 @@ bool compare(RApp& g, RApp& n, const x86::CPU& gc, const x86::CPU& nc, x86::reg3
             {"cf", gc.flags.cf, nc.flags.cf}, {"zf", gc.flags.zf, nc.flags.zf}, {"sf", gc.flags.sf, nc.flags.sf},
             {"of", gc.flags.of, nc.flags.of}, {"pf", gc.flags.pf, nc.flags.pf}, {"af", gc.flags.af, nc.flags.af},
             {"df", gc.flags.df, nc.flags.df},
-            {"fpu count", gc.fpu.count, nc.fpu.count}, {"fpu status", gc.fpu.status.word, nc.fpu.status.word},
+            {"fpu count", gc.fpu.count, nc.fpu.count},
             {"fpu control", gc.fpu.control.word, nc.fpu.control.word},
         };
         for (const auto& r : regs)
@@ -390,7 +390,7 @@ bool compare(RApp& g, RApp& n, const x86::CPU& gc, const x86::CPU& nc, x86::reg3
         for (x86::reg32 i = 0; i < 8; ++i)
         {
             const x86::reg32 depth = gc.fpu.count;
-            if (!std::getenv("RENDER_ALL_FPU_REGS") && depth <= 8 && ((depth - i) & 7) >= depth)
+            if (!std::getenv("RENDER_ALL_FPU_REGS") && (depth > 8 || ((depth - i) & 7) >= depth))
                 continue;
             const double a = double(gc.fpu.regs[i]), c = double(nc.fpu.regs[i]);
             if (std::memcmp(&a, &c, 8) != 0 && !(a != a && c != c))

@@ -197,21 +197,21 @@ void fxch(CPU& cpu, int i)
 void fchs(CPU& cpu) { cpu.fpu.st(0) = -cpu.fpu.st(0); }
 
 // st(0) op= m.
-void fadd(CPU& cpu, const Float& m) { cpu.fpu.st(0) = cpu.fpu.add(cpu.fpu.st(0), m); }
-void fsub(CPU& cpu, const Float& m) { cpu.fpu.st(0) = cpu.fpu.sub(cpu.fpu.st(0), m); }
-void fsubr(CPU& cpu, const Float& m) { cpu.fpu.st(0) = cpu.fpu.sub(m, Float(cpu.fpu.st(0))); }
-void fmul(CPU& cpu, const Float& m) { cpu.fpu.st(0) = cpu.fpu.mul(cpu.fpu.st(0), m); }
-void fdiv(CPU& cpu, const Float& m) { cpu.fpu.st(0) = cpu.fpu.div(cpu.fpu.st(0), m); }
+void fadd(CPU& cpu, const Float& m) { cpu.fpu.st(0) = fp::add(cpu.fpu.st(0), m); }
+void fsub(CPU& cpu, const Float& m) { cpu.fpu.st(0) = fp::sub(cpu.fpu.st(0), m); }
+void fsubr(CPU& cpu, const Float& m) { cpu.fpu.st(0) = fp::sub(m, Float(cpu.fpu.st(0))); }
+void fmul(CPU& cpu, const Float& m) { cpu.fpu.st(0) = fp::mul(cpu.fpu.st(0), m); }
+void fdiv(CPU& cpu, const Float& m) { cpu.fpu.st(0) = fp::div(cpu.fpu.st(0), m); }
 
 // st(0) op= st(i); st(i) op= st(0) (no pop).
-void fmulSt0(CPU& cpu, int i) { cpu.fpu.st(0) = cpu.fpu.mul(cpu.fpu.st(0), Float(cpu.fpu.st(i))); }
-void fmulSti(CPU& cpu, int i) { cpu.fpu.st(i) = cpu.fpu.mul(cpu.fpu.st(i), Float(cpu.fpu.st(0))); }
+void fmulSt0(CPU& cpu, int i) { cpu.fpu.st(0) = fp::mul(cpu.fpu.st(0), Float(cpu.fpu.st(i))); }
+void fmulSti(CPU& cpu, int i) { cpu.fpu.st(i) = fp::mul(cpu.fpu.st(i), Float(cpu.fpu.st(0))); }
 
 // st(i) op= st(0), popped.
-void faddp(CPU& cpu, int i) { cpu.fpu.st(i) = cpu.fpu.add(cpu.fpu.st(i), cpu.fpu.st(0)); cpu.fpu.pop(); }
-void fmulp(CPU& cpu, int i) { cpu.fpu.st(i) = cpu.fpu.mul(cpu.fpu.st(i), cpu.fpu.st(0)); cpu.fpu.pop(); }
-void fdivp(CPU& cpu, int i) { cpu.fpu.st(i) = cpu.fpu.div(cpu.fpu.st(i), cpu.fpu.st(0)); cpu.fpu.pop(); }
-void fsubrp(CPU& cpu, int i) { cpu.fpu.st(i) = cpu.fpu.sub(cpu.fpu.st(0), Float(cpu.fpu.st(i))); cpu.fpu.pop(); }
+void faddp(CPU& cpu, int i) { cpu.fpu.st(i) = fp::add(cpu.fpu.st(i), cpu.fpu.st(0)); cpu.fpu.pop(); }
+void fmulp(CPU& cpu, int i) { cpu.fpu.st(i) = fp::mul(cpu.fpu.st(i), cpu.fpu.st(0)); cpu.fpu.pop(); }
+void fdivp(CPU& cpu, int i) { cpu.fpu.st(i) = fp::div(cpu.fpu.st(i), cpu.fpu.st(0)); cpu.fpu.pop(); }
+void fsubrp(CPU& cpu, int i) { cpu.fpu.st(i) = fp::sub(cpu.fpu.st(0), Float(cpu.fpu.st(i))); cpu.fpu.pop(); }
 
 /* fcom(p); fnstsw ax; sahf: the x87 status word into ax, CF (C0, below) and
  * ZF (C3, equal) as sahf leaves them. */
@@ -251,7 +251,7 @@ Flags fcompp(CPU& cpu)
 /* sub esp, 4; fistp dword [esp]; pop reg: st(0) rounded to an integer. */
 reg32 fistpPop(App* app, CPU& cpu)
 {
-    const reg32 v = reg32(cpu.fpu.toInteger<sreg32>(cpu.fpu.st(0)));
+    const reg32 v = reg32(fp::toInteger<sreg32>(cpu.fpu.st(0)));
     cpu.fpu.pop();
     return v;
 }
@@ -2670,7 +2670,7 @@ void setupTrackTuning(App* app, CPU& cpu)
         fild(app, cpu, m4);
         fmul(cpu, f32(app, 0x5367e0));  // 0.25
         fld1(cpu);
-        cpu.fpu.st(1) = cpu.fpu.div(cpu.fpu.st(0), Float(cpu.fpu.st(1)));  // fdivrp st(1)
+        cpu.fpu.st(1) = fp::div(cpu.fpu.st(0), Float(cpu.fpu.st(1)));  // fdivrp st(1)
         cpu.fpu.pop();
         ++cpu.eax;
         fstp32(app, cpu, cpu.eax * 4 + 0x56f0dc);

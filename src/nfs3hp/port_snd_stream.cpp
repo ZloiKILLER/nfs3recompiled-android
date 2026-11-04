@@ -88,7 +88,6 @@ constexpr int32_t kTaskCount = 0x10;
 constexpr Var<reg32> kTaskDepth{0x564670};  // the tasks' nesting
 constexpr Var<reg32> kTaskTick{0x564674};   // the tick the tasks last ran at
 constexpr Var<reg32> kTaskTiming{0x56466c}, kTaskTime{0x564668};
-constexpr Var<reg32> kRdtscOk{0x5643bc};
 constexpr Var<int32_t> kClock{0x79c1a0};    // the tasks' clock
 constexpr Var<reg32> kSoundRunning{0x5643d8};  // the sound thread runs
 
@@ -138,12 +137,11 @@ constexpr Table<reg32> kWhere{0x552190};
  * phone's arm64 where the generated code runs, 0 for a divisor of 0). */
 int32_t quotientOf(int32_t a, int32_t b) { return b == 0 ? 0 : idiv(a, b); }
 
-/* The timestamp counter in eax -- `fallback` where the machine has none. */
-reg32 timestamp(App* app, CPU& cpu, reg32 fallback)
+/* The time the tasks' timing goes by: what the game's code has on a machine with
+ * no timestamp counter, what is in eax. */
+reg32 timestamp(CPU& cpu, reg32 fallback)
 {
     cpu.eax = fallback;
-    if (kRdtscOk(app) != 0)
-        cpu.rdtsc();
     return cpu.eax;
 }
 
@@ -218,7 +216,7 @@ Result runDueTasks(App* app, CPU& cpu, reg32 esp, reg32 argument)
     reg32 result = 0, started = cpu.ebp;
     const bool timing = kTaskTiming(app) != 0;
     if (timing)
-        started = timestamp(app, cpu, argument);
+        started = timestamp(cpu, argument);
     // The code's safepoint before the tick's test (0x4e7648), on every call.
     safepoint(app, cpu);
     // eax as the loop leaves it: the clock, 0 after a task ran.
@@ -254,7 +252,7 @@ Result runDueTasks(App* app, CPU& cpu, reg32 esp, reg32 argument)
         }
     }
     if (timing)
-        kTaskTime.set(app, kTaskTime(app) + (timestamp(app, cpu, left) - started));
+        kTaskTime.set(app, kTaskTime(app) + (timestamp(cpu, left) - started));
     return int32_t(result);
 }
 

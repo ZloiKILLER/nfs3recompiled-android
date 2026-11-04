@@ -45,8 +45,8 @@ SITES = [
      "    cpu.ecx ^= x86::reg32(x86::sreg32(cpu.ecx));",
      "void mirrorFollowsMain(win32::WinApplication* app);\n"),
     ("nfs3hp.26.cpp", "004bb6c8  dd0538015400",
-     "    x86::Float fpu9 = x86::Float(app->getMemory<double>(x86::reg32(5505336) /* 0x540138 */));",
-     "    x86::Float fpu9 = x86::Float(mirrorCarScale(app->getMemory<double>(x86::reg32(5505336) /* 0x540138 */)));"
+     "x86::Float(app->getMemory<double>(x86::reg32(5505336) /* 0x540138 */));",
+     "x86::Float(mirrorCarScale(app->getMemory<double>(x86::reg32(5505336) /* 0x540138 */)));"
      " /* port: cars in the mirror as in the main view */",
      "double mirrorCarScale(double scale);\n"),
     # Each place a view pass asks whether it is the mirror's ([view] == 1, the

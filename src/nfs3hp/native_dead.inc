@@ -918,3 +918,26 @@ DEAD(0x533ec8)  // 1 instructions; DdeConnect
 DEAD(0x533ece)  // 1 instructions; DdeCreateStringHandleA
 DEAD(0x533ed4)  // 1 instructions; DdeUninitialize
 DEAD(0x533eda)  // 1 instructions; DdeInitializeA
+DEAD(0x4ff624)
+DEAD(0x51f320)
+DEAD(0x5269d4)
+DEAD(0x526aeb)
+DEAD(0x50ea68)
+DEAD(0x50ea85)
+DEAD(0x50eaa7)
+DEAD(0x4f1ea0)
+DEAD(0x4f21c0)
+DEAD(0x4f20b0)
+DEAD(0x4df5c0)
+DEAD(0x51f272)
+DEAD(0x503280)
+DEAD(0x503281)
+DEAD(0x50356c)
+DEAD(0x50356d)
+// Data decoded as code, found reading them 2026-11-03: the fields' blank buffers, shape names, a table.
+DEAD(0x457260)
+DEAD(0x4576e0)
+DEAD(0x469020)
+DEAD(0x49fdd0)
+DEAD(0x4b6a10)
+DEAD(0x4a78b6)

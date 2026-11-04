@@ -64,6 +64,12 @@ final class DebugOptions
         new Option("live_counter", false,
             "Live functions log: writes which of the game's functions are running to functions.bin as it plays",
             "NFS_FUNC_LOG", "1"),
+        // Every car at every physics step, to compare two builds by a replay (tools/replay_compare.py).
+        new Option("replay_trace", false, "Every car at every physics step, to logs/trace-*.bin",
+            "NFS_REPLAY_TRACE", "1"),
+        // The race summary's Performance page left empty: the timings from the car to the results.
+        new Option("perf_trace", false, "Missing performance data logging [PERF] [PERFTIME]",
+            "NFS_PERF_TRACE", "1"),
         new Option("net_trace", false, "EA's comm library, for network races [COMM]", "NFS_NET_TRACE", "1"),
         /* Every win32 call and File::read's byte counts, and SDL's "opening
          * file %s" (SDL_LogDebug, silent by default), so a read burst can be
@@ -75,17 +81,10 @@ final class DebugOptions
     /* The natives against the generated code, and the experiments. */
     static final Option[] CODE = {
         new Option("natives", true, "Car specs native (off: generated code)", "NFS_NATIVES", "0"),
-        new Option("fe_native", true, "Native front end", "NFS_FE_NATIVE", "0"),
-        new Option("native_ai_off", false, "Opponents on their generated code", "NFS_NATIVE_AI", "0"),
         // Listed before native_check, which sets the same variable and wins.
         new Option("load_check", false, "Check the loading natives [NATIVE]", "NFS_NATIVE_CHECK", "load"),
         new Option("native_check", false, "Check every checked native [NATIVE]", "NFS_NATIVE_CHECK", "1"),
         new Option("mad_check", false, "Check the movie decoder [MAD]", "NFS_MAD_CHECK", "1"),
-        // Races are single precision, as the original's; this is the Modern Patch's way.
-        new Option("fpu_extended_races", false, "Races at extended precision, as the Modern Patch", "NFS_FPU_EXTENDED", "1"),
-        new Option("fpu_double", false, "No x87 single-precision rounding", "NFS_FPU_SINGLE", "0"),
-        new Option("fpu_float", false, "The whole game in single precision",
-            "NFS_FPU_FLOAT", "1", "NFS_FPU_EXTENDED", "0"),
     };
 
     static final Option[] PICTURE = {

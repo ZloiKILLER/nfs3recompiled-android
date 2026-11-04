@@ -1,0 +1,11 @@
+# address name kind: the functions native whole in src/nfs3hp/native_frontend_menuf.cpp, frontend::name.
+# kind: how frontend_checks enters it (Menu, Key, Item, None).
+45b940 hudElementPickCursor Item
+45bcb0 hudElementDraw Item
+45bd20 hudElementKey Key
+45c9d0 hudElementToRecord Item
+4730d0 frontEndFirstStart None
+478000 raceEndEmpty None
+4a4a10 effectsScreenStart Item
+4bc530 pauseResetRaceMouse None
+4bc660 pauseMenuAgain None

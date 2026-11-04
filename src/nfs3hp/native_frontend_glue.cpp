@@ -63,8 +63,7 @@ constexpr reg32 kGameMode = 0x6fd3b0;         // 1: two players on one screen
 constexpr reg32 kControllers = 0x6fc970;      // 0x88 bytes each, the first byte's 4 a game pad
 constexpr reg32 kFirstDigital = 0x6fd2dc, kSecondDigital = 0x6fd348;
 // The attract mode and the movies.
-constexpr reg32 kMoviesOff = 0x7a1fdc, kMovieFolder = 0x7a32b4, kProcessorSpeed = 0x5652a4;
-constexpr reg32 kSlowProcessor = 0x7ed6b40, kFastProcessor = 0xbebc200;   // 133 and 200 MHz
+constexpr reg32 kMoviesOff = 0x7a1fdc, kMovieFolder = 0x7a32b4;
 constexpr reg32 kClock = 0x79c1a4, kAttractSince = 0x55e548, kAttractMovie = 0x55e54c;
 constexpr reg32 kMouseBeforeX = 0x55e550, kMouseBeforeY = 0x55e554;
 constexpr reg32 kAttractOff = 0x6fbb54, kMusicVolume = 0x6fbbe8, kAttractTicks = 0x1400;
@@ -372,16 +371,9 @@ void playMovie(win32::WinApplication* app, x86::CPU& cpu)
             if (!byAddress(app, cpu, kFlushKeys) || !byAddress(app, cpu, kClearBuffers)
                 || !byAddress(app, cpu, kMusicStreamEnd))
                 return;
-            cpu.ebx = at(app, kProcessorSpeed);
+            // The movies' best quality, every frame: no phone is too slow for them.
             put(app, ebp + 0x7e, cpu.edx);
-            if (sreg32(cpu.ebx) < sreg32(kSlowProcessor))
-                cpu.ecx = 1;
-            else if (sreg32(cpu.ebx) < sreg32(kFastProcessor))
-                cpu.ecx = 2;
-            else
-                cpu.ecx = 3;
-            if (sreg32(at(app, kProcessorSpeed)) < sreg32(kSlowProcessor))
-                put(app, ebp + 0x7e, 1);
+            cpu.ecx = 3;
             push(app, cpu, 1);
             cpu.edx = ebp + 0x7e;
             cpu.eax = ebp - 0x7e;

@@ -106,28 +106,28 @@ reg32 corner(reg32 i) { return kCorners + i * kCornerBytes; }
 /* ---- The x87's arithmetic of the resizing ---- */
 
 /* fild a; fild b; fdivp: a over b, kept as a float (fstp). */
-float ratio(CPU& cpu, int32_t a, int32_t b) { return float(cpu.fpu.div(F(a), F(b))); }
+float ratio(CPU& cpu, int32_t a, int32_t b) { return float(fp::div(F(a), F(b))); }
 
 /* fild n; fmul [step]; __CHP; fistp: n steps along, toward 0. */
-int32_t stepped(CPU& cpu, int32_t n, float step) { return chopped<int32_t>(cpu, cpu.fpu.mul(F(n), F(step))); }
+int32_t stepped(CPU& cpu, int32_t n, float step) { return chopped<int32_t>(cpu, fp::mul(F(n), F(step))); }
 
 /* fld [place]; __CHP; fistp. */
 int32_t whole(CPU& cpu, float place) { return chopped<int32_t>(cpu, F(place)); }
 
 /* fld [place]; fadd [step]; fstp [place]. */
-float advanced(CPU& cpu, float place, float step) { return float(cpu.fpu.add(F(place), F(step))); }
+float advanced(CPU& cpu, float place, float step) { return float(fp::add(F(place), F(step))); }
 
 /* fild a; fstp [f]; fild b; fdivr [f]; fistp: a as a float over b, rounded
  * as the control word says. */
 int32_t wholeRatio(CPU& cpu, int32_t a, int32_t b)
 {
-    return cpu.fpu.toInteger<int32_t>(cpu.fpu.div(F(float(F(a))), F(b)));
+    return fp::toInteger<int32_t>(fp::div(F(float(F(a))), F(b)));
 }
 
 /* fild c; fild d; fdivp; fmul [f]; fistp: c over d, times a as a float. */
 int32_t wholeRatioTimes(CPU& cpu, int32_t c, int32_t d, int32_t a)
 {
-    return cpu.fpu.toInteger<int32_t>(cpu.fpu.mul(cpu.fpu.div(F(c), F(d)), F(float(F(a)))));
+    return fp::toInteger<int32_t>(fp::mul(fp::div(F(c), F(d)), F(float(F(a)))));
 }
 
 /* ---- The alpha scans: 0 every pixel opaque, 1 some fully clear (keyed), 2
@@ -1336,17 +1336,17 @@ Result drawArt(App* app, CPU& cpu, reg32 esp, int32_t record, int32_t x, int32_t
         const reg32 t = kArtTiles + reg32(tile) * 0xc;
         ++tile;
         const F size = F(x86::sreg16(wordAt(app, t + 4)));
-        const F left = cpu.fpu.add(F(int32_t(reg32(sword(app, t + 6)) << 5)), F(x));
+        const F left = fp::add(F(int32_t(reg32(sword(app, t + 6)) << 5)), F(x));
         putFloat(app, corner(3), float(left));
         putFloat(app, corner(0), float(left));
         const int32_t top = int32_t((reg32(sword(app, t + 8)) << 5) + reg32(y));
-        const F right = cpu.fpu.add(F(floatAt(app, corner(0))), size);
+        const F right = fp::add(F(floatAt(app, corner(0))), size);
         putFloat(app, corner(2), float(right));
         putFloat(app, corner(1) + 4, float(F(top)));
         const reg32 texture = dwordAt(app, t);
         const F rightAgain = F(floatAt(app, corner(2))), topAgain = F(floatAt(app, corner(1) + 4));
         putFloat(app, corner(1), float(rightAgain));
-        const F bottom = cpu.fpu.add(size, topAgain);
+        const F bottom = fp::add(size, topAgain);
         putFloat(app, corner(0) + 4, float(topAgain));
         putFloat(app, corner(3) + 4, float(bottom));
         putFloat(app, corner(2) + 4, float(bottom));

@@ -1,7 +1,9 @@
 #include "native_guest.h"
+#include "diag_hooks.h"
 #include "thrash.h"
 
 #include <cstdint>
+#include <cstdio>
 
 /* The game's graphics that were still generated: what drives the THRASH
  * driver itself (voodoo2a, the port's own in port_thrash.cpp) -- its states,
@@ -1189,7 +1191,7 @@ void drawLoadingAborted(win32::WinApplication* app, x86::CPU& cpu)
         put(app, cpu.ebp - 4, cpu.eax);
         cpu.ecx = 0;
         const x86::Float perLine =
-            fpu.mul(x86::Float(sreg32(at(app, cpu.ebp - 4))), x86::Float(app->getMemory<float>(kHeightPer480)));
+            fp::mul(x86::Float(sreg32(at(app, cpu.ebp - 4))), x86::Float(app->getMemory<float>(kHeightPer480)));
         put(app, kLoadingTextShown, cpu.ecx);
         app->getMemory<float>(scale) = float(perLine);
         if (!byAddress(app, cpu, kTwoDStates))
@@ -1210,7 +1212,7 @@ void drawLoadingAborted(win32::WinApplication* app, x86::CPU& cpu)
         if (!byAddress(app, cpu, kSprintf))
             return;
         const x86::Float row =
-            fpu.mul(x86::Float(app->getMemory<float>(scale)), x86::Float(app->getMemory<float>(kAbortedRow)));
+            fp::mul(x86::Float(app->getMemory<float>(scale)), x86::Float(app->getMemory<float>(kAbortedRow)));
         const x86::Float x = x86::Float(app->getMemory<float>(kLoadingTextX));
         cpu.eax = text;
         cpu.esp += 0xc;
@@ -1220,12 +1222,12 @@ void drawLoadingAborted(win32::WinApplication* app, x86::CPU& cpu)
         // Each chopped and stored as an integer: x into edx, the row into ebx.
         if (!byAddress(app, cpu, kChop))
             return;
-        put(app, cpu.ebp - 4, reg32(fpu.toInteger<sreg32>(fpu.st(0))));
+        put(app, cpu.ebp - 4, reg32(fp::toInteger<sreg32>(fpu.st(0))));
         cpu.edx = at(app, cpu.ebp - 4);
         fpu.count -= 1;
         if (!byAddress(app, cpu, kChop))
             return;
-        put(app, cpu.ebp - 4, reg32(fpu.toInteger<sreg32>(fpu.st(0))));
+        put(app, cpu.ebp - 4, reg32(fp::toInteger<sreg32>(fpu.st(0))));
         cpu.ebx = at(app, cpu.ebp - 4);
         fpu.count -= 1;
         if (!byAddress(app, cpu, kDrawText))
@@ -1343,6 +1345,8 @@ void takeDownRace(win32::WinApplication* app, x86::CPU& cpu)
     push(app, cpu, cpu.ebp);
     cpu.ebp = cpu.esp;
     cpu.esi = cpu.eax;
+    if (diag::raceDown)
+        diag::raceDown(app, "race taken down");
     raceRunning(false);
     cpu.eax = at(app, kMenuScreenMode);
     cpu.edx = 0;
@@ -1380,8 +1384,16 @@ void takeDownRace(win32::WinApplication* app, x86::CPU& cpu)
     if (cpu.esi != 0 && !byAddress(app, cpu, kRaceEndExtra))
         return;
     for (const reg32 end : kRaceEnds)
+    {
         if (!byAddress(app, cpu, end))
             return;
+        if (diag::raceDown)
+        {
+            char where[32];
+            std::snprintf(where, sizeof where, "after sub_%x", unsigned(end));
+            diag::raceDown(app, where);
+        }
+    }
     cpu.ebp = pop(app, cpu);
     cpu.esi = pop(app, cpu);
     cpu.edx = pop(app, cpu);
@@ -1780,8 +1792,8 @@ void drawTextBox(win32::WinApplication* app, x86::CPU& cpu)
     put(app, cpu.ebp - 4, cpu.edx);
     cpu.edx = at(app, kFont);
     const x86::Float scale = loadFloat(kFontScale);
-    const x86::Float scaledWidth = fpu.mul(width, scale);
-    const x86::Float height = fpu.mul(scale, loadInteger(kFontHeights + cpu.edx * 4));
+    const x86::Float scaledWidth = fp::mul(width, scale);
+    const x86::Float height = fp::mul(scale, loadInteger(kFontHeights + cpu.edx * 4));
     put(app, cpu.ebp - 8, cpu.ecx);
     cpu.eax = at(app, kTextBoxColour) | 0xff000000;
     const x86::Float x = loadInteger(cpu.ebp - 8);
@@ -1797,8 +1809,8 @@ void drawTextBox(win32::WinApplication* app, x86::CPU& cpu)
     cpu.eax = thrash::kStateTexture;
     put(app, cpu.ebp - 8, cpu.ecx);
     put(app, kTextQuad + 0x60, cpu.ecx);
-    const x86::Float right = fpu.add(scaledWidth, loadFloat(cpu.ebp - 8));
-    const x86::Float bottom = fpu.add(height, top);
+    const x86::Float right = fp::add(scaledWidth, loadFloat(cpu.ebp - 8));
+    const x86::Float bottom = fp::add(height, top);
     storeFloat(kTextQuad + 0x20, right);
     storeFloat(kTextQuad + 0x44, bottom);
     cpu.ecx = at(app, kTextQuad + 0x20);
@@ -2661,7 +2673,7 @@ void showWaitMessage(win32::WinApplication* app, x86::CPU& cpu)
     // The text at the view's height over 480.
     cpu.eax = local(8);
     setLocal(4, cpu.eax);
-    const x86::Float scale = fpu.mul(fpu.mul(x86::Float(sreg32(local(4))), x86::Float(app->getMemory<float>(kMessageScale))),
+    const x86::Float scale = fp::mul(fp::mul(x86::Float(sreg32(local(4))), x86::Float(app->getMemory<float>(kMessageScale))),
                                      x86::Float(app->getMemory<float>(kMessageScaleAgain)));
     cpu.esp -= 4;
     app->getMemory<float>(cpu.esp) = float(scale);
@@ -2672,7 +2684,7 @@ void showWaitMessage(win32::WinApplication* app, x86::CPU& cpu)
     if (!byAddress(app, cpu, kTextWidth) || !byAddress(app, cpu, kChop))
         return;
     cpu.eax = kFont87;
-    setLocal(0x1c, reg32(fpu.toInteger<sreg32>(fpu.st(0))));
+    setLocal(0x1c, reg32(fp::toInteger<sreg32>(fpu.st(0))));
     fpu.count -= 1;
     if (!byAddress(app, cpu, kTextHeight))
         return;
@@ -2799,16 +2811,16 @@ void hudEditorFrame(win32::WinApplication* app, x86::CPU& cpu)
     auto integer = [&](reg32 address) { return x86::Float(sreg32(at(app, address))); };
     cpu.ecx = cpu.eax;
     const x86::Float width = integer(kModeWidth);
-    const x86::Float scaledX = fpu.mul(width, loadFloat(kFrameScaleX));
-    const x86::Float scaledY = fpu.mul(width, loadFloat(kFrameScaleY));
+    const x86::Float scaledX = fp::mul(width, loadFloat(kFrameScaleX));
+    const x86::Float scaledY = fp::mul(width, loadFloat(kFrameScaleY));
     const x86::Float thickness = loadFloat(kFrameThickness);
-    const x86::Float roomX = fpu.mul(scaledX, thickness);
-    const x86::Float roomY = fpu.mul(thickness, scaledY);
+    const x86::Float roomX = fp::mul(scaledX, thickness);
+    const x86::Float roomY = fp::mul(thickness, scaledY);
     const x86::Float right = integer(cpu.eax + 0x60);
     const x86::Float left = word16(cpu.ecx + 6);
     cpu.eax = 0;
-    storeFloat(ebp - 0x14, fpu.add(left, loadFloat(kFrameMarginX)));
-    storeFloat(ebp - 0x10, fpu.add(right, loadFloat(kFrameMarginY)));
+    storeFloat(ebp - 0x14, fp::add(left, loadFloat(kFrameMarginX)));
+    storeFloat(ebp - 0x10, fp::add(right, loadFloat(kFrameMarginY)));
     storeFloat(ebp - 0x1c, roomX);
     storeFloat(ebp - 0x18, roomY);
     do
@@ -2835,8 +2847,8 @@ void hudEditorFrame(win32::WinApplication* app, x86::CPU& cpu)
     for (const reg32 corner : {11u, 10u, 1u, 0u})
         put(app, kFrameMesh + corner * kCornerBytes, cpu.eax);
     x86::Float room = loadFloat(ebp - 0x1c);
-    storeFloat(kFrameMesh + 0x120, fpu.add(frameLeft, room));
-    storeFloat(kFrameMesh + 0x100, fpu.sub(frameRight, room));
+    storeFloat(kFrameMesh + 0x120, fp::add(frameLeft, room));
+    storeFloat(kFrameMesh + 0x100, fp::sub(frameRight, room));
     const x86::Float innerLeft = loadFloat(kFrameMesh + 0x120);
     cpu.eax = at(app, kModeWidth);
     const x86::Float innerRight = loadFloat(kFrameMesh + 0x100);
@@ -2857,8 +2869,8 @@ void hudEditorFrame(win32::WinApplication* app, x86::CPU& cpu)
         put(app, kFrameMesh + corner * kCornerBytes, cpu.eax);
     cpu.eax = at(app, ebp - 0x24);
     room = loadFloat(ebp - 0x18);
-    storeFloat(kFrameMesh + 0xa4, fpu.add(top, room));
-    storeFloat(kFrameMesh + 0x164, fpu.sub(bottom, room));
+    storeFloat(kFrameMesh + 0xa4, fp::add(top, room));
+    storeFloat(kFrameMesh + 0x164, fp::sub(bottom, room));
     const x86::Float innerTop = loadFloat(kFrameMesh + 0xa4);
     const x86::Float innerBottom = loadFloat(kFrameMesh + 0x164);
     for (const reg32 corner : {0x4u, 0x3u, 0x2u, 0x1u})
@@ -2898,9 +2910,6 @@ void hudEditorFrame(win32::WinApplication* app, x86::CPU& cpu)
 
 }  // namespace graphics
 
-// nfs3hp_main.cpp (tools/apply_race_precision.py): the race's control word,
-// at the precision NFS_FPU_EXTENDED asks for.
-x86::reg16 raceControl(x86::reg16 word);
 
 namespace graphics
 {
@@ -2921,8 +2930,7 @@ void menuPrecision(win32::WinApplication* app, x86::CPU& cpu)
 }
 
 /* fninit, fnstcw [0x79f3ec], the word kept as the menus' and its precision
- * cleared, fldcw: the race's (through nfs3hp::raceControl, a port).  eax as
- * the code leaves it. */
+ * cleared, fldcw: the race's.  eax as the code leaves it. */
 void racePrecision(win32::WinApplication* app, x86::CPU& cpu)
 {
     cpu.fpu.init();
@@ -2931,7 +2939,7 @@ void racePrecision(win32::WinApplication* app, x86::CPU& cpu)
     put(app, kMenuControl, cpu.eax);
     cpu.eax &= 0xfffff0ff;
     put(app, kRaceControl, cpu.eax);
-    cpu.fpu.setControl(raceControl(half(app, kRaceControl)));
+    cpu.fpu.setControl(half(app, kRaceControl));
 }
 
 /* The inlined strlen of the string at edi (ecx its length, edi past its end). */
@@ -3140,12 +3148,12 @@ void drawLoadingProgress(win32::WinApplication* app, x86::CPU& cpu)
         if (!belowAx(cpu, floatAt(ebp + 0x1c), x86::Float(app->getMemory<double>(kLoadingAll))))
             put(app, ebp + 0x1c, 0x42ca0000);  // 101.0f
         const x86::Float perCent = floatAt(ebp + 0x1c);
-        const x86::Float scaled = fpu.mul(perCent, x86::Float(app->getMemory<double>(kLoadingPerCent)));
+        const x86::Float scaled = fp::mul(perCent, x86::Float(app->getMemory<double>(kLoadingPerCent)));
         const x86::Float left = floatAt(kLoadingTextX);
-        const x86::Float room = fpu.sub(floatAt(kLoadingBarEnd), left);
+        const x86::Float room = fp::sub(floatAt(kLoadingBarEnd), left);
         setFloat(ebp + 0x1c, scaled);
-        const x86::Float width = fpu.mul(room, floatAt(ebp + 0x1c));
-        const x86::Float height = fpu.mul(floatAt(ebp + 0x1c), floatAt(kLoadingBarHeight));
+        const x86::Float width = fp::mul(room, floatAt(ebp + 0x1c));
+        const x86::Float height = fp::mul(floatAt(ebp + 0x1c), floatAt(kLoadingBarHeight));
         cpu.ebx = 0x43e08000;                    // 449.0f, the bar's top
         cpu.edi = 0x43ea8000;                    // 469.0f, its bottom
         cpu.ecx = kLoadingBar + 3 * kCornerBytes;
@@ -3165,9 +3173,9 @@ void drawLoadingProgress(win32::WinApplication* app, x86::CPU& cpu)
         fpu.st(2) = left;
         if (!byAddress(app, cpu, kChop))
             return;
-        put(app, ebp - 4, reg32(fpu.toInteger<sreg32>(fpu.st(0))));
+        put(app, ebp - 4, reg32(fp::toInteger<sreg32>(fpu.st(0))));
         cpu.eax = at(app, ebp - 4);
-        const x86::Float right = fpu.add(fpu.st(2), fpu.st(1));
+        const x86::Float right = fp::add(fpu.st(2), fpu.st(1));
         cpu.eax <<= 0x10;
         setFloat(kLoadingBar + kCornerBytes, right);
         cpu.eax -= 0x1000000;
@@ -3608,13 +3616,13 @@ namespace
 void angleIntoTurn(win32::WinApplication* app, x86::CPU& cpu, reg32 at)
 {
     while (!belowOrEqualAx(cpu, 0.0, x86::Float(app->getMemory<float>(at))))
-        app->getMemory<float>(at) = float(cpu.fpu.add(1.0, x86::Float(app->getMemory<float>(at))));
+        app->getMemory<float>(at) = float(fp::add(1.0, x86::Float(app->getMemory<float>(at))));
 }
 
 void angleNotPastTurn(win32::WinApplication* app, x86::CPU& cpu, reg32 at)
 {
     while (sreg32(guest::at(app, at)) > 0x3f800000)
-        app->getMemory<float>(at) = float(cpu.fpu.add(x86::Float(app->getMemory<float>(at)),
+        app->getMemory<float>(at) = float(fp::add(x86::Float(app->getMemory<float>(at)),
                                                       x86::Float(app->getMemory<float>(kOneDown))));
 }
 
@@ -3860,8 +3868,8 @@ void loadCabinInstruments(win32::WinApplication* app, x86::CPU& cpu)
             const x86::Float factor = floatAt(at(app, 0x79204c) != 0 ? 0x53b74c : 0x53b750);
             fpu.count += 1;
             fpu.st(0) = factor;
-            const x86::Float scaled = fpu.mul(x86::Float(sreg32(at(app, 0x792054))), fpu.st(0));
-            const x86::Float scaledOther = fpu.mul(fpu.st(0), x86::Float(sreg32(at(app, 0x792050))));
+            const x86::Float scaled = fp::mul(x86::Float(sreg32(at(app, 0x792054))), fpu.st(0));
+            const x86::Float scaledOther = fp::mul(fpu.st(0), x86::Float(sreg32(at(app, 0x792050))));
             setFloat(ebp - 0x1c, scaled);
             setFloat(ebp - 0x24, scaledOther);
         }
@@ -3908,16 +3916,16 @@ void loadCabinInstruments(win32::WinApplication* app, x86::CPU& cpu)
         if (belowAx(cpu, floatAt(ebp - from), floatAt(ebp - to)))
         {
             if (belowAx(cpu, floatAt(ebp - high), floatAt(ebp - low)))
-                setFloat(ebp - high, fpu.add(1.0, floatAt(ebp - high)));
+                setFloat(ebp - high, fp::add(1.0, floatAt(ebp - high)));
         }
         else if (belowAx(cpu, floatAt(ebp - low), floatAt(ebp - high)))
-            setFloat(ebp - low, fpu.add(1.0, floatAt(ebp - low)));
+            setFloat(ebp - low, fp::add(1.0, floatAt(ebp - low)));
         // The slope, the start, and the two distances.
         const x86::Float highTurn = floatAt(ebp - high);
-        const x86::Float turn = fpu.sub(highTurn, floatAt(ebp - low));
+        const x86::Float turn = fp::sub(highTurn, floatAt(ebp - low));
         const x86::Float scaleTo = floatAt(ebp - to);
-        const x86::Float scaleSpan = fpu.sub(scaleTo, floatAt(ebp - from));
-        const x86::Float perUnit = fpu.div(turn, scaleSpan);
+        const x86::Float scaleSpan = fp::sub(scaleTo, floatAt(ebp - from));
+        const x86::Float perUnit = fp::div(turn, scaleSpan);
         cpu.eax = at(app, n.points + 0x18);
         reg32& pivotX = first ? cpu.edi : cpu.ecx;
         reg32& pivotY = first ? cpu.edx : cpu.ebx;
@@ -3929,36 +3937,36 @@ void loadCabinInstruments(win32::WinApplication* app, x86::CPU& cpu)
         const x86::Float dx = x86::Float(sreg32(local(4)));
         cpu.eax -= pivotY;
         setLocal(4, cpu.eax);
-        const x86::Float dx2 = fpu.mul(dx, dx);
+        const x86::Float dx2 = fp::mul(dx, dx);
         const x86::Float dy = x86::Float(sreg32(local(4)));
         cpu.eax = at(app, n.points + 0x20);
-        const x86::Float dy2 = fpu.mul(dy, dy);
+        const x86::Float dy2 = fp::mul(dy, dy);
         cpu.eax -= pivotX;
         setFloat(n.slope, perUnit);
-        const x86::Float offset = fpu.mul(scaleTo, floatAt(n.slope));
+        const x86::Float offset = fp::mul(scaleTo, floatAt(n.slope));
         setLocal(4, cpu.eax);
         cpu.esp -= 4;
         const x86::Float fullX = x86::Float(sreg32(local(4)));
         cpu.eax = at(app, n.points + 0x24);
         setFloat(ebp - 0x2c, fullX);
         cpu.eax -= pivotY;
-        const x86::Float zeroSquared = fpu.add(dx2, dy2);
+        const x86::Float zeroSquared = fp::add(dx2, dy2);
         setLocal(4, cpu.eax);
         app->getMemory<float>(cpu.esp) = float(zeroSquared);
         const x86::Float fullY = x86::Float(sreg32(local(4)));
-        setFloat(n.start, fpu.sub(highTurn, offset));
+        setFloat(n.start, fp::sub(highTurn, offset));
         setFloat(ebp - 0x3c, fullY);
         if (!byAddress(app, cpu, kSquareRoot))
             return false;
         const x86::Float fullSquared =
-            fpu.add(fpu.mul(floatAt(ebp - 0x2c), floatAt(ebp - 0x2c)), fpu.mul(floatAt(ebp - 0x3c), floatAt(ebp - 0x3c)));
+            fp::add(fp::mul(floatAt(ebp - 0x2c), floatAt(ebp - 0x2c)), fp::mul(floatAt(ebp - 0x3c), floatAt(ebp - 0x3c)));
         cpu.esp -= 4;
         app->getMemory<float>(cpu.esp) = float(fullSquared);
         setFloat(ebp - 4, fpu.st(0));
         fpu.count -= 1;
         if (!byAddress(app, cpu, kSquareRoot))
             return false;
-        setFloat(n.length, fpu.mul(fpu.add(fpu.st(0), floatAt(ebp - 4)), floatAt(kHalfOfIt)));
+        setFloat(n.length, fp::mul(fp::add(fpu.st(0), floatAt(ebp - 4)), floatAt(kHalfOfIt)));
         fpu.count -= 1;
         return true;
     };
@@ -3988,12 +3996,12 @@ void loadCabinInstruments(win32::WinApplication* app, x86::CPU& cpu)
     setLocal(4, cpu.edx);
     divide256(at(app, kCabinGauges + 4));
     const x86::Float unit = floatAt(0x53b75c);
-    const x86::Float u = fpu.mul(x86::Float(sreg32(local(4))), unit);
+    const x86::Float u = fp::mul(x86::Float(sreg32(local(4))), unit);
     setLocal(4, cpu.edx);
-    const x86::Float v = fpu.mul(unit, x86::Float(sreg32(local(4))));
+    const x86::Float v = fp::mul(unit, x86::Float(sreg32(local(4))));
     const x86::Float bias = x86::Float(app->getMemory<double>(0x53b764));
-    setFloat(0x7922d8, fpu.add(u, bias));
-    setFloat(0x7922d4, fpu.add(bias, v));
+    setFloat(0x7922d8, fp::add(u, bias));
+    setFloat(0x7922d4, fp::add(bias, v));
     done();
 }
 
@@ -4045,29 +4053,29 @@ void hudMessageBox(win32::WinApplication* app, x86::CPU& cpu)
     if (!byAddress(app, cpu, kTextWidth))
         return;
     // The text's left: the box's middle less half its width (chopped).
-    const x86::Float left = fpu.mul(fpu.sub(loadFloat(cpu.ebp - 8), fpu.st(0)), loadFloat(kHalf));
-    const x86::Float boxHeight = fpu.sub(loadFloat(cpu.esi + 0x44), loadFloat(cpu.esi + 4));
+    const x86::Float left = fp::mul(fp::sub(loadFloat(cpu.ebp - 8), fpu.st(0)), loadFloat(kHalf));
+    const x86::Float boxHeight = fp::sub(loadFloat(cpu.esi + 0x44), loadFloat(cpu.esi + 4));
     cpu.eax = 0x44;
     app->getMemory<float>(cpu.ebp - 8) = float(boxHeight);
     fpu.st(0) = left;
     if (!byAddress(app, cpu, kChop))
         return;
-    put(app, cpu.ebp - 0xc, reg32(fpu.toInteger<sreg32>(fpu.st(0))));
+    put(app, cpu.ebp - 0xc, reg32(fp::toInteger<sreg32>(fpu.st(0))));
     fpu.count -= 1;
     if (!byAddress(app, cpu, kTextHeight))
         return;
     // Its top: the box's top and half of what its height leaves.
     put(app, cpu.ebp - 4, cpu.eax);
-    const x86::Float spare = fpu.sub(loadFloat(cpu.ebp - 8), x86::Float(sreg32(at(app, cpu.ebp - 4))));
-    const x86::Float halfSpare = fpu.mul(spare, loadFloat(kHalfAgain));
+    const x86::Float spare = fp::sub(loadFloat(cpu.ebp - 8), x86::Float(sreg32(at(app, cpu.ebp - 4))));
+    const x86::Float halfSpare = fp::mul(spare, loadFloat(kHalfAgain));
     cpu.edx = at(app, cpu.ebp - 0xc);
-    const x86::Float top = fpu.add(halfSpare, loadFloat(cpu.esi + 4));
+    const x86::Float top = fp::add(halfSpare, loadFloat(cpu.esi + 4));
     cpu.eax = cpu.edi;
     fpu.count += 1;
     fpu.st(0) = top;
     if (!byAddress(app, cpu, kChop))
         return;
-    put(app, cpu.ebp - 0x10, reg32(fpu.toInteger<sreg32>(fpu.st(0))));
+    put(app, cpu.ebp - 0x10, reg32(fp::toInteger<sreg32>(fpu.st(0))));
     cpu.ebx = at(app, cpu.ebp - 0x10);
     fpu.count -= 1;
     if (!byAddress(app, cpu, kDrawText))

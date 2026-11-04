@@ -31,10 +31,9 @@ of their own, which is why it needed a separate patch and not this one.
 from pathlib import Path
 
 # (generated file, address of the `test byte ptr [0x7a3a58], 0x40` it guards)
-SITES = [
-    ("nfs3hp.12.cpp", "00448738"),   # sub_448610 -- advgrph, from Options
-    ("nfs3hp.13.cpp", "0044d36d"),   # sub_44d2a0 -- psgraph, from the pause menu
-]
+# sub_448610 (advgrph) and sub_44d2a0 (psgraph) are native whole and have it themselves;
+# tools/frontend_checks/generate.py makes the change to the game's code they are held against.
+SITES = []
 
 CAP_TEST = ("    cpu.set_szp(static_cast<x86::reg8>(app->getMemory<x86::reg8>"
             "(x86::reg32(8010328) /* 0x7a3a58 */) & 64 /*0x40*/));")

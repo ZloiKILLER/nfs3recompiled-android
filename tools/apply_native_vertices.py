@@ -21,7 +21,6 @@ SITES = [
     ("nfs3hp", "sub_4bbd70", "arenaReset"),
     # An opponent's lane votes as its driver acts on them (NFS_CAR_TRACE), to
     # find why the opponents pile up at Aquatica's tunnel.
-    ("nfs3hp", "sub_40de30", "aiVotes"),
     # EA's comm library into the log (NFS_NET_TRACE) -- the IPX transport
     # opening, the library's event log and packet_sendpacket -- to see where an
     # IPX race stops.  Its message printer, Error, is native

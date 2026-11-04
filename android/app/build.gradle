@@ -43,7 +43,7 @@ android {
                  * something that feels interpreted; the desktop reference build
                  * is Release.  This lands after CMAKE_CXX_FLAGS_DEBUG, so it
                  * wins, while -g is kept for symbolicating native crashes. */
-                cppFlags "-O2"
+                cppFlags "-O2 -ffp-contract=off"
                 arguments(
                     "-DANDROID_STL=c++_shared",
                     // The game pumps SDL's event queue from a guest thread, so
@@ -53,20 +53,9 @@ android {
                     // simpleperf profile put SDL_ReportAssertion at ~1% of total
                     // CPU. "release" keeps the cheap assertions and drops that one.
                     "-DSDL_ASSERTIONS=release",
-                    // Must match the desktop reference build, which has MMX on
-                    // (CMake default).  WITH_MMX only flips the MMX bit in the
-                    // emulated CPUID, and the game picks a completely different
-                    // set of copy/decode routines when it thinks MMX is absent --
-                    // that no-MMX path is what left the movie streamer's filename
-                    // buffer all zeroes on device.  MMX itself is plain C++
-                    // (include/mmx.h), the same on ARM as on x86.
-                    "-DWITH_MMX=ON",
-                    // -PwideFpu: the long double x87 experiment (include/fpu.h).
-                    "-DWITH_WIDE_FPU=" + (providers.gradleProperty("wideFpu").isPresent() ? "ON" : "OFF"),
-                    // -Px87Exact: every x87 value in 80 bits and the x87's own
-                    // arithmetic to the bit (src/lib/x87soft.cpp) -- extended
-                    // races exactly as the Modern Patch's PCs run them.
-                    "-DWITH_PEDANTIC_FPU=" + (providers.gradleProperty("x87Exact").isPresent() ? "ON" : "OFF")
+                    // WITH_MMX is the checks' only: the game's code they hold the
+                    // port against still has MMX, cpuid and rdtsc.  The port has none.
+                    "-DWITH_MMX=OFF"
                 )
                 // Only nfs3hp is wired up for Android (see the NFS_BUILD_NFS2SE
                 // guard in the root CMakeLists.txt); the default is already OFF.

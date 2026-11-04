@@ -491,7 +491,7 @@ reg32 scaleSet(App* app, CPU& cpu, reg32 scale)
     if (kScaledToScreen(app) != 0)
     {
         kFont.set(app, int32_t(scale) < 0x3f800000 ? 1 : 0);
-        kCharacterSize.set(app, float(cpu.fpu.mul(Float(x86::sreg32(kScreenWidth(app))), Float(kScreenScale(app)))));
+        kCharacterSize.set(app, float(fp::mul(Float(x86::sreg32(kScreenWidth(app))), Float(kScreenScale(app)))));
     }
     else
         kCharacterSizeBits.set(app, scale);
@@ -504,14 +504,14 @@ int32_t characterHeightOf(App* app, CPU& cpu, uint8_t c)
 {
     const reg32 i = reg32(c) + (reg32(kFont(app)) << 5) * 7;
     const Float height = Float(x86::sreg16(byteAt(app, 0x83fde0 + i)));
-    return chopped<int32_t>(cpu, cpu.fpu.mul(height, Float(kCharacterSize(app))));
+    return chopped<int32_t>(cpu, fp::mul(height, Float(kCharacterSize(app))));
 }
 
 int32_t characterDropOf(App* app, CPU& cpu, uint8_t c)
 {
     const reg32 i = reg32(c) + (reg32(kFont(app)) << 5) * 7;
     const Float drop = Float(x86::sreg16(int8_t(byteAt(app, 0x83fa60 + i))));
-    return chopped<int32_t>(cpu, cpu.fpu.mul(drop, Float(kCharacterSize(app))));
+    return chopped<int32_t>(cpu, fp::mul(drop, Float(kCharacterSize(app))));
 }
 
 /* What 0x4d06f0 is handed: the character's number (0xe0 a font, from the
@@ -638,7 +638,7 @@ WidthResult measuredWithOverhang(App* app, CPU& cpu, reg32 esp, reg32 text)
     const int32_t advance = kAdvance(app, i);
     const int32_t overhang = int32_t(kGlyphWidth(app, i)) + kOffsetX(app, i) - advance;
     return Width{reg32(advance),
-                 cpu.fpu.add(cpu.fpu.mul(Float(x86::sreg32(overhang)), Float(kCharacterSize(app))), Float(width))};
+                 fp::add(fp::mul(Float(x86::sreg32(overhang)), Float(kCharacterSize(app))), Float(width))};
 }
 
 /* 0x4d1000's: text `text` at x, y in the font's colour, opaque -- its last
@@ -711,8 +711,8 @@ Result menuTextWidth(App* app, CPU& cpu, reg32 esp, reg32 text, reg32 font)
         const WidthResult m = measured(app, cpu, at - 4, text);
         if (!m)
             return {};
-        const Float wide = cpu.fpu.mul(m->value, Float(kMenuWidth(app)));
-        return chopped<int32_t>(cpu, cpu.fpu.div(wide, Float(x86::sreg32(kScreenWidth(app)))));
+        const Float wide = fp::mul(m->value, Float(kMenuWidth(app)));
+        return chopped<int32_t>(cpu, fp::div(wide, Float(x86::sreg32(kScreenWidth(app)))));
     }
     reg32 r;
     if (!callGame(app, cpu, at, kDrawScreenText, {text, 0, 0, 1}, {}, r))

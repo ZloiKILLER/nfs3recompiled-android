@@ -231,70 +231,70 @@ const GuestString kSpeakStrings[] = { kDescriptionName };
 
 }
 
-bool locationOnEnter(win32::WinApplication* app, x86::CPU& cpu)
+void frontend::locationOnEnter(win32::WinApplication* app, x86::CPU& cpu)
 {
     static fe::Site site{ "sub_4487e0", 0, 24, kLocationStrings, std::size(kLocationStrings) };
     const x86::reg32 menu = cpu.eax;
-    return fe::run(app, cpu, site, [&](Guest& guest) { return onLocationEnter(guest, menu); });
+    fe::runWhole(app, cpu, site, [&](Guest& guest) { return onLocationEnter(guest, menu); });
 }
 
-bool locationOnFrame(win32::WinApplication* app, x86::CPU& cpu)
+void frontend::locationOnFrame(win32::WinApplication* app, x86::CPU& cpu)
 {
     static fe::Site site{ "sub_4487d0", 0, 4, nullptr, 0, 0 };
-    return fe::run(app, cpu, site, [](Guest& guest) {
+    fe::runWhole(app, cpu, site, [](Guest& guest) {
         guest.call(kRecordTrack);
         return x86::reg32(0);
     });
 }
 
-bool locationOnExit(win32::WinApplication* app, x86::CPU& cpu)
+void frontend::locationOnExit(win32::WinApplication* app, x86::CPU& cpu)
 {
     // sub_4489e0: nothing to undo.
     static fe::Site site{ "sub_4489e0", 0, 4, nullptr, 0, 0 };
-    return fe::run(app, cpu, site, [](Guest&) { return x86::reg32(0); });
+    fe::runWhole(app, cpu, site, [](Guest&) { return x86::reg32(0); });
 }
 
-bool infoPlaceTrackPlaces(win32::WinApplication* app, x86::CPU& cpu)
+void frontend::infoPlaceTrackPlaces(win32::WinApplication* app, x86::CPU& cpu)
 {
     static fe::Site site{ "sub_456200", 0, 24 + 0x50, nullptr, 0 };
-    return fe::run(app, cpu, site, [](Guest& guest) { return placeTrackPlaces(guest); });
+    fe::runWhole(app, cpu, site, [](Guest& guest) { return placeTrackPlaces(guest); });
 }
 
-bool infoOnEnter(win32::WinApplication* app, x86::CPU& cpu)
+void frontend::infoOnEnter(win32::WinApplication* app, x86::CPU& cpu)
 {
     static fe::Site site{ "sub_4568d0", 0, 16 + 0x50, kInfoEnterStrings, std::size(kInfoEnterStrings),
                           fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEdx };
     const x86::reg32 menu = cpu.eax;
-    return fe::run(app, cpu, site, [&](Guest& guest) { return onInfoEnter(guest, menu); });
+    fe::runWhole(app, cpu, site, [&](Guest& guest) { return onInfoEnter(guest, menu); });
 }
 
-bool infoOnFrame(win32::WinApplication* app, x86::CPU& cpu)
+void frontend::infoOnFrame(win32::WinApplication* app, x86::CPU& cpu)
 {
     static fe::Site site{ "sub_456890", 0, 16, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEdx };
-    return fe::run(app, cpu, site, [](Guest& guest) { return onInfoFrame(guest); });
+    fe::runWhole(app, cpu, site, [](Guest& guest) { return onInfoFrame(guest); });
 }
 
-bool infoOnExit(win32::WinApplication* app, x86::CPU& cpu)
+void frontend::infoOnExit(win32::WinApplication* app, x86::CPU& cpu)
 {
     static fe::Site site{ "sub_456990", 0, 4, nullptr, 0, 0 };
-    return fe::run(app, cpu, site, [](Guest& guest) {
+    fe::runWhole(app, cpu, site, [](Guest& guest) {
         guest.call(kStopSpeaking);
         return x86::reg32(0);
     });
 }
 
-bool infoSpeak(win32::WinApplication* app, x86::CPU& cpu)
+void frontend::infoSpeak(win32::WinApplication* app, x86::CPU& cpu)
 {
     static fe::Site site{ "sub_4c94e0", 0, 16 + 0x200, kSpeakStrings, std::size(kSpeakStrings),
                           fe::kRestoreEcx | fe::kRestoreEsi | fe::kRestoreEdi };
     const x86::reg32 language = cpu.eax, track = cpu.edx;
-    return fe::run(app, cpu, site, [&](Guest& guest) { return speak(guest, language, track); });
+    fe::runWhole(app, cpu, site, [&](Guest& guest) { return speak(guest, language, track); });
 }
 
-bool infoStopSpeaking(win32::WinApplication* app, x86::CPU& cpu)
+void frontend::infoStopSpeaking(win32::WinApplication* app, x86::CPU& cpu)
 {
     static fe::Site site{ "sub_4c9590", 0, 16, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEsi };
-    return fe::run(app, cpu, site, [](Guest& guest) { return stopSpeaking(guest); });
+    fe::runWhole(app, cpu, site, [](Guest& guest) { return stopSpeaking(guest); });
 }
 
 }

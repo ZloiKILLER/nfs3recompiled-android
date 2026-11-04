@@ -210,8 +210,7 @@ void closePicture(App* app)
  * without the precision control's rounding (disasm/dll.py), so this does too,
  * operation by operation, in the same order: in plain double, where each
  * product of floats is exact and only the one of three factors and the stores
- * to float round; and under WITH_PEDANTIC_FPU in the x87's 80 bits, which
- * quiet a signalling NaN as they load it.  Its colour table only ever held
+ * to float round.  Its colour table only ever held
  * each byte's own value, so the bytes are taken as they are. */
 struct Vertex
 {
@@ -629,7 +628,7 @@ double fogExp(CPU& cpu, double w, float density)
     const double x = -(w * double(density));
     const double t = 1.4426950408889634 * x;
     const double fraction = cpu.fpu.rem(t, 1.0);
-    return cpu.fpu.scale(1.0 + cpu.fpu.f2xm1(fraction), t);
+    return fp::scale(1.0 + fp::f2xm1(fraction), t);
 }
 
 void fogTable(CPU& cpu, float density, uint8_t (&table)[64])
@@ -645,7 +644,7 @@ void fogTable(CPU& cpu, float density, uint8_t (&table)[64])
         else if (0.0 > double(value))  // fcomp leaves a NaN as it is
             value = 0.0f;
         const double scaled = double(value) * double(kFogScale);
-        table[i] = uint8_t(cpu.fpu.toInteger<int32_t>(scaled));
+        table[i] = uint8_t(fp::toInteger<int32_t>(scaled));
     }
 }
 

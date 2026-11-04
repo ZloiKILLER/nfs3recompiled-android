@@ -18,7 +18,7 @@
  * and as the entry the game's code knows (an adapter named as it was).  The
  * records stay where the game has them -- a channel's resampler, a decoder's
  * state, the bit reader -- and are read and written in place, in the order
- * the code has it: the MMX decoders (mmx::xaMono, mmx::interpolateMono8 ...)
+ * the code has it: the MMX decoders (mix::xaMono, mix::interpolateMono8 ...)
  * run on the same memory.  Only the x87 is the host's: the floats the coded
  * sound is made of are doubles that are stored as floats where the code
  * stores them (the x87 at the 53 bits the port runs it at), and the sums
@@ -45,8 +45,8 @@ constexpr reg32 kFill = 0x4e0640;        // memset: eax where, edx the byte, ebx
 constexpr reg32 kPacketPlayerOf = 0x52d160;
 constexpr reg32 kNextPacket = 0x5118fc;          // eax the player, edx where the packet's length goes
 constexpr reg32 kPacketFramesPlayed = 0x511998;  // eax the player, edx the frames taken
-constexpr reg32 kXaMono = 0x52d1a0;    // mmx::xaMono (cdecl: the state)
-constexpr reg32 kXaStereo = 0x52d250;  // mmx::xaStereo (cdecl: the state)
+constexpr reg32 kXaMono = 0x52d1a0;    // mix::xaMono (cdecl: the state)
+constexpr reg32 kXaStereo = 0x52d250;  // mix::xaStereo (cdecl: the state)
 constexpr reg32 kInterpolateMono8 = 0x5270f0, kInterpolateStereo8 = 0x527170;
 constexpr reg32 kInterpolateMono16 = 0x527210, kInterpolateStereo16 = 0x527290;
 constexpr Var<reg32> kRefill{0x5678b4};  // what a streamed sound asks its next chunk of
@@ -929,7 +929,7 @@ bool decodeXaStereo(App* app, CPU& cpu, reg32 esp, reg32 s) { return callGame(ap
 
 /* Mono XA played once: its state has the data at +0x10, the length at +0x14,
  * the frame at +0x18, the frames kept at +0x1c and the kept samples from
- * +0x1e.  The kept frames first, then whole blocks by mmx::xaMono, what a
+ * +0x1e.  The kept frames first, then whole blocks by mix::xaMono, what a
  * block leaves over kept; past the end, silence.  1; -1 at its end.  (four
  * pushed registers) */
 Result playXaMonoOnce(App* app, CPU& cpu, reg32 esp, reg32 s, uint32_t wanted, reg32 target)
@@ -1282,7 +1282,7 @@ Result playXaMonoPackets(App* app, CPU& cpu, reg32 esp, reg32 s, int32_t wanted,
 
 /* ---------------------------------------------------------- XA, stereo */
 
-/* Stereo XA played once: the state has mmx::xaStereo's head (the frames to
+/* Stereo XA played once: the state has mix::xaStereo's head (the frames to
  * decode, the history of both sides, +0xc where it reads and +0x10 where it
  * writes), the data at +0x14, the length at +0x18, the frame at +0x1c, the
  * samples kept at +0x20 (two a frame) and from +0x24.  As the mono's, two

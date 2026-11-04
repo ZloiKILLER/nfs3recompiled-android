@@ -167,7 +167,7 @@ void storeFloat(win32::WinApplication* app, reg32 address, const x86::Float& val
 /* fistp: st(0) as the control word rounds it, popped. */
 void storeInteger(win32::WinApplication* app, x86::CPU& cpu, reg32 address)
 {
-    put(app, address, reg32(cpu.fpu.toInteger<x86::sreg32>(cpu.fpu.st(0))));
+    put(app, address, reg32(fp::toInteger<x86::sreg32>(cpu.fpu.st(0))));
     cpu.fpu.count -= 1;
 }
 
@@ -772,15 +772,15 @@ void crashJolt(win32::WinApplication* app, x86::CPU& cpu)
     for (reg32 row = 0; row < 3; ++row)
     {
         const reg32 a = cpu.eax + 4 * row, m = cpu.edx + 0xc * row;
-        fpu.push(fpu.mul(loadFloat(app, a), loadFloat(app, m)));
-        fpu.push(fpu.mul(loadFloat(app, a), loadFloat(app, m + 4)));
-        fpu.push(fpu.mul(loadFloat(app, a), loadFloat(app, m + 8)));
+        fpu.push(fp::mul(loadFloat(app, a), loadFloat(app, m)));
+        fpu.push(fp::mul(loadFloat(app, a), loadFloat(app, m + 4)));
+        fpu.push(fp::mul(loadFloat(app, a), loadFloat(app, m + 8)));
         exchange(cpu, 2);
         if (row == 0)
             continue;
         for (int i = 0; i < 3; ++i)
         {
-            fpu.st(3) = fpu.add(fpu.st(3), fpu.st(0));     // faddp st(3)
+            fpu.st(3) = fp::add(fpu.st(3), fpu.st(0));     // faddp st(3)
             fpu.count -= 1;
         }
     }
@@ -804,7 +804,7 @@ void crashJolt(win32::WinApplication* app, x86::CPU& cpu)
     {
         fpu.push(loadFloat(app, ebp - 4));
         fpu.push(fpu.st(0));
-        fpu.st(0) = fpu.add(fpu.st(0), loadDouble(app, kTwo));
+        fpu.st(0) = fp::add(fpu.st(0), loadDouble(app, kTwo));
         fpu.st(1) = fpu.st(0);                              // fstp st(1)
         fpu.count -= 1;
         storeFloat(app, ebp - 4, fpu.pop());
@@ -831,7 +831,7 @@ void crashJolt(win32::WinApplication* app, x86::CPU& cpu)
         put(app, ebp - 8, cpu.eax);
     }
     // In degrees, 0 to 360.
-    fpu.push(fpu.mul(loadFloat(app, ebp - 8), loadFloat(app, kHalfTurnDegrees)));
+    fpu.push(fp::mul(loadFloat(app, ebp - 8), loadFloat(app, kHalfTurnDegrees)));
     cpu.esp -= 4;
     storeInteger(app, cpu, cpu.esp);
     cpu.eax = pop(app, cpu);
@@ -841,7 +841,7 @@ void crashJolt(win32::WinApplication* app, x86::CPU& cpu)
     else if (sreg32(cpu.eax) > 0x168)
         cpu.eax = 0x168;
     // How long: 70 times the strength, 400 to 1000.
-    fpu.push(fpu.mul(loadFloat(app, ebp + 0x28), loadDouble(app, kImpactScale)));
+    fpu.push(fp::mul(loadFloat(app, ebp + 0x28), loadDouble(app, kImpactScale)));
     put(app, ebp - 0x14, cpu.eax);
     cpu.esp -= 4;
     storeInteger(app, cpu, cpu.esp);
@@ -1046,16 +1046,16 @@ void steeringAmount(win32::WinApplication* app, x86::CPU& cpu)
     if (half(app, cpu.eax + 0x164) != 0)
     {
         fpu.push(loadFloat(app, kSteerScale));
-        fpu.st(0) = fpu.mul(fpu.st(0), loadFloat(app, cpu.eax + 0x4f8));
-        fpu.st(0) = fpu.mul(fpu.st(0), loadDouble(app, kEighth));
+        fpu.st(0) = fp::mul(fpu.st(0), loadFloat(app, cpu.eax + 0x4f8));
+        fpu.st(0) = fp::mul(fpu.st(0), loadDouble(app, kEighth));
         storeFloat(app, ebp - 8, fpu.pop());
     }
     fpu.push(loadFloat(app, kSteerRange));
-    fpu.st(0) = fpu.div(fpu.st(0), loadFloat(app, kSteerScale));
+    fpu.st(0) = fp::div(fpu.st(0), loadFloat(app, kSteerScale));
     fpu.push(loadFloat(app, ebp - 8));
     fpu.st(0) = -fpu.st(0);
     storeFloat(app, ebp - 4, fpu.pop());
-    fpu.st(0) = fpu.mul(fpu.st(0), loadFloat(app, ebp - 4));
+    fpu.st(0) = fp::mul(fpu.st(0), loadFloat(app, ebp - 4));
     storeFloat(app, ebp - 4, fpu.st(0));
     comparePop(cpu, loadFloat(app, kTenThousandF));
     if (!belowOrEqual(cpu))
@@ -1105,8 +1105,8 @@ void playSteeringSpring(win32::WinApplication* app, x86::CPU& cpu)
     {
         fpu.push(loadFloat(app, cpu.ecx + 0x500));
         fpu.st(0) = -fpu.st(0);
-        fpu.st(0) = fpu.mul(fpu.st(0), loadFloat(app, kSpringScale));
-        fpu.st(0) = fpu.mul(fpu.st(0), loadDouble(app, kSpringEighth));
+        fpu.st(0) = fp::mul(fpu.st(0), loadFloat(app, kSpringScale));
+        fpu.st(0) = fp::mul(fpu.st(0), loadDouble(app, kSpringEighth));
         storeFloat(app, ebp - 0xc, fpu.pop());
     }
     cpu.ebx = ebp - 0x14;
@@ -1116,11 +1116,11 @@ void playSteeringSpring(win32::WinApplication* app, x86::CPU& cpu)
         return;
     fpu.push(loadFloat(app, kSpringRange));
     fpu.push(fpu.st(0));
-    fpu.st(0) = fpu.div(fpu.st(0), loadFloat(app, kSpringScale));
+    fpu.st(0) = fp::div(fpu.st(0), loadFloat(app, kSpringScale));
     fpu.push(loadFloat(app, ebp - 0xc));
     fpu.st(0) = -fpu.st(0);
     storeFloat(app, ebp - 4, fpu.pop());
-    fpu.st(0) = fpu.mul(fpu.st(0), loadFloat(app, ebp - 4));
+    fpu.st(0) = fp::mul(fpu.st(0), loadFloat(app, ebp - 4));
     storeFloat(app, ebp - 4, fpu.st(0));
     compareTop(cpu, fpu.st(1));                             // fcompp
     fpu.count -= 2;
@@ -1323,7 +1323,7 @@ void playRoadRumble(win32::WinApplication* app, x86::CPU& cpu)
         put(app, ebp - 0x1c, 0x1388);
     put(app, ebp - 4, cpu.ebx);
     fpu.push(x86::Float(sreg32(at(app, ebp - 4))));
-    fpu.st(0) = fpu.div(loadDouble(app, kMillion), fpu.st(0));   // fdivr
+    fpu.st(0) = fp::div(loadDouble(app, kMillion), fpu.st(0));   // fdivr
     cpu.esi = 0;
     cpu.eax = ebp - 0x1c;
     push(app, cpu, cpu.esi);
@@ -1337,7 +1337,7 @@ void playRoadRumble(win32::WinApplication* app, x86::CPU& cpu)
     cpu.ebx = 0;
     push(app, cpu, kRoadStrength);
     cpu.eax = at(app, cpu.eax * 8 + kRoadHandle);
-    fpu.st(0) = fpu.add(fpu.st(0), loadDouble(app, kHalf));
+    fpu.st(0) = fp::add(fpu.st(0), loadDouble(app, kHalf));
     cpu.eax = reg32(sreg32(cpu.eax) >> 16);
     if (!direct(app, cpu, watcom::CHP))
         return;
@@ -1457,7 +1457,7 @@ void playEngineRumble(win32::WinApplication* app, x86::CPU& cpu)
         put(app, ebp - 0xc, cpu.esi);
         put(app, ebp - 8, cpu.ecx);
         fpu.push(x86::Float(x86::sreg64(app->getMemory<x86::reg64>(ebp - 0xc))));
-        fpu.st(0) = fpu.div(loadDouble(app, kEngineMillion), fpu.st(0));   // fdivr
+        fpu.st(0) = fp::div(loadDouble(app, kEngineMillion), fpu.st(0));   // fdivr
         cpu.eax = ebp - 0x24;
         push(app, cpu, cpu.ecx);
         cpu.edx = 1;
@@ -1470,7 +1470,7 @@ void playEngineRumble(win32::WinApplication* app, x86::CPU& cpu)
         put(app, ebp - 0x1c, cpu.ecx);
         push(app, cpu, kEngineStrength);
         cpu.eax = at(app, cpu.eax * 8 + kEngineHandle);
-        fpu.st(0) = fpu.add(fpu.st(0), loadDouble(app, kEngineHalf));
+        fpu.st(0) = fp::add(fpu.st(0), loadDouble(app, kEngineHalf));
         cpu.eax = reg32(sreg32(cpu.eax) >> 16);
         if (!direct(app, cpu, watcom::CHP))
             return;
@@ -1753,7 +1753,7 @@ void carSpeedMph(win32::WinApplication* app, x86::CPU& cpu)
     comparePop(cpu, loadFloat(app, ebp - 4));
     if (!belowOrEqual(cpu))
         putByte(app, ebp - 1, byte(app, ebp - 1) ^ 0x80);
-    cpu.fpu.push(cpu.fpu.mul(loadFloat(app, ebp - 4), loadFloat(app, kToMph)));
+    cpu.fpu.push(fp::mul(loadFloat(app, ebp - 4), loadFloat(app, kToMph)));
     storeFloat(app, ebp - 4, cpu.fpu.st(0));
     cpu.esp = cpu.ebp;
     cpu.ebp = pop(app, cpu);

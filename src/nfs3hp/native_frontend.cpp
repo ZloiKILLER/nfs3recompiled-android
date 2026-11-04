@@ -24,33 +24,6 @@ constexpr x86::reg32 kDialogEditText = 0x444c10;
 constexpr x86::reg32 kDialogFocus = 0x4446c0;
 constexpr x86::reg32 kTruncate = 0x4dfd56;     // frndint towards zero
 
-bool allOn()
-{
-    static const bool on = []() {
-        const char* value = SDL_getenv("NFS_FE_NATIVE");
-        return !value || SDL_strcmp(value, "0") != 0;
-    }();
-    return on;
-}
-
-bool switchedOff(const char* name)
-{
-    static const std::string off = []() {
-        const char* value = SDL_getenv("NFS_FE_NATIVE_OFF");
-        return std::string(value ? value : "");
-    }();
-    if (off.empty())
-        return false;
-    const std::size_t length = SDL_strlen(name);
-    for (std::size_t at = off.find(name); at != std::string::npos; at = off.find(name, at + 1))
-    {
-        const std::size_t end = at + length;
-        if ((at == 0 || off[at - 1] == ',') && (end == off.size() || off[end] == ','))
-            return true;
-    }
-    return false;
-}
-
 }
 
 void Guest::copyString(x86::reg32 to, x86::reg32 from)
@@ -186,30 +159,6 @@ void checkStrings(Guest& guest, Site& site)
             SDL_Log("[FE] %s: 0x%x is not \"%s\"", site.name, string.address, string.text);
     }
     site.ready = 1;
-}
-
-bool ready(Guest& guest, Site& site)
-{
-    if (!allOn() || switchedOff(site.name))
-    {
-        SDL_Log("[FE] %s left to the generated code (NFS_FE_NATIVE)", site.name);
-        site.ready = -1;
-        return false;
-    }
-    for (std::size_t i = 0; i < site.stringCount; ++i)
-    {
-        const GuestString& string = site.strings[i];
-        if (!guest.holds(string.address, string.text))
-        {
-            SDL_Log("[FE] %s left to the generated code: 0x%x is not \"%s\"", site.name, string.address,
-                    string.text);
-            site.ready = -1;
-            return false;
-        }
-    }
-    SDL_Log("[FE] %s runs native", site.name);
-    site.ready = 1;
-    return true;
 }
 
 }

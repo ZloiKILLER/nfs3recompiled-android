@@ -390,8 +390,8 @@ Result drawBoxCore(Game& g, reg32 esp, reg32 rect)
     const reg32 at = esp - 24 - 0x20;
     const int32_t x = chop(cpu, load(app, rect + kLeft));
     const int32_t y = chop(cpu, load(app, rect + kTop));
-    const int32_t width = chop(cpu, cpu.fpu.sub(load(app, rect + kRight), load(app, rect + kLeft)));
-    const int32_t height = chop(cpu, cpu.fpu.sub(load(app, rect + kBottom), load(app, rect + kTop)));
+    const int32_t width = chop(cpu, fp::sub(load(app, rect + kRight), load(app, rect + kLeft)));
+    const int32_t height = chop(cpu, fp::sub(load(app, rect + kBottom), load(app, rect + kTop)));
     // The corners' alphas, faded in -- one of them never reaches the end of
     // its fade, which jumps from 16 to 160 as the fade completes.
     const int32_t fade = sdword(app, 0x661064);
@@ -410,8 +410,8 @@ Result drawBoxCore(Game& g, reg32 esp, reg32 rect)
     const reg32 colour = fadeAlpha(app) + kWhite;
     if (inRace(app))
     {
-        const int32_t bottom = chop(cpu, cpu.fpu.add(integer(y - 7), Float(63.0)));
-        const int32_t right = chop(cpu, cpu.fpu.add(integer(x - 14), Float(127.0)));
+        const int32_t bottom = chop(cpu, fp::add(integer(y - 7), Float(63.0)));
+        const int32_t right = chop(cpu, fp::add(integer(x - 14), Float(127.0)));
         // The emblem on the art narrowed for a wide screen, for this one draw.
         dialogEmblem(true);
         const bool drawn = drawPauseArt(g, at, x - 14, y - 7, right, bottom, kBoxArt, colour);
@@ -431,9 +431,9 @@ Result drawLinesCore(Game& g, reg32 esp, int32_t count, reg32 lines, reg32 rect)
     App* app = g.app;
     CPU& cpu = g.cpu;
     const reg32 at = esp - 16 - 0x18;
-    const Float halfWidth = cpu.fpu.mul(cpu.fpu.sub(load(app, rect + kRight), load(app, rect + kLeft)), Float(0.5));
+    const Float halfWidth = fp::mul(fp::sub(load(app, rect + kRight), load(app, rect + kLeft)), Float(0.5));
     const int32_t top = chop(cpu, load(app, rect + kTop)) + 19;
-    const int32_t middle = chop(cpu, cpu.fpu.add(halfWidth, load(app, rect + kLeft)));
+    const int32_t middle = chop(cpu, fp::add(halfWidth, load(app, rect + kLeft)));
     if (!setFont(g, at))
         return {};
     for (int32_t i = 0; i < count; ++i)
@@ -445,7 +445,7 @@ Result drawLinesCore(Game& g, reg32 esp, int32_t count, reg32 lines, reg32 rect)
         reg32 colour = kTextColour;
         if (inRace(app))
         {
-            x = chop(cpu, cpu.fpu.add(integer(middle), Float(31.75)));
+            x = chop(cpu, fp::add(integer(middle), Float(31.75)));
             colour = kOpaque | kTextColour;
         }
         GAME(at, kDrawText, {line, reg32(x), reg32(top + 30 * i), kFont}, {kAlignCentre, colour});
@@ -477,12 +477,12 @@ Result drawButtonsCore(Game& g, reg32 esp, int32_t focus)
         const int32_t artX = b.x - 17, artY = b.y + 1;
         if (inRace(app))
         {
-            const int32_t artBottom = chop(cpu, cpu.fpu.add(integer(artY), Float(19.0)));
-            const int32_t artRight = chop(cpu, cpu.fpu.add(integer(artX), Float(16.0)));
+            const int32_t artBottom = chop(cpu, fp::add(integer(artY), Float(19.0)));
+            const int32_t artRight = chop(cpu, fp::add(integer(artX), Float(16.0)));
             if (!drawPauseArt(g, at, artX, artY, artRight, artBottom, focused ? kFocusArt : kButtonArt, white)
                 || !drawShaded(g, at, b.x - 3, b.y + 1, b.width + 8, 1, edge, solid, solid, edge))
                 return {};
-            const int32_t bottom = chop(cpu, cpu.fpu.add(integer(b.y), Float(19.0)));
+            const int32_t bottom = chop(cpu, fp::add(integer(b.y), Float(19.0)));
             if (!drawShaded(g, at, b.x - 7, bottom, b.width + 8, 1, edge, solid, solid, edge))
                 return {};
         }
@@ -509,12 +509,12 @@ Result drawEditFieldCore(Game& g, reg32 esp, reg32 rect)
     const reg32 at = esp - 24 - 0x14;
     GAME(at, kTextWidth, {kEditText, kFont});
     const int32_t width = int32_t(g.eax);
-    const int32_t middle = chop(cpu, cpu.fpu.add(load(app, rect + kLeft), load(app, rect + kRight))) / 2;
-    const int32_t y = chop(cpu, cpu.fpu.add(cpu.fpu.add(load(app, rect + kBottom), Float(-30.0)), Float(-60.0)));
+    const int32_t middle = chop(cpu, fp::add(load(app, rect + kLeft), load(app, rect + kRight))) / 2;
+    const int32_t y = chop(cpu, fp::add(fp::add(load(app, rect + kBottom), Float(-30.0)), Float(-60.0)));
     int32_t x = middle - width / 2 - 3;
     if (!inRace(app))
     {
-        const int32_t span = chop(cpu, cpu.fpu.sub(load(app, rect + kRight), load(app, rect + kLeft)));
+        const int32_t span = chop(cpu, fp::sub(load(app, rect + kRight), load(app, rect + kLeft)));
         const int32_t fieldWidth = sdword(app, 0x661070);
         const int32_t fieldX = chop(cpu, load(app, rect + kLeft)) + (span - fieldWidth) / 2;
         const int32_t fade = sdword(app, 0x661064);
@@ -530,7 +530,7 @@ Result drawEditFieldCore(Game& g, reg32 esp, reg32 rect)
     if (shownWidth > fieldWidth)
     {
         // Its end in the field, what goes past the field's left edge clipped.
-        const int32_t fieldMiddle = chop(cpu, cpu.fpu.add(load(app, rect + kLeft), load(app, rect + kRight))) / 2;
+        const int32_t fieldMiddle = chop(cpu, fp::add(load(app, rect + kLeft), load(app, rect + kRight))) / 2;
         const int32_t clip = fieldMiddle - fieldWidth / 2;
         x = fieldWidth / 2 + fieldMiddle - shownWidth - 7;
         if (!inRace(app))

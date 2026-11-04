@@ -1,0 +1,13 @@
+# address name kind: the functions native whole in src/nfs3hp/native_frontend_menud.cpp, frontend::name.
+# kind: how frontend_checks enters it (Menu, Key, Item, None).
+49ae30 lobbyDrawPlayers None
+49c140 menuPointerLoadArt None
+49c1c0 menuPointerListLine None
+49c240 menuPointerOverRect None
+49c2a0 menuPointerFreeArt None
+4a4390 effectsLogoTextureStart None
+4a47c0 effectsBandDraw None
+4a49c0 effectsScreenDraw None
+4a4ba0 effectsLoadScreenArt None
+4a4c20 effectsLogoDraw Item
+4bc670 pauseEndRestorePointer None

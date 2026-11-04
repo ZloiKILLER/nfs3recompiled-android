@@ -145,39 +145,39 @@ void fxch(CPU& cpu, int i)
 }
 
 // st(0) op= m (fadd m32 and the like, fadd st(i) one operand).
-void fadd(CPU& cpu, const Float& m) { cpu.fpu.st(0) = cpu.fpu.add(cpu.fpu.st(0), m); }
-void fsub(CPU& cpu, const Float& m) { cpu.fpu.st(0) = cpu.fpu.sub(cpu.fpu.st(0), m); }
-void fmul(CPU& cpu, const Float& m) { cpu.fpu.st(0) = cpu.fpu.mul(cpu.fpu.st(0), m); }
+void fadd(CPU& cpu, const Float& m) { cpu.fpu.st(0) = fp::add(cpu.fpu.st(0), m); }
+void fsub(CPU& cpu, const Float& m) { cpu.fpu.st(0) = fp::sub(cpu.fpu.st(0), m); }
+void fmul(CPU& cpu, const Float& m) { cpu.fpu.st(0) = fp::mul(cpu.fpu.st(0), m); }
 
 // st(i) op= st(0), popped (faddp st(i) and the like); the reversed forms
 // st(i) = st(0) op st(i).
 void faddp(CPU& cpu, int i)
 {
-    cpu.fpu.st(i) = cpu.fpu.add(cpu.fpu.st(i), cpu.fpu.st(0));
+    cpu.fpu.st(i) = fp::add(cpu.fpu.st(i), cpu.fpu.st(0));
     cpu.fpu.pop();
 }
 
 void fmulp(CPU& cpu, int i)
 {
-    cpu.fpu.st(i) = cpu.fpu.mul(cpu.fpu.st(i), cpu.fpu.st(0));
+    cpu.fpu.st(i) = fp::mul(cpu.fpu.st(i), cpu.fpu.st(0));
     cpu.fpu.pop();
 }
 
 void fdivp(CPU& cpu, int i)
 {
-    cpu.fpu.st(i) = cpu.fpu.div(cpu.fpu.st(i), cpu.fpu.st(0));
+    cpu.fpu.st(i) = fp::div(cpu.fpu.st(i), cpu.fpu.st(0));
     cpu.fpu.pop();
 }
 
 void fsubrp(CPU& cpu, int i)
 {
-    cpu.fpu.st(i) = cpu.fpu.sub(cpu.fpu.st(0), Float(cpu.fpu.st(i)));
+    cpu.fpu.st(i) = fp::sub(cpu.fpu.st(0), Float(cpu.fpu.st(i)));
     cpu.fpu.pop();
 }
 
 void fdivrp(CPU& cpu, int i)
 {
-    cpu.fpu.st(i) = cpu.fpu.div(cpu.fpu.st(0), Float(cpu.fpu.st(i)));
+    cpu.fpu.st(i) = fp::div(cpu.fpu.st(0), Float(cpu.fpu.st(i)));
     cpu.fpu.pop();
 }
 
@@ -187,7 +187,7 @@ void fchs(CPU& cpu) { cpu.fpu.st(0) = -cpu.fpu.st(0); }
 void fistpToEax(App* app, CPU& cpu)
 {
     cpu.esp -= 4;
-    put(app, cpu.esp, reg32(cpu.fpu.toInteger<sreg32>(cpu.fpu.st(0))));
+    put(app, cpu.esp, reg32(fp::toInteger<sreg32>(cpu.fpu.st(0))));
     cpu.fpu.pop();
     cpu.eax = pop(app, cpu);
 }
@@ -914,7 +914,7 @@ void keepOutOfCars(App* app, CPU& cpu)
         if (!f.cf && !f.zf)
             continue;
         fld(cpu, f32(app, e + 0x22));
-        fpu.st(0) = fpu.mul(fpu.st(0), fpu.st(0));
+        fpu.st(0) = fp::mul(fpu.st(0), fpu.st(0));
         fmul(cpu, f32(app, e + 0x76));
         cpu.esp -= 4;
         fstp(app, cpu, cpu.esp);
@@ -1725,9 +1725,9 @@ void blendCamera(App* app, CPU& cpu)
     fmul(cpu, fpu.st(2));
     fpu.st(2) = Float(fpu.st(0));
     fpu.st(0) = fpu.rem(fpu.st(0), fpu.st(1));
-    fpu.st(0) = fpu.f2xm1(fpu.st(0));
+    fpu.st(0) = fp::f2xm1(fpu.st(0));
     faddp(cpu, 1);
-    fpu.st(0) = fpu.scale(fpu.st(0), fpu.st(1));
+    fpu.st(0) = fp::scale(fpu.st(0), fpu.st(1));
     fpu.st(1) = Float(fpu.st(0));
     fpu.pop();
     fld(cpu, 1.0);

@@ -112,6 +112,7 @@ class LauncherActivity : ComponentActivity() {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
         hideStatusBar(this)
+        autoReplayPending = savedInstanceState == null && intent.getBooleanExtra("auto_replay", false)
         val preferences = GamePreferences.get(this)
         // Removed in 0.75: fixed/editable positions supersede this global offset.
         preferences.edit().remove("touch_raise_controls").apply()
@@ -551,6 +552,17 @@ class LauncherActivity : ComponentActivity() {
         }, "nfs3-data-import")
         worker = thread
         thread.start()
+    }
+
+    /* tools/replay_run.py's launch: Play pressed for it, once the data set is known. */
+    private var autoReplayPending = false
+
+    override fun onResume() {
+        super.onResume()
+        if (autoReplayPending) {
+            autoReplayPending = false
+            startGame()
+        }
     }
 
     fun startGame() {

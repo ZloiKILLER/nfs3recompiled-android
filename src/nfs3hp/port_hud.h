@@ -6,9 +6,8 @@
 /* The race HUD, rewritten as the port's own, without the x87 (port.h says
  * how; port_hud.cpp): its gauges, needles and the track's map, one function
  * at a time.  The arithmetic is the host's doubles rounded to a float where
- * the game stores a float (the build's extended precision; the game's own
- * single-precision race, NFS_FPU_EXTENDED=0, is not followed), as port_view.h
- * has it.
+ * the game stores a float (the game's single-precision race is not followed:
+ * only what is drawn sees it), as port_view.h has it.
  *
  * disassemble_nfs3hp.py binds each address to the adapter of that name here
  * (PORT_HUD_NATIVES): the generated code calls them by name.  tools/game_checks

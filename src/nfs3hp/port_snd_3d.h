@@ -46,11 +46,7 @@ enum class Arithmetic
 
 inline Arithmetic arithmeticOf(const CPU& cpu)
 {
-#if defined(WITH_PEDANTIC_FPU) || defined(WITH_WIDE_FPU)
-    return cpu.fpu.control.pc == 0 ? Arithmetic::Single : Arithmetic::Double;
-#else
     return cpu.fpu.rounding == x86::FPU::kRoundNone ? Arithmetic::Double : Arithmetic::Single;
-#endif
 }
 
 template <class Real>

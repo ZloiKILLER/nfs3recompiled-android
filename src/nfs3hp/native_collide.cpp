@@ -420,7 +420,7 @@ void contactNormal(App* app, CPU& cpu)
     {
         const Axis& a = axes[i];
         const Float zero = 0.0;
-        const Float difference = cpu.fpu.sub(loadFloat(app, cpu.ecx + a.speed), loadFloat(app, cpu.edx + a.speed));
+        const Float difference = fp::sub(loadFloat(app, cpu.ecx + a.speed), loadFloat(app, cpu.edx + a.speed));
         if (i == 1)
         {
             cpu.eax = at(app, ebp - 0x30);
@@ -571,7 +571,7 @@ void contactNormal(App* app, CPU& cpu)
         const bool above = !compare(cpu, 0.0, loadFloat(app, in.offset)).belowOrEqual();
         const Float size = loadFloat(app, cpu.edx + in.size);
         storeFloat(app, ebp - in.to,
-                   above ? cpu.fpu.add(size, loadFloat(app, in.offset)) : cpu.fpu.sub(size, loadFloat(app, in.offset)));
+                   above ? fp::add(size, loadFloat(app, in.offset)) : fp::sub(size, loadFloat(app, in.offset)));
     }
     reg32 axis, offset;
     if (compare(cpu, loadFloat(app, ebp - 0x20), loadFloat(app, ebp - 0x1c)).below
@@ -661,15 +661,15 @@ void pushCarsApart(App* app, CPU& cpu)
     if (!byAddress(app, cpu, kNormalize))
         return;
     // The direction's length stays on the x87's stack until the fstp st(0).
-    const Float sum = cpu.fpu.add(loadFloat(app, cpu.ecx + 0xb0), loadFloat(app, cpu.edx + 0xb0));
+    const Float sum = fp::add(loadFloat(app, cpu.ecx + 0xb0), loadFloat(app, cpu.edx + 0xb0));
     const Float second = loadFloat(app, cpu.edx + 0xb0);
-    const Float reciprocal = cpu.fpu.div(1.0, sum);
-    const Float secondShare = cpu.fpu.mul(second, reciprocal);
-    const Float firstShare = cpu.fpu.mul(reciprocal, loadFloat(app, cpu.ecx + 0xb0));
+    const Float reciprocal = fp::div(1.0, sum);
+    const Float secondShare = fp::mul(second, reciprocal);
+    const Float firstShare = fp::mul(reciprocal, loadFloat(app, cpu.ecx + 0xb0));
     const Float quarter = loadDouble(app, kQuarter);
-    const Float back = cpu.fpu.mul(secondShare, quarter);
+    const Float back = fp::mul(secondShare, quarter);
     cpu.eax = ebp - 0x18;
-    const Float on = cpu.fpu.mul(quarter, firstShare);
+    const Float on = fp::mul(quarter, firstShare);
     push(app, cpu, cpu.eax);
     cpu.esp -= 4;
     cpu.edx = ebp - 0x24;
@@ -776,23 +776,23 @@ void separateCars(App* app, CPU& cpu)
     const auto dot = [&](reg32 i) { return loadFloat(app, kAxisDots + 4 * i); };
     Float p[9], q[9];
     for (reg32 i = 0; i < 7; ++i)
-        p[i] = cpu.fpu.mul(dot(i), loadFloat(app, cpu.edi + 0x114 + 4 * (i % 3)));
+        p[i] = fp::mul(dot(i), loadFloat(app, cpu.edi + 0x114 + 4 * (i % 3)));
     storeFloat(app, kSecondExtents + 4, p[1]);
-    p[7] = cpu.fpu.mul(dot(7), loadFloat(app, cpu.edi + 0x118));
+    p[7] = fp::mul(dot(7), loadFloat(app, cpu.edi + 0x118));
     storeFloat(app, kSecondExtents + 8, p[2]);
-    p[8] = cpu.fpu.mul(dot(8), loadFloat(app, cpu.edi + 0x11c));
+    p[8] = fp::mul(dot(8), loadFloat(app, cpu.edi + 0x11c));
     storeFloat(app, kSecondExtents + 0xc, p[3]);
     for (reg32 i = 0; i < 6; ++i)
     {
-        q[i] = cpu.fpu.mul(dot(i), loadFloat(app, cpu.esi + 0x114 + 4 * (i / 3)));
+        q[i] = fp::mul(dot(i), loadFloat(app, cpu.esi + 0x114 + 4 * (i / 3)));
         storeFloat(app, i < 5 ? kSecondExtents + 0x10 + 4 * i : kFirstExtents, i < 5 ? p[4 + i] : q[0]);
     }
-    q[6] = cpu.fpu.mul(dot(6), loadFloat(app, cpu.esi + 0x11c));
+    q[6] = fp::mul(dot(6), loadFloat(app, cpu.esi + 0x11c));
     storeFloat(app, kFirstExtents + 4, q[1]);
-    q[7] = cpu.fpu.mul(dot(7), loadFloat(app, cpu.esi + 0x11c));
+    q[7] = fp::mul(dot(7), loadFloat(app, cpu.esi + 0x11c));
     cpu.ecx = 0;
     storeFloat(app, kFirstExtents + 8, q[2]);
-    q[8] = cpu.fpu.mul(dot(8), loadFloat(app, cpu.esi + 0x11c));
+    q[8] = fp::mul(dot(8), loadFloat(app, cpu.esi + 0x11c));
     put(app, ebp - 8, cpu.ecx);
     for (reg32 i = 3; i < 9; ++i)
         storeFloat(app, kFirstExtents + 4 * i, q[i]);
@@ -969,13 +969,13 @@ void polygonEdgeNormal(App* app, CPU& cpu)
     // To floats, each through the frame's -4.
     cpu.eax = at(app, ebp - 0x1c);
     const Float scale = loadDouble(app, kFixedScale);
-    const Float third = cpu.fpu.mul(loadInteger(app, ebp - 4), scale);
+    const Float third = fp::mul(loadInteger(app, ebp - 4), scale);
     put(app, ebp - 4, cpu.eax);
     cpu.eax = at(app, ebp - 0x18);
     const Float first = loadInteger(app, ebp - 4);
     put(app, ebp - 4, cpu.eax);
-    const Float firstScaled = cpu.fpu.mul(first, scale);
-    const Float second = cpu.fpu.mul(scale, loadInteger(app, ebp - 4));
+    const Float firstScaled = fp::mul(first, scale);
+    const Float second = fp::mul(scale, loadInteger(app, ebp - 4));
     put(app, ebp - 0x14, cpu.ebx);
     storeFloat(app, cpu.ecx + 8, third);
     storeFloat(app, cpu.ecx, firstScaled);
@@ -1065,7 +1065,7 @@ void clearOfWall(App* app, CPU& cpu)
         movsd(app, cpu);
         cpu.eax = at(app, ebp - 0x2c);
         put(app, ebp - 4, cpu.eax);
-        const Float height = cpu.fpu.mul(loadInteger(app, ebp - 4), loadDouble(app, kWallScale));
+        const Float height = fp::mul(loadInteger(app, ebp - 4), loadDouble(app, kWallScale));
         Float highest;
         if (cpu.edx == 0)
             highest = height;
@@ -1095,7 +1095,7 @@ void clearOfWall(App* app, CPU& cpu)
             break;
     }
     const reg32 margin = half(app, cpu.ebx + 0x164) != 0 ? kWallMarginRace : kWallMarginOther;
-    const Float top = cpu.fpu.add(loadFloat(app, ebp - 8), loadDouble(app, margin));
+    const Float top = fp::add(loadFloat(app, ebp - 8), loadDouble(app, margin));
     cpu.eax = compare(cpu, loadFloat(app, ebp - 0xc), top).below ? 1 : 0;
     leave();
 }
@@ -1155,21 +1155,21 @@ void carAgainstWalls(App* app, CPU& cpu)
     // A thirty-second of the speed into -0x12, of the turn onto the stack.
     {
         const Float step = loadFloat(app, kSpeedStep);
-        storeFloat(app, f - 0x12, cpu.fpu.mul(loadFloat(app, cpu.eax + 0xa4), step));
-        storeFloat(app, f - 0xe, cpu.fpu.mul(loadFloat(app, cpu.eax + 0xa8), step));
+        storeFloat(app, f - 0x12, fp::mul(loadFloat(app, cpu.eax + 0xa4), step));
+        storeFloat(app, f - 0xe, fp::mul(loadFloat(app, cpu.eax + 0xa8), step));
         const Float z = loadFloat(app, cpu.eax + 0xac);
         cpu.eax = f + 0x5a;
-        const Float zStep = cpu.fpu.mul(z, step);
+        const Float zStep = fp::mul(z, step);
         push(app, cpu, cpu.eax);
         cpu.eax = car();
         storeFloat(app, f - 0xa, zStep);
-        const Float turnZ = cpu.fpu.mul(loadFloat(app, cpu.eax + 0xec), step);
+        const Float turnZ = fp::mul(loadFloat(app, cpu.eax + 0xec), step);
         cpu.esp -= 4;
         storeFloat(app, cpu.esp, turnZ);
-        const Float turnY = cpu.fpu.mul(loadFloat(app, cpu.eax + 0xe8), step);
+        const Float turnY = fp::mul(loadFloat(app, cpu.eax + 0xe8), step);
         cpu.esp -= 4;
         storeFloat(app, cpu.esp, turnY);
-        const Float turnX = cpu.fpu.mul(step, loadFloat(app, cpu.eax + 0xe4));
+        const Float turnX = fp::mul(step, loadFloat(app, cpu.eax + 0xe4));
         cpu.esp -= 4;
         cpu.eax = f - 0x46;
         storeFloat(app, cpu.esp, turnX);
@@ -1300,14 +1300,14 @@ void carAgainstWalls(App* app, CPU& cpu)
             return;
         const Float toFixed = loadDouble(app, kToFixed);
         cpu.esp -= 4;
-        put(app, cpu.esp, reg32(cpu.fpu.toInteger<sreg32>(cpu.fpu.mul(loadFloat(app, f + 0x42), toFixed))));
+        put(app, cpu.esp, reg32(fp::toInteger<sreg32>(fp::mul(loadFloat(app, f + 0x42), toFixed))));
         cpu.eax = pop(app, cpu);
-        const Float y = cpu.fpu.mul(loadFloat(app, f + 0x46), toFixed);
+        const Float y = fp::mul(loadFloat(app, f + 0x46), toFixed);
         put(app, f + 0x1e, cpu.eax);
         cpu.esp -= 4;
-        put(app, cpu.esp, reg32(cpu.fpu.toInteger<sreg32>(y)));
+        put(app, cpu.esp, reg32(fp::toInteger<sreg32>(y)));
         cpu.eax = pop(app, cpu);
-        const Float z = cpu.fpu.mul(loadFloat(app, f + 0x4a), toFixed);
+        const Float z = fp::mul(loadFloat(app, f + 0x4a), toFixed);
         cpu.edi = 0;
         cpu.esi = f + 0x1e;
         put(app, f + 0x76, cpu.edi);
@@ -1316,7 +1316,7 @@ void carAgainstWalls(App* app, CPU& cpu)
         cpu.edx = f - 0x1ba;
         put(app, f + 0x22, cpu.eax);
         cpu.esp -= 4;
-        put(app, cpu.esp, reg32(cpu.fpu.toInteger<sreg32>(z)));
+        put(app, cpu.esp, reg32(fp::toInteger<sreg32>(z)));
         cpu.eax = pop(app, cpu);
         put(app, f + 0x26, cpu.eax);
         cpu.eax = f + 0x1e;
@@ -1398,10 +1398,10 @@ void carAgainstWalls(App* app, CPU& cpu)
                     const Float z = loadFloat(app, f + 0x1a);
                     cpu.edx = at(app, f + 0x76);
                     cpu.eax = at(app, f + cpu.ecx * 4 - 0x22);
-                    const Float count = cpu.fpu.add(1.0, loadFloat(app, f + 0x6e));
-                    const Float sumX = cpu.fpu.add(x, loadFloat(app, f + 0x4e));
-                    const Float sumY = cpu.fpu.add(y, loadFloat(app, f + 0x52));
-                    const Float sumZ = cpu.fpu.add(z, loadFloat(app, f + 0x56));
+                    const Float count = fp::add(1.0, loadFloat(app, f + 0x6e));
+                    const Float sumX = fp::add(x, loadFloat(app, f + 0x4e));
+                    const Float sumY = fp::add(y, loadFloat(app, f + 0x52));
+                    const Float sumZ = fp::add(z, loadFloat(app, f + 0x56));
                     cpu.edx |= cpu.eax;
                     storeFloat(app, f + 0x6e, count);
                     storeFloat(app, f + 0x12, sumX);
@@ -1413,10 +1413,10 @@ void carAgainstWalls(App* app, CPU& cpu)
                 {
                     // Their mean, flat (y 0).
                     const Float x = loadFloat(app, f + 0x12);
-                    const Float reciprocal = cpu.fpu.div(1.0, loadFloat(app, f + 0x6e));
-                    const Float meanX = cpu.fpu.mul(x, reciprocal);
-                    const Float meanY = cpu.fpu.mul(loadFloat(app, f + 0x16), reciprocal);
-                    const Float meanZ = cpu.fpu.mul(reciprocal, loadFloat(app, f + 0x1a));
+                    const Float reciprocal = fp::div(1.0, loadFloat(app, f + 0x6e));
+                    const Float meanX = fp::mul(x, reciprocal);
+                    const Float meanY = fp::mul(loadFloat(app, f + 0x16), reciprocal);
+                    const Float meanZ = fp::mul(reciprocal, loadFloat(app, f + 0x1a));
                     cpu.ebx = 0;
                     storeFloat(app, f + 0x12, meanX);
                     storeFloat(app, f + 0x16, meanY);
@@ -1427,9 +1427,9 @@ void carAgainstWalls(App* app, CPU& cpu)
                 {
                     // No wall's normal: back towards the car.
                     cpu.eax = car();
-                    storeFloat(app, f + 0x12, cpu.fpu.sub(loadFloat(app, cpu.eax + 0x98), loadFloat(app, f + 0x42)));
-                    storeFloat(app, f + 0x16, cpu.fpu.sub(loadFloat(app, cpu.eax + 0x9c), loadFloat(app, f + 0x46)));
-                    const Float z = cpu.fpu.sub(loadFloat(app, cpu.eax + 0xa0), loadFloat(app, f + 0x4a));
+                    storeFloat(app, f + 0x12, fp::sub(loadFloat(app, cpu.eax + 0x98), loadFloat(app, f + 0x42)));
+                    storeFloat(app, f + 0x16, fp::sub(loadFloat(app, cpu.eax + 0x9c), loadFloat(app, f + 0x46)));
+                    const Float z = fp::sub(loadFloat(app, cpu.eax + 0xa0), loadFloat(app, f + 0x4a));
                     cpu.eax = at(app, f + 0x62);
                     storeFloat(app, f + 0x1a, z);
                     put(app, f + 0x76, cpu.eax);
@@ -1466,9 +1466,9 @@ void carAgainstWalls(App* app, CPU& cpu)
         cpu.eax = car();
         {
             const Float scale = loadDouble(app, kPolygonScale);
-            storeFloat(app, f - 6, cpu.fpu.mul(loadInteger(app, cpu.eax + corner), scale));
-            storeFloat(app, f - 2, cpu.fpu.mul(loadInteger(app, cpu.eax + corner + 4), scale));
-            storeFloat(app, f + 2, cpu.fpu.mul(scale, loadInteger(app, cpu.eax + corner + 8)));
+            storeFloat(app, f - 6, fp::mul(loadInteger(app, cpu.eax + corner), scale));
+            storeFloat(app, f - 2, fp::mul(loadInteger(app, cpu.eax + corner + 4), scale));
+            storeFloat(app, f + 2, fp::mul(scale, loadInteger(app, cpu.eax + corner + 8)));
         }
         cpu.eax = at(app, f + 0x72);
         cpu.edx = cpu.eax * 4;
@@ -1492,20 +1492,20 @@ void carAgainstWalls(App* app, CPU& cpu)
         cpu.edx = at(app, kPolygonRecords);
         {
             const Float scale = loadDouble(app, kPolygonScale);
-            const Float x = cpu.fpu.mul(loadInteger(app, cpu.edx + cpu.eax * 4), scale);
-            const Float y = cpu.fpu.mul(loadInteger(app, cpu.edx + cpu.eax * 4 + 4), scale);
+            const Float x = fp::mul(loadInteger(app, cpu.edx + cpu.eax * 4), scale);
+            const Float y = fp::mul(loadInteger(app, cpu.edx + cpu.eax * 4 + 4), scale);
             const Float zFixed = loadInteger(app, cpu.edx + cpu.eax * 4 + 8);
             cpu.eax = car();
-            const Float z = cpu.fpu.mul(zFixed, scale);
+            const Float z = fp::mul(zFixed, scale);
             const Float carX = loadFloat(app, cpu.eax + 0x98);
             storeFloat(app, f + 0x2a, x);
-            const Float toX = cpu.fpu.sub(carX, loadFloat(app, f + 0x2a));
+            const Float toX = fp::sub(carX, loadFloat(app, f + 0x2a));
             storeFloat(app, f + 0x2e, y);
             storeFloat(app, f + 0x36, toX);
-            const Float toY = cpu.fpu.sub(loadFloat(app, cpu.eax + 0x9c), loadFloat(app, f + 0x2e));
+            const Float toY = fp::sub(loadFloat(app, cpu.eax + 0x9c), loadFloat(app, f + 0x2e));
             storeFloat(app, f + 0x32, z);
             storeFloat(app, f + 0x3a, toY);
-            storeFloat(app, f + 0x3e, cpu.fpu.sub(loadFloat(app, cpu.eax + 0xa0), loadFloat(app, f + 0x32)));
+            storeFloat(app, f + 0x3e, fp::sub(loadFloat(app, cpu.eax + 0xa0), loadFloat(app, f + 0x32)));
             for (reg32 i = 0; i < 3; ++i)
             {
                 cpu.ecx = at(app, cpu.eax + 0x1c);
@@ -1517,13 +1517,13 @@ void carAgainstWalls(App* app, CPU& cpu)
                 put(app, f + 0x7e, cpu.eax);
                 if (i < 2)
                 {
-                    const Float n = cpu.fpu.mul(loadInteger(app, f + 0x7e), scale);
+                    const Float n = fp::mul(loadInteger(app, f + 0x7e), scale);
                     cpu.eax = car();
                     storeFloat(app, f + 6 + 4 * i, n);
                 }
                 else
                 {
-                    const Float n = cpu.fpu.mul(scale, loadInteger(app, f + 0x7e));
+                    const Float n = fp::mul(scale, loadInteger(app, f + 0x7e));
                     cpu.edx = f + 0x36;
                     cpu.eax = f + 6;
                     storeFloat(app, f + 0xe, n);
@@ -1653,10 +1653,10 @@ void objectInReach(App* app, CPU& cpu)
     };
     cpu.ebx = at(app, ebp + 0x14);
     cpu.ecx = cpu.eax;
-    const Float x = cpu.fpu.sub(loadFloat(app, cpu.edx), loadFloat(app, cpu.eax + 0x98));
+    const Float x = fp::sub(loadFloat(app, cpu.edx), loadFloat(app, cpu.eax + 0x98));
     cpu.eax += 0xc0;
     storeFloat(app, cpu.ebx, x);
-    const Float z = cpu.fpu.sub(loadFloat(app, cpu.edx + 8), loadFloat(app, cpu.eax - 0x20));
+    const Float z = fp::sub(loadFloat(app, cpu.edx + 8), loadFloat(app, cpu.eax - 0x20));
     cpu.edx = cpu.ebx;
     storeFloat(app, cpu.ebx + 8, z);
     put(app, cpu.ebx + 4, 0);
@@ -1682,7 +1682,7 @@ void objectInReach(App* app, CPU& cpu)
         }
         else
             storeFloat(app, positive, -loadFloat(app, along));
-        const Float reach = cpu.fpu.add(loadFloat(app, cpu.ecx + axes[i][1]), loadFloat(app, ebp + 0x10));
+        const Float reach = fp::add(loadFloat(app, cpu.ecx + axes[i][1]), loadFloat(app, ebp + 0x10));
         if (compare(cpu, reach, loadFloat(app, positive)).below)
         {
             cpu.eax = 0;
@@ -1744,22 +1744,22 @@ void carAgainstObjects(App* app, CPU& cpu)
         const Float sizeFixed = loadInteger(app, ebp - 8);
         put(app, ebp - 8, cpu.eax);
         const Float scale = loadDouble(app, kObjectScale);
-        const Float size = cpu.fpu.mul(sizeFixed, scale);
+        const Float size = fp::mul(sizeFixed, scale);
         const Float xFixed = loadInteger(app, ebp - 8);
         cpu.eax = at(app, ebp - 0x44);
-        const Float x = cpu.fpu.mul(xFixed, scale);
+        const Float x = fp::mul(xFixed, scale);
         put(app, ebp - 8, cpu.eax);
         cpu.eax = at(app, ebp - 0x40);
         const Float yFixed = loadInteger(app, ebp - 8);
         put(app, ebp - 8, cpu.eax);
-        const Float y = cpu.fpu.mul(yFixed, scale);
-        const Float z = cpu.fpu.mul(scale, loadInteger(app, ebp - 8));
+        const Float y = fp::mul(yFixed, scale);
+        const Float z = fp::mul(scale, loadInteger(app, ebp - 8));
         const Float zero = 0.0;
         storeFloat(app, ebp - 0x3c, x);
         storeFloat(app, ebp - 0x38, y);
         cpu.eax = car();
         storeFloat(app, ebp - 0x34, z);
-        const Float dx = cpu.fpu.sub(x, loadFloat(app, cpu.eax + 0x98));
+        const Float dx = fp::sub(x, loadFloat(app, cpu.eax + 0x98));
         storeFloat(app, ebp - 0x1c, size);
         storeFloat(app, ebp - 0x28, dx);
         if (compare(cpu, zero, loadFloat(app, ebp - 0x28)).below)
@@ -1772,7 +1772,7 @@ void carAgainstObjects(App* app, CPU& cpu)
         cpu.eax = at(app, ebp - 0x30);
         put(app, ebp - 0x20, cpu.eax);
         cpu.eax = car();
-        const Float dz = cpu.fpu.sub(loadFloat(app, ebp - 0x34), loadFloat(app, cpu.eax + 0xa0));
+        const Float dz = fp::sub(loadFloat(app, ebp - 0x34), loadFloat(app, cpu.eax + 0xa0));
         storeFloat(app, ebp - 0x24, dz);
         if (compare(cpu, 0.0, loadFloat(app, ebp - 0x24)).below)
         {
@@ -1784,13 +1784,13 @@ void carAgainstObjects(App* app, CPU& cpu)
         // The rough distance: the larger and a quarter of the smaller.
         const bool xLarger = !compare(cpu, loadFloat(app, ebp - 0x20), loadFloat(app, ebp - 0x18)).belowOrEqual();
         const reg32 smaller = xLarger ? ebp - 0x18 : ebp - 0x20, larger = xLarger ? ebp - 0x20 : ebp - 0x18;
-        storeFloat(app, ebp - 0x2c, cpu.fpu.add(cpu.fpu.mul(loadFloat(app, smaller), loadFloat(app, kObjectQuarter)),
+        storeFloat(app, ebp - 0x2c, fp::add(fp::mul(loadFloat(app, smaller), loadFloat(app, kObjectQuarter)),
                                                 loadFloat(app, larger)));
         cpu.eax = car();
-        const Float near = cpu.fpu.add(loadFloat(app, ebp - 0x1c), loadFloat(app, cpu.eax + 0x120));
+        const Float near = fp::add(loadFloat(app, ebp - 0x1c), loadFloat(app, cpu.eax + 0x120));
         if (compare(cpu, near, loadFloat(app, ebp - 0x2c)).belowOrEqual())
             continue;
-        const Float twice = cpu.fpu.mul(loadFloat(app, ebp - 0x1c), loadFloat(app, kObjectTwo));
+        const Float twice = fp::mul(loadFloat(app, ebp - 0x1c), loadFloat(app, kObjectTwo));
         cpu.eax = car();
         if (compare(cpu, twice, loadFloat(app, cpu.eax + 0x15c)).belowOrEqual())
             continue;
@@ -1809,16 +1809,16 @@ void carAgainstObjects(App* app, CPU& cpu)
             return;
         // The jolt, by the offset's x and z in 16.16.
         const Float toFixed = loadDouble(app, kObjectToFixed);
-        const Float joltX = cpu.fpu.mul(loadFloat(app, ebp - 0x4c), toFixed);
+        const Float joltX = fp::mul(loadFloat(app, ebp - 0x4c), toFixed);
         cpu.esi = cpu.eax;
         cpu.esp -= 4;
-        put(app, cpu.esp, reg32(cpu.fpu.toInteger<sreg32>(joltX)));
+        put(app, cpu.esp, reg32(fp::toInteger<sreg32>(joltX)));
         cpu.eax = pop(app, cpu);
-        const Float joltZ = cpu.fpu.mul(loadFloat(app, ebp - 0x54), toFixed);
+        const Float joltZ = fp::mul(loadFloat(app, ebp - 0x54), toFixed);
         cpu.edx = cpu.esi;
         cpu.ecx = cpu.eax;
         cpu.esp -= 4;
-        put(app, cpu.esp, reg32(cpu.fpu.toInteger<sreg32>(joltZ)));
+        put(app, cpu.esp, reg32(fp::toInteger<sreg32>(joltZ)));
         cpu.eax = pop(app, cpu);
         cpu.ebx = cpu.eax;
         cpu.eax = car();
@@ -1830,8 +1830,8 @@ void carAgainstObjects(App* app, CPU& cpu)
             cpu.ebx = 0;
             cpu.eax = car();
             put(app, ebp - 0x68, cpu.ebx);
-            storeFloat(app, ebp - 0x6c, cpu.fpu.sub(loadFloat(app, cpu.eax + 0x98), loadFloat(app, ebp - 0x3c)));
-            const Float awayZ = cpu.fpu.sub(loadFloat(app, cpu.eax + 0xa0), loadFloat(app, ebp - 0x34));
+            storeFloat(app, ebp - 0x6c, fp::sub(loadFloat(app, cpu.eax + 0x98), loadFloat(app, ebp - 0x3c)));
+            const Float awayZ = fp::sub(loadFloat(app, cpu.eax + 0xa0), loadFloat(app, ebp - 0x34));
             cpu.eax = ebp - 0x6c;
             storeFloat(app, ebp - 0x64, awayZ);
             if (!byAddress(app, cpu, kNormalize))
@@ -1861,7 +1861,7 @@ void carAgainstObjects(App* app, CPU& cpu)
             {
                 const Float loudness = loadFloat(app, cpu.eax + 0x168);
                 put(app, cpu.eax + 0x170, 0x6000a);
-                const Float halved = cpu.fpu.mul(loudness, loadFloat(app, kObjectHalf));
+                const Float halved = fp::mul(loudness, loadFloat(app, kObjectHalf));
                 const Float px = loadFloat(app, cpu.eax + 0x98);
                 const Float py = loadFloat(app, cpu.eax + 0x9c);
                 const Float pz = loadFloat(app, cpu.eax + 0xa0);
@@ -1939,8 +1939,8 @@ void addCarToList(App* app, CPU& cpu)
         const Float radius = loadFloat(app, cpu.ecx + 0x120);
         cpu.edx = at(app, cpu.ebx * 4 + kCarList);
         const Float y = loadFloat(app, cpu.ecx + 0xa0);
-        const Float radii = cpu.fpu.add(radius, loadFloat(app, cpu.edx + 0x120));
-        const Float dy = cpu.fpu.sub(y, loadFloat(app, cpu.edx + 0xa0));
+        const Float radii = fp::add(radius, loadFloat(app, cpu.edx + 0x120));
+        const Float dy = fp::sub(y, loadFloat(app, cpu.edx + 0xa0));
         storeFloat(app, ebp - 0x10, radii);
         storeFloat(app, ebp - 4, dy);
         if (compare(cpu, zero, loadFloat(app, ebp - 4)).below)
@@ -1956,7 +1956,7 @@ void addCarToList(App* app, CPU& cpu)
         bool near = true;
         for (const auto& o : others)
         {
-            const Float d = cpu.fpu.sub(loadFloat(app, cpu.ecx + o[0]), loadFloat(app, cpu.edx + o[0]));
+            const Float d = fp::sub(loadFloat(app, cpu.ecx + o[0]), loadFloat(app, cpu.edx + o[0]));
             storeFloat(app, ebp - o[1], d);
             if (compare(cpu, 0.0, loadFloat(app, ebp - o[1])).below)
             {
@@ -3404,7 +3404,7 @@ void drawPointer(App* app, CPU& cpu)
     const Float x = loadFloat(app, f + 0x46);
     cpu.eax -= cpu.ecx;
     const Float size = loadFloat(app, kPointerSize);
-    const Float right = cpu.fpu.add(x, size);
+    const Float right = fp::add(x, size);
     put(app, f + 0x7e, cpu.eax);
     storeFloat(app, f + 6, right);
     storeFloat(app, f + 0x4a, loadInteger(app, f + 0x7e));
@@ -3413,7 +3413,7 @@ void drawPointer(App* app, CPU& cpu)
     put(app, f + 0x2a, cpu.eax);
     put(app, f + 0xa, cpu.eax);
     put(app, f - 0x16, cpu.eax);
-    const Float bottom = cpu.fpu.add(size, y);
+    const Float bottom = fp::add(size, y);
     cpu.eax = at(app, f + 6);
     storeFloat(app, f + 0x2a, bottom);
     put(app, f + 0x26, cpu.eax);

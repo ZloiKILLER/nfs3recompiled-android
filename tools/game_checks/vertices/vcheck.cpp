@@ -1,6 +1,6 @@
 /* native_vertices.cpp's natives against the game's generated code, made
  * afresh (gen_vertices.py) -- the port's build has none of it since they are
- * native whole -- on the desktop, in every x87 mode the game can be in.
+ * native whole -- on the desktop.
  *
  * Two guest memories of 16 MB hold the same state: the game's data as it
  * loads, and a world of records made up for each case.  The native runs on
@@ -12,7 +12,7 @@
  * compared.  The functions the natives call that both sides run as the game's
  * code are gen_vertices.py's PIECES.
  *
- *     vcheck [cases per mode] [name ...] */
+ *     vcheck [cases] [name ...] */
 #include "nfs3hp.h"
 #include <SDL3/SDL.h>
 #include <algorithm>
@@ -75,7 +75,6 @@ namespace nfs3hp
 {
 x86::reg32 mirrorAsMain(x86::reg32 kind) { return kind == 1 ? 0 : kind; }
 double mirrorCarScale(double scale) { return scale; }
-x86::reg16 raceControl(x86::reg16 word) { return x86::reg16(word | 0x0300); }
 }
 
 namespace
@@ -1089,7 +1088,7 @@ void makeCase(World& g, const std::string& name, x86::CPU& cpu, Args& a)
         args[9] = aFloat(5.0f);
         std::memcpy(a.stack, args, sizeof args);
         g.w(0x6fbc30) = below(3);
-        g.b(0x567858) = x86::reg8(random32());
+        g.b(0x567858) = 0;
         g.w(0x7a3a60) = 1;
         g.w(0x7dcffc) = g.alloc(8);
         for (x86::reg32 i = 0; i < 0x320; ++i)
@@ -1160,14 +1159,7 @@ std::string floatBits(const x86::Float& f)
 }
 
 const x86::reg16 kModes[] = {
-    0x007f,  // single, nearest: a race on a PC
-    0x037f,  // extended, nearest: the port's races and menus
-    0x027f,  // double, nearest
-    0x047f,  // single, down
-    0x087f,  // single, up
-    0x0c7f,  // single, toward zero
-    0x077f,  // extended, down
-    0x0f7f,  // extended, toward zero
+    0x007f,  // single, nearest: the one mode the game's code is in now (fp::, include/fpu.h)
 };
 
 struct Counts
@@ -1212,10 +1204,9 @@ bool compare(VApp& n, VApp& g, const x86::CPU& nc, const x86::CPU& gc, char* wha
     if ((nc.flags.lo & 0xd5) != (gc.flags.lo & 0xd5) || nc.flags.of != gc.flags.of)
         return std::snprintf(what, size, "flags %02x/%u native, %02x/%u generated", nc.flags.lo & 0xd5,
                              unsigned(nc.flags.of), gc.flags.lo & 0xd5, unsigned(gc.flags.of)), false;
-    if (nc.fpu.control.word != gc.fpu.control.word || nc.fpu.status.word != gc.fpu.status.word
-        || nc.fpu.count != gc.fpu.count)
-        return std::snprintf(what, size, "fpu control %04x/%04x status %04x/%04x depth %u/%u",
-                             nc.fpu.control.word, gc.fpu.control.word, nc.fpu.status.word, gc.fpu.status.word,
+    if (nc.fpu.control.word != gc.fpu.control.word || nc.fpu.count != gc.fpu.count)
+        return std::snprintf(what, size, "fpu control %04x/%04x depth %u/%u",
+                             nc.fpu.control.word, gc.fpu.control.word,
                              unsigned(nc.fpu.count), unsigned(gc.fpu.count)), false;
     for (x86::reg32 i = 0; i < nc.fpu.count && i < 8; ++i)
     {
@@ -1333,7 +1324,6 @@ int main(int argc, char** argv)
                 x86::CPU cpu{};
                 cpu.fpu.init();
                 cpu.fpu.setControl(mode);
-                cpu.fpu.status.word = x86::reg16(random32() & 0x4700);
                 cpu.eax = random32();
                 cpu.ebx = random32();
                 cpu.ecx = random32();

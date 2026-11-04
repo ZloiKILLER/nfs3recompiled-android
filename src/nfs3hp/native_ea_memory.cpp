@@ -41,11 +41,8 @@
  * purgememclass have no callers in the game.
  *
  * Its memmove (0x4ea4f0) copies backwards a byte at a time where the copy
- * overlaps its source from above, and otherwise by the MMX copy (0x5033e5,
- * mmx::copy, 0x5643b4 set), the x87's (0x503281, 0x5643ac set) or dwords
- * (0x50356d) -- each, at the entry a byte before, with eax and edx swapped
- * first (the files' copies' table holds those two).  The x87's moves 8 bytes
- * at a time through fild and fistp, as the game does.
+ * overlaps its source from above, and otherwise by the forward copy (0x5033e5,
+ * mix::copy).
  *
  * Written as their code is: each push and pop to the guest's stack, each call
  * with the return address's slot, the frames' locals in the guest's memory,
@@ -53,7 +50,7 @@
  * stack in its order.  reservememadr, purgememadr and memmove are called by
  * address where this file calls them (tools/game_checks stands in for them),
  * as are Error (0x401010), the game's fill (0x4e070c), sprintf (0x4df690),
- * the locks made and freed (0x4eb2e0, 0x4eb360), the MMX copy, and the
+ * the locks made and freed (0x4eb2e0, 0x4eb360), the forward copy, and the
  * critical sections' Windows functions. */
 namespace nfs3hp
 {
@@ -74,8 +71,6 @@ using x86::sreg32;
 
 // The class table, and the default class; whether an error is reported.
 constexpr reg32 kClasses = 0x9ef5c0, kDefaultClass = 0x5643f4, kReportErrors = 0x56440c;
-// Which copy memmove takes.
-constexpr reg32 kMmxCopying = 0x5643b4, kFpuCopying = 0x5643ac;
 // Where an error is from: the file, the function, the line.
 constexpr reg32 kWhereFile = 0x552190, kWhereFunction = 0x552194, kWhereLine = 0x552198;
 // Where the call is from, if anywhere: its file, its line.
@@ -92,7 +87,7 @@ constexpr reg32 kPurgeName = 0x549ab8, kNotABlock = 0x549ac4;
 // What is called by address.
 constexpr reg32 kError = 0x401010, kFillZero = 0x4e070c, kSprintf = 0x4df690;
 constexpr reg32 kLockMade = 0x4eb2e0, kLockFreed = 0x4eb360;
-constexpr reg32 kReserve = 0x4e1620, kPurge = 0x4e1890, kMmxCopy = 0x5033e5;
+constexpr reg32 kReserve = 0x4e1620, kPurge = 0x4e1890, kForwardCopy = 0x5033e5;
 constexpr reg32 kEnterCriticalSection = 0x5344b8, kLeaveCriticalSection = 0x534588;
 
 reg16 half(win32::WinApplication* app, reg32 address)
@@ -205,10 +200,6 @@ void purgememclass(win32::WinApplication* app, x86::CPU& cpu);
 void reservememStdcall(win32::WinApplication* app, x86::CPU& cpu);
 void purgememStdcall(win32::WinApplication* app, x86::CPU& cpu);
 void memmove(win32::WinApplication* app, x86::CPU& cpu);
-void fpuCopySwapped(win32::WinApplication* app, x86::CPU& cpu);
-void fpuCopy(win32::WinApplication* app, x86::CPU& cpu);
-void dwordCopySwapped(win32::WinApplication* app, x86::CPU& cpu);
-void dwordCopy(win32::WinApplication* app, x86::CPU& cpu);
 
 /* 0x4e1000: the first free block of class eax of at least edx bytes, from
  * the free list's start (ebx 0) or its end; 0 if none -- the sentinel. */
@@ -1214,267 +1205,12 @@ void memmove(win32::WinApplication* app, x86::CPU& cpu)
             return;
         }
     }
-    if (at(app, kMmxCopying) != 0)
-    {
-        cpu.edx = cpu.eax;
-        cpu.eax = cpu.ecx;
-        if (!byAddress(app, cpu, kMmxCopy))
-            return;
-        cpu.mmx.init();  // emms
-    }
-    else if (at(app, kFpuCopying) == 0)
-    {
-        cpu.edx = cpu.eax;
-        cpu.eax = cpu.ecx;
-        if (!direct(app, cpu, dwordCopy))
-            return;
-    }
-    else
-    {
-        cpu.edx = cpu.eax;
-        cpu.eax = cpu.ecx;
-        if (!direct(app, cpu, fpuCopy))
-            return;
-    }
+    cpu.edx = cpu.eax;
+    cpu.eax = cpu.ecx;
+    if (!byAddress(app, cpu, kForwardCopy))
+        return;
     cpu.ecx = pop(app, cpu);
     cpu.esp += 4;
-}
-
-namespace
-{
-
-/* fild qword ptr [edx + from]. */
-void loadQword(win32::WinApplication* app, x86::CPU& cpu, reg32 from)
-{
-    cpu.fpu.push(x86::Float(x86::sreg64(app->getMemory<x86::reg64>(cpu.edx + from))));
-}
-
-/* fistp qword ptr [eax + to]. */
-void storeQword(win32::WinApplication* app, x86::CPU& cpu, reg32 to)
-{
-    app->getMemory<x86::reg64>(cpu.eax + to) = x86::reg64(cpu.fpu.toInteger<x86::sreg64>(cpu.fpu.st(0)));
-    cpu.fpu.pop();
-}
-
-/* fxch st(i). */
-void exchange(x86::CPU& cpu, int i)
-{
-    std::swap(cpu.fpu.st(0), cpu.fpu.st(i));
-}
-
-/* What is left of the copies, under 8 bytes: a dword, a word, a byte as ebx
- * says; then pop ecx and ret. */
-void copyRest(win32::WinApplication* app, x86::CPU& cpu)
-{
-    cpu.ebx += 8;
-    if (cpu.ebx != 0)
-    {
-        if (cpu.ebx >= 4)
-        {
-            cpu.ecx = at(app, cpu.edx);
-            cpu.edx += 4;
-            put(app, cpu.eax, cpu.ecx);
-            cpu.eax += 4;
-            cpu.ebx -= 4;
-        }
-        if (cpu.ebx >= 2)
-        {
-            cpu.cx = half(app, cpu.edx);
-            cpu.edx += 2;
-            putHalf(app, cpu.eax, cpu.cx);
-            cpu.eax += 2;
-            cpu.ebx -= 2;
-        }
-        if (cpu.ebx >= 1)
-        {
-            cpu.cl = byte(app, cpu.edx);
-            cpu.edx += 1;
-            putByte(app, cpu.eax, cpu.cl);
-            cpu.eax += 1;
-            cpu.ebx -= 1;
-        }
-    }
-    cpu.ecx = pop(app, cpu);
-    cpu.esp += 4;
-}
-
-/* The copies' start where eax is not aligned to `mask` + 1: a byte, a word,
- * a dword copied as eax is not aligned to them and ebx has them. */
-void alignCopy(win32::WinApplication* app, x86::CPU& cpu)
-{
-    if ((cpu.eax & 1) && sreg32(cpu.ebx) >= 1)
-    {
-        cpu.cl = byte(app, cpu.edx);
-        cpu.edx += 1;
-        putByte(app, cpu.eax, cpu.cl);
-        cpu.eax += 1;
-        cpu.ebx -= 1;
-    }
-    if ((cpu.eax & 2) && sreg32(cpu.ebx) >= 2)
-    {
-        cpu.cx = half(app, cpu.edx);
-        cpu.edx += 2;
-        putHalf(app, cpu.eax, cpu.cx);
-        cpu.eax += 2;
-        cpu.ebx -= 2;
-    }
-    if ((cpu.eax & 4) && sreg32(cpu.ebx) >= 4)
-    {
-        cpu.ecx = at(app, cpu.edx);
-        cpu.edx += 4;
-        put(app, cpu.eax, cpu.ecx);
-        cpu.eax += 4;
-        cpu.ebx -= 4;
-    }
-}
-
-/* 0x503281's body: ebx bytes from edx to eax, 0x80, 0x20 and 8 at a time
- * through the x87's stack. */
-void fpuCopyBody(win32::WinApplication* app, x86::CPU& cpu)
-{
-    push(app, cpu, cpu.ecx);
-    if (cpu.eax & 7)
-        alignCopy(app, cpu);
-    cpu.ebx -= 0x80;
-    while (sreg32(cpu.ebx) >= 0)
-    {
-        loadQword(app, cpu, 0);
-        loadQword(app, cpu, 0x20);
-        loadQword(app, cpu, 0x40);
-        loadQword(app, cpu, 0x60);
-        exchange(cpu, 3);
-        loadQword(app, cpu, 0x10);
-        loadQword(app, cpu, 8);
-        loadQword(app, cpu, 0x18);
-        exchange(cpu, 3);
-        storeQword(app, cpu, 0);
-        storeQword(app, cpu, 8);
-        storeQword(app, cpu, 0x10);
-        storeQword(app, cpu, 0x18);
-        exchange(cpu, 1);
-        loadQword(app, cpu, 0x30);
-        loadQword(app, cpu, 0x28);
-        loadQword(app, cpu, 0x38);
-        exchange(cpu, 3);
-        storeQword(app, cpu, 0x20);
-        storeQword(app, cpu, 0x28);
-        storeQword(app, cpu, 0x30);
-        storeQword(app, cpu, 0x38);
-        loadQword(app, cpu, 0x50);
-        loadQword(app, cpu, 0x48);
-        loadQword(app, cpu, 0x58);
-        exchange(cpu, 3);
-        storeQword(app, cpu, 0x40);
-        storeQword(app, cpu, 0x48);
-        storeQword(app, cpu, 0x50);
-        storeQword(app, cpu, 0x58);
-        loadQword(app, cpu, 0x70);
-        loadQword(app, cpu, 0x68);
-        loadQword(app, cpu, 0x78);
-        exchange(cpu, 3);
-        storeQword(app, cpu, 0x60);
-        storeQword(app, cpu, 0x68);
-        storeQword(app, cpu, 0x70);
-        storeQword(app, cpu, 0x78);
-        cpu.edx += 0x80;
-        cpu.eax += 0x80;
-        cpu.ebx -= 0x80;
-    }
-    cpu.ebx += 0x60;
-    while (sreg32(cpu.ebx) >= 0)
-    {
-        loadQword(app, cpu, 0);
-        loadQword(app, cpu, 8);
-        exchange(cpu, 1);
-        storeQword(app, cpu, 0);
-        storeQword(app, cpu, 8);
-        loadQword(app, cpu, 0x10);
-        loadQword(app, cpu, 0x18);
-        exchange(cpu, 1);
-        storeQword(app, cpu, 0x10);
-        storeQword(app, cpu, 0x18);
-        cpu.edx += 0x20;
-        cpu.eax += 0x20;
-        cpu.ebx -= 0x20;
-    }
-    cpu.ebx += 0x18;
-    while (sreg32(cpu.ebx) >= 0)
-    {
-        loadQword(app, cpu, 0);
-        storeQword(app, cpu, 0);
-        cpu.edx += 8;
-        cpu.eax += 8;
-        cpu.ebx -= 8;
-    }
-    copyRest(app, cpu);
-}
-
-/* 0x50356d's body: ebx bytes from edx to eax, 0x20 and 8 at a time in
- * dwords. */
-void dwordCopyBody(win32::WinApplication* app, x86::CPU& cpu)
-{
-    push(app, cpu, cpu.ecx);
-    if (cpu.eax & 3)
-        alignCopy(app, cpu);
-    cpu.ebx -= 0x20;
-    while (sreg32(cpu.ebx) >= 0)
-    {
-        for (reg32 k = 0; k < 0x20; k += 4)
-        {
-            cpu.ecx = at(app, cpu.edx + k);
-            put(app, cpu.eax + k, cpu.ecx);
-        }
-        cpu.edx += 0x20;
-        cpu.eax += 0x20;
-        cpu.ebx -= 0x20;
-    }
-    cpu.ebx += 0x18;
-    while (sreg32(cpu.ebx) >= 0)
-    {
-        cpu.ecx = at(app, cpu.edx);
-        put(app, cpu.eax, cpu.ecx);
-        cpu.ecx = at(app, cpu.edx + 4);
-        put(app, cpu.eax + 4, cpu.ecx);
-        cpu.edx += 8;
-        cpu.eax += 8;
-        cpu.ebx -= 8;
-    }
-    copyRest(app, cpu);
-}
-
-}  // namespace
-
-/* 0x503280: fpuCopy with eax and edx swapped first -- eax the source, edx
- * the destination; the files' copies' table holds it. */
-void fpuCopySwapped(win32::WinApplication* app, x86::CPU& cpu)
-{
-    std::swap(cpu.eax, cpu.edx);
-    fpuCopyBody(app, cpu);
-}
-
-/* 0x503281: ebx bytes from edx to eax, eax aligned to 8 first a byte, a
- * word, a dword at a time, then 0x80, 0x20 and 8 bytes at a time through the
- * x87's stack (fild and fistp of qwords), then a dword, a word, a byte.  eax
- * and edx left past them, ebx 0 -- or less, where it was less than 0. */
-void fpuCopy(win32::WinApplication* app, x86::CPU& cpu)
-{
-    fpuCopyBody(app, cpu);
-}
-
-/* 0x50356c: dwordCopy with eax and edx swapped first -- eax the source,
- * edx the destination; the files' copies' table holds it. */
-void dwordCopySwapped(win32::WinApplication* app, x86::CPU& cpu)
-{
-    std::swap(cpu.eax, cpu.edx);
-    dwordCopyBody(app, cpu);
-}
-
-/* 0x50356d: ebx bytes from edx to eax, eax aligned to 4 first a byte, a
- * word, a dword at a time, then 0x20 and 8 bytes at a time in dwords, then a
- * dword, a word, a byte.  eax and edx left past them. */
-void dwordCopy(win32::WinApplication* app, x86::CPU& cpu)
-{
-    dwordCopyBody(app, cpu);
 }
 
 }  // namespace ea

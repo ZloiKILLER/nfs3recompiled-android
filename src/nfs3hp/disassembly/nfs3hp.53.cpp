@@ -10,9 +10,9 @@ namespace nfs3hp
 
 /* sub_52d160: native, nfs3hp::port::packetPlayerOf */
 
-/* sub_52d1a0: native, nfs3hp::mmx::xaMono */
+/* sub_52d1a0: native, nfs3hp::mix::xaMono */
 
-/* sub_52d250: native, nfs3hp::mmx::xaStereo */
+/* sub_52d250: native, nfs3hp::mix::xaStereo */
 
 /* sub_52d370: native, nfs3hp::port::codedBits */
 

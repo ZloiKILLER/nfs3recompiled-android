@@ -1,4 +1,5 @@
 #include "native_guest.h"
+#include "diag_hooks.h"
 
 #include <cstdint>
 #include <utility>
@@ -241,13 +242,13 @@ void transform(App* app, CPU& cpu)
         for (reg32 j = 0; j < 3; ++j)
         {
             fpu.push(f32(app, cpu.eax + 4 * row));
-            fpu.st(0) = fpu.mul(fpu.st(0), f32(app, cpu.edx + 0xc * row + 4 * j));
+            fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.edx + 0xc * row + 4 * j));
         }
         std::swap(fpu.st(0), fpu.st(2));
         if (row != 0)
             for (int k = 0; k < 3; ++k)
             {
-                fpu.st(3) = fpu.add(fpu.st(3), fpu.st(0));
+                fpu.st(3) = fp::add(fpu.st(3), fpu.st(0));
                 fpu.pop();
             }
     }
@@ -264,7 +265,7 @@ void scaleField(App* app, CPU& cpu, reg32 self, reg32 offset, reg32 factor)
 {
     cpu.eax = at(app, self);
     cpu.fpu.push(f32(app, cpu.eax + offset));
-    cpu.fpu.st(0) = cpu.fpu.mul(cpu.fpu.st(0), f32(app, factor));
+    cpu.fpu.st(0) = fp::mul(cpu.fpu.st(0), f32(app, factor));
     fstp(app, cpu, cpu.eax + offset);
 }
 
@@ -344,7 +345,7 @@ void steerAngle(App* app, CPU& cpu)
     static_cast<void>(at(app, kUnusedFlag));  // cmp dword [0x6fd494], 0: its flags never used
     cpu.eax = at(app, self);
     fpu.push(x86::Float(x86::sreg32(at(app, cpu.eax + 0x51c))));
-    fpu.st(0) = fpu.add(fpu.st(0), f32(app, cpu.ebp - 4));
+    fpu.st(0) = fp::add(fpu.st(0), f32(app, cpu.ebp - 4));
     fstp(app, cpu, cpu.ebp - 0xc);
     cpu.eax = at(app, self);
     bool handbrake = false;
@@ -381,8 +382,8 @@ void steerAngle(App* app, CPU& cpu)
             cpu.eax = at(app, self);
             magnitude(app, cpu, cpu.eax + 0x4f4, cpu.ebp - 0x20, self);
             fpu.push(f32(app, cpu.ebp - 0x20));
-            fpu.st(0) = fpu.mul(fpu.st(0), f32(app, 0x53de34));
-            fpu.st(0) = fpu.sub(f32(app, 0x53de38), fpu.st(0));
+            fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53de34));
+            fpu.st(0) = fp::sub(f32(app, 0x53de38), fpu.st(0));
             fstp(app, cpu, cpu.ebp - 8);
             if (i32(at(app, cpu.ebp - 8)) > i32(0x3f0ccccd))
             {
@@ -392,7 +393,7 @@ void steerAngle(App* app, CPU& cpu)
             else
                 put(app, cpu.ebp - 0x1c, 0x3f0ccccd);
             fpu.push(f32(app, cpu.ebp - 0xc));
-            fpu.st(0) = fpu.mul(fpu.st(0), f32(app, cpu.ebp - 0x1c));
+            fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.ebp - 0x1c));
             fstp(app, cpu, cpu.ebp - 0xc);
         }
     }
@@ -447,12 +448,12 @@ void steerAngle(App* app, CPU& cpu)
                 cpu.eax = at(app, self);
                 magnitude(app, cpu, cpu.eax + 0x5b0, local, self);
                 fpu.push(f32(app, local));
-                fpu.st(0) = fpu.mul(fpu.st(0), f32(app, slipScale));
+                fpu.st(0) = fp::mul(fpu.st(0), f32(app, slipScale));
                 fstp(app, cpu, cpu.ebp - 8);
                 if (i32(at(app, cpu.ebp - 8)) < i32(0x3f800000))
                 {
                     fpu.push(f32(app, cpu.ebp - 0xc));
-                    fpu.st(0) = fpu.mul(fpu.st(0), f32(app, cpu.ebp - 8));
+                    fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.ebp - 8));
                     fstp(app, cpu, cpu.ebp - 0xc);
                 }
             }
@@ -466,7 +467,7 @@ void steerAngle(App* app, CPU& cpu)
         cpu.eax = at(app, self);
         magnitude(app, cpu, cpu.eax + 0x4f4, cpu.ebp - 0x38, self);
         fpu.push(f32(app, cpu.ebp - 0x38));
-        fpu.st(0) = fpu.mul(fpu.st(0), f64(app, 0x53de5c));
+        fpu.st(0) = fp::mul(fpu.st(0), f64(app, 0x53de5c));
         fstp(app, cpu, cpu.ebp - 8);
         if (i32(at(app, cpu.ebp - 8)) > i32(0x3f800000))
         {
@@ -487,18 +488,18 @@ void steerAngle(App* app, CPU& cpu)
         cpu.eax = at(app, cpu.ebp - 0x30);
         put(app, cpu.ebp - 8, cpu.eax);
         fpu.push(f32(app, cpu.ebp - 0xc));
-        fpu.st(0) = fpu.div(fpu.st(0), f32(app, cpu.ebp - 8));
+        fpu.st(0) = fp::div(fpu.st(0), f32(app, cpu.ebp - 8));
         fstp(app, cpu, cpu.ebp - 0xc);
     }
     fpu.push(f32(app, cpu.ebp - 0xc));
-    fpu.st(0) = fpu.mul(fpu.st(0), f32(app, 0x53de64));
+    fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53de64));
     fstp(app, cpu, cpu.ebp - 0xc);
     cpu.eax = at(app, self);
     cpu.eax = at(app, cpu.eax + 0x528);
     fpu.push(f32(app, cpu.eax + 0x23c));
-    fpu.st(0) = fpu.mul(fpu.st(0), f32(app, 0x53de68));
-    fpu.st(0) = fpu.div(fpu.st(0), f32(app, 0x53de6c));
-    fpu.st(0) = fpu.mul(fpu.st(0), f32(app, cpu.ebp - 0xc));
+    fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53de68));
+    fpu.st(0) = fp::div(fpu.st(0), f32(app, 0x53de6c));
+    fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.ebp - 0xc));
     fstp(app, cpu, cpu.ebp - 0xc);
     fpu.push(f32(app, cpu.ebp - 0xc));
     fcomp(cpu, f64(app, 0x53de74));
@@ -537,7 +538,7 @@ void sideSlip(App* app, CPU& cpu)
         cpu.eax = at(app, self);
         fpu.push(f32(app, cpu.eax + 0x4ec));
         cpu.eax = at(app, self);
-        fpu.st(0) = fpu.div(fpu.st(0), f32(app, cpu.eax + 0x4f4));
+        fpu.st(0) = fp::div(fpu.st(0), f32(app, cpu.eax + 0x4f4));
         cpu.eax = at(app, self);
         fstp(app, cpu, cpu.eax + 0x5b0);
     }
@@ -683,9 +684,9 @@ void physicsStep(App* app, CPU& cpu)
     {
         cpu.eax = at(app, self);
         fpu.push(f32(app, cpu.eax + axis.first));
-        fpu.st(0) = fpu.mul(fpu.st(0), f32(app, 0x53de7c));
+        fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53de7c));
         fpu.st(0) = -fpu.st(0);
-        fpu.st(0) = fpu.mul(fpu.st(0), f32(app, 0x53de80));
+        fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53de80));
         fstp(app, cpu, cpu.ebp - axis.second);
     }
     cpu.eax = at(app, self);
@@ -714,7 +715,7 @@ void physicsStep(App* app, CPU& cpu)
     else
     {
         fpu.push(f32(app, cpu.ebp - 0x58));
-        fpu.st(0) = fpu.add(fpu.st(0), f32(app, cpu.ebp - 0x14));
+        fpu.st(0) = fp::add(fpu.st(0), f32(app, cpu.ebp - 0x14));
         fstp(app, cpu, cpu.ebp - 0x10c);
         cpu.eax = at(app, cpu.ebp - 0x10c);
         put(app, cpu.ebp - 0x13c, cpu.eax);
@@ -727,7 +728,7 @@ void physicsStep(App* app, CPU& cpu)
         cpu.eax = at(app, cpu.ebp - 0x104);
         put(app, cpu.ebp - 0x134, cpu.eax);
         fpu.push(f32(app, cpu.ebp - 0x58));
-        fpu.st(0) = fpu.sub(fpu.st(0), f32(app, cpu.ebp - 0x14));
+        fpu.st(0) = fp::sub(fpu.st(0), f32(app, cpu.ebp - 0x14));
         fstp(app, cpu, cpu.ebp - 0xdc);
         cpu.eax = at(app, cpu.ebp - 0xdc);
         put(app, cpu.ebp - 0xac, cpu.eax);
@@ -763,12 +764,12 @@ void physicsStep(App* app, CPU& cpu)
     // The engine's force, front and back by the handling's split.
     cpu.eax = at(app, handling);
     fpu.push(f32(app, cpu.ebp - 0x1c));
-    fpu.st(0) = fpu.mul(fpu.st(0), f32(app, cpu.eax + 0x1d0));
+    fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.eax + 0x1d0));
     fstp(app, cpu, cpu.ebp - 0x11c);
     cpu.eax = at(app, cpu.ebp - 0x11c);
     put(app, cpu.ebp - 0x14c, cpu.eax);
     fpu.push(f32(app, cpu.ebp - 0x1c));
-    fpu.st(0) = fpu.sub(fpu.st(0), f32(app, cpu.ebp - 0x14c));
+    fpu.st(0) = fp::sub(fpu.st(0), f32(app, cpu.ebp - 0x14c));
     fstp(app, cpu, cpu.ebp - 0xec);
     cpu.eax = at(app, cpu.ebp - 0xec);
     put(app, cpu.ebp - 0xbc, cpu.eax);
@@ -816,17 +817,17 @@ void physicsStep(App* app, CPU& cpu)
     cpu.eax = at(app, self);
     fpu.push(f32(app, cpu.eax + 0x5ec));
     cpu.eax = at(app, handling);
-    fpu.st(0) = fpu.mul(fpu.st(0), f32(app, cpu.eax + 0x1d8));
+    fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.eax + 0x1d8));
     fstp(app, cpu, cpu.ebp - 0x28);
     cpu.eax = at(app, self);
     fpu.push(f32(app, cpu.eax + 0x4f4));
-    fpu.st(0) = fpu.mul(fpu.st(0), f32(app, 0x53de8c));
+    fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53de8c));
     fpu.push(0.0);
     fcompp(cpu);
     const bool backwards = above(cpu);
     cpu.eax = at(app, self);
     fpu.push(f32(app, cpu.eax + 0x4f4));
-    fpu.st(0) = fpu.mul(fpu.st(0), f32(app, 0x53de8c));
+    fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53de8c));
     if (backwards)
         fpu.st(0) = -fpu.st(0);
     fstp(app, cpu, cpu.ebp - 0x154);
@@ -856,28 +857,28 @@ void physicsStep(App* app, CPU& cpu)
     {
         cpu.eax = at(app, handling);
         fpu.push(f32(app, cpu.eax + 0x1dc));
-        fpu.st(0) = fpu.add(fpu.st(0), f32(app, 0x53de90));
-        fpu.st(0) = fpu.mul(fpu.st(0), f32(app, cpu.ebp - 0x28));
+        fpu.st(0) = fp::add(fpu.st(0), f32(app, 0x53de90));
+        fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.ebp - 0x28));
         fstp(app, cpu, cpu.ebp - 0x2c);
     }
     else
     {
         cpu.eax = at(app, handling);
         fpu.push(f32(app, cpu.ebp - 0x28));
-        fpu.st(0) = fpu.mul(fpu.st(0), f32(app, cpu.eax + 0x1dc));
+        fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.eax + 0x1dc));
         fstp(app, cpu, cpu.ebp - 0x2c);
     }
     for (const reg32 local : {0x14cu, 0x11cu})
     {
         fpu.push(f32(app, cpu.ebp - local));
-        fpu.st(0) = fpu.add(fpu.st(0), f32(app, cpu.ebp - 0x2c));
+        fpu.st(0) = fp::add(fpu.st(0), f32(app, cpu.ebp - 0x2c));
         fstp(app, cpu, cpu.ebp - local);
     }
     for (const reg32 local : {0xbcu, 0xecu})
     {
         fpu.push(f32(app, cpu.ebp - 0x28));
-        fpu.st(0) = fpu.sub(fpu.st(0), f32(app, cpu.ebp - 0x2c));
-        fpu.st(0) = fpu.add(fpu.st(0), f32(app, cpu.ebp - local));
+        fpu.st(0) = fp::sub(fpu.st(0), f32(app, cpu.ebp - 0x2c));
+        fpu.st(0) = fp::add(fpu.st(0), f32(app, cpu.ebp - local));
         fstp(app, cpu, cpu.ebp - local);
     }
     cpu.eax = at(app, self);
@@ -889,7 +890,7 @@ void physicsStep(App* app, CPU& cpu)
         fpu.push(f32(app, kGravityY));
         fpu.st(0) = -fpu.st(0);
         cpu.eax = at(app, handling);
-        fpu.st(0) = fpu.mul(fpu.st(0), f32(app, cpu.eax + 0x248));
+        fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.eax + 0x248));
         cpu.eax = at(app, cpu.ebp - 4);
         cpu.eax <<= 2;
         fstp(app, cpu, cpu.eax + reg32(-0x68) + cpu.ebp);
@@ -899,7 +900,7 @@ void physicsStep(App* app, CPU& cpu)
         cpu.edx <<= 2;
         cpu.edx += at(app, self);
         fpu.push(f32(app, cpu.edx + 0x5d8));
-        fpu.st(0) = fpu.mul(fpu.st(0), f32(app, cpu.eax + reg32(-0x68) + cpu.ebp));
+        fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.eax + reg32(-0x68) + cpu.ebp));
         fstp(app, cpu, cpu.eax + reg32(-0x68) + cpu.ebp);
         cpu.eax = at(app, cpu.ebp - 4);
         put(app, cpu.ebp - 4, at(app, cpu.ebp - 4) + 1);
@@ -919,21 +920,21 @@ void physicsStep(App* app, CPU& cpu)
         return leave(app, cpu);
     cpu.eax = at(app, handling);
     fpu.push(f32(app, cpu.ebp - 0x68));
-    fpu.st(0) = fpu.mul(fpu.st(0), f32(app, cpu.eax + 0x234));
+    fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.eax + 0x234));
     fstp(app, cpu, cpu.ebp - 0x34);
     cpu.eax = at(app, handling);
     fpu.push(f32(app, cpu.ebp - 0x64));
-    fpu.st(0) = fpu.mul(fpu.st(0), f32(app, cpu.eax + 0x234));
+    fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.eax + 0x234));
     fstp(app, cpu, cpu.ebp - 0x30);
     cpu.eax = at(app, handling);
     fpu.push(1.0);
-    fpu.st(0) = fpu.sub(fpu.st(0), f32(app, cpu.eax + 0x234));
-    fpu.st(0) = fpu.mul(fpu.st(0), f32(app, cpu.ebp - 0x5c));
+    fpu.st(0) = fp::sub(fpu.st(0), f32(app, cpu.eax + 0x234));
+    fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.ebp - 0x5c));
     fstp(app, cpu, cpu.ebp - 0x28);
     cpu.eax = at(app, handling);
     fpu.push(1.0);
-    fpu.st(0) = fpu.sub(fpu.st(0), f32(app, cpu.eax + 0x234));
-    fpu.st(0) = fpu.mul(fpu.st(0), f32(app, cpu.ebp - 0x60));
+    fpu.st(0) = fp::sub(fpu.st(0), f32(app, cpu.eax + 0x234));
+    fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.ebp - 0x60));
     fstp(app, cpu, cpu.ebp - 0x2c);
     cpu.eax = at(app, self);
     if (!direct(app, cpu, settleLoadShift))
@@ -943,24 +944,24 @@ void physicsStep(App* app, CPU& cpu)
     {
         cpu.eax = at(app, self);
         fpu.push(f32(app, cpu.ebp - wheel.first));
-        fpu.st(0) = fpu.sub(fpu.st(0), f32(app, cpu.eax + 0x5bc));
+        fpu.st(0) = fp::sub(fpu.st(0), f32(app, cpu.eax + 0x5bc));
         fstp(app, cpu, cpu.ebp - wheel.second);
         cpu.eax = at(app, self);
         fpu.push(f32(app, cpu.ebp - wheel.second));
-        fpu.st(0) = fpu.mul(fpu.st(0), f32(app, cpu.eax + (wheel.first == 0x34 ? 0x5c8 : 0x5cc)));
+        fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.eax + (wheel.first == 0x34 ? 0x5c8 : 0x5cc)));
         fstp(app, cpu, cpu.ebp - wheel.second);
     }
     for (const auto& wheel : {std::pair<reg32, reg32>{0x5c, 0xb8}, {0x60, 0xe8}})
     {
         const reg32 low = wheel.first == 0x5c ? 0x28 : 0x2c;
         fpu.push(f32(app, cpu.ebp - wheel.first));
-        fpu.st(0) = fpu.sub(fpu.st(0), f32(app, cpu.ebp - low));
+        fpu.st(0) = fp::sub(fpu.st(0), f32(app, cpu.ebp - low));
         cpu.eax = at(app, self);
-        fpu.st(0) = fpu.add(fpu.st(0), f32(app, cpu.eax + 0x5bc));
+        fpu.st(0) = fp::add(fpu.st(0), f32(app, cpu.eax + 0x5bc));
         fstp(app, cpu, cpu.ebp - wheel.second);
         cpu.eax = at(app, self);
         fpu.push(f32(app, cpu.ebp - wheel.second));
-        fpu.st(0) = fpu.mul(fpu.st(0), f32(app, cpu.eax + (wheel.first == 0x5c ? 0x5d4 : 0x5d0)));
+        fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.eax + (wheel.first == 0x5c ? 0x5d4 : 0x5d0)));
         fstp(app, cpu, cpu.ebp - wheel.second);
     }
     put(app, cpu.ebp - 0xe0, 0);
@@ -998,7 +999,7 @@ void physicsStep(App* app, CPU& cpu)
             cpu.eax = at(app, cpu.ebp - 4) * 0x30;
             cpu.edx = at(app, self);
             fpu.push(f32(app, cpu.edx + 0x1a0));
-            fpu.st(0) = fpu.mul(fpu.st(0), f32(app, cpu.eax + reg32(0) - local + cpu.ebp));
+            fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.eax + reg32(0) - local + cpu.ebp));
             fstp(app, cpu, cpu.eax + reg32(0) - local + cpu.ebp);
         }
         cpu.eax = at(app, cpu.ebp - 4);
@@ -1010,9 +1011,9 @@ void physicsStep(App* app, CPU& cpu)
     for (const reg32 offset : {0x5c0u, 0x5c4u})
     {
         fpu.push(f32(app, 0x53de94));
-        fpu.st(0) = fpu.sub(fpu.st(0), f32(app, cpu.ebp - 8));
+        fpu.st(0) = fp::sub(fpu.st(0), f32(app, cpu.ebp - 8));
         cpu.eax = at(app, self);
-        fpu.st(0) = fpu.mul(fpu.st(0), f32(app, cpu.eax + offset));
+        fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.eax + offset));
         fstp(app, cpu, cpu.eax + offset);
     }
     // The car's force: the four wheels' forward (+0x24) and across (+0x1c).
@@ -1020,13 +1021,13 @@ void physicsStep(App* app, CPU& cpu)
     {
         const reg32 first = sum.first, second = sum.first - 0x30, third = sum.first - 0x90, fourth = sum.first - 0x60;
         fpu.push(f32(app, cpu.ebp - first));
-        fpu.st(0) = fpu.add(fpu.st(0), f32(app, cpu.ebp - second));
-        fpu.st(0) = fpu.mul(fpu.st(0), f32(app, 0x53de98));
+        fpu.st(0) = fp::add(fpu.st(0), f32(app, cpu.ebp - second));
+        fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53de98));
         fpu.push(f32(app, cpu.ebp - third));
-        fpu.st(0) = fpu.add(fpu.st(0), f32(app, cpu.ebp - fourth));
-        fpu.st(0) = fpu.mul(fpu.st(0), f32(app, 0x53de98));
+        fpu.st(0) = fp::add(fpu.st(0), f32(app, cpu.ebp - fourth));
+        fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53de98));
         cpu.eax = at(app, self);
-        fpu.st(1) = fpu.add(fpu.st(1), fpu.st(0));
+        fpu.st(1) = fp::add(fpu.st(1), fpu.st(0));
         fpu.pop();
         fstp(app, cpu, cpu.eax + sum.second);
     }
@@ -1035,14 +1036,14 @@ void physicsStep(App* app, CPU& cpu)
         return;
     fpu.push(f32(app, kGravityZ));
     fpu.st(0) = -fpu.st(0);
-    fpu.st(0) = fpu.mul(fpu.st(0), f32(app, 0x53de9c));
+    fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53de9c));
     fstp(app, cpu, cpu.ebp - 0x18);
     cpu.eax = at(app, self);
     fpu.push(f32(app, cpu.eax + 0x4e8));
     cpu.eax = at(app, handling);
-    fpu.st(0) = fpu.mul(fpu.st(0), f32(app, cpu.eax + 0x254));
+    fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.eax + 0x254));
     cpu.eax = at(app, self);
-    fpu.st(0) = fpu.add(fpu.st(0), f32(app, cpu.ebp - 0x18));
+    fpu.st(0) = fp::add(fpu.st(0), f32(app, cpu.ebp - 0x18));
     fstp(app, cpu, cpu.eax + 0x5bc);
     // The acceleration in the world's axes, onto the speed.
     cpu.ebx = at(app, self);
@@ -1056,9 +1057,9 @@ void physicsStep(App* app, CPU& cpu)
     {
         cpu.eax = at(app, self);
         fpu.push(f32(app, cpu.eax + axis.first));
-        fpu.st(0) = fpu.mul(fpu.st(0), f32(app, 0x53dea0));
+        fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53dea0));
         cpu.eax = at(app, self);
-        fpu.st(0) = fpu.add(fpu.st(0), f32(app, cpu.eax + axis.second));
+        fpu.st(0) = fp::add(fpu.st(0), f32(app, cpu.eax + axis.second));
         fstp(app, cpu, cpu.eax + axis.second);
     }
     cpu.eax = at(app, self);
@@ -1085,20 +1086,20 @@ void physicsStep(App* app, CPU& cpu)
     transform(app, cpu);
     // The yaw's torque: the front wheels' sideways forces less the back's.
     fpu.push(f32(app, cpu.ebp - 0x130));
-    fpu.st(0) = fpu.add(fpu.st(0), f32(app, cpu.ebp - 0x100));
-    fpu.st(0) = fpu.mul(fpu.st(0), f32(app, 0x53de98));
+    fpu.st(0) = fp::add(fpu.st(0), f32(app, cpu.ebp - 0x100));
+    fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53de98));
     fpu.push(f32(app, cpu.ebp - 0xa0));
-    fpu.st(0) = fpu.add(fpu.st(0), f32(app, cpu.ebp - 0xd0));
-    fpu.st(0) = fpu.mul(fpu.st(0), f32(app, 0x53de98));
-    fpu.st(1) = fpu.sub(fpu.st(1), fpu.st(0));
+    fpu.st(0) = fp::add(fpu.st(0), f32(app, cpu.ebp - 0xd0));
+    fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53de98));
+    fpu.st(1) = fp::sub(fpu.st(1), fpu.st(0));
     fpu.pop();
     fstp(app, cpu, cpu.ebp - 0x3c);
     cpu.eax = at(app, self);
     fpu.push(f32(app, cpu.eax + 0xb0));
     cpu.eax = at(app, self);
-    fpu.st(0) = fpu.mul(fpu.st(0), f32(app, cpu.eax + 0x100));
-    fpu.st(0) = fpu.mul(fpu.st(0), f32(app, 0x53dea0));
-    fpu.st(0) = fpu.mul(fpu.st(0), f32(app, cpu.ebp - 0x3c));
+    fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.eax + 0x100));
+    fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53dea0));
+    fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.ebp - 0x3c));
     fstp(app, cpu, cpu.ebp - 0x3c);
     put(app, cpu.ebp - 0x40, 0);
     put(app, cpu.ebp - 0x38, 0);
@@ -1112,9 +1113,9 @@ void physicsStep(App* app, CPU& cpu)
     {
         cpu.eax = at(app, self);
         fpu.push(f32(app, cpu.eax + axis.first));
-        fpu.st(0) = fpu.mul(fpu.st(0), f32(app, 0x53dea0));
+        fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53dea0));
         cpu.eax = at(app, self);
-        fpu.st(0) = fpu.add(fpu.st(0), f32(app, cpu.eax + axis.second));
+        fpu.st(0) = fp::add(fpu.st(0), f32(app, cpu.eax + axis.second));
         fstp(app, cpu, cpu.eax + axis.second);
     }
     cpu.ebx = at(app, self);
@@ -1211,6 +1212,8 @@ void carPhysics(App* app, CPU& cpu)
                 return;
         }
     }
+    if (diag::carStepped)
+        diag::carStepped(app, at(app, self));
     leave(app, cpu);
 }
 
@@ -1267,7 +1270,7 @@ void driveForce(App* app, CPU& cpu)
     cpu.eax = at(app, cpu.ebp - 4);
     fpu.push(f32(app, cpu.eax + 0x248));
     cpu.eax = at(app, self);
-    fpu.st(0) = fpu.div(f32(app, cpu.eax + 0x4e8), fpu.st(0));
+    fpu.st(0) = fp::div(f32(app, cpu.eax + 0x4e8), fpu.st(0));
     fstp(app, cpu, cpu.eax + 0x4e8);
     cpu.eax = at(app, self);
     bool tuned = false;
@@ -1293,12 +1296,12 @@ void driveForce(App* app, CPU& cpu)
             cpu.eax = at(app, self);
             cpu.eax = at(app, cpu.eax + 0x220);
             fpu.push(f32(app, cpu.eax + 0x58));
-            fpu.st(0) = fpu.mul(fpu.st(0), f32(app, 0x53deb4));
+            fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53deb4));
             fpu.push(1.0);
-            fpu.st(1) = fpu.add(fpu.st(1), fpu.st(0));
+            fpu.st(1) = fp::add(fpu.st(1), fpu.st(0));
             fpu.pop();
             cpu.eax = at(app, self);
-            fpu.st(0) = fpu.mul(fpu.st(0), f32(app, cpu.eax + 0x4e8));
+            fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.eax + 0x4e8));
             fstp(app, cpu, cpu.eax + 0x4e8);
         }
         else
@@ -1310,13 +1313,13 @@ void driveForce(App* app, CPU& cpu)
                 cpu.eax = at(app, self);
                 cpu.eax = at(app, cpu.eax + 0x220);
                 fpu.push(f32(app, cpu.eax + 0x58));
-                fpu.st(0) = fpu.add(fpu.st(0), f32(app, 0x53deb8));
-                fpu.st(0) = fpu.mul(fpu.st(0), f32(app, 0x53debc));
+                fpu.st(0) = fp::add(fpu.st(0), f32(app, 0x53deb8));
+                fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53debc));
                 fpu.push(1.0);
-                fpu.st(1) = fpu.add(fpu.st(1), fpu.st(0));
+                fpu.st(1) = fp::add(fpu.st(1), fpu.st(0));
                 fpu.pop();
                 cpu.eax = at(app, self);
-                fpu.st(0) = fpu.mul(fpu.st(0), f32(app, cpu.eax + 0x4e8));
+                fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.eax + 0x4e8));
                 fstp(app, cpu, cpu.eax + 0x4e8);
             }
         }
@@ -1378,11 +1381,11 @@ void sideGrip(App* app, CPU& cpu)
             cpu.eax = at(app, self);
             magnitude(app, cpu, cpu.eax + 0x4ec, cpu.ebp - 0x20, self);
             fpu.push(f32(app, cpu.ebp - 0x20));
-            fpu.st(0) = fpu.add(fpu.st(0), f32(app, 0x53dec0));
-            fpu.st(0) = fpu.mul(fpu.st(0), f32(app, 0x53dec4));
+            fpu.st(0) = fp::add(fpu.st(0), f32(app, 0x53dec0));
+            fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53dec4));
             fstp(app, cpu, cpu.ebp - 8);
             fpu.push(f32(app, cpu.ebp - 8));
-            fpu.st(0) = fpu.add(fpu.st(0), f32(app, 0x53dec8));
+            fpu.st(0) = fp::add(fpu.st(0), f32(app, 0x53dec8));
             fstp(app, cpu, cpu.ebp - 8);
             if (i32(at(app, cpu.ebp - 8)) < i32(0x3f666666))
                 put(app, cpu.ebp - 0x1c, 0x3f666666);
@@ -1402,7 +1405,7 @@ void sideGrip(App* app, CPU& cpu)
     }
     cpu.eax = at(app, self);
     fpu.push(f32(app, cpu.eax + 0x4ec));
-    fpu.st(0) = fpu.mul(fpu.st(0), f32(app, cpu.ebp - 8));
+    fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.ebp - 8));
     fstp(app, cpu, cpu.eax + 0x4ec);
     leave(app, cpu);
 }
@@ -1500,13 +1503,13 @@ void yawDamping(App* app, CPU& cpu)
         cpu.eax = at(app, self);
         magnitude(app, cpu, cpu.eax + 0x4fc, cpu.ebp - 0x28, self);
         fpu.push(f32(app, cpu.ebp - 0x28));
-        fpu.st(0) = fpu.mul(fpu.st(0), f64(app, 0x53dedc));
+        fpu.st(0) = fp::mul(fpu.st(0), f64(app, 0x53dedc));
         cpu.eax = at(app, self);
         cpu.eax = at(app, cpu.eax + 0x528);
         fpu.push(f32(app, cpu.eax + 0x258));
-        fpu.st(1) = fpu.mul(fpu.st(1), fpu.st(0));
+        fpu.st(1) = fp::mul(fpu.st(1), fpu.st(0));
         fpu.pop();
-        fpu.st(0) = fpu.mul(fpu.st(0), f64(app, 0x53dee4));
+        fpu.st(0) = fp::mul(fpu.st(0), f64(app, 0x53dee4));
         fstp(app, cpu, cpu.ebp - 0x2c);
         bool share = false;
         cpu.eax = at(app, self);
@@ -1525,7 +1528,7 @@ void yawDamping(App* app, CPU& cpu)
         {
             cpu.eax = at(app, self);
             fpu.push(f32(app, cpu.eax + 0x4f4));
-            fpu.st(0) = fpu.div(fpu.st(0), f32(app, cpu.ebp - 0x2c));
+            fpu.st(0) = fp::div(fpu.st(0), f32(app, cpu.ebp - 0x2c));
             fstp(app, cpu, cpu.ebp - 0x38);
             magnitude(app, cpu, cpu.ebp - 0x38, cpu.ebp - 0x34, 0);
             cpu.eax = at(app, cpu.ebp - 0x34);
@@ -1543,7 +1546,7 @@ void yawDamping(App* app, CPU& cpu)
             put(app, cpu.ebp - 0x38, cpu.eax);
             cpu.eax = at(app, self);
             fpu.push(f32(app, cpu.eax + 0x4fc));
-            fpu.st(0) = fpu.mul(fpu.st(0), f32(app, cpu.ebp - 0x38));
+            fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.ebp - 0x38));
             fstp(app, cpu, cpu.eax + 0x4fc);
         }
         else
@@ -1573,13 +1576,13 @@ void yawDamping(App* app, CPU& cpu)
     cpu.eax = at(app, self);
     magnitude(app, cpu, cpu.eax + 0x4fc, cpu.ebp - 0x50, self);
     fpu.push(f32(app, cpu.ebp - 0x50));
-    fpu.st(0) = fpu.mul(fpu.st(0), f64(app, 0x53df04));
+    fpu.st(0) = fp::mul(fpu.st(0), f64(app, 0x53df04));
     cpu.eax = at(app, self);
     cpu.eax = at(app, cpu.eax + 0x528);
     fpu.push(f32(app, cpu.eax + 0x258));
-    fpu.st(1) = fpu.mul(fpu.st(1), fpu.st(0));
+    fpu.st(1) = fp::mul(fpu.st(1), fpu.st(0));
     fpu.pop();
-    fpu.st(0) = fpu.mul(fpu.st(0), f64(app, 0x53df0c));
+    fpu.st(0) = fp::mul(fpu.st(0), f64(app, 0x53df0c));
     fstp(app, cpu, cpu.ebp - 0x54);
     bool share = false;
     cpu.eax = at(app, self);
@@ -1598,7 +1601,7 @@ void yawDamping(App* app, CPU& cpu)
     {
         cpu.eax = at(app, self);
         fpu.push(f32(app, cpu.eax + 0x4f4));
-        fpu.st(0) = fpu.div(fpu.st(0), f32(app, cpu.ebp - 0x54));
+        fpu.st(0) = fp::div(fpu.st(0), f32(app, cpu.ebp - 0x54));
         fstp(app, cpu, cpu.ebp - 0x60);
         magnitude(app, cpu, cpu.ebp - 0x60, cpu.ebp - 0x5c, 0);
         cpu.eax = at(app, cpu.ebp - 0x5c);
@@ -1616,7 +1619,7 @@ void yawDamping(App* app, CPU& cpu)
         put(app, cpu.ebp - 0x60, cpu.eax);
         cpu.eax = at(app, self);
         fpu.push(f32(app, cpu.eax + 0x4fc));
-        fpu.st(0) = fpu.mul(fpu.st(0), f32(app, cpu.ebp - 0x60));
+        fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.ebp - 0x60));
         fstp(app, cpu, cpu.eax + 0x4fc);
     }
     else
@@ -1744,12 +1747,12 @@ void spinTorque(App* app, CPU& cpu)
         cpu.eax = at(app, self);
         magnitude(app, cpu, cpu.eax + 0xe8, cpu.ebp - 0x20, self);
         fpu.push(f32(app, cpu.ebp - 0x20));
-        fpu.st(0) = fpu.mul(fpu.st(0), f32(app, 0x53df20));
+        fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53df20));
         cpu.eax = at(app, self);
         fpu.push(f32(app, cpu.eax + 0xb0));
         cpu.eax = at(app, self);
-        fpu.st(0) = fpu.mul(fpu.st(0), f32(app, cpu.eax + 0x100));
-        fpu.st(1) = fpu.mul(fpu.st(1), fpu.st(0));
+        fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.eax + 0x100));
+        fpu.st(1) = fp::mul(fpu.st(1), fpu.st(0));
         fpu.pop();
         fpu.st(0) = -fpu.st(0);
         fstp(app, cpu, cpu.ebp - 0xc);
@@ -1758,14 +1761,14 @@ void spinTorque(App* app, CPU& cpu)
         cpu.eax = at(app, cpu.ebp - 0x1c);
         put(app, cpu.ebp - 8, cpu.eax);
         fpu.push(f32(app, cpu.ebp - 8));
-        fpu.st(0) = fpu.mul(fpu.st(0), f32(app, 0x53df24));
-        fpu.st(0) = fpu.add(fpu.st(0), f32(app, 0x53df28));
+        fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53df24));
+        fpu.st(0) = fp::add(fpu.st(0), f32(app, 0x53df28));
         fcomp(cpu, f64(app, 0x53df2c));
         if (!below(cpu))
         {
             fpu.push(f32(app, cpu.ebp - 8));
-            fpu.st(0) = fpu.mul(fpu.st(0), f32(app, 0x53df24));
-            fpu.st(0) = fpu.add(fpu.st(0), f32(app, 0x53df28));
+            fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53df24));
+            fpu.st(0) = fp::add(fpu.st(0), f32(app, 0x53df28));
             fstpDouble(app, cpu, cpu.ebp - 0x28);
         }
         else
@@ -1783,13 +1786,13 @@ void spinTorque(App* app, CPU& cpu)
             put(app, cpu.ebp - 0x18, cpu.eax);
         }
         fpu.push(f32(app, cpu.ebp - 0xc));
-        fpu.st(0) = fpu.mul(fpu.st(0), f32(app, cpu.ebp - 0x18));
+        fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.ebp - 0x18));
         fstp(app, cpu, cpu.ebp - 0xc);
         cpu.eax = at(app, self);
         if (byte(app, cpu.eax + 0x50b) == 0)
         {
             fpu.push(f32(app, cpu.ebp - 0xc));
-            fpu.st(0) = fpu.mul(fpu.st(0), f32(app, 0x53df34));
+            fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53df34));
             fstp(app, cpu, cpu.ebp - 0xc);
         }
     }

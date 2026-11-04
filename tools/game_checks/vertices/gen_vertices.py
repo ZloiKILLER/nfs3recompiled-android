@@ -60,7 +60,6 @@ def main():
         h.write("#ifndef NFS3HP_H_\n#define NFS3HP_H_\n#include <x86.h>\n#include <lib/winapp.h>\n"
                 "#include <lib/memmap.h>\n\nnamespace nfs3hp\n{\n\n"
                 "x86::reg32 mirrorAsMain(x86::reg32 kind);\n"
-                "x86::reg16 raceControl(x86::reg16 word);\n"
                 "double mirrorCarScale(double scale);\n")
         for address, name in sorted(natives.items()):
             h.write("namespace vertices { void %s(win32::WinApplication* app, x86::CPU& cpu); }\n" % name)

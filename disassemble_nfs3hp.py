@@ -72,7 +72,8 @@ MERGE_ROUTINES = [(0x405740, 0x405791),
 # machines as an IPX race was joined.
 KNOWN_SUBROUTINES = [0x4ff3d0, 0x4f5fd0, 0x505970, 0x509c60,]
 
-SKIP_INSTRUCTIONS = [0x4a3aec]
+# 0x4ff5c5 calls the test for the Pentium's FDIV bug (0x51f272), 0x4f0a06 is an emms.
+SKIP_INSTRUCTIONS = [0x4a3aec, 0x4ff5c5, 0x4f0a06]
 
 
 SPLIT_INSTRUCTIONS = [0x4e08af, 0x4e087a, 0x4eee0f]
@@ -240,7 +241,6 @@ WATCOM_NATIVES = {
     0x4ff46c: "watcom::FiniRtns",       # __FiniRtns
     0x4ff4c0: "watcom::STOSB",          # __STOSB
     0x4ff4f7: "watcom::STOSD",          # __STOSD
-    0x4ff624: "watcom::fpatan_wrap",    # __fpatan_wrap
     0x500f8c: "watcom::set_errno_dos",  # __set_errno_dos
     0x500ff4: "watcom::set_errno_nt",   # __set_errno_nt
     0x502760: "watcom::flush",          # __flush
@@ -344,7 +344,6 @@ WATCOM_NATIVES = {
     0x51ec20: "watcom::stackLimits",    # the stack's limits
     0x51f0d0: "watcom::InitExceptionHandling", # __InitExceptionHandling
     0x51f11c: "watcom::DoneExceptionHandler",# __DoneExceptionHandler
-    0x51f320: "watcom::atanSafe",       # __fpatan_wrap's atan2
     0x522d80: "watcom::fsync",
     0x522de0: "watcom::GetIOMode",      # __GetIOMode
     0x522e38: "watcom::SetIOMode",      # __SetIOMode
@@ -379,8 +378,6 @@ WATCOM_NATIVES = {
     0x525d59: "watcom::U8D",            # __U8D
     0x525df0: "watcom::calloc",
     0x526030: "watcom::initThread",     # the thread's data's start
-    0x5269d4: "watcom::fdivSafe",       # __fdiv_fpr's division
-    0x526aeb: "watcom::fdiv_fpr",       # __fdiv_fpr
     0x52b290: "watcom::putch",
     0x52b5b0: "watcom::mbclen",         # _mbclen
     0x52b5e0: "watcom::mbcicmp",        # _mbcicmp
@@ -643,10 +640,6 @@ EA_MEMORY_NATIVES = {
     0x4e19d0: "ea::reservememStdcall",
     0x4e19f0: "ea::purgememStdcall",
     0x4ea4f0: "ea::memmove",
-    0x503280: "ea::fpuCopySwapped",
-    0x503281: "ea::fpuCopy",
-    0x50356c: "ea::dwordCopySwapped",
-    0x50356d: "ea::dwordCopy",
 }
 EA_FILES_NATIVES = {
     0x4e28c0: "ea::initHandlesDefault",
@@ -1367,8 +1360,8 @@ COLLIDE_NATIVES = {
 GAME_NATIVES.update(COLLIDE_NATIVES)
 
 # The cops' Hot Pursuit, the extra cars and the computer's car's driving
-# and physics (0x404d30 to 0x4088f0, but 0x4064f0 and 0x4070c0, which
-# tools/apply_native_ai.py hooks), native whole in nfs3hp::aidrive
+# and physics (0x404d30 to 0x4088f0, but 0x4064f0 and 0x4070c0, which are
+# native_frontend_sima.cpp's), native whole in nfs3hp::aidrive
 # (native_aidrive.cpp).  tools/game_checks compares them with their
 # generated code (aidrive.inc).
 AIDRIVE_NATIVES = {
@@ -2356,7 +2349,101 @@ GAME_NATIVES.update(PORT_CONV_NATIVES)
 # the shown screen's name; a question, a message, a line to type in opened,
 # and their layout.  tools/frontend_checks compares them with the game's
 # code, made afresh (its generate.py); tools/game_checks leaves them out.
+def menu_group_natives():
+    """tools/frontend_checks/groups/*.txt: the screens' functions by group."""
+    from pathlib import Path
+    natives = {}
+    for path in sorted((Path(__file__).resolve().parent / "tools/frontend_checks/groups").glob("*.txt")):
+        for line in path.read_text().splitlines():
+            if line and not line.startswith("#"):
+                address, name, _ = line.split()
+                natives[int(address, 16)] = "frontend::" + name
+    return natives
+
+
 MENU_NATIVES = {
+    # The options screens, the cars' and the tracks' (native_frontend_options.cpp, _cars, _tracks).
+    0x442aa0: "frontend::optionsOnEnter",
+    0x4374b0: "frontend::feedOnEnter",
+    0x437590: "frontend::feedOnExit",
+    0x437250: "frontend::feedSeparate",
+    0x437300: "frontend::feedTimeButtonKey",
+    0x437390: "frontend::feedPositionButtonKey",
+    0x437420: "frontend::feedSpeedButtonKey",
+    0x437350: "frontend::feedTimeListKey",
+    0x4373e0: "frontend::feedPositionListKey",
+    0x437470: "frontend::feedSpeedListKey",
+    0x437e00: "frontend::audioOnEnter",
+    0x438070: "frontend::audioOnExit",
+    0x438260: "frontend::audioOnFrame",
+    0x437a90: "frontend::audioVolumeDraw",
+    0x437990: "frontend::audioMenuMusicMoved",
+    0x4379b0: "frontend::audioRaceMusicMoved",
+    0x4379d0: "frontend::audioEffectsMoved",
+    0x437a20: "frontend::audioEngineMoved",
+    0x437a70: "frontend::audioSpeechMoved",
+    0x448440: "frontend::graphicsOnEnter",
+    0x4484e0: "frontend::graphicsOnExit",
+    0x448430: "frontend::graphicsOnFrame",
+    0x448610: "frontend::advancedOnEnter",
+    0x448770: "frontend::advancedOnExit",
+    0x4485a0: "frontend::advancedOnFrame",
+    0x448570: "frontend::advancedIntensityMoved",
+    0x4104b0: "frontend::carMenuMusicBack",
+    0x4267a0: "frontend::carSaveFrame",
+    0x4267f0: "frontend::trackSaveFrame",
+    0x426870: "frontend::carRecord",
+    0x426b00: "frontend::trackRecord",
+    0x426d60: "frontend::car1OnEnter",
+    0x426ef0: "frontend::car2OnEnter",
+    0x426e20: "frontend::car1OnFrame",
+    0x426f80: "frontend::car2OnFrame",
+    0x426ee0: "frontend::car1OnExit",
+    0x427040: "frontend::car2OnExit",
+    0x426c20: "frontend::car1EditClicked",
+    0x426c40: "frontend::car2EditClicked",
+    0x426c60: "frontend::car1ColourClicked",
+    0x426ce0: "frontend::car2ColourClicked",
+    0x427050: "frontend::opponentFitCar",
+    0x4270c0: "frontend::opponentFitArt",
+    0x4272a0: "frontend::opponentOnEnter",
+    0x4272e0: "frontend::opponentOnExit",
+    0x427190: "frontend::opponentOnFrame",
+    0x4272f0: "frontend::tuningLoad",
+    0x427370: "frontend::tuningSave",
+    0x4273e0: "frontend::tuningEngineMoved",
+    0x427470: "frontend::tuningBrakesMoved",
+    0x427500: "frontend::tuningSteeringMoved",
+    0x427590: "frontend::tuningGearsMoved",
+    0x427620: "frontend::tuningSuspensionMoved",
+    0x4276b0: "frontend::tuningAeroMoved",
+    0x427740: "frontend::tuningTiresMoved",
+    0x4277d0: "frontend::tuningSetSliders",
+    0x4279b0: "frontend::tuningRememberSliders",
+    0x427ac0: "frontend::tuningSlidersMoved",
+    0x427c20: "frontend::tuningBindSliders",
+    0x427d00: "frontend::tuningLoadAdvanced",
+    0x427d80: "frontend::tuningDefaultsAnswered",
+    0x427e10: "frontend::tuningDoneKey",
+    0x427ea0: "frontend::tuningCancelKey",
+    0x427f40: "frontend::tuningCarListKey",
+    0x427fb0: "frontend::tuningDefaultsKey",
+    0x428020: "frontend::tuningBindDoneCancel",
+    0x428060: "frontend::tuningFitButtons",
+    0x4281e0: "frontend::tuningPrepare",
+    0x428360: "frontend::tuningOnEnter",
+    0x4283b0: "frontend::tuningOnExit",
+    0x4dcaf0: "frontend::tuningAdvancedDiffers",
+    0x4dcb60: "frontend::tuningCopyAdvanced",
+    0x4487e0: "frontend::locationOnEnter",
+    0x4487d0: "frontend::locationOnFrame",
+    0x4489e0: "frontend::locationOnExit",
+    0x456200: "frontend::infoPlaceTrackPlaces",
+    0x4568d0: "frontend::infoOnEnter",
+    0x456890: "frontend::infoOnFrame",
+    0x456990: "frontend::infoOnExit",
+    0x4c94e0: "frontend::infoSpeak",
+    0x4c9590: "frontend::infoStopSpeaking",
     0x43fcb0: "frontend::multiMenuLeaveAnswer",
     0x4400d0: "frontend::multiMenuOnBack",
     0x440160: "frontend::multiMenuApplyRaceList",
@@ -2420,6 +2507,7 @@ MENU_NATIVES = {
     0x44a660: "frontend::menuShownNow",
     0x4446c0: "frontend::dialogFocusedButton",
 }
+MENU_NATIVES.update(menu_group_natives())
 GAME_NATIVES.update(MENU_NATIVES)
 
 # The game's code that uses MMX, native: each address is the port's function
@@ -2427,27 +2515,35 @@ GAME_NATIVES.update(MENU_NATIVES)
 # library's MMX routines and the memmove the game's file reads copy with.
 # Only 0x4ea4f0's and 0x4f09c0's emms are left generated.  tools/game_checks
 # compares them with their generated code as well.
-MMX_NATIVES = {
-    0x5033e4: "mmx::copySwapped",       # the memmove's copy, xchg edx, eax first
-    0x5033e5: "mmx::copy",              # its copy: eax to, edx from, ebx bytes
-    0x51f5dd: "mmx::addMono8",
-    0x51f6c7: "mmx::addStereo8",
-    0x51f7ad: "mmx::addMono16",
-    0x51f897: "mmx::addStereo16",
-    0x520830: "mmx::outputMono8",
-    0x520870: "mmx::outputStereo8",
-    0x520920: "mmx::outputStereo16",
-    0x5209a0: "mmx::clear",
-    0x520a00: "mmx::emms",
-    0x520a10: "mmx::outputMono16",
-    0x5270f0: "mmx::interpolateMono8",
-    0x527170: "mmx::interpolateStereo8",
-    0x527210: "mmx::interpolateMono16",
-    0x527290: "mmx::interpolateStereo16",
-    0x52d1a0: "mmx::xaMono",
-    0x52d250: "mmx::xaStereo",
+MIX_NATIVES = {
+    0x5033e4: "mix::copySwapped",       # the memmove's copy, xchg edx, eax first
+    0x5033e5: "mix::copy",              # its copy: eax to, edx from, ebx bytes
+    0x51f5dd: "mix::addMono8",
+    0x51f6c7: "mix::addStereo8",
+    0x51f7ad: "mix::addMono16",
+    0x51f897: "mix::addStereo16",
+    0x520830: "mix::outputMono8",
+    0x520870: "mix::outputStereo8",
+    0x520920: "mix::outputStereo16",
+    0x5209a0: "mix::clear",
+    0x520a00: "mix::finished",
+    0x520a10: "mix::outputMono16",
+    0x5270f0: "mix::interpolateMono8",
+    0x527170: "mix::interpolateStereo8",
+    0x527210: "mix::interpolateMono16",
+    0x527290: "mix::interpolateStereo16",
+    0x52d1a0: "mix::xaMono",
+    0x52d250: "mix::xaStereo",
 }
-GAME_NATIVES.update(MMX_NATIVES)
+GAME_NATIVES.update(MIX_NATIVES)
+
+# The game asked the processor what it can do and timed it, to choose what to run
+# on it.  The port's answers are constants (native_game.cpp): nfs3hp::removed.
+REMOVED_NATIVES = {
+    0x4f1c70: "removed::processorChecked",
+    0x4f1ef0: "removed::processorSpeed",
+}
+GAME_NATIVES.update(REMOVED_NATIVES)
 
 # EA's SND library, rewritten as the port's own C++ (src/nfs3hp/port_snd.h):
 # each address is the game's entry of that name in nfs3hp::port, first those
@@ -3123,21 +3219,9 @@ if __name__ == '__main__':
     # half for voodoo2a, whose code is no longer generated, would now go into
     # THRASH_about and measureModes in src/nfs3hp/port_thrash.cpp.
 
-    from tools.apply_menu_unlock import apply as apply_menu_unlock
-    apply_menu_unlock(Path(__file__).resolve().parent)
 
-    # Download Car: off both car screens, there being nothing left to download.
-    from tools.apply_hide_download import apply as apply_hide_download
-    apply_hide_download(Path(__file__).resolve().parent)
 
-    # RaceNet, Modem and Serial: off the connection screen, EA's server being
-    # gone and a phone having neither of the others.
-    from tools.apply_hide_connections import apply as apply_hide_connections
-    apply_hide_connections(Path(__file__).resolve().parent)
 
-    # TCP/IP port: 9803 as the Modern Patch has it, or 1030 for the original.
-    from tools.apply_network_port import apply as apply_network_port
-    apply_network_port(Path(__file__).resolve().parent)
 
     # Car detail: every car's texture at the player's size, a larger transform
     # buffer and wheel spin kept per car, so split screen and the mirror match.
@@ -3156,12 +3240,6 @@ if __name__ == '__main__':
     # Race state: which of the two on-screen layouts belongs on the screen.
     from tools.apply_race_state import apply as apply_race_state
     apply_race_state(Path(__file__).resolve().parent)
-
-    # Races at the x87's extended precision, as the Modern Patch runs them:
-    # the race loop's fldcw down to single precision goes through
-    # nfs3hp::raceControl (NFS_FPU_EXTENDED).
-    from tools.apply_race_precision import apply as apply_race_precision
-    apply_race_precision(Path(__file__).resolve().parent)
 
     # HUD scale: the parts of a HUD element keep their proportions on a wide
     # screen instead of growing with its width.
@@ -3200,10 +3278,6 @@ if __name__ == '__main__':
     apply_view_angle(Path(__file__).resolve().parent)
 
 
-    # Text entry: the phone's keyboard comes up by itself while the game waits
-    # for a name to be typed.
-    from tools.apply_text_entry import apply as apply_text_entry
-    apply_text_entry(Path(__file__).resolve().parent)
 
     # Force feedback: player one's car keeps its effects when the on-screen
     # controls are bound as keys, which leaves no axis on the pad to claim them.
@@ -3215,10 +3289,6 @@ if __name__ == '__main__':
     from tools.apply_full_colour import apply as apply_full_colour
     apply_full_colour(Path(__file__).resolve().parent)
 
-    # First settings: a game that starts with no settings file -- data copied
-    # straight off the disc -- gets the phone's, as an import writes them.
-    from tools.apply_first_settings import apply as apply_first_settings
-    apply_first_settings(Path(__file__).resolve().parent)
 
     # Hooks that only watch the game's code (the [VIEW] arena peak, the AI's
     # lane votes, the comm library's traces); the vertex loops that were
@@ -3226,10 +3296,6 @@ if __name__ == '__main__':
     from tools.apply_native_vertices import apply as apply_native_vertices
     apply_native_vertices(Path(__file__).resolve().parent)
 
-    # The opponents' pull and steering, decompiled into C++ that comes out as
-    # the generated code to the bit (src/nfs3hp/native_ai.h).
-    from tools.apply_native_ai import apply as apply_native_ai
-    apply_native_ai(Path(__file__).resolve().parent)
 
     # The loading native: RefPack, the FSH textures' alpha scans, an FCE's
     # polygon records and a track's FRD.
@@ -3247,5 +3313,3 @@ if __name__ == '__main__':
 
     # The menus decompiled a screen at a time, the generated code kept behind
     # them: first the main menu.
-    from tools.apply_native_frontend import apply as apply_native_frontend
-    apply_native_frontend(Path(__file__).resolve().parent)

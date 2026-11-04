@@ -11,6 +11,8 @@
 #include "port_thrash.h"
 #include "dynamic_fullscreen.h"
 #include "func_log.h"
+#include "diag_hooks.h"
+#include "replay_trace.h"
 #include <SDL3/SDL.h>
 #include <array>
 #include <atomic>
@@ -40,9 +42,29 @@ void moviePlaying(bool playing)
     s_moviePlaying.store(playing, std::memory_order_release);
 }
 
+/* NFS_AUTO_REPLAY=1 (tools/replay_run.py): no movies, and from the first menu
+ * straight to the last race's replay, once. */
+static bool autoReplayAsked()
+{
+    static const bool on = []() {
+        const char* value = SDL_getenv("NFS_AUTO_REPLAY");
+        return value && *value && *value != '0';
+    }();
+    return on;
+}
+
+static bool takeAutoReplay()
+{
+    static bool s_taken = false;
+    if (s_taken || !autoReplayAsked())
+        return false;
+    s_taken = true;
+    return true;
+}
+
 bool movieSkipRequested()
 {
-    return s_movieSkip.load(std::memory_order_acquire);
+    return autoReplayAsked() || s_movieSkip.load(std::memory_order_acquire);
 }
 
 static bool requestMovieSkip()
@@ -76,29 +98,6 @@ x86::reg32 networkPort()
     return port;
 }
 
-/* Races at the x87's extended precision, as the Modern Patch runs them
- * (tools/apply_race_precision.py): NFS_FPU_EXTENDED=1 only.  By default a race
- * runs as the original's did: on leaving the menus the game takes the precision
- * control down to single (24 bits) for the loading, the race and its replay,
- * and so do four functions that call out mid-race; the Modern Patch drops that
- * fldcw and races at the 64 bits fninit leaves.  With it on, the word the game
- * loads keeps its rounding and exception bits and gets its precision control
- * back at 64 bits.  Every player of a network race needs the same: the race is
- * simulated on every machine. */
-bool extendedRaces()
-{
-    static const bool on = []() {
-        const char* value = SDL_getenv("NFS_FPU_EXTENDED");
-        return value && SDL_strcmp(value, "1") == 0;
-    }();
-    return on;
-}
-
-x86::reg16 raceControl(x86::reg16 word)
-{
-    return extendedRaces() ? x86::reg16(word | 0x0300) : word;
-}
-
 /* Whether the player is driving.  A race is one call of the game's own -- set
  * up by sub_4a3400, taken down again by sub_4a35d0, each called from one place
  * only -- and both are marked (tools/apply_race_state.py the first, the
@@ -119,6 +118,77 @@ void raceRunning(bool running)
         nfs3hp::port::driver::fitFourThree(false);
         s_loadingScreen = false;
     }
+}
+
+/* NFS_PERF_TRACE=1 (debug mode, Traces: perf_trace): the race summary's
+ * Performance page shows "---" though the car measured its 0-100 and the rest
+ * (2026-10-31: the car keeps them through the whole of takeDownRace; the
+ * results' copy, sub_455410, is what is left to see).  These [PERF] and
+ * [PERFTIME] lines follow them from the car to the results. */
+bool perfTraceOn()
+{
+    static const bool on = []() {
+        const char* value = SDL_getenv("NFS_PERF_TRACE");
+        return value && *value && *value != '0';
+    }();
+    return on;
+}
+
+void logPerformance(win32::WinApplication* app, const char* where);
+
+/* A step of takeDownRace: the timings said, and at its first the trace closed. */
+static void raceDownStep(win32::WinApplication* app, const char* where)
+{
+    logPerformance(app, where);
+    if (SDL_strcmp(where, "race taken down") == 0)
+        endReplayTrace(app);
+}
+
+/* Player one's timings in the car and in the results' first record (0x6647b0,
+ * the race's copies of the players' cars, sub_455210), said with `where`. */
+void logPerformance(win32::WinApplication* app, const char* where)
+{
+    if (!perfTraceOn())
+        return;
+    const x86::reg32 player = app->getMemory<x86::reg32>(0x6fd4f4);
+    const x86::reg32 car = player < 16 ? x86::reg32(app->getMemory<x86::reg32>(0x5efa48 + player * 4)) : 0u;
+    if (!car)
+        return;
+    SDL_Log("[PERFTIME] %s: car %08x 0-100=%u 0-160=%u, results %u records, first's 0-100=%u, replay %u, "
+            "ended %u",
+            where, unsigned(car), unsigned(app->getMemory<x86::reg32>(car + 0x26c)),
+            unsigned(app->getMemory<x86::reg32>(car + 0x270)), unsigned(app->getMemory<x86::reg32>(0x677d30)),
+            unsigned(app->getMemory<x86::reg32>(0x6647b0 + 0x26c)), unsigned(app->getMemory<x86::reg32>(0x6fd3a0)),
+            unsigned(app->getMemory<x86::reg32>(0x7d36b4)));
+}
+
+/* The results' records as the menus have them (sub_455410 copies the players'
+ * cars there after the race, 0x9ac bytes each from 0x6647b0, their number at
+ * 0x677d30; the cops' from 0x66e270, at 0x677d34): each record's player
+ * (+0x1f0), flags (+0x200) and 0-100 km/h (+0x26c), written when they change. */
+void logResults(win32::WinApplication* app)
+{
+    if (!perfTraceOn())
+        return;
+    static std::string s_last;
+    std::string now = "players";
+    const x86::reg32 count = app->getMemory<x86::reg32>(0x677d30);
+    for (x86::reg32 i = 0; i < count && i < 16; ++i)
+    {
+        const x86::reg32 r = 0x6647b0 + i * 0x9ac;
+        char one[64];
+        SDL_snprintf(one, sizeof one, " #%u:p%u f%02x 0-100=%u", unsigned(i), unsigned(app->getMemory<x86::reg32>(r + 0x1f0)),
+                     unsigned(app->getMemory<x86::reg8>(r + 0x200)), unsigned(app->getMemory<x86::reg32>(r + 0x26c)));
+        now += one;
+    }
+    char tail[64];
+    SDL_snprintf(tail, sizeof tail, "; cops %u; player %u", unsigned(app->getMemory<x86::reg32>(0x677d34)),
+                 unsigned(app->getMemory<x86::reg32>(0x6fd4f4)));
+    now += tail;
+    if (now == s_last)
+        return;
+    s_last = now;
+    SDL_Log("[PERFTIME] results: %s", now.c_str());
 }
 
 /* The loading screen at 4:3 in the middle of a wide screen, as the Modern Patch
@@ -2261,6 +2331,56 @@ void botForceTick(win32::WinApplication* app)
             bots.c_str());
 }
 
+/* Diagnostics for the race summary's Performance page (2026-10-31): player
+ * one's timings as sub_4cdf10 keeps them in the car -- the start's node and
+ * clock (+0x260, +0x264), 0-60 mph, 0-100 km/h, 0-100 mph, 0-160 km/h
+ * (+0x268..+0x274), the quarter mile and 400 m (+0x278, +0x27c), the mile
+ * and 1000 m (+0x280, +0x284) -- and what restarts them: in neutral
+ * (+0x50b 1) slower than 0.5 along its axis (+0x4f4).  Written whenever one
+ * of them changes, the race's clock [0x7d3684] beside it. */
+void perfTick(win32::WinApplication* app)
+{
+    if (!nfs3hp::perfTraceOn())
+        return;
+    static x86::reg32 s_last[12] = {};
+    static bool s_had = false;
+    static bool s_raced = false;
+    if (!nfs3hp::raceIsRunning())
+    {
+        // Once after a race, on the results' first frame.
+        if (s_raced)
+            nfs3hp::logPerformance(app, "menus after the race");
+        s_raced = false;
+        nfs3hp::logResults(app);
+        s_had = false;
+        return;
+    }
+    s_raced = true;
+    const x86::reg32 player = app->getMemory<x86::reg32>(0x6fd4f4);
+    const x86::reg32 car = player < 16 ? x86::reg32(app->getMemory<x86::reg32>(0x5efa48 + player * 4)) : 0u;
+    if (!car)
+        return;
+    x86::reg32 now[12];
+    for (int i = 0; i < 10; ++i)
+        now[i] = app->getMemory<x86::reg32>(car + 0x260 + 4 * i);
+    // The start's clock moves every frame of a restart: kept out of the comparison.
+    const x86::reg32 startClock = now[1];
+    now[1] = 0;
+    const float speed = app->getMemory<float>(car + 0x4f4);
+    const x86::reg32 gear = app->getMemory<x86::reg8>(car + 0x50b);
+    now[10] = gear == 1 && speed > -0.5f && speed < 0.5f;
+    now[11] = app->getMemory<x86::reg8>(car + 0x200);
+    if (s_had && SDL_memcmp(now, s_last, sizeof now) == 0)
+        return;
+    s_had = true;
+    SDL_memcpy(s_last, now, sizeof now);
+    SDL_Log("[PERF] clock=%u gear=%u v=%.1f flags=%02x restart=%u start=%d/%u 0-60=%u 0-100=%u 0-100mph=%u "
+            "0-160=%u quarter=%u 400m=%u mile=%u 1000m=%u",
+            unsigned(app->getMemory<x86::reg32>(0x7d3684)), unsigned(gear), double(speed), unsigned(now[11]),
+            unsigned(now[10]), int(now[0]), unsigned(startClock), unsigned(now[2]), unsigned(now[3]), unsigned(now[4]),
+            unsigned(now[5]), unsigned(now[6]), unsigned(now[7]), unsigned(now[8]), unsigned(now[9]));
+}
+
 /* Every buffer swap: the finger and the mouse on the picture, which layout the
  * controls should be showing and which of the race's buttons, whether the pads'
  * keys go out, the phone's cornering and how the touch buttons steer. */
@@ -2279,6 +2399,7 @@ void onSwap(win32::WinApplication* app)
     steeringTick(app);
     viewTick(app);
     botForceTick(app);
+    perfTick(app);
     if (s_traceTicks)
         traceTicks(app);
     if (s_traceInput)
@@ -2451,7 +2572,11 @@ int main(int argc, char* argv[])
 #ifdef __ANDROID__
     if (const char* funcLog = SDL_getenv("NFS_FUNC_LOG"); funcLog && *funcLog && *funcLog != '0')
         nfs3hp::startFunctionLog();
+    if (const char* trace = SDL_getenv("NFS_REPLAY_TRACE"); trace && *trace && *trace != '0')
+        nfs3hp::startReplayTrace();
 #endif
+    nfs3hp::diag::takeAutoReplay = nfs3hp::takeAutoReplay;
+    nfs3hp::diag::raceDown = nfs3hp::raceDownStep;
     SDL_Init(SDL_INIT_EVENTS|SDL_INIT_VIDEO|SDL_INIT_AUDIO|SDL_INIT_JOYSTICK|SDL_INIT_GAMEPAD);
     /* Window::getMessage consumes key, text, quit and its own registered user
      * events; everything else falls through its switch and is thrown away.  The
@@ -2530,26 +2655,6 @@ int main(int argc, char* argv[])
         s_traceCars = carTrace && *carTrace && *carTrace != '0';
         const char* inputTrace = SDL_getenv("NFS_INPUT_TRACE");
         s_traceInput = inputTrace && *inputTrace && *inputTrace != '0';
-        /* NFS_FPU_SINGLE=0: races without the x87's single-precision rounding
-         * (FPU::s_singlePrecision), for comparing frame rates with and without. */
-        const char* single = SDL_getenv("NFS_FPU_SINGLE");
-        if (single && SDL_strcmp(single, "0") == 0)
-            x86::FPU::s_singlePrecision = 4;
-        SDL_Log("[FPU] single-precision rounding where the game asks for it: %s", x86::FPU::s_singlePrecision == 0 ? "on" : "off");
-#if !defined(WITH_PEDANTIC_FPU) && !defined(WITH_WIDE_FPU)
-        /* NFS_FPU_FLOAT=1: the whole game in single precision (FPU::s_floatEverywhere). */
-        const char* floatAll = SDL_getenv("NFS_FPU_FLOAT");
-        x86::FPU::s_floatEverywhere = floatAll && SDL_strcmp(floatAll, "1") == 0;
-        if (x86::FPU::s_floatEverywhere)
-            SDL_Log("[FPU] float everywhere: every x87 operation of the game rounded to 24 bits, the menus too");
-#endif
-#ifdef WITH_PEDANTIC_FPU
-        SDL_Log("[FPU] x87 arithmetic: 80 bits, exact (src/lib/x87soft.cpp); races at %s precision",
-                nfs3hp::extendedRaces() ? "extended, as the Modern Patch" : "single, as the original");
-#else
-        SDL_Log("[FPU] x87 arithmetic: doubles; races at %s precision",
-                nfs3hp::extendedRaces() ? "extended (53 bits), as the Modern Patch" : "single, as the original");
-#endif
         s_touchMutex = SDL_CreateMutex();
 #ifndef __ANDROID__
         loadTouchScript();

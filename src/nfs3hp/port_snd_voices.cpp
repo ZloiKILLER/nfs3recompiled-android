@@ -588,7 +588,7 @@ x86::Float pitchScale(App* app, CPU& cpu, int32_t cents)
         if (bit & reg32(n))
         {
             const x86::Float t = x86::Float(kPitchSteps(app, k));
-            f = float(down ? cpu.fpu.div(x86::Float(f), t) : cpu.fpu.mul(x86::Float(f), t));
+            f = float(down ? fp::div(x86::Float(f), t) : fp::mul(x86::Float(f), t));
         }
     return x86::Float(f);
 }
@@ -599,9 +599,9 @@ int32_t stepFor(App* app, CPU& cpu, int32_t rate, int32_t mixRate, int32_t pitch
 {
     x86::FPU& fpu = cpu.fpu;
     x86::Float f = pitchScale(app, cpu, pitch);
-    f = fpu.mul(f, x86::Float(rate));
-    f = fpu.div(f, x86::Float(mixRate));
-    f = fpu.mul(f, x86::Float(kStepScale(app)));
+    f = fp::mul(f, x86::Float(rate));
+    f = fp::div(f, x86::Float(mixRate));
+    f = fp::mul(f, x86::Float(kStepScale(app)));
     return chopped<int32_t>(cpu, f);
 }
 
@@ -634,7 +634,7 @@ Result detuneVoice(App* app, CPU& cpu, reg32 esp, int32_t index, int32_t pitch)
     }
     if (p.method == 3)
     {
-        const x86::Float f = cpu.fpu.mul(pitchScale(app, cpu, pitch), x86::Float(int32_t(p.rate)));
+        const x86::Float f = fp::mul(pitchScale(app, cpu, pitch), x86::Float(int32_t(p.rate)));
         const reg32 rate = reg32(chopped<int32_t>(cpu, f));
         reg32 eax;
         if (!callGame(app, cpu, frame, kDirectRate(app), {p.rate, kPlatform.address(index), reg32(pitch), reg32(index)},

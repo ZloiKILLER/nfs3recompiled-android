@@ -74,6 +74,7 @@ void setFloat(x86::reg32 at, float value)
 std::mt19937 g_script;
 std::vector<x86::reg32> g_log;
 unsigned g_calls = 0;
+x86::reg32 g_caseAddress = 0;  // the function a case is of
 
 x86::reg32 scripted(x86::reg32 below)
 {
@@ -81,6 +82,9 @@ x86::reg32 scripted(x86::reg32 below)
 }
 
 /* The memory the screens read and write, hashed at each call. */
+/* The group these cases are of (windows/run.py): its world, entries and memory. */
+const std::string g_group = std::getenv("FRONTEND_CHECKS_GROUP") ? std::getenv("FRONTEND_CHECKS_GROUP") : "";
+
 const std::pair<x86::reg32, x86::reg32> kWatched[] = {
     { 0x550000, 0x570000 }, { 0x5f3000, 0x5f4000 }, { 0x604000, 0x608000 },
     { 0x660000, 0x664000 }, { 0x6fb000, 0x6fe000 }, { 0x7a2000, 0x7a4000 },
@@ -88,23 +92,78 @@ const std::pair<x86::reg32, x86::reg32> kWatched[] = {
     { 0x678000, 0x679000 }, { 0x5f4000, 0x5f5000 }, { 0x664000, 0x665000 },
 };
 
+using Ranges = std::vector<std::pair<x86::reg32, x86::reg32>>;
+
+/* kWatched and this group's own ranges, sorted and merged. */
+const Ranges& watchedRanges()
+{
+    static const Ranges ranges = [] {
+        Ranges all(std::begin(kWatched), std::end(kWatched));
+#include "group_watched.inc"
+        std::sort(all.begin(), all.end());
+        Ranges merged;
+        for (const auto& range : all)
+        {
+            if (!merged.empty() && range.first <= merged.back().second)
+                merged.back().second = std::max(merged.back().second, range.second);
+            else
+                merged.push_back(range);
+        }
+        return merged;
+    }();
+    return ranges;
+}
+
+/* What the hash reads: all of it but the rows the items stand in, which mainsplt
+ * moves as the port has it (checked by compare()). */
+const Ranges& hashedRanges()
+{
+    static constexpr x86::reg32 kRowsFrom = 0x559c68, kRowsTo = 0x559cb8;
+    static const Ranges ranges = [&] {
+        Ranges out;
+        for (const auto& range : watchedRanges())
+        {
+            if (range.first < kRowsFrom && kRowsTo < range.second)
+            {
+                out.push_back({ range.first, x86::reg32(kRowsFrom) });
+                out.push_back({ x86::reg32(kRowsTo), range.second });
+            }
+            else
+                out.push_back(range);
+        }
+        return out;
+    }();
+    return ranges;
+}
+
+/* Every call out records this, so that a write made on the wrong side of a call
+ * shows: most of a case's time, hence four lanes, a word of 32 bytes at a time. */
 x86::reg32 watchedHash()
 {
-    std::uint64_t h = 1469598103934665603ull;
-    for (const auto& range : kWatched)
+    constexpr std::uint64_t kPrime = 1099511628211ull;
+    std::uint64_t h[4] = { 1469598103934665603ull, 0x9e3779b97f4a7c15ull, 0xc2b2ae3d27d4eb4full, 0x165667b19e3779f9ull };
+    for (const auto& range : hashedRanges())
     {
-        for (x86::reg32 at = range.first; at < range.second; at += 8)
+        const x86::reg8* at = g_memory + range.first;
+        const x86::reg8* const end = g_memory + range.second;
+        for (; at + 32 <= end; at += 32)
         {
-            // The rows the items stand in, which mainsplt moves as the port
-            // has it (checked by compare()).
-            if (at >= 0x559c68 && at < 0x559cb8)
-                continue;
+            std::uint64_t v[4];
+            std::memcpy(v, at, 32);
+            h[0] = (h[0] ^ v[0]) * kPrime;
+            h[1] = (h[1] ^ v[1]) * kPrime;
+            h[2] = (h[2] ^ v[2]) * kPrime;
+            h[3] = (h[3] ^ v[3]) * kPrime;
+        }
+        for (; at + 8 <= end; at += 8)
+        {
             std::uint64_t v;
-            std::memcpy(&v, g_memory + at, 8);
-            h = (h ^ v) * 1099511628211ull;
+            std::memcpy(&v, at, 8);
+            h[0] = (h[0] ^ v) * kPrime;
         }
     }
-    return x86::reg32(h ^ (h >> 32));
+    const std::uint64_t all = (h[0] ^ (h[1] >> 13)) * kPrime ^ (h[2] ^ (h[3] >> 29)) * kPrime;
+    return x86::reg32(all ^ (all >> 32));
 }
 
 enum Reg : std::uint8_t
@@ -153,6 +212,9 @@ struct Spec
 constexpr x86::reg32 kShowHandler = 0x7e0100;
 
 const std::map<x86::reg32, Spec> kSpecs = {
+    // What sub_439ce0 calls: it runs as itself here, by name, from sub_4270c0.
+    { 0x438ad0, { EAX | EDX, 0, 0, 0, Kind::Plain } },
+    { 0x439990, { EAX, 0, 0, 0, Kind::Plain } },
     { 0x442a40, { EAX | EDX, 0, 0, EDX, Kind::FindItem } },
     { 0x4429c0, { EAX | EDX, 0, 0, EDX, Kind::Bool } },
     { 0x461270, { EAX | EBX | EDX, 0, 0, EBX | EDX, Kind::KeyHandler } },
@@ -224,7 +286,7 @@ const std::map<x86::reg32, Spec> kSpecs = {
     { 0x4104f0, { EAX | EBX | EDX, 0, 0, EBX | EDX, Kind::Plain } },
     { 0x4d6390, { EAX | EDX, 0, 0, EDX, Kind::Plain } },
     { 0x4ef270, { EAX | EDX, 0, 0, EDX, Kind::Shape, false } },
-    { 0x4ef1e0, { EAX | EDX, 0, 0, EDX | EDI, Kind::Shape } },
+    { 0x4ef1e0, { EAX | EDX, 0, 0, EDX, Kind::Shape } },  // edi it saves round the one path that uses it
     { 0x456800, { EAX | EDX, 0, 0, EDX, Kind::Plain } },
     { 0x4c9240, { EAX, 0, 0, 0, Kind::Bool, true } },
     { 0x4c95f0, { EAX | EBX | EDX, 0, 0, EDX, Kind::Plain } },
@@ -389,10 +451,44 @@ void dialogEmblem(bool) {}
  * by the driver's table): none of the modes the cases make up is. */
 bool dynamicFullscreenMode(x86::reg32) { return false; }
 
+/* What the port's patches in the groups' functions call: their stand-ins. */
+#include "group_hooks.inc"
+
+/* A race's depth on the Screen Size list, and Dynamic Fullscreen's line: recorded. */
+x86::reg32 shownDepth(x86::reg32 depth)
+{
+    g_log.push_back(0x7e480000 | depth);
+    return depth == 16 ? 32 : depth;
+}
+
+void dynamicFullscreenLabel(win32::WinApplication*, x86::reg32 entry)
+{
+    g_log.push_back(0x7e490000);
+    g_log.push_back(entry);
+}
+
+/* The port the race's transport is on, as the original has it. */
+x86::reg32 networkPort() { return 0x406; }
+
 /* The port's keyboard, told the game takes typing: recorded. */
 void textEntry(bool taking)
 {
     g_log.push_back(0x7e470000 | (taking ? 1 : 0));
+}
+
+bool hasStandIn(x86::reg32 address)
+{
+    static const x86::reg32 kGroups[] = {
+#include "group_addresses.inc"
+    };
+    /* This process's own group's run as themselves; another group's are its to check. */
+    static const std::vector<x86::reg32> own = [] {
+        std::vector<x86::reg32> list;
+#include "group_own.inc"
+        return list;
+    }();
+    return std::find(std::begin(kGroups), std::end(kGroups), address) != std::end(kGroups)
+        && std::find(own.begin(), own.end(), address) == own.end() && kSpecs.count(address) != 0;
 }
 
 /* A stand-in for a game function: the call recorded, answered from the
@@ -403,10 +499,17 @@ void mock(win32::WinApplication*, x86::CPU& cpu, x86::reg32 address)
     if (found == kSpecs.end())
     {
         std::printf("no stand-in for sub_%06x\n", unsigned(address));
+        std::fflush(stdout);
         std::abort();
     }
     const Spec& spec = found->second;
-    ++g_calls;
+    if (++g_calls > 200000)
+    {
+        // A case that does not end (a world the game never has): said, not waited for.
+        std::printf("FAIL sub_%06x: a case has not ended after %u calls, the last sub_%06x\n", unsigned(g_caseAddress), unsigned(g_calls), unsigned(address));
+        std::fflush(stdout);
+        std::_Exit(3);
+    }
     g_log.push_back(0xca110000);
     g_log.push_back(address);
     for (const std::uint8_t r : { EAX, EBX, ECX, EDX, ESI, EDI })
@@ -604,9 +707,16 @@ namespace win32
 
 WinApplication::WinApplication(const char*, x86::reg32, const std::vector<Section>&)
 {
+#ifdef _WIN32
+    // Watched for writes, for compare() to copy and compare only what changed.
+    void* memory = VirtualAlloc(nullptr, kMemory, MEM_RESERVE | MEM_COMMIT | MEM_WRITE_WATCH, PAGE_READWRITE);
+    if (!memory)
+        std::abort();
+#else
     void* memory = mmap(nullptr, kMemory, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     if (memory == MAP_FAILED)
         std::abort();
+#endif
     m_memory = static_cast<x86::reg8*>(memory);
     g_memory = m_memory;
 }
@@ -622,7 +732,8 @@ void WinApplication::dynamicCallElsewhere(x86::reg32 address, x86::CPU& cpu)
 {
     auto method = g_methods.find(address);
     const bool elsewhere = address != g_testing
-        && std::find(std::begin(kStandInElsewhere), std::end(kStandInElsewhere), address) != std::end(kStandInElsewhere);
+        && (std::find(std::begin(kStandInElsewhere), std::end(kStandInElsewhere), address) != std::end(kStandInElsewhere)
+            || nfs3hp::hasStandIn(address));
     if (method == g_methods.end() || elsewhere)
     {
         nfs3hp::mock(this, cpu, address);
@@ -708,8 +819,17 @@ std::vector<x86::reg8> g_image;
 
 void fillRandom(x86::reg32 from, x86::reg32 to)
 {
-    for (x86::reg32 at = from; at < to; ++at)
-        g_memory[at] = x86::reg8(g_random());
+    std::uint64_t state = (std::uint64_t(g_random()) << 32) | g_random();
+    for (x86::reg32 at = from; at < to; at += 8)
+    {
+        // splitmix64: the mt19937 a byte at a time was a good part of a case.
+        state += 0x9e3779b97f4a7c15ull;
+        std::uint64_t z = state;
+        z = (z ^ (z >> 30)) * 0xbf58476d1ce4e5b9ull;
+        z = (z ^ (z >> 27)) * 0x94d049bb133111ebull;
+        z ^= z >> 31;
+        std::memcpy(g_memory + at, &z, std::min<x86::reg32>(8, to - at));
+    }
 }
 
 x86::reg32 maybeItem(unsigned zeroIn)
@@ -722,8 +842,15 @@ x86::reg32 g_menu = 0;
 /* A world for one case: the image, then the screens' memory made up. */
 void makeWorld()
 {
-    std::memcpy(g_memory + 0x534000, g_image.data(), g_image.size());
-    for (const auto& range : kWatched)
+    // The image, only the pages of it that a case changed: writing them all would
+    // leave them all to copy and compare.
+    for (std::size_t at = 0; at < g_image.size(); at += 0x1000)
+    {
+        const std::size_t length = std::min<std::size_t>(0x1000, g_image.size() - at);
+        if (std::memcmp(g_memory + 0x534000 + at, g_image.data() + at, length) != 0)
+            std::memcpy(g_memory + 0x534000 + at, g_image.data() + at, length);
+    }
+    for (const auto& range : watchedRanges())
         fillRandom(range.first, range.second);
     fillRandom(kStack - 0x8000, kStack + 0x100);
 
@@ -892,6 +1019,7 @@ void makeWorld()
         g_memory[0x555730 + 2 * i] = x86::reg8(random(2)), g_memory[0x555731 + 2 * i] = x86::reg8(random(8) == 0);
     std::memcpy(g_memory + 0x55573e, "opcars", 7);
     setWord32(0x664658, random(2));
+#include "group_world.inc"
 }
 
 x86::CPU entryState()
@@ -907,8 +1035,7 @@ x86::CPU entryState()
     cpu.edi = random(0);
     cpu.ebp = random(0);
     cpu.esp = kStack;
-    static const x86::reg16 kControls[] = { 0x037f, 0x027f, 0x007f, 0x0c7f, 0x047f };
-    cpu.fpu.setControl(kControls[random(std::size(kControls))]);
+    cpu.fpu.setControl(0x007f);
     // Something on the x87 already, as the menus leave it.
     for (unsigned i = random(3); i > 0; --i)
         cpu.fpu.push(x86::Float(random(1000)));
@@ -926,25 +1053,76 @@ std::map<std::string, Totals> g_totals;
 std::vector<x86::reg8> g_before;
 std::vector<x86::reg8> g_original;
 
+constexpr x86::reg32 kPage = 0x1000;
+
+/* The pages written since the last time this was asked, added to `pages`.  Copying
+ * and comparing the whole 16 MB four times a case, in every process at once, was
+ * nearly all the time the checks took: the machine's memory was what they waited on. */
+void takeWritten(std::vector<x86::reg32>& pages)
+{
+#ifdef _WIN32
+    static std::vector<void*> found(kMemory / kPage);
+    ULONG_PTR count = found.size();
+    DWORD granularity = 0;
+    if (GetWriteWatch(WRITE_WATCH_FLAG_RESET, g_memory, kMemory, found.data(), &count, &granularity) != 0)
+    {
+        std::printf("GetWriteWatch failed: %lu\n", GetLastError());
+        std::fflush(stdout);
+        std::abort();
+    }
+    for (ULONG_PTR i = 0; i < count; ++i)
+        pages.push_back(x86::reg32(static_cast<x86::reg8*>(found[i]) - g_memory));
+#else
+    for (x86::reg32 page = 0; page < kMemory; page += kPage)
+        pages.push_back(page);
+#endif
+}
+
 /* One case: the generated function at `address`, then `native`, from the same
  * memory, registers and script. */
 void compare(nfs3hp::Application& app, const char* name, x86::reg32 address, Native native, const x86::CPU& entry)
 {
     Totals& totals = g_totals[name];
     ++totals.cases;
-    g_before.assign(g_memory, g_memory + kMemory);
+    // g_before and g_original as the memory is now: whatever changed since they last
+    // were, which is what the last case wrote and what this one's world did.
+    static std::vector<x86::reg32> pending, scratch;
+    if (g_before.empty())
+    {
+        g_before.assign(g_memory, g_memory + kMemory);
+        g_original.assign(g_memory, g_memory + kMemory);
+        pending.clear();
+        takeWritten(pending);
+    }
+    else
+    {
+        takeWritten(pending);
+        for (x86::reg32 page : pending)
+        {
+            std::memcpy(&g_before[page], g_memory + page, kPage);
+            std::memcpy(&g_original[page], g_memory + page, kPage);
+        }
+    }
+    pending.clear();
     const unsigned seed = random(0);
 
     g_testing = address;
+    g_caseAddress = address;
     x86::CPU original = entry;
     g_script.seed(seed);
     g_log.clear();
     g_calls = 0;
     app.dynamic_call(address, original);
     const std::vector<x86::reg32> originalLog = g_log;
-    g_original.assign(g_memory, g_memory + kMemory);
+    takeWritten(pending);
+    for (x86::reg32 page : pending)
+    {
+        std::memcpy(&g_original[page], g_memory + page, kPage);
+        std::memcpy(g_memory + page, &g_before[page], kPage);
+    }
+    scratch.clear();
+    takeWritten(scratch);  // what was just put back: in `pending` already
 
-    std::memcpy(g_memory, g_before.data(), kMemory);
     x86::CPU mine = entry;
     g_script.seed(seed);
     g_log.clear();
@@ -974,6 +1152,10 @@ void compare(nfs3hp::Application& app, const char* name, x86::reg32 address, Nat
         for (x86::reg32 at : { kRowX, kRowY })
             std::memcpy(g_memory + at, &g_original[at], 4 * 8);
     }
+    // Written by either: the rest of the memory is as it was on both sides.
+    takeWritten(pending);
+    std::sort(pending.begin(), pending.end());
+    pending.erase(std::unique(pending.begin(), pending.end()), pending.end());
     if (what[0])
     {
     }
@@ -1002,11 +1184,11 @@ void compare(nfs3hp::Application& app, const char* name, x86::reg32 address, Nat
         const x86::reg32 stackEnd = original.esp;
         const x86::reg32 stackStart = original.esp - 0x10000;
         unsigned differing = 0;
-        for (x86::reg32 chunk = 0; chunk < kMemory; chunk += 0x10000)
+        for (x86::reg32 chunk : pending)
         {
-            if (std::memcmp(g_memory + chunk, &g_original[chunk], 0x10000) == 0)
+            if (std::memcmp(g_memory + chunk, &g_original[chunk], kPage) == 0)
                 continue;
-            for (x86::reg32 i = chunk; i < chunk + 0x10000; ++i)
+            for (x86::reg32 i = chunk; i < chunk + kPage; ++i)
             {
                 if (g_memory[i] == g_original[i] || (i >= stackStart && i < stackEnd))
                     continue;
@@ -1031,10 +1213,9 @@ void compare(nfs3hp::Application& app, const char* name, x86::reg32 address, Nat
                           unsigned(mine.ecx), unsigned(original.ecx), unsigned(mine.edx), unsigned(original.edx),
                           unsigned(mine.esi), unsigned(original.esi), unsigned(mine.edi), unsigned(original.edi),
                           unsigned(mine.ebp), unsigned(original.ebp), unsigned(mine.esp), unsigned(original.esp));
-        if (!what[0] && (mine.fpu.status.word != original.fpu.status.word || mine.fpu.count != original.fpu.count))
-            std::snprintf(what, sizeof what, "x87 status/depth native %04x/%u, generated %04x/%u",
-                          unsigned(mine.fpu.status.word), unsigned(mine.fpu.count),
-                          unsigned(original.fpu.status.word), unsigned(original.fpu.count));
+        if (!what[0] && mine.fpu.count != original.fpu.count)
+            std::snprintf(what, sizeof what, "x87 depth native %u, generated %u",
+                          unsigned(mine.fpu.count), unsigned(original.fpu.count));
         if (!what[0])
         {
             for (unsigned i = 0; i < mine.fpu.count && i < 8; ++i)
@@ -1324,28 +1505,29 @@ int main(int argc, char** argv)
         std::sscanf(argv[3], "%u/%u", &share, &shares);
 
     const Case cases[] = {
-        CASE(optionsOnEnter, 442aa0, Menu),
-        CASE(feedOnEnter, 4374b0, Menu),
-        CASE(feedOnExit, 437590, Menu),
-        CASE(feedSeparate, 437250, None),
-        CASE(feedTimeButtonKey, 437300, Key),
-        CASE(feedPositionButtonKey, 437390, Key),
-        CASE(feedSpeedButtonKey, 437420, Key),
-        CASE(feedTimeListKey, 437350, Key),
-        CASE(feedPositionListKey, 4373e0, Key),
-        CASE(feedSpeedListKey, 437470, Key),
+#include "group_cases.inc"
+        WHOLE(optionsOnEnter, 442aa0, Menu),
+        WHOLE(feedOnEnter, 4374b0, Menu),
+        WHOLE(feedOnExit, 437590, Menu),
+        WHOLE(feedSeparate, 437250, None),
+        WHOLE(feedTimeButtonKey, 437300, Key),
+        WHOLE(feedPositionButtonKey, 437390, Key),
+        WHOLE(feedSpeedButtonKey, 437420, Key),
+        WHOLE(feedTimeListKey, 437350, Key),
+        WHOLE(feedPositionListKey, 4373e0, Key),
+        WHOLE(feedSpeedListKey, 437470, Key),
         WHOLE(funkeysOnEnter, 437600, Menu),
         WHOLE(funkeysOnExit, 4377c0, Menu),
         WHOLE(hardkeysOnEnter, 4377d0, Menu),
-        CASE(audioOnEnter, 437e00, Menu),
-        CASE(audioOnExit, 438070, Menu),
-        CASE(audioOnFrame, 438260, Menu),
-        CASE(audioVolumeDraw, 437a90, Item),
-        CASE(audioMenuMusicMoved, 437990, Item),
-        CASE(audioRaceMusicMoved, 4379b0, Item),
-        CASE(audioEffectsMoved, 4379d0, Item),
-        CASE(audioEngineMoved, 437a20, Item),
-        CASE(audioSpeechMoved, 437a70, Item),
+        WHOLE(audioOnEnter, 437e00, Menu),
+        WHOLE(audioOnExit, 438070, Menu),
+        WHOLE(audioOnFrame, 438260, Menu),
+        WHOLE(audioVolumeDraw, 437a90, Item),
+        WHOLE(audioMenuMusicMoved, 437990, Item),
+        WHOLE(audioRaceMusicMoved, 4379b0, Item),
+        WHOLE(audioEffectsMoved, 4379d0, Item),
+        WHOLE(audioEngineMoved, 437a20, Item),
+        WHOLE(audioSpeechMoved, 437a70, Item),
         WHOLE(controlsOnEnter, 43d4d0, Menu),
         WHOLE(controlsOnExit, 43d5f0, Menu),
         WHOLE(controlsCancelKey, 43d3f0, Key),
@@ -1371,70 +1553,70 @@ int main(int argc, char** argv)
         WHOLE(forceEngineMoved, 447ca0, Item),
         WHOLE(forceBodyRollMoved, 447cd0, Item),
         WHOLE(forceRoadGripMoved, 447d50, Item),
-        CASE(graphicsOnEnter, 448440, Menu),
-        CASE(graphicsOnExit, 4484e0, Menu),
-        CASE(graphicsOnFrame, 448430, Menu),
-        CASE(advancedOnEnter, 448610, Menu),
-        CASE(advancedOnExit, 448770, Menu),
-        CASE(advancedOnFrame, 4485a0, Menu),
-        CASE(advancedIntensityMoved, 448570, Item),
+        WHOLE(graphicsOnEnter, 448440, Menu),
+        WHOLE(graphicsOnExit, 4484e0, Menu),
+        WHOLE(graphicsOnFrame, 448430, Menu),
+        WHOLE(advancedOnEnter, 448610, Menu),
+        WHOLE(advancedOnExit, 448770, Menu),
+        WHOLE(advancedOnFrame, 4485a0, Menu),
+        WHOLE(advancedIntensityMoved, 448570, Item),
         // The cars' screens.
-        CASE(carMenuMusicBack, 4104b0, None),
-        CASE(carSaveFrame, 4267a0, Numbers),
-        CASE(trackSaveFrame, 4267f0, Numbers),
-        CASE(carRecord, 426870, None),
-        CASE(trackRecord, 426b00, None),
-        CASE(car1OnEnter, 426d60, Menu),
-        CASE(car2OnEnter, 426ef0, Menu),
-        CASE(car1OnFrame, 426e20, Menu),
-        CASE(car2OnFrame, 426f80, Menu),
-        CASE(car1OnExit, 426ee0, Menu),
-        CASE(car2OnExit, 427040, Menu),
-        CASE(car1EditClicked, 426c20, None),
-        CASE(car2EditClicked, 426c40, None),
-        CASE(car1ColourClicked, 426c60, None),
-        CASE(car2ColourClicked, 426ce0, None),
-        CASE(opponentFitCar, 427050, Menu),
-        CASE(opponentFitArt, 4270c0, Menu),
-        CASE(opponentOnEnter, 4272a0, Menu),
-        CASE(opponentOnExit, 4272e0, Menu),
-        CASE(opponentOnFrame, 427190, Menu),
-        CASE(tuningLoad, 4272f0, Numbers),
-        CASE(tuningSave, 427370, Numbers),
-        CASE(tuningEngineMoved, 4273e0, Item),
-        CASE(tuningBrakesMoved, 427470, Item),
-        CASE(tuningSteeringMoved, 427500, Item),
-        CASE(tuningGearsMoved, 427590, Item),
-        CASE(tuningSuspensionMoved, 427620, Item),
-        CASE(tuningAeroMoved, 4276b0, Item),
-        CASE(tuningTiresMoved, 427740, Item),
-        CASE(tuningSetSliders, 4277d0, Menu),
-        CASE(tuningRememberSliders, 4279b0, Menu),
-        CASE(tuningSlidersMoved, 427ac0, Menu),
-        CASE(tuningBindSliders, 427c20, Menu),
-        CASE(tuningLoadAdvanced, 427d00, None),
-        CASE(tuningDefaultsAnswered, 427d80, Answer),
-        CASE(tuningDoneKey, 427e10, Key),
-        CASE(tuningCancelKey, 427ea0, Key),
-        CASE(tuningCarListKey, 427f40, Key),
-        CASE(tuningDefaultsKey, 427fb0, Key),
-        CASE(tuningBindDoneCancel, 428020, Menu),
-        CASE(tuningFitButtons, 428060, MenuAndMode),
-        CASE(tuningPrepare, 4281e0, Menu),
-        CASE(tuningOnEnter, 428360, Menu),
-        CASE(tuningOnExit, 4283b0, Menu),
-        CASE(tuningAdvancedDiffers, 4dcaf0, Advanced),
-        CASE(tuningCopyAdvanced, 4dcb60, Advanced),
+        WHOLE(carMenuMusicBack, 4104b0, None),
+        WHOLE(carSaveFrame, 4267a0, Numbers),
+        WHOLE(trackSaveFrame, 4267f0, Numbers),
+        WHOLE(carRecord, 426870, None),
+        WHOLE(trackRecord, 426b00, None),
+        WHOLE(car1OnEnter, 426d60, Menu),
+        WHOLE(car2OnEnter, 426ef0, Menu),
+        WHOLE(car1OnFrame, 426e20, Menu),
+        WHOLE(car2OnFrame, 426f80, Menu),
+        WHOLE(car1OnExit, 426ee0, Menu),
+        WHOLE(car2OnExit, 427040, Menu),
+        WHOLE(car1EditClicked, 426c20, None),
+        WHOLE(car2EditClicked, 426c40, None),
+        WHOLE(car1ColourClicked, 426c60, None),
+        WHOLE(car2ColourClicked, 426ce0, None),
+        WHOLE(opponentFitCar, 427050, Menu),
+        WHOLE(opponentFitArt, 4270c0, Menu),
+        WHOLE(opponentOnEnter, 4272a0, Menu),
+        WHOLE(opponentOnExit, 4272e0, Menu),
+        WHOLE(opponentOnFrame, 427190, Menu),
+        WHOLE(tuningLoad, 4272f0, Numbers),
+        WHOLE(tuningSave, 427370, Numbers),
+        WHOLE(tuningEngineMoved, 4273e0, Item),
+        WHOLE(tuningBrakesMoved, 427470, Item),
+        WHOLE(tuningSteeringMoved, 427500, Item),
+        WHOLE(tuningGearsMoved, 427590, Item),
+        WHOLE(tuningSuspensionMoved, 427620, Item),
+        WHOLE(tuningAeroMoved, 4276b0, Item),
+        WHOLE(tuningTiresMoved, 427740, Item),
+        WHOLE(tuningSetSliders, 4277d0, Menu),
+        WHOLE(tuningRememberSliders, 4279b0, Menu),
+        WHOLE(tuningSlidersMoved, 427ac0, Menu),
+        WHOLE(tuningBindSliders, 427c20, Menu),
+        WHOLE(tuningLoadAdvanced, 427d00, None),
+        WHOLE(tuningDefaultsAnswered, 427d80, Answer),
+        WHOLE(tuningDoneKey, 427e10, Key),
+        WHOLE(tuningCancelKey, 427ea0, Key),
+        WHOLE(tuningCarListKey, 427f40, Key),
+        WHOLE(tuningDefaultsKey, 427fb0, Key),
+        WHOLE(tuningBindDoneCancel, 428020, Menu),
+        WHOLE(tuningFitButtons, 428060, MenuAndMode),
+        WHOLE(tuningPrepare, 4281e0, Menu),
+        WHOLE(tuningOnEnter, 428360, Menu),
+        WHOLE(tuningOnExit, 4283b0, Menu),
+        WHOLE(tuningAdvancedDiffers, 4dcaf0, Advanced),
+        WHOLE(tuningCopyAdvanced, 4dcb60, Advanced),
         // The tracks'.
-        CASE(locationOnEnter, 4487e0, Menu),
-        CASE(locationOnFrame, 4487d0, Menu),
-        CASE(locationOnExit, 4489e0, Menu),
-        CASE(infoPlaceTrackPlaces, 456200, None),
-        CASE(infoOnEnter, 4568d0, Menu),
-        CASE(infoOnFrame, 456890, Menu),
-        CASE(infoOnExit, 456990, Menu),
-        CASE(infoSpeak, 4c94e0, Numbers),
-        CASE(infoStopSpeaking, 4c9590, None),
+        WHOLE(locationOnEnter, 4487e0, Menu),
+        WHOLE(locationOnFrame, 4487d0, Menu),
+        WHOLE(locationOnExit, 4489e0, Menu),
+        WHOLE(infoPlaceTrackPlaces, 456200, None),
+        WHOLE(infoOnEnter, 4568d0, Menu),
+        WHOLE(infoOnFrame, 456890, Menu),
+        WHOLE(infoOnExit, 456990, Menu),
+        WHOLE(infoSpeak, 4c94e0, Numbers),
+        WHOLE(infoStopSpeaking, 4c9590, None),
         // The main menu: main, mainsplt, mainmult.
         WHOLE(mainMenuOnEnter, 45d050, Menu),
         WHOLE(mainMenuOnExit, 45d2f0, Menu),
@@ -1475,11 +1657,21 @@ int main(int argc, char** argv)
     {
         for (std::size_t i = 0; i < std::size(cases); ++i)
         {
+            char address[16];
+            std::snprintf(address, sizeof address, "%x", unsigned(cases[i].address));
+            if (const char* only = std::getenv("FRONTEND_CHECKS_ONLY"))
+                if (!std::strstr(only, address))
+                    continue;
+            if (const char* skip = std::getenv("FRONTEND_CHECKS_SKIP"))
+                if (std::strstr(skip, address))
+                    continue;
             if (shares > 1 && i % shares != share)
                 continue;
             const Case& c = cases[i];
             makeWorld();
-            compare(app, c.name, c.address, c.native, caseEntry(c.entry, c.address));
+            x86::CPU entry = caseEntry(c.entry, c.address);
+#include "group_entry.inc"
+            compare(app, c.name, c.address, c.native, entry);
         }
     }
     unsigned failures = 0;

@@ -1,0 +1,31 @@
+# address name kind: the functions native whole in src/nfs3hp/native_frontend_showcase.cpp, frontend::name.
+# kind: how frontend_checks enters it (Menu, Key, Item, None).
+439290 showcaseCarFileStem Numbers
+453160 showcaseHasInterior Numbers
+453200 showcaseHasSlides Numbers
+453290 showcaseHasHistory Numbers
+453320 showcaseLoadArt Menu
+453500 showcaseResolveCar None
+4535e0 showcaseOnEnter Menu
+4537d0 showcaseOnFrame Menu
+453830 showcaseOnExit Menu
+453840 showcaseNextSlide None
+453860 showcasePreviousSlide None
+453c00 showcaseSlidesOnEnter Menu
+453ef0 showcaseSlidesOnFrame Menu
+453f50 showcaseSlidesOnExit Menu
+454000 showcaseHistoryPage Numbers
+454210 showcaseHistoryPageFrom Numbers
+454260 showcaseHistoryOnEnter Menu
+454310 showcaseHistoryOnFrame Menu
+4543e0 showcaseHistoryOnExit Menu
+4543f0 showcaseComparePicture Numbers
+454500 showcaseCompareOnEnter Menu
+454690 showcaseCompareOnFrame Menu
+454580 showcaseCompare2OnEnter Menu
+454660 showcaseCompare2OnFrame Menu
+454710 showcaseCompare2OnExit Menu
+454cf0 showcaseZoomMoved Item
+454d10 showcaseInteriorOnEnter Menu
+454d40 showcaseInteriorOnFrame Menu
+454d50 showcaseInteriorOnExit Menu

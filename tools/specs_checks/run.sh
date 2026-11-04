@@ -22,7 +22,6 @@ ${CXX:-c++} -std=c++17 -O2 -fno-strict-aliasing -w \
     -I"$root/src/nfs3hp/disassembly" -I"$root/src/nfs3hp" \
     "$build/generated.cpp" "$root/src/nfs3hp/native_specs_file.cpp" \
     "$root/src/nfs3hp/native_watcom.cpp" "$root/src/nfs3hp/native_watcom_heap.cpp" \
-    "$root/src/lib/x87soft.cpp" \
     "$here/specs_checks.cpp" \
     -o "$build/specs_checks"
 "$build/specs_checks"

@@ -4777,6 +4777,7 @@ void Application::sub_5167b3(WinApplication* __restrict app, x86::CPU& cpu_)
   x86::Local cpu(cpu_);
   NFS2_USE(cpu);
   NFS2_USE(app);
+  x86::Float fp0, fp1;
   goto start;
 dynamic_jump:
   switch(cpu.ip)
@@ -4810,7 +4811,6 @@ start:
     // 005167c8  9b                     -wait 
     /*nothing*/;
     // 005167c9  d93c24                 -fnstcw word ptr [esp]
-    {  // x87 stack in locals (codegen/fpu_stack.py)
     app->getMemory<x86::reg16>(cpu.esp) = cpu.fpu.control.word;
     // 005167cc  58                     -pop eax
     cpu.eax = app->getMemory<x86::reg32>(cpu.esp);
@@ -4846,7 +4846,6 @@ start:
     // 005167f7  f645d580               +test byte ptr [ebp - 0x2b], 0x80
     cpu.clear_co();
     cpu.set_szp(static_cast<x86::reg8>(app->getMemory<x86::reg8>(cpu.ebp + x86::reg32(-43) /* -0x2b */) & 128 /*0x80*/));
-    }
     // 005167fb  7407                   -je 0x516804
     if (cpu.flags.zf)
     {
@@ -5112,14 +5111,13 @@ L_0x005168fe:
     // 0051691a  894db4                 -mov dword ptr [ebp - 0x4c], ecx
     app->getMemory<x86::reg32>(cpu.ebp + x86::reg32(-76) /* -0x4c */) = cpu.ecx;
     // 0051691d  db28                   -fld xword ptr [eax]
-    {  // x87 stack in locals (codegen/fpu_stack.py)
-    x86::Float fpu1 = x86::Float(app->getMemory<x86::IEEEf80>(cpu.eax));
+    fp0 = x86::Float(app->getMemory<x86::IEEEf80>(cpu.eax));
     // 0051691f  db2a                   -fld xword ptr [edx]
-    x86::Float fpu2 = x86::Float(app->getMemory<x86::IEEEf80>(cpu.edx));
+    fp1 = x86::Float(app->getMemory<x86::IEEEf80>(cpu.edx));
     // 00516921  def9                   -fdivp st(1)
-    x86::Float fpu3 = cpu.fpu.div(fpu1, fpu2);
+    fp0 = cpu.fpu.div(fp0, fp1);
     // 00516923  db3b                   -fstp xword ptr [ebx]
-    app->getMemory<x86::IEEEf80>(cpu.ebx) = x86::Float(fpu3);
+    app->getMemory<x86::IEEEf80>(cpu.ebx) = x86::Float(fp0);
     // 00516925  8d45a8                 -lea eax, [ebp - 0x58]
     cpu.eax = x86::reg32(cpu.ebp + x86::reg32(-88) /* -0x58 */);
     // 00516928  8d55a8                 -lea edx, [ebp - 0x58]
@@ -5127,7 +5125,7 @@ L_0x005168fe:
     // 0051692b  8d5db4                 -lea ebx, [ebp - 0x4c]
     cpu.ebx = x86::reg32(cpu.ebp + x86::reg32(-76) /* -0x4c */);
     // 0051692e  db28                   -fld xword ptr [eax]
-    x86::Float fpu4 = x86::Float(app->getMemory<x86::IEEEf80>(cpu.eax));
+    fp0 = x86::Float(app->getMemory<x86::IEEEf80>(cpu.eax));
     // 00516930  50                     -push eax
     app->getMemory<x86::reg32>(cpu.esp-4) = cpu.eax;
     cpu.esp -= 4;
@@ -5156,7 +5154,7 @@ L_0x005168fe:
     cpu.eax = app->getMemory<x86::reg32>(cpu.esp);
     cpu.esp += 4;
     // 00516940  db5c2404               +fistp dword ptr [esp + 4]
-    app->getMemory<x86::reg32>(cpu.esp + x86::reg32(4) /* 0x4 */) = x86::reg32(cpu.fpu.toInteger<x86::sreg32>(fpu4));
+    app->getMemory<x86::reg32>(cpu.esp + x86::reg32(4) /* 0x4 */) = x86::reg32(cpu.fpu.toInteger<x86::sreg32>(fp0));
     // 00516944  d92c24                 -fldcw word ptr [esp]
     cpu.fpu.setControl(app->getMemory<x86::reg16>(cpu.esp));
     // 00516947  58                     -pop eax
@@ -5171,24 +5169,24 @@ L_0x005168fe:
     app->getMemory<x86::reg32>(cpu.esp-4) = cpu.eax;
     cpu.esp -= 4;
     // 0051694c  db0424                 +fild dword ptr [esp]
-    x86::Float fpu5 = x86::Float(x86::sreg32(app->getMemory<x86::reg32>(cpu.esp)));
+    fp0 = x86::Float(x86::sreg32(app->getMemory<x86::reg32>(cpu.esp)));
     // 0051694f  58                     -pop eax
     cpu.eax = app->getMemory<x86::reg32>(cpu.esp);
     cpu.esp += 4;
     // 00516950  db3a                   +fstp xword ptr [edx]
-    app->getMemory<x86::IEEEf80>(cpu.edx) = x86::Float(fpu5);
+    app->getMemory<x86::IEEEf80>(cpu.edx) = x86::Float(fp0);
     // 00516952  8d55b4                 -lea edx, [ebp - 0x4c]
     cpu.edx = x86::reg32(cpu.ebp + x86::reg32(-76) /* -0x4c */);
     // 00516955  8d45a8                 -lea eax, [ebp - 0x58]
     cpu.eax = x86::reg32(cpu.ebp + x86::reg32(-88) /* -0x58 */);
     // 00516958  db28                   +fld xword ptr [eax]
-    x86::Float fpu6 = x86::Float(app->getMemory<x86::IEEEf80>(cpu.eax));
+    fp0 = x86::Float(app->getMemory<x86::IEEEf80>(cpu.eax));
     // 0051695a  db2a                   +fld xword ptr [edx]
-    x86::Float fpu7 = x86::Float(app->getMemory<x86::IEEEf80>(cpu.edx));
+    fp1 = x86::Float(app->getMemory<x86::IEEEf80>(cpu.edx));
     // 0051695c  dec9                   +fmulp st(1)
-    x86::Float fpu8 = cpu.fpu.mul(fpu6, fpu7);
+    fp0 = cpu.fpu.mul(fp0, fp1);
     // 0051695e  db3b                   +fstp xword ptr [ebx]
-    app->getMemory<x86::IEEEf80>(cpu.ebx) = x86::Float(fpu8);
+    app->getMemory<x86::IEEEf80>(cpu.ebx) = x86::Float(fp0);
     // 00516960  8d5dcc                 -lea ebx, [ebp - 0x34]
     cpu.ebx = x86::reg32(cpu.ebp + x86::reg32(-52) /* -0x34 */);
     // 00516963  8d55b4                 -lea edx, [ebp - 0x4c]
@@ -5198,14 +5196,13 @@ L_0x005168fe:
     // 00516969  b908000000             -mov ecx, 8
     cpu.ecx = 8 /*0x8*/;
     // 0051696e  db28                   +fld xword ptr [eax]
-    x86::Float fpu9 = x86::Float(app->getMemory<x86::IEEEf80>(cpu.eax));
+    fp0 = x86::Float(app->getMemory<x86::IEEEf80>(cpu.eax));
     // 00516970  db2a                   +fld xword ptr [edx]
-    x86::Float fpu10 = x86::Float(app->getMemory<x86::IEEEf80>(cpu.edx));
+    fp1 = x86::Float(app->getMemory<x86::IEEEf80>(cpu.edx));
     // 00516972  dee9                   +fsubp st(1)
-    x86::Float fpu11 = cpu.fpu.sub(fpu9, fpu10);
+    fp0 = cpu.fpu.sub(fp0, fp1);
     // 00516974  db3b                   +fstp xword ptr [ebx]
-    app->getMemory<x86::IEEEf80>(cpu.ebx) = x86::Float(fpu11);
-    }
+    app->getMemory<x86::IEEEf80>(cpu.ebx) = x86::Float(fp0);
     // 00516976  eb0f                   -jmp 0x516987
     goto L_0x00516987;
 L_0x00516978:
@@ -5343,7 +5340,7 @@ L_0x005169d2:
     // 005169f4  0f8ee8000000           -jle 0x516ae2
     if (cpu.flags.zf || (cpu.flags.sf != cpu.flags.of))
     {
-        return sub_516ae2(app, cpu.handOver());
+    return sub_516ae2(app, cpu.handOver());
     }
     // 005169fa  8d5af8                 -lea ebx, [edx - 8]
     cpu.ebx = x86::reg32(cpu.edx + x86::reg32(-8) /* -0x8 */);
@@ -5363,13 +5360,12 @@ L_0x005169d2:
     // 00516a0a  0f84d2000000           -je 0x516ae2
     if (cpu.flags.zf)
     {
-        return sub_516ae2(app, cpu.handOver());
+    return sub_516ae2(app, cpu.handOver());
     }
     // 00516a10  8d45cc                 -lea eax, [ebp - 0x34]
     cpu.eax = x86::reg32(cpu.ebp + x86::reg32(-52) /* -0x34 */);
     // 00516a13  db28                   -fld xword ptr [eax]
-    {  // x87 stack in locals (codegen/fpu_stack.py)
-    x86::Float fpu12 = x86::Float(app->getMemory<x86::IEEEf80>(cpu.eax));
+    fp0 = x86::Float(app->getMemory<x86::IEEEf80>(cpu.eax));
     // 00516a15  50                     -push eax
     app->getMemory<x86::reg32>(cpu.esp-4) = cpu.eax;
     cpu.esp -= 4;
@@ -5397,7 +5393,7 @@ L_0x005169d2:
     cpu.eax = app->getMemory<x86::reg32>(cpu.esp);
     cpu.esp += 4;
     // 00516a25  db5c2404               -fistp dword ptr [esp + 4]
-    app->getMemory<x86::reg32>(cpu.esp + x86::reg32(4) /* 0x4 */) = x86::reg32(cpu.fpu.toInteger<x86::sreg32>(fpu12));
+    app->getMemory<x86::reg32>(cpu.esp + x86::reg32(4) /* 0x4 */) = x86::reg32(cpu.fpu.toInteger<x86::sreg32>(fp0));
     // 00516a29  d92c24                 -fldcw word ptr [esp]
     cpu.fpu.setControl(app->getMemory<x86::reg16>(cpu.esp));
     // 00516a2c  58                     -pop eax
@@ -5411,7 +5407,6 @@ L_0x005169d2:
     // 00516a30  85db                   +test ebx, ebx
     cpu.clear_co();
     cpu.set_szp(static_cast<x86::reg32>(cpu.ebx & cpu.ebx));
-    }
     // 00516a32  7e42                   -jle 0x516a76
     if (cpu.flags.zf || (cpu.flags.sf != cpu.flags.of))
     {
@@ -5425,25 +5420,24 @@ L_0x005169d2:
     app->getMemory<x86::reg32>(cpu.esp-4) = cpu.eax;
     cpu.esp -= 4;
     // 00516a3b  db0424                 -fild dword ptr [esp]
-    {  // x87 stack in locals (codegen/fpu_stack.py)
-    x86::Float fpu13 = x86::Float(x86::sreg32(app->getMemory<x86::reg32>(cpu.esp)));
+    fp0 = x86::Float(x86::sreg32(app->getMemory<x86::reg32>(cpu.esp)));
     // 00516a3e  58                     -pop eax
     cpu.eax = app->getMemory<x86::reg32>(cpu.esp);
     cpu.esp += 4;
     // 00516a3f  db3a                   -fstp xword ptr [edx]
-    app->getMemory<x86::IEEEf80>(cpu.edx) = x86::Float(fpu13);
+    app->getMemory<x86::IEEEf80>(cpu.edx) = x86::Float(fp0);
     // 00516a41  8d55c0                 -lea edx, [ebp - 0x40]
     cpu.edx = x86::reg32(cpu.ebp + x86::reg32(-64) /* -0x40 */);
     // 00516a44  8d45cc                 -lea eax, [ebp - 0x34]
     cpu.eax = x86::reg32(cpu.ebp + x86::reg32(-52) /* -0x34 */);
     // 00516a47  db28                   -fld xword ptr [eax]
-    x86::Float fpu14 = x86::Float(app->getMemory<x86::IEEEf80>(cpu.eax));
+    fp0 = x86::Float(app->getMemory<x86::IEEEf80>(cpu.eax));
     // 00516a49  db2a                   -fld xword ptr [edx]
-    x86::Float fpu15 = x86::Float(app->getMemory<x86::IEEEf80>(cpu.edx));
+    fp1 = x86::Float(app->getMemory<x86::IEEEf80>(cpu.edx));
     // 00516a4b  dee9                   -fsubp st(1)
-    x86::Float fpu16 = cpu.fpu.sub(fpu14, fpu15);
+    fp0 = cpu.fpu.sub(fp0, fp1);
     // 00516a4d  db3b                   -fstp xword ptr [ebx]
-    app->getMemory<x86::IEEEf80>(cpu.ebx) = x86::Float(fpu16);
+    app->getMemory<x86::IEEEf80>(cpu.ebx) = x86::Float(fp0);
     // 00516a4f  b819400000             -mov eax, 0x4019
     cpu.eax = 16409 /*0x4019*/;
     // 00516a54  bb0020bcbe             -mov ebx, 0xbebc2000
@@ -5464,14 +5458,13 @@ L_0x005169d2:
     // 00516a6b  8d45cc                 -lea eax, [ebp - 0x34]
     cpu.eax = x86::reg32(cpu.ebp + x86::reg32(-52) /* -0x34 */);
     // 00516a6e  db28                   +fld xword ptr [eax]
-    x86::Float fpu17 = x86::Float(app->getMemory<x86::IEEEf80>(cpu.eax));
+    fp0 = x86::Float(app->getMemory<x86::IEEEf80>(cpu.eax));
     // 00516a70  db2a                   +fld xword ptr [edx]
-    x86::Float fpu18 = x86::Float(app->getMemory<x86::IEEEf80>(cpu.edx));
+    fp1 = x86::Float(app->getMemory<x86::IEEEf80>(cpu.edx));
     // 00516a72  dec9                   +fmulp st(1)
-    x86::Float fpu19 = cpu.fpu.mul(fpu17, fpu18);
+    fp0 = cpu.fpu.mul(fp0, fp1);
     // 00516a74  db3b                   +fstp xword ptr [ebx]
-    app->getMemory<x86::IEEEf80>(cpu.ebx) = x86::Float(fpu19);
-    }
+    app->getMemory<x86::IEEEf80>(cpu.ebx) = x86::Float(fp0);
 L_0x00516a76:
     // 00516a76  8b5dd8                 -mov ebx, dword ptr [ebp - 0x28]
     cpu.ebx = app->getMemory<x86::reg32>(cpu.ebp + x86::reg32(-40) /* -0x28 */);
@@ -5503,6 +5496,7 @@ void Application::sub_5169ef(WinApplication* __restrict app, x86::CPU& cpu_)
   x86::Local cpu(cpu_);
   NFS2_USE(cpu);
   NFS2_USE(app);
+  x86::Float fp0, fp1;
   goto start;
 dynamic_jump:
   switch(cpu.ip)
@@ -5537,7 +5531,6 @@ start:
     // 005167c8  9b                     -wait 
     /*nothing*/;
     // 005167c9  d93c24                 -fnstcw word ptr [esp]
-    {  // x87 stack in locals (codegen/fpu_stack.py)
     app->getMemory<x86::reg16>(cpu.esp) = cpu.fpu.control.word;
     // 005167cc  58                     -pop eax
     cpu.eax = app->getMemory<x86::reg32>(cpu.esp);
@@ -5573,7 +5566,6 @@ start:
     // 005167f7  f645d580               +test byte ptr [ebp - 0x2b], 0x80
     cpu.clear_co();
     cpu.set_szp(static_cast<x86::reg8>(app->getMemory<x86::reg8>(cpu.ebp + x86::reg32(-43) /* -0x2b */) & 128 /*0x80*/));
-    }
     // 005167fb  7407                   -je 0x516804
     if (cpu.flags.zf)
     {
@@ -5839,14 +5831,15 @@ L_0x005168fe:
     // 0051691a  894db4                 -mov dword ptr [ebp - 0x4c], ecx
     app->getMemory<x86::reg32>(cpu.ebp + x86::reg32(-76) /* -0x4c */) = cpu.ecx;
     // 0051691d  db28                   -fld xword ptr [eax]
-    {  // x87 stack in locals (codegen/fpu_stack.py)
-    x86::Float fpu1 = x86::Float(app->getMemory<x86::IEEEf80>(cpu.eax));
+    cpu.fpu.push(x86::Float(app->getMemory<x86::IEEEf80>(cpu.eax)));
     // 0051691f  db2a                   -fld xword ptr [edx]
-    x86::Float fpu2 = x86::Float(app->getMemory<x86::IEEEf80>(cpu.edx));
+    cpu.fpu.push(x86::Float(app->getMemory<x86::IEEEf80>(cpu.edx)));
     // 00516921  def9                   -fdivp st(1)
-    x86::Float fpu3 = cpu.fpu.div(fpu1, fpu2);
+    cpu.fpu.st(1) = cpu.fpu.div(cpu.fpu.st(1), cpu.fpu.st(0));
+    cpu.fpu.pop();
     // 00516923  db3b                   -fstp xword ptr [ebx]
-    app->getMemory<x86::IEEEf80>(cpu.ebx) = x86::Float(fpu3);
+    app->getMemory<x86::IEEEf80>(cpu.ebx) = x86::Float(cpu.fpu.st(0));
+    cpu.fpu.pop();
     // 00516925  8d45a8                 -lea eax, [ebp - 0x58]
     cpu.eax = x86::reg32(cpu.ebp + x86::reg32(-88) /* -0x58 */);
     // 00516928  8d55a8                 -lea edx, [ebp - 0x58]
@@ -5854,7 +5847,7 @@ L_0x005168fe:
     // 0051692b  8d5db4                 -lea ebx, [ebp - 0x4c]
     cpu.ebx = x86::reg32(cpu.ebp + x86::reg32(-76) /* -0x4c */);
     // 0051692e  db28                   -fld xword ptr [eax]
-    x86::Float fpu4 = x86::Float(app->getMemory<x86::IEEEf80>(cpu.eax));
+    cpu.fpu.push(x86::Float(app->getMemory<x86::IEEEf80>(cpu.eax)));
     // 00516930  50                     -push eax
     app->getMemory<x86::reg32>(cpu.esp-4) = cpu.eax;
     cpu.esp -= 4;
@@ -5883,7 +5876,8 @@ L_0x005168fe:
     cpu.eax = app->getMemory<x86::reg32>(cpu.esp);
     cpu.esp += 4;
     // 00516940  db5c2404               +fistp dword ptr [esp + 4]
-    app->getMemory<x86::reg32>(cpu.esp + x86::reg32(4) /* 0x4 */) = x86::reg32(cpu.fpu.toInteger<x86::sreg32>(fpu4));
+    app->getMemory<x86::reg32>(cpu.esp + x86::reg32(4) /* 0x4 */) = x86::reg32(cpu.fpu.toInteger<x86::sreg32>(cpu.fpu.st(0)));
+    cpu.fpu.pop();
     // 00516944  d92c24                 -fldcw word ptr [esp]
     cpu.fpu.setControl(app->getMemory<x86::reg16>(cpu.esp));
     // 00516947  58                     -pop eax
@@ -5898,24 +5892,27 @@ L_0x005168fe:
     app->getMemory<x86::reg32>(cpu.esp-4) = cpu.eax;
     cpu.esp -= 4;
     // 0051694c  db0424                 +fild dword ptr [esp]
-    x86::Float fpu5 = x86::Float(x86::sreg32(app->getMemory<x86::reg32>(cpu.esp)));
+    cpu.fpu.push(x86::Float(x86::sreg32(app->getMemory<x86::reg32>(cpu.esp))));
     // 0051694f  58                     -pop eax
     cpu.eax = app->getMemory<x86::reg32>(cpu.esp);
     cpu.esp += 4;
     // 00516950  db3a                   +fstp xword ptr [edx]
-    app->getMemory<x86::IEEEf80>(cpu.edx) = x86::Float(fpu5);
+    app->getMemory<x86::IEEEf80>(cpu.edx) = x86::Float(cpu.fpu.st(0));
+    cpu.fpu.pop();
     // 00516952  8d55b4                 -lea edx, [ebp - 0x4c]
     cpu.edx = x86::reg32(cpu.ebp + x86::reg32(-76) /* -0x4c */);
     // 00516955  8d45a8                 -lea eax, [ebp - 0x58]
     cpu.eax = x86::reg32(cpu.ebp + x86::reg32(-88) /* -0x58 */);
     // 00516958  db28                   +fld xword ptr [eax]
-    x86::Float fpu6 = x86::Float(app->getMemory<x86::IEEEf80>(cpu.eax));
+    cpu.fpu.push(x86::Float(app->getMemory<x86::IEEEf80>(cpu.eax)));
     // 0051695a  db2a                   +fld xword ptr [edx]
-    x86::Float fpu7 = x86::Float(app->getMemory<x86::IEEEf80>(cpu.edx));
+    cpu.fpu.push(x86::Float(app->getMemory<x86::IEEEf80>(cpu.edx)));
     // 0051695c  dec9                   +fmulp st(1)
-    x86::Float fpu8 = cpu.fpu.mul(fpu6, fpu7);
+    cpu.fpu.st(1) = cpu.fpu.mul(cpu.fpu.st(1), cpu.fpu.st(0));
+    cpu.fpu.pop();
     // 0051695e  db3b                   +fstp xword ptr [ebx]
-    app->getMemory<x86::IEEEf80>(cpu.ebx) = x86::Float(fpu8);
+    app->getMemory<x86::IEEEf80>(cpu.ebx) = x86::Float(cpu.fpu.st(0));
+    cpu.fpu.pop();
     // 00516960  8d5dcc                 -lea ebx, [ebp - 0x34]
     cpu.ebx = x86::reg32(cpu.ebp + x86::reg32(-52) /* -0x34 */);
     // 00516963  8d55b4                 -lea edx, [ebp - 0x4c]
@@ -5925,14 +5922,15 @@ L_0x005168fe:
     // 00516969  b908000000             -mov ecx, 8
     cpu.ecx = 8 /*0x8*/;
     // 0051696e  db28                   +fld xword ptr [eax]
-    x86::Float fpu9 = x86::Float(app->getMemory<x86::IEEEf80>(cpu.eax));
+    cpu.fpu.push(x86::Float(app->getMemory<x86::IEEEf80>(cpu.eax)));
     // 00516970  db2a                   +fld xword ptr [edx]
-    x86::Float fpu10 = x86::Float(app->getMemory<x86::IEEEf80>(cpu.edx));
+    cpu.fpu.push(x86::Float(app->getMemory<x86::IEEEf80>(cpu.edx)));
     // 00516972  dee9                   +fsubp st(1)
-    x86::Float fpu11 = cpu.fpu.sub(fpu9, fpu10);
+    cpu.fpu.st(1) = cpu.fpu.sub(cpu.fpu.st(1), cpu.fpu.st(0));
+    cpu.fpu.pop();
     // 00516974  db3b                   +fstp xword ptr [ebx]
-    app->getMemory<x86::IEEEf80>(cpu.ebx) = x86::Float(fpu11);
-    }
+    app->getMemory<x86::IEEEf80>(cpu.ebx) = x86::Float(cpu.fpu.st(0));
+    cpu.fpu.pop();
     // 00516976  eb0f                   -jmp 0x516987
     goto L_0x00516987;
 L_0x00516978:
@@ -6071,7 +6069,7 @@ L_entry_0x005169ef:
     // 005169f4  0f8ee8000000           -jle 0x516ae2
     if (cpu.flags.zf || (cpu.flags.sf != cpu.flags.of))
     {
-        return sub_516ae2(app, cpu.handOver());
+    return sub_516ae2(app, cpu.handOver());
     }
     // 005169fa  8d5af8                 -lea ebx, [edx - 8]
     cpu.ebx = x86::reg32(cpu.edx + x86::reg32(-8) /* -0x8 */);
@@ -6091,13 +6089,12 @@ L_entry_0x005169ef:
     // 00516a0a  0f84d2000000           -je 0x516ae2
     if (cpu.flags.zf)
     {
-        return sub_516ae2(app, cpu.handOver());
+    return sub_516ae2(app, cpu.handOver());
     }
     // 00516a10  8d45cc                 -lea eax, [ebp - 0x34]
     cpu.eax = x86::reg32(cpu.ebp + x86::reg32(-52) /* -0x34 */);
     // 00516a13  db28                   -fld xword ptr [eax]
-    {  // x87 stack in locals (codegen/fpu_stack.py)
-    x86::Float fpu12 = x86::Float(app->getMemory<x86::IEEEf80>(cpu.eax));
+    fp0 = x86::Float(app->getMemory<x86::IEEEf80>(cpu.eax));
     // 00516a15  50                     -push eax
     app->getMemory<x86::reg32>(cpu.esp-4) = cpu.eax;
     cpu.esp -= 4;
@@ -6125,7 +6122,7 @@ L_entry_0x005169ef:
     cpu.eax = app->getMemory<x86::reg32>(cpu.esp);
     cpu.esp += 4;
     // 00516a25  db5c2404               -fistp dword ptr [esp + 4]
-    app->getMemory<x86::reg32>(cpu.esp + x86::reg32(4) /* 0x4 */) = x86::reg32(cpu.fpu.toInteger<x86::sreg32>(fpu12));
+    app->getMemory<x86::reg32>(cpu.esp + x86::reg32(4) /* 0x4 */) = x86::reg32(cpu.fpu.toInteger<x86::sreg32>(fp0));
     // 00516a29  d92c24                 -fldcw word ptr [esp]
     cpu.fpu.setControl(app->getMemory<x86::reg16>(cpu.esp));
     // 00516a2c  58                     -pop eax
@@ -6139,7 +6136,6 @@ L_entry_0x005169ef:
     // 00516a30  85db                   +test ebx, ebx
     cpu.clear_co();
     cpu.set_szp(static_cast<x86::reg32>(cpu.ebx & cpu.ebx));
-    }
     // 00516a32  7e42                   -jle 0x516a76
     if (cpu.flags.zf || (cpu.flags.sf != cpu.flags.of))
     {
@@ -6153,25 +6149,24 @@ L_entry_0x005169ef:
     app->getMemory<x86::reg32>(cpu.esp-4) = cpu.eax;
     cpu.esp -= 4;
     // 00516a3b  db0424                 -fild dword ptr [esp]
-    {  // x87 stack in locals (codegen/fpu_stack.py)
-    x86::Float fpu13 = x86::Float(x86::sreg32(app->getMemory<x86::reg32>(cpu.esp)));
+    fp0 = x86::Float(x86::sreg32(app->getMemory<x86::reg32>(cpu.esp)));
     // 00516a3e  58                     -pop eax
     cpu.eax = app->getMemory<x86::reg32>(cpu.esp);
     cpu.esp += 4;
     // 00516a3f  db3a                   -fstp xword ptr [edx]
-    app->getMemory<x86::IEEEf80>(cpu.edx) = x86::Float(fpu13);
+    app->getMemory<x86::IEEEf80>(cpu.edx) = x86::Float(fp0);
     // 00516a41  8d55c0                 -lea edx, [ebp - 0x40]
     cpu.edx = x86::reg32(cpu.ebp + x86::reg32(-64) /* -0x40 */);
     // 00516a44  8d45cc                 -lea eax, [ebp - 0x34]
     cpu.eax = x86::reg32(cpu.ebp + x86::reg32(-52) /* -0x34 */);
     // 00516a47  db28                   -fld xword ptr [eax]
-    x86::Float fpu14 = x86::Float(app->getMemory<x86::IEEEf80>(cpu.eax));
+    fp0 = x86::Float(app->getMemory<x86::IEEEf80>(cpu.eax));
     // 00516a49  db2a                   -fld xword ptr [edx]
-    x86::Float fpu15 = x86::Float(app->getMemory<x86::IEEEf80>(cpu.edx));
+    fp1 = x86::Float(app->getMemory<x86::IEEEf80>(cpu.edx));
     // 00516a4b  dee9                   -fsubp st(1)
-    x86::Float fpu16 = cpu.fpu.sub(fpu14, fpu15);
+    fp0 = cpu.fpu.sub(fp0, fp1);
     // 00516a4d  db3b                   -fstp xword ptr [ebx]
-    app->getMemory<x86::IEEEf80>(cpu.ebx) = x86::Float(fpu16);
+    app->getMemory<x86::IEEEf80>(cpu.ebx) = x86::Float(fp0);
     // 00516a4f  b819400000             -mov eax, 0x4019
     cpu.eax = 16409 /*0x4019*/;
     // 00516a54  bb0020bcbe             -mov ebx, 0xbebc2000
@@ -6192,14 +6187,13 @@ L_entry_0x005169ef:
     // 00516a6b  8d45cc                 -lea eax, [ebp - 0x34]
     cpu.eax = x86::reg32(cpu.ebp + x86::reg32(-52) /* -0x34 */);
     // 00516a6e  db28                   +fld xword ptr [eax]
-    x86::Float fpu17 = x86::Float(app->getMemory<x86::IEEEf80>(cpu.eax));
+    fp0 = x86::Float(app->getMemory<x86::IEEEf80>(cpu.eax));
     // 00516a70  db2a                   +fld xword ptr [edx]
-    x86::Float fpu18 = x86::Float(app->getMemory<x86::IEEEf80>(cpu.edx));
+    fp1 = x86::Float(app->getMemory<x86::IEEEf80>(cpu.edx));
     // 00516a72  dec9                   +fmulp st(1)
-    x86::Float fpu19 = cpu.fpu.mul(fpu17, fpu18);
+    fp0 = cpu.fpu.mul(fp0, fp1);
     // 00516a74  db3b                   +fstp xword ptr [ebx]
-    app->getMemory<x86::IEEEf80>(cpu.ebx) = x86::Float(fpu19);
-    }
+    app->getMemory<x86::IEEEf80>(cpu.ebx) = x86::Float(fp0);
 L_0x00516a76:
     // 00516a76  8b5dd8                 -mov ebx, dword ptr [ebp - 0x28]
     cpu.ebx = app->getMemory<x86::reg32>(cpu.ebp + x86::reg32(-40) /* -0x28 */);
@@ -7191,7 +7185,6 @@ L_0x00516be2:
     app->getMemory<x86::reg32>(cpu.esp-4) = cpu.eax;
     cpu.esp -= 4;
     // 00516be9  d92c24                 -fldcw word ptr [esp]
-    {  // x87 stack in locals (codegen/fpu_stack.py)
     cpu.fpu.setControl(app->getMemory<x86::reg16>(cpu.esp));
     // 00516bec  58                     -pop eax
     cpu.eax = app->getMemory<x86::reg32>(cpu.esp);
@@ -7210,7 +7203,6 @@ L_0x00516be2:
     // 00516bf3  5d                     -pop ebp
     cpu.ebp = app->getMemory<x86::reg32>(cpu.esp);
     cpu.esp += 4;
-    }
     // 00516bf4  c3                     -ret 
     cpu.esp += 4;
     return;
@@ -7662,7 +7654,6 @@ L_entry_0x00516be2:
     app->getMemory<x86::reg32>(cpu.esp-4) = cpu.eax;
     cpu.esp -= 4;
     // 00516be9  d92c24                 -fldcw word ptr [esp]
-    {  // x87 stack in locals (codegen/fpu_stack.py)
     cpu.fpu.setControl(app->getMemory<x86::reg16>(cpu.esp));
     // 00516bec  58                     -pop eax
     cpu.eax = app->getMemory<x86::reg32>(cpu.esp);
@@ -7681,7 +7672,6 @@ L_entry_0x00516be2:
     // 00516bf3  5d                     -pop ebp
     cpu.ebp = app->getMemory<x86::reg32>(cpu.esp);
     cpu.esp += 4;
-    }
     // 00516bf4  c3                     -ret 
     cpu.esp += 4;
     return;

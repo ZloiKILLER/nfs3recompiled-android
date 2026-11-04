@@ -4,7 +4,7 @@
 //
 // The port's CPU has MMX (WITH_MMX, [0x5643b4] set): mixFunctions and the
 // decoders' tables (native_snd_fx.cpp, native_snd_mixsetup.cpp) hand the
-// channels the MMX set only, which native_snd_mixfuncs.cpp and native_mmx.cpp
+// channels the MMX set only, which native_snd_mixfuncs.cpp and native_mix.cpp
 // translate.  Left: the plain set's volume functions, resamplers and outputs,
 // the decoders' plain set-ups and what only they reach; the reverb's own hooks
 // (0x5230dc, 0x523118), which native_mixer.cpp runs itself whenever the MMX

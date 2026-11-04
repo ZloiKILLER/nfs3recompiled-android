@@ -206,6 +206,8 @@ public class NFS3Activity extends SDLActivity
                     if (DebugOptions.value(preferences, getIntent(), option) != option.byDefault)
                         for (int i = 0; i + 1 < option.environment.length; i += 2)
                             setEnv(option.environment[i], option.environment[i + 1]);
+            if (getIntent().getBooleanExtra("auto_replay", false))
+                setEnv("NFS_AUTO_REPLAY", "1");
             String depth16 = DebugOptions.depth16(preferences, getIntent());
             if ("off".equals(depth16))
                 setEnv("NFS_DEPTH16", "0");

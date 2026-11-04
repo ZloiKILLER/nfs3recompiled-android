@@ -64,6 +64,8 @@ void Application::sub_52b523(WinApplication* __restrict app, x86::CPU& cpu_)
   x86::Local cpu(cpu_);
   NFS2_USE(cpu);
   NFS2_USE(app);
+  x86::Float fp0;
+  x86::reg16 fsw = 0;
     // 0052b523  55                     -push ebp
     app->getMemory<x86::reg32>(cpu.esp-4) = cpu.ebp;
     cpu.esp -= 4;
@@ -110,15 +112,13 @@ void Application::sub_52b523(WinApplication* __restrict app, x86::CPU& cpu_)
         goto L_0x0052b55d;
     }
     // 0052b539  d9ee                   +fldz 
-    {  // x87 stack in locals (codegen/fpu_stack.py)
-    x86::Float fpu1 = 0.0;
+    fp0 = 0.0;
     // 0052b53b  dc5d10                 +fcomp qword ptr [ebp + 0x10]
-    cpu.fpu.compare(fpu1, x86::Float(app->getMemory<double>(cpu.ebp + x86::reg32(16) /* 0x10 */)));
+    fsw = fp::compare(fp0, x86::Float(app->getMemory<double>(cpu.ebp + x86::reg32(16) /* 0x10 */)));
     // 0052b53e  dfe0                   -fnstsw ax
-    cpu.ax = cpu.fpu.status.word;
+    cpu.ax = fsw;
     // 0052b540  9e                     +sahf 
     cpu.flags.lo = 0x02 | (cpu.ah & 0xD7);
-    }
     // 0052b541  730a                   -jae 0x52b54d
     if (!cpu.flags.cf)
     {
@@ -155,15 +155,13 @@ L_0x0052b55d:
     goto L_0x0052b58e;
 L_0x0052b564:
     // 0052b564  d9ee                   +fldz 
-    {  // x87 stack in locals (codegen/fpu_stack.py)
-    x86::Float fpu2 = 0.0;
+    fp0 = 0.0;
     // 0052b566  dc5d10                 +fcomp qword ptr [ebp + 0x10]
-    cpu.fpu.compare(fpu2, x86::Float(app->getMemory<double>(cpu.ebp + x86::reg32(16) /* 0x10 */)));
+    fsw = fp::compare(fp0, x86::Float(app->getMemory<double>(cpu.ebp + x86::reg32(16) /* 0x10 */)));
     // 0052b569  dfe0                   -fnstsw ax
-    cpu.ax = cpu.fpu.status.word;
+    cpu.ax = fsw;
     // 0052b56b  9e                     +sahf 
     cpu.flags.lo = 0x02 | (cpu.ah & 0xD7);
-    }
     // 0052b56c  720a                   -jb 0x52b578
     if (cpu.flags.cf)
     {
@@ -180,15 +178,13 @@ L_0x0052b564:
     goto L_0x0052b59c;
 L_0x0052b578:
     // 0052b578  d9ee                   +fldz 
-    {  // x87 stack in locals (codegen/fpu_stack.py)
-    x86::Float fpu3 = 0.0;
+    fp0 = 0.0;
     // 0052b57a  dc5d08                 +fcomp qword ptr [ebp + 8]
-    cpu.fpu.compare(fpu3, x86::Float(app->getMemory<double>(cpu.ebp + x86::reg32(8) /* 0x8 */)));
+    fsw = fp::compare(fp0, x86::Float(app->getMemory<double>(cpu.ebp + x86::reg32(8) /* 0x8 */)));
     // 0052b57d  dfe0                   -fnstsw ax
-    cpu.ax = cpu.fpu.status.word;
+    cpu.ax = fsw;
     // 0052b57f  9e                     +sahf 
     cpu.flags.lo = 0x02 | (cpu.ah & 0xD7);
-    }
     // 0052b580  7307                   -jae 0x52b589
     if (!cpu.flags.cf)
     {
@@ -211,16 +207,12 @@ L_0x0052b58e:
     nfs3hp::watcom::reportError(app, cpu.sync());
     cpu.reload();
     if (cpu.terminate) return;
+    fp0 = cpu.fpu.take();
     // 0052b599  dd5de8                 -fstp qword ptr [ebp - 0x18]
-    {  // x87 stack in locals (codegen/fpu_stack.py)
-    x86::Float fpu4 = cpu.fpu.st(0);
-    app->getMemory<double>(cpu.ebp + x86::reg32(-24) /* -0x18 */) = double(fpu4);
-    cpu.fpu.count -= 1;
-    }
+    app->getMemory<double>(cpu.ebp + x86::reg32(-24) /* -0x18 */) = double(fp0);
 L_0x0052b59c:
     // 0052b59c  dd45e8                 -fld qword ptr [ebp - 0x18]
-    {  // x87 stack in locals (codegen/fpu_stack.py)
-    x86::Float fpu5 = x86::Float(app->getMemory<double>(cpu.ebp + x86::reg32(-24) /* -0x18 */));
+    fp0 = x86::Float(app->getMemory<double>(cpu.ebp + x86::reg32(-24) /* -0x18 */));
     // 0052b59f  8d65f0                 -lea esp, [ebp - 0x10]
     cpu.esp = x86::reg32(cpu.ebp + x86::reg32(-16) /* -0x10 */);
     // 0052b5a2  5a                     -pop edx
@@ -238,10 +230,9 @@ L_0x0052b59c:
     // 0052b5a6  5d                     -pop ebp
     cpu.ebp = app->getMemory<x86::reg32>(cpu.esp);
     cpu.esp += 4;
-    cpu.fpu.count += 1;
-    cpu.fpu.st(0) = fpu5;
-    }
     // 0052b5a7  c21400                 -ret 0x14
+    cpu.fpu.count += 1;
+    cpu.fpu.st(0) = fp0;
     cpu.esp += 4+20 /*0x14*/;
     return;
 }

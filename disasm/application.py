@@ -1,11 +1,17 @@
+import io
 import os
 from .module import Module, function_opening, loop_heads, SAFEPOINT
 from .codegen import fpu as fpu_codegen
+from .codegen import fpu_frame
 from .codegen import fpu_stack
 
 class Application(Module):
     def __init__(self, application_name, exe_path, rebase_after):
         Module.__init__(self, application_name, exe_path, rebase_after)
+        self._x87_frames = None
+        # In plain doubles, for tools/game_checks: the game's code for natives
+        # that are written in doubles.
+        self.double_functions = set()
 
     def write(self, thread_segments=[], skip_instructions=[], dlls=[], function_names={}, natives={}):
         """`natives`: the game's functions the port has natively, {address:
@@ -174,6 +180,14 @@ class Application(Module):
                       '%s'
                       '  NFS2_USE(cpu);\n'
                       '  NFS2_USE(app);\n' % (name, parameters, opening))
+        # The function's code goes through a buffer: which x87 locals it needs,
+        # declared above it all, is known once it has been written.
+        outer = methods
+        methods = io.StringIO()
+        frame = self._x87_frame(function_entry, skip_instructions)
+        fpu_codegen.EXACT = function_entry not in self.double_functions
+        fpu_codegen.BY_CONTROL_WORD = (function_entry in fpu_frame.UNDER_CONTROL_WORD
+                                       or any(i.mnemonic == 'fldcw' for i in subroutine.instructions))
         if subroutine.thread_unsafe:
             methods.write('  win32::LockContext lock(*app);\n')
         if subroutine.dynamic_labels:
@@ -194,8 +208,8 @@ class Application(Module):
                         or instruction.address in static_addresses
                         or (function_entry != function_start and instruction.address == function_entry))
             skipped = instruction.address in skip_instructions
-            carried = (fpu_stack.ENABLED and not skipped and not fpu_stack.Run.boundary(instruction)
-                       and fpu_stack.Run.understood(lines))
+            carried = (frame is None and fpu_stack.ENABLED and not skipped
+                       and not fpu_stack.Run.boundary(instruction) and fpu_stack.Run.understood(lines))
             if run.open and (labelled or not carried):
                 methods.write(fpu_stack.text(run.close()))
             if instruction.address in dynamic_addresses:
@@ -212,12 +226,15 @@ class Application(Module):
                               '    app->lockContext(cpu);\n')
             if instruction.address in loops:
                 methods.write(SAFEPOINT)
-            if carried:
+            if skipped:
+                lines = []
+            elif carried:
                 lines = run.transform(lines)
+            elif frame is not None and not skipped and frame.depth_at(instruction) is not None:
+                lines = frame.transform(instruction, lines)
             methods.write('    // %s\n'
-                          '    %s%s\n'  % (self._raw(subroutine.section, instruction),
-                                           skipped and '//' or '',
-                                           '\n    '.join(lines)))
+                          '    %s\n'  % (self._raw(subroutine.section, instruction),
+                                         '\n    '.join(lines)))
             fallthrough = instruction.mnemonic not in ['jmp', 'ret']
         if run.open:
             methods.write(fpu_stack.text(run.close()))
@@ -226,3 +243,17 @@ class Application(Module):
                           '    NFS2_ASSERT(false);\n'
                           '  }\n')
         methods.write('}\n\n')
+        if frame is not None:
+            outer.write(frame.opening())
+        outer.write(methods.getvalue())
+
+    def _x87_frame(self, entry, skip_instructions):
+        """The x87 stack of the function at `entry` in locals (codegen/fpu_frame.py);
+        None for one whose depth does not follow from its code, which keeps it
+        in the emulated FPU."""
+        if not fpu_stack.ENABLED:
+            return None
+        if self._x87_frames is None:
+            self._x87_frames, _ = fpu_frame.analyse(self, skip_instructions)
+        frame = self._x87_frames.get(entry)
+        return frame if frame is not None and frame.valid else None

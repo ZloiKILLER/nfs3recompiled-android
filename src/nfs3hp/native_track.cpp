@@ -261,17 +261,17 @@ void rotate(App* app, CPU& cpu)
 {
     x86::FPU& fpu = cpu.fpu;
     const reg32 v = cpu.eax, m = cpu.edx;
-    const Float a = fpu.mul(f32(app, v), f32(app, m));
-    const Float b = fpu.mul(f32(app, v), f32(app, m + 4));
-    const Float c = fpu.mul(f32(app, v), f32(app, m + 8));
-    const Float d = fpu.mul(f32(app, v + 4), f32(app, m + 0xc));
-    const Float e = fpu.mul(f32(app, v + 4), f32(app, m + 0x10));
-    const Float f = fpu.mul(f32(app, v + 4), f32(app, m + 0x14));
-    const Float x = fpu.add(a, d), y = fpu.add(b, e), z = fpu.add(c, f);
-    const Float g = fpu.mul(f32(app, v + 8), f32(app, m + 0x18));
-    const Float h = fpu.mul(f32(app, v + 8), f32(app, m + 0x1c));
-    const Float i = fpu.mul(f32(app, v + 8), f32(app, m + 0x20));
-    const Float rx = fpu.add(x, g), ry = fpu.add(y, h), rz = fpu.add(z, i);
+    const Float a = fp::mul(f32(app, v), f32(app, m));
+    const Float b = fp::mul(f32(app, v), f32(app, m + 4));
+    const Float c = fp::mul(f32(app, v), f32(app, m + 8));
+    const Float d = fp::mul(f32(app, v + 4), f32(app, m + 0xc));
+    const Float e = fp::mul(f32(app, v + 4), f32(app, m + 0x10));
+    const Float f = fp::mul(f32(app, v + 4), f32(app, m + 0x14));
+    const Float x = fp::add(a, d), y = fp::add(b, e), z = fp::add(c, f);
+    const Float g = fp::mul(f32(app, v + 8), f32(app, m + 0x18));
+    const Float h = fp::mul(f32(app, v + 8), f32(app, m + 0x1c));
+    const Float i = fp::mul(f32(app, v + 8), f32(app, m + 0x20));
+    const Float rx = fp::add(x, g), ry = fp::add(y, h), rz = fp::add(z, i);
     cpu.eax = v + 0xc;
     putF32(app, cpu.ebx, rx);
     putF32(app, cpu.ebx + 4, ry);
@@ -1026,9 +1026,9 @@ void projectedTriangle(App* app, CPU& cpu)
     putF64(app, intensity, f32(app, kAlphaIntensity));
     if (!compare(cpu, Float(1.0), f64(app, intensity)).belowOrEqual())
     {
-        const Float scaled = cpu.fpu.mul(f64(app, intensity), f64(app, 0x536c6c));
+        const Float scaled = fp::mul(f64(app, intensity), f64(app, 0x536c6c));
         cpu.esp -= 4;
-        put(app, cpu.esp, reg32(cpu.fpu.toInteger<sreg32>(scaled)));
+        put(app, cpu.esp, reg32(fp::toInteger<sreg32>(scaled)));
         cpu.eax = pop(app, cpu);
         cpu.esi = cpu.eax;
         for (const reg32 corner : corners)
@@ -1095,7 +1095,7 @@ void shadeVertex(App* app, CPU& cpu)
     const reg32 absX = cpu.ebp - 0x1c, inverse = cpu.ebp - 0x28, acrossClamped = cpu.ebp - 0x14;
     const reg32 acrossSum = cpu.ebp - 0x2c, upClamped = cpu.ebp - 0x18;
     cpu.edx = at(app, colour);
-    const Float reciprocal = fpu.div(Float(1.0), f32(app, depth));
+    const Float reciprocal = fp::div(Float(1.0), f32(app, depth));
     cpu.ecx = 0x3f800000;
     put(app, shade, cpu.ecx);
     putF32(app, inverse, reciprocal);
@@ -1120,15 +1120,15 @@ void shadeVertex(App* app, CPU& cpu)
         put(app, absY, cpu.eax);
     }
     const Float t = f32(app, inverse);
-    const Float a = fpu.mul(f32(app, across), t);
-    const Float b = fpu.mul(t, f32(app, absY));
+    const Float a = fp::mul(f32(app, across), t);
+    const Float b = fp::mul(t, f32(app, absY));
     const Float d = f32(app, depth);
     putF32(app, across, a);
     putF32(app, up, b);
     if (!compare(cpu, d, f32(app, kShadeNear)).belowOrEqual())
     {
-        const Float beyond = fpu.mul(fpu.sub(f32(app, depth), f32(app, kShadeNear)), f32(app, kShadeScale));
-        putF32(app, shade, fpu.sub(Float(1.0), beyond));
+        const Float beyond = fp::mul(fp::sub(f32(app, depth), f32(app, kShadeNear)), f32(app, kShadeScale));
+        putF32(app, shade, fp::sub(Float(1.0), beyond));
     }
     if (!compare(cpu, Float(0.0), f32(app, across)).belowOrEqual())
     {
@@ -1155,13 +1155,13 @@ void shadeVertex(App* app, CPU& cpu)
         cpu.eax = at(app, cpu.ebp - 0x20);
     }
     put(app, upClamped, cpu.eax);
-    const Float sum = fpu.add(f32(app, acrossSum), f32(app, upClamped));
-    const Float off = fpu.mul(sum, f32(app, 0x536c74));
-    const Float darkened = fpu.mul(fpu.sub(Float(1.0), off), f32(app, shade));
+    const Float sum = fp::add(f32(app, acrossSum), f32(app, upClamped));
+    const Float off = fp::mul(sum, f32(app, 0x536c74));
+    const Float darkened = fp::mul(fp::sub(Float(1.0), off), f32(app, shade));
     putF32(app, shade, darkened);
-    const Float factor = fpu.mul(darkened, f64(app, 0x536c7c));
+    const Float factor = fp::mul(darkened, f64(app, 0x536c7c));
     cpu.esp -= 4;
-    put(app, cpu.esp, reg32(fpu.toInteger<sreg32>(factor)));
+    put(app, cpu.esp, reg32(fp::toInteger<sreg32>(factor)));
     cpu.eax = pop(app, cpu);
     cpu.ecx = cpu.eax;
     cpu.eax = cpu.edx;
@@ -1189,13 +1189,13 @@ void setShadeDistances(App* app, CPU& cpu)
     cpu.esp -= 8;
     const reg32 scale = cpu.ebp + 0xc, nearPlusOne = cpu.ebp - 4, farthest = cpu.ebp - 8;
     const Float s = f32(app, scale);
-    const Float nearDistance = fpu.mul(f32(app, cpu.eax + 0x68), s);
-    const Float farDistance = fpu.mul(s, f32(app, cpu.eax + 0x6c));
+    const Float nearDistance = fp::mul(f32(app, cpu.eax + 0x68), s);
+    const Float farDistance = fp::mul(s, f32(app, cpu.eax + 0x6c));
     cpu.edx = at(app, cpu.eax + 0x64);
     put(app, kShadeReach, cpu.edx);
     putF32(app, kShadeNear, nearDistance);
     putF32(app, kShadeFar, farDistance);
-    const Float plusOne = fpu.add(Float(1.0), f32(app, kShadeNear));
+    const Float plusOne = fp::add(Float(1.0), f32(app, kShadeNear));
     const Float stored = f32(app, kShadeFar);
     putF32(app, nearPlusOne, plusOne);
     if (!compare(cpu, stored, f32(app, nearPlusOne)).belowOrEqual())
@@ -1203,8 +1203,8 @@ void setShadeDistances(App* app, CPU& cpu)
     else
         cpu.eax = at(app, nearPlusOne);
     put(app, farthest, cpu.eax);
-    const Float range = fpu.sub(f32(app, farthest), f32(app, kShadeNear));
-    const Float inverse = fpu.div(Float(1.0), range);
+    const Float range = fp::sub(f32(app, farthest), f32(app, kShadeNear));
+    const Float inverse = fp::div(Float(1.0), range);
     cpu.eax = at(app, farthest);
     put(app, kShadeFar, cpu.eax);
     putF32(app, kShadeScale, inverse);
@@ -1226,11 +1226,11 @@ void viewObjectVertices(App* app, CPU& cpu)
     cpu.ebp = cpu.esp;
     cpu.esp -= 0x18;
     cpu.edi = cpu.edx;
-    putF32(app, cpu.ebp - 0x18, fpu.sub(f32(app, cpu.ebx), f32(app, cpu.eax + 8)));
+    putF32(app, cpu.ebp - 0x18, fp::sub(f32(app, cpu.ebx), f32(app, cpu.eax + 8)));
     cpu.esi = cpu.eax + 0x44;
-    putF32(app, cpu.ebp - 0x14, fpu.sub(f32(app, cpu.ebx + 4), f32(app, cpu.eax + 0xc)));
+    putF32(app, cpu.ebp - 0x14, fp::sub(f32(app, cpu.ebx + 4), f32(app, cpu.eax + 0xc)));
     cpu.edx = cpu.esi;
-    const Float z = fpu.sub(f32(app, cpu.ebx + 8), f32(app, cpu.eax + 0x10));
+    const Float z = fp::sub(f32(app, cpu.ebx + 8), f32(app, cpu.eax + 0x10));
     cpu.ebx = cpu.ebp - 0xc;
     cpu.eax = cpu.ebp - 0x18;
     putF32(app, cpu.ebp - 0x10, z);
@@ -1265,10 +1265,10 @@ void viewTurnedObjectVertices(App* app, CPU& cpu)
     cpu.esp -= 0x3c;
     cpu.edi = cpu.edx;
     cpu.esi = cpu.ebx;
-    putF32(app, cpu.ebp - 0x18, fpu.sub(f32(app, cpu.ecx), f32(app, cpu.eax + 8)));
-    putF32(app, cpu.ebp - 0x14, fpu.sub(f32(app, cpu.ecx + 4), f32(app, cpu.eax + 0xc)));
+    putF32(app, cpu.ebp - 0x18, fp::sub(f32(app, cpu.ecx), f32(app, cpu.eax + 8)));
+    putF32(app, cpu.ebp - 0x14, fp::sub(f32(app, cpu.ecx + 4), f32(app, cpu.eax + 0xc)));
     cpu.ebx = cpu.ebp - 0xc;
-    const Float z = fpu.sub(f32(app, cpu.ecx + 8), f32(app, cpu.eax + 0x10));
+    const Float z = fp::sub(f32(app, cpu.ecx + 8), f32(app, cpu.eax + 0x10));
     cpu.ecx = cpu.eax + 0x44;
     cpu.edx = cpu.ecx;
     cpu.eax = cpu.ebp - 0x18;
@@ -1319,10 +1319,10 @@ void modelByDistance(App* app, CPU& cpu)
         return leave(0);
     cpu.edx = at(app, kView);
     const Float coarse = f32(app, cpu.edx + 0x44);
-    if (compare(cpu, fpu.mul(coarse, coarse), f32(app, distance)).below)
+    if (compare(cpu, fp::mul(coarse, coarse), f32(app, distance)).below)
         return leave(0);
     const Float middle = f32(app, cpu.edx + 0x40);
-    if (compare(cpu, fpu.mul(middle, middle), f32(app, distance)).below)
+    if (compare(cpu, fp::mul(middle, middle), f32(app, distance)).below)
         return leave(1);
     leave(2);
 }
@@ -1778,13 +1778,13 @@ void litBoxOutside(App* app, CPU& cpu)
         rotate(app, cpu);
         cpu.eax = at(app, origin);
         for (const reg32 k : {0u, 4u, 8u})
-            putF32(app, cpu.ecx + points + k, fpu.add(f32(app, cpu.eax + k), f32(app, cpu.ecx + points + k)));
+            putF32(app, cpu.ecx + points + k, fp::add(f32(app, cpu.eax + k), f32(app, cpu.ecx + points + k)));
         cpu.esi = at(app, cpu.ecx + points + 8);
         if ((cpu.esi & 0x7fffffff) == 0)
             put(app, cpu.ecx + points + 8, 0x37800080);
         cpu.eax = at(app, index);
         cpu.ecx = cpu.eax * 12;
-        const Float w = fpu.div(Float(1.0), f32(app, cpu.ecx + points + 8));
+        const Float w = fp::div(Float(1.0), f32(app, cpu.ecx + points + 8));
         put(app, row, cpu.ecx);
         cpu.eax <<= 5;
         cpu.edx = at(app, row);
@@ -1796,15 +1796,15 @@ void litBoxOutside(App* app, CPU& cpu)
         cpu.ebx = cpu.esi;
         cpu.eax += cpu.edx;
         cpu.edi = cpu.esi + 0x14;
-        const Float p = fpu.mul(f32(app, 0x56009c), f32(app, cpu.ecx));
-        const Float q = fpu.mul(f32(app, 0x5600a0), f32(app, cpu.ecx));
+        const Float p = fp::mul(f32(app, 0x56009c), f32(app, cpu.ecx));
+        const Float q = fp::mul(f32(app, 0x5600a0), f32(app, cpu.ecx));
         cpu.edx = at(app, cpu.ecx);
-        const Float qy = fpu.mul(q, f32(app, cpu.eax + 4));
+        const Float qy = fp::mul(q, f32(app, cpu.eax + 4));
         put(app, cpu.ebx + 0xc, cpu.edx);
-        const Float px = fpu.mul(p, f32(app, cpu.eax));
+        const Float px = fp::mul(p, f32(app, cpu.eax));
         cpu.edx = at(app, cpu.eax + 8);
-        const Float sx = fpu.add(px, f32(app, 0x5600a4));
-        const Float sy = fpu.add(qy, f32(app, 0x5600a8));
+        const Float sx = fp::add(px, f32(app, 0x5600a4));
+        const Float sy = fp::add(qy, f32(app, 0x5600a8));
         putF32(app, cpu.ebx, sx);
         put(app, cpu.ebx + 8, cpu.edx);
         putF32(app, cpu.ebx + 4, sy);
@@ -1865,7 +1865,7 @@ void litBoxOutside(App* app, CPU& cpu)
         }
         const Float x = f32(app, absX);
         cpu.eax = at(app, index);
-        const Float spreadX = fpu.mul(x, f32(app, spread));
+        const Float spreadX = fp::mul(x, f32(app, spread));
         cpu.ecx = cpu.eax * 3;
         putF32(app, e + cpu.ecx * 4 + 0x2e, spreadX);
         cpu.ecx = cpu.eax + 1;
@@ -2164,9 +2164,9 @@ void headlightsOnObjects(App* app, CPU& cpu)
                 cpu.eax = at(app, cpu.esi + 0xa0);
                 put(app, carPlace + 8, cpu.eax);
                 cpu.eax = at(app, point);
-                const Float dz = fpu.sub(f32(app, carPlace + 8), f32(app, cpu.eax + 8));
-                const Float dx = fpu.sub(f32(app, carPlace), f32(app, cpu.eax));
-                const Float d = fpu.add(fpu.mul(dz, dz), fpu.mul(dx, dx));
+                const Float dz = fp::sub(f32(app, carPlace + 8), f32(app, cpu.eax + 8));
+                const Float dx = fp::sub(f32(app, carPlace), f32(app, cpu.eax));
+                const Float d = fp::add(fp::mul(dz, dz), fp::mul(dx, dx));
                 if (!compare(cpu, d, f64(app, 0x536cb4)).above())
                 {
                     bool second = true;
@@ -2319,9 +2319,9 @@ void headlightsOnBlock(App* app, CPU& cpu)
                     cpu.eax <<= 6;
                     put(app, carPlace + 8, cpu.edx);
                     cpu.eax += kBlocks;
-                    const Float dz = fpu.sub(f32(app, carPlace + 8), f32(app, cpu.eax + 0x80));
-                    const Float dx = fpu.sub(f32(app, carPlace), f32(app, cpu.eax + 0x78));
-                    const Float d = fpu.add(fpu.mul(dz, dz), fpu.mul(dx, dx));
+                    const Float dz = fp::sub(f32(app, carPlace + 8), f32(app, cpu.eax + 0x80));
+                    const Float dx = fp::sub(f32(app, carPlace), f32(app, cpu.eax + 0x78));
+                    const Float d = fp::add(fp::mul(dz, dz), fp::mul(dx, dx));
                     if (!compare(cpu, d, f64(app, 0x536cbc)).above())
                     {
                         cpu.eax = at(app, carAt);
@@ -2428,12 +2428,12 @@ void headlightsOnBlock(App* app, CPU& cpu)
                             {
                                 cpu.eax = at(app, lightsSeen);
                                 put(app, order, cpu.eax);
-                                const Float share = fpu.div(Float(sreg32(at(app, order))), Float(sreg32(at(app, kCarCount))));
-                                const Float scaled = fpu.mul(share, f32(app, 0x536cc4));
+                                const Float share = fp::div(Float(sreg32(at(app, order))), Float(sreg32(at(app, kCarCount))));
+                                const Float scaled = fp::mul(share, f32(app, 0x536cc4));
                                 cpu.ecx = at(app, pointCount);
                                 cpu.ebx = at(app, view);
                                 push(app, cpu, cpu.esi);
-                                const Float dimmed = fpu.sub(Float(1.0), scaled);
+                                const Float dimmed = fp::sub(Float(1.0), scaled);
                                 cpu.eax = at(app, secondLight);
                                 putF32(app, dim, dimmed);
                                 push(app, cpu, at(app, dim));
@@ -3014,11 +3014,11 @@ void drawTrack(App* app, CPU& cpu)
         cpu.eax = blockOffset(cpu.edi);
         cpu.edx = kBlocks + cpu.eax;
         cpu.eax = cpu.edx + 0x78;
-        const Float dz = fpu.sub(f32(app, cpu.esi + 0x10), f32(app, cpu.eax + 8));
-        const Float dx = fpu.sub(f32(app, cpu.esi + 8), f32(app, cpu.eax));
+        const Float dz = fp::sub(f32(app, cpu.esi + 0x10), f32(app, cpu.eax + 8));
+        const Float dx = fp::sub(f32(app, cpu.esi + 8), f32(app, cpu.eax));
         cpu.eax = at(app, kView);
-        const Float d = fpu.add(fpu.mul(dz, dz), fpu.mul(dx, dx));
-        const Float reach = fpu.mul(f32(app, cpu.eax + 0x34), f32(app, cpu.eax + 0x34));
+        const Float d = fp::add(fp::mul(dz, dz), fp::mul(dx, dx));
+        const Float reach = fp::mul(f32(app, cpu.eax + 0x34), f32(app, cpu.eax + 0x34));
         putF32(app, distance, d);
         if (compare(cpu, reach, f32(app, distance)).below)
             continue;
@@ -3055,10 +3055,10 @@ void drawTrack(App* app, CPU& cpu)
             cpu.edx = 0;
         // The next block's distance, its model asked for and not taken.
         cpu.eax = blockOffset(cpu.edx) + kBlocks;
-        const Float nz = fpu.sub(f32(app, cpu.esi + 0x10), f32(app, cpu.eax + 0x80));
-        const Float nx = fpu.sub(f32(app, cpu.esi + 8), f32(app, cpu.eax + 0x78));
+        const Float nz = fp::sub(f32(app, cpu.esi + 0x10), f32(app, cpu.eax + 0x80));
+        const Float nx = fp::sub(f32(app, cpu.esi + 8), f32(app, cpu.eax + 0x78));
         cpu.esp -= 4;
-        const Float next = fpu.add(fpu.mul(nz, nz), fpu.mul(nx, nx));
+        const Float next = fp::add(fp::mul(nz, nz), fp::mul(nx, nx));
         cpu.eax = cpu.esi;
         putF32(app, cpu.esp, next);
         if (!direct(app, cpu, modelByDistance))
@@ -3521,9 +3521,9 @@ void objectAnimation(App* app, CPU& cpu)
         cpu.eax = at(app, cpu.ecx + 0xac);
         put(app, absZ, cpu.eax);
     }
-    const Float speed = fpu.add(f32(app, absX), f32(app, absZ));
+    const Float speed = fp::add(f32(app, absX), f32(app, absZ));
     cpu.esp -= 4;
-    put(app, cpu.esp, reg32(fpu.toInteger<sreg32>(speed)));
+    put(app, cpu.esp, reg32(fp::toInteger<sreg32>(speed)));
     cpu.eax = pop(app, cpu);
     cpu.ebx = cpu.eax;
     cpu.eax = cpu.edi * 5;
@@ -3561,16 +3561,16 @@ void objectAnimation(App* app, CPU& cpu)
         putByte(app, cpu.esi, 0xfe);
         return leave(0xffffffff);
     }
-    const Float z = fpu.mul(f32(app, cpu.ecx + 0xac), f64(app, 0x536ccc));
+    const Float z = fp::mul(f32(app, cpu.ecx + 0xac), f64(app, 0x536ccc));
     cpu.esp -= 4;
-    put(app, cpu.esp, reg32(fpu.toInteger<sreg32>(z)));
+    put(app, cpu.esp, reg32(fp::toInteger<sreg32>(z)));
     cpu.eax = pop(app, cpu);
     const Float x = f32(app, cpu.ecx + 0xa4);
     cpu.edx = cpu.eax;
-    const Float xs = fpu.mul(x, f64(app, 0x536ccc));
+    const Float xs = fp::mul(x, f64(app, 0x536ccc));
     cpu.edx = reg32(sreg32(cpu.edx) >> 8);
     cpu.esp -= 4;
-    put(app, cpu.esp, reg32(fpu.toInteger<sreg32>(xs)));
+    put(app, cpu.esp, reg32(fp::toInteger<sreg32>(xs)));
     cpu.eax = pop(app, cpu);
     cpu.eax = reg32(sreg32(cpu.eax) >> 8);
     if (!byAddress(app, cpu, 0x4ea570))
@@ -3607,18 +3607,18 @@ void turnFromAngles(App* app, CPU& cpu)
     put(app, b, cpu.ebx);
     put(app, a, cpu.eax);
     const Float k = f64(app, 0x536cd4);
-    const Float bk = fpu.mul(Float(sreg32(at(app, b))), k);
-    const Float ak = fpu.mul(Float(sreg32(at(app, a))), k);
+    const Float bk = fp::mul(Float(sreg32(at(app, b))), k);
+    const Float ak = fp::mul(Float(sreg32(at(app, a))), k);
     put(app, b, cpu.edx);
     const Float minusBk = -bk;
-    const Float rest = fpu.sub(Float(1.0), ak);
-    const Float yawShare = fpu.mul(minusBk, rest);
-    const Float ck = fpu.mul(k, Float(sreg32(at(app, b))));
+    const Float rest = fp::sub(Float(1.0), ak);
+    const Float yawShare = fp::mul(minusBk, rest);
+    const Float ck = fp::mul(k, Float(sreg32(at(app, b))));
     const Float minusCk = -ck;
-    const Float pitchShare = fpu.mul(ak, minusCk);
+    const Float pitchShare = fp::mul(ak, minusCk);
     cpu.esp -= 4;
     put(app, a, cpu.ebx);
-    const Float angle = fpu.add(pitchShare, yawShare);
+    const Float angle = fp::add(pitchShare, yawShare);
     cpu.eax = e + 0x22;
     putF32(app, cpu.esp, angle);
     cpu.ebx = e + 0x46;
@@ -3660,8 +3660,8 @@ void turnFromPitchYaw(App* app, CPU& cpu)
     put(app, pitch, cpu.eax);
     put(app, yaw, cpu.edx);
     const Float k = f64(app, 0x536cdc);
-    const Float p = fpu.mul(Float(sreg32(at(app, pitch))), k);
-    const Float y = fpu.mul(k, Float(sreg32(at(app, yaw))));
+    const Float p = fp::mul(Float(sreg32(at(app, pitch))), k);
+    const Float y = fp::mul(k, Float(sreg32(at(app, yaw))));
     push(app, cpu, 0x3e800000);
     cpu.eax = cpu.ebx;
     putF32(app, pitchAngle, p);
@@ -3881,7 +3881,7 @@ void loadTextures(App* app, CPU& cpu)
     if (cpu.eax != 0)
     {
         put(app, count, cpu.eax);
-        putF32(app, step, fpu.div(f32(app, 0x536d1c), Float(sreg32(at(app, count)))));
+        putF32(app, step, fp::div(f32(app, 0x536d1c), Float(sreg32(at(app, count)))));
     }
     cpu.ebx = 0;
     put(app, index, cpu.ebx);
@@ -3918,7 +3918,7 @@ void loadTextures(App* app, CPU& cpu)
             if (!byAddress(app, cpu, 0x4d4080))
                 return;
         }
-        putF32(app, progress, fpu.add(f32(app, progress), f32(app, step)));
+        putF32(app, progress, fp::add(f32(app, progress), f32(app, step)));
         push(app, cpu, at(app, progress));
         if (!byAddress(app, cpu, 0x495230))
             return;
@@ -4232,12 +4232,12 @@ void blockInView(App* app, CPU& cpu)
     else
     {
         cpu.eax = cpu.edi + 0x78;
-        const Float dz = fpu.sub(f32(app, cpu.esi + 0x10), f32(app, cpu.eax + 8));
-        const Float dx = fpu.sub(f32(app, cpu.esi + 8), f32(app, cpu.eax));
+        const Float dz = fp::sub(f32(app, cpu.esi + 0x10), f32(app, cpu.eax + 8));
+        const Float dx = fp::sub(f32(app, cpu.esi + 8), f32(app, cpu.eax));
         cpu.eax = at(app, kView);
         const Float reach = f32(app, cpu.eax + 0x34);
-        const Float d = fpu.add(fpu.mul(dz, dz), fpu.mul(dx, dx));
-        cpu.eax = compare(cpu, fpu.mul(reach, reach), d).below ? 0 : 1;
+        const Float d = fp::add(fp::mul(dz, dz), fp::mul(dx, dx));
+        cpu.eax = compare(cpu, fp::mul(reach, reach), d).below ? 0 : 1;
     }
     cpu.esp = cpu.ebp;
     cpu.ebp = pop(app, cpu);

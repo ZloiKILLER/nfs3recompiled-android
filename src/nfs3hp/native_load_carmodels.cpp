@@ -176,7 +176,7 @@ void loadInteger(win32::WinApplication* app, x86::CPU& cpu, reg32 address)
 /* fistp: st(0) to the dword at `address` as the control word rounds it, popped. */
 void storeInteger(win32::WinApplication* app, x86::CPU& cpu, reg32 address)
 {
-    put(app, address, reg32(cpu.fpu.toInteger<sreg32>(cpu.fpu.st(0))));
+    put(app, address, reg32(fp::toInteger<sreg32>(cpu.fpu.st(0))));
     cpu.fpu.pop();
 }
 
@@ -907,7 +907,7 @@ void hsvToRgb(win32::WinApplication* app, x86::CPU& cpu)
         cpu.edx = at(app, cpu.edi);
         loadInteger(app, cpu, cpu.edi);
         cpu.eax = cpu.edx * 4;
-        fpu.st(0) = fpu.mul(fpu.st(0), f64(app, kSix));
+        fpu.st(0) = fp::mul(fpu.st(0), f64(app, kSix));
         cpu.eax -= cpu.edx;
         cpu.eax += cpu.eax;
         cpu.eax = reg32(sreg32(cpu.eax) >> 8);
@@ -915,7 +915,7 @@ void hsvToRgb(win32::WinApplication* app, x86::CPU& cpu)
         cpu.eax <<= 8;
         put(app, fraction, cpu.eax);
         loadInteger(app, cpu, fraction);
-        fpu.st(1) = fpu.sub(fpu.st(1), fpu.st(0));
+        fpu.st(1) = fp::sub(fpu.st(1), fpu.st(0));
         fpu.pop();
         cpu.ebx = 0x100;
         if (!byAddress(app, cpu, kChop))
@@ -1077,8 +1077,8 @@ void tintPixel(win32::WinApplication* app, x86::CPU& cpu)
     if (cpu.ecx != 0xff)
     {
         loadInteger(app, cpu, cpu.edx + 0xc);
-        fpu.st(0) = fpu.sub(f64(app, kFull), fpu.st(0));
-        fpu.st(0) = fpu.div(f32(app, scale), fpu.st(0));
+        fpu.st(0) = fp::sub(f64(app, kFull), fpu.st(0));
+        fpu.st(0) = fp::div(f32(app, scale), fpu.st(0));
         putF32(app, scale, fpu.pop());
     }
     cpu.eax = at(app, cpu.edx);
@@ -1086,7 +1086,7 @@ void tintPixel(win32::WinApplication* app, x86::CPU& cpu)
     cpu.eax = at(app, cpu.edx + 4);
     put(app, hsv + 4, cpu.eax);
     loadInteger(app, cpu, cpu.edx + 8);
-    fpu.st(0) = fpu.mul(fpu.st(0), f32(app, scale));
+    fpu.st(0) = fp::mul(fpu.st(0), f32(app, scale));
     if (!byAddress(app, cpu, kChop))
         return;
     storeInteger(app, cpu, hsv + 8);
@@ -1141,14 +1141,14 @@ void scaleTexture(win32::WinApplication* app, x86::CPU& cpu)
     put(app, scratch2, cpu.eax);
     loadInteger(app, cpu, scratch1);
     loadInteger(app, cpu, scratch2);
-    fpu.st(1) = fpu.div(fpu.st(1), fpu.st(0));
+    fpu.st(1) = fp::div(fpu.st(1), fpu.st(0));
     fpu.pop();
     cpu.eax = at(app, toHeight);
     put(app, scratch2, cpu.ecx);
     put(app, scratch1, cpu.eax);
     loadInteger(app, cpu, scratch2);
     loadInteger(app, cpu, scratch1);
-    fpu.st(1) = fpu.div(fpu.st(1), fpu.st(0));
+    fpu.st(1) = fp::div(fpu.st(1), fpu.st(0));
     fpu.pop();
     cpu.ecx = 0;
     std::swap(fpu.st(0), fpu.st(1));
@@ -1167,7 +1167,7 @@ void scaleTexture(win32::WinApplication* app, x86::CPU& cpu)
     {
         put(app, scratch1, cpu.ecx);
         loadInteger(app, cpu, scratch1);
-        fpu.st(0) = fpu.mul(fpu.st(0), f32(app, rowStep));
+        fpu.st(0) = fp::mul(fpu.st(0), f32(app, rowStep));
         cpu.edi = at(app, width);
         if (!byAddress(app, cpu, kChop))
             return;
@@ -1261,7 +1261,7 @@ void scaleTexture(win32::WinApplication* app, x86::CPU& cpu)
             fpu.push(f32(app, x));
             cpu.ebx = at(app, column);
             cpu.esi += 2;
-            fpu.st(0) = fpu.add(fpu.st(0), f32(app, columnStep));
+            fpu.st(0) = fp::add(fpu.st(0), f32(app, columnStep));
             ++cpu.ebx;
             putF32(app, x, fpu.pop());
             put(app, column, cpu.ebx);

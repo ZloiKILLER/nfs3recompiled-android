@@ -398,21 +398,9 @@ int32_t mad_play_movie(MadPlayer *p, const MadMovieHost *m, const char *name)
     m->sound_pause(m->user);
     m->music_stop(m->user);
 
-    /* The display mode by the speed measured at start-up. */
-    int32_t quality;
-    if (m->cpu_hz < 133000000u)
-        quality = 1;
-    else if (m->cpu_hz < 200000000u)
-        quality = 2;
-    else
-        quality = 3;
-    /* edx still holds the -nomovie flag here, i.e. 0; a slow machine starts
-     * out dropping MADe frames. */
+    /* The best quality, every frame: the game chose by the machine's speed. */
     int32_t skip_extra = 0;
-    if (m->cpu_hz < 133000000u)
-        skip_extra = 1;
-
-    mad_player_play(p, path, &skip_extra, 0, quality, 1);
+    mad_player_play(p, path, &skip_extra, 0, 3, 1);
 
     m->sound_resume(m->user);
     m->flush_input(m->user);

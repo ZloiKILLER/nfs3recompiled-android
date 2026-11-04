@@ -185,7 +185,7 @@ void fstpSt1(CPU& cpu)
 // fistp m32: st(0) as an integer, by the rounding in force.
 void fistp(App* app, CPU& cpu, reg32 a)
 {
-    put(app, a, reg32(cpu.fpu.toInteger<sreg32>(cpu.fpu.st(0))));
+    put(app, a, reg32(fp::toInteger<sreg32>(cpu.fpu.st(0))));
     cpu.fpu.pop();
 }
 
@@ -197,31 +197,31 @@ void fxch(CPU& cpu, int i)
 }
 
 // st(0) op= m (fadd m32 and the like); fsubr: st(0) = m - st(0).
-void fadd(CPU& cpu, const Float& m) { cpu.fpu.st(0) = cpu.fpu.add(cpu.fpu.st(0), m); }
-void fsub(CPU& cpu, const Float& m) { cpu.fpu.st(0) = cpu.fpu.sub(cpu.fpu.st(0), m); }
-void fsubr(CPU& cpu, const Float& m) { cpu.fpu.st(0) = cpu.fpu.sub(m, cpu.fpu.st(0)); }
-void fmul(CPU& cpu, const Float& m) { cpu.fpu.st(0) = cpu.fpu.mul(cpu.fpu.st(0), m); }
-void fdiv(CPU& cpu, const Float& m) { cpu.fpu.st(0) = cpu.fpu.div(cpu.fpu.st(0), m); }
+void fadd(CPU& cpu, const Float& m) { cpu.fpu.st(0) = fp::add(cpu.fpu.st(0), m); }
+void fsub(CPU& cpu, const Float& m) { cpu.fpu.st(0) = fp::sub(cpu.fpu.st(0), m); }
+void fsubr(CPU& cpu, const Float& m) { cpu.fpu.st(0) = fp::sub(m, cpu.fpu.st(0)); }
+void fmul(CPU& cpu, const Float& m) { cpu.fpu.st(0) = fp::mul(cpu.fpu.st(0), m); }
+void fdiv(CPU& cpu, const Float& m) { cpu.fpu.st(0) = fp::div(cpu.fpu.st(0), m); }
 
 // fmul st(0), st(1)
-void fmulSt1(CPU& cpu) { cpu.fpu.st(0) = cpu.fpu.mul(cpu.fpu.st(0), Float(cpu.fpu.st(1))); }
+void fmulSt1(CPU& cpu) { cpu.fpu.st(0) = fp::mul(cpu.fpu.st(0), Float(cpu.fpu.st(1))); }
 
 // st(i) op= st(0), popped (faddp st(i) and the like).
 void faddp(CPU& cpu, int i)
 {
-    cpu.fpu.st(i) = cpu.fpu.add(cpu.fpu.st(i), cpu.fpu.st(0));
+    cpu.fpu.st(i) = fp::add(cpu.fpu.st(i), cpu.fpu.st(0));
     cpu.fpu.pop();
 }
 
 void fsubp(CPU& cpu, int i)
 {
-    cpu.fpu.st(i) = cpu.fpu.sub(cpu.fpu.st(i), cpu.fpu.st(0));
+    cpu.fpu.st(i) = fp::sub(cpu.fpu.st(i), cpu.fpu.st(0));
     cpu.fpu.pop();
 }
 
 void fmulp(CPU& cpu, int i)
 {
-    cpu.fpu.st(i) = cpu.fpu.mul(cpu.fpu.st(i), cpu.fpu.st(0));
+    cpu.fpu.st(i) = fp::mul(cpu.fpu.st(i), cpu.fpu.st(0));
     cpu.fpu.pop();
 }
 

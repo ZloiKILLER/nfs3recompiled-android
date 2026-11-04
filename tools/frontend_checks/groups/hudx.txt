@@ -1,0 +1,21 @@
+# address name kind: the functions native whole in src/nfs3hp/native_frontend_hudx.cpp, frontend::name.
+# kind: how frontend_checks enters it (Menu, Key, Item, None).
+474d50 textLookClearLights None
+477070 textLookSetFlat None
+477170 textLookSetDirectional None
+4771c0 textLookAddLight None
+477470 textLookSetTexture None
+484220 hudClearRebuildFlag None
+484260 hudToggleShown None
+484450 hudToggleRearView None
+485640 hudRebuildView None
+487340 hudGroupClearCount None
+4873c0 hudGroupDropLast None
+48ccf0 hudRefreshPane None
+48eb60 hudStepZoom None
+497590 hudVectorLength None
+49bef0 hudSurfaceReset None
+49bf40 hudSurfaceTakeVertices None
+4d10e0 hudTextToRightEdge None
+4d1310 hudFontSurfacesBegin None
+4d14f0 hudCharacterDrop None

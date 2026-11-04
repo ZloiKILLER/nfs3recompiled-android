@@ -958,13 +958,13 @@ Result screenCharacter(App* app, CPU& cpu, reg32 esp, int32_t u, int32_t v, int3
     if ((kDriverFlags(app) & kSofttria) != 0)
         kNudge.set(app, 0);
     // The texture's corners, a 256th of the texture a texel.
-    const Float u0 = fpu.mul(Float(uf), Float(kU));
-    const Float v0 = fpu.mul(Float(vf), Float(kV));
-    const Float u1 = fpu.mul(Float(kU), fpu.add(Float(width), Float(uf)));
-    const Float v1 = fpu.mul(Float(kV), fpu.add(Float(vf), Float(height)));
+    const Float u0 = fp::mul(Float(uf), Float(kU));
+    const Float v0 = fp::mul(Float(vf), Float(kV));
+    const Float u1 = fp::mul(Float(kU), fp::add(Float(width), Float(uf)));
+    const Float v1 = fp::mul(Float(kV), fp::add(Float(vf), Float(height)));
     const float nudge = ofInt(kNudge(app));
-    const Float x0 = fpu.add(Float(q0.x), Float(nudge));
-    const Float x1 = fpu.add(Float(q1.x), Float(nudge));
+    const Float x0 = fp::add(Float(q0.x), Float(nudge));
+    const Float x1 = fp::add(Float(q1.x), Float(nudge));
     q3.u = float(u0);
     q1.v = float(v0);
     q0.x = float(x0);
@@ -1031,10 +1031,10 @@ Result turnedCharacter(App* app, CPU& cpu, reg32 esp, int32_t u, int32_t v, int3
         // The accented font overlaps its characters by a pixel; the menus'
         // highlight (in its colour less a step) its own shadowed colour.
         const Float minusOne = Float(kMinusOne(app));
-        const Float w = fpu.add(Float(width), minusOne);
-        const Float h = fpu.add(minusOne, Float(height));
+        const Float w = fp::add(Float(width), minusOne);
+        const Float h = fp::add(minusOne, Float(height));
         const Float s = Float(fromBits(scale));
-        const Float sw = fpu.mul(w, s), sh = fpu.mul(s, h);
+        const Float sw = fp::mul(w, s), sh = fp::mul(s, h);
         u += 1;
         v += 3;
         y += 4;
@@ -1049,7 +1049,7 @@ Result turnedCharacter(App* app, CPU& cpu, reg32 esp, int32_t u, int32_t v, int3
     else
     {
         const Float s = Float(fromBits(scale));
-        const Float sw = fpu.mul(Float(width), s), sh = fpu.mul(s, Float(height));
+        const Float sw = fp::mul(Float(width), s), sh = fp::mul(s, Float(height));
         scaledWidth = chopped<int32_t>(cpu, sw);
         scaledHeight = chopped<int32_t>(cpu, sh);
     }
@@ -1093,13 +1093,13 @@ Result turnedCharacter(App* app, CPU& cpu, reg32 esp, int32_t u, int32_t v, int3
     if ((kDriverFlags(app) & kSofttria) != 0)
         kNudge.set(app, 0);
     // The texture's corners, a 256th of the texture a texel.
-    const Float u0 = fpu.mul(Float(uf), Float(kU));
-    const Float v0 = fpu.mul(Float(vf), Float(kV));
-    const Float u1 = fpu.mul(Float(kU), fpu.add(Float(uf), Float(width)));
-    const Float v1 = fpu.mul(fpu.add(Float(vf), Float(height)), Float(kV));
+    const Float u0 = fp::mul(Float(uf), Float(kU));
+    const Float v0 = fp::mul(Float(vf), Float(kV));
+    const Float u1 = fp::mul(Float(kU), fp::add(Float(uf), Float(width)));
+    const Float v1 = fp::mul(fp::add(Float(vf), Float(height)), Float(kV));
     const float nudge = ofInt(kNudge(app));
-    const Float x0 = fpu.add(Float(q0.x), Float(nudge));
-    const Float x1 = fpu.add(Float(q1.x), Float(nudge));
+    const Float x0 = fp::add(Float(q0.x), Float(nudge));
+    const Float x1 = fp::add(Float(q1.x), Float(nudge));
     q3.u = float(u0);
     q1.v = float(v0);
     q0.x = float(x0);
@@ -1283,7 +1283,7 @@ Result titleText(App* app, CPU& cpu, reg32 esp, reg32 text, int32_t x, int32_t y
         {
             const int32_t e = step < 0 ? 0 : step > 0x20 ? 0x20 : step;
             const int32_t turn = over(cosine(app, 0x100 - e * 8), 8);
-            const uint32_t scale = bitsOf(float(fpu.add(fpu.mul(Float(e), Float(kEighth(app))), Float(1.0))));
+            const uint32_t scale = bitsOf(float(fp::add(fp::mul(Float(e), Float(kEighth(app))), Float(1.0))));
             const int32_t fade = (0x40 - e * 2) << 24;
             uint32_t alpha;
             if (step != first)
@@ -1358,11 +1358,11 @@ Result pointer(App* app, CPU& cpu, reg32 esp)
     q3.x = float(left);
     q0.y = ofInt(y);
     const Float size = Float(kPointerSize(app));
-    q1.x = float(fpu.add(left, size));
+    q1.x = float(fp::add(left, size));
     const Float top = Float(q0.y);
     q1.y = float(top);
     q2.x = viaX87(q1.x);
-    const Float lower = fpu.add(size, top);
+    const Float lower = fp::add(size, top);
     q2.y = float(lower);
     q3.y = float(lower);
     reg32 r;
@@ -1412,14 +1412,14 @@ Result texturedQuad(App* app, CPU& cpu, reg32 esp, const ArtQuad& quad)
     const Float sw = Float(kScreenWidth(app));
     const Float sh = Float(float(Float(kScreenHeight(app))));
     const Float perWidth = Float(kArtPerWidth(app)), perHeight = Float(kArtPerHeight(app));
-    const Float x1 = fpu.mul(fpu.mul(Float(quad.x[1]), sw), perWidth);
-    const Float y1 = fpu.mul(fpu.mul(Float(quad.y[1]), sh), perHeight);
-    const Float x0 = fpu.mul(fpu.mul(Float(quad.x[0]), sw), perWidth);
-    const Float x2 = fpu.mul(fpu.mul(Float(quad.x[2]), sw), perWidth);
-    const Float y0 = fpu.mul(fpu.mul(Float(quad.y[0]), sh), perHeight);
-    const Float y2 = fpu.mul(fpu.mul(Float(quad.y[2]), sh), perHeight);
-    const Float x3 = fpu.mul(fpu.mul(sw, Float(quad.x[3])), perWidth);
-    const Float y3 = fpu.mul(fpu.mul(Float(quad.y[3]), sh), perHeight);
+    const Float x1 = fp::mul(fp::mul(Float(quad.x[1]), sw), perWidth);
+    const Float y1 = fp::mul(fp::mul(Float(quad.y[1]), sh), perHeight);
+    const Float x0 = fp::mul(fp::mul(Float(quad.x[0]), sw), perWidth);
+    const Float x2 = fp::mul(fp::mul(Float(quad.x[2]), sw), perWidth);
+    const Float y0 = fp::mul(fp::mul(Float(quad.y[0]), sh), perHeight);
+    const Float y2 = fp::mul(fp::mul(Float(quad.y[2]), sh), perHeight);
+    const Float x3 = fp::mul(fp::mul(sw, Float(quad.x[3])), perWidth);
+    const Float y3 = fp::mul(fp::mul(Float(quad.y[3]), sh), perHeight);
     const Float xs[4] = {x0, x1, x2, x3}, ys[4] = {y0, y1, y2, y3};
     for (int32_t i = 0; i < 4; ++i)
     {
@@ -1497,14 +1497,14 @@ Result shadedQuad(App* app, CPU& cpu, reg32 esp, const ShadedQuad& quad)
     const Float sh = Float(float(Float(kScreenHeight(app))));
     const Float sw = Float(kScreenWidth(app));
     const Float perWidth = Float(kShadePerWidth(app)), perHeight = Float(kShadePerHeight(app));
-    const Float y1 = fpu.mul(fpu.mul(Float(quad.y[1]), sh), perHeight);
-    const Float x0 = fpu.mul(fpu.mul(Float(quad.x[0]), sw), perWidth);
-    const Float y0 = fpu.mul(fpu.mul(Float(quad.y[0]), sh), perHeight);
-    const Float x1 = fpu.mul(fpu.mul(Float(quad.x[1]), sw), perWidth);
-    const Float x2 = fpu.mul(fpu.mul(Float(quad.x[2]), sw), perWidth);
-    const Float y2 = fpu.mul(fpu.mul(Float(quad.y[2]), sh), perHeight);
-    const Float x3 = fpu.mul(fpu.mul(sw, Float(quad.x[3])), perWidth);
-    const Float y3 = fpu.mul(fpu.mul(Float(quad.y[3]), sh), perHeight);
+    const Float y1 = fp::mul(fp::mul(Float(quad.y[1]), sh), perHeight);
+    const Float x0 = fp::mul(fp::mul(Float(quad.x[0]), sw), perWidth);
+    const Float y0 = fp::mul(fp::mul(Float(quad.y[0]), sh), perHeight);
+    const Float x1 = fp::mul(fp::mul(Float(quad.x[1]), sw), perWidth);
+    const Float x2 = fp::mul(fp::mul(Float(quad.x[2]), sw), perWidth);
+    const Float y2 = fp::mul(fp::mul(Float(quad.y[2]), sh), perHeight);
+    const Float x3 = fp::mul(fp::mul(sw, Float(quad.x[3])), perWidth);
+    const Float y3 = fp::mul(fp::mul(Float(quad.y[3]), sh), perHeight);
     const Float xs[4] = {x0, x1, x2, x3}, ys[4] = {y0, y1, y2, y3};
     for (int32_t i = 0; i < 4; ++i)
     {

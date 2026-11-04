@@ -1640,7 +1640,7 @@ void loadHorizon(win32::WinApplication* app, x86::CPU& cpu)
             cpu.eax = cpu.edx;
         put(app, number, cpu.eax);
         fpu.push(i32(app, number));
-        fpu.st(0) = fpu.mul(fpu.st(0), f32(app, kHundredth));
+        fpu.st(0) = fp::mul(fpu.st(0), f32(app, kHundredth));
         cpu.eax = text;
         putF32(app, 0x55d268, fpu.pop());
         // The records.
@@ -1714,7 +1714,7 @@ void loadHorizon(win32::WinApplication* app, x86::CPU& cpu)
         {
             fpu.push(f32(app, 0x55d208));
             fpu.push(x86::Float(1.0));
-            fpu.st(1) = fpu.div(fpu.st(0), fpu.st(1));
+            fpu.st(1) = fp::div(fpu.st(0), fpu.st(1));
             fpu.pop();
             putF32(app, 0x55d208, fpu.pop());
         }
@@ -1738,13 +1738,13 @@ void loadHorizon(win32::WinApplication* app, x86::CPU& cpu)
         put(app, number, cpu.eax);
         fpu.push(i32(app, number));
         fpu.push(fpu.st(0));
-        fpu.st(0) = fpu.mul(fpu.st(0), f64(app, kHeightScale));
+        fpu.st(0) = fp::mul(fpu.st(0), f64(app, kHeightScale));
         cpu.eax = text;
         fpu.st(1) = fpu.st(0);
         fpu.pop();
         if (!byAddress(app, cpu, kChop))
             return;
-        put(app, 0x55d1fc, reg32(fpu.toInteger<sreg32>(fpu.pop())));
+        put(app, 0x55d1fc, reg32(fp::toInteger<sreg32>(fpu.pop())));
         // The sun's angle and distance: its place on the sky.
         if (!byAddress(app, cpu, kReadNumber))
             return;
@@ -1754,21 +1754,21 @@ void loadHorizon(win32::WinApplication* app, x86::CPU& cpu)
         put(app, number, cpu.eax);
         put(app, other, cpu.edx);
         fpu.push(i32(app, number));
-        fpu.st(0) = fpu.mul(fpu.st(0), f64(app, kSunAngleScale));
+        fpu.st(0) = fp::mul(fpu.st(0), f64(app, kSunAngleScale));
         fpu.push(i32(app, other));
-        fpu.st(0) = fpu.mul(fpu.st(0), f64(app, kSunDistanceScale));
+        fpu.st(0) = fp::mul(fpu.st(0), f64(app, kSunDistanceScale));
         std::swap(fpu.st(0), fpu.st(1));
         putF32(app, cpu.ebp - 0x38, fpu.pop());
         push(app, cpu, at(app, cpu.ebp - 0x38));
         putF32(app, cpu.ebp - 0x3c, fpu.pop());
         if (!byAddress(app, cpu, kCosine))
             return;
-        fpu.st(0) = fpu.mul(fpu.st(0), f32(app, cpu.ebp - 0x3c));
+        fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.ebp - 0x3c));
         push(app, cpu, at(app, cpu.ebp - 0x38));
         putF32(app, 0x55d20c, fpu.pop());
         if (!byAddress(app, cpu, kSine))
             return;
-        fpu.st(0) = fpu.mul(fpu.st(0), f32(app, cpu.ebp - 0x3c));
+        fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.ebp - 0x3c));
         cpu.eax = text;
         putF32(app, 0x55d210, fpu.pop());
         if (!byAddress(app, cpu, kReadNumber))
@@ -1796,7 +1796,7 @@ void loadHorizon(win32::WinApplication* app, x86::CPU& cpu)
         }
         put(app, 0x55d1f0, cpu.eax);
         fpu.push(i32(app, 0x55d1f0));
-        fpu.st(0) = fpu.mul(fpu.st(0), f32(app, kTurnScale));
+        fpu.st(0) = fp::mul(fpu.st(0), f32(app, kTurnScale));
         for (;;)
         {
             putF32(app, 0x55d1cc, fpu.pop());
@@ -1805,12 +1805,12 @@ void loadHorizon(win32::WinApplication* app, x86::CPU& cpu)
             if ((cpu.ah & 0x41) != 0)  // jbe: CF (C0) or ZF (C3)
                 break;
             fpu.push(x86::Float(1.0));
-            fpu.st(0) = fpu.add(fpu.st(0), f32(app, 0x55d1cc));
+            fpu.st(0) = fp::add(fpu.st(0), f32(app, 0x55d1cc));
         }
         while (sreg32(at(app, 0x55d1cc)) > 0x3f800000)
         {
             fpu.push(f32(app, 0x55d1cc));
-            fpu.st(0) = fpu.add(fpu.st(0), f32(app, kMinusOne));
+            fpu.st(0) = fp::add(fpu.st(0), f32(app, kMinusOne));
             putF32(app, 0x55d1cc, fpu.pop());
         }
         if (!readNumber(app, cpu))
@@ -1891,7 +1891,7 @@ void loadHorizon(win32::WinApplication* app, x86::CPU& cpu)
         put(app, number, cpu.eax);
         fpu.push(i32(app, number));
         cpu.eax = 0x3f000000;
-        fpu.st(0) = fpu.mul(fpu.st(0), f64(app, kFixedScale));
+        fpu.st(0) = fp::mul(fpu.st(0), f64(app, kFixedScale));
         put(app, 0x55d2ac, cpu.eax);
         cpu.eax = at(app, 0x55d1f0);
         putF32(app, 0x55d2a8, fpu.pop());
@@ -1900,7 +1900,7 @@ void loadHorizon(win32::WinApplication* app, x86::CPU& cpu)
         put(app, number, cpu.eax);
         cpu.ecx = 8;
         fpu.push(i32(app, number));
-        fpu.st(0) = fpu.mul(fpu.st(0), f64(app, kFixedScale));
+        fpu.st(0) = fp::mul(fpu.st(0), f64(app, kFixedScale));
         put(app, cpu.ebp - 0x30, cpu.ecx);
         cpu.eax = 0x55d2a8;
         putF32(app, 0x55d2b0, fpu.pop());

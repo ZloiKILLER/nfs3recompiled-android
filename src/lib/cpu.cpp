@@ -6,6 +6,7 @@
 namespace x86
 {
 
+#ifdef WITH_MMX
 void CPU::rdtsc()
 {
     // Emulate a 2GHz CPU
@@ -28,20 +29,16 @@ void CPU::cpuid()
         eax = 0x0510;
         ebx = 0x0000;
         ecx = 0x0000;
-        #ifdef WITH_MMX
-            edx = 0x008001BF; // Pentium MMX
-        #else
-            edx = 0x000001BF; // Pentium
-        #endif
+        edx = 0x008001BF; // Pentium MMX
         break;
     default:
         NFS2_ASSERT(false);     
     }
 }
+#endif
 
 }
 
-#ifndef WITH_PEDANTIC_FPU
 
 extern "C" void convert80x64(const x86::IEEEf80Data *fp80, double *fp64)
 {
@@ -188,4 +185,3 @@ extern "C" void convert64x80(const double *fp64, x86::IEEEf80Data *fp80)
     fp80->data5 = x86::sreg16(expSign);
 }
 
-#endif

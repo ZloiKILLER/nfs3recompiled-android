@@ -43,10 +43,6 @@
 // The copies through the x87's stack: its words compared too, and its
 // registers in use (none, after).
 {"ea::memmove", true, true, 0, true, kNoHeap, true},
-{"ea::fpuCopySwapped", true, true, 0, true, kNoHeap, true},
-{"ea::fpuCopy", true, true, 0, true, kNoHeap, true},
-{"ea::dwordCopySwapped", true, true, 0},
-{"ea::dwordCopy", true, true, 0},
 #elif defined(EA_ARGUMENTS)
 /* Where the memory cases keep their own: two classes' memory, a block marked
  * on its own, bytes copied (all of it, for the copies). */

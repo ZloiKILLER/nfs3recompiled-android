@@ -152,7 +152,7 @@ constexpr reg16 kBelow = 0x100, kEqual = 0x4000;  // C0 and C3: sahf's CF and ZF
 reg32 fistpPop(App* app, CPU& cpu, const Float& value)
 {
     cpu.esp -= 4;
-    put(app, cpu.esp, reg32(cpu.fpu.toInteger<sreg32>(value)));
+    put(app, cpu.esp, reg32(fp::toInteger<sreg32>(value)));
     return pop(app, cpu);
 }
 
@@ -162,8 +162,8 @@ reg32 fistpPop(App* app, CPU& cpu, const Float& value)
 bool sideBelow(App* app, CPU& cpu, reg32 a, reg32 b, reg32 px, reg32 pz)
 {
     x86::FPU& fpu = cpu.fpu;
-    const Float first = fpu.mul(fpu.sub(f32(app, a), f32(app, b)), fpu.sub(f32(app, pz), f32(app, b + 8)));
-    const Float second = fpu.mul(fpu.sub(f32(app, a + 8), f32(app, b + 8)), fpu.sub(f32(app, px), f32(app, b)));
+    const Float first = fp::mul(fp::sub(f32(app, a), f32(app, b)), fp::sub(f32(app, pz), f32(app, b + 8)));
+    const Float second = fp::mul(fp::sub(f32(app, a + 8), f32(app, b + 8)), fp::sub(f32(app, px), f32(app, b)));
     return (status(cpu, second, first) & kBelow) != 0;
 }
 
@@ -189,7 +189,7 @@ bool chopInto(App* app, CPU& cpu, const Float& value, reg32 slot)
     if (!byAddress(app, cpu, kChop))
         return false;
     const Float top = cpu.fpu.st(0);
-    put(app, slot, reg32(cpu.fpu.toInteger<sreg32>(top)));
+    put(app, slot, reg32(fp::toInteger<sreg32>(top)));
     cpu.fpu.count -= 1;
     return true;
 }
@@ -883,7 +883,7 @@ void quadToFixed(App* app, CPU& cpu)
     for (reg32 k = 0; k < 12; ++k)
     {
         cpu.eax = at(app, cpu.edx + 0x54 + 4 * (k / 3));
-        const Float value = cpu.fpu.mul(f32(app, cpu.eax + 4 * (k % 3)), f64(app, kFixed));
+        const Float value = fp::mul(f32(app, cpu.eax + 4 * (k % 3)), f64(app, kFixed));
         cpu.eax = fistpPop(app, cpu, value);
         put(app, cpu.edx + 0x24 + 4 * k, cpu.eax);
     }
@@ -1077,9 +1077,9 @@ void placeFloats(App* app, CPU& cpu, reg32 scale, Float& x, Float& z)
 {
     x86::FPU& fpu = cpu.fpu;
     const Float k = f64(app, scale);
-    x = fpu.mul(i32(app, cpu.eax), k);
+    x = fp::mul(i32(app, cpu.eax), k);
     const Float zi = i32(app, cpu.eax + 8);
-    z = fpu.mul(k, zi);
+    z = fp::mul(k, zi);
 }
 
 /* The steps' sum at b - 4 walked back, as the searches end when nothing is
@@ -1247,15 +1247,15 @@ void findQuad(App* app, CPU& cpu)
                 break;
             }
             cpu.eax = at(app, cpu.ecx + 0x54);
-            absInto(app, cpu, fpu.sub(f32(app, pz), f32(app, cpu.eax + 8)), b - 0x1c, b - 0x54);
+            absInto(app, cpu, fp::sub(f32(app, pz), f32(app, cpu.eax + 8)), b - 0x1c, b - 0x54);
             cpu.eax = at(app, cpu.ecx + 0x54);
-            absInto(app, cpu, fpu.sub(f32(app, px), f32(app, cpu.eax)), b - 0x14, b - 0x58);
+            absInto(app, cpu, fp::sub(f32(app, px), f32(app, cpu.eax)), b - 0x14, b - 0x58);
             {
                 const Float across = f32(app, b - 0x58);
                 const Float along = f32(app, pz);
                 cpu.eax = at(app, cpu.ecx + 0x5c);
-                const Float sum = fpu.add(across, f32(app, b - 0x54));
-                const Float dz = fpu.sub(along, f32(app, cpu.eax + 8));
+                const Float sum = fp::add(across, f32(app, b - 0x54));
+                const Float dz = fp::sub(along, f32(app, cpu.eax + 8));
                 putF32(app, b - 0x60, sum);
                 putF32(app, b - 0x28, dz);
                 if (status(cpu, Float(0.0), f32(app, b - 0x28)) & (kBelow | kEqual))
@@ -1267,9 +1267,9 @@ void findQuad(App* app, CPU& cpu)
                     putF32(app, b - 0x40, -f32(app, b - 0x28));
             }
             cpu.eax = at(app, cpu.ecx + 0x5c);
-            absInto(app, cpu, fpu.sub(f32(app, px), f32(app, cpu.eax)), b - 0x18, b - 0x48);
+            absInto(app, cpu, fp::sub(f32(app, px), f32(app, cpu.eax)), b - 0x18, b - 0x48);
             {
-                const Float sum = fpu.add(fpu.add(f32(app, b - 0x48), f32(app, b - 0x40)), f32(app, b - 0x60));
+                const Float sum = fp::add(fp::add(f32(app, b - 0x48), f32(app, b - 0x40)), f32(app, b - 0x60));
                 cpu.esi = at(app, b - 0x2c);
                 if (!chopInto(app, cpu, sum, b - 0x38))
                     return;
@@ -1347,15 +1347,15 @@ void findQuad(App* app, CPU& cpu)
                 break;
             }
             cpu.eax = at(app, cpu.ecx + 0x54);
-            absInto(app, cpu, fpu.sub(f32(app, pz), f32(app, cpu.eax + 8)), b - 0x10, b - 0x3c);
+            absInto(app, cpu, fp::sub(f32(app, pz), f32(app, cpu.eax + 8)), b - 0x10, b - 0x3c);
             cpu.eax = at(app, cpu.ecx + 0x54);
-            absInto(app, cpu, fpu.sub(f32(app, px), f32(app, cpu.eax)), b - 0x20, b - 0x50);
+            absInto(app, cpu, fp::sub(f32(app, px), f32(app, cpu.eax)), b - 0x20, b - 0x50);
             {
                 const Float across = f32(app, b - 0x50);
                 const Float along = f32(app, pz);
                 cpu.eax = at(app, cpu.ecx + 0x5c);
-                const Float sum = fpu.add(across, f32(app, b - 0x3c));
-                const Float dz = fpu.sub(along, f32(app, cpu.eax + 8));
+                const Float sum = fp::add(across, f32(app, b - 0x3c));
+                const Float dz = fp::sub(along, f32(app, cpu.eax + 8));
                 putF32(app, b - 0x5c, sum);
                 putF32(app, b - 0x24, dz);
                 if (status(cpu, Float(0.0), f32(app, b - 0x24)) & (kBelow | kEqual))
@@ -1367,9 +1367,9 @@ void findQuad(App* app, CPU& cpu)
                     putF32(app, b - 0x44, -f32(app, b - 0x24));
             }
             cpu.eax = at(app, cpu.ecx + 0x5c);
-            absInto(app, cpu, fpu.sub(f32(app, px), f32(app, cpu.eax)), b - 0xc, b - 0x4c);
+            absInto(app, cpu, fp::sub(f32(app, px), f32(app, cpu.eax)), b - 0xc, b - 0x4c);
             {
-                const Float sum = fpu.add(fpu.add(f32(app, b - 0x4c), f32(app, b - 0x44)), f32(app, b - 0x5c));
+                const Float sum = fp::add(fp::add(f32(app, b - 0x4c), f32(app, b - 0x44)), f32(app, b - 0x5c));
                 cpu.edx = at(app, b - 0x34);
                 if (!chopInto(app, cpu, sum, b - 0x30))
                     return;
@@ -2198,7 +2198,7 @@ void findMatchingQuad(App* app, CPU& cpu)
                                         cpu.edi = at(app, cpu.ebx + cpu.ecx * 4 + 0x54);
                                         cpu.eax = at(app, cpu.edx + cpu.esi * 4 + 0x54);
                                     }
-                                    absInto(app, cpu, fpu.sub(f32(app, cpu.edi + 4 * k), f32(app, cpu.eax + 4 * k)),
+                                    absInto(app, cpu, fp::sub(f32(app, cpu.edi + 4 * k), f32(app, cpu.eax + 4 * k)),
                                             slots[k][0], slots[k][1]);
                                     within = (status(cpu, f32(app, slots[k][1]), f64(app, kNear)) & kBelow) != 0;
                                 }
@@ -2993,12 +2993,12 @@ void snapToTrack(App* app, CPU& cpu)
     x86::FPU& fpu = cpu.fpu;
     put(app, b + 0x7a, cpu.esi);
     cpu.ecx = cpu.eax;
-    cpu.eax = fistpPop(app, cpu, fpu.mul(f32(app, cpu.eax), f64(app, kFixedToo)));
+    cpu.eax = fistpPop(app, cpu, fp::mul(f32(app, cpu.eax), f64(app, kFixedToo)));
     put(app, b + 0x6e, cpu.eax);
-    cpu.eax = fistpPop(app, cpu, fpu.mul(f32(app, cpu.ecx + 4), f64(app, kFixedToo)));
+    cpu.eax = fistpPop(app, cpu, fp::mul(f32(app, cpu.ecx + 4), f64(app, kFixedToo)));
     put(app, b + 0x72, cpu.eax);
     {
-        const Float z = fpu.mul(f32(app, cpu.ecx + 8), f64(app, kFixedToo));
+        const Float z = fp::mul(f32(app, cpu.ecx + 8), f64(app, kFixedToo));
         cpu.esi = b - 0xa;
         cpu.eax = fistpPop(app, cpu, z);
     }
@@ -3010,13 +3010,13 @@ void snapToTrack(App* app, CPU& cpu)
         const Float k = f64(app, kUnfixedThree);
         cpu.eax = at(app, b + 0x6e);
         put(app, b + 0x7e, cpu.eax);
-        putF32(app, cpu.ecx, fpu.mul(i32(app, b + 0x7e), k));
+        putF32(app, cpu.ecx, fp::mul(i32(app, b + 0x7e), k));
         cpu.eax = at(app, b + 0x72);
         put(app, b + 0x7e, cpu.eax);
-        putF32(app, cpu.ecx + 4, fpu.mul(i32(app, b + 0x7e), k));
+        putF32(app, cpu.ecx + 4, fp::mul(i32(app, b + 0x7e), k));
         cpu.eax = at(app, b + 0x76);
         put(app, b + 0x7e, cpu.eax);
-        const Float z = fpu.mul(k, i32(app, b + 0x7e));
+        const Float z = fp::mul(k, i32(app, b + 0x7e));
         cpu.edi = at(app, b + 0x7a);
         cpu.esi = b - 0xa;
         putF32(app, cpu.ecx + 8, z);
@@ -3371,10 +3371,10 @@ void inTunnel(App* app, CPU& cpu)
     cpu.esi += cpu.edx;
     cpu.eax = at(app, kNodes);
     cpu.esi <<= 2;
-    putF32(app, b - 0x1c, fpu.mul(i32(app, cpu.esi + cpu.eax), f64(app, kUnfixedFour)));
-    putF32(app, b - 0x18, fpu.mul(i32(app, cpu.esi + cpu.eax + 4), f64(app, kUnfixedFour)));
+    putF32(app, b - 0x1c, fp::mul(i32(app, cpu.esi + cpu.eax), f64(app, kUnfixedFour)));
+    putF32(app, b - 0x18, fp::mul(i32(app, cpu.esi + cpu.eax + 4), f64(app, kUnfixedFour)));
     {
-        const Float z = fpu.mul(i32(app, cpu.esi + cpu.eax + 8), f64(app, kUnfixedFour));
+        const Float z = fp::mul(i32(app, cpu.esi + cpu.eax + 8), f64(app, kUnfixedFour));
         cpu.ecx = b - 0x10;
         cpu.ebx = b - 0x1c;
         cpu.edx = b + 0x18;
@@ -3388,18 +3388,18 @@ void inTunnel(App* app, CPU& cpu)
     cpu.edx = reg32(s(cpu.edx) >> 0x18);
     cpu.edx <<= 9;
     put(app, b - 4, cpu.edx);
-    putF32(app, b - 0x28, fpu.mul(i32(app, b - 4), f64(app, kUnfixedFour)));
+    putF32(app, b - 0x28, fp::mul(i32(app, b - 4), f64(app, kUnfixedFour)));
     cpu.edx = at(app, cpu.esi + cpu.eax + 0x16);
     cpu.edx = reg32(s(cpu.edx) >> 0x18);
     cpu.edx <<= 9;
     put(app, b - 4, cpu.edx);
-    putF32(app, b - 0x24, fpu.mul(i32(app, b - 4), f64(app, kUnfixedFour)));
+    putF32(app, b - 0x24, fp::mul(i32(app, b - 4), f64(app, kUnfixedFour)));
     cpu.eax = at(app, cpu.esi + cpu.eax + 0x17);
     cpu.eax = reg32(s(cpu.eax) >> 0x18);
     cpu.eax <<= 9;
     put(app, b - 4, cpu.eax);
     {
-        const Float z = fpu.mul(i32(app, b - 4), f64(app, kUnfixedFour));
+        const Float z = fp::mul(i32(app, b - 4), f64(app, kUnfixedFour));
         cpu.edx = b - 0x10;
         cpu.eax = b - 0x28;
         putF32(app, b - 0x20, z);
@@ -3467,7 +3467,7 @@ void carFacingWay(App* app, CPU& cpu)
     cpu.eax = at(app, cpu.eax + 4);
     if (!byAddress(app, cpu, kCarNode))
         return;
-    const auto fixed = [&](reg32 at) { return fpu.mul(f32(app, cpu.edx + at), f64(app, kFixedThree)); };
+    const auto fixed = [&](reg32 at) { return fp::mul(f32(app, cpu.edx + at), f64(app, kFixedThree)); };
     {
         const Float v = fixed(8);
         cpu.ecx = cpu.eax;
@@ -3654,7 +3654,7 @@ void carSectionKind(App* app, CPU& cpu)
     }
     else
         putF32(app, b - 8, -f32(app, cpu.ecx + 0xac));
-    cpu.eax = fistpPop(app, cpu, fpu.mul(fpu.add(f32(app, b - 4), f32(app, b - 8)), f64(app, kFixedFive)));
+    cpu.eax = fistpPop(app, cpu, fp::mul(fp::add(f32(app, b - 4), f32(app, b - 8)), f64(app, kFixedFive)));
     cpu.eax = 0;
     if (at(app, cpu.edx + 0x998) != 0)
         cpu.eax = 0u - cpu.eax;

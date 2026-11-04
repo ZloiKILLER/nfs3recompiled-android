@@ -211,7 +211,7 @@ NAMESPACE = "namespace nfs3hp\n{\n"
 # src/nfs3hp/port_text.cpp: port::text::queueQuad, sub_49bd30);
 # tools/game_checks/generate.py makes it to the game's code the native is held
 # against.
-NATIVE_SITES = {0x481f86, 0x49bd30}
+NATIVE_SITES = {0x481f86, 0x49bd30, 0x45bcc3, 0x45bd0c}
 
 
 def apply(root):

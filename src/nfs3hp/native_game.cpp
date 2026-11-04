@@ -929,4 +929,27 @@ void fillZero(win32::WinApplication* app, x86::CPU& cpu)
     cpu.esp += 4;
 }
 
+
+/* The game asked the processor what it could do and timed it, to choose what to
+ * run on it.  No phone needs that asked: what is left of the answers is what the
+ * sound's set-up and the memmove read, MMX's routines (native_mix.cpp). */
+namespace removed
+{
+
+void processorChecked(win32::WinApplication* app, x86::CPU& cpu)
+{
+    app->getMemory<x86::reg32>(0x5643b4) = 1;  // MMX's set of the mixing's routines
+    app->getMemory<x86::reg32>(0x5643ac) = 1;
+    app->getMemory<x86::reg32>(0x5643bc) = 0;  // no timestamp counter to read
+    cpu.esp += 4;
+}
+
+void processorSpeed(win32::WinApplication* app, x86::CPU& cpu)
+{
+    NFS2_USE(app);
+    cpu.esp += 4;
+}
+
+}  // namespace removed
+
 }  // namespace nfs3hp

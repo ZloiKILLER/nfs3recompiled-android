@@ -99,7 +99,7 @@ case kHudVertexPtrs:
 {0x49bf40, "vertices taken", kWatcom, 3, 0, kEax, -1, 0, kHudVertices},
 {0x4896f0, "an ordinal suffix", kWatcom, 1, 0, kEax, -1, 0, kHudSuffix},
 {0x4ea920, "a square root", kStdcall, 0, 1, kEax, -1, 0, kHudRoot},
-{0x4e8f28, "an angle", kWatcom, 3, 0, kEax, -1, 0, kNothing},
+{0x4e8f28, "an angle", kWatcom, 2, 0, kEax, -1, 0, kNothing},
 {0x485c20, "floats swapped", kWatcom, 2, 0, kEax, -1, 0, kNothing},
 {0x4870c0, "a rectangle's quad", kWatcom, 4, 0, kEax, -1, 0, kNothing},
 {0x486f70, "a quad from the stack", kStdcall, 4, 10, kEax, -1, 0, kNothing},

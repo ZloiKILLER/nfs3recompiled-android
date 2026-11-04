@@ -7,8 +7,8 @@ gets wrong; one that gets none wrong in `cases` (5000) is missed.
 
 Builds game_checks again and again, each time with one mistake put into a copy
 of src/nfs3hp/native_game.cpp, or for a watcom:: function native_watcom.cpp or
-native_watcom_heap.cpp, whichever has the text it changes, or for an mmx::
-one native_mmx.cpp -- an argument off, a register not kept, a check left out,
+native_watcom_heap.cpp, whichever has the text it changes, or for an mix::
+one native_mix.cpp -- an argument off, a register not kept, a check left out,
 a byte compared signed -- and expects it to fail.
 Only the mutant is compiled; the rest is linked from what
 tools/game_checks/run.sh built, so run that first.
@@ -21,7 +21,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
-NATIVES = ("native_game.cpp", "native_watcom.cpp", "native_watcom_heap.cpp", "native_mmx.cpp")
+NATIVES = ("native_game.cpp", "native_watcom.cpp", "native_watcom_heap.cpp", "native_mix.cpp")
 
 # (the function it is checked on, what, [(the text, what it becomes), ...][, the FPU])
 MUTATIONS = [
@@ -82,15 +82,6 @@ MUTATIONS = [
        "    put(app, arguments, esp + 4);\n    cpu.esp = arguments;\n    if (!call(app, cpu, Message,")]),
     ("abortmessagewrapper", "the line of the Error off",
      [("kAbortmessagewrapperName, 0x92,", "kAbortmessagewrapperName, 0x93,")]),
-    # Through the x87 a signalling NaN comes out quiet; the double build's
-    # compiler makes the float a double and back again a copy, so these two
-    # are the 80-bit build's to catch.
-    ("iSNDconvertsample", "one channel made two the other way round",
-     [("            app->getMemory<float>(to + 4) = float(x86::Float(app->getMemory<float>(from)));\n            put(app, to, bits);",
-       "            app->getMemory<float>(to) = float(x86::Float(app->getMemory<float>(from)));\n            put(app, to + 4, bits);")],
-     "80-bit"),
-    ("iSNDconvertsample", "a sample copied, not through the x87",
-     [("float(x86::Float(app->getMemory<float>(from)))", "app->getMemory<float>(from)")], "80-bit"),
     ("iSNDconvertsample", "the frames from first at four bytes a frame",
      [("        buffer += argument(4) << 3;\n", "        buffer += argument(4) << 2;\n")]),
     ("iSNDconvertsample", "XA's two channels with source and buffer swapped",
@@ -259,8 +250,6 @@ MUTATIONS = [
      [("    const x86::reg32 tm = data + 0x14;", "    const x86::reg32 tm = data + 0x18;")]),
     ("watcom::localtime_", "daylight saving's hour not taken",
      [("    if (dst != 0)\n        breakTime(", "    if (false)\n        breakTime(")]),
-    ("watcom::IF_DATAN2", "fpatan without the fxch",
-     [("    std::swap(cpu.fpu.st(0), cpu.fpu.st(1));\n    if (byte(app, kChipBug) & 1)", "    if (byte(app, kChipBug) & 1)")]),
     ("watcom::floor", "negatives rounded up",
      [("    if (!(cpu.fpu.status.word & (kC0 | kC3)))\n        storeDouble(app, whole, cpu.fpu.add(",
        "    if (false)\n        storeDouble(app, whole, cpu.fpu.add(")]),
@@ -677,111 +666,13 @@ MUTATIONS = [
        "    if (false)\n    {\n        result = 0xffffffff;\n        return true;")]),
     ("watcom::ReleaseNHeap", "the one after still pointing at it",
      [("        put(app, after + 4, before);\n    return true;\n}", "    return true;\n}")]),
-    # The game's MMX code (native_mmx.cpp).
-    ("mmx::copySwapped", "not swapped", [("    std::swap(cpu.eax, cpu.edx);\n", "")]),
-    ("mmx::copy", "a byte to align by copied when there is none",
-     [("if ((to & 1) && !less(left, 1))", "if (to & 1)")]),
-    ("mmx::copy", "the dword to align by asked for unsigned", [("if ((to & 4) && !less(left, 4))", "if ((to & 4) && left >= 4)")]),
-    ("mmx::copy", "a block's later dwords read after its first are written",
-     [("put64(app, to + block, mm[block == 0 ? 0 : 3 + block / 0x20]);", "put64(app, to + block, at64(app, from + block));")]),
-    ("mmx::copy", "32 bytes at a time while more than 32 are left",
-     [("    left += 0x60;\n    while (!negative(left))", "    left += 0x60;\n    while (x86::sreg32(left) > 0)")]),
-    ("mmx::copy", "the last word asked for signed", [("        if (left >= 2)\n", "        if (x86::sreg32(left) >= 2)\n")]),
-    ("mmx::copy", "ebx not where it got to", [("    cpu.ebx = left;\n", "")]),
-    ("mmx::copy", "8 bytes at a time by mm1",
-     [("        mm[0] = at64(app, from);\n        put64(app, to, mm[0]);", "        mm[1] = at64(app, from);\n        put64(app, to, mm[1]);")]),
-    ("mmx::addMono8", "mm6's low bytes not under the samples",
-     [("mm[6] = op::punpcklbw(mm[6], mm[5]);", "mm[6] = op::punpcklbw(0, mm[5]);")]),
-    ("mmx::addMono8", "a count below 4 taken unsigned",
-     [("    const bool tail = less(count, x86::sreg32(block));", "    const bool tail = count < block;")]),
-    ("mmx::addMono8", "the tail's count not of what is left",
-     [("            count = 0 - (count + 4);\n            x86::reg32 eax = 0;", "            count = 0 - count;\n            x86::reg32 eax = 0;")]),
-    ("mmx::addStereo8", "the low frames from the high bytes",
-     [("mm[4] = op::punpcklbw(mm[4], mm[3]);\n                mm[5] = op::punpckhbw(mm[5], mm[3]);",
-       "mm[4] = op::punpckhbw(mm[4], mm[3]);\n                mm[5] = op::punpcklbw(mm[5], mm[3]);")]),
-    ("mmx::addStereo8", "the tail's left and right swapped",
-     [("eax = (eax & 0xffffff00) | byte(app, source + 1);\n                eax <<= 24;",
-       "eax = (eax & 0xffffff00) | byte(app, source);\n                eax <<= 24;")]),
-    ("mmx::addMono16", "the tail's sample sign-extended",
-     [("eax = (eax & 0xffff0000) | at16(app, source);", "eax = x86::reg32(x86::sreg32(x86::sreg16(at16(app, source))));")]),
-    ("mmx::addStereo16", "the loop once more on a whole block", [("more = greater(count, 8);", "more = greater(count, 7);")]),
-    ("mmx::addStereo16", "straight to the tail by fours",
-     [("bool tail = straightToTail(count, 8);", "bool tail = straightToTail(count, 4);")]),
-    ("mmx::addStereo16", "each frame of the tail the next's",
-     [("mm[1] = op::movd(at(app, source));\n                mm[1] = op::pmulhw(mm[1], mm[0]);",
-       "mm[1] = op::movd(at(app, source + 4));\n                mm[1] = op::pmulhw(mm[1], mm[0]);")]),
-    ("mmx::outputMono8", "signed out", [("eax = x86::reg32(mm[0]) ^ 0x8000;", "eax = x86::reg32(mm[0]);")]),
-    ("mmx::outputMono8", "eax's high word not carried on",
-     [("eax = x86::reg32(mm[0]) ^ 0x8000;", "eax = (x86::reg32(mm[0]) ^ 0x8000) & 0xffff;")]),
-    ("mmx::outputMono16", "a frame on",
-     [("put16(app, target + count * 2 - 2, x86::reg16(eax));", "put16(app, target + count * 2, x86::reg16(eax));")]),
-    ("mmx::outputStereo8", "packed the other way round",
-     [("mm[i] = op::packuswb(mm[i], mm[i - 1]);", "mm[i] = op::packuswb(mm[i - 1], mm[i]);")]),
-    ("mmx::outputStereo8", "not doubled",
-     [("            for (unsigned i = 0; i < 8; ++i)\n                mm[i] = op::paddsw(mm[i], mm[i]);\n            for (unsigned i = 0; i < 8; ++i)\n                mm[i] = op::psrlw(mm[i], 8);",
-       "            for (unsigned i = 0; i < 8; ++i)\n                mm[i] = op::psrlw(mm[i], 8);")]),
-    ("mmx::outputStereo8", "stored a block on",
-     [("put64(app, count + target - 8 * ((i + 1) / 2), mm[i]);", "put64(app, count + target - 8 * ((i - 1) / 2), mm[i]);")]),
-    ("mmx::outputStereo16", "a block more on a whole one", [("more = greater(count, 0x40);", "more = greater(count, 0x3f);")]),
-    ("mmx::outputStereo16", "mm7 not given back", [("        cpu.mmx.mm7 = x86::from_reg64(mm[7]);\n", "")]),
-    ("mmx::clear", "MMX not emptied", [("            mm[i] = 0;  // emms\n", "            ;\n")]),
-    ("mmx::clear", "a dword short", [("        while (greater(count, 0))\n", "        while (greater(count, 1))\n")]),
-    ("mmx::clear", "the blocks' 15 not given back", [("        count += 0xf;\n", "")]),
-    ("mmx::clear", "the arguments from the return address on",
-     [("    return at(app, cpu.esp + 4 + 4 * i);", "    return at(app, cpu.esp + 4 * i);")]),
-    ("mmx::emms", "not emptied", [("    cpu.mmx.init();\n", "")]),
-    ("mmx::emms", "the return address left", [("    cpu.mmx.init();\n    cpu.esp += 4;", "    cpu.mmx.init();")]),
-    ("mmx::interpolateMono8", "the step's rate of the step, not one less",
-     [("        mm[4] = op::movd(s.stepFraction - 1);\n        mm[5] = op::movd(s.stepFraction);\n        mm[4] = op::pxor(op::por(op::psrld(mm[4], 16), mm[5]), mm[3]);\n        do\n        {\n            mm[0] = op::punpcklbw(",
-       "        mm[4] = op::movd(s.stepFraction);\n        mm[5] = op::movd(s.stepFraction);\n        mm[4] = op::pxor(op::por(op::psrld(mm[4], 16), mm[5]), mm[3]);\n        do\n        {\n            mm[0] = op::punpcklbw(")]),
-    ("mmx::interpolateMono8", "mm0's low bytes not under the samples",
-     [("mm[0] = op::punpcklbw(mm[0], op::movd(at(app, s.whole + s.source)));",
-       "mm[0] = op::punpcklbw(0, op::movd(at(app, s.whole + s.source)));")]),
-    ("mmx::interpolateMono8", "a frame more", [("        const bool more = greater(count, 1);", "        const bool more = greater(count, 0);")]),
-    ("mmx::interpolateMono16", "the fraction's carry lost",
-     [("    const x86::reg32 carry = sum < fraction ? 1 : 0;", "    const x86::reg32 carry = 0;")]),
-    ("mmx::interpolateMono16", "the rate not halved",
-     [("mm[0] = op::movd(at(app, s.source + s.whole * 2));\n            mm[2] = op::psrlw(mm[1], 1);",
-       "mm[0] = op::movd(at(app, s.source + s.whole * 2));\n            mm[2] = mm[1];")]),
-    ("mmx::interpolateStereo8", "saturated as words, not bytes", [("            mm[0] = op::packsswb(mm[0], mm[1]);\n", "")]),
-    ("mmx::interpolateStereo8", "shifted logically", [("mm[0] = op::psrad(mm[0], 0x17);", "mm[0] = op::psrld(mm[0], 0x17);")]),
-    ("mmx::interpolateStereo16", "the positions written back the other way round",
-     [("        put(app, argument(app, cpu, 4), fraction);\n        put(app, argument(app, cpu, 3), whole);",
-       "        put(app, argument(app, cpu, 4), whole);\n        put(app, argument(app, cpu, 3), fraction);")]),
-    ("mmx::interpolateStereo16", "the right frame a frame on",
-     [("op::movd(at(app, s.source + s.whole * 4 + 4))", "op::movd(at(app, s.source + s.whole * 4 + 8))")]),
-    ("mmx::xaMono", "a block taken as 14 samples",
-     [("put(app, state, at(app, state) - 0x1c);\n            eax >>= 4;\n            target += 0x38;",
-       "put(app, state, at(app, state) - 0xe);\n            eax >>= 4;\n            target += 0x38;")]),
-    ("mmx::xaMono", "the second filter the first's",
-     [("mm[2] = op::movd(at(app, eax * 4 + kFilterSecond));\n            eax = (eax & 0xffffff00) | byte(app, source);",
-       "mm[2] = op::movd(at(app, eax * 4 + kFilterFirst));\n            eax = (eax & 0xffffff00) | byte(app, source);")]),
-    ("mmx::xaMono", "the shifts' rows of 16 bytes", [("            eax <<= 6;\n            bool more;", "            eax <<= 4;\n            bool more;")]),
-    ("mmx::xaMono", "the history not kept",
-     [("        put(app, state + 4, x86::reg32(mm[3]));\n        put(app, state + 0xc, target);", "        put(app, state + 0xc, target);")]),
-    ("mmx::xaMono", "the low nibble first",
-     [("edx = (edx & 0xffffff00) | x86::reg8(byte(app, ecx + source) >> 4);\n                mm[6] = op::pmaddwd(mm[3], mm[1]);",
-       "edx = (edx & 0xffffff00) | (byte(app, ecx + source) & 0xf);\n                mm[6] = op::pmaddwd(mm[3], mm[1]);")]),
-    ("mmx::xaMono", "a block's last pair left out", [("more = less(ecx, -1);", "more = less(ecx, -2);")]),
-    ("mmx::xaStereo", "the frames' middle words not swapped",
-     [("                put16(app, frames + 2, third);\n                put16(app, frames + 4, second);\n", "")]),
-    ("mmx::xaStereo", "the right's nibbles by the left's shift",
-     [("mm[0] = op::punpckldq(mm[0], op::movd(at(app, right + edx * 4 + kNibbles)));\n                mm[3] = op::pand(mm[3], mm[5]);",
-       "mm[0] = op::punpckldq(mm[0], op::movd(at(app, eax + edx * 4 + kNibbles)));\n                mm[3] = op::pand(mm[3], mm[5]);")]),
-    ("mmx::xaStereo", "the right's history not kept",
-     [("        mm[3] = op::psrlq(mm[3], 0x20);\n        put(app, state + 8, x86::reg32(mm[3]));", "        put(app, state + 8, x86::reg32(mm[3]));")]),
-    ("mmx::xaStereo", "the second sample shifted the other way",
-     [("mm[6] = op::pslld(mm[6], 8);\n                mm[6] = op::pand(mm[6], mm[5]);", "mm[6] = op::psrld(mm[6], 8);\n                mm[6] = op::pand(mm[6], mm[5]);")]),
-    ("mmx::xaStereo", "the right's filter the left's",
-     [("mm[1] = op::punpckldq(mm[1], op::movd(at(app, edx * 4 + kFilterFirst)));",
-       "mm[1] = op::punpckldq(mm[1], op::movd(at(app, eax * 4 + kFilterFirst)));")]),
 ]
 
 
 def main():
     cases = sys.argv[1] if len(sys.argv) > 1 else "5000"
     build = Path(os.environ.get("BUILD", HERE / "build"))
-    if not any((build / fpu / "base").glob("*.o") for fpu in ("double", "80-bit")):
+    if not any((build / "double" / "base").glob("*.o")):
         raise SystemExit("run tools/game_checks/run.sh first")
     sources = {name: (ROOT / "src/nfs3hp" / name).read_text() for name in NATIVES}
     missed = 0
@@ -790,10 +681,10 @@ def main():
             fpu = fpu[0] if fpu else "double"
             base = sorted((build / fpu / "base").glob("*.o"))
             # native_game.cpp, for the runtime's whichever of its two has the
-            # text, native_mmx.cpp for MMX's.
+            # text, native_mix.cpp for MMX's.
             if function.startswith("watcom::"):
                 names = [name for name in NATIVES[1:3] if edits[0][0] in sources[name]]
-            elif function.startswith("mmx::"):
+            elif function.startswith("mix::"):
                 names = [NATIVES[3]]
             else:
                 names = [NATIVES[0]]
@@ -812,7 +703,6 @@ def main():
             exe = Path(tmp) / "mutant"
             # Only the mutant is compiled; the rest is run.sh's, linked as it is.
             subprocess.run(["c++", "-std=c++17", "-O1", "-fno-strict-aliasing", "-DWITH_MMX", "-w"]
-                           + (["-DWITH_PEDANTIC_FPU"] if fpu == "80-bit" else [])
                            + ["-I" + str(build / "generated"), "-I" + str(ROOT / "sdl3/include"),
                               "-I" + str(ROOT / "include"),
                               "-I" + str(ROOT / "src/nfs3hp"), "-c", str(source), "-o", str(obj)], check=True)
@@ -821,7 +711,7 @@ def main():
             caught = result.returncode != 0
             missed += 0 if caught else 1
             print("%-8s %s: %s%s" % ("caught" if caught else "MISSED", function, what,
-                                     " (80-bit)" if fpu == "80-bit" else ""), flush=True)
+                                     ""), flush=True)
     print("%d of %d caught" % (len(MUTATIONS) - missed, len(MUTATIONS)))
     sys.exit(1 if missed else 0)
 

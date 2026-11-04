@@ -56,7 +56,7 @@
  * equal the C0 and C3 bits of it).  The two switches go by the targets
  * nfs3.exe's tables hold (0x404d14, 0x405714).  Every other function of the
  * game's is called by address, the two of the AI that the port has as
- * decompiled C++ (0x4064f0, 0x4070c0, native_ai.cpp) among them. */
+ * decompiled C++ (0x4064f0, 0x4070c0, native_frontend_sima.cpp) among them. */
 namespace nfs3hp
 {
 namespace aidrive
@@ -99,7 +99,7 @@ constexpr reg32 kSeed = 0x554f10, kProduct = 0x554f14, kMultiplier = 0x554f18;
 // speed's damping, the force and turn handed to the step (three floats).
 constexpr reg32 kStep = 0x56ec58, kSubsteps = 0x56ec78, kHeadingError = 0x56ec60, kDamping = 0x56ec68;
 constexpr reg32 kPush = 0x56ec6c, kPushY = 0x56ec70, kPushZ = 0x56ec74;
-// What is called by address: the opponents' pull and heading (native_ai.cpp),
+// What is called by address: the opponents' pull and heading (native_frontend_sima.cpp),
 // the racestart's car put back and grid place, the track's place found again,
 // the cops' sounds, the camera's target car, the car at rest settled, chop,
 // the fill, the distance of two cars, vectors, the slices' gaps, the speeds'
@@ -211,29 +211,29 @@ void fxch(CPU& cpu, int i)
 
 // st(0) op= m (fadd m32 and the like; fadd st(i) and fmul st(i) with st(i)
 // as m); fsubr, fdivr the other way: st(0) = m op st(0).
-void fadd(CPU& cpu, const Float& m) { cpu.fpu.st(0) = cpu.fpu.add(cpu.fpu.st(0), m); }
-void fsub(CPU& cpu, const Float& m) { cpu.fpu.st(0) = cpu.fpu.sub(cpu.fpu.st(0), m); }
-void fmul(CPU& cpu, const Float& m) { cpu.fpu.st(0) = cpu.fpu.mul(cpu.fpu.st(0), m); }
-void fdiv(CPU& cpu, const Float& m) { cpu.fpu.st(0) = cpu.fpu.div(cpu.fpu.st(0), m); }
-void fsubr(CPU& cpu, const Float& m) { cpu.fpu.st(0) = cpu.fpu.sub(m, cpu.fpu.st(0)); }
-void fdivr(CPU& cpu, const Float& m) { cpu.fpu.st(0) = cpu.fpu.div(m, cpu.fpu.st(0)); }
+void fadd(CPU& cpu, const Float& m) { cpu.fpu.st(0) = fp::add(cpu.fpu.st(0), m); }
+void fsub(CPU& cpu, const Float& m) { cpu.fpu.st(0) = fp::sub(cpu.fpu.st(0), m); }
+void fmul(CPU& cpu, const Float& m) { cpu.fpu.st(0) = fp::mul(cpu.fpu.st(0), m); }
+void fdiv(CPU& cpu, const Float& m) { cpu.fpu.st(0) = fp::div(cpu.fpu.st(0), m); }
+void fsubr(CPU& cpu, const Float& m) { cpu.fpu.st(0) = fp::sub(m, cpu.fpu.st(0)); }
+void fdivr(CPU& cpu, const Float& m) { cpu.fpu.st(0) = fp::div(m, cpu.fpu.st(0)); }
 
 // st(i) op= st(0), popped (faddp st(i) and the like).
 void faddp(CPU& cpu, int i)
 {
-    cpu.fpu.st(i) = cpu.fpu.add(cpu.fpu.st(i), cpu.fpu.st(0));
+    cpu.fpu.st(i) = fp::add(cpu.fpu.st(i), cpu.fpu.st(0));
     cpu.fpu.pop();
 }
 
 void fsubp(CPU& cpu, int i)
 {
-    cpu.fpu.st(i) = cpu.fpu.sub(cpu.fpu.st(i), cpu.fpu.st(0));
+    cpu.fpu.st(i) = fp::sub(cpu.fpu.st(i), cpu.fpu.st(0));
     cpu.fpu.pop();
 }
 
 void fmulp(CPU& cpu, int i)
 {
-    cpu.fpu.st(i) = cpu.fpu.mul(cpu.fpu.st(i), cpu.fpu.st(0));
+    cpu.fpu.st(i) = fp::mul(cpu.fpu.st(i), cpu.fpu.st(0));
     cpu.fpu.pop();
 }
 
@@ -242,7 +242,7 @@ void fchs(CPU& cpu) { cpu.fpu.st(0) = -cpu.fpu.st(0); }
 /* fistp dword [a]. */
 void fistp(App* app, CPU& cpu, reg32 a)
 {
-    put(app, a, reg32(cpu.fpu.toInteger<sreg32>(cpu.fpu.st(0))));
+    put(app, a, reg32(fp::toInteger<sreg32>(cpu.fpu.st(0))));
     cpu.fpu.pop();
 }
 
@@ -3038,7 +3038,7 @@ void transform(App* app, CPU& cpu)
         for (reg32 j = 0; j < 3; ++j)
         {
             fpu.push(f32(app, cpu.eax + 4 * row));
-            fpu.st(0) = fpu.mul(fpu.st(0), f32(app, cpu.edx + 0xc * row + 4 * j));
+            fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.edx + 0xc * row + 4 * j));
         }
         fxch(cpu, 2);
         if (row != 0)
@@ -3630,14 +3630,14 @@ void steerReversing(App* app, CPU& cpu)
         fld(cpu, Float(1.0));
         fadd(cpu, f64(app, L(-0x22)));
         fmul(cpu, f64(app, 0x536374));
-        cpu.fpu.st(0) = cpu.fpu.sin(cpu.fpu.st(0));
+        cpu.fpu.st(0) = fp::sin(cpu.fpu.st(0));
         fchs(cpu);
     }
     else
     {
         fld(cpu, f64(app, L(-0x22)));
         fmul(cpu, f64(app, 0x536374));
-        cpu.fpu.st(0) = cpu.fpu.sin(cpu.fpu.st(0));
+        cpu.fpu.st(0) = fp::sin(cpu.fpu.st(0));
     }
     fmul(cpu, f32(app, cpu.edx + 0x4f4));
     fstp(app, cpu, L(0x5a));
@@ -4005,7 +4005,7 @@ void steerOffRoad(App* app, CPU& cpu)
                         fxch(cpu, 1);
                         fmul(cpu, cpu.fpu.st(1));
                         fld(cpu, f32(app, L(0x66)));
-                        cpu.fpu.st(2) = cpu.fpu.mul(cpu.fpu.st(2), cpu.fpu.st(0));
+                        cpu.fpu.st(2) = fp::mul(cpu.fpu.st(2), cpu.fpu.st(0));
                         fxch(cpu, 1);
                     }
                     else

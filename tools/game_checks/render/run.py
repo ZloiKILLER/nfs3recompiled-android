@@ -10,9 +10,8 @@ NDK's clang-cl as tools/game_checks/windows/winbuild.py builds game_checks,
 into build/ here, and run function by function and mode by mode, in parallel
 (RCHECK_JOBS, the processors by default).  A case that runs away (over 4 s,
 too many pages touched, a host fault) is counted as one, and the run goes on
-after it.  The control words default to 7f (a race at single precision), 37f
-and 27f (extended and double: the menus, the races at extended precision),
-c7f (single, towards zero) and f7f (extended, towards zero).  Per mode: the
+after it.  The control word defaults to 7f, the one mode the game's code is in
+now (fp::, include/fpu.h).  Per mode: the
 cases run, those the game stopped in a call, those that differ (the first two
 shown), the runaways, the words told apart only by a NaN's payload, and the
 cases whose outcome differs from the first mode's (mode-sensitive: the modes
@@ -37,7 +36,7 @@ BUILD = HERE / "build"
 GEN = BUILD / "generated"
 OBJ = BUILD / "obj"
 EXE = BUILD / "rcheck.exe"
-CONTROLS = "7f,37f,27f,c7f,f7f"
+CONTROLS = "7f"
 
 
 def compile_one(source):

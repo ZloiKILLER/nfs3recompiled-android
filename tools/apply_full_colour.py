@@ -41,7 +41,11 @@ Only the number written into the entry's text changes.
 from pathlib import Path
 
 # (generated file, address and bytes of the instruction, original code, patched code)
-SITES = [
+# sub_448210 is native whole (native_frontend_menua.cpp) and has the change itself;
+# tools/frontend_checks/generate.py makes it to the game's code it is held against.
+SITES = []
+
+NATIVE_SITES = [
     # sub_448210, a Screen Size entry: the depth pushed for "%d x %d x %d".
     ("nfs3hp.12.cpp", "0044823e  51",
      "    app->getMemory<x86::reg32>(cpu.esp-4) = cpu.ecx;",

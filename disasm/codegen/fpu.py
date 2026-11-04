@@ -47,25 +47,30 @@ def cg_fldln2(instruction, function_bounds, function_names):
 
 def cg_fyl2x(instruction, function_bounds, function_names):
     return [
-        'cpu.fpu.st(1) = cpu.fpu.log2(cpu.fpu.st(0)) * cpu.fpu.st(1);',
+        'cpu.fpu.st(1) = fp::log2(cpu.fpu.st(0)) * cpu.fpu.st(1);',
         'cpu.fpu.pop();'
     ]
 
-# Whether arithmetic rounds as the x87's precision control asks (FPU::add, sub,
-# mul, div).  The game's own code does: it runs its races in single precision,
-# and its physics has to come out as a PC's does.  The driver DLLs -- drawing
-# and sound -- keep plain double arithmetic: rounding there changes nothing on
-# the screen and costs a little on every vertex.  Set per module by the writers
-# (application.py, dll.py).
+# Whether arithmetic rounds to a float's 24 bits (fp::add, sub, mul, div, sqrt in
+# include/fpu.h).  The game's own code does: its races are in single precision,
+# and its physics has to come out as a PC's does.  Set per function by the writer
+# (application.py).
 EXACT = True
+# Whether arithmetic, frndint and fistp go by the control word, for the few
+# functions that load one (fldcw) and what they call with it loaded: 64 bits to
+# turn numbers into text, chopping for an integer.  Everywhere else the word is
+# what the game's code always leaves, single precision to nearest.
+BY_CONTROL_WORD = False
 
 _SYMBOLS = {'add': '+', 'sub': '-', 'mul': '*', 'div': '/'}
 
 
 def _op(name, destination, a, b):
     """`destination` = `a` name `b`, rounded where EXACT says."""
-    if EXACT:
+    if BY_CONTROL_WORD:
         return '%s = cpu.fpu.%s(%s, %s);' % (destination, name, a, b)
+    if EXACT:
+        return '%s = fp::%s(%s, %s);' % (destination, name, a, b)
     return '%s = %s %s %s;' % (destination, a, _SYMBOLS[name], b)
 
 
@@ -174,15 +179,18 @@ def cg_fdivrp(instruction, function_bounds, function_names, *argument):
 
 
 def cg_frndint(instruction, function_bounds, function_names):
-    return ['cpu.fpu.st(0) = cpu.fpu.rndint(cpu.fpu.st(0));']
+    if BY_CONTROL_WORD:
+        return ['cpu.fpu.st(0) = cpu.fpu.rndint(cpu.fpu.st(0));']
+    return ['cpu.fpu.st(0) = fp::rndint(cpu.fpu.st(0));']
 
 
 def cg_fistp(instruction, function_bounds, function_names, destination):
     # toInteger stores the x87's integer indefinite for a NaN or a value out of
     # range, where a plain C++ conversion is undefined (and differs on arm64).
-    return ['%s = x86::reg%d(cpu.fpu.toInteger<x86::sreg%d>(cpu.fpu.st(0)));' % (arguments.get_value(instruction, destination),
-                                                                              destination.size * 8,
-                                                                              destination.size * 8),
+    convert = 'cpu.fpu.toInteger' if BY_CONTROL_WORD else 'fp::toInteger'
+    return ['%s = x86::reg%d(%s<x86::sreg%d>(cpu.fpu.st(0)));' % (arguments.get_value(instruction, destination),
+                                                                  destination.size * 8, convert,
+                                                                  destination.size * 8),
             'cpu.fpu.pop();']
 
 
@@ -239,39 +247,40 @@ cg_fnstcw = cg_fstcw
 
 
 def cg_fptan(instruction, function_bounds, function_names):
-    return ['cpu.fpu.st(0) = cpu.fpu.tan(cpu.fpu.st(0));',
+    return ['cpu.fpu.st(0) = fp::tan(cpu.fpu.st(0));',
             'cpu.fpu.push(1.0);']
 
 
 def cg_fsin(instruction, function_bounds, function_names):
-    return ['cpu.fpu.st(0) = cpu.fpu.sin(cpu.fpu.st(0));']
+    return ['cpu.fpu.st(0) = fp::sin(cpu.fpu.st(0));']
 
 
 def cg_fcos(instruction, function_bounds, function_names):
-    return ['cpu.fpu.st(0) = cpu.fpu.cos(cpu.fpu.st(0));']
+    return ['cpu.fpu.st(0) = fp::cos(cpu.fpu.st(0));']
 
 
 def cg_fabs(instruction, function_bounds, function_names):
-    return ['cpu.fpu.st(0) = cpu.fpu.abs(cpu.fpu.st(0));']
+    return ['cpu.fpu.st(0) = fp::abs(cpu.fpu.st(0));']
 
 
 def cg_fsqrt(instruction, function_bounds, function_names):
-    return ['cpu.fpu.st(0) = cpu.fpu.sqrt(cpu.fpu.st(0));']
+    function = 'cpu.fpu.sqrt' if BY_CONTROL_WORD else 'fp::sqrt' if EXACT else 'std::sqrt'
+    return ['cpu.fpu.st(0) = %s(cpu.fpu.st(0));' % function]
 
 
 def cg_fpatan(instruction, function_bounds, function_names):
-    return ['cpu.fpu.st(1) = cpu.fpu.atan(cpu.fpu.st(0), cpu.fpu.st(1));',
+    return ['cpu.fpu.st(1) = fp::atan(cpu.fpu.st(0), cpu.fpu.st(1));',
             'cpu.fpu.pop();']
 
 
 def cg_fprem(instruction, function_bounds, function_names):
-    return ['cpu.fpu.st(0) = cpu.fpu.rem(cpu.fpu.st(0), cpu.fpu.st(1));']
+    return ['cpu.fpu.st(0) = fp::rem(cpu.fpu.st(0), cpu.fpu.st(1));', 'cpu.fpu.status.c2 = 0;']
 
 
 def cg_fscale(instruction, function_bounds, function_names):
-    return ['cpu.fpu.st(0) = cpu.fpu.scale(cpu.fpu.st(0), cpu.fpu.st(1));']
+    return ['cpu.fpu.st(0) = fp::scale(cpu.fpu.st(0), cpu.fpu.st(1));']
 
 
 def cg_f2xm1(instruction, function_bounds, function_names):
-    return ['cpu.fpu.st(0) = cpu.fpu.f2xm1(cpu.fpu.st(0));']
+    return ['cpu.fpu.st(0) = fp::f2xm1(cpu.fpu.st(0));']
 

@@ -58,14 +58,12 @@ case kRaceVectors:
         x86::reg32 b;
         std::memcpy(&b, &f, 4);
         x86::reg32 odd = anyFloatBits(random64(id + i));
-#ifndef WITH_PEDANTIC_FPU
         /* With doubles for the x87, which of two NaNs a sum or a product
          * keeps is the host compiler's, which may swap the operands: the
          * vectors finite here, their NaNs and infinities held to the bit by
          * the 80-bit build. */
         if ((odd & 0x7f800000) == 0x7f800000)
             odd &= 0xbfffffff;
-#endif
         word(to + 4 * i) = bits % 23 == 0 ? odd : b;
     }
     break;

@@ -1,4 +1,5 @@
 #include "port_loop.h"
+#include "diag_hooks.h"
 #include "port_text.h"
 
 #include <cstdint>
@@ -302,6 +303,7 @@ constexpr reg32 kResetInput = 0x451b20;
 constexpr reg32 kStartMusic = 0x4104f0;        // (track, music choice, after a race)
 constexpr reg32 kStopMusic = 0x4109d0;
 constexpr reg32 kPollEvents = 0x4c9860;
+constexpr reg32 kViewLastReplay = 0x44e710;  // the results' View Replay: 7 when it loaded
 constexpr reg32 kReadKey = 0x451960;           // the next key, 0 for none
 constexpr reg32 kBeginFrame = 0x4d9120;
 constexpr reg32 kPresentFrame = 0x4dab90;
@@ -1718,6 +1720,11 @@ Result menuLoopCore(Game& g, reg32 esp, reg32 name, reg32 history)
             if (screen(app, menu).onFrame != 0)
             {
                 GAME(at, screen(app, menu).onFrame, {menu, menu});
+                setWord(app, action, g.eax);
+            }
+            if (diag::takeAutoReplay && word(app, action) == 0 && diag::takeAutoReplay())
+            {
+                GAME(at, kViewLastReplay);
                 setWord(app, action, g.eax);
             }
             NEEDED(fitted, fitRaceSettingsCore(g, entered(at)));

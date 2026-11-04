@@ -1,0 +1,16 @@
+# address name kind: the functions native whole in src/nfs3hp/native_frontend_hudr.cpp, frontend::name.
+# kind: how frontend_checks enters it (Menu, Key, Item, None).
+45ab30 hudDrawElement None
+4853c0 hudRebuildElement None
+48e920 hudStepMapPanes None
+4896f0 hudOrdinalLetters None
+489750 hudFormatTime None
+4898b0 hudDrawTime None
+489900 hudDrawPercentAndCount None
+4899d0 hudDrawLaps None
+489a50 hudDrawRatio None
+48a320 hudDrawPlaceAmong None
+48b2a0 hudDrawTriangle None
+48b4a0 hudDrawLine None
+48e770 hudFlushLines None
+48e780 hudPrepareLines None

@@ -187,32 +187,32 @@ void fstp1(CPU& cpu)
 }
 
 // st(0) op= m (fadd m32 and the like).
-void fadd(CPU& cpu, const Float& m) { cpu.fpu.st(0) = cpu.fpu.add(cpu.fpu.st(0), m); }
-void fsub(CPU& cpu, const Float& m) { cpu.fpu.st(0) = cpu.fpu.sub(cpu.fpu.st(0), m); }
-void fmul(CPU& cpu, const Float& m) { cpu.fpu.st(0) = cpu.fpu.mul(cpu.fpu.st(0), m); }
+void fadd(CPU& cpu, const Float& m) { cpu.fpu.st(0) = fp::add(cpu.fpu.st(0), m); }
+void fsub(CPU& cpu, const Float& m) { cpu.fpu.st(0) = fp::sub(cpu.fpu.st(0), m); }
+void fmul(CPU& cpu, const Float& m) { cpu.fpu.st(0) = fp::mul(cpu.fpu.st(0), m); }
 
 // st(i) op= st(0), popped (faddp st(i) and the like).
 void faddp(CPU& cpu, int i)
 {
-    cpu.fpu.st(i) = cpu.fpu.add(cpu.fpu.st(i), cpu.fpu.st(0));
+    cpu.fpu.st(i) = fp::add(cpu.fpu.st(i), cpu.fpu.st(0));
     cpu.fpu.pop();
 }
 
 void fsubp(CPU& cpu, int i)
 {
-    cpu.fpu.st(i) = cpu.fpu.sub(cpu.fpu.st(i), cpu.fpu.st(0));
+    cpu.fpu.st(i) = fp::sub(cpu.fpu.st(i), cpu.fpu.st(0));
     cpu.fpu.pop();
 }
 
 void fmulp(CPU& cpu, int i)
 {
-    cpu.fpu.st(i) = cpu.fpu.mul(cpu.fpu.st(i), cpu.fpu.st(0));
+    cpu.fpu.st(i) = fp::mul(cpu.fpu.st(i), cpu.fpu.st(0));
     cpu.fpu.pop();
 }
 
 void fdivp(CPU& cpu, int i)
 {
-    cpu.fpu.st(i) = cpu.fpu.div(cpu.fpu.st(i), cpu.fpu.st(0));
+    cpu.fpu.st(i) = fp::div(cpu.fpu.st(i), cpu.fpu.st(0));
     cpu.fpu.pop();
 }
 
@@ -222,7 +222,7 @@ void fchs(CPU& cpu) { cpu.fpu.st(0) = -cpu.fpu.st(0); }
 void fistpToEax(App* app, CPU& cpu)
 {
     cpu.esp -= 4;
-    put(app, cpu.esp, reg32(cpu.fpu.toInteger<sreg32>(cpu.fpu.st(0))));
+    put(app, cpu.esp, reg32(fp::toInteger<sreg32>(cpu.fpu.st(0))));
     cpu.fpu.pop();
     cpu.eax = pop(app, cpu);
 }
@@ -2801,7 +2801,7 @@ void sayLocation(App* app, CPU& cpu)
     fld(cpu, f32(app, cpu.esi + 0x7c0));
     if (!byAddress(app, cpu, kChop))
         return;
-    put(app, cpu.ebp - 8, reg32(cpu.fpu.toInteger<sreg32>(cpu.fpu.st(0))));
+    put(app, cpu.ebp - 8, reg32(fp::toInteger<sreg32>(cpu.fpu.st(0))));
     cpu.fpu.pop();
     cpu.eax = at(app, cpu.ebp - 8);
     cpu.edx = s(cpu.eax) > 0 ? cpu.eax : 0 - cpu.eax;
@@ -3645,7 +3645,7 @@ namespace
 {
 
 /* fmul st(i): st(0) = st(0) * st(i). */
-void fmulSt(CPU& cpu, int i) { cpu.fpu.st(0) = cpu.fpu.mul(cpu.fpu.st(0), cpu.fpu.st(i)); }
+void fmulSt(CPU& cpu, int i) { cpu.fpu.st(0) = fp::mul(cpu.fpu.st(0), cpu.fpu.st(i)); }
 
 }  // namespace
 

@@ -157,7 +157,7 @@ void storeDouble(App* app, CPU& cpu, reg32 a)
 /* fistp dword m, as the control word rounds. */
 void storeInteger(App* app, CPU& cpu, reg32 a)
 {
-    put(app, a, reg32(cpu.fpu.toInteger<i32>(cpu.fpu.st(0))));
+    put(app, a, reg32(fp::toInteger<i32>(cpu.fpu.st(0))));
     cpu.fpu.pop();
 }
 
@@ -485,11 +485,11 @@ void computerDriver(App* app, CPU& cpu)
         return;
     storeFloat(app, cpu, cpu.ebp - 0x10);
     fpu.push(f32(app, cpu.ebp - 0x10));
-    fpu.st(0) = fpu.mul(fpu.st(0), f32(app, cpu.ebp - 0x14));
+    fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.ebp - 0x14));
     storeFloat(app, cpu, cpu.ebp - 0x10);
     cpu.eax = at(app, cpu.ebp - 0x2c);
     fpu.push(f32(app, cpu.ebp - 0x10));
-    fpu.st(0) = fpu.sub(fpu.st(0), f32(app, cpu.eax + 0x4f4));
+    fpu.st(0) = fp::sub(fpu.st(0), f32(app, cpu.eax + 0x4f4));
     storeFloat(app, cpu, cpu.ebp - 0x18);
     // The steering eased: 0x20 a frame at most.
     cpu.eax = at(app, cpu.ebp - 0x24);
@@ -569,7 +569,7 @@ void computerDriver(App* app, CPU& cpu)
     if (i32(at(app, cpu.ebp - 0x18)) > i32(0x3f800000))
     {
         fpu.push(f32(app, cpu.ebp - 0x18));
-        fpu.st(0) = fpu.mul(fpu.st(0), f32(app, 0x53dc90));
+        fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53dc90));
         integerToEax(app, cpu);
         put(app, cpu.ebp - 4, cpu.eax);
         cpu.eax = at(app, cpu.ebp - 4);
@@ -593,7 +593,7 @@ void computerDriver(App* app, CPU& cpu)
         if (above(cpu))
         {
             fpu.push(f32(app, cpu.ebp - 0x18));
-            fpu.st(0) = fpu.mul(fpu.st(0), f32(app, 0x53dc94));
+            fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53dc94));
             integerToEax(app, cpu);
             put(app, cpu.ebp - 4, cpu.eax);
             cpu.eax = at(app, cpu.ebp - 4);
@@ -623,7 +623,7 @@ void computerDriver(App* app, CPU& cpu)
             cpu.edx += cpu.ecx;
             cpu.eax = at(app, cpu.ebp - 0x2c);
             fpu.push(f32(app, cpu.eax + 0x4f4));
-            fpu.st(0) = fpu.mul(fpu.st(0), f32(app, cpu.edx + 0x94));
+            fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.edx + 0x94));
             integerToEax(app, cpu);
             put(app, cpu.ebp - 0x68, cpu.eax);
             cpu.eax = at(app, cpu.ebp - 0x2c);
@@ -655,7 +655,7 @@ void computerDriver(App* app, CPU& cpu)
                 put(app, cpu.ebp - 0x6c, 0);
             }
             fpu.push(f32(app, cpu.ebp - 0x6c));
-            fpu.st(0) = fpu.mul(fpu.st(0), f32(app, 0x53dc98));
+            fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53dc98));
             integerToEax(app, cpu);
             cpu.edx = cpu.eax;
             cpu.eax = at(app, cpu.ebp - 0x2c);
@@ -755,7 +755,7 @@ void engineTorque(App* app, CPU& cpu)
     put(app, cpu.ebp - 4, 0);
     // The revs by 256, 0 to 40.
     fpu.push(i32At(app, cpu.ebp - 0x30));
-    fpu.st(0) = fpu.mul(fpu.st(0), f32(app, 0x53dc9c));
+    fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53dc9c));
     storeFloat(app, cpu, cpu.ebp - 8);
     if (i32(at(app, cpu.ebp - 8)) > i32(0x42200000))
     {
@@ -774,8 +774,8 @@ void engineTorque(App* app, CPU& cpu)
         return;
     storeFloat(app, cpu, cpu.ebp - 0x10);
     fpu.push(f32(app, cpu.ebp - 8));
-    fpu.st(0) = fpu.sub(fpu.st(0), f32(app, cpu.ebp - 0x10));
-    fpu.st(0) = fpu.abs(fpu.st(0));
+    fpu.st(0) = fp::sub(fpu.st(0), f32(app, cpu.ebp - 0x10));
+    fpu.st(0) = fp::abs(fpu.st(0));
     storeFloat(app, cpu, cpu.ebp - 0xc);
     if ((at(app, cpu.ebp - 0xc) & 0x7fffffff) != 0)
     {
@@ -801,15 +801,15 @@ void engineTorque(App* app, CPU& cpu)
         cpu.eax = at(app, cpu.eax + 0x114);
         put(app, cpu.ebp - 0x18, cpu.eax);
         fpu.push(f32(app, cpu.ebp - 0x18));
-        fpu.st(0) = fpu.sub(fpu.st(0), f32(app, cpu.ebp - 0x1c));
+        fpu.st(0) = fp::sub(fpu.st(0), f32(app, cpu.ebp - 0x1c));
         storeFloat(app, cpu, cpu.ebp - 0x14);
         fpu.push(i32At(app, cpu.ebp - 0x24));
-        fpu.st(0) = fpu.mul(fpu.st(0), f32(app, cpu.ebp - 0x14));
-        fpu.st(0) = fpu.sub(f32(app, cpu.ebp - 0x1c), fpu.st(0));
+        fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.ebp - 0x14));
+        fpu.st(0) = fp::sub(f32(app, cpu.ebp - 0x1c), fpu.st(0));
         storeFloat(app, cpu, cpu.ebp - 4);
         fpu.push(f32(app, cpu.ebp - 0x14));
-        fpu.st(0) = fpu.mul(fpu.st(0), f32(app, cpu.ebp - 8));
-        fpu.st(0) = fpu.add(fpu.st(0), f32(app, cpu.ebp - 4));
+        fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.ebp - 8));
+        fpu.st(0) = fp::add(fpu.st(0), f32(app, cpu.ebp - 4));
         storeFloat(app, cpu, cpu.ebp - 0x28);
     }
     else
@@ -915,7 +915,7 @@ void automaticGears(App* app, CPU& cpu)
     cpu.eax = at(app, cpu.ebp - 0x38);
     cpu.eax = at(app, cpu.eax + 0x528);
     fpu.push(i32At(app, cpu.eax + 0x1c4));
-    fpu.st(0) = fpu.mul(fpu.st(0), f32(app, cpu.edx + 0x544));
+    fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.edx + 0x544));
     cpu.eax = at(app, cpu.ebp - 0x38);
     cpu.eax = at(app, cpu.eax + 0x528);
     fcomp(cpu, f32(app, cpu.eax + 0x1c8));
@@ -983,7 +983,7 @@ void automaticGears(App* app, CPU& cpu)
     cpu.edx += cpu.eax;
     cpu.eax = at(app, cpu.ebp - 0x38);
     fpu.push(f32(app, cpu.eax + 0x5a4));
-    fpu.st(0) = fpu.mul(fpu.st(0), f32(app, cpu.edx + 0x94));
+    fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.edx + 0x94));
     integerToEax(app, cpu);
     put(app, cpu.ebp - 0x30, cpu.eax);
     for (const reg32 gear : {0x18u, 0x20u})
@@ -995,7 +995,7 @@ void automaticGears(App* app, CPU& cpu)
         cpu.edx += cpu.eax;
         cpu.eax = at(app, cpu.ebp - 0x38);
         fpu.push(f32(app, cpu.eax + 0x5a4));
-        fpu.st(0) = fpu.mul(fpu.st(0), f32(app, cpu.edx + 0x94));
+        fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.edx + 0x94));
         integerToEax(app, cpu);
         put(app, cpu.ebp - (gear == 0x18 ? 0x2c : 0x28), cpu.eax);
     }
@@ -1006,7 +1006,7 @@ void automaticGears(App* app, CPU& cpu)
     cpu.edx += cpu.eax;
     cpu.eax = at(app, cpu.ebp - 0x38);
     fpu.push(f32(app, cpu.eax + 0x5a4));
-    fpu.st(0) = fpu.mul(fpu.st(0), f32(app, cpu.edx + 0x94));
+    fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.edx + 0x94));
     integerToEax(app, cpu);
     put(app, cpu.ebp - 0x24, cpu.eax);
 
@@ -1162,7 +1162,7 @@ void gearLimit(App* app, CPU& cpu)
     cpu.eax = at(app, cpu.eax + 0x528);
     fpu.push(i32At(app, cpu.eax + 0x1c4));
     cpu.eax = at(app, cpu.ebp - 8);
-    fpu.st(0) = fpu.mul(fpu.st(0), f32(app, cpu.eax + 0x554));
+    fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.eax + 0x554));
     cpu.eax = at(app, cpu.ebp - 8);
     fcomp(cpu, f32(app, cpu.eax + 0x4f4));
     if (above(cpu))
@@ -1547,8 +1547,8 @@ void driverInputs(App* app, CPU& cpu)
             cpu.eax = at(app, cpu.ebp - 0x1c);
             cpu.eax = at(app, cpu.eax + 0x220);
             fpu.push(f32(app, cpu.eax + 0x48));
-            fpu.st(0) = fpu.add(fpu.st(0), f32(app, 0x53dcb4));
-            fpu.st(0) = fpu.mul(fpu.st(0), f32(app, 0x53dcb8));
+            fpu.st(0) = fp::add(fpu.st(0), f32(app, 0x53dcb4));
+            fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53dcb8));
             integerToEax(app, cpu);
             putByte(app, cpu.ebp - 0x24, reg8(byte(app, cpu.ebp - 0x24) + cpu.al));
         }
@@ -1797,7 +1797,7 @@ void driverInputs(App* app, CPU& cpu)
                             cpu.eax = at(app, cpu.ebp - 0x1c);
                             cpu.eax = at(app, cpu.eax + 0x528);
                             fpu.push(i32At(app, cpu.eax + 0x1c4));
-                            fpu.st(0) = fpu.mul(fpu.st(0), f32(app, cpu.edx + 0x54c));
+                            fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.edx + 0x54c));
                             cpu.eax = at(app, cpu.ebp - 0x1c);
                             fcomp(cpu, f32(app, cpu.eax + 0x4f4));
                             if (below(cpu))
@@ -1971,7 +1971,7 @@ ratios:
         cpu.al = byte(app, cpu.edx + pedal);
         put(app, cpu.ebp - 0x6c, cpu.eax);
         fpu.push(i16At(app, cpu.ebp - 0x6c));
-        fpu.st(0) = fpu.div(fpu.st(0), f32(app, 0x53dcbc));
+        fpu.st(0) = fp::div(fpu.st(0), f32(app, 0x53dcbc));
         fpu.push(1.0);
         fcompp(cpu);
         if (above(cpu))
@@ -1981,7 +1981,7 @@ ratios:
             cpu.al = byte(app, cpu.edx + pedal);
             put(app, cpu.ebp - 0x6c, cpu.eax);
             fpu.push(i16At(app, cpu.ebp - 0x6c));
-            fpu.st(0) = fpu.div(fpu.st(0), f32(app, 0x53dcbc));
+            fpu.st(0) = fp::div(fpu.st(0), f32(app, 0x53dcbc));
             storeDouble(app, cpu, cpu.ebp - local);
         }
         else
@@ -2013,7 +2013,7 @@ ratios:
         put(app, cpu.ebp - 0x80, reg32(-i32(cpu.eax)));
     fpu.push(i32At(app, cpu.ebp - 0x80));
     cpu.eax = at(app, cpu.ebp - 0x1c);
-    fpu.st(0) = fpu.mul(fpu.st(0), f32(app, 0x53dcc0));
+    fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53dcc0));
     storeFloat(app, cpu, cpu.eax + 0x5e8);
     leave(app, cpu);
 }
@@ -2067,12 +2067,12 @@ void wheelGrip(App* app, CPU& cpu)
             const reg32 first = kind == 2 ? 0x53dcd4 : 0x53dce4, second = kind == 2 ? 0x53dcdc : 0x53dcec;
             wheel();
             fpu.push(f32(app, cpu.edx + kSurfaceGrip));
-            fpu.st(0) = fpu.mul(fpu.st(0), f32(app, cpu.ebp - 4));
-            fpu.st(0) = fpu.mul(fpu.st(0), f64(app, first));
-            fpu.st(0) = fpu.mul(fpu.st(0), f64(app, second));
+            fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.ebp - 4));
+            fpu.st(0) = fp::mul(fpu.st(0), f64(app, first));
+            fpu.st(0) = fp::mul(fpu.st(0), f64(app, second));
             fpu.push(f32(app, cpu.eax + 0x5d8));
             storeDouble(app, cpu, cpu.ebp - 0x1c);
-            fpu.st(0) = fpu.add(fpu.st(0), f64(app, cpu.ebp - 0x1c));
+            fpu.st(0) = fp::add(fpu.st(0), f64(app, cpu.ebp - 0x1c));
             storeDouble(app, cpu, cpu.ebp - 0x1c);
             fpu.push(f64(app, cpu.ebp - 0x1c));
             storeFloat(app, cpu, cpu.eax + 0x5d8);
@@ -2081,14 +2081,14 @@ void wheelGrip(App* app, CPU& cpu)
         {
             wheel();
             fpu.push(f32(app, cpu.edx + kSurfaceGrip));
-            fpu.st(0) = fpu.mul(fpu.st(0), f32(app, cpu.ebp - 4));
-            fpu.st(0) = fpu.mul(fpu.st(0), f32(app, 0x53dcf4));
-            fpu.st(0) = fpu.add(fpu.st(0), f32(app, cpu.eax + 0x5d8));
+            fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.ebp - 4));
+            fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53dcf4));
+            fpu.st(0) = fp::add(fpu.st(0), f32(app, cpu.eax + 0x5d8));
             storeFloat(app, cpu, cpu.eax + 0x5d8);
         }
         wheel();
         fpu.push(f32(app, cpu.edx + kSurfaceGrip));
-        fpu.st(0) = fpu.mul(fpu.st(0), f32(app, cpu.eax + 0x5d8));
+        fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.eax + 0x5d8));
         storeFloat(app, cpu, cpu.eax + 0x5d8);
         if (at(app, kSimulation) != 0 || (byte(app, kLoadingFlags) & 1) != 0)
         {
@@ -2096,7 +2096,7 @@ void wheelGrip(App* app, CPU& cpu)
             cpu.eax <<= 2;
             cpu.eax += at(app, cpu.ebp - 0x14);
             fpu.push(f32(app, cpu.eax + 0x5d8));
-            fpu.st(0) = fpu.mul(fpu.st(0), f32(app, 0x53dcf8));
+            fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53dcf8));
             storeFloat(app, cpu, cpu.eax + 0x5d8);
         }
         cpu.eax = at(app, cpu.ebp - 8);
@@ -2121,10 +2121,10 @@ void wheelGrip(App* app, CPU& cpu)
     const auto grow = [&](reg32 field) {
         cpu.eax = at(app, cpu.ebp - 0x14);
         fpu.push(f32(app, cpu.eax + 0x4f4));
-        fpu.st(0) = fpu.mul(fpu.st(0), f32(app, cpu.ebp - 0x24));
+        fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.ebp - 0x24));
         cpu.eax = at(app, cpu.ebp - 0x14);
         fpu.push(1.0);
-        fpu.st(1) = fpu.add(fpu.st(1), fpu.st(0));
+        fpu.st(1) = fp::add(fpu.st(1), fpu.st(0));
         fpu.pop();
         storeFloat(app, cpu, cpu.eax + field);
     };
@@ -2144,7 +2144,7 @@ void wheelGrip(App* app, CPU& cpu)
         if (at(app, kSimulation) != 0)
         {
             fpu.push(f32(app, cpu.ebp - 0x24));
-            fpu.st(0) = fpu.mul(fpu.st(0), f32(app, 0x53dcfc));
+            fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53dcfc));
             storeFloat(app, cpu, cpu.ebp - 0x24);
         }
         grow(0x5c8);
@@ -2152,7 +2152,7 @@ void wheelGrip(App* app, CPU& cpu)
         cpu.eax = at(app, cpu.ebp - 0x14);
         cpu.eax = at(app, cpu.eax + 0x528);
         fpu.push(f32(app, cpu.eax + 0x24c));
-        fpu.st(0) = fpu.mul(fpu.st(0), f32(app, 0x53dd00));
+        fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53dd00));
         storeFloat(app, cpu, cpu.ebp - 0x24);
         grow(0x5d4);
         grow(0x5d0);
@@ -2162,10 +2162,10 @@ void wheelGrip(App* app, CPU& cpu)
         cpu.eax = at(app, cpu.ebp - 0x14);
         cpu.eax = at(app, cpu.eax + 0x528);
         fpu.push(f32(app, cpu.eax + 0x24c));
-        fpu.st(0) = fpu.mul(fpu.st(0), f32(app, 0x53dd04));
+        fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53dd04));
         cpu.eax = at(app, cpu.ebp - 0x14);
         fpu.push(1.0);
-        fpu.st(1) = fpu.add(fpu.st(1), fpu.st(0));
+        fpu.st(1) = fp::add(fpu.st(1), fpu.st(0));
         fpu.pop();
         storeFloat(app, cpu, cpu.eax + 0x5c8);
         copy(0x5c8, 0x5d0);
@@ -2178,7 +2178,7 @@ void wheelGrip(App* app, CPU& cpu)
         cpu.eax = at(app, cpu.eax + 0x528);
         fpu.push(f32(app, cpu.eax + 0x24c));
         fpu.push(1.0);
-        fpu.st(1) = fpu.add(fpu.st(1), fpu.st(0));
+        fpu.st(1) = fp::add(fpu.st(1), fpu.st(0));
         fpu.pop();
         cpu.eax = at(app, cpu.ebp - 0x14);
         storeFloat(app, cpu, cpu.eax + 0x5c8);
@@ -2265,9 +2265,9 @@ void engineForce(App* app, CPU& cpu)
         cpu.eax = at(app, cpu.ebp - 0x38);
         cpu.eax = at(app, cpu.eax + 0x220);
         fpu.push(1.0);
-        fpu.st(0) = fpu.add(fpu.st(0), f32(app, cpu.eax + 0x54));
-        fpu.st(0) = fpu.div(fpu.st(0), f32(app, 0x53dd08));
-        fpu.st(0) = fpu.mul(fpu.st(0), f32(app, 0x53dd0c));
+        fpu.st(0) = fp::add(fpu.st(0), f32(app, cpu.eax + 0x54));
+        fpu.st(0) = fp::div(fpu.st(0), f32(app, 0x53dd08));
+        fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53dd0c));
         storeFloat(app, cpu, cpu.ebp - 0x18);
     }
     cpu.eax = at(app, cpu.ebp - 0x38);
@@ -2275,9 +2275,9 @@ void engineForce(App* app, CPU& cpu)
     for (int i = 0; i < 3; ++i)
     {
         cpu.eax = at(app, cpu.ebp - 0x38);
-        fpu.st(0) = fpu.mul(fpu.st(0), f32(app, cpu.eax + 0x4f4));
+        fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.eax + 0x4f4));
     }
-    fpu.st(0) = fpu.mul(fpu.st(0), f32(app, cpu.ebp - 0x18));
+    fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.ebp - 0x18));
     storeFloat(app, cpu, cpu.ebp - 0x18);
     // The speed, either way, to [ebp - local].
     const auto speed = [&](reg32 local) {
@@ -2306,23 +2306,23 @@ void engineForce(App* app, CPU& cpu)
         speed(0x44);
         cpu.eax = at(app, cpu.ebp - 8);
         fpu.push(f32(app, cpu.ebp - 0x44));
-        fpu.st(0) = fpu.sub(fpu.st(0), f32(app, cpu.eax + 0x1c8));
+        fpu.st(0) = fp::sub(fpu.st(0), f32(app, cpu.eax + 0x1c8));
         storeFloat(app, cpu, cpu.ebp - 0x40);
         fpu.push(f32(app, cpu.ebp - 0x40));
-        fpu.st(0) = fpu.mul(fpu.st(0), f32(app, cpu.ebp - 0x40));
+        fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.ebp - 0x40));
         storeFloat(app, cpu, cpu.ebp - 0x40);
         fpu.push(f32(app, cpu.ebp - 0x40));
-        fpu.st(0) = fpu.mul(fpu.st(0), f32(app, 0x53dd10));
+        fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53dd10));
         storeFloat(app, cpu, cpu.ebp - 0x40);
         fpu.push(f32(app, cpu.ebp - 0x18));
-        fpu.st(0) = fpu.add(fpu.st(0), f32(app, cpu.ebp - 0x40));
+        fpu.st(0) = fp::add(fpu.st(0), f32(app, cpu.ebp - 0x40));
         storeFloat(app, cpu, cpu.ebp - 0x18);
     }
     // The revs aimed at: the top by the throttle, the idle at least.
     cpu.eax = at(app, cpu.ebp - 8);
     fpu.push(i32At(app, cpu.eax + 0x1c4));
     cpu.eax = at(app, cpu.ebp - 0x38);
-    fpu.st(0) = fpu.mul(fpu.st(0), f32(app, cpu.eax + 0x5f0));
+    fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.eax + 0x5f0));
     cpu.eax = at(app, cpu.ebp - 8);
     fpu.push(i32At(app, cpu.eax + 0x1c0));
     fcompp(cpu);
@@ -2331,7 +2331,7 @@ void engineForce(App* app, CPU& cpu)
         cpu.eax = at(app, cpu.ebp - 8);
         fpu.push(i32At(app, cpu.eax + 0x1c4));
         cpu.eax = at(app, cpu.ebp - 0x38);
-        fpu.st(0) = fpu.mul(fpu.st(0), f32(app, cpu.eax + 0x5f0));
+        fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.eax + 0x5f0));
         storeFloat(app, cpu, cpu.ebp - 0x48);
     }
     else
@@ -2614,7 +2614,7 @@ void engineForce(App* app, CPU& cpu)
     cpu.edx += at(app, cpu.ebp - 8);
     cpu.eax = at(app, cpu.ebp - 0x38);
     fpu.push(f32(app, cpu.eax + 0x4f4));
-    fpu.st(0) = fpu.mul(fpu.st(0), f32(app, cpu.edx + 0x94));
+    fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.edx + 0x94));
     integerToEax(app, cpu);
     put(app, cpu.ebp - 0x20, cpu.eax);
     cpu.eax = at(app, cpu.ebp - 0x20);
@@ -2642,7 +2642,7 @@ void engineForce(App* app, CPU& cpu)
     cpu.eax = at(app, cpu.ebp - 0x38);
     if (!direct(app, cpu, engineTorque))
         return;
-    fpu.st(0) = fpu.mul(fpu.st(0), f32(app, cpu.ecx + 0x56c));
+    fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.ecx + 0x56c));
     storeFloat(app, cpu, cpu.ebp - 0x1c);
     holdTorque(0x53dd14, 0x74, 0x78, 0x7c);
     // How far the wheels' revs are from the aim, and from the engine's.
@@ -2774,7 +2774,7 @@ void engineForce(App* app, CPU& cpu)
         put(app, cpu.ebp - 0xb0, 0);
         fpu.push(-f32(app, cpu.ebp - 0x1c));
         cpu.eax = at(app, cpu.ebp - 8);
-        fpu.st(0) = fpu.mul(fpu.st(0), f32(app, cpu.eax + 0x250));
+        fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.eax + 0x250));
         storeFloat(app, cpu, cpu.ebp - 0x1c);
         // [ebp - 0x1c] made positive (to [ebp - local]), and back negative with `negate`.
         const auto positive = [&](reg32 local, bool negate) {
@@ -2828,8 +2828,8 @@ void engineForce(App* app, CPU& cpu)
         cpu.eax <<= 2;
         cpu.eax += at(app, cpu.ebp - 0x38);
         fpu.push(f32(app, cpu.eax + 0x54c));
-        fpu.st(0) = fpu.mul(fpu.st(0), f32(app, 0x53dd24));
-        fpu.st(0) = fpu.mul(fpu.st(0), f32(app, 0x53dd28));
+        fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53dd24));
+        fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53dd28));
         if (!byAddress(app, cpu, kChop))
             return;
         storeInteger(app, cpu, cpu.ebp - 0xb0);
@@ -2885,8 +2885,8 @@ void engineForce(App* app, CPU& cpu)
         cpu.eax = at(app, cpu.ebp - 0x38);
         cpu.eax = at(app, cpu.eax + 0x528);
         fpu.push(i32At(app, cpu.eax + 0x1c4));
-        fpu.st(0) = fpu.mul(fpu.st(0), f32(app, cpu.edx + 0x54c));
-        fpu.st(0) = fpu.mul(fpu.st(0), f32(app, 0x53dd2c));
+        fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.edx + 0x54c));
+        fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53dd2c));
         storeFloat(app, cpu, cpu.ebp - 0xcc);
         speed(0xd0);
         fpu.push(f32(app, cpu.ebp - 0xd0));
@@ -2908,12 +2908,12 @@ void engineForce(App* app, CPU& cpu)
             cpu.eax = at(app, cpu.ebp - 0x38);
             cpu.eax = at(app, cpu.eax + 0x528);
             fpu.push(i32At(app, cpu.eax + 0x1c4));
-            fpu.st(0) = fpu.mul(fpu.st(0), f32(app, cpu.edx + 0x54c));
+            fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.edx + 0x54c));
             storeFloat(app, cpu, cpu.ebp - 0xd4);
             speed(0xd8);
             fpu.push(f32(app, cpu.ebp - 0xd4));
-            fpu.st(0) = fpu.div(fpu.st(0), f32(app, cpu.ebp - 0xd8));
-            fpu.st(0) = fpu.mul(fpu.st(0), f32(app, cpu.ebp - 0x1c));
+            fpu.st(0) = fp::div(fpu.st(0), f32(app, cpu.ebp - 0xd8));
+            fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.ebp - 0x1c));
             storeFloat(app, cpu, cpu.ebp - 0x1c);
             cpu.eax = at(app, cpu.ebp - 0x38);
             putByte(app, cpu.eax + 0x50d, 1);
@@ -3040,7 +3040,7 @@ void engineForce(App* app, CPU& cpu)
         atLeastIdle(0xc, 0xf4);
         cpu.eax = at(app, cpu.ebp - 0x38);
         fpu.push(f32(app, cpu.ebp - 0x1c));
-        fpu.st(0) = fpu.mul(fpu.st(0), f32(app, cpu.eax + 0x5f0));
+        fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.eax + 0x5f0));
         storeFloat(app, cpu, cpu.ebp - 0x1c);
         cpu.eax = at(app, cpu.ebp - 0x38);
         zeroAgainst(cpu, f32(app, cpu.eax + 0x5b0));
@@ -3057,9 +3057,9 @@ void engineForce(App* app, CPU& cpu)
             put(app, cpu.ebp - 0xf8, cpu.eax);
         }
         fpu.push(f32(app, cpu.ebp - 0xf8));
-        fpu.st(0) = fpu.mul(fpu.st(0), f32(app, 0x53dd30));
+        fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53dd30));
         fpu.push(1.0);
-        fpu.st(1) = fpu.add(fpu.st(1), fpu.st(0));
+        fpu.st(1) = fp::add(fpu.st(1), fpu.st(0));
         fpu.pop();
         storeFloat(app, cpu, cpu.ebp - 0x14);
         fpu.push(f32(app, 0x53dd34));
@@ -3076,7 +3076,7 @@ void engineForce(App* app, CPU& cpu)
         cpu.eax = at(app, cpu.ebp - 0xfc);
         put(app, cpu.ebp - 0x14, cpu.eax);
         fpu.push(f32(app, cpu.ebp - 0x1c));
-        fpu.st(0) = fpu.mul(fpu.st(0), f32(app, cpu.ebp - 0x14));
+        fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.ebp - 0x14));
         storeFloat(app, cpu, cpu.ebp - 0x1c);
     }
 idle:
@@ -3097,7 +3097,7 @@ idle:
         cpu.eax = at(app, cpu.ebp - 0x38);
         if (!direct(app, cpu, engineTorque))
             return;
-        fpu.st(0) = fpu.mul(fpu.st(0), f32(app, cpu.ecx + 0x56c));
+        fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.ecx + 0x56c));
         storeFloat(app, cpu, cpu.ebp - 0x1c);
         cpu.eax = at(app, cpu.ebp - 8);
         cpu.edx = at(app, cpu.eax + 0x1c0);
@@ -3120,7 +3120,7 @@ force:
         else
         {
             fpu.push(-f32(app, cpu.ebp - 0x18));
-            fpu.st(0) = fpu.mul(fpu.st(0), f32(app, 0x53dd44));
+            fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53dd44));
             storeFloat(app, cpu, cpu.ebp - 4);
         }
     }
@@ -3131,14 +3131,14 @@ force:
         if (above(cpu))
         {
             fpu.push(f32(app, cpu.ebp - 0x18));
-            fpu.st(0) = fpu.mul(fpu.st(0), f32(app, 0x53dd48));
-            fpu.st(0) = fpu.add(fpu.st(0), f32(app, cpu.ebp - 0x1c));
+            fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53dd48));
+            fpu.st(0) = fp::add(fpu.st(0), f32(app, cpu.ebp - 0x1c));
             storeFloat(app, cpu, cpu.ebp - 4);
         }
         else
         {
             fpu.push(f32(app, cpu.ebp - 0x1c));
-            fpu.st(0) = fpu.sub(fpu.st(0), f32(app, cpu.ebp - 0x18));
+            fpu.st(0) = fp::sub(fpu.st(0), f32(app, cpu.ebp - 0x18));
             storeFloat(app, cpu, cpu.ebp - 4);
         }
     }

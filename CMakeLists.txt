@@ -15,19 +15,11 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # options
-option(WITH_PEDANTIC_FPU "Compile pedantic FPU implementation" OFF)
-option(WITH_WIDE_FPU "Experiment: x87 values as long double, never single precision (include/fpu.h)" OFF)
-option(WITH_MMX "Enable MMX support" ON)
+option(WITH_MMX "The checks' game code: MMX registers, cpuid and rdtsc on the CPU" OFF)
 option(NFS_TRACE_MSG "Trace the win32 message pump to the log" OFF)
 option(NFS2_ASSERT_TRAP "Make NFS2_ASSERT a hard trap (debugger break) instead of logging and continuing" OFF)
 
 # add compile definitions based on options
-if(WITH_PEDANTIC_FPU)
-    add_compile_definitions(WITH_PEDANTIC_FPU)
-endif()
-if(WITH_WIDE_FPU)
-    add_compile_definitions(WITH_WIDE_FPU)
-endif()
 if(WITH_MMX)
     add_compile_definitions(WITH_MMX)
 endif()
@@ -132,20 +124,6 @@ file(GLOB LIB_CPP_SOURCES CONFIGURE_DEPENDS
      "${NFS_ROOT_DIR}/src/lib/winapi/ddraw/*.cpp"
      "${NFS_ROOT_DIR}/src/lib/winapi/dsound/*.cpp")
 
-# src/lib/x87soft.cpp is WITH_PEDANTIC_FPU's 80-bit arithmetic: the x87's,
-# exact, in portable C++ -- an arm64 phone as well as a PC (it replaces
-# x87.asm, which ran on the host's own x87 and so only on x86).  It needs
-# unsigned __int128, which GCC and Clang have and MSVC does not.  Without
-# WITH_PEDANTIC_FPU nothing calls it, so it is left out.
-if(WITH_PEDANTIC_FPU AND MSVC)
-    message(FATAL_ERROR
-        "WITH_PEDANTIC_FPU needs GCC or Clang: src/lib/x87soft.cpp uses "
-        "unsigned __int128.")
-endif()
-if(NOT WITH_PEDANTIC_FPU)
-    list(REMOVE_ITEM LIB_CPP_SOURCES "${NFS_ROOT_DIR}/src/lib/x87soft.cpp")
-endif()
-
 add_library(nfs_core STATIC ${LIB_CPP_SOURCES})
 target_include_directories(nfs_core PRIVATE
     ${NFS_ROOT_DIR}/include)
@@ -227,9 +205,6 @@ function(add_game_exe name)
         ${NFS_ROOT_DIR}/decomp/mad/src
         ${NFS_ROOT_DIR}/include)
     target_link_libraries(${name} PRIVATE ${SDL3_MAIN_TARGET} nfs_core ${SDL3_LIB_TARGET} ${NFS_GL_LIBS})
-    if(WITH_PEDANTIC_FPU)
-        target_compile_definitions(${name} PRIVATE WITH_PEDANTIC_FPU)
-    endif()
     if(WITH_MMX)
         target_compile_definitions(${name} PRIVATE WITH_MMX)
     endif()

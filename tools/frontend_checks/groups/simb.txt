@@ -1,0 +1,13 @@
+# address name kind: the functions native whole in src/nfs3hp/native_frontend_simb.cpp, frontend::name.
+# kind: how frontend_checks enters it (Menu, Key, Item, None).
+4a0aa0 simTrackPlaceOnRoad None
+4a1210 simTrackProbeWalls None
+4a1610 simTrackPredictContact None
+4a1ce0 simTrackReactToSurface None
+4a21a0 simTrackTunnelRoof None
+4a2260 simTrackDownforceAndDrag None
+4a2690 simTrackSettle None
+4a2bc0 simTrackOffsetAcross None
+4a2cc0 simTrackTurnMatrix None
+4a2f10 simTrackSpinThirtySecond None
+4a2f30 simTrackSpinSixtyFourth None

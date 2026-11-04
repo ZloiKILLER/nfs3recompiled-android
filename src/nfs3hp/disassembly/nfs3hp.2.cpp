@@ -3,8 +3,6 @@
 
 namespace nfs3hp
 {
-// Port (tools/apply_native_vertices.py): defined in native_vertices.cpp.
-bool aiVotes(win32::WinApplication* app, x86::CPU& cpu);
 
 /* sub_40bca0: native, nfs3hp::pursuit::radioResume */
 
@@ -90,49 +88,7 @@ bool aiVotes(win32::WinApplication* app, x86::CPU& cpu);
 
 /* sub_40ddb0: native, nfs3hp::aiplan::chooseLane */
 
-/* align: skip 0x8d 0x80 0x00 0x00 0x00 0x00 */
-void Application::sub_40de30(WinApplication* __restrict app, x86::CPU& cpu_)
-{
-  x86::Local cpu(cpu_);
-  NFS2_USE(cpu);
-  NFS2_USE(app);
-    if (aiVotes(app, cpu.sync())) /* port: native (tools/apply_native_vertices.py) */
-    {
-        cpu.reload();
-        return;
-    }
-    // 0040de30  52                     -push edx
-    app->getMemory<x86::reg32>(cpu.esp-4) = cpu.edx;
-    cpu.esp -= 4;
-    // 0040de31  55                     -push ebp
-    app->getMemory<x86::reg32>(cpu.esp-4) = cpu.ebp;
-    cpu.esp -= 4;
-    // 0040de32  89e5                   -mov ebp, esp
-    cpu.ebp = cpu.esp;
-    // 0040de34  89c2                   -mov edx, eax
-    cpu.edx = cpu.eax;
-    // 0040de36  e8f5fbffff             -call 0x40da30
-    cpu.esp -= 4;
-    nfs3hp::aiplan::sumLaneVotes(app, cpu.sync());
-    cpu.reload();
-    if (cpu.terminate) return;
-    // 0040de3b  89d0                   -mov eax, edx
-    cpu.eax = cpu.edx;
-    // 0040de3d  e8aefcffff             -call 0x40daf0
-    cpu.esp -= 4;
-    nfs3hp::aiplan::steerToLane(app, cpu.sync());
-    cpu.reload();
-    if (cpu.terminate) return;
-    // 0040de42  5d                     -pop ebp
-    cpu.ebp = app->getMemory<x86::reg32>(cpu.esp);
-    cpu.esp += 4;
-    // 0040de43  5a                     -pop edx
-    cpu.edx = app->getMemory<x86::reg32>(cpu.esp);
-    cpu.esp += 4;
-    // 0040de44  c3                     -ret 
-    cpu.esp += 4;
-    return;
-}
+/* sub_40de30: native, nfs3hp::frontend::simLaneSteer */
 
 /* sub_40de50: native, nfs3hp::aiplan::startHorn */
 

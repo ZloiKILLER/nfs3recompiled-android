@@ -1,0 +1,14 @@
+# address name kind: the functions native whole in src/nfs3hp/native_frontend_menue.cpp, frontend::name.
+# kind: how frontend_checks enters it (Menu, Key, Item, None).
+4cedd0 resultsMetricText None
+4cee40 resultsTimeText None
+4cf160 lapsToOption None
+4cf190 optionToLaps None
+4d1880 languageTextsFree None
+4d7560 artTilesDraw None
+4d7cc0 bouncerCornerFade None
+4d7d90 bouncerDraw None
+4d88c0 pickerShadedTriangle None
+4d9180 effectsBandColourScaled None
+4daa10 menuPointerLoad None
+4dab10 menuPointerHotSpot None

@@ -14,16 +14,12 @@ root=$(cd "$here/../.." && pwd)
 build=${BUILD:-"$here/build"}
 mkdir -p "$build"
 ${PYTHON:-python3} "$here/generate.py" "$build/generated" > "$build/generate.log"
-for fpu in double 80-bit; do
+for fpu in double; do
     out="$build/$fpu"
     rm -rf "$out"
     mkdir -p "$out/base"
     flags="-std=c++17 -O1 -fno-strict-aliasing -DWITH_MMX -w"
     sources="$(ls "$build"/generated/eacsnd.*.cpp) $root/src/lib/cpu.cpp $here/sound_checks.cpp"
-    if [ "$fpu" = 80-bit ]; then
-        flags="$flags -DWITH_PEDANTIC_FPU"
-        sources="$sources $root/src/lib/x87soft.cpp"
-    fi
     includes="-I$build/generated -I$root/sdl3/include -I$root/include -I$root/src/nfs3hp"
     printf '%s\n' $sources | xargs -P "${JOBS:-4}" -I{} \
         sh -c '${CXX:-c++} $1 $2 -c "$3" -o "$4/$(basename "$3" .cpp).o"' _ "$flags" "$includes" {} "$out/base"

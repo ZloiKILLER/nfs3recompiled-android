@@ -193,11 +193,8 @@ struct HeldEbp
 template <class Int>
 Int chopped(CPU& cpu, const x86::Float& value)
 {
-    const auto rc = cpu.fpu.control.rc;
-    cpu.fpu.control.rc = 3;
-    const Int n = cpu.fpu.toInteger<Int>(value);
-    cpu.fpu.control.rc = rc;
-    return n;
+    NFS2_USE(cpu);
+    return fp::toInteger<Int>(std::trunc(value));
 }
 
 /* The adapter's two ends: the caller's registers and stack on the way in,

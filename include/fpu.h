@@ -7,8 +7,6 @@
 #include <cmath>
 #include <limits>
 
-//#define NFS2SE_X87_DEBUG 1
-
 #if defined(_MSC_VER) && !defined(__clang__)
 #define FPU_NOINLINE __declspec(noinline)
 #else
@@ -18,9 +16,6 @@
 namespace x86
 {
 
-#ifdef WITH_PEDANTIC_FPU
-    struct Float;
-#endif
 
     struct IEEEf80Data
     {
@@ -38,9 +33,6 @@ namespace x86
         inline IEEEf80(IEEEf80Data data) : data(data) {};
         inline IEEEf80(double value);
 
-#ifdef WITH_PEDANTIC_FPU
-        inline void operator=(const Float &value);
-#endif
 
         inline operator double() const;
         inline void operator=(double value);
@@ -56,26 +48,6 @@ namespace x86
     extern "C" void convert80xi16(const IEEEf80Data *fp80, sreg16 *int16);
     extern "C" void convert80xi32(const IEEEf80Data *fp80, sreg32 *int32);
     extern "C" void convert80xi64(const IEEEf80Data *fp80, sreg64 *int64);
-    extern "C" x86::reg32 add80(IEEEf80Data *result, const IEEEf80Data *operand);
-    extern "C" x86::reg32 sub80(IEEEf80Data *result, const IEEEf80Data *operand);
-    extern "C" x86::reg32 mul80(IEEEf80Data *result, const IEEEf80Data *operand);
-    extern "C" x86::reg32 div80(IEEEf80Data *result, const IEEEf80Data *operand);
-    extern "C" x86::reg32 cmp80(const IEEEf80Data *f1, const IEEEf80Data *f2);
-    extern "C" x86::reg32 chs80(IEEEf80Data *result);
-    extern "C" x86::reg32 sin80(IEEEf80Data *result);
-    extern "C" x86::reg32 cos80(IEEEf80Data *result);
-    extern "C" x86::reg32 sqrt80(IEEEf80Data *result);
-    extern "C" x86::reg32 tan80(IEEEf80Data *result);
-    extern "C" x86::reg32 log280(IEEEf80Data *result);
-    extern "C" x86::reg32 atan80(IEEEf80Data *result, const IEEEf80Data *operand);
-    extern "C" x86::reg32 abs80(IEEEf80Data *result);
-    extern "C" x86::reg32 round80(IEEEf80Data *result, x86::reg32 mode);
-    extern "C" x86::reg32 f2xm180(IEEEf80Data *result);
-    extern "C" x86::reg32 scale80(IEEEf80Data *result, const IEEEf80Data *operand);
-    extern "C" x86::reg32 rem80(IEEEf80Data *result, const IEEEf80Data *operand);
-    /* The control word the helpers above round by: precision control and
-     * rounding mode, per thread as the x87's (src/lib/x87soft.cpp). */
-    extern "C" void control80(x86::reg16 word);
 
     inline IEEEf80::IEEEf80()
         : data{0, 0, 0, 0, 0}
@@ -99,245 +71,7 @@ namespace x86
         convert64x80(&value, &data);
     }
 
-#ifdef WITH_PEDANTIC_FPU
-    struct Float
-    {
-        IEEEf80 f80value;
-#ifdef NFS2SE_X87_DEBUG
-        float dbgValue;
-#endif
-
-        Float()
-            : f80value()
-#ifdef NFS2SE_X87_DEBUG
-              ,
-              dbgValue(0)
-#endif
-        {
-        }
-        Float(const IEEEf80 &value)
-            : f80value(value)
-#ifdef NFS2SE_X87_DEBUG
-              ,
-              dbgValue(0)
-#endif
-        {
-        }
-        Float(float value)
-        {
-            convert32x80(&value, &f80value.data);
-#ifdef NFS2SE_X87_DEBUG
-            convert80x32(&f80value.data, &dbgValue);
-#endif
-        }
-
-        Float(double value)
-        {
-            convert64x80(&value, &f80value.data);
-#ifdef NFS2SE_X87_DEBUG
-            convert80x32(&f80value.data, &dbgValue);
-#endif
-        }
-
-        Float(sreg16 value)
-        {
-            converti16x80(&value, &f80value.data);
-#ifdef NFS2SE_X87_DEBUG
-            convert80x32(&f80value.data, &dbgValue);
-#endif
-        }
-
-        Float(sreg32 value)
-        {
-            converti32x80(&value, &f80value.data);
-#ifdef NFS2SE_X87_DEBUG
-            convert80x32(&f80value.data, &dbgValue);
-#endif
-        }
-        Float(sreg64 value)
-        {
-            converti64x80(&value, &f80value.data);
-#ifdef NFS2SE_X87_DEBUG
-            convert80x32(&f80value.data, &dbgValue);
-#endif
-        }
-
-        operator IEEEf80() const
-        {
-            return f80value;
-        }
-
-        operator double() const
-        {
-            double result;
-            convert80x64(&f80value.data, &result);
-            return result;
-        }
-        operator float() const
-        {
-            float result;
-            convert80x32(&f80value.data, &result);
-            return result;
-        }
-        operator sreg16() const
-        {
-            sreg16 result;
-            convert80xi16(&f80value.data, &result);
-            return result;
-        }
-        operator sreg32() const
-        {
-            sreg32 result;
-            convert80xi32(&f80value.data, &result);
-            return result;
-        }
-        operator sreg64() const
-        {
-            sreg64 result;
-            convert80xi64(&f80value.data, &result);
-            return result;
-        }
-
-        Float &operator+=(const Float &other)
-        {
-            add80(&f80value.data, &other.f80value.data);
-#ifdef NFS2SE_X87_DEBUG
-            convert80x32(&f80value.data, &dbgValue);
-#endif
-            return *this;
-        }
-
-        Float &operator-=(const Float &other)
-        {
-            sub80(&f80value.data, &other.f80value.data);
-#ifdef NFS2SE_X87_DEBUG
-            convert80x32(&f80value.data, &dbgValue);
-#endif
-            return *this;
-        }
-
-        Float &operator*=(const Float &other)
-        {
-            mul80(&f80value.data, &other.f80value.data);
-#ifdef NFS2SE_X87_DEBUG
-            convert80x32(&f80value.data, &dbgValue);
-#endif
-            return *this;
-        }
-
-        Float &operator/=(const Float &other)
-        {
-            div80(&f80value.data, &other.f80value.data);
-#ifdef NFS2SE_X87_DEBUG
-            convert80x32(&f80value.data, &dbgValue);
-#endif
-            return *this;
-        }
-        Float operator-() const
-        {
-            Float result = *this;
-            chs80(&result.f80value.data);
-#ifdef NFS2SE_X87_DEBUG
-            convert80x32(&result.f80value.data, &result.dbgValue);
-#endif
-            return result;
-        }
-    };
-
-    static inline Float operator+(const Float &arg1, const Float &arg2)
-    {
-        Float result = arg1;
-        result += arg2;
-        return result;
-    }
-
-    static inline Float operator-(const Float &arg1, const Float &arg2)
-    {
-        Float result = arg1;
-        result -= arg2;
-        return result;
-    }
-
-    static inline Float operator*(const Float &arg1, const Float &arg2)
-    {
-        Float result = arg1;
-        result *= arg2;
-        return result;
-    }
-
-    static inline Float operator/(const Float &arg1, const Float &arg2)
-    {
-        Float result = arg1;
-        result /= arg2;
-        return result;
-    }
-
-    static inline Float operator+(const float &arg1, const Float &arg2)
-    {
-        Float result = arg1;
-        result += arg2;
-        return result;
-    }
-
-    static inline Float operator-(const float &arg1, const Float &arg2)
-    {
-        Float result = arg1;
-        result -= arg2;
-        return result;
-    }
-
-    static inline Float operator*(const float &arg1, const Float &arg2)
-    {
-        Float result = arg1;
-        result *= arg2;
-        return result;
-    }
-
-    static inline Float operator/(const float &arg1, const Float &arg2)
-    {
-        Float result = arg1;
-        result /= arg2;
-        return result;
-    }
-    static inline Float operator+(const double &arg1, const Float &arg2)
-    {
-        Float result = arg1;
-        result += arg2;
-        return result;
-    }
-
-    static inline Float operator-(const double &arg1, const Float &arg2)
-    {
-        Float result = arg1;
-        result -= arg2;
-        return result;
-    }
-
-    static inline Float operator*(const double &arg1, const Float &arg2)
-    {
-        Float result = arg1;
-        result *= arg2;
-        return result;
-    }
-
-    static inline Float operator/(const double &arg1, const Float &arg2)
-    {
-        Float result = arg1;
-        result /= arg2;
-        return result;
-    }
-#elif defined(WITH_WIDE_FPU)
-    /* An experiment (WITH_WIDE_FPU): every value on the x87 stack as a long
-     * double -- IEEE quad on arm64, 113 bits of significand, done in software
-     * and slow -- and never rounded to the race's single precision.  That is
-     * what Modern Patch does on a PC since 1.6.0 ("FPU always uses extended
-     * precision"): its race loop keeps the fninit and drops the fldcw at
-     * 0x4a3ed3.  Only to see whether the opponents drive better with more
-     * precision than a double gives. */
-    typedef long double Float;
-#else
     typedef double Float;
-#endif
 
     struct FPU
     {
@@ -404,25 +138,32 @@ namespace x86
             }
         }
 
+        /* What a callee left on the stack, as the generated code takes it
+         * (codegen/fpu_frame.py): the count moves whatever it was, as a native's
+         * does. */
+        Float take()
+        {
+            const Float result = regs[count & 7];
+            count--;
+            return result;
+        }
+
         Float &st(int index)
         {
             Float &result = regs[(count - index) & 7];
             return result;
         }
 
+        /* fninit.  The word an x87 starts with asks for 64 bits; here it asks
+         * for single precision, as the game's races do, so that the menus are in
+         * it too and code that reads the word and loads it again (the game's own
+         * loading screen does) asks for no other. */
         inline void init()
         {
             status.word = 0;
             count = 0;
-            setControl(0x37f);
+            setControl(0x7f);
         }
-
-        /* An experiment (NFS_FPU_FLOAT=1): every sum, product, quotient and
-         * root of the whole game rounded to a float's 24-bit significand, in
-         * the menus too, whatever precision the game asks for -- the game as
-         * it would run on the host's float alone (the exponent keeps the
-         * x87's range). */
-        static inline bool s_floatEverywhere = false;
 
         /* fldcw and init.  Nothing else writes the control word, so what it
          * asks of the arithmetic below is worked out here, once, rather than
@@ -438,14 +179,7 @@ namespace x86
             control.word = word;
             if (s_controlHook)
                 s_controlHook(word);
-#if defined(WITH_PEDANTIC_FPU)
-            control80(word);   // the 80-bit arithmetic rounds as the word says
-#elif defined(WITH_WIDE_FPU)
-            rounding = kRoundNone;   // as Modern Patch: the race's single precision is never taken
-#elif !defined(WITH_PEDANTIC_FPU)
-            rounding = control.pc != s_singlePrecision && !s_floatEverywhere ? kRoundNone
-                     : control.rc == 0 ? kRoundSingleNearest : kRoundSingleOther;
-#endif
+            rounding = control.pc != 0 ? kRoundNone : control.rc == 0 ? kRoundSingleNearest : kRoundSingleOther;
         }
 
         /* The four operations and fsqrt as the x87 rounds them: to the
@@ -461,73 +195,38 @@ namespace x86
          * one.  Precision control at 53 or 64 bits leaves the double as it is,
          * as close as the port comes to either.  The disassembler emits these
          * for fadd, fsub, fsubr, fmul, fdiv and fdivr (disasm/codegen/fpu.py). */
-#ifdef WITH_PEDANTIC_FPU
-        /* Every precision control is the x87's own here (x87soft.cpp); kept
-         * for NFS_FPU_SINGLE's log line. */
-        static inline x86::reg8 s_singlePrecision = 0;
-        inline Float add(const Float &a, const Float &b) { return a + b; }
-        inline Float sub(const Float &a, const Float &b) { return a - b; }
-        inline Float mul(const Float &a, const Float &b) { return a * b; }
-        inline Float div(const Float &a, const Float &b) { return a / b; }
-#else
         /* Which operation a rounding came from, for the rare rounding that has
          * to know the exact result more closely than the double says. */
         enum class Rounded { Add, Sub, Mul, Div, Sqrt };
-
-        /* The precision control that means single precision: 0, as the x87
-         * has it -- or 4, which two bits never hold, for a run without the
-         * rounding (NFS_FPU_SINGLE=0), to compare frame rates by. */
-#ifdef WITH_WIDE_FPU
-        // No race is ever in single precision, so the native loops stay off too.
-        static inline x86::reg8 s_singlePrecision = 4;
-#else
-        static inline x86::reg8 s_singlePrecision = 0;
-#endif
 
         /* What setControl found the control word to ask for. */
         static constexpr x86::reg8 kRoundNone = 0;           // 53 or 64 bits: the double as it is
         static constexpr x86::reg8 kRoundSingleNearest = 1;  // a race
         static constexpr x86::reg8 kRoundSingleOther = 2;    // single, a directed mode
-        x86::reg8 rounding = kRoundNone;
+        x86::reg8 rounding = kRoundSingleNearest;
 
         inline Float add(const Float &a, const Float &b)
         {
-#ifdef WITH_WIDE_FPU
-            return a + b;
-#else
             const double sum = a + b;
             return rounding == kRoundNone ? sum : toSingle(sum, Rounded::Add, a, b);
-#endif
         }
 
         inline Float sub(const Float &a, const Float &b)
         {
-#ifdef WITH_WIDE_FPU
-            return a - b;
-#else
             const double difference = a - b;
             return rounding == kRoundNone ? difference : toSingle(difference, Rounded::Sub, a, b);
-#endif
         }
 
         inline Float mul(const Float &a, const Float &b)
         {
-#ifdef WITH_WIDE_FPU
-            return a * b;
-#else
             const double product = a * b;
             return rounding == kRoundNone ? product : toSingle(product, Rounded::Mul, a, b);
-#endif
         }
 
         inline Float div(const Float &a, const Float &b)
         {
-#ifdef WITH_WIDE_FPU
-            return a / b;
-#else
             const double quotient = a / b;
             return rounding == kRoundNone ? quotient : toSingle(quotient, Rounded::Div, a, b);
-#endif
         }
 
         static constexpr std::uint64_t kSingleDropped = (std::uint64_t(1) << 29) - 1;
@@ -624,15 +323,9 @@ namespace x86
             std::memcpy(&value, &kept, sizeof kept);
             return value;
         }
-#endif
 
         inline void compare(const Float& val1, const Float& val2)
         {
-#ifdef WITH_PEDANTIC_FPU
-            x86::reg32 r = cmp80(&val1.f80value.data, &val2.f80value.data) & 0x4700;
-            status.word &= ~0x4700;
-            status.word |= r;
-#else
             if (val1 == val2)
             {
                 status.c3 = true;
@@ -658,173 +351,58 @@ namespace x86
                 status.c2 = true;
                 status.c0 = true;
             }
-#endif
         }
 
         inline Float log2(const Float &value)
         {
-#ifdef WITH_PEDANTIC_FPU
-            Float result = value;
-            x86::reg32 r = log280(&result.f80value.data);
-            status.word &= ~0x4700;
-            status.word |= r & 0x4700;
-#ifdef NFS2SE_X87_DEBUG
-            convert80x32(&result.f80value.data, &result.dbgValue);
-#endif
-            return result;
-#else
             return std::log2(value);
-#endif
         }
 
         inline Float sin(const Float &value)
         {
-#ifdef WITH_PEDANTIC_FPU
-            Float result = value;
-            x86::reg32 r = sin80(&result.f80value.data);
-            status.word &= ~0x4700;
-            status.word |= r & 0x4700;
-#ifdef NFS2SE_X87_DEBUG
-            convert80x32(&result.f80value.data, &result.dbgValue);
-#endif
-            return result;
-#else
             return std::sin(value);
-#endif
         }
 
         inline Float cos(const Float &value)
         {
-#ifdef WITH_PEDANTIC_FPU
-            Float result = value;
-            x86::reg32 r = cos80(&result.f80value.data);
-            status.word &= ~0x4700;
-            status.word |= r & 0x4700;
-#ifdef NFS2SE_X87_DEBUG
-            convert80x32(&result.f80value.data, &result.dbgValue);
-#endif
-            return result;
-#else
             return std::cos(value);
-#endif
         }
 
         inline Float tan(const Float &value)
         {
-#ifdef WITH_PEDANTIC_FPU
-            Float result = value;
-            x86::reg32 r = tan80(&result.f80value.data);
-            status.word &= ~0x4700;
-            status.word |= r & 0x4700;
-#ifdef NFS2SE_X87_DEBUG
-            convert80x32(&result.f80value.data, &result.dbgValue);
-#endif
-            return result;
-#else
             return std::tan(value);
-#endif
         }
 
         inline Float abs(const Float &value)
         {
-#ifdef WITH_PEDANTIC_FPU
-            Float result = value;
-            x86::reg32 r = abs80(&result.f80value.data);
-            status.word &= ~0x4700;
-            status.word |= r & 0x4700;
-#ifdef NFS2SE_X87_DEBUG
-            convert80x32(&result.f80value.data, &result.dbgValue);
-#endif
-            return result;
-#else
             return std::fabs(value);
-#endif
         }
 
         inline Float sqrt(const Float &value)
         {
-#ifdef WITH_PEDANTIC_FPU
-            Float result = value;
-            x86::reg32 r = sqrt80(&result.f80value.data);
-            status.word &= ~0x4700;
-            status.word |= r & 0x4700;
-#ifdef NFS2SE_X87_DEBUG
-            convert80x32(&result.f80value.data, &result.dbgValue);
-#endif
-            return result;
-#else
-#ifdef WITH_WIDE_FPU
-            return std::sqrt(value);
-#else
             const double root = ::sqrt(value);
             return rounding == kRoundNone ? root : toSingle(root, Rounded::Sqrt, value, 0.0);
-#endif
-#endif
         }
 
         inline Float atan(const Float &value, const Float &operand)
         {
-#ifdef WITH_PEDANTIC_FPU
-            Float result = value;
-            x86::reg32 r = atan80(&result.f80value.data, &operand.f80value.data);
-            status.word &= ~0x4700;
-            status.word |= r & 0x4700;
-#ifdef NFS2SE_X87_DEBUG
-            convert80x32(&result.f80value.data, &result.dbgValue);
-#endif
-            return result;
-#else
             return std::atan2(operand, value);
-#endif
         }
 
         inline Float rem(const Float &val1, const Float &val2)
         {
-#ifdef WITH_PEDANTIC_FPU
-            Float result = val1;
-            x86::reg32 r = rem80(&result.f80value.data, &val2.f80value.data);
-            status.word &= ~0x4700;
-            status.word |= r & 0x4700;
-#ifdef NFS2SE_X87_DEBUG
-            convert80x32(&result.f80value.data, &result.dbgValue);
-#endif
-            return result;
-#else
             status.c2 = 0;
             return std::fmod(val1, val2);
-#endif
         }
 
         inline Float scale(const Float &val1, const Float &val2)
         {
-#ifdef WITH_PEDANTIC_FPU
-            Float result = val1;
-            x86::reg32 r = scale80(&result.f80value.data, &val2.f80value.data);
-            status.word &= ~0x4700;
-            status.word |= r & 0x4700;
-#ifdef NFS2SE_X87_DEBUG
-            convert80x32(&result.f80value.data, &result.dbgValue);
-#endif
-            return result;
-#else
             return val1 * std::pow(Float(2), std::trunc(val2));
-#endif
         }
 
         inline Float f2xm1(const Float &value)
         {
-#ifdef WITH_PEDANTIC_FPU
-            Float result = value;
-            x86::reg32 r = f2xm180(&result.f80value.data);
-            status.word &= ~0x4700;
-            status.word |= r & 0x4700;
-#ifdef NFS2SE_X87_DEBUG
-            convert80x32(&result.f80value.data, &result.dbgValue);
-#endif
-            return result;
-#else
             return std::pow(Float(2), value) - Float(1);
-#endif
         }
 
         /* st(0) rounded to an integer in the control word's mode -- frndint,
@@ -832,14 +410,6 @@ namespace x86
          * generator can hand over a value it keeps in a local. */
         Float rndint(const Float& value)
         {
-#ifdef WITH_PEDANTIC_FPU
-            Float result = value;
-            round80(&result.f80value.data, control.rc);
-#ifdef NFS2SE_X87_DEBUG
-            convert80x32(&result.f80value.data, &result.dbgValue);
-#endif
-            return result;
-#else
             switch (control.rc)
             {
             case 0:
@@ -854,7 +424,6 @@ namespace x86
                 NFS2_ASSERT(false);
                 return std::trunc(value);
             }
-#endif
         }
 
         Float rndint()
@@ -876,9 +445,6 @@ namespace x86
         template <typename Int>
         Int toInteger(const Float& value)
         {
-#ifdef WITH_PEDANTIC_FPU
-            return Int(rndint(value));
-#else
             const Float rounded = rndint(value);
             const Float lowest = Float(std::numeric_limits<Int>::min());
             if (!(rounded >= lowest && rounded < -lowest))
@@ -887,17 +453,78 @@ namespace x86
                 return std::numeric_limits<Int>::min();
             }
             return Int(rounded);
-#endif
         }
     };
 
-#ifdef WITH_PEDANTIC_FPU
-    void IEEEf80::operator=(const Float &value)
-    {
-        *this = value.f80value;
-    }
-#endif
 
+}
+
+/* The game's arithmetic with nothing behind it: no stack, no control word, no
+ * status word.  The sums, products, quotients and roots come out as an x87 at
+ * single precision has them, to the bit; codegen/fpu.py writes these for the
+ * generated code.  Values stay doubles between operations: a float's 24 bits
+ * with the x87's wider exponent, and the full width of what sin and the like
+ * return, which the x87 does not round either. */
+namespace fp
+{
+    using x86::Float;
+
+    inline double single(double value, x86::FPU::Rounded op, double a, double b)
+    {
+        std::uint64_t bits;
+        std::memcpy(&bits, &value, sizeof bits);
+        const std::uint64_t exponent = (bits >> 52) & 0x7ff;
+        if ((bits & x86::FPU::kSingleDropped) != x86::FPU::kSingleHalf && exponent - 0x381 < 0x47e - 0x381)
+            return double(float(value));
+        if ((bits << 1) == 0)
+            return value;  // either zero
+        return x86::FPU::roundSingleSlow(value, op, a, b, 0);
+    }
+
+    inline double add(double a, double b) { return single(a + b, x86::FPU::Rounded::Add, a, b); }
+    inline double sub(double a, double b) { return single(a - b, x86::FPU::Rounded::Sub, a, b); }
+    inline double mul(double a, double b) { return single(a * b, x86::FPU::Rounded::Mul, a, b); }
+    inline double div(double a, double b) { return single(a / b, x86::FPU::Rounded::Div, a, b); }
+    inline double sqrt(double a) { return single(::sqrt(a), x86::FPU::Rounded::Sqrt, a, 0.0); }
+
+    /* fcom: the word fnstsw reads, the x87's c3, c2 and c0. */
+    inline x86::reg16 compare(double a, double b)
+    {
+        if (a == b)
+            return 0x4000;
+        if (a > b)
+            return 0;
+        if (a < b)
+            return 0x100;
+        ++x86::FPU::s_unordered;
+        return 0x4500;
+    }
+
+    inline double abs(double a) { return std::fabs(a); }
+    inline double sin(double a) { return std::sin(a); }
+    inline double cos(double a) { return std::cos(a); }
+    inline double tan(double a) { return std::tan(a); }
+    inline double log2(double a) { return std::log2(a); }
+    inline double atan(double a, double b) { return std::atan2(b, a); }
+    inline double rem(double a, double b) { return std::fmod(a, b); }
+    inline double scale(double a, double b) { return a * std::pow(2.0, std::trunc(b)); }
+    inline double f2xm1(double a) { return std::pow(2.0, a) - 1.0; }
+    inline double rndint(double a) { return std::nearbyint(a); }
+
+    /* fistp, to nearest: the x87's integer indefinite, the lowest integer, for a
+     * NaN or a value out of range, where the host's conversion is undefined. */
+    template <typename Int>
+    inline Int toInteger(double value)
+    {
+        const double rounded = std::nearbyint(value);
+        const double lowest = double(std::numeric_limits<Int>::min());
+        if (!(rounded >= lowest && rounded < -lowest))
+        {
+            ++x86::FPU::s_indefinite;
+            return std::numeric_limits<Int>::min();
+        }
+        return Int(rounded);
+    }
 }
 
 #endif /* !FPU_H_ */

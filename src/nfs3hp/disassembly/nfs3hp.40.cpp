@@ -5893,7 +5893,7 @@ L_0x004fb4a7:
     // 004fb4b8  0f8ee2010000           -jle 0x4fb6a0
     if (cpu.flags.zf || (cpu.flags.sf != cpu.flags.of))
     {
-        return sub_4fb6a0(app, cpu.handOver());
+    return sub_4fb6a0(app, cpu.handOver());
     }
     // 004fb4be  89f5                   -mov ebp, esi
     cpu.ebp = cpu.esi;
@@ -5914,7 +5914,7 @@ L_0x004fb4c0:
     // 004fb4c8  0f8ed9010000           -jle 0x4fb6a7
     if (cpu.flags.zf || (cpu.flags.sf != cpu.flags.of))
     {
-        return sub_4fb6a7(app, cpu.handOver());
+    return sub_4fb6a7(app, cpu.handOver());
     }
     // 004fb4ce  89fb                   -mov ebx, edi
     cpu.ebx = cpu.edi;
@@ -5934,7 +5934,7 @@ L_0x004fb4c0:
     // 004fb4d8  0f8dd0010000           -jge 0x4fb6ae
     if (cpu.flags.sf == cpu.flags.of)
     {
-        return sub_4fb6ae(app, cpu.handOver());
+    return sub_4fb6ae(app, cpu.handOver());
     }
     // 004fb4de  8b1d504f9f00           -mov ebx, dword ptr [0x9f4f50]
     cpu.ebx = app->getMemory<x86::reg32>(x86::reg32(10440528) /* 0x9f4f50 */);
@@ -5988,7 +5988,7 @@ L_0x004fb4ea:
     // 004fb505  0f84aa010000           -je 0x4fb6b5
     if (cpu.flags.zf)
     {
-        return sub_4fb6b5(app, cpu.handOver());
+    return sub_4fb6b5(app, cpu.handOver());
     }
     // 004fb50b  8b5c2408               -mov ebx, dword ptr [esp + 8]
     cpu.ebx = app->getMemory<x86::reg32>(cpu.esp + x86::reg32(8) /* 0x8 */);
@@ -6015,7 +6015,7 @@ L_0x004fb4ea:
     // 004fb521  0f849b010000           -je 0x4fb6c2
     if (cpu.flags.zf)
     {
-        return sub_4fb6c2(app, cpu.handOver());
+    return sub_4fb6c2(app, cpu.handOver());
     }
     // 004fb527  8b442408               -mov eax, dword ptr [esp + 8]
     cpu.eax = app->getMemory<x86::reg32>(cpu.esp + x86::reg32(8) /* 0x8 */);
@@ -6058,7 +6058,7 @@ L_0x004fb4ea:
     // 004fb552  0f857f010000           -jne 0x4fb6d7
     if (!cpu.flags.zf)
     {
-        return sub_4fb6d7(app, cpu.handOver());
+    return sub_4fb6d7(app, cpu.handOver());
     }
 L_0x004fb558:
     // 004fb558  83c40c                 -add esp, 0xc
@@ -6374,7 +6374,7 @@ L_entry_0x004fb536:
     // 004fb552  0f857f010000           -jne 0x4fb6d7
     if (!cpu.flags.zf)
     {
-        return sub_4fb6d7(app, cpu.handOver());
+    return sub_4fb6d7(app, cpu.handOver());
     }
 L_0x004fb558:
     // 004fb558  83c40c                 -add esp, 0xc
@@ -6690,7 +6690,7 @@ L_entry_0x004fb527:
     // 004fb552  0f857f010000           -jne 0x4fb6d7
     if (!cpu.flags.zf)
     {
-        return sub_4fb6d7(app, cpu.handOver());
+    return sub_4fb6d7(app, cpu.handOver());
     }
 L_0x004fb558:
     // 004fb558  83c40c                 -add esp, 0xc
@@ -6963,7 +6963,7 @@ L_entry_0x004fb51b:
     // 004fb521  0f849b010000           -je 0x4fb6c2
     if (cpu.flags.zf)
     {
-        return sub_4fb6c2(app, cpu.handOver());
+    return sub_4fb6c2(app, cpu.handOver());
     }
     // 004fb527  8b442408               -mov eax, dword ptr [esp + 8]
     cpu.eax = app->getMemory<x86::reg32>(cpu.esp + x86::reg32(8) /* 0x8 */);
@@ -7006,7 +7006,7 @@ L_entry_0x004fb51b:
     // 004fb552  0f857f010000           -jne 0x4fb6d7
     if (!cpu.flags.zf)
     {
-        return sub_4fb6d7(app, cpu.handOver());
+    return sub_4fb6d7(app, cpu.handOver());
     }
 L_0x004fb558:
     // 004fb558  83c40c                 -add esp, 0xc
@@ -7279,7 +7279,7 @@ L_entry_0x004fb50b:
     // 004fb521  0f849b010000           -je 0x4fb6c2
     if (cpu.flags.zf)
     {
-        return sub_4fb6c2(app, cpu.handOver());
+    return sub_4fb6c2(app, cpu.handOver());
     }
     // 004fb527  8b442408               -mov eax, dword ptr [esp + 8]
     cpu.eax = app->getMemory<x86::reg32>(cpu.esp + x86::reg32(8) /* 0x8 */);
@@ -7322,7 +7322,7 @@ L_entry_0x004fb50b:
     // 004fb552  0f857f010000           -jne 0x4fb6d7
     if (!cpu.flags.zf)
     {
-        return sub_4fb6d7(app, cpu.handOver());
+    return sub_4fb6d7(app, cpu.handOver());
     }
 L_0x004fb558:
     // 004fb558  83c40c                 -add esp, 0xc
@@ -7568,7 +7568,7 @@ L_entry_0x004fb4ea:
     // 004fb505  0f84aa010000           -je 0x4fb6b5
     if (cpu.flags.zf)
     {
-        return sub_4fb6b5(app, cpu.handOver());
+    return sub_4fb6b5(app, cpu.handOver());
     }
     // 004fb50b  8b5c2408               -mov ebx, dword ptr [esp + 8]
     cpu.ebx = app->getMemory<x86::reg32>(cpu.esp + x86::reg32(8) /* 0x8 */);
@@ -7595,7 +7595,7 @@ L_entry_0x004fb4ea:
     // 004fb521  0f849b010000           -je 0x4fb6c2
     if (cpu.flags.zf)
     {
-        return sub_4fb6c2(app, cpu.handOver());
+    return sub_4fb6c2(app, cpu.handOver());
     }
     // 004fb527  8b442408               -mov eax, dword ptr [esp + 8]
     cpu.eax = app->getMemory<x86::reg32>(cpu.esp + x86::reg32(8) /* 0x8 */);
@@ -7638,7 +7638,7 @@ L_entry_0x004fb4ea:
     // 004fb552  0f857f010000           -jne 0x4fb6d7
     if (!cpu.flags.zf)
     {
-        return sub_4fb6d7(app, cpu.handOver());
+    return sub_4fb6d7(app, cpu.handOver());
     }
 L_0x004fb558:
     // 004fb558  83c40c                 -add esp, 0xc
@@ -7830,7 +7830,7 @@ L_entry_0x004fb4d0:
     // 004fb4d8  0f8dd0010000           -jge 0x4fb6ae
     if (cpu.flags.sf == cpu.flags.of)
     {
-        return sub_4fb6ae(app, cpu.handOver());
+    return sub_4fb6ae(app, cpu.handOver());
     }
     // 004fb4de  8b1d504f9f00           -mov ebx, dword ptr [0x9f4f50]
     cpu.ebx = app->getMemory<x86::reg32>(x86::reg32(10440528) /* 0x9f4f50 */);
@@ -7884,7 +7884,7 @@ L_0x004fb4ea:
     // 004fb505  0f84aa010000           -je 0x4fb6b5
     if (cpu.flags.zf)
     {
-        return sub_4fb6b5(app, cpu.handOver());
+    return sub_4fb6b5(app, cpu.handOver());
     }
     // 004fb50b  8b5c2408               -mov ebx, dword ptr [esp + 8]
     cpu.ebx = app->getMemory<x86::reg32>(cpu.esp + x86::reg32(8) /* 0x8 */);
@@ -7911,7 +7911,7 @@ L_0x004fb4ea:
     // 004fb521  0f849b010000           -je 0x4fb6c2
     if (cpu.flags.zf)
     {
-        return sub_4fb6c2(app, cpu.handOver());
+    return sub_4fb6c2(app, cpu.handOver());
     }
     // 004fb527  8b442408               -mov eax, dword ptr [esp + 8]
     cpu.eax = app->getMemory<x86::reg32>(cpu.esp + x86::reg32(8) /* 0x8 */);
@@ -7954,7 +7954,7 @@ L_0x004fb4ea:
     // 004fb552  0f857f010000           -jne 0x4fb6d7
     if (!cpu.flags.zf)
     {
-        return sub_4fb6d7(app, cpu.handOver());
+    return sub_4fb6d7(app, cpu.handOver());
     }
 L_0x004fb558:
     // 004fb558  83c40c                 -add esp, 0xc
@@ -8126,7 +8126,7 @@ L_entry_0x004fb4c0:
     // 004fb4c8  0f8ed9010000           -jle 0x4fb6a7
     if (cpu.flags.zf || (cpu.flags.sf != cpu.flags.of))
     {
-        return sub_4fb6a7(app, cpu.handOver());
+    return sub_4fb6a7(app, cpu.handOver());
     }
     // 004fb4ce  89fb                   -mov ebx, edi
     cpu.ebx = cpu.edi;
@@ -8146,7 +8146,7 @@ L_entry_0x004fb4c0:
     // 004fb4d8  0f8dd0010000           -jge 0x4fb6ae
     if (cpu.flags.sf == cpu.flags.of)
     {
-        return sub_4fb6ae(app, cpu.handOver());
+    return sub_4fb6ae(app, cpu.handOver());
     }
     // 004fb4de  8b1d504f9f00           -mov ebx, dword ptr [0x9f4f50]
     cpu.ebx = app->getMemory<x86::reg32>(x86::reg32(10440528) /* 0x9f4f50 */);
@@ -8200,7 +8200,7 @@ L_0x004fb4ea:
     // 004fb505  0f84aa010000           -je 0x4fb6b5
     if (cpu.flags.zf)
     {
-        return sub_4fb6b5(app, cpu.handOver());
+    return sub_4fb6b5(app, cpu.handOver());
     }
     // 004fb50b  8b5c2408               -mov ebx, dword ptr [esp + 8]
     cpu.ebx = app->getMemory<x86::reg32>(cpu.esp + x86::reg32(8) /* 0x8 */);
@@ -8227,7 +8227,7 @@ L_0x004fb4ea:
     // 004fb521  0f849b010000           -je 0x4fb6c2
     if (cpu.flags.zf)
     {
-        return sub_4fb6c2(app, cpu.handOver());
+    return sub_4fb6c2(app, cpu.handOver());
     }
     // 004fb527  8b442408               -mov eax, dword ptr [esp + 8]
     cpu.eax = app->getMemory<x86::reg32>(cpu.esp + x86::reg32(8) /* 0x8 */);
@@ -8270,7 +8270,7 @@ L_0x004fb4ea:
     // 004fb552  0f857f010000           -jne 0x4fb6d7
     if (!cpu.flags.zf)
     {
-        return sub_4fb6d7(app, cpu.handOver());
+    return sub_4fb6d7(app, cpu.handOver());
     }
 L_0x004fb558:
     // 004fb558  83c40c                 -add esp, 0xc
@@ -8421,7 +8421,7 @@ L_0x004fb4a7:
     // 004fb4b8  0f8ee2010000           -jle 0x4fb6a0
     if (cpu.flags.zf || (cpu.flags.sf != cpu.flags.of))
     {
-        return sub_4fb6a0(app, cpu.handOver());
+    return sub_4fb6a0(app, cpu.handOver());
     }
     // 004fb4be  89f5                   -mov ebp, esi
     cpu.ebp = cpu.esi;
@@ -8442,7 +8442,7 @@ L_0x004fb4c0:
     // 004fb4c8  0f8ed9010000           -jle 0x4fb6a7
     if (cpu.flags.zf || (cpu.flags.sf != cpu.flags.of))
     {
-        return sub_4fb6a7(app, cpu.handOver());
+    return sub_4fb6a7(app, cpu.handOver());
     }
     // 004fb4ce  89fb                   -mov ebx, edi
     cpu.ebx = cpu.edi;
@@ -8462,7 +8462,7 @@ L_0x004fb4c0:
     // 004fb4d8  0f8dd0010000           -jge 0x4fb6ae
     if (cpu.flags.sf == cpu.flags.of)
     {
-        return sub_4fb6ae(app, cpu.handOver());
+    return sub_4fb6ae(app, cpu.handOver());
     }
     // 004fb4de  8b1d504f9f00           -mov ebx, dword ptr [0x9f4f50]
     cpu.ebx = app->getMemory<x86::reg32>(x86::reg32(10440528) /* 0x9f4f50 */);
@@ -8516,7 +8516,7 @@ L_0x004fb4ea:
     // 004fb505  0f84aa010000           -je 0x4fb6b5
     if (cpu.flags.zf)
     {
-        return sub_4fb6b5(app, cpu.handOver());
+    return sub_4fb6b5(app, cpu.handOver());
     }
     // 004fb50b  8b5c2408               -mov ebx, dword ptr [esp + 8]
     cpu.ebx = app->getMemory<x86::reg32>(cpu.esp + x86::reg32(8) /* 0x8 */);
@@ -8543,7 +8543,7 @@ L_0x004fb4ea:
     // 004fb521  0f849b010000           -je 0x4fb6c2
     if (cpu.flags.zf)
     {
-        return sub_4fb6c2(app, cpu.handOver());
+    return sub_4fb6c2(app, cpu.handOver());
     }
     // 004fb527  8b442408               -mov eax, dword ptr [esp + 8]
     cpu.eax = app->getMemory<x86::reg32>(cpu.esp + x86::reg32(8) /* 0x8 */);
@@ -8586,7 +8586,7 @@ L_0x004fb4ea:
     // 004fb552  0f857f010000           -jne 0x4fb6d7
     if (!cpu.flags.zf)
     {
-        return sub_4fb6d7(app, cpu.handOver());
+    return sub_4fb6d7(app, cpu.handOver());
     }
 L_0x004fb558:
     // 004fb558  83c40c                 -add esp, 0xc
@@ -8663,7 +8663,7 @@ void Application::sub_4fb6b5(WinApplication* app, x86::CPU& cpu)
     // 004fb6b7  0f854efeffff           -jne 0x4fb50b
     if (!cpu.flags.zf)
     {
-        return sub_4fb50b(app, cpu.handOver());
+    return sub_4fb50b(app, cpu.handOver());
     }
     // 004fb6bd  e959feffff             -jmp 0x4fb51b
     return sub_4fb51b(app, cpu.handOver());
@@ -8690,7 +8690,7 @@ void Application::sub_4fb6c2(WinApplication* app, x86::CPU& cpu)
     // 004fb6cc  0f8555feffff           -jne 0x4fb527
     if (!cpu.flags.zf)
     {
-        return sub_4fb527(app, cpu.handOver());
+    return sub_4fb527(app, cpu.handOver());
     }
     // 004fb6d2  e95ffeffff             -jmp 0x4fb536
     return sub_4fb536(app, cpu.handOver());

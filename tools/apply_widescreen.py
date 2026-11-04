@@ -78,6 +78,27 @@ HEADER = "// Port (tools/apply_widescreen.py): defined in nfs3hp_main.cpp.\n"
 
 # (generated file, address and bytes of the instruction, original code, patched
 # code, the declaration the patched code needs)
+# The Graphics menu's line for Dynamic Fullscreen: its name rather than the size and
+# depth sub_448210 has just written for it.  That function is native whole
+# (native_frontend_menua.cpp); tools/frontend_checks/generate.py makes the change to the
+# game's code it is held against.
+MODE_LABEL = [
+    ("nfs3hp.12.cpp", "00448291  8b1518925500",
+     "    cpu.edx = app->getMemory<x86::reg32>(x86::reg32(5607960) /* 0x559218 */);",
+     "    dynamicFullscreenLabel(app, cpu.edx); /* port: Dynamic Fullscreen named in the list */\n"
+     "    cpu.edx = app->getMemory<x86::reg32>(x86::reg32(5607960) /* 0x559218 */);",
+     "void dynamicFullscreenLabel(win32::WinApplication* app, x86::reg32 entry);\n"),
+]
+
+# sub_4dbde0 is native whole (native_frontend_simc.cpp) and calls zoomHalfWidth itself;
+# tools/frontend_checks/generate.py makes the change to the game's code it is held against.
+ZOOM = [
+    ("nfs3hp.31.cpp", "004dbe8f  d905ac005600",
+     "x86::Float(app->getMemory<float>(x86::reg32(5636268) /* 0x5600ac */))",
+     "x86::Float(zoomHalfWidth(app)) /* port: a racing zoom camera's x scale is its y scale on a wide view */",
+     "float zoomHalfWidth(win32::WinApplication* app);\n"),
+]
+
 SITES = [
     ("nfs3hp.27.cpp", "004bedf8  0f8565000000",
      "    if (!cpu.flags.zf)",
@@ -96,13 +117,6 @@ SITES = [
      " /* port: Dynamic Fullscreen found again */\n"
      "    cpu.clear_co();",
      "x86::reg32 dynamicSavedMode(x86::reg32 found, x86::reg32 width);\n"),
-    # The Graphics menu's line for Dynamic Fullscreen: its name rather than
-    # the size and depth sub_448210 has just written for it.
-    ("nfs3hp.12.cpp", "00448291  8b1518925500",
-     "    cpu.edx = app->getMemory<x86::reg32>(x86::reg32(5607960) /* 0x559218 */);",
-     "    dynamicFullscreenLabel(app, cpu.edx); /* port: Dynamic Fullscreen named in the list */\n"
-     "    cpu.edx = app->getMemory<x86::reg32>(x86::reg32(5607960) /* 0x559218 */);",
-     "void dynamicFullscreenLabel(win32::WinApplication* app, x86::reg32 entry);\n"),
     ("nfs3hp.31.cpp", "004dbd1b  8945e8",
      "    app->getMemory<x86::reg32>(cpu.ebp + x86::reg32(-24) /* -0x18 */) = cpu.eax;",
      "    app->getMemory<x86::reg32>(cpu.ebp + x86::reg32(-24) /* -0x18 */) = cpu.eax;\n"
@@ -117,10 +131,6 @@ SITES = [
      "    cpu.eax = letterboxHeight(app->getMemory<x86::reg32>(cpu.ebp + x86::reg32(-32)),"
      " app->getMemory<x86::reg32>(cpu.ebp + x86::reg32(-28)), cpu.eax); /* port: bars on any screen */",
      "x86::reg32 letterboxHeight(x86::reg32 width, x86::reg32 height, x86::reg32 half);\n"),
-    ("nfs3hp.31.cpp", "004dbe8f  d905ac005600",
-     "x86::Float(app->getMemory<float>(x86::reg32(5636268) /* 0x5600ac */))",
-     "x86::Float(zoomHalfWidth(app)) /* port: a racing zoom camera's x scale is its y scale on a wide view */",
-     "float zoomHalfWidth(win32::WinApplication* app);\n"),
     ("nfs3hp.11.cpp", "00443a44  e8b7750900",
      "    nfs3hp::port::draw2d::drawTexturedQuad(app, cpu.sync());",
      "    dialogEmblem(true); /* port: the dialog's NFS emblem round on a wide screen */\n"

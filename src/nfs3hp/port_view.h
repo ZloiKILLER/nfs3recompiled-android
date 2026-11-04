@@ -9,9 +9,8 @@
  * race's results, and the view's own pan, drawn grid and keys.
  *
  * This is the first of the x87-free layers: the arithmetic is the host's
- * doubles, rounded to a float where the game stores a float, not cpu.fpu.  It
- * is what the build computes at the x87's extended precision (the default; the
- * game's own single-precision race, NFS_FPU_EXTENDED=0, is not followed here).
+ * doubles, rounded to a float where the game stores a float, not cpu.fpu (the
+ * game's single-precision race is not followed: only what is drawn sees it).
  * An adapter that gives back a float pushes it on the x87's stack as the game's
  * code does, since the game's callers still read it there.
  *

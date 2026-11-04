@@ -1650,7 +1650,7 @@ constexpr reg32 kRowColours[7] = {0xff505050, 0xff505050, 0xff505050, 0xffa0a0a0
  * control word says. */
 int32_t stored(CPU& cpu, double value)
 {
-    return cpu.fpu.toInteger<int32_t>(x86::Float(value));
+    return fp::toInteger<int32_t>(x86::Float(value));
 }
 
 /* The HUD's table of labelled rows -- the racers on the screen `group` --

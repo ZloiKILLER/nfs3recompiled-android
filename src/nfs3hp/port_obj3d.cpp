@@ -346,15 +346,15 @@ void markCode(App* app, reg32 at)
  * (x, y, z, w only). */
 void project(App* app, CPU& cpu, reg32 xBits, reg32 yBits, reg32 zBits, Vertex& v)
 {
-    const float w = float(cpu.fpu.div(Float(1.0), bitsF(zBits)));
-    const Float a = cpu.fpu.mul(Float(kScaleX(app)), Float(w));
-    const Float b = cpu.fpu.mul(Float(kScaleY(app)), Float(w));
-    const Float y = cpu.fpu.mul(b, bitsF(yBits));
-    const Float x = cpu.fpu.mul(a, bitsF(xBits));
+    const float w = float(fp::div(Float(1.0), bitsF(zBits)));
+    const Float a = fp::mul(Float(kScaleX(app)), Float(w));
+    const Float b = fp::mul(Float(kScaleY(app)), Float(w));
+    const Float y = fp::mul(b, bitsF(yBits));
+    const Float x = fp::mul(a, bitsF(xBits));
     v.w = w;
-    v.x = float(cpu.fpu.add(x, Float(kCentreX(app))));
+    v.x = float(fp::add(x, Float(kCentreX(app))));
     v.z = fromBits(zBits);
-    v.y = float(cpu.fpu.add(y, Float(kCentreY(app))));
+    v.y = float(fp::add(y, Float(kCentreY(app))));
 }
 
 /* A colour's channels scaled by `scale` of 0xff (the code's mul and its two
@@ -379,11 +379,11 @@ uint32_t fadeOf(int32_t alpha)
  * it, else the float kept at `kept` rounded again. */
 int32_t flareAlpha(CPU& cpu, const Float& value, float kept)
 {
-    if (cpu.fpu.toInteger<int32_t>(value) < 0)
+    if (fp::toInteger<int32_t>(value) < 0)
         return 0;
-    if (cpu.fpu.toInteger<int32_t>(Float(kept)) > 0xff)
+    if (fp::toInteger<int32_t>(Float(kept)) > 0xff)
         return 0xff;
-    return cpu.fpu.toInteger<int32_t>(Float(kept));
+    return fp::toInteger<int32_t>(Float(kept));
 }
 
 /* strcpy and strcat as the code has them inline. */
@@ -563,10 +563,10 @@ Result flare(App* app, CPU& cpu, reg32 esp, reg32 x, reg32 y, reg32 z, uint32_t 
         return 0;
     const reg32 room = word(app, roomAt);
     const Float w = Float(record<Vertex>(app, vertexAt).w);
-    const Float sx = cpu.fpu.mul(Float(kScaleX(app)), w);
-    const Float sy = cpu.fpu.mul(Float(kScaleY(app)), w);
+    const Float sx = fp::mul(Float(kScaleX(app)), w);
+    const Float sy = fp::mul(Float(kScaleY(app)), w);
     const reg32 q0 = room + 0x20, q1 = room + 0x40, q2 = room + 0x60, q3 = room + 0x80;
-    const Float distance = cpu.fpu.div(bitsF(x), bitsF(z));
+    const Float distance = fp::div(bitsF(x), bitsF(z));
     app->getMemory<uint16_t>(room + 4) = 0;
     setWord(app, room, 0);
     app->getMemory<uint16_t>(room + 6) = 1;
@@ -577,10 +577,10 @@ Result flare(App* app, CPU& cpu, reg32 esp, reg32 x, reg32 y, reg32 z, uint32_t 
     setWord(app, room + 0x14, q3);
     setWord(app, room + 0x1c, bitsOf(record<Vertex>(app, vertexAt).z));
     const Float size_ = bitsF(size);
-    const Float across = cpu.fpu.mul(sx, size_), down = cpu.fpu.mul(size_, sy);
+    const Float across = fp::mul(sx, size_), down = fp::mul(size_, sy);
     const float d = float(distance);
     copyWords(app, q3, vertexAt, 8);
-    const Float turned = cpu.fpu.mul(cpu.fpu.add(Float(1.0), Float(d)), F(app, kQuarterA));
+    const Float turned = fp::mul(fp::add(Float(1.0), Float(d)), F(app, kQuarterA));
     copyWords(app, q2, q3, 8);
     const float acrossF = float(across), downF = float(down);
     copyWords(app, q1, q2, 8);
@@ -588,32 +588,32 @@ Result flare(App* app, CPU& cpu, reg32 esp, reg32 x, reg32 y, reg32 z, uint32_t 
     copyWords(app, q0, q1, 8);
     if (!callGame(app, cpu, frame, kSine, {bitsOf(record<Vertex>(app, vertexAt).z), q0}, {angle}))
         return {};
-    const float s = float(cpu.fpu.mul(cpu.fpu.st(0), Float(acrossF)));
+    const float s = float(fp::mul(cpu.fpu.st(0), Float(acrossF)));
     dropFloat(cpu);
     if (!callGame(app, cpu, frame, kCosine, {bitsOf(record<Vertex>(app, vertexAt).z), q0}, {angle}))
         return {};
-    const Float c = cpu.fpu.mul(cpu.fpu.st(0), Float(downF));
+    const Float c = fp::mul(cpu.fpu.st(0), Float(downF));
     dropFloat(cpu);
     {
         const Float x0 = F(app, q0), y0 = F(app, q0 + 4);
-        putF(app, q0, cpu.fpu.sub(x0, Float(s)));
-        putF(app, q0 + 4, cpu.fpu.add(y0, c));
+        putF(app, q0, fp::sub(x0, Float(s)));
+        putF(app, q0 + 4, fp::add(y0, c));
     }
     {
         const Float y1 = F(app, q1 + 4), x1 = F(app, q1);
-        const Float nx = cpu.fpu.add(x1, c), ny = cpu.fpu.add(y1, Float(s));
+        const Float nx = fp::add(x1, c), ny = fp::add(y1, Float(s));
         putF(app, q1, nx);
         putF(app, q1 + 4, ny);
     }
     {
         const Float y2 = F(app, q2 + 4), x2 = F(app, q2);
-        const Float nx = cpu.fpu.add(x2, Float(s)), ny = cpu.fpu.sub(y2, c);
+        const Float nx = fp::add(x2, Float(s)), ny = fp::sub(y2, c);
         putF(app, q2, nx);
         putF(app, q2 + 4, ny);
     }
     {
         const Float y3 = F(app, q3 + 4), x3 = F(app, q3);
-        const Float nx = cpu.fpu.sub(x3, c), ny = cpu.fpu.sub(y3, Float(s));
+        const Float nx = fp::sub(x3, c), ny = fp::sub(y3, Float(s));
         putF(app, q3, nx);
         putF(app, q3 + 4, ny);
     }
@@ -649,9 +649,9 @@ Result lightPlace(App* app, CPU& cpu, reg32 esp, reg32 model, int32_t index, reg
     cpu.edi = from + 12;
     if (!callGame(app, cpu, frame, kRotate, {1, from, matrix, turned}))
         return {};
-    putF(app, out, cpu.fpu.add(F(app, turned), bitsF(offset[0])));
-    putF(app, out + 4, cpu.fpu.add(F(app, turned + 4), bitsF(offset[1])));
-    putF(app, out + 8, cpu.fpu.add(F(app, turned + 8), bitsF(offset[2])));
+    putF(app, out, fp::add(F(app, turned), bitsF(offset[0])));
+    putF(app, out + 4, fp::add(F(app, turned + 4), bitsF(offset[1])));
+    putF(app, out + 8, fp::add(F(app, turned + 8), bitsF(offset[2])));
     return 1;
 }
 
@@ -735,15 +735,15 @@ Result headlightFlare(App* app, CPU& cpu, reg32 esp, reg32 pair, reg32 model, re
     }
     if (fcom(cpu, Float(faced), bitsF(threshold)).belowOrEqual())
         return int32_t(withStatus(cpu, model));
-    const float strength = float(cpu.fpu.mul(cpu.fpu.sub(Float(faced), bitsF(threshold)), bitsF(scale)));
+    const float strength = float(fp::mul(fp::sub(Float(faced), bitsF(threshold)), bitsF(scale)));
     const reg32 least = fcom(cpu, F(app, kQuarterB), Float(strength)).belowOrEqual() ? bitsOf(strength) : 0x3e800000;
-    const Float size = cpu.fpu.mul(cpu.fpu.mul(bitsF(least), D(app, kHeadA)), D(app, kHeadB));
+    const Float size = fp::mul(fp::mul(bitsF(least), D(app, kHeadA)), D(app, kHeadB));
     const double strong = double(Float(strength));
     const float sizeF = float(size);
     double brightness = 1.0;
     if (!fcom(cpu, Float(strength), D(app, kHeadNear)).above())
-        brightness = double(cpu.fpu.mul(Float(strong), D(app, kHeadFour)));
-    const Float a = cpu.fpu.mul(cpu.fpu.mul(Float(brightness), F(app, kWhite)), F(app, kHeadAlpha));
+        brightness = double(fp::mul(Float(strong), D(app, kHeadFour)));
+    const Float a = fp::mul(fp::mul(Float(brightness), F(app, kWhite)), F(app, kHeadAlpha));
     const int32_t opacity = flareAlpha(cpu, a, float(a));
     const uint32_t colour = faded(uint32_t(opacity & 0xff) << 24 | 0xffffff, fadeOf(int32_t(alpha & 0xff)));
     return flareJoined(app, cpu, frame, pair, ebp - 0x54, colour, bitsOf(sizeF), ebp - 0x3c, ebp - 0x24);
@@ -763,18 +763,18 @@ Result taillightFlare(App* app, CPU& cpu, reg32 esp, reg32 pair, reg32 model, re
     const float facedF = float(faced);
     if (fcom(cpu, faced, F(app, kTailFacing)).belowOrEqual())
         return int32_t(withStatus(cpu, afterUnit));
-    const Float over = cpu.fpu.mul(cpu.fpu.add(Float(facedF), D(app, kTailMinus)), D(app, kTailOver));
+    const Float over = fp::mul(fp::add(Float(facedF), D(app, kTailMinus)), D(app, kTailOver));
     const float overF = float(over);
     const double overD = double(over);
     double brightness = 1.0;
     if (!fcom(cpu, over, D(app, kTailNear)).above())
-        brightness = double(cpu.fpu.mul(Float(overD), D(app, kTailFour)));
+        brightness = double(fp::mul(Float(overD), D(app, kTailFour)));
     const float brightF = float(Float(brightness));
     const reg32 least = fcom(cpu, F(app, kQuarterC), Float(overF)).belowOrEqual() ? bitsOf(overF) : 0x3e800000;
-    const Float p = cpu.fpu.mul(bitsF(least), D(app, kTailA));
-    const Float q = cpu.fpu.mul(Float(brightF), F(app, kTailScale));
-    const Float size = cpu.fpu.mul(p, D(app, kTailB));
-    const Float a = cpu.fpu.mul(q, F(app, kTailAlpha));
+    const Float p = fp::mul(bitsF(least), D(app, kTailA));
+    const Float q = fp::mul(Float(brightF), F(app, kTailScale));
+    const Float size = fp::mul(p, D(app, kTailB));
+    const Float a = fp::mul(q, F(app, kTailAlpha));
     const float sizeF = float(size);
     const int32_t opacity = flareAlpha(cpu, a, float(a));
     const uint32_t colour = faded(uint32_t(opacity & 0xff) << 24 | 0xff0000, fadeOf(int32_t(alpha & 0xff)));
@@ -878,14 +878,14 @@ Result dragSpin(App* app, CPU& cpu, reg32 esp, reg32 item, reg32 edx)
         return int32_t(eax);
     const int32_t grabbed = o.grabX;
     const int32_t moved = int32_t(uint32_t(kMouseX(app)) - uint32_t(grabbed));
-    const Float turn = cpu.fpu.mul(Float(moved), F(app, kDragTurn));
-    const Float spin = cpu.fpu.mul(turn, F(app, kDragSpin));
+    const Float turn = fp::mul(Float(moved), F(app, kDragTurn));
+    const Float spin = fp::mul(turn, F(app, kDragSpin));
     const uint16_t mouse = app->getMemory<uint16_t>(kMouseX.at);
     eax = (uint32_t(grabbed) & 0xffff0000u) | mouse;
     const Float was = Float(o.turn[1]);
     o.grabX = int16_t(mouse);
-    const Float now = cpu.fpu.add(turn, was);
-    const Float damped = cpu.fpu.mul(spin, D(app, kDragDamp));
+    const Float now = fp::add(turn, was);
+    const Float damped = fp::mul(spin, D(app, kDragDamp));
     o.turn[1] = float(now);
     o.spin[1] = float(damped);
     return int32_t(eax);
@@ -955,8 +955,8 @@ Result screenBounds(App* app, CPU& cpu, reg32 esp, reg32 item, reg32 rect)
     const Float top = Float(fromBits(minY)), left = Float(fromBits(minX));
     const Float right = Float(fromBits(maxX)), bottom = Float(fromBits(maxY));
     const int32_t y0 = chopped<int32_t>(cpu, top), x0 = chopped<int32_t>(cpu, left);
-    const int32_t width = chopped<int32_t>(cpu, cpu.fpu.sub(right, left));
-    const int32_t height = chopped<int32_t>(cpu, cpu.fpu.sub(bottom, top));
+    const int32_t width = chopped<int32_t>(cpu, fp::sub(right, left));
+    const int32_t height = chopped<int32_t>(cpu, fp::sub(bottom, top));
     app->getMemory<uint16_t>(rect) = uint16_t(y0);
     app->getMemory<uint16_t>(rect + 2) = uint16_t(x0);
     app->getMemory<uint16_t>(rect + 4) = uint16_t(width);
@@ -992,8 +992,8 @@ Result drawLogoOf(App* app, CPU& cpu, reg32 esp, reg32 texture, int32_t x, int32
     const Float left = Float(kQuad(app, 3).x), top = Float(kQuad(app, 1).y);
     kQuad(app, 0).x = float(left);
     kQuad(app, 0).y = float(top);
-    kQuad(app, 2).x = float(cpu.fpu.add(left, Float(width)));
-    const Float bottom = cpu.fpu.add(Float(height), top);
+    kQuad(app, 2).x = float(fp::add(left, Float(width)));
+    const Float bottom = fp::add(Float(height), top);
     const float right = viaX87(kQuad(app, 2).x);
     kQuad(app, 3).y = float(bottom);
     kQuad(app, 1).x = right;
@@ -1749,7 +1749,7 @@ Result makeTextureOf(App* app, CPU& cpu, reg32 esp, reg32 item)
     if (o.model == 0)
         return int32_t(item);
     // The object pushed back far enough for the model to be in front of the eye.
-    const float back = float(cpu.fpu.add(Float(1.0), F(app, o.model + 0x30)));
+    const float back = float(fp::add(Float(1.0), F(app, o.model + 0x30)));
     if (fcom(cpu, Float(fromBits(o.position[2])), Float(back)).cf)
         o.position[2] = bitsOf(back);
     const Result coloured = carColourOf(app, cpu, callee(frame, 0), item, colour);
@@ -1849,12 +1849,12 @@ Result drawObject(App* app, CPU& cpu, reg32 esp, reg32 item, reg32 edx)
     if (kNoMouse(app) == 0 && !dragSpin(app, cpu, callee(frame, 0), item, edx))
         return {};
     // A spin faster than the object's own turn slowed, a step a tick.
-    const float own = float(cpu.fpu.mul(F(app, item + 0x54), F(app, kPerDegree)));
+    const float own = float(fp::mul(F(app, item + 0x54), F(app, kPerDegree)));
     const float ownSize = fcom(cpu, Float(0.0), Float(own)).belowOrEqual() ? own : float(-Float(own));
     const float spinSize = fcom(cpu, Float(0.0), Float(o.spin[1])).belowOrEqual() ? o.spin[1] : float(-Float(o.spin[1]));
     if (fcom(cpu, Float(spinSize), Float(ownSize)).above())
         for (int32_t n = 0; n < chopped<int32_t>(cpu, Float(dt)); ++n)
-            o.spin[1] = float(cpu.fpu.mul(Float(o.spin[1]), F(app, kSlowing)));
+            o.spin[1] = float(fp::mul(Float(o.spin[1]), F(app, kSlowing)));
     if ((kMenuFlags(app) & 0x40) != 0)
     {
         // Over a race: the screen cleared behind it, its turn the pause's.
@@ -1866,13 +1866,13 @@ Result drawObject(App* app, CPU& cpu, reg32 esp, reg32 item, reg32 edx)
     else if (o.dragging == 0)
     {
         const Float t = Float(dt);
-        const Float a = cpu.fpu.mul(t, Float(o.spin[0]));
-        const Float b = cpu.fpu.mul(t, Float(o.spin[1]));
-        const Float c = cpu.fpu.mul(t, Float(o.spin[2]));
+        const Float a = fp::mul(t, Float(o.spin[0]));
+        const Float b = fp::mul(t, Float(o.spin[1]));
+        const Float c = fp::mul(t, Float(o.spin[2]));
         const Float k = D(app, kPerMillisecond);
-        const Float x = cpu.fpu.add(cpu.fpu.mul(a, k), Float(o.turn[0]));
-        const Float y = cpu.fpu.add(cpu.fpu.mul(b, k), Float(o.turn[1]));
-        const Float z = cpu.fpu.add(cpu.fpu.mul(k, c), Float(o.turn[2]));
+        const Float x = fp::add(fp::mul(a, k), Float(o.turn[0]));
+        const Float y = fp::add(fp::mul(b, k), Float(o.turn[1]));
+        const Float z = fp::add(fp::mul(k, c), Float(o.turn[2]));
         o.turn[0] = float(x);
         o.turn[1] = float(y);
         o.turn[2] = float(z);
@@ -1906,7 +1906,7 @@ Result drawObject(App* app, CPU& cpu, reg32 esp, reg32 item, reg32 edx)
             app->getMemory<uint8_t>(sign) ^= 0x80;
         copyWords(app, place, item + 0x5c, 3);
         // The shadow's place: the object's, below it by the model's height.
-        putF(app, place + 4, cpu.fpu.sub(F(app, place + 4), cpu.fpu.mul(F(app, o.model + 0x2c), D(app, kTwice))));
+        putF(app, place + 4, fp::sub(F(app, place + 4), fp::mul(F(app, o.model + 0x2c), D(app, kTwice))));
         if (!callGame(app, cpu, frame, kListStart)
             || !callGame(app, cpu, frame, kLightAlpha, {uint32_t(o.alpha) & 0xff, uint32_t(o.alpha >> 1) & 0xff}))
             return {};
@@ -2242,15 +2242,15 @@ Result objectShown(App* app, CPU& cpu, reg32 esp, reg32 item)
     }
     // Its turn from its angles in degrees, less half a turn; its spins.
     const Float k = D(app, kDegrees);
-    const Float a = cpu.fpu.mul(Float(o.angles[0]), k), b = cpu.fpu.mul(Float(o.angles[1]), k);
-    const Float c = cpu.fpu.mul(Float(o.angles[2]), k), d = cpu.fpu.mul(Float(o.spins[0]), k);
-    const Float e = cpu.fpu.mul(Float(o.spins[1]), k), f = cpu.fpu.mul(k, Float(o.spins[2]));
+    const Float a = fp::mul(Float(o.angles[0]), k), b = fp::mul(Float(o.angles[1]), k);
+    const Float c = fp::mul(Float(o.angles[2]), k), d = fp::mul(Float(o.spins[0]), k);
+    const Float e = fp::mul(Float(o.spins[1]), k), f = fp::mul(k, Float(o.spins[2]));
     const uint8_t menuFlags = kMenuFlags(app);
     o.spin[0] = float(d);
     o.spin[1] = float(e);
     o.spin[2] = float(f);
     const Float half = D(app, kHalfBack);
-    const Float x = cpu.fpu.add(a, half), y = cpu.fpu.add(b, half), z = cpu.fpu.add(half, c);
+    const Float x = fp::add(a, half), y = fp::add(b, half), z = fp::add(half, c);
     o.turn[1] = float(y);
     o.turn[2] = float(z);
     o.turn[0] = float(x);

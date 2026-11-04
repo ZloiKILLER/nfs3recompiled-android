@@ -1,0 +1,18 @@
+# address name kind: the functions native whole in src/nfs3hp/native_frontend_hudedit.cpp, frontend::name.
+# kind: how frontend_checks enters it (Menu, Key, Item, None).
+44de00 hudEditDoneKey Key
+44de20 hudEditResetKey Key
+44de80 hudEditLayoutOnEnter Menu
+44dfd0 hudEditLayoutOnExit Menu
+45ca90 hudEditPlaceElement Item
+45dae0 hudEditShowSpeedometer None
+45deb0 hudEditShowTachometer None
+45e160 hudEditGreyMirrors Menu
+45e210 hudEditGreyOpponentNames Menu
+45e310 hudEditPlaceImages Menu
+45e3d0 hudEditShowScreenItems None
+45e960 hudEditOnEnter Menu
+45f160 hudEditOnExit Menu
+45f300 hudEditSetScreenArt None
+45f4c0 hudEditOnFrame Menu
+485680 hudEditLoadDefaults None

@@ -60,7 +60,9 @@ def main():
                                     nfs3hp.KNOWN_SUBROUTINES, nfs3hp.SPLIT_INSTRUCTIONS,
                                     nfs3hp.THREAD_ROUTINES, nfs3hp.THREAD_SEGMENTS, nfs3hp.MERGE_ROUTINES)
     fpu_codegen.EXACT = True  # as Application.write has the game's arithmetic
-    tested = {address: name.split("::")[1] for address, name in nfs3hp.RENDER_NATIVES.items()}
+    # detailSettings no longer chooses by the machine's speed, as the game's code does.
+    tested = {address: name.split("::")[1] for address, name in nfs3hp.RENDER_NATIVES.items()
+              if address != 0x472d10}
     pieces = {s.get_entry_point(): s for s in game.subroutines}
 
     def code_of(address):

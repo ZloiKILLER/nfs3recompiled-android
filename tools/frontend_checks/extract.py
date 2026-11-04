@@ -52,7 +52,7 @@ def main():
         i = 0
         while i < len(lines):
             m = re.match(r"^void Application::(sub_[0-9a-f]+)\(", lines[i])
-            if m and m.group(1) in wanted:
+            if m and m.group(1) in wanted and m.group(1) not in found:
                 end = i + 1
                 while lines[end].rstrip("\r") != "}":
                     end += 1
@@ -63,8 +63,13 @@ def main():
         for native, address in natives.items():
             found[name] = found[name].replace("nfs3hp::%s(app, cpu.sync());" % native,
                                               "app->dynamic_call(0x%x, cpu.sync());" % address)
+    # The groups' functions, called by address too: the natives do, and in a process
+    # that is not of their group both sides then go to the stand-in.
+    in_groups = tuple("sub_" + line.split()[0]
+                      for group in sorted((Path(__file__).resolve().parent / "groups").glob("*.txt"))
+                      for line in group.read_text().splitlines() if line and not line.startswith("#"))
     for name in found:
-        for other in STAND_IN_ELSEWHERE:
+        for other in STAND_IN_ELSEWHERE + in_groups:
             if other != name:
                 found[name] = found[name].replace("%s(app, cpu.sync());" % other,
                                                   "app->dynamic_call(0x%s, cpu.sync());" % other[4:])
@@ -76,6 +81,10 @@ def main():
         f.write('#include "nfs3hp.h"\n\nnamespace nfs3hp\n{\n\n')
         # What the port's own changes to them call (tools/apply_text_entry.py).
         f.write("void textEntry(bool taking);\n\n")
+        f.write("x86::reg32 networkPort();\n\n")
+        f.write('#include "group_decls.inc"\n\n')
+        f.write("x86::reg32 shownDepth(x86::reg32 depth);\n\n")
+        f.write("void dynamicFullscreenLabel(win32::WinApplication* app, x86::reg32 entry);\n\n")
         for name in sorted(found):
             if "/* port: native" in found[name]:
                 raise SystemExit("a hook left in " + name)
@@ -90,7 +99,9 @@ def main():
                 f.write("void Application::%s(WinApplication* app, x86::CPU& cpu) { %s(app, cpu); }\n"
                         % (name, REAL[name]))
                 continue
-            f.write("void Application::%s(WinApplication* app, x86::CPU& cpu) { mock(app, cpu, 0x%s); }\n"
+            # Through the dispatch, for a stand-in a group's world has made its own to answer
+            # calls by name as well as by address.
+            f.write("void Application::%s(WinApplication* app, x86::CPU& cpu) { app->dynamic_call(0x%s, cpu); }\n"
                     % (name, name[4:]))
     with Path(str(mocks) + ".generated").open("w") as f:
         for name in sorted(found):
@@ -101,6 +112,14 @@ def main():
     at = header.index("    static void sub_")
     header = header[:at] + "".join("    static void %s(WinApplication* app, x86::CPU& cpu);\n" % name
                                    for name in lacking) + header[at:]
+    # The groups' functions (groups/*.txt), which a tree not generated since has not declared.
+    for group in sorted((Path(__file__).resolve().parent / "groups").glob("*.txt")):
+        for line in group.read_text().splitlines():
+            if line and not line.startswith("#"):
+                function = line.split()[1]
+                declaration = "void %s(win32::WinApplication* app, x86::CPU& cpu);" % function
+                if declaration not in header:
+                    header += "\nnamespace nfs3hp { namespace frontend { %s } }\n" % declaration
     (out.parent / "nfs3hp.h").write_text(header)
 
 

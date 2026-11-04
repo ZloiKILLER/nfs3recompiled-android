@@ -819,7 +819,7 @@ Result playSample(App* app, CPU& cpu, reg32 esp, reg32 tags, int32_t mode, int32
             play.position = reg32(pan - 0x40) << 8;
             play.elevation = 0;
         }
-        const x86::Float scaled = cpu.fpu.mul(pitchScale(app, cpu, play.pitch), x86::Float(int32_t(p.rate)));
+        const x86::Float scaled = fp::mul(pitchScale(app, cpu, play.pitch), x86::Float(int32_t(p.rate)));
         const int64_t frames = chopped<int64_t>(cpu, scaled);
         // eax as the pitch's power leaves it: its size.
         reg32 eax = reg32(play.pitch <= 0 ? imul(play.pitch, -1) : play.pitch);

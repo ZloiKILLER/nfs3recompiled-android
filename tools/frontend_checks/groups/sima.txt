@@ -1,0 +1,26 @@
+# address name kind: the functions native whole in src/nfs3hp/native_frontend_sima.cpp, frontend::name.
+# kind: how frontend_checks enters it (Menu, Key, Item, None).
+4064f0 simEnginePull None
+4070c0 simHeadingError None
+40de30 simLaneSteer None
+425060 simCameraBesideRoad None
+4251f0 simCameraNearestSpot None
+4253d0 simCameraPlayPath None
+425640 simCameraEndPath None
+425bf0 simCameraOverRoad None
+425d50 simCameraFlyover None
+426290 simCameraStill None
+4262a0 simCameraWaitThenHandOn None
+426310 simCameraBackFromWait None
+426450 simCameraStep None
+426560 simCameraForcedMode None
+426680 simCamerasStep None
+4965b0 simQuickDistance None
+4967e0 simPlanarLength None
+49fde0 simCarTiltedOver None
+49fee0 simSliceHeading None
+49ffa0 simCarTrackFrame None
+4a00c0 simNodeGap None
+4a0140 simCarOntoRoad None
+4a0580 simCarNearPlayers None
+4a08c0 simCarTrackEnvironment None

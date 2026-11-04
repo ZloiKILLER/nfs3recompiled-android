@@ -821,11 +821,11 @@ Result cursorText3d(App* app, CPU& cpu, reg32 esp, reg32 text, int32_t x, int32_
                        kMeasuring(app)}))
             return {};
         const Float advance = cpu.fpu.pop();
-        place = float(cpu.fpu.add(advance, Float(place)));
+        place = float(fp::add(advance, Float(place)));
     }
     if (i == cursor && show != 0 && !cursor3d(app, cpu, at, place, y, shape, reg32(i)))
         return {};
-    return chopped<int32_t>(cpu, cpu.fpu.sub(Float(place), Float(x)));
+    return chopped<int32_t>(cpu, fp::sub(Float(place), Float(x)));
 }
 
 /* 0x4da560's: the 2D screens' cursor, a quad at x, y as high as the font's
@@ -858,8 +858,8 @@ Result cursorDrawn(App* app, CPU& cpu, reg32 esp, int32_t x, int32_t y, int32_t 
     setFloat(app, kQuad + 4, top);
     setWord(app, kQuad + 8, word(app, kQuad + 0x28));
     setFloat(app, kQuad + 0xc, viaX87(floatAt(app, kQuad + 0x2c)));
-    const float right0 = float(cpu.fpu.add(Float(x86::sreg32(width)), Float(left0)));
-    const float bottom = float(cpu.fpu.add(Float(top), Float(x86::sreg32(size))));
+    const float right0 = float(fp::add(Float(x86::sreg32(width)), Float(left0)));
+    const float bottom = float(fp::add(Float(top), Float(x86::sreg32(size))));
     setFloat(app, kQuad + 0x40, right0);
     setFloat(app, kQuad + 0x64, bottom);
     setWord(app, kQuad + 0x20, word(app, kQuad + 0x40));
@@ -996,7 +996,7 @@ Result spacedText(App* app, CPU& cpu, reg32 esp, reg32 text, int32_t x, int32_t 
     if (!callGame(app, cpu, at, kSelectFont, {reg32(font16), edx, reg32(y), reg32(font)}, {}, r)
         || !callGame(app, cpu, at, kFontHeight, {reg32(font16), edx, reg32(y), reg32(font)}, {}, r))
         return {};
-    const int32_t spacing = chopped<int32_t>(cpu, cpu.fpu.mul(Float(x86::sreg32(r)), Float(kSpacing(app))));
+    const int32_t spacing = chopped<int32_t>(cpu, fp::mul(Float(x86::sreg32(r)), Float(kSpacing(app))));
     setWord(app, ebp - 0x14, r);
     setWord(app, ebp - 0x1c, reg32(spacing));
     const int16_t align16 = half(app, esp + 4);
@@ -1798,7 +1798,7 @@ Result floatDrawn(App* app, CPU& cpu, reg32 esp, reg32 item, reg32 hot, bool fix
         return typedLine(app, cpu, ebp, item + 0x64, l, f.cursor) ? Result(0) : Result();
     const reg32 decimals = f.decimals > 0 && f.decimals <= 6 ? reg32(f.decimals) : 6;
     const reg32 unit = unitOf(f.unitsShown, f.unit, f.units);
-    const Float value = fixed ? cpu.fpu.mul(Float(x86::sreg32(word(app, f.value))), Float(kFixedUnit(app)))
+    const Float value = fixed ? fp::mul(Float(x86::sreg32(word(app, f.value))), Float(kFixedUnit(app)))
                               : Float(floatAt(app, f.value));
     const Words d = wordsOf(double(value));
     if (!(unit != 0 ? format(app, cpu, at, {text, kFS, decimals, d.lo, d.hi, unit})
@@ -1992,7 +1992,7 @@ Result floatKey(App* app, CPU& cpu, reg32 esp, reg32 item, reg32 ebx, bool fixed
             return {};
         const FloatField& f = record<FloatField>(app, item);
         const auto scaled = [&] {
-            return cpu.fpu.toInteger<int32_t>(cpu.fpu.mul(Float(floatAt(app, ebp - 8)), Float(kFixedScale(app))));
+            return fp::toInteger<int32_t>(fp::mul(Float(floatAt(app, ebp - 8)), Float(kFixedScale(app))));
         };
         if (f.checked == 1)
         {
@@ -2014,8 +2014,8 @@ Result floatKey(App* app, CPU& cpu, reg32 esp, reg32 item, reg32 ebx, bool fixed
                 if (fixed)
                 {
                     const Float unit = Float(kFixedUnit2(app));
-                    const Words most = wordsOf(double(cpu.fpu.mul(Float(x86::sreg32(f.most)), unit)));
-                    const Words least = wordsOf(double(cpu.fpu.mul(unit, Float(x86::sreg32(f.least)))));
+                    const Words most = wordsOf(double(fp::mul(Float(x86::sreg32(f.most)), unit)));
+                    const Words least = wordsOf(double(fp::mul(unit, Float(x86::sreg32(f.least)))));
                     if (!asked(app, cpu, at - 4 - 0xc - 8,
                                {kDialogText, kFloatRange, least.lo, least.hi, most.lo, most.hi}))
                         return {};
@@ -2345,8 +2345,8 @@ void fixedRangeMessage(App* app, CPU& cpu)
     const Entry e(cpu);
     HeldEbp held(cpu, e.esp - 0xc);
     const Float unit = Float(kFixedUnit2(app));
-    const Words most = wordsOf(double(cpu.fpu.mul(Float(x86::sreg32(e.edx)), unit)));
-    const Words least = wordsOf(double(cpu.fpu.mul(unit, Float(x86::sreg32(e.eax)))));
+    const Words most = wordsOf(double(fp::mul(Float(x86::sreg32(e.edx)), unit)));
+    const Words least = wordsOf(double(fp::mul(unit, Float(x86::sreg32(e.eax)))));
     e.finish(cpu, asked(app, cpu, e.esp - 0xc - 8, {kDialogText, kFloatRange, least.lo, least.hi, most.lo, most.hi}));
 }
 
@@ -3147,7 +3147,7 @@ reg32 argsBelow(App* app, reg32 at, std::initializer_list<reg32> words)
  * truncated. */
 reg32 onScreen(CPU& cpu, reg32 product, double per)
 {
-    return reg32(chopped<int32_t>(cpu, cpu.fpu.mul(Float(x86::sreg32(product)), Float(per))));
+    return reg32(chopped<int32_t>(cpu, fp::mul(Float(x86::sreg32(product)), Float(per))));
 }
 
 /* ---- Their parts and values ---- */
@@ -3178,7 +3178,7 @@ int32_t thumbPlaced(App* app, CPU& cpu, reg32 item, reg32 startAt, reg32 endAt, 
     setHalf(app, endAt, end);
     setHalf(app, lengthAt, end - half(app, startAt));
     const int32_t place =
-        chopped<int32_t>(cpu, cpu.fpu.mul(Float(int16_t(half(app, lengthAt))), floatOf(slider(app, item).values[0])));
+        chopped<int32_t>(cpu, fp::mul(Float(int16_t(half(app, lengthAt))), floatOf(slider(app, item).values[0])));
     setHalf(app, placeAt, place);
     return place;
 }
@@ -3203,20 +3203,20 @@ std::optional<Float> snapped(App* app, CPU& cpu, reg32 esp)
     }
     if (snap)
     {
-        const Float steps = cpu.fpu.div(Float(floatAt(app, valueAt)), Float(floatAt(app, stepAt)));
+        const Float steps = fp::div(Float(floatAt(app, valueAt)), Float(floatAt(app, stepAt)));
         setFloat(app, ebp - 0x10, float(steps));
         const Words d = wordsOf(double(steps));
         if (!callGame(app, cpu, at, kFloor, {}, {d.lo, d.hi}))
             return {};
         setFloat(app, ebp - 8, float(cpu.fpu.pop()));
-        const Float rest = cpu.fpu.sub(Float(floatAt(app, ebp - 0x10)), Float(floatAt(app, ebp - 8)));
-        setFloat(app, ebp - 0xc, float(cpu.fpu.abs(rest)));
+        const Float rest = fp::sub(Float(floatAt(app, ebp - 0x10)), Float(floatAt(app, ebp - 8)));
+        setFloat(app, ebp - 0xc, float(fp::abs(rest)));
         if ((word(app, ebp - 0xc) & 0x7fffffff) != 0)
         {
             cpu.fpu.compare(Float(floatAt(app, ebp - 0xc)), Float(kHalf(app)));
-            const Float whole = !cpu.fpu.status.c0 ? cpu.fpu.add(Float(1.0), Float(floatAt(app, ebp - 8)))
+            const Float whole = !cpu.fpu.status.c0 ? fp::add(Float(1.0), Float(floatAt(app, ebp - 8)))
                                                    : Float(floatAt(app, ebp - 8));
-            setFloat(app, ebp - 4, float(cpu.fpu.mul(whole, Float(floatAt(app, stepAt)))));
+            setFloat(app, ebp - 4, float(fp::mul(whole, Float(floatAt(app, stepAt)))));
         }
         else
             setWord(app, ebp - 4, word(app, valueAt));
@@ -3324,7 +3324,7 @@ Result draggedTo(App* app, CPU& cpu, reg32 esp, reg32 item, int16_t place)
     setWord(app, ebp - 0x10, word(app, ebp - 4));
     setWord(app, ebp - 0xc, word(app, ebp - 0x18));
     setFloat(app, ebp - 0x1c,
-             float(cpu.fpu.div(Float(int16_t(half(app, ebp - 0x10))), Float(int16_t(half(app, ebp - 0xc))))));
+             float(fp::div(Float(int16_t(half(app, ebp - 0x10))), Float(int16_t(half(app, ebp - 0xc))))));
     const std::optional<Float> r = snappedAt(app, cpu, at, slider(app, item).step, word(app, ebp - 0x1c));
     if (!r)
         return {};
@@ -3375,7 +3375,7 @@ int32_t twoAxisPlaced(App* app, CPU& cpu, reg32 item, int32_t axis, reg32 part, 
         setHalf(app, lengthAt, end - uint16_t(half(app, startAt)));
     }
     const int32_t place = chopped<int32_t>(
-        cpu, cpu.fpu.mul(Float(int16_t(half(app, lengthAt))), floatOf(word(app, item + 0x54 + 4 * reg32(axis)))));
+        cpu, fp::mul(Float(int16_t(half(app, lengthAt))), floatOf(word(app, item + 0x54 + 4 * reg32(axis)))));
     setHalf(app, placeAt, place);
     return place;
 }
@@ -3466,7 +3466,7 @@ Result twoAxisDragged(App* app, CPU& cpu, reg32 esp, reg32 item, int16_t to, int
         setWord(app, ebp - 4, word(app, place));
         setWord(app, ebp - 0xc, word(app, length));
         setFloat(app, ebp - 0x20,
-                 float(cpu.fpu.div(Float(int16_t(half(app, ebp - 4))), Float(int16_t(half(app, ebp - 0xc))))));
+                 float(fp::div(Float(int16_t(half(app, ebp - 4))), Float(int16_t(half(app, ebp - 0xc))))));
         const std::optional<Float> r = snappedAt(app, cpu, at, slider(app, item).step, word(app, ebp - 0x20));
         if (!r)
             return false;
@@ -3595,7 +3595,7 @@ Result sliderTracked(App* app, CPU& cpu, reg32 esp, reg32 item)
         Float v = floatOf(slider(app, item).values[0]);
         if (repeat == 2)
         {
-            v = cpu.fpu.sub(v, floatOf(step));
+            v = fp::sub(v, floatOf(step));
             setFloat(app, item + 0x54, float(v));
             cpu.fpu.compare(Float(0.0), v);
             if (!cpu.fpu.status.c0 && !cpu.fpu.status.c3)
@@ -3603,7 +3603,7 @@ Result sliderTracked(App* app, CPU& cpu, reg32 esp, reg32 item)
         }
         else
         {
-            v = cpu.fpu.add(v, floatOf(step));
+            v = fp::add(v, floatOf(step));
             setFloat(app, item + 0x54, float(v));
             cpu.fpu.compare(Float(1.0), v);
             if (cpu.fpu.status.c0)
@@ -3703,7 +3703,7 @@ Result sliderKeyed(App* app, CPU& cpu, reg32 esp, reg32 item, reg32 ebx)
     Float v = floatOf(slider(app, item).values[0]);
     if (direction < 0)
     {
-        v = cpu.fpu.sub(v, floatOf(step));
+        v = fp::sub(v, floatOf(step));
         setFloat(app, item + 0x54, float(v));
         cpu.fpu.compare(Float(0.0), v);
         if (!cpu.fpu.status.c0 && !cpu.fpu.status.c3)
@@ -3711,7 +3711,7 @@ Result sliderKeyed(App* app, CPU& cpu, reg32 esp, reg32 item, reg32 ebx)
     }
     else
     {
-        v = cpu.fpu.add(v, floatOf(step));
+        v = fp::add(v, floatOf(step));
         setFloat(app, item + 0x54, float(v));
         cpu.fpu.compare(Float(1.0), v);
         if (cpu.fpu.status.c0)
@@ -3747,7 +3747,7 @@ Result twoAxisKeyed(App* app, CPU& cpu, reg32 esp, reg32 item, reg32 ebx)
     Float v = floatOf(word(app, valueAt));
     if (key == kLeft)
     {
-        v = cpu.fpu.sub(v, floatOf(step));
+        v = fp::sub(v, floatOf(step));
         setFloat(app, valueAt, float(v));
         cpu.fpu.compare(Float(0.0), v);
         if (!cpu.fpu.status.c0 && !cpu.fpu.status.c3)
@@ -3755,7 +3755,7 @@ Result twoAxisKeyed(App* app, CPU& cpu, reg32 esp, reg32 item, reg32 ebx)
     }
     else
     {
-        v = cpu.fpu.add(v, floatOf(step));
+        v = fp::add(v, floatOf(step));
         setFloat(app, valueAt, float(v));
         cpu.fpu.compare(Float(1.0), v);
         if (cpu.fpu.status.c0)
@@ -4352,14 +4352,14 @@ Result sliderDrawn(App* app, CPU& cpu, reg32 esp, reg32 item, reg32 hot)
         const std::optional<Float> v = snappedAt(app, cpu, at, kHundredth, slider(app, item).values[0]);
         if (!v)
             return {};
-        Float p = cpu.fpu.sub(Float(kPercentFrom(app)), *v);
+        Float p = fp::sub(Float(kPercentFrom(app)), *v);
         p = -p;
-        p = cpu.fpu.mul(p, Float(kPercentScale(app)));
-        p = cpu.fpu.mul(p, Float(kPercentScale2(app)));
+        p = fp::mul(p, Float(kPercentScale(app)));
+        p = fp::mul(p, Float(kPercentScale2(app)));
         const float scaled = float(p);
         cpu.fpu.compare(Float(0.0), Float(scaled));
         const float rounded =
-            float(cpu.fpu.add(Float(scaled), Float(cpu.fpu.status.c0 || cpu.fpu.status.c3 ? kRoundUp(app) : kRoundDown(app))));
+            float(fp::add(Float(scaled), Float(cpu.fpu.status.c0 || cpu.fpu.status.c3 ? kRoundUp(app) : kRoundDown(app))));
         const int32_t n = chopped<int32_t>(cpu, Float(rounded));
         if (!format(app, cpu, at, {text, kPercent, reg32(n), 0x25})
             || !callGame(app, cpu, at, kDrawMenuText, {text, reg32(boxX + boxWidth + 0xa), reg32(y), 0x12},
@@ -4551,9 +4551,9 @@ Result twoAxisDrawn(App* app, CPU& cpu, reg32 esp, reg32 item, reg32 hot)
         const std::optional<Float> v = snappedAt(app, cpu, at, kHundredth, slider(app, item).values[axis]);
         if (!v)
             return {};
-        const float scaled = float(cpu.fpu.mul(*v, Float(kTwoAxisScale(app))));
+        const float scaled = float(fp::mul(*v, Float(kTwoAxisScale(app))));
         cpu.fpu.compare(Float(0.0), Float(scaled));
-        percents[axis] = float(cpu.fpu.add(
+        percents[axis] = float(fp::add(
             Float(scaled), Float(cpu.fpu.status.c0 || cpu.fpu.status.c3 ? kTwoAxisUp(app) : kTwoAxisDown(app))));
     }
     const int32_t across = chopped<int32_t>(cpu, Float(percents[0]));

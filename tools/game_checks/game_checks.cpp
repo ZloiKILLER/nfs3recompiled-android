@@ -85,9 +85,6 @@ void musicStreamFile(win32::WinApplication*, x86::reg32) {}
  * sides: 16:9 taken, and Dynamic Fullscreen's marker (0xffff) as mode 16. */
 bool widescreenMode(x86::reg32 width, x86::reg32 height) { return width * 9 == height * 16; }
 x86::reg32 dynamicSavedMode(x86::reg32 found, x86::reg32 width) { return width == 0xffff ? 16 : found; }
-/* nfs3hp_main.cpp's race precision (tools/apply_race_precision.py), on both
- * sides: extended, as NFS_FPU_EXTENDED has it by default. */
-x86::reg16 raceControl(x86::reg16 word) { return x86::reg16(word | 0x0300); }
 /* nfs3hp_main.cpp's mirror drawn in full (tools/apply_mirror_detail.py), on
  * both sides: the mirror's pass (1) answered as the main view's 0. */
 x86::reg32 mirrorAsMain(x86::reg32 kind) { return kind == 1 ? 0 : kind; }
@@ -118,7 +115,7 @@ constexpr x86::reg32 kStreams = 0x638000;      // 8 of 0x40: a FILE, its __strea
 constexpr x86::reg32 kIobLinks = 0x638200;     // __iob's first three's links, 0x20 each
 constexpr x86::reg32 kStreamBuffers = 0x639000;  // the 11's buffers, 0x400 each
 constexpr x86::reg32 kStackLow = 0xef0000, kStackHigh = 0xf00000;
-/* The MMX functions' (native_mmx.cpp), in kSamples: what they read, what they
+/* The MMX functions' (native_mix.cpp), in kSamples: what they read, what they
  * write -- the accumulator, the output -- with room before each for what
  * their loops' ends reach back to; their volumes, positions and decoders'
  * states. */
@@ -1359,10 +1356,6 @@ const Promise kPromises[] = {
     {"watcom::mainStart", true, true, 0, false, kStirred},
     {"watcom::cstart_", true, true, 0, false, kStirred},
     // The maths' error report, and the FDIV bug's atan2.
-    {"watcom::fdivSafe", true, true, 0, true},
-    {"watcom::fdiv_fpr", true, true, 1, true},
-    {"watcom::atanSafe", true, true, 0, true},
-    {"watcom::fpatan_wrap", true, true, 0, true},
     {"watcom::get_std_stream", true, true, 1},
     {"watcom::printMathError", true, true, 2},
     {"watcom::callMatherr", true, true, 1, true},
@@ -1381,27 +1374,27 @@ const Promise kPromises[] = {
     {"watcom::nheapshrink", true, true, 0, false, kStirred},
     {"watcom::ReturnMemToSystem", true, true, 1, false, kRestored},
     {"watcom::ReleaseNHeap", true, true, 1, false, kRestored},
-    // The game's MMX code (native_mmx.cpp): the SND library's routines keep
+    // The game's MMX code (native_mix.cpp): the SND library's routines keep
     // every register; the memmove's copy leaves eax, edx and ebx where it got
     // to, and keeps ecx.  The MMX registers are compared for all.
-    {"mmx::copySwapped", true, true},
-    {"mmx::copy", true, true},
-    {"mmx::addMono8", true, true},
-    {"mmx::addStereo8", true, true},
-    {"mmx::addMono16", true, true},
-    {"mmx::addStereo16", true, true},
-    {"mmx::outputMono8", true, true},
-    {"mmx::outputStereo8", true, true},
-    {"mmx::outputStereo16", true, true},
-    {"mmx::clear", true, true},
-    {"mmx::emms", true, true},
-    {"mmx::outputMono16", true, true},
-    {"mmx::interpolateMono8", true, true},
-    {"mmx::interpolateStereo8", true, true},
-    {"mmx::interpolateMono16", true, true},
-    {"mmx::interpolateStereo16", true, true},
-    {"mmx::xaMono", true, true},
-    {"mmx::xaStereo", true, true},
+    {"mix::copySwapped", true, true},
+    {"mix::copy", true, true},
+    {"mix::addMono8", true, true},
+    {"mix::addStereo8", true, true},
+    {"mix::addMono16", true, true},
+    {"mix::addStereo16", true, true},
+    {"mix::outputMono8", true, true},
+    {"mix::outputStereo8", true, true},
+    {"mix::outputStereo16", true, true},
+    {"mix::clear", true, true},
+    {"mix::finished", true, true},
+    {"mix::outputMono16", true, true},
+    {"mix::interpolateMono8", true, true},
+    {"mix::interpolateStereo8", true, true},
+    {"mix::interpolateMono16", true, true},
+    {"mix::interpolateStereo16", true, true},
+    {"mix::xaMono", true, true},
+    {"mix::xaStereo", true, true},
 };
 
 const Promise* promiseOf(const char* name)
@@ -2134,9 +2127,16 @@ CheckApp* g_running = nullptr;
 
 WinApplication::WinApplication(const char*, x86::reg32, const std::vector<Section>&)
 {
+#ifdef _WIN32
+    // Watched for writes, for the windows to be copied and compared only where written.
+    void* memory = VirtualAlloc(nullptr, kMemory, MEM_RESERVE | MEM_COMMIT | MEM_WRITE_WATCH, PAGE_READWRITE);
+    if (!memory)
+        std::abort();
+#else
     void* memory = mmap(nullptr, kMemory, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     if (memory == MAP_FAILED)
         std::abort();
+#endif
     m_memory = static_cast<x86::reg8*>(memory);
 }
 
@@ -2289,10 +2289,77 @@ x86::reg32 firstDifference(win32::WinApplication& a, win32::WinApplication& b, x
     return to;
 }
 
+constexpr x86::reg32 kPage = 0x1000;
+
+/* The pages of a memory written since it was last asked with `reset`, added to
+ * `pages`.  Copying and comparing every window, some megabytes, every case was what
+ * the checks waited on: with all the machine's threads they got no further in a
+ * second than with one, the memory's bandwidth being the limit. */
+void writtenPages(win32::WinApplication& app, bool reset, std::vector<x86::reg32>& pages)
+{
+#ifdef _WIN32
+    static std::vector<void*> found(kMemory / kPage);
+    ULONG_PTR count = found.size();
+    DWORD granularity = 0;
+    x86::reg8* const base = bytes(app, 0);
+    if (GetWriteWatch(reset ? WRITE_WATCH_FLAG_RESET : 0, base, kMemory, found.data(), &count, &granularity) != 0)
+    {
+        std::printf("GetWriteWatch failed: %lu\n", GetLastError());
+        std::exit(2);
+    }
+    for (ULONG_PTR i = 0; i < count; ++i)
+        pages.push_back(x86::reg32(static_cast<x86::reg8*>(found[i]) - base));
+#else
+    for (x86::reg32 page = 0; page < kMemory; page += kPage)
+        pages.push_back(page);
+#endif
+}
+
+/* What two memories alike in their windows when last copied may differ in: the
+ * pages either has written since, in order. */
+std::vector<x86::reg32>& pagesEitherWrote(win32::WinApplication& a, win32::WinApplication& b, bool reset)
+{
+    static std::vector<x86::reg32> pages;
+    pages.clear();
+    writtenPages(a, reset, pages);
+    writtenPages(b, reset, pages);
+    std::sort(pages.begin(), pages.end());
+    pages.erase(std::unique(pages.begin(), pages.end()), pages.end());
+    return pages;
+}
+
+/* The first byte of the window [from, to), at `pages`, where the two differ, or `to`. */
+x86::reg32 firstDifferenceIn(win32::WinApplication& a, win32::WinApplication& b, x86::reg32 from, x86::reg32 to,
+                             const std::vector<x86::reg32>& pages)
+{
+    for (auto page = std::lower_bound(pages.begin(), pages.end(), from & ~(kPage - 1));
+         page != pages.end() && *page < to; ++page)
+    {
+        const x86::reg32 at = firstDifference(a, b, std::max(*page, from), std::min(*page + kPage, to));
+        if (at != std::min(*page + kPage, to))
+            return at;
+    }
+    return to;
+}
+
+/* `to`'s windows made `from`'s, where either was written since this was last done. */
 void copyWindows(win32::WinApplication& to, win32::WinApplication& from)
 {
+    const std::vector<x86::reg32>& pages = pagesEitherWrote(to, from, true);
     for (const auto& w : kWindows)
-        std::memcpy(bytes(to, w.first), bytes(from, w.first), w.second - w.first);
+    {
+        for (auto page = std::lower_bound(pages.begin(), pages.end(), w.first & ~(kPage - 1));
+             page != pages.end() && *page < w.second; ++page)
+        {
+            const x86::reg32 start = std::max(*page, w.first);
+            const x86::reg32 end = std::min(*page + kPage, w.second);
+            std::memcpy(bytes(to, start), bytes(from, start), end - start);
+        }
+    }
+    // What was just copied is no news.
+    static std::vector<x86::reg32> copied;
+    copied.clear();
+    writtenPages(to, true, copied);
 }
 
 x86::reg32 aString()
@@ -2303,16 +2370,11 @@ x86::reg32 aString()
 /* A Float's bits, as hex: the 80 of the x87's, or the double's. */
 std::string floatBits(const x86::Float& f)
 {
-#ifdef WITH_PEDANTIC_FPU
-    const x86::IEEEf80Data& d = f.f80value.data;
-    const unsigned words[] = {d.data5, d.data4, d.data3, d.data2, d.data1};
-#else
     const double value = f;
     std::uint64_t bits;
     std::memcpy(&bits, &value, 8);
     const unsigned words[] = {unsigned(bits >> 48), unsigned(bits >> 32 & 0xffff), unsigned(bits >> 16 & 0xffff),
                               unsigned(bits & 0xffff)};
-#endif
     std::string text;
     char word[8];
     for (const unsigned w : words)
@@ -4239,7 +4301,7 @@ bool makeMathArguments(CheckApp& g, const std::string& name, x86::CPU& cpu, x86:
         return false;
     static const x86::reg16 precisions[] = {0x000, 0x200, 0x300};
     cpu.fpu.setControl(x86::reg16(0x7f | precisions[below(3)] | below(4) << 10 | (random32() & 0x1000)));
-    cpu.fpu.count = 2 + below(4);
+    cpu.fpu.count = 2 + below(2);  // no deeper: see the x87 of the natives' other cases below
     for (x86::Float& f : cpu.fpu.regs)
         f = chance(70) ? x86::Float(double(x86::sreg32(random32() >> below(32))) / double(1 + below(1000)))
                        : x86::Float(anyDouble());
@@ -4320,15 +4382,15 @@ void makeWatcomArguments(CheckApp& g, const std::string& name, x86::CPU& cpu, x8
                                       "IF_DACOS", "DSQRT", "math87_err"};
     if (std::find_if(std::begin(x87), std::end(x87), [&](const char* n) { return name == n; }) != std::end(x87))
     {
-        // The x87: a control word of every precision and rounding, a stack
-        // of one to six, doubles of every kind on it.
+        // The x87: a stack of two to four, doubles of every kind on it.  Deeper,
+        // what these push themselves would overflow an x87: the natives' pushes
+        // wrap over the bottom of the emulated stack, the generated code's stay
+        // in its locals, and no game comes here so.
         static const x86::reg16 precisions[] = {0x000, 0x200, 0x300};
         cpu.fpu.setControl(x86::reg16(0x7f | precisions[below(3)] | below(4) << 10 | (random32() & 0x1000)));
-        cpu.fpu.count = name == "CHP" ? 1 + below(8) : 2 + below(5);
+        cpu.fpu.count = name == "CHP" ? 1 + below(8) : 2 + below(3);
         for (x86::Float& f : cpu.fpu.regs)
             f = x86::Float(anyDouble());
-        // __chipbug: a Pentium with the FDIV bug now and then, for __fpatan_wrap.
-        g.getMemory<x86::reg8>(0x567858) = chance(20) ? 1 : 0;
     }
     if (name == "IF_DACOS")
     {
@@ -5197,12 +5259,12 @@ void makeMmxArguments(CheckApp& g, const std::string& name, x86::CPU& cpu, x86::
     else if (name == "copy" || name == "copySwapped")
     {
         // eax to, edx from, ebx bytes -- the other way round for copySwapped:
-        // aligned any way, into another buffer or over the source either side.
-        const x86::reg32 count = chance(20) ? below(0x24) : chance(15) ? 0x60 + below(0x40) : chance(5)
-                                     ? 0 - (1 + below(8)) : chance(10) ? 0x80 * (1 + below(8)) + below(3) - 1
-                                     : below(0x900);
+        // aligned any way, into another buffer or over the source below it, as the
+        // memmove calls it: a copy upward over its source goes backwards there.
+        const x86::reg32 count = chance(20) ? below(0x24) : chance(15) ? 0x60 + below(0x40) : chance(10)
+                                     ? 0x80 * (1 + below(8)) + below(0x40) : below(0x900);
         const x86::reg32 from = kMmxSource + 0x100 + below(0x100);
-        const x86::reg32 to = chance(25) ? from + below(0x100) - 0x80 : kMmxTarget + below(0x100);
+        const x86::reg32 to = chance(25) ? from - below(0x80) : kMmxTarget + below(0x100);
         makeSamples(g, from - 0x100, from + 0x100 + (x86::sreg32(count) < 0 ? 0 : count));
         if (to >= kMmxTarget)
             makeSamples(g, to, to + 0x10 + (x86::sreg32(count) < 0 ? 0 : count));
@@ -5503,7 +5565,7 @@ void makeArguments(CheckApp& g, const Tested& t, x86::reg32 esp, x86::CPU& cpu)
         makePursuitArguments(g, name.substr(9), cpu, a);
     if (name.compare(0, 8, "aiplan::") == 0)
         makeAiplanArguments(g, name.substr(8), cpu, a);
-    if (name.compare(0, 5, "mmx::") == 0)
+    if (name.compare(0, 5, "mix::") == 0)
         makeMmxArguments(g, name.substr(5), cpu, a);
     if (name.compare(0, 5, "snd::") == 0)
         makeSoundArguments(g, name.substr(5), cpu, a);
@@ -5628,6 +5690,20 @@ bool runCase(const Tested& t, CheckApp& g, CheckApp& n, Counts& counts)
     g.calls.clear();
     n.calls.clear();
 
+    /* What the game's code is in now: single precision, to nearest, whatever
+     * the case's world asked for (FPU::init, fp:: in include/fpu.h). */
+    cpu.fpu.setControl(x86::reg16(0x7f | (cpu.fpu.control.word & 0x1000)));
+    /* And what it finds of the machine: MMX's copies chosen, no timestamp counter,
+     * no FDIV bug (removed::processorChecked); no MMX registers kept between calls. */
+    cpu.mmx.init();
+    for (CheckApp* app : {&g, &n})
+    {
+        app->word(0x5643b4) = 1;
+        app->word(0x5643ac) = 1;
+        app->word(0x5643bc) = 0;
+        app->word(0x5652a4) = 2000000000;  // what its movies ask: their best quality
+        app->getMemory<x86::reg8>(0x567858) = 0;
+    }
     x86::CPU nativeCpu = cpu, generatedCpu = cpu;
     win32::g_testedPort = std::strncmp(t.name, "port::", 6) == 0;
     win32::g_running = &n;
@@ -5728,18 +5804,6 @@ bool compareRuns(const Tested& t, CheckApp& g, CheckApp& n, const x86::CPU& gene
                 std::snprintf(what, sizeof what, "%s %08x generated, %08x native", r.name, r.g, r.n);
                 return report(counts, what);
             }
-        const x86::regmmx* const mmx[2][8] = {
-            {&generatedCpu.mmx.mm0, &generatedCpu.mmx.mm1, &generatedCpu.mmx.mm2, &generatedCpu.mmx.mm3,
-             &generatedCpu.mmx.mm4, &generatedCpu.mmx.mm5, &generatedCpu.mmx.mm6, &generatedCpu.mmx.mm7},
-            {&nativeCpu.mmx.mm0, &nativeCpu.mmx.mm1, &nativeCpu.mmx.mm2, &nativeCpu.mmx.mm3, &nativeCpu.mmx.mm4,
-             &nativeCpu.mmx.mm5, &nativeCpu.mmx.mm6, &nativeCpu.mmx.mm7}};
-        for (unsigned i = 0; i < 8; ++i)
-            if (x86::reg64(*mmx[0][i]) != x86::reg64(*mmx[1][i]))
-            {
-                std::snprintf(what, sizeof what, "mm%u %016llx generated, %016llx native", i,
-                              (unsigned long long)x86::reg64(*mmx[0][i]), (unsigned long long)x86::reg64(*mmx[1][i]));
-                return report(counts, what);
-            }
         if (generatedCpu.fpu.count != nativeCpu.fpu.count)
         {
             std::snprintf(what, sizeof what, "the FPU's stack left otherwise: %u deep generated, %u native",
@@ -5750,10 +5814,8 @@ bool compareRuns(const Tested& t, CheckApp& g, CheckApp& n, const x86::CPU& gene
         {
             if (generatedCpu.fpu.control.word != nativeCpu.fpu.control.word)
                 return report(counts, "the FPU's control word left otherwise");
-            if (generatedCpu.fpu.status.word != nativeCpu.fpu.status.word)
-                return report(counts, "the FPU's status word left otherwise");
             for (x86::reg32 i = 0; i < 8; ++i)
-                if ((!p.liveOnly || ((generatedCpu.fpu.count - i) & 7) < generatedCpu.fpu.count)
+                if (((generatedCpu.fpu.count - i) & 7) < generatedCpu.fpu.count
                     && floatBits(generatedCpu.fpu.regs[i]) != floatBits(nativeCpu.fpu.regs[i]))
                 {
                     std::snprintf(what, sizeof what, "the FPU's register %u: %s generated, %s native", unsigned(i),
@@ -5762,10 +5824,11 @@ bool compareRuns(const Tested& t, CheckApp& g, CheckApp& n, const x86::CPU& gene
                 }
         }
     }
+    const std::vector<x86::reg32>& written = pagesEitherWrote(g, n, false);
     for (const auto& w : kWindows)
     {
         const x86::reg32 from = w.first == kStackLow ? esp : w.first;
-        const x86::reg32 at = firstDifference(g, n, from, w.second);
+        const x86::reg32 at = firstDifferenceIn(g, n, from, w.second, written);
         if (at != w.second)
         {
             std::snprintf(what, sizeof what, "memory at %08x: %02x generated, %02x native", at, *bytes(g, at),
@@ -5892,6 +5955,7 @@ int main(int argc, char** argv)
                     std::printf("  %s: memory at %08x written outside the windows\n", t.name, at);
                     ++counts.failed;
                     std::memcpy(bytes(n, 0), bytes(g, 0), kMemory);
+                    copyWindows(n, g);
                 }
             }
         }

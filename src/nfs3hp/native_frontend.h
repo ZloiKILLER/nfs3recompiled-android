@@ -9,16 +9,9 @@
 #include <initializer_list>
 
 /* The game's menus, decompiled screen by screen, and the menu engine under
- * them a layer at a time (tools/apply_native_frontend.py).
+ * them a layer at a time, each function native whole.
  *
- * Each function here stands in for one of the generated ones and is entered
- * from its top, as native_vertices.cpp's are: the generated function stays
- * behind it and runs whenever this one says no -- with NFS_FE_NATIVE=0, for a
- * function named in NFS_FE_NATIVE_OFF, or when the game's strings it relies on
- * are not where it expects them.
- *
- * Unlike the vertex loops these are not about speed.  They are there to be
- * read and changed.  The menus' state stays in guest memory, where the rest of
+ * These are not about speed.  They are there to be read and changed.  The menus' state stays in guest memory, where the rest of
  * the game reads it, and what the menu engine does for a screen -- finding an
  * item, a line of text, a dialog box -- is a call into the game's own function
  * at its address.  A stand-in leaves memory and registers as the generated
@@ -312,7 +305,7 @@ enum Restores : std::uint8_t
  * strings are looked at once. */
 struct Site
 {
-    const char* name;                 // "sub_437e00", as NFS_FE_NATIVE_OFF names it
+    const char* name;                 // "sub_437e00"
     x86::reg32 stackBytes;            // the arguments its ret pops
     /* What the generated function's prologue puts on the stack (the registers
      * it pushes, its locals) before it calls anything.  The stand-in leaves
@@ -323,13 +316,8 @@ struct Site
     const GuestString* strings;
     std::size_t stringCount;
     std::uint8_t restores = kRestoreAll;  // Restores; ebp always
-    signed char ready = 0;            // 0 not looked at yet, 1 native, -1 generated
+    signed char ready = 0;            // its strings looked at
 };
-
-/* Whether `site` runs native: not with NFS_FE_NATIVE=0, nor when
- * NFS_FE_NATIVE_OFF=sub_437e00,sub_438260 names it, nor when one of its
- * strings is not where it expects it.  Decided and logged the first time. */
-bool ready(Guest& guest, Site& site);
 
 /* Whether the strings a screen that is native whole hands to the game are
  * where it expects them: logged the first time, not, and the screen runs all
@@ -369,18 +357,6 @@ void perform(Guest& guest, x86::CPU& cpu, const Site& site, Body body)
     }
 }
 
-/* A stand-in hooked into its generated function: `body` performed, or false
- * -- the generated code runs -- when the stand-in is not ready. */
-template <typename Body>
-bool run(win32::WinApplication* app, x86::CPU& cpu, Site& site, Body body)
-{
-    Guest guest(app, cpu);
-    if (site.ready < 0 || (site.ready == 0 && !ready(guest, site)))
-        return false;
-    perform(guest, cpu, site, body);
-    return true;
-}
-
 /* A function native whole: `body` performed, always. */
 template <typename Body>
 void runWhole(win32::WinApplication* app, x86::CPU& cpu, Site& site, Body body)
@@ -405,95 +381,95 @@ void runWhole(win32::WinApplication* app, x86::CPU& cpu, Site& site, Body body)
 
 /* The options screens (native_frontend_options.cpp): the options screen and
  * the audio feed's keys (audfeed), */
-bool optionsOnEnter(win32::WinApplication* app, x86::CPU& cpu);
-bool feedOnEnter(win32::WinApplication* app, x86::CPU& cpu);
-bool feedOnExit(win32::WinApplication* app, x86::CPU& cpu);
-bool feedSeparate(win32::WinApplication* app, x86::CPU& cpu);
-bool feedTimeButtonKey(win32::WinApplication* app, x86::CPU& cpu);
-bool feedPositionButtonKey(win32::WinApplication* app, x86::CPU& cpu);
-bool feedSpeedButtonKey(win32::WinApplication* app, x86::CPU& cpu);
-bool feedTimeListKey(win32::WinApplication* app, x86::CPU& cpu);
-bool feedPositionListKey(win32::WinApplication* app, x86::CPU& cpu);
-bool feedSpeedListKey(win32::WinApplication* app, x86::CPU& cpu);
+namespace frontend { void optionsOnEnter(win32::WinApplication* app, x86::CPU& cpu); }
+namespace frontend { void feedOnEnter(win32::WinApplication* app, x86::CPU& cpu); }
+namespace frontend { void feedOnExit(win32::WinApplication* app, x86::CPU& cpu); }
+namespace frontend { void feedSeparate(win32::WinApplication* app, x86::CPU& cpu); }
+namespace frontend { void feedTimeButtonKey(win32::WinApplication* app, x86::CPU& cpu); }
+namespace frontend { void feedPositionButtonKey(win32::WinApplication* app, x86::CPU& cpu); }
+namespace frontend { void feedSpeedButtonKey(win32::WinApplication* app, x86::CPU& cpu); }
+namespace frontend { void feedTimeListKey(win32::WinApplication* app, x86::CPU& cpu); }
+namespace frontend { void feedPositionListKey(win32::WinApplication* app, x86::CPU& cpu); }
+namespace frontend { void feedSpeedListKey(win32::WinApplication* app, x86::CPU& cpu); }
 /* the sound and its sliders, */
-bool audioOnEnter(win32::WinApplication* app, x86::CPU& cpu);
-bool audioOnExit(win32::WinApplication* app, x86::CPU& cpu);
-bool audioOnFrame(win32::WinApplication* app, x86::CPU& cpu);
-bool audioVolumeDraw(win32::WinApplication* app, x86::CPU& cpu);
-bool audioMenuMusicMoved(win32::WinApplication* app, x86::CPU& cpu);
-bool audioRaceMusicMoved(win32::WinApplication* app, x86::CPU& cpu);
-bool audioEffectsMoved(win32::WinApplication* app, x86::CPU& cpu);
-bool audioEngineMoved(win32::WinApplication* app, x86::CPU& cpu);
-bool audioSpeechMoved(win32::WinApplication* app, x86::CPU& cpu);
+namespace frontend { void audioOnEnter(win32::WinApplication* app, x86::CPU& cpu); }
+namespace frontend { void audioOnExit(win32::WinApplication* app, x86::CPU& cpu); }
+namespace frontend { void audioOnFrame(win32::WinApplication* app, x86::CPU& cpu); }
+namespace frontend { void audioVolumeDraw(win32::WinApplication* app, x86::CPU& cpu); }
+namespace frontend { void audioMenuMusicMoved(win32::WinApplication* app, x86::CPU& cpu); }
+namespace frontend { void audioRaceMusicMoved(win32::WinApplication* app, x86::CPU& cpu); }
+namespace frontend { void audioEffectsMoved(win32::WinApplication* app, x86::CPU& cpu); }
+namespace frontend { void audioEngineMoved(win32::WinApplication* app, x86::CPU& cpu); }
+namespace frontend { void audioSpeechMoved(win32::WinApplication* app, x86::CPU& cpu); }
 /* and the graphics.  (The controls' screens -- the function keys, the fixed
  * ones, the controllers, their dead zones and force feedback -- are native
  * whole: disassemble_nfs3hp.py's MENU_NATIVES, declared with the game's.) */
-bool graphicsOnEnter(win32::WinApplication* app, x86::CPU& cpu);
-bool graphicsOnExit(win32::WinApplication* app, x86::CPU& cpu);
-bool graphicsOnFrame(win32::WinApplication* app, x86::CPU& cpu);
-bool advancedOnEnter(win32::WinApplication* app, x86::CPU& cpu);
-bool advancedOnExit(win32::WinApplication* app, x86::CPU& cpu);
-bool advancedOnFrame(win32::WinApplication* app, x86::CPU& cpu);
-bool advancedIntensityMoved(win32::WinApplication* app, x86::CPU& cpu);
+namespace frontend { void graphicsOnEnter(win32::WinApplication* app, x86::CPU& cpu); }
+namespace frontend { void graphicsOnExit(win32::WinApplication* app, x86::CPU& cpu); }
+namespace frontend { void graphicsOnFrame(win32::WinApplication* app, x86::CPU& cpu); }
+namespace frontend { void advancedOnEnter(win32::WinApplication* app, x86::CPU& cpu); }
+namespace frontend { void advancedOnExit(win32::WinApplication* app, x86::CPU& cpu); }
+namespace frontend { void advancedOnFrame(win32::WinApplication* app, x86::CPU& cpu); }
+namespace frontend { void advancedIntensityMoved(win32::WinApplication* app, x86::CPU& cpu); }
 
 /* The cars' screens (native_frontend_cars.cpp): car1 and car2, the music, the
  * developer's recorder, opponent, and cedbasic, a car's tuning, */
-bool carMenuMusicBack(win32::WinApplication* app, x86::CPU& cpu);
-bool carSaveFrame(win32::WinApplication* app, x86::CPU& cpu);
-bool trackSaveFrame(win32::WinApplication* app, x86::CPU& cpu);
-bool carRecord(win32::WinApplication* app, x86::CPU& cpu);
-bool trackRecord(win32::WinApplication* app, x86::CPU& cpu);
-bool car1OnEnter(win32::WinApplication* app, x86::CPU& cpu);
-bool car2OnEnter(win32::WinApplication* app, x86::CPU& cpu);
-bool car1OnFrame(win32::WinApplication* app, x86::CPU& cpu);
-bool car2OnFrame(win32::WinApplication* app, x86::CPU& cpu);
-bool car1OnExit(win32::WinApplication* app, x86::CPU& cpu);
-bool car2OnExit(win32::WinApplication* app, x86::CPU& cpu);
-bool car1EditClicked(win32::WinApplication* app, x86::CPU& cpu);
-bool car2EditClicked(win32::WinApplication* app, x86::CPU& cpu);
-bool car1ColourClicked(win32::WinApplication* app, x86::CPU& cpu);
-bool car2ColourClicked(win32::WinApplication* app, x86::CPU& cpu);
-bool opponentFitCar(win32::WinApplication* app, x86::CPU& cpu);
-bool opponentFitArt(win32::WinApplication* app, x86::CPU& cpu);
-bool opponentOnEnter(win32::WinApplication* app, x86::CPU& cpu);
-bool opponentOnExit(win32::WinApplication* app, x86::CPU& cpu);
-bool opponentOnFrame(win32::WinApplication* app, x86::CPU& cpu);
-bool tuningLoad(win32::WinApplication* app, x86::CPU& cpu);
-bool tuningSave(win32::WinApplication* app, x86::CPU& cpu);
-bool tuningEngineMoved(win32::WinApplication* app, x86::CPU& cpu);
-bool tuningBrakesMoved(win32::WinApplication* app, x86::CPU& cpu);
-bool tuningSteeringMoved(win32::WinApplication* app, x86::CPU& cpu);
-bool tuningGearsMoved(win32::WinApplication* app, x86::CPU& cpu);
-bool tuningSuspensionMoved(win32::WinApplication* app, x86::CPU& cpu);
-bool tuningAeroMoved(win32::WinApplication* app, x86::CPU& cpu);
-bool tuningTiresMoved(win32::WinApplication* app, x86::CPU& cpu);
-bool tuningSetSliders(win32::WinApplication* app, x86::CPU& cpu);
-bool tuningRememberSliders(win32::WinApplication* app, x86::CPU& cpu);
-bool tuningSlidersMoved(win32::WinApplication* app, x86::CPU& cpu);
-bool tuningBindSliders(win32::WinApplication* app, x86::CPU& cpu);
-bool tuningLoadAdvanced(win32::WinApplication* app, x86::CPU& cpu);
-bool tuningDefaultsAnswered(win32::WinApplication* app, x86::CPU& cpu);
-bool tuningDoneKey(win32::WinApplication* app, x86::CPU& cpu);
-bool tuningCancelKey(win32::WinApplication* app, x86::CPU& cpu);
-bool tuningCarListKey(win32::WinApplication* app, x86::CPU& cpu);
-bool tuningDefaultsKey(win32::WinApplication* app, x86::CPU& cpu);
-bool tuningBindDoneCancel(win32::WinApplication* app, x86::CPU& cpu);
-bool tuningFitButtons(win32::WinApplication* app, x86::CPU& cpu);
-bool tuningPrepare(win32::WinApplication* app, x86::CPU& cpu);
-bool tuningOnEnter(win32::WinApplication* app, x86::CPU& cpu);
-bool tuningOnExit(win32::WinApplication* app, x86::CPU& cpu);
-bool tuningAdvancedDiffers(win32::WinApplication* app, x86::CPU& cpu);
-bool tuningCopyAdvanced(win32::WinApplication* app, x86::CPU& cpu);
+namespace frontend { void carMenuMusicBack(win32::WinApplication* app, x86::CPU& cpu); }
+namespace frontend { void carSaveFrame(win32::WinApplication* app, x86::CPU& cpu); }
+namespace frontend { void trackSaveFrame(win32::WinApplication* app, x86::CPU& cpu); }
+namespace frontend { void carRecord(win32::WinApplication* app, x86::CPU& cpu); }
+namespace frontend { void trackRecord(win32::WinApplication* app, x86::CPU& cpu); }
+namespace frontend { void car1OnEnter(win32::WinApplication* app, x86::CPU& cpu); }
+namespace frontend { void car2OnEnter(win32::WinApplication* app, x86::CPU& cpu); }
+namespace frontend { void car1OnFrame(win32::WinApplication* app, x86::CPU& cpu); }
+namespace frontend { void car2OnFrame(win32::WinApplication* app, x86::CPU& cpu); }
+namespace frontend { void car1OnExit(win32::WinApplication* app, x86::CPU& cpu); }
+namespace frontend { void car2OnExit(win32::WinApplication* app, x86::CPU& cpu); }
+namespace frontend { void car1EditClicked(win32::WinApplication* app, x86::CPU& cpu); }
+namespace frontend { void car2EditClicked(win32::WinApplication* app, x86::CPU& cpu); }
+namespace frontend { void car1ColourClicked(win32::WinApplication* app, x86::CPU& cpu); }
+namespace frontend { void car2ColourClicked(win32::WinApplication* app, x86::CPU& cpu); }
+namespace frontend { void opponentFitCar(win32::WinApplication* app, x86::CPU& cpu); }
+namespace frontend { void opponentFitArt(win32::WinApplication* app, x86::CPU& cpu); }
+namespace frontend { void opponentOnEnter(win32::WinApplication* app, x86::CPU& cpu); }
+namespace frontend { void opponentOnExit(win32::WinApplication* app, x86::CPU& cpu); }
+namespace frontend { void opponentOnFrame(win32::WinApplication* app, x86::CPU& cpu); }
+namespace frontend { void tuningLoad(win32::WinApplication* app, x86::CPU& cpu); }
+namespace frontend { void tuningSave(win32::WinApplication* app, x86::CPU& cpu); }
+namespace frontend { void tuningEngineMoved(win32::WinApplication* app, x86::CPU& cpu); }
+namespace frontend { void tuningBrakesMoved(win32::WinApplication* app, x86::CPU& cpu); }
+namespace frontend { void tuningSteeringMoved(win32::WinApplication* app, x86::CPU& cpu); }
+namespace frontend { void tuningGearsMoved(win32::WinApplication* app, x86::CPU& cpu); }
+namespace frontend { void tuningSuspensionMoved(win32::WinApplication* app, x86::CPU& cpu); }
+namespace frontend { void tuningAeroMoved(win32::WinApplication* app, x86::CPU& cpu); }
+namespace frontend { void tuningTiresMoved(win32::WinApplication* app, x86::CPU& cpu); }
+namespace frontend { void tuningSetSliders(win32::WinApplication* app, x86::CPU& cpu); }
+namespace frontend { void tuningRememberSliders(win32::WinApplication* app, x86::CPU& cpu); }
+namespace frontend { void tuningSlidersMoved(win32::WinApplication* app, x86::CPU& cpu); }
+namespace frontend { void tuningBindSliders(win32::WinApplication* app, x86::CPU& cpu); }
+namespace frontend { void tuningLoadAdvanced(win32::WinApplication* app, x86::CPU& cpu); }
+namespace frontend { void tuningDefaultsAnswered(win32::WinApplication* app, x86::CPU& cpu); }
+namespace frontend { void tuningDoneKey(win32::WinApplication* app, x86::CPU& cpu); }
+namespace frontend { void tuningCancelKey(win32::WinApplication* app, x86::CPU& cpu); }
+namespace frontend { void tuningCarListKey(win32::WinApplication* app, x86::CPU& cpu); }
+namespace frontend { void tuningDefaultsKey(win32::WinApplication* app, x86::CPU& cpu); }
+namespace frontend { void tuningBindDoneCancel(win32::WinApplication* app, x86::CPU& cpu); }
+namespace frontend { void tuningFitButtons(win32::WinApplication* app, x86::CPU& cpu); }
+namespace frontend { void tuningPrepare(win32::WinApplication* app, x86::CPU& cpu); }
+namespace frontend { void tuningOnEnter(win32::WinApplication* app, x86::CPU& cpu); }
+namespace frontend { void tuningOnExit(win32::WinApplication* app, x86::CPU& cpu); }
+namespace frontend { void tuningAdvancedDiffers(win32::WinApplication* app, x86::CPU& cpu); }
+namespace frontend { void tuningCopyAdvanced(win32::WinApplication* app, x86::CPU& cpu); }
 /* and the track's (native_frontend_tracks.cpp): location and trkinfo. */
-bool locationOnEnter(win32::WinApplication* app, x86::CPU& cpu);
-bool locationOnFrame(win32::WinApplication* app, x86::CPU& cpu);
-bool locationOnExit(win32::WinApplication* app, x86::CPU& cpu);
-bool infoPlaceTrackPlaces(win32::WinApplication* app, x86::CPU& cpu);
-bool infoOnEnter(win32::WinApplication* app, x86::CPU& cpu);
-bool infoOnFrame(win32::WinApplication* app, x86::CPU& cpu);
-bool infoOnExit(win32::WinApplication* app, x86::CPU& cpu);
-bool infoSpeak(win32::WinApplication* app, x86::CPU& cpu);
-bool infoStopSpeaking(win32::WinApplication* app, x86::CPU& cpu);
+namespace frontend { void locationOnEnter(win32::WinApplication* app, x86::CPU& cpu); }
+namespace frontend { void locationOnFrame(win32::WinApplication* app, x86::CPU& cpu); }
+namespace frontend { void locationOnExit(win32::WinApplication* app, x86::CPU& cpu); }
+namespace frontend { void infoPlaceTrackPlaces(win32::WinApplication* app, x86::CPU& cpu); }
+namespace frontend { void infoOnEnter(win32::WinApplication* app, x86::CPU& cpu); }
+namespace frontend { void infoOnFrame(win32::WinApplication* app, x86::CPU& cpu); }
+namespace frontend { void infoOnExit(win32::WinApplication* app, x86::CPU& cpu); }
+namespace frontend { void infoSpeak(win32::WinApplication* app, x86::CPU& cpu); }
+namespace frontend { void infoStopSpeaking(win32::WinApplication* app, x86::CPU& cpu); }
 
 }
 
