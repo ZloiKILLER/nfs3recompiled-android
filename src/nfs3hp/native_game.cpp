@@ -1,4 +1,7 @@
 #include "native_guest.h"
+#include "native_windows.h"
+#include <winapi/kernel32.h>
+#include <winapi/user32.h>
 #include <cstring>
 #include <iterator>
 
@@ -38,8 +41,10 @@ namespace
 using guest::at;
 using guest::call;
 using guest::put;
+using guest::windows;
 
-/* The game's imports (their slots), as its code calls them. */
+/* The game's imports (their slots), as its code calls them: the port's own Windows functions,
+ * called as C++ (native_windows.h); in the checks through the slots. */
 constexpr x86::reg32 kDebugBreak = 0x5344a8;
 constexpr x86::reg32 kEnterCriticalSection = 0x5344b8;
 constexpr x86::reg32 kExitProcess = 0x5344c0;
@@ -165,9 +170,9 @@ void Error(win32::WinApplication* app, x86::CPU& cpu)
     }
     if (at(app, kDebugOutput) != 0)
     {
-        if (!call(app, cpu, at(app, kOutputDebugStringA), {kErrorText}))
+        if (!windows<kOutputDebugStringA, &win32::kernel32::OutputDebugStringA>(app, cpu, kErrorText))
             return;
-        if (at(app, kDebugStop) != 0 && !call(app, cpu, at(app, kDebugBreak)))
+        if (at(app, kDebugStop) != 0 && !windows<kDebugBreak, &win32::kernel32::DebugBreak>(app, cpu))
             return;
     }
     if (const x86::reg32 filter = at(app, kErrorFilter))
@@ -198,17 +203,17 @@ void Error(win32::WinApplication* app, x86::CPU& cpu)
     }
     if (const x86::reg32 before = at(app, kErrorBefore); before != 0 && !call(app, cpu, before))
         return;
-    if (!call(app, cpu, at(app, kShowCursor), {1}))
+    if (!windows<kShowCursor, &win32::user32::ShowCursor>(app, cpu, 1))
         return;
     // MB_OKCANCEL | MB_ICONEXCLAMATION | MB_SYSTEMMODAL | MB_SETFOREGROUND
-    if (!call(app, cpu, at(app, kMessageBoxA), {0, kErrorText, kErrorCaption, 0x11031}))
+    if (!windows<kMessageBoxA, &win32::user32::MessageBoxA>(app, cpu, 0, kErrorText, kErrorCaption, 0x11031))
         return;
     if (cpu.eax == 1 && at(app, kErrorPrintOk) != 0 && at(app, kErrorOk) != 0)
     {
         if (!call(app, cpu, Message, {kJustText, kErrorText}) || !call(app, cpu, at(app, kErrorOk)))
             return;
     }
-    if (lock != 0 && !call(app, cpu, at(app, kLeaveCriticalSection), {lock}))
+    if (lock != 0 && !windows<kLeaveCriticalSection, &win32::kernel32::LeaveCriticalSection>(app, cpu, lock))
         return;
     cpu.eax = 0;
     if (!call(app, cpu, kOnMainThread))
@@ -219,7 +224,7 @@ void Error(win32::WinApplication* app, x86::CPU& cpu)
         if (!call(app, cpu, kExit))
             return;
     }
-    else if (!call(app, cpu, at(app, kExitProcess), {cpu.eax}))
+    else if (!windows<kExitProcess, &win32::kernel32::ExitProcess>(app, cpu, cpu.eax))
     {
         return;
     }
@@ -310,13 +315,13 @@ bool soundError(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 function, 
 bool loadSound(win32::WinApplication* app, x86::CPU& cpu, x86::reg32& result)
 {
     result = 0xffffffff;
-    if (!call(app, cpu, at(app, kLoadLibraryA), {kSoundDll}))
+    if (!windows<kLoadLibraryA, &win32::kernel32::LoadLibraryA>(app, cpu, kSoundDll))
         return false;
     const x86::reg32 module = cpu.eax;
     put(app, kSoundModule, module);
     if (module == 0)  // "COULDN'T LOAD/FIND EACSND.DLL..."
         return soundError(app, cpu, kLoadName, 0x153, {0x549c78});
-    if (!call(app, cpu, at(app, kGetProcAddress), {module, kVersionName}))
+    if (!windows<kGetProcAddress, &win32::kernel32::GetProcAddress>(app, cpu, module, kVersionName))
         return false;
     const x86::reg32 version = cpu.eax;
     if (version == 0)  // "COULDN'T FIND iSNDdllversion."
@@ -330,7 +335,7 @@ bool loadSound(win32::WinApplication* app, x86::CPU& cpu, x86::reg32& result)
         return soundError(app, cpu, kLoadName, 0x169,
                           {0x549d1c, 0x10, 3, x86::reg32(x86::sreg32(cpu.eax) >> 16), cpu.eax & 0xffff});
     }
-    if (!call(app, cpu, at(app, kGetProcAddress), {at(app, kSoundModule), kSetFunctionsName}))
+    if (!windows<kGetProcAddress, &win32::kernel32::GetProcAddress>(app, cpu, at(app, kSoundModule), kSetFunctionsName))
         return false;
     const x86::reg32 setFunctions = cpu.eax;
     if (setFunctions == 0)  // "COULDN'T FIND setfunctions."
@@ -341,7 +346,7 @@ bool loadSound(win32::WinApplication* app, x86::CPU& cpu, x86::reg32& result)
     x86::reg32 slot = kSoundFunctions;
     for (const x86::reg32 name : kSoundFunctionNames)
     {
-        if (!call(app, cpu, at(app, kGetProcAddress), {at(app, kSoundModule), name}))
+        if (!windows<kGetProcAddress, &win32::kernel32::GetProcAddress>(app, cpu, at(app, kSoundModule), name))
             return false;
         put(app, slot, cpu.eax);
         slot += 4;
@@ -430,7 +435,7 @@ void audiofocushandler(win32::WinApplication* app, x86::CPU& cpu)
     const x86::reg32 ebx = cpu.ebx, ecx = cpu.ecx, edx = cpu.edx, ebp = cpu.ebp;
     const x86::reg32 focus = cpu.eax;
     cpu.esp = esp - 0x10;  // below the four registers it keeps
-    if (!call(app, cpu, at(app, kEnterCriticalSection), {at(app, kSoundLock)}))
+    if (!windows<kEnterCriticalSection, &win32::kernel32::EnterCriticalSection>(app, cpu, at(app, kSoundLock)))
         return;
     if (focus != 0)
     {
@@ -452,7 +457,7 @@ void audiofocushandler(win32::WinApplication* app, x86::CPU& cpu)
     {
         return;
     }
-    if (!call(app, cpu, at(app, kLeaveCriticalSection), {at(app, kSoundLock)}))
+    if (!windows<kLeaveCriticalSection, &win32::kernel32::LeaveCriticalSection>(app, cpu, at(app, kSoundLock)))
         return;
     cpu.ebx = ebx;
     cpu.ecx = ecx;
@@ -468,9 +473,9 @@ void SoundServeHandler(win32::WinApplication* app, x86::CPU& cpu)
     const x86::reg32 esp = cpu.esp;
     const x86::reg32 ecx = cpu.ecx, edx = cpu.edx;
     cpu.esp = esp - 8;  // below the two registers it keeps
-    if (!call(app, cpu, at(app, kEnterCriticalSection), {at(app, kSoundLock)})
+    if (!windows<kEnterCriticalSection, &win32::kernel32::EnterCriticalSection>(app, cpu, at(app, kSoundLock))
         || !call(app, cpu, at(app, kSoundServe))
-        || !call(app, cpu, at(app, kLeaveCriticalSection), {at(app, kSoundLock)}))
+        || !windows<kLeaveCriticalSection, &win32::kernel32::LeaveCriticalSection>(app, cpu, at(app, kSoundLock)))
         return;
     cpu.ecx = ecx;
     cpu.edx = edx;
@@ -596,7 +601,7 @@ void iSNDconvertsample(win32::WinApplication* app, x86::CPU& cpu)
     // "CAN'T HANDLE dstnumchan %i"
     if (argument(9) != 1 && !soundError(app, cpu, kConvertName, 0xb0, {0x549b80, argument(9)}))
         return;
-    if (!call(app, cpu, at(app, kVirtualAlloc), {0, frames * 8 + 0x4e20, 0x3000, 4}))
+    if (!windows<kVirtualAlloc, &win32::kernel32::VirtualAlloc>(app, cpu, 0, frames * 8 + 0x4e20, 0x3000, 4))
         return;
     x86::reg32 buffer = cpu.eax;
     switch (representation)
@@ -666,7 +671,7 @@ void iSNDconvertsample(win32::WinApplication* app, x86::CPU& cpu)
     {
         return;
     }
-    if (!call(app, cpu, at(app, kVirtualFree), {buffer, 0, 0x8000}))  // MEM_RELEASE
+    if (!windows<kVirtualFree, &win32::kernel32::VirtualFree>(app, cpu, buffer, 0, 0x8000))  // MEM_RELEASE
         return;
     cpu.eax = 0;
     cpu.esp = esp + 4 + 0x24;
@@ -710,13 +715,13 @@ void THRASH_opendll(win32::WinApplication* app, x86::CPU& cpu)
     const x86::reg32 name = cpu.eax;
     const x86::reg32 path = esp - 0x14 - 0x200;  // below the five registers it keeps: its buffer
     cpu.esp = path;
-    if (!call(app, cpu, at(app, kLoadLibraryA), {name}))
+    if (!windows<kLoadLibraryA, &win32::kernel32::LoadLibraryA>(app, cpu, name))
         return;
     put(app, kRendererModule, cpu.eax);
     if (cpu.eax == 0)
     {
         if (!call(app, cpu, kSprintf, {path, 0x54d3a0 /* "%sa" */, name})
-            || !call(app, cpu, at(app, kLoadLibraryA), {path}))
+            || !windows<kLoadLibraryA, &win32::kernel32::LoadLibraryA>(app, cpu, path))
             return;
         put(app, kRendererModule, cpu.eax);
     }
@@ -726,7 +731,7 @@ void THRASH_opendll(win32::WinApplication* app, x86::CPU& cpu)
         cpu.esp = path - 4;  // below edi, which it keeps while it looks
         for (const auto& function : kThrashFunctions)
         {
-            if (!call(app, cpu, at(app, kGetProcAddress), {at(app, kRendererModule), function.name}))
+            if (!windows<kGetProcAddress, &win32::kernel32::GetProcAddress>(app, cpu, at(app, kRendererModule), function.name))
                 return;
             put(app, function.slot, cpu.eax);
         }

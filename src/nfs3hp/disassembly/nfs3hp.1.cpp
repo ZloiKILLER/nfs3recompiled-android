@@ -26,23 +26,7 @@ namespace nfs3hp
 
 /* sub_405fb0: native, nfs3hp::aidrive::drivingNothing */
 
-/* align: skip 0x8d 0x80 0x00 0x00 0x00 0x00 0x8d 0x52 0x00 0x8b 0xdb */
-void Application::sub_405fc0(WinApplication* app, x86::CPU& cpu)
-{
-  NFS2_USE(cpu);
-  NFS2_USE(app);
-    // 00405fc0  55                     -push ebp
-    app->getMemory<x86::reg32>(cpu.esp-4) = cpu.ebp;
-    cpu.esp -= 4;
-    // 00405fc1  89e5                   -mov ebp, esp
-    cpu.ebp = cpu.esp;
-    // 00405fc3  5d                     -pop ebp
-    cpu.ebp = app->getMemory<x86::reg32>(cpu.esp);
-    cpu.esp += 4;
-    // 00405fc4  c3                     -ret 
-    cpu.esp += 4;
-    return;
-}
+/* sub_405fc0: native, nfs3hp::pieces::stub_0x405fc0 */
 
 /* sub_405fd0: native, nfs3hp::aidrive::setReverse */
 

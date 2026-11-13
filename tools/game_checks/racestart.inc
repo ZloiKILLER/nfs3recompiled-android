@@ -13,6 +13,7 @@
 #elif defined(RACESTART_EFFECTS)
 // kSomething,  -- a stand-in's effect of this file's
 kRsWheelCell,  // a wheel's cell on the track (0x420650): its 0x78 bytes at esi, as wheelCells copies them
+kRsObjectAgainst,  // the object a car is against (0x4ca160): 1 or 0, with 1 its handle to [edx]
 #elif defined(RACESTART_EFFECT_CASES)
 // case kSomething: ... break;
 case kRsWheelCell:
@@ -28,6 +29,13 @@ case kRsWheelCell:
     word(cpu.esi + 0x1c) = 0x625800 + 0x10 * ((r >> 16) % 4) + 2 * ((r >> 18) % 2);
     break;
 }
+case kRsObjectAgainst:
+    // As the real one: with an object found its handle to the word at edx, which objectContacts
+    // hands on (0x4c9f50, 0x401650) -- else both sides would read the stack's garbage there.
+    result = r & 1;
+    if (result != 0)
+        word(cpu.edx) = random(id ^ 0x5a5a5a5a);
+    break;
 #elif defined(RACESTART_GAME_FUNCTIONS)
 // {address, "name", convention, registers, words, clobbers, through, deref, effect},
 // What the car's functions call that leaves a float on the x87's stack: the
@@ -40,7 +48,7 @@ case kRsWheelCell:
 // the record to esi.
 {0x420650, "a wheel's cell on the track", kWatcom, 3, 0, kEax | kEdx | kEbx, 0, 3, kRsWheelCell},
 // The object the car is against, if any (its handle to [edx]): 1 or 0.
-{0x4ca160, "an object the car is against", kWatcom, 2, 0, kEax, -1, 0, kMainThread},
+{0x4ca160, "an object the car is against", kWatcom, 2, 0, kEax, -1, 0, kRsObjectAgainst},
 // The kind of polygon a wheel's place is on (trackdata::positionSurface,
 // native too since trackdata's natives came in): by address, to a stand-in
 // as any callee, its place (eax) and whether on a strip (edx) logged.

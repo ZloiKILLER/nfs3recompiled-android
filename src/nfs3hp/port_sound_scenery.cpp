@@ -1,3 +1,4 @@
+#include "game_settings.h"
 #include "port_snd_3d.h"
 
 #include <cstdint>
@@ -50,7 +51,6 @@ struct Slot
 };
 #pragma pack(pop)
 
-constexpr Var<int32_t> kTrack{0x6fd4ac}, kSplitScreen{0x6fd3b0}, kViewedA{0x6fd4f8}, kViewedB{0x6fd4f4};
 constexpr Var<reg32> kAmbience{0x571148}, kRainBank{0x571154};
 constexpr Table<int32_t> kWeather{0x564288};
 constexpr Table<uint8_t> kRainOn{0x570de0};
@@ -60,7 +60,6 @@ constexpr Table<int32_t> kStretchVolume{0x570f20}, kStretchTarget{0x571050};
 constexpr Var<int32_t> kStretchPan{0x571120}, kStretchPanTarget{0x57111c};
 constexpr Table<Slot> kSlots{0x570de8};
 constexpr Table<int32_t> kZoneTable{0x552d54};
-constexpr Var<int32_t> kEffectsVolume{0x6fbbf4};
 constexpr Var<uint8_t> kRainAlways{0x552909};
 constexpr Var<int32_t> kHornSpot{0x552d84}, kCheerSpot{0x552d88}, kBellLap{0x552c34}, kBellState{0x552c38};
 constexpr Records<Repeat> kRepeats{0x570f70};
@@ -91,7 +90,7 @@ Result sceneryIn(App* app, CPU& cpu, reg32 entryEsp, reg32 entryEsi, reg32 entry
     Calls game{app, cpu, below, entryEsi, entryEdi};
     const auto player = [&] { return guest::at(app, car + 0x1f0); };
     const auto cell = [&] { return signedAt(app, car + 0x1c); };
-    const auto track = [&] { return kTrack(app); };
+    const auto track = [&] { return std::int32_t(gameSettings(app).track); };
     const auto random = [&] { return nextRandom(app); };
     const auto roll = [&](reg32 by) {
         const reg32 r = random();
@@ -100,10 +99,10 @@ Result sceneryIn(App* app, CPU& cpu, reg32 entryEsp, reg32 entryEsi, reg32 entry
     const auto inside = [&](int32_t lo, int32_t hi) { return cell() >= lo && cell() <= hi; };
     const auto bits = [&](reg32 at) { return app->getMemory<uint8_t>(at); };
 
-    if (kViewedA(app) != kViewedB(app))
+    if (gameSettings(app).viewedPlayer != gameSettings(app).localPlayer)
     {
         reg32 r;
-        if (!game(kTrace, {car, reg32(kViewedA(app))}, {0x64, 2, 0x536b98}, r))
+        if (!game(kTrace, {car, reg32(gameSettings(app).viewedPlayer)}, {0x64, 2, 0x536b98}, r))
             return {};
         return int32_t(r);
     }
@@ -115,10 +114,10 @@ Result sceneryIn(App* app, CPU& cpu, reg32 entryEsp, reg32 entryEsi, reg32 entry
     reg32 tunnel;
     // (A stand-in of the checks may give back the eax it was called with: it is
     // the code's here, the car, then the y.)
-    if (!game(kInTunnel, {car, reg32(kViewedA(app)), z, reg32(cell())}, {x, y, z, reg32(cell())}, tunnel))
+    if (!game(kInTunnel, {car, reg32(gameSettings(app).viewedPlayer), z, reg32(cell())}, {x, y, z, reg32(cell())}, tunnel))
         return {};
     game.edi = tunnel;
-    const reg32 weather = kSplitScreen(app) == 1 ? player() : 0;
+    const reg32 weather = gameSettings(app).playMode == 1 ? player() : 0;
     game.esi = weather;
     const reg32 rain = guest::at(app, kWeather.address(int32_t(weather)));
     reg32 echo;
@@ -133,7 +132,7 @@ Result sceneryIn(App* app, CPU& cpu, reg32 entryEsp, reg32 entryEsi, reg32 entry
         const uint8_t on = kRainOn(app, int32_t(weather));
         if (rainNow != 0 && on == 0)
         {
-            const reg32 pan = kSplitScreen(app) == 1 ? (weather != 0 ? kRight : kLeft) : 0;
+            const reg32 pan = gameSettings(app).playMode == 1 ? (weather != 0 ? kRight : kLeft) : 0;
             const int32_t volume = idiv(imul(level, 127), 100);
             reg32 sound;
             if (!game(playEffect, {kRainBank(app), 4, pan, reg32(volume)}, {0x40}, sound))
@@ -150,7 +149,7 @@ Result sceneryIn(App* app, CPU& cpu, reg32 entryEsp, reg32 entryEsi, reg32 entry
         else if (rainNow != 0 && on != 0)
         {
             // Louder with the effects' volume and the rain.
-            const int32_t loudness = imul(level, imul(kEffectsVolume(app), 63));
+            const int32_t loudness = imul(level, imul(std::int32_t(gameSettings(app).effectsVolume), 63));
             const int32_t volume = idiv(loudness, 100) >> 7;
             if (!game(SNDvol, {guest::at(app, kRainSound.address(int32_t(weather))), reg32(volume)}))
                 return {};
@@ -160,7 +159,7 @@ Result sceneryIn(App* app, CPU& cpu, reg32 entryEsp, reg32 entryEsi, reg32 entry
                 return {};
     }
     // The stretch's slot; the player's side in the split screen.
-    const bool split = kSplitScreen(app) == 1;
+    const bool split = gameSettings(app).playMode == 1;
     const reg32 sidePan = player() != 0 ? kRight : kLeft;
     const reg32 slot = split && player() != 0 ? 0x24 : 0x1a;
     game.esi = slot;
@@ -170,14 +169,14 @@ Result sceneryIn(App* app, CPU& cpu, reg32 entryEsp, reg32 entryEsi, reg32 entry
     const auto turnedPan = [&](bool mirrorFirst) {
         if (split)
             return sidePan;
-        const bool mirror = kMirror(app) != 0;
+        const bool mirror = gameSettings(app).mirrored != 0;
         const reg32 add = mirror == mirrorFirst ? 0xc000 : 0x2000;
         return ((random() & 0x3fff) + add + heading) & 0xffff;
     };
     const auto headingPan = [&](bool mirrorFirst) {
         if (split)
             return sidePan;
-        const bool mirror = kMirror(app) != 0;
+        const bool mirror = gameSettings(app).mirrored != 0;
         return (heading + (mirror == mirrorFirst ? 0xc000 : 0x3fff)) & 0xffff;
     };
     const auto play = [&](reg32 effect, reg32 pitch, reg32 pan, reg32 volume, reg32& result) {
@@ -384,7 +383,7 @@ Result sceneryIn(App* app, CPU& cpu, reg32 entryEsp, reg32 entryEsi, reg32 entry
                 call.pan = sidePan;
             else
             {
-                const bool mirror = kMirror(app) != 0;
+                const bool mirror = gameSettings(app).mirrored != 0;
                 call.pan = (random() & 0x3fff) + (mirror ? 0xc000 : 0x2000);
             }
         }
@@ -402,7 +401,7 @@ Result sceneryIn(App* app, CPU& cpu, reg32 entryEsp, reg32 entryEsi, reg32 entry
                     pan = sidePan;
                 else
                 {
-                    const bool mirror = kMirror(app) != 0;
+                    const bool mirror = gameSettings(app).mirrored != 0;
                     pan = ((random() & 0x3fff) + (mirror ? 0x2000 : 0xc000) + heading) & 0xffff;
                     if (mirror)
                         game.edi = heading;
@@ -547,7 +546,7 @@ Result sceneryIn(App* app, CPU& cpu, reg32 entryEsp, reg32 entryEsi, reg32 entry
                 pan = sidePan;
             else
             {
-                const bool mirror = kMirror(app) != 0;
+                const bool mirror = gameSettings(app).mirrored != 0;
                 pan = ((random() & 0x3fff) + (mirror ? 0x2000 : 0xc000) + heading) & 0xffff;
             }
             const reg32 pitch = (random() & 0x1f) + 0x40;

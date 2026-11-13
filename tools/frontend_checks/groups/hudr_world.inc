@@ -29,7 +29,7 @@
         plain(0x4cdee0, 0);
         plain(0x48a3a0, EAX | EDX, 7, 28, EDX);
         specs[0x4897f0] = { EAX, 6, 24, 0, Kind::Plain, true };        // the text it is given recorded
-        plain(0x47ee80, EAX | EDX, 0, 0, EDX);
+        plain(0x47ee80, EDX, 0, 0, EDX);                               // eax is not read (its code, nfs3.exe)
         plain(0x48ae70, 0, 4, 16);
         plain(0x459350, EAX | EBX | ECX | EDX, 1, 4, EBX | EDX);
         plain(0x48b5f0, EAX | EBX | ECX | EDX, 0, 0, EBX | ECX | EDX);

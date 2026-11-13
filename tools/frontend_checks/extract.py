@@ -73,6 +73,9 @@ def main():
             if other != name:
                 found[name] = found[name].replace("%s(app, cpu.sync());" % other,
                                                   "app->dynamic_call(0x%s, cpu.sync());" % other[4:])
+                # And a jump to it at a function's end, which is a call as far as the check goes.
+                found[name] = found[name].replace("return %s(app, cpu.handOver());" % other,
+                                                  "{ app->dynamic_call(0x%s, cpu.handOver()); return; }" % other[4:])
     missing = wanted - set(found)
     if missing:
         raise SystemExit("not found: " + " ".join(sorted(missing)))
@@ -109,7 +112,8 @@ def main():
     header = (source / "nfs3hp.h").read_text()
     declared = set(re.findall(r"static void (sub_[0-9a-f]+)\(", header))
     lacking = sorted((set(found) | called) - declared)
-    at = header.index("    static void sub_")
+    # The tree has no generated function left to go beside: the class's segments will do.
+    at = header.index("    static const x86::reg8 s_AUTOSegment[];")
     header = header[:at] + "".join("    static void %s(WinApplication* app, x86::CPU& cpu);\n" % name
                                    for name in lacking) + header[at:]
     # The groups' functions (groups/*.txt), which a tree not generated since has not declared.

@@ -1,4 +1,5 @@
 #include "port_snd.h"
+#include "port_snd_play.h"
 
 #ifdef __ANDROID__
 #include <SDL3/SDL.h>

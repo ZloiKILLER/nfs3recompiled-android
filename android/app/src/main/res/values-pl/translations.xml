@@ -31,13 +31,6 @@
  <string name="touch_settings">Sterowanie dotykiem</string>
  <string name="screen_settings">Ekran</string>
  <string name="display_settings">Ekran</string>
- <string name="screen_adjustment">Regulacja obrazu</string>
- <string name="brightness_label">Jasność</string>
- <string name="contrast_label">Kontrast</string>
- <string name="adjust_hint">Próbki pokazują wynik. Zadziała przy następnym uruchomieniu gry.</string>
- <string name="adjust_reset">Przywróć</string>
- <string name="sample_dark">Noc</string>
- <string name="sample_bright">Dzień</string>
  <string name="back_to_launcher">Wstecz</string>
  <string name="switch_data">Ustaw aktywny</string>
  <string name="data_change">Zmień…</string>
@@ -71,7 +64,6 @@
  <string name="orientation_landscape_reverse">Stały — poziomo, odwrócony</string>
  <string name="fps_30">30 FPS</string>
  <string name="fps_60">60 FPS</string>
- <string name="gamma_label">Gamma</string>
  <string name="fps_cap_label">Liczba klatek</string>
  <string name="fps_error">Wpisz liczbę całkowitą od 1 do 240</string>
  <string name="save">Zapisz</string>
@@ -156,6 +148,8 @@
  <string name="faq_mapping"><b>Pady</b>\nGra zawsze widzi dwa pady: pad 1 to gracz 1 razem ze sterowaniem dotykiem, pad 2 to gracz 2. W Sterowanie → Pady wybierz, który pad jest który, naciskając na nim przycisk, ustaw, co robi każdy przycisk, a potem raz naciśnij Pad WŁĄCZONY. Zapisze to pasujące sterowanie w ustawieniach gry i zrobi kopię starego pliku. Lewa gałka skręca, spusty przyspieszają i hamują. Pad ma dwa zestawy przycisków, tak jak sterowanie dotykiem ma dwa układy: wyścigowy, ustawiany tutaj, i stały dla menu i powtórek, gdzie Cross / A zatwierdza, Circle / B cofa, a krzyżak przesuwa wybór. Aby grać na klawiaturze, zapisz zamiast tego Domyślne w grze.</string>
  <string name="faq_lights"><b>Światła i powrót na tor</b>\n☼ wysyła L. ↻ wysyła R, aby wrócić na tor. Klawisze można zmienić w Sterowanie → Dotyk → Klawisze.</string>
  <string name="faq_screen_data"><b>Ekran i dane gry</b>\nPozioma blokuje grę w poziomie; Automatyczna pozwala na obrót. Limit FPS ogranicza liczbę klatek; niższa wartość zmniejsza obciążenie. «Dane gry» zarządzają importami i pokazują aktywny zestaw. Przycisk «Graj» włącza się, gdy zestaw jest gotowy.</string>
+ <string name="faq_picture"><b>Jasność, kontrast i gamma</b>\nUstawia się je w samej grze: Options → Graphics → Advanced Settings albo Graphics w menu pauzy podczas wyścigu. Obraz zmienia się od razu, gdy przesuwasz suwak. Done zapisuje wartości, Cancel przywraca poprzednie. Ustawienia działają w wyścigach, menu i filmach.</string>
+ <string name="faq_network"><b>Wyścigi sieciowe</b>\nOtwórz Connect Players na pierwszym ekranie gry. Local WiFi sam znajduje wyścigi między telefonami w tej samej sieci Wi-Fi. Network (TCP) łączy z każdym, kto zna adres hosta, także z komputerem z oryginalną grą lub Modern Patchem. Poniżej widać adres tego telefonu (Your IP) i TCP Port: dotknięcie przełącza między 9803 (Modern Patch) a 1030 (oryginalna gra). Wszyscy gracze wyścigu przez TCP muszą używać tego samego portu.</string>
  <string name="gamepad_buttons">Przyciski</string>
  <string name="gamepad_buttons_title">Przyciski pada %1$d</string>
  <string name="gamepad_buttons_hint">Co robi każdy przycisk tego pada podczas jazdy. Lewa gałka skręca, prawy spust przyspiesza, a lewy hamuje. W menu i w powtórkach przyciski są stałe i nic się nie ustawia: Cross / A i Options / Menu zatwierdzają, Circle / B i Create / View cofają, krzyżak przesuwa wybór. Działania przycisków docierają do gry, gdy sterowanie padami zostanie do niej zapisane.</string>
@@ -191,12 +185,5 @@
  <string name="force_feedback_phone_note">Telefon odtwarza zderzenia, lądowania i zmiany biegów, silnik na wysokich obrotach i ostre zakręty.</string>
  <string name="force_feedback_gamepad_note">Pad 1 odtwarza efekty gry takie, jakie są. Ich siłę ustawia się w grze: Options → Controllers → Force Feedback.</string>
  <string name="editor_snap_grid">Przyciągaj do siatki</string>
- <string name="network_title">Sieć</string>
- <string name="network_address">Adres tego urządzenia w sieci: %1$s</string>
- <string name="network_no_address">Brak połączenia z siecią</string>
- <string name="network_port_label">Port TCP/IP</string>
- <string name="network_port_modern">9803 · Modern Patch</string>
- <string name="network_port_original">1030 · oryginalna gra</string>
- <string name="network_hint">IPX sam znajduje wyścigi w tej sieci Wi-Fi. TCP/IP łączy z każdym, kto zna adres hosta, także z PC z oryginalną grą lub Modern Patch. Wszyscy gracze używają tego samego portu.</string>
  <string name="fps_unlimited">Bez limitu</string>
 </resources>

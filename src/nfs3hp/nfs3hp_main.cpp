@@ -7,6 +7,7 @@
 #include <nfs3hp.h>
 #include <winapi/version.h>
 #include <lib/thrashrenderer.h>
+#include "game_settings.h"
 #include "native_thrash.h"
 #include "port_thrash.h"
 #include "dynamic_fullscreen.h"
@@ -26,10 +27,16 @@
 #include <unistd.h>
 #endif
 
+using nfs3hp::gameSettings;
+
 namespace nfs3hp
 {
 // menu_data.cpp: the port's versions of menu files, read in place of the game's.
 void installMenuData();
+// port_display.cpp: gamma, brightness and contrast on the game's graphics screens.
+void installDisplaySliders(win32::WinApplication* app);
+// port_connect.cpp: the TCP/IP port and this phone's address on the connection screen.
+void installConnectScreen(win32::WinApplication* app);
 
 /* The MAD player runs on the game thread. Android's UI thread only requests
  * that its normal cleanup path run at the next frame boundary. */
@@ -86,16 +93,27 @@ bool fullCarDetail()
 }
 
 /* The TCP/IP port a race is hosted and joined on (tools/apply_network_port.py):
- * NFS_NET_PORT, read once, 9803 as the Modern Patch has it unless the launcher
- * says 1030, the original's.  Every player of one race needs the same. */
-x86::reg32 networkPort()
+ * NFS_NET_PORT to start with, 9803 as the Modern Patch has it unless the player
+ * chose 1030, the original's, and the connection screen moves it from there
+ * (port_connect.cpp).  Every player of one race needs the same. */
+static std::atomic<x86::reg32>& networkPortChosen()
 {
-    static const x86::reg32 port = []() {
+    static std::atomic<x86::reg32> port{ []() {
         const char* value = SDL_getenv("NFS_NET_PORT");
         const int chosen = value ? SDL_atoi(value) : 0;
         return x86::reg32(chosen > 0 && chosen < 65536 ? chosen : 9803);
-    }();
+    }() };
     return port;
+}
+
+x86::reg32 networkPort()
+{
+    return networkPortChosen().load(std::memory_order_relaxed);
+}
+
+void setNetworkPort(x86::reg32 port)
+{
+    networkPortChosen().store(port, std::memory_order_relaxed);
 }
 
 /* Whether the player is driving.  A race is one call of the game's own -- set
@@ -150,7 +168,7 @@ void logPerformance(win32::WinApplication* app, const char* where)
 {
     if (!perfTraceOn())
         return;
-    const x86::reg32 player = app->getMemory<x86::reg32>(0x6fd4f4);
+    const x86::reg32 player = gameSettings(app).localPlayer;
     const x86::reg32 car = player < 16 ? x86::reg32(app->getMemory<x86::reg32>(0x5efa48 + player * 4)) : 0u;
     if (!car)
         return;
@@ -158,7 +176,7 @@ void logPerformance(win32::WinApplication* app, const char* where)
             "ended %u",
             where, unsigned(car), unsigned(app->getMemory<x86::reg32>(car + 0x26c)),
             unsigned(app->getMemory<x86::reg32>(car + 0x270)), unsigned(app->getMemory<x86::reg32>(0x677d30)),
-            unsigned(app->getMemory<x86::reg32>(0x6647b0 + 0x26c)), unsigned(app->getMemory<x86::reg32>(0x6fd3a0)),
+            unsigned(app->getMemory<x86::reg32>(0x6647b0 + 0x26c)), unsigned(gameSettings(app).replayMode),
             unsigned(app->getMemory<x86::reg32>(0x7d36b4)));
 }
 
@@ -183,7 +201,7 @@ void logResults(win32::WinApplication* app)
     }
     char tail[64];
     SDL_snprintf(tail, sizeof tail, "; cops %u; player %u", unsigned(app->getMemory<x86::reg32>(0x677d34)),
-                 unsigned(app->getMemory<x86::reg32>(0x6fd4f4)));
+                 unsigned(gameSettings(app).localPlayer));
     now += tail;
     if (now == s_last)
         return;
@@ -254,7 +272,7 @@ x86::reg32 shownDepth(x86::reg32 depth)
  * take that distance to 500 wherever the game held it shorter, and past it. */
 static bool viewDistanceFull(win32::WinApplication* app)
 {
-    return app->getMemory<x86::reg32>(0x6fbc28) == 0;
+    return gameSettings(app).viewDistance == 0;
 }
 
 /* Which table of multipliers sub_41d620 scales the distances by: 0x41a8bc, whose
@@ -310,7 +328,7 @@ static bool fullMirror()
  * own record at +0x1c stays).  Split screen has no mirror and is left alone. */
 void mirrorFollowsMain(win32::WinApplication* app)
 {
-    if (!fullMirror() || app->getMemory<x86::reg32>(0x6fd3b0) == 1 || app->getMemory<x86::reg32>(0x5dd0dc) != 2)
+    if (!fullMirror() || gameSettings(app).playMode == 1 || app->getMemory<x86::reg32>(0x5dd0dc) != 2)
         return;
     const x86::reg32 mainView = 0x5dd0e0;
     const x86::reg32 mirror = mainView + 0x54;
@@ -451,13 +469,12 @@ bool dynamicFullscreenRefresh(win32::WinApplication* app)
 /* View Angle ([0x6fbc40]) in the Graphics menu: Normal, 0 -- the game's Wide,
  * 90 degrees -- Narrow, 1, 75, and Wide, 2, 105, the Modern Patch's widest
  * (tools/apply_view_angle.py). */
-constexpr x86::reg32 kViewAngle = 0x6fbc40;
 constexpr x86::reg32 kViewAngleList = 0x55675c;   // the settings record's (0x556758) list of its choices
 constexpr x86::reg16 kNormalText = 0xaf, kNarrowText = 0x113, kWideText = 0x112;
 
 x86::reg32 viewAngleFor(win32::WinApplication* app, x86::reg32 angle)
 {
-    return app->getMemory<x86::reg32>(kViewAngle) == 2 ? 105u : angle;
+    return gameSettings(app).viewAngle == 2 ? 105u : angle;
 }
 
 /* The menu's three choices, a list of text lines ending at a zero, in a guest
@@ -524,7 +541,7 @@ bool widescreenMode(x86::reg32 width, x86::reg32 height)
  * [0x7cdae4]). */
 static bool letterboxed(win32::WinApplication* app)
 {
-    return raceIsRunning() && app->getMemory<x86::reg32>(0x6fbc4c) != 0 && app->getMemory<x86::reg32>(0x6fd3b0) != 1
+    return raceIsRunning() && gameSettings(app).wideScreen != 0 && gameSettings(app).playMode != 1
            && x86::sreg32(app->getMemory<x86::reg32>(0x7cdba4)) < x86::sreg32(app->getMemory<x86::reg32>(0x7cdae4));
 }
 
@@ -1054,8 +1071,8 @@ void hudLayoutsDrawn(win32::WinApplication* app, x86::CPU& cpu, bool drawn)
     s_element = cpu.ebx;
     s_rect = cpu.eax;
     s_mode = cpu.ecx;
-    const x86::reg32 slot = player + (app->getMemory<x86::reg32>(0x6fd3b0) == 1 ? 1 : 0);
-    s_base = 0x6fbc74 + slot * 0x348;
+    const x86::reg32 slot = player + (gameSettings(app).playMode == 1 ? 1 : 0);
+    s_base = SETTINGS_ADDRESS(hud[0].rects) + slot * 0x348;
     const x86::reg32 hudWidth = app->getMemory<x86::reg32>(0x7cdac8);
     const x86::reg32 hudHeight = app->getMemory<x86::reg32>(0x7cdacc);
     const bool measurable = player < 2 && hudWidth && hudHeight;
@@ -1202,7 +1219,7 @@ bool firstSettings(win32::WinApplication* app)
         jbyteArray config = method ? env->NewByteArray(kSize) : nullptr;
         if (config)
         {
-            void* block = &app->getMemory<void>(0x6fbb40);
+            void* block = &gameSettings(app);
             env->SetByteArrayRegion(config, 0, kSize, static_cast<const jbyte*>(block));
             laid = env->CallBooleanMethod(activity, method, config) == JNI_TRUE && !env->ExceptionCheck();
             if (laid)
@@ -1290,19 +1307,19 @@ void steeringTick(win32::WinApplication* app)
      * and each learned this flag from the others as the race began (message 9,
      * sub_43da60), so a flag changed here and nowhere else drives this car
      * differently on this machine than on the rest. */
-    if (app->getMemory<x86::reg32>(0x6fd3b0) >= 2)
+    if (gameSettings(app).playMode >= 2)
         return;
     const x86::reg32 car = app->getMemory<x86::reg32>(0x678b54);
     if (!car)
         return;
     const x86::reg32 record = app->getMemory<x86::reg32>(car + 0x220);
-    if (record < 0x6fd52c || record >= 0x6fd52c + 16 * 0x6c || (record - 0x6fd52c) % 0x6c)
+    if (record < SETTINGS_ADDRESS(entries) || record >= SETTINGS_ADDRESS(entries) + 16 * 0x6c || (record - SETTINGS_ADDRESS(entries)) % 0x6c)
         return;
     /* A replay is the race driven again from what the game recorded of it, so
      * the car is steered the way it was steered then: the flag keeps the value
      * the race left it at rather than following a screen nobody is touching.
      * ([0x6fd3a0] is 2 while a replay runs, as sub_4bcb00 sets it.) */
-    const bool replay = app->getMemory<x86::reg32>(0x6fd3a0) == 2;
+    const bool replay = gameSettings(app).replayMode == 2;
     const x86::reg32 digital = replay ? s_raced : x86::reg32(win32::Gamepad::touchSteering() ? 1 : 0);
     if (!replay)
         s_raced = digital;
@@ -1310,7 +1327,7 @@ void steeringTick(win32::WinApplication* app)
         app->getMemory<x86::reg32>(record + 0x24) = digital;
     if (s_last != int(digital))
     {
-        SDL_Log("[STEERING] player %u: %s%s", unsigned((record - 0x6fd52c) / 0x6c),
+        SDL_Log("[STEERING] player %u: %s%s", unsigned((record - SETTINGS_ADDRESS(entries)) / 0x6c),
                 digital ? "the game's keyboard steering (touch buttons)" : "analog (pad)",
                 replay ? ", as the replay was recorded" : "");
         s_last = int(digital);
@@ -1348,10 +1365,10 @@ void traceInput(win32::WinApplication* app)
     if (!car)
         return;
     const x86::reg32 record = app->getMemory<x86::reg32>(car + 0x220);
-    if (record < 0x6fd52c || record >= 0x6fd52c + 16 * 0x6c || (record - 0x6fd52c) % 0x6c)
+    if (record < SETTINGS_ADDRESS(entries) || record >= SETTINGS_ADDRESS(entries) + 16 * 0x6c || (record - SETTINGS_ADDRESS(entries)) % 0x6c)
         return;
     SDL_Log("[INPUT] step %u mode %u rec %08x %08x %08x %08x %08x %08x at %.1f %.1f %.1f",
-            unsigned(step), unsigned(app->getMemory<x86::reg32>(0x6fd3a0)),
+            unsigned(step), unsigned(gameSettings(app).replayMode),
             unsigned(app->getMemory<x86::reg32>(record + 0x1c)),
             unsigned(app->getMemory<x86::reg32>(record + 0x20)),
             unsigned(app->getMemory<x86::reg32>(record + 0x24)),
@@ -1475,7 +1492,7 @@ void traceCars(win32::WinApplication* app, x86::reg32 clock)
         }
         SDL_Log("[CARS] writing %s", path.c_str());
     }
-    const x86::reg32 header[4] = { 0x52414353, clock, app->getMemory<x86::reg32>(0x6fd510), 0 };
+    const x86::reg32 header[4] = { 0x52414353, clock, gameSettings(app).entryCount, 0 };
     SDL_WriteIO(s_file, header, sizeof header);
     SDL_WriteIO(s_file, &app->getMemory<x86::reg8>(0x5e1120), 0x9ac0);
     SDL_WriteIO(s_file, &app->getMemory<x86::reg8>(0x5eabe0), 0x4ac0);
@@ -1589,7 +1606,7 @@ void traceTicks(win32::WinApplication* app)
             unsigned(ticks), (unsigned long long)span, double(ticks) * 1000.0 / double(span),
             unsigned(frames), double(frames) * 1000.0 / double(span),
             frames ? double(ticks) / double(frames) : 0.0, unsigned(clock),
-            unsigned(app->getMemory<x86::reg32>(0x6fd3a0)),
+            unsigned(gameSettings(app).replayMode),
             frames ? drawn.triangles / unsigned(frames) : 0u, frames ? drawn.fogged / unsigned(frames) : 0u,
             drawn.fogTables, frames ? drawn.drawCalls / unsigned(frames) : 0u,
             frames ? drawn.emptyCalls / unsigned(frames) : 0u, frames ? drawn.cut / unsigned(frames) : 0u);
@@ -1607,7 +1624,7 @@ void traceTicks(win32::WinApplication* app)
                 cap >= 10000 ? cap / 1000 : cap,
                 s_ticks.gpuBusy / s_ticks.gpuLooks / (double(frames) * 1000.0 / double(span)),
                 drawn.depth16Frames, drawn.frames,
-                unsigned(app->getMemory<x86::reg32>(0x6fd4c8)), unsigned(app->getMemory<x86::reg32>(0x6fd3b0)));
+                unsigned(gameSettings(app).night), unsigned(gameSettings(app).playMode));
     }
     /* And the x87's special cases this second, all threads together: compares
      * that met a NaN, and fistp with no integer to store. */
@@ -1720,7 +1737,7 @@ x86::sreg32 clampAxis(x86::sreg32 value, x86::sreg32 low, x86::sreg32 high)
 bool playerDriving(win32::WinApplication* app)
 {
     return nfs3hp::raceIsRunning() && app->getMemory<x86::reg32>(0x7a3d10) == 0
-        && app->getMemory<x86::reg32>(0x6fd3a0) != 2;
+        && gameSettings(app).replayMode != 2;
 }
 
 /* NFS3Activity's say in something, by the name of its method taking a boolean;
@@ -2172,7 +2189,7 @@ void raceControlsTick(win32::WinApplication* app)
     if (!car)
         return;
     const x86::reg32 record = app->getMemory<x86::reg32>(car + 0x220);
-    if (record < 0x6fd52c || record >= 0x6fd52c + 16 * 0x6c || (record - 0x6fd52c) % 0x6c)
+    if (record < SETTINGS_ADDRESS(entries) || record >= SETTINGS_ADDRESS(entries) + 16 * 0x6c || (record - SETTINGS_ADDRESS(entries)) % 0x6c)
         return;
     const bool gears = app->getMemory<x86::reg32>(record + 0x1c) != 1;
     const bool spikes = (app->getMemory<x86::reg8>(car + 0x200) & 0x20) != 0;
@@ -2275,11 +2292,11 @@ void textEntryTick(win32::WinApplication* app)
 void padKeysTick(win32::WinApplication* app)
 {
     bool muted = false;
-    if (playerDriving(app) && app->getMemory<x86::reg32>(0x6fd3b0) == 1)
+    if (playerDriving(app) && gameSettings(app).playMode == 1)
     {
         muted = true;
         for (x86::reg32 i = 0; i < 3 * 13 && muted; ++i)
-            muted = app->getMemory<x86::reg32>(0x6fd20c + i * 4) == app->getMemory<x86::reg32>(0x490430 + i * 4);
+            muted = gameSettings(app).controls[0][i] == app->getMemory<x86::reg32>(0x490430 + i * 4);
     }
     static int last = -1;
     if (last != int(muted))
@@ -2305,11 +2322,11 @@ void botForceTick(win32::WinApplication* app)
     if (now - s_last < 5000)
         return;
     s_last = now;
-    const x86::reg32 player = app->getMemory<x86::reg32>(0x6fd4f4);
+    const x86::reg32 player = gameSettings(app).localPlayer;
     const x86::reg32 playerCar = player < 16 ? x86::reg32(app->getMemory<x86::reg32>(0x5efa48 + player * 4)) : 0u;
     const x86::sreg32 playerNode = playerCar ? x86::sreg32(app->getMemory<x86::reg32>(playerCar + 0x1c)) : 0;
     std::string bots;
-    const x86::reg32 cars = app->getMemory<x86::reg32>(0x6fd510);
+    const x86::reg32 cars = gameSettings(app).entryCount;
     for (x86::reg32 i = 0; i < cars && i < 16; ++i)
     {
         const x86::reg32 car = 0x5e1120 + i * 0x9ac;
@@ -2324,10 +2341,10 @@ void botForceTick(win32::WinApplication* app)
         bots += one;
     }
     SDL_Log("[BOTFORCE] flag50c=%u 4cc=%u 4f0=%u player=%u node=%d 7a22da=%u 518=%u 508=%u 55eb2e=%02x:%s",
-            unsigned(app->getMemory<x86::reg32>(0x6fd50c)), unsigned(app->getMemory<x86::reg32>(0x6fd4cc)),
-            unsigned(app->getMemory<x86::reg32>(0x6fd4f0)), unsigned(player), int(playerNode),
-            unsigned(app->getMemory<x86::reg16>(0x7a22da)), unsigned(app->getMemory<x86::reg32>(0x6fd518)),
-            unsigned(app->getMemory<x86::reg32>(0x6fd508)), unsigned(app->getMemory<x86::reg8>(0x55eb2e)),
+            unsigned(gameSettings(app).networkGame), unsigned(gameSettings(app).weather),
+            unsigned(gameSettings(app).seriesRace), unsigned(player), int(playerNode),
+            unsigned(app->getMemory<x86::reg16>(0x7a22da)), unsigned(gameSettings(app).humanCount),
+            unsigned(gameSettings(app).networkLobby), unsigned(app->getMemory<x86::reg8>(0x55eb2e)),
             bots.c_str());
 }
 
@@ -2356,7 +2373,7 @@ void perfTick(win32::WinApplication* app)
         return;
     }
     s_raced = true;
-    const x86::reg32 player = app->getMemory<x86::reg32>(0x6fd4f4);
+    const x86::reg32 player = gameSettings(app).localPlayer;
     const x86::reg32 car = player < 16 ? x86::reg32(app->getMemory<x86::reg32>(0x5efa48 + player * 4)) : 0u;
     if (!car)
         return;
@@ -2452,7 +2469,7 @@ bool SDLCALL backgroundWatch(void* userdata, SDL_Event* event)
     if (event->type == SDL_EVENT_WILL_ENTER_BACKGROUND)
     {
         s_pauseOnReturn = playerDriving(app) && !nfs3hp::loadingScreenUp()
-                       && app->getMemory<x86::reg32>(0x6fd3b0) < 2;
+                       && gameSettings(app).playMode < 2;
         win32::suspendTime(true);
         SDL_Log("[TIME] to the background%s", s_pauseOnReturn ? "; the race comes back paused" : "");
     }
@@ -2593,6 +2610,8 @@ int main(int argc, char* argv[])
          * FileVersion): the version a network race checks between machines. */
         win32::version::setFileVersion("27, 2.0");
         nfs3hp::Application app("nfs3.exe");
+        nfs3hp::installDisplaySliders(&app);
+        nfs3hp::installConnectScreen(&app);
         app.addRegistryKey(win32::HKEY_LOCAL_MACHINE, "SOFTWARE\\Electronic Arts\\Need For Speed III", "3D Device Description", new win32::RegistryValue("3Dfx Voodoo 2"));
         app.addRegistryKey(win32::HKEY_LOCAL_MACHINE, "SOFTWARE\\Electronic Arts\\Need For Speed III", "3D Card", new win32::RegistryValue("3Dfx Voodoo 2"));
         //app.addRegistryKey(win32::HKEY_LOCAL_MACHINE, "SOFTWARE\\Electronic Arts\\Need For Speed III", "Thrash Driver", new win32::RegistryValue("softtri"));

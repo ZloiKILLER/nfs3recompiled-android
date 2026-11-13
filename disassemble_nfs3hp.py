@@ -3071,6 +3071,27 @@ for _line in open(__import__("os").path.join(__import__("os").path.dirname(__imp
         GRAPHICS_DEAD[int(_line[5:-1], 16)] = "graphics::dead_%s" % _line[5:-1]
 GAME_NATIVES.update(GRAPHICS_DEAD)
 
+# The loaders, whole: RefPack, an FCE's polygon records, a track's FRD (native_loading.cpp).
+GAME_NATIVES.update({0x5102a4: "loader::refpack", 0x49cfa0: "loader::fceRecords", 0x419c20: "loader::frd"})
+
+# What is no function of its own (src/nfs3hp/native_pieces.inc, native_pieces.cpp):
+# a stub each, no code generated.
+PIECES = {}
+for _line in open(__import__("os").path.join(__import__("os").path.dirname(__import__("os").path.abspath(__file__)),
+                                     "src/nfs3hp/native_pieces.inc")).read().splitlines():
+    if _line.startswith("DEAD("):
+        PIECES[int(_line[5:-1], 16)] = "pieces::stub_%s" % _line[5:-1]
+GAME_NATIVES.update(PIECES)
+
+# The executable's jumps to its imports (src/nfs3hp/native_import_thunks.inc).
+for _line in open(__import__("os").path.join(__import__("os").path.dirname(__import__("os").path.abspath(__file__)),
+                                     "src/nfs3hp/native_import_thunks.inc")).read().splitlines():
+    if _line.startswith("IMPORT_THUNK("):
+        _address = _line[13:].split(",")[0]
+        GAME_NATIVES[int(_address, 16)] = "imports::thunk_%s" % _address
+# The movies (decomp/mad, native_movie.cpp): the player and its frame on the screen.
+GAME_NATIVES.update({0x495bc0: "movie::play", 0x4df2b0: "movie::showFrameAt"})
+
 # The code nothing can reach -- no call, jump, pointer or address of it
 # anywhere that runs, proved by tools/audit_dead.py: a stub each that stops
 # the game (src/nfs3hp/native_dead.inc, native_dead.cpp), no code generated.
@@ -3206,6 +3227,11 @@ if __name__ == '__main__':
     for stale in Path('src/nfs3hp/disassembly').glob('softtria.*'):
         stale.unlink()  # what an earlier run wrote of softtria
 
+    # A tool's site in a function of MENU_NATIVES has no code to find: out of the tools' lists,
+    # and tools/frontend_checks/generate.py makes the same change to the code it holds the native against.
+    from tools.frontend_checks.port_sites import leave_natives, of_module
+    leave_natives(of_module(application), MENU_NATIVES)
+
     # Reapply the reviewed port heap budget after regenerating the original code.
     from tools.apply_heap_budget import apply
     apply(Path(__file__).resolve().parent)
@@ -3260,8 +3286,6 @@ if __name__ == '__main__':
     from tools.apply_loading_screen import apply as apply_loading_screen
     apply_loading_screen(Path(__file__).resolve().parent)
 
-    from tools.apply_movie_tap import apply as apply_movie_tap
-    apply_movie_tap(Path(__file__).resolve().parent)
 
     # Alpha intensity: the Advanced Graphics slider, which the original applies
     # on its Direct3D driver only.
@@ -3297,19 +3321,6 @@ if __name__ == '__main__':
     apply_native_vertices(Path(__file__).resolve().parent)
 
 
-    # The loading native: RefPack, the FSH textures' alpha scans, an FCE's
-    # polygon records and a track's FRD.
-    from tools.apply_native_loading import apply as apply_native_loading
-    apply_native_loading(Path(__file__).resolve().parent)
-
-    # The specs file's text native (sub_4b22d0), which nothing in the game calls.
-    from tools.apply_native_specs_file import apply as apply_native_specs_file
-    apply_native_specs_file(Path(__file__).resolve().parent)
-
-    # The movies native: the MAD player, decoder and display (decomp/mad), after
-    # apply_movie_tap's MovieSession.
-    from tools.apply_native_movie import apply as apply_native_movie
-    apply_native_movie(Path(__file__).resolve().parent)
 
     # The menus decompiled a screen at a time, the generated code kept behind
     # them: first the main menu.

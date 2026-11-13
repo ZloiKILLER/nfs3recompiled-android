@@ -1,3 +1,4 @@
+#include "native_frontend_loop.h"
 #include "native_frontend.h"
 #include <iterator>
 
@@ -12,7 +13,11 @@
  *
  * The same screens serve a race as its pause screens (0x559234 set, their
  * own loop at sub_44bac0): no fades then, no art of their own, and only the
- * items marked for it. */
+ * items marked for it.
+ *
+ * Plan step 5: each function a typed core in frontend::loop (native_frontend_loop.h), in a frame
+ * of its own where it calls anything (fe::Frame: what it calls runs at the stack addresses it
+ * did), and an adapter under the game's name for the calls by address. */
 namespace nfs3hp
 {
 
@@ -57,10 +62,13 @@ bool isEnd(const Guest& guest, x86::reg32 item)
     return guest.dword(item + fe::item::kType) == 0;
 }
 
+}
+
 /* sub_44a660: whether an item is shown: in the pause screens, only one marked
  * for them. */
-x86::reg32 shownNow(Guest& guest, x86::reg32 item)
+x86::reg32 frontend::loop::shownNow(App* app, CPU& cpu, reg32 item)
 {
+    Guest guest(app, cpu);
     if (guest.dword(kInRace) != 0 && (guest.word(item + kStateWord) & kInRaceToo) == 0)
         return 0;
     return 1;
@@ -69,8 +77,10 @@ x86::reg32 shownNow(Guest& guest, x86::reg32 item)
 /* sub_44a960: every item's kOnShow handler, the screen opening; an item for
  * after a race only, or for before one only, greyed out and hidden when it
  * is not the time for it.  The network screens get theirs. */
-x86::reg32 showItems(Guest& guest, x86::reg32 menu)
+x86::reg32 frontend::loop::showItems(App* app, CPU& cpu, reg32 menu)
 {
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 12);
     std::int16_t index = std::int16_t(firstItem(guest, menu));
     for (; !isEnd(guest, itemAt(index)); ++index)
     {
@@ -91,12 +101,11 @@ x86::reg32 showItems(Guest& guest, x86::reg32 menu)
 }
 
 /* sub_44ae00: the name of the screen shown, 0 for none. */
-x86::reg32 currentMenuName(Guest& guest)
+x86::reg32 frontend::loop::currentMenuName(App* app, CPU& cpu)
 {
+    Guest guest(app, cpu);
     const x86::reg32 menu = guest.dword(kCurrentMenu);
     return menu != 0 ? guest.dword(menu + fe::menu::kName) : 0;
-}
-
 }
 
 using fe::kRestoreEbx;
@@ -111,22 +120,22 @@ namespace frontend
 
 void menuShowItems(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_44a960", 0, 12, nullptr, 0, kRestoreEbx | kRestoreEdx };
+    static fe::Site site{ "sub_44a960", 0, 0, nullptr, 0, kRestoreEbx | kRestoreEdx };
     const x86::reg32 menu = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest& guest) { return showItems(guest, menu); });
+    fe::runWhole(app, cpu, site, [&](Guest&) { return loop::showItems(app, cpu, menu); });
 }
 
 void menuShownNow(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_44a660", 0, 4, nullptr, 0, kRestoreNone };
+    static fe::Site site{ "sub_44a660", 0, 0, nullptr, 0, kRestoreNone };
     const x86::reg32 item = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest& guest) { return shownNow(guest, item); });
+    fe::runWhole(app, cpu, site, [&](Guest&) { return loop::shownNow(app, cpu, item); });
 }
 
 void menuCurrentName(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_44ae00", 0, 8, nullptr, 0, fe::kRestoreEdx };
-    fe::runWhole(app, cpu, site, [&](Guest& guest) { return currentMenuName(guest); });
+    static fe::Site site{ "sub_44ae00", 0, 0, nullptr, 0, fe::kRestoreEdx };
+    fe::runWhole(app, cpu, site, [&](Guest&) { return loop::currentMenuName(app, cpu); });
 }
 
 }  // namespace frontend

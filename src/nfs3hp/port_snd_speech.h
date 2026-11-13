@@ -43,7 +43,6 @@ static_assert(sizeof(SpeechLine) == 0x24, "the speech's line");
 // The pan of the left and right of the split screen.
 constexpr uint32_t kSideLeft = 0x3fff, kSideRight = 0xc000;
 
-constexpr Var<int32_t> kSplitScreenMode{0x6fd3b0};
 constexpr Table<int32_t> kSpeechBankHandles{0x571124, 12};   // the game's banks' SND handles
 
 // The banks the code names by their place in kSpeechBankHandles.
@@ -133,9 +132,6 @@ inline reg32 appendText(App* app, reg32 to, reg32 from)
     copyText(app, end, from);
     return end - to;
 }
-
-// The units in use: which folder the speech is in.
-constexpr Var<int32_t> kSpeechUnits{0x6fbb4c};
 
 /* The units' folders (a name each), by the units. */
 constexpr reg32 kSpeechUnitFolders[6] = {0x7a2b34, 0x7a2bb4, 0x7a2c34, 0x7a2cb4, 0x7a2d34, 0x7a2b34};

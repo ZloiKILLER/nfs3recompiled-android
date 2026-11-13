@@ -17,7 +17,7 @@ public:
     static x86::reg32 init(WinApplication* app, x86::reg32 memblockIndex, x86::reg8* memBlock);
     static x86::reg32 g_currentDisplayMode;
 
-private:
+public:  // the methods, which the game's natives also call as C++ (native_windows.h, guest::method)
     struct DDCAPS;
     typedef DDCAPS* LPDDCAPS;
 

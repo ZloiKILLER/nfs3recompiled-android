@@ -31,13 +31,6 @@
  <string name="touch_settings">Comandos táteis</string>
  <string name="screen_settings">Definições do ecrã</string>
  <string name="display_settings">Ecrã</string>
- <string name="screen_adjustment">Ajuste da imagem</string>
- <string name="brightness_label">Brilho</string>
- <string name="contrast_label">Contraste</string>
- <string name="adjust_hint">As amostras mostram o resultado. Aplica-se no próximo arranque do jogo.</string>
- <string name="adjust_reset">Repor</string>
- <string name="sample_dark">Noite</string>
- <string name="sample_bright">Dia</string>
  <string name="back_to_launcher">Voltar</string>
  <string name="switch_data">Tornar ativo</string>
  <string name="data_change">Alterar…</string>
@@ -71,7 +64,6 @@
  <string name="orientation_landscape_reverse">Fixo — horizontal invertido</string>
  <string name="fps_30">30 FPS</string>
  <string name="fps_60">60 FPS</string>
- <string name="gamma_label">Gama</string>
  <string name="fps_cap_label">Taxa de imagens</string>
  <string name="fps_error">Introduz um número inteiro de 1 a 240</string>
  <string name="save">Guardar</string>
@@ -156,6 +148,8 @@
  <string name="faq_mapping"><b>Comandos de jogo</b>\nO jogo vê sempre dois comandos: o comando 1 é o jogador 1, juntamente com os controlos táteis, e o comando 2 é o jogador 2. Em Comandos → Comandos de jogo escolhe qual é qual premindo um botão nele e define o que faz cada botão; depois prime uma vez Comando LIGADO, que escreve os controlos correspondentes nas definições do jogo e guarda uma cópia do ficheiro antigo. O stick esquerdo vira e os gatilhos aceleram e travam. Um comando tem dois conjuntos de botões, tal como os controlos táteis têm duas disposições: o de corrida, que defines aqui, e um fixo para os menus e as repetições, onde Cross / A confirma, Circle / B recua e o direcional move a seleção. Para jogar com teclado, escreve antes Predefinição do jogo.</string>
  <string name="faq_lights"><b>Luzes e regresso à pista</b>\n☼ envia L. ↻ envia R para voltar à pista. As teclas podem ser alteradas em Comandos → Toque → Teclas.</string>
  <string name="faq_screen_data"><b>Ecrã e dados do jogo</b>\nHorizontal bloqueia o jogo na horizontal; Automática permite a rotação. O limite de FPS restringe a taxa de imagens; um valor menor reduz o trabalho por segundo. «Dados do jogo» gere as importações e mostra o conjunto ativo. «Jogar» fica disponível quando um conjunto estiver pronto.</string>
+ <string name="faq_picture"><b>Brilho, contraste e gama</b>\nSão ajustados no próprio jogo: Options → Graphics → Advanced Settings, ou Graphics no menu de pausa durante uma corrida. A imagem muda de imediato enquanto move o controlo deslizante. Done mantém os valores e Cancel repõe os anteriores. As definições aplicam-se a corridas, menus e vídeos.</string>
+ <string name="faq_network"><b>Corridas em rede</b>\nAbra Connect Players no primeiro ecrã do jogo. Local WiFi encontra sozinho corridas entre telemóveis na mesma rede Wi-Fi. Network (TCP) liga a qualquer pessoa que saiba o endereço do anfitrião, incluindo um PC com o jogo original ou o Modern Patch. Por baixo aparecem o endereço deste telemóvel (Your IP) e TCP Port: um toque alterna entre 9803 (Modern Patch) e 1030 (jogo original). Todos os jogadores de uma corrida TCP têm de usar a mesma porta.</string>
  <string name="gamepad_buttons">Botões</string>
  <string name="gamepad_buttons_title">Botões do comando %1$d</string>
  <string name="gamepad_buttons_hint">O que faz cada botão deste comando enquanto conduzes. O stick esquerdo vira, o gatilho direito acelera e o esquerdo trava. Nos menus e nas repetições os botões são fixos e não se configuram: Cross / A e Options / Menu confirmam, Circle / B e Create / View recuam, o direcional move a seleção. As ações dos botões chegam ao jogo assim que os controlos de comando forem escritos nele.</string>
@@ -191,12 +185,5 @@
  <string name="force_feedback_phone_note">O telemóvel reproduz colisões, aterragens e mudanças de velocidade, o motor em rotações altas e as curvas apertadas.</string>
  <string name="force_feedback_gamepad_note">O comando 1 reproduz os efeitos do jogo tal como são. A sua intensidade define-se no jogo: Options → Controllers → Force Feedback.</string>
  <string name="editor_snap_grid">Ajustar à grelha</string>
- <string name="network_title">Rede</string>
- <string name="network_address">Endereço deste dispositivo na rede: %1$s</string>
- <string name="network_no_address">Sem ligação à rede</string>
- <string name="network_port_label">Porta TCP/IP</string>
- <string name="network_port_modern">9803 · Modern Patch</string>
- <string name="network_port_original">1030 · jogo original</string>
- <string name="network_hint">O IPX encontra sozinho as corridas nesta rede Wi-Fi. O TCP/IP liga a quem souber o endereço do anfitrião, incluindo um PC com o jogo original ou o Modern Patch. Todos os jogadores usam a mesma porta.</string>
  <string name="fps_unlimited">Sem limite</string>
 </resources>

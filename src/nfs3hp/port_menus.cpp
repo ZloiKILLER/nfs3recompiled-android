@@ -280,6 +280,8 @@ constexpr reg32 entered(reg32 at)
 
 /* ---- The item lookup ---- */
 
+}  // namespace
+
 /* 0x4429c0's: whether a codelink names `name`.  A codelink may hold several
  * names, apart by spaces; it is split with strtok, on a copy in the frame
  * (pushes ecx, esi, edi, ebp, then 0x200 bytes). */
@@ -304,6 +306,9 @@ Result codelinkMatched(App* app, CPU& cpu, reg32 esp, reg32 codelink, reg32 name
     }
     return 0;
 }
+
+namespace
+{
 
 /* 0x442b10's: a screen's handlers, found by its name in the table at
  * 0x555c48; a screen not there keeps the ones it has.  eax: the last
@@ -703,6 +708,8 @@ Result menuFilesChecked(App* app, CPU& cpu, reg32 esp, reg32 eax)
     return int32_t(eax);
 }
 
+}  // namespace
+
 /* 0x449510's: the screen `name` loaded -- with every screen its buttons lead
  * to -- unless it is loaded already.  With `reset`, every screen, item and
  * string loaded so far is let go first.  A screen whose .MNU cannot be
@@ -842,8 +849,6 @@ Result menusLoaded(App* app, CPU& cpu, reg32 esp, reg32 name, reg32 reset, const
             return {};
     return 1;
 }
-
-}  // namespace
 
 /* ---- The adapters ---- */
 

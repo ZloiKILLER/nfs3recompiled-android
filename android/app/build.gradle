@@ -23,9 +23,9 @@ android {
          * API 21 on, as SDL3 itself does. */
         minSdk = 26
         targetSdk = 36
-        // Kept in step with versionName so the two can never disagree: 0.78 -> 78.
-        versionCode = 78
-        versionName = "0.78"
+        // Kept in step with versionName so the two can never disagree: 0.79 -> 79.
+        versionCode = 79
+        versionName = "0.79"
         testInstrumentationRunner "dev.nfs3hp.port.TouchOverlayInstrumentation"
         // Both packed in one APK; the installer takes the device's first ABI it
         // finds here, so a 64-bit Android always gets arm64-v8a and only a 32-bit

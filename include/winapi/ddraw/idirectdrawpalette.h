@@ -30,7 +30,7 @@ public:
 
     static x86::reg32 init(WinApplication* app, x86::reg32 memblockIndex, x86::reg8* memBlock);
 
-private:
+public:  // the methods, which the game's natives also call as C++ (native_windows.h, guest::method)
     static void GetCaps(WinApplication* app, x86::CPU& cpu);
     static void GetEntries(WinApplication* app, x86::CPU& cpu);
     static void Initialize(WinApplication* app, x86::CPU& cpu);

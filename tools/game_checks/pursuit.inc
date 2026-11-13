@@ -22,6 +22,7 @@ kPursuitRadar,   // the radar's word (0x4c8040): its record at eax, 1 mostly; 0 
 kPursuitPlace,   // a place named (0x4c8550, 0x4c8470): its record at edx -- phrase, distance, kind -- or none
 kPursuitSmall,   // a count (0x40ef10): 0 to 11
 kPursuitLine,    // a speech's line queued (0x4c85a0): the words the code wrote of its record logged
+kPursuitDebug,   // a debug text (0x42d520): its arguments past the five logged, one for each % of its format
 #elif defined(PURSUIT_EFFECT_CASES)
 case kPursuitFlag:
     result = r % 2 == 0 ? 0 : 1 + (r >> 8) % 3;
@@ -91,6 +92,19 @@ case kPursuitLine:
         if (k < 7 || (k == 8 && word(0xcb8ffc) == x86::reg32(g_seed)))
             calls.back().words.push_back(words[0] + 4 * k < kMemory - 4 ? word(words[0] + 4 * k) : 0xbad0bad0);
     break;
+case kPursuitDebug:
+{
+    // The debug text's arguments past its five (the row's words): one for each % of its format, the
+    // fifth word -- "V%d" has the chase's count, the blank none.  A sixth word logged for the blank
+    // would be the caller's frame (its saved ebp), which the natives that keep their locals in C++ do
+    // not write.
+    const x86::reg32 format = word(esp + 0x14);
+    x86::reg32 more = 0;
+    for (x86::reg32 at = format; at < format + 0x40 && at < kMemory && getMemory<char>(at) != 0 && more < 4; ++at)
+        if (getMemory<char>(at) == '%')
+            calls.back().words.push_back(word(esp + 0x18 + 4 * more++));
+    break;
+}
 #elif defined(PURSUIT_GAME_FUNCTIONS)
 // {address, "name", convention, registers, words, clobbers, through, deref, effect},
 // The ramming rival's tick (airace::rivalTick, native too), called by address:
@@ -102,20 +116,22 @@ case kPursuitLine:
 // not, a car within reach, the nodes ahead (within the case's 64), a lane
 // (never so wild that scoreLane's walk into its node's lanes takes long), the
 // speeds and the pace onto the x87's stack, a free node now and then (so that
-// followCar's search ends).
+// followCar's search ends).  No register logged for the track's pace, a car
+// taken over and the places left: aiplan::trackTuningSpeed, answerOne and
+// trackTuningFirst read none, and the pursuit's code calls them as C++.
 {0x40ed40, "a node's speed", kWatcom, 1, 0, kEax, -1, 0, kPursuitSpeed},
-{0x40ee80, "the track's pace", kWatcom, 1, 0, kEax, -1, 0, kPursuitPace},
+{0x40ee80, "the track's pace", kWatcom, 0, 0, kEax, -1, 0, kPursuitPace},
 {0x40f050, "a cop near", kWatcom, 2, 0, kEax, -1, 0, kPursuitFlag},
 {0x404610, "the chase's kind", kWatcom, 1, 0, kEax, -1, 0, kPursuitKind},
 {0x40e160, "a node ahead", kWatcom, 2, 0, kEax, -1, 0, kPursuitNode},
 {0x40e0c0, "a node's lane", kWatcom, 1, 0, kEax, -1, 0, kPursuitLane},
 {0x40f000, "a node within reach", kWatcom, 3, 0, kEax, -1, 0, kPursuitFlag},
-{0x40f100, "a car taken over", kWatcom, 2, 0, kEax, -1, 0, kPursuitFlag},
+{0x40f100, "a car taken over", kWatcom, 0, 0, kEax, -1, 0, kPursuitFlag},
 {0x40df10, "the cop active", kWatcom, 1, 0, kEax, -1, 0, kPursuitYes},
 {0x404b90, "the cop held", kWatcom, 1, 0, kEax, -1, 0, kPursuitFlag},
 {0x401500, "the car out", kWatcom, 1, 0, kEax, -1, 0, kPursuitFlag},
 {0x405c80, "a node taken", kWatcom, 1, 0, kEax, -1, 0, kPursuitFlag},
-{0x40ef10, "the places left", kWatcom, 2, 0, kEax, -1, 0, kPursuitSmall},
+{0x40ef10, "the places left", kWatcom, 0, 0, kEax, -1, 0, kPursuitSmall},
 // The game's the radio asks: the radar's word, the places named on the
 // track (their records written), the speech's line queued (its 13 words
 // logged as kPursuitLine says -- snd::speechLine, which the sound's
@@ -127,12 +143,12 @@ case kPursuitLine:
 {0x4c85a0, "a speech's line", kWatcom, 1, 0, kEax, -1, 0, kPursuitLine},
 {0x4c7fd0, "the car ticketed", kWatcom, 1, 0, kEax, -1, 0, kNothing},
 // Other parts' natives, by address: the car reset (racestart::resetCar),
-// the debug text (raceload's empty hook: its six words logged, no register
-// changed), a colour's nearest point (collide::nearestPoint), the speech bank
+// the debug text (raceload's empty hook: its five words and its format's
+// arguments logged, no register changed), a colour's nearest point (collide::nearestPoint), the speech bank
 // loaded (snd::voiceBankLoad, its path's 16 words logged) -- each held
 // against its own code on its own; here their worlds are not made.
 {0x429100, "a car reset", kWatcom, 1, 0, kEax, -1, 0, kNothing},
-{0x42d520, "a debug text", kCdecl, 0, 6, 0, -1, 0, kNothing},
+{0x42d520, "a debug text", kCdecl, 0, 5, 0, -1, 0, kPursuitDebug},
 {0x431280, "a colour's nearest", kWatcom, 3, 0, kEax, -1, 0, kNothing},
 {0x413750, "a speech bank loaded", kWatcom, 3, 0, kEax, 0, 16, kNothing},
 #elif defined(PURSUIT_POINTERS)

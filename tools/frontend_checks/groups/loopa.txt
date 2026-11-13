@@ -1,0 +1,33 @@
+# address name kind: the functions native whole in src/nfs3hp/native_frontend_loopa.cpp, frontend::name.
+# kind: how frontend_checks enters it (Menu, Key, Item, None).
+43bcb0 loopLoadingScreenFlag None
+459410 loopItemFrame None
+475b10 loopFreeLoadedBlock None
+4777d0 ghostSaveFile None
+477830 ghostPoseSetRotation None
+477850 ghostPosePosition None
+4778c0 ghostPoseSetPosition None
+477990 ghostPoseBetween None
+4779e0 ghostRecordedAt None
+477a10 ghostLoadedAt None
+477a50 ghostRecordingStart None
+477b50 ghostLoadFile None
+477c20 ghostRecordCar None
+477d90 ghostPlaybackPose None
+495190 loopBarScale None
+497430 loopFillRootBytes None
+4a3390 loopGameStart None
+4a33a0 loopGameEnd None
+4a33b0 loopRaceRestart None
+4a3400 loopRaceLoad None
+4a3690 loopRaceSession None
+4a6f70 loopNothingToEnd None
+4a7080 loopPanelQuad None
+4a7310 loopPanelTexturedQuad None
+4a75e0 loopPanelDraw None
+4b6020 loopGameInit None
+4b62a0 loopInstallIsRemote None
+4b6a30 poseBlend None
+4b6ca0 poseMatrixOfRotation None
+4b6d90 poseRotationNearest None
+4b6e80 poseRotationOfMatrix None

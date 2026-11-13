@@ -31,13 +31,6 @@
  <string name="touch_settings">Сенсорное управление</string>
  <string name="screen_settings">Настройки экрана</string>
  <string name="display_settings">Дисплей</string>
- <string name="screen_adjustment">Настройка изображения</string>
- <string name="brightness_label">Яркость</string>
- <string name="contrast_label">Контраст</string>
- <string name="adjust_hint">Образец показывает результат: листайте его, чтобы увидеть день и ночь. Применится при следующем запуске игры.</string>
- <string name="adjust_reset">Сбросить</string>
- <string name="sample_dark">Ночь</string>
- <string name="sample_bright">День</string>
  <string name="back_to_launcher">Назад</string>
  <string name="switch_data">Сделать активным</string>
  <string name="data_change">Изменить…</string>
@@ -71,7 +64,6 @@
  <string name="orientation_landscape_reverse">Фиксированно — ландшафт наоборот</string>
  <string name="fps_30">30 FPS</string>
  <string name="fps_60">60 FPS</string>
- <string name="gamma_label">Гамма</string>
  <string name="fps_cap_label">Частота кадров</string>
  <string name="fps_error">Введите целое число от 1 до 240</string>
  <string name="save">Сохранить</string>
@@ -156,6 +148,8 @@
  <string name="faq_mapping"><b>Геймпады</b>\nИгра всегда видит два геймпада: «Геймпад 1» — первый игрок вместе с сенсорным управлением, «Геймпад 2» — второй игрок. В «Управление → Геймпады» выберите нажатием кнопки, какой пэд чей, настройте, что делает каждая кнопка, затем один раз нажмите «Геймпад ВКЛ». Оно запишет подходящее управление в настройки игры и сохранит копию старого файла. Левый стик рулит, курки — газ и тормоз. У пэда два набора кнопок, как у сенсорного управления две раскладки: гоночный, который настраивается здесь, и постоянный для меню и повторов, где Cross / A подтверждает, Circle / B возвращает назад, а крестовина двигает выбор. Чтобы играть на клавиатуре, запишите вместо этого «По умолчанию в игре».</string>
  <string name="faq_lights"><b>Фары и возврат на трассу</b>\n☼ отправляет L. ↻ отправляет R для возврата на трассу. Клавиши можно изменить в «Управление → Сенсор → Клавиши».</string>
  <string name="faq_screen_data"><b>Экран и игровые данные</b>\nЛандшафт фиксирует игру горизонтально; «Авто» разрешает поворот. Ограничение FPS задаёт частоту кадров; меньшее значение снижает нагрузку. «Игровые данные» управляют импортом и показывают активный набор. Кнопка «Играть» включается, когда набор данных готов.</string>
+ <string name="faq_picture"><b>Яркость, контраст и гамма</b>\nОни настраиваются в самой игре: Options → Graphics → Advanced Settings или Graphics в меню паузы во время гонки. Картинка меняется сразу, пока двигается ползунок. Done сохраняет значения, Cancel возвращает прежние. Настройки действуют на гонки, меню и видеоролики.</string>
+ <string name="faq_network"><b>Сетевые гонки</b>\nОткройте Connect Players на первом экране игры. Local WiFi сам находит гонки между телефонами в одной сети Wi-Fi. Network (TCP) соединяет с любым, кто знает адрес хоста, в том числе с ПК с оригинальной игрой или Modern Patch. Ниже показаны адрес этого телефона (Your IP) и TCP Port: нажатие переключает между 9803 (Modern Patch) и 1030 (оригинальная игра). У всех игроков гонки по TCP должен быть один и тот же порт.</string>
  <string name="gamepad_buttons">Кнопки</string>
  <string name="gamepad_buttons_title">Кнопки геймпада %1$d</string>
  <string name="gamepad_buttons_hint">Что делает каждая кнопка этого пэда во время езды. Левый стик рулит, правый курок — газ, левый — тормоз. В меню и в повторах кнопки постоянные и не настраиваются: Cross / A и Options / Menu подтверждают, Circle / B и Create / View возвращают назад, крестовина двигает выбор. Действия кнопок доходят до игры после того, как управление геймпадами записано в игру.</string>
@@ -191,12 +185,5 @@
  <string name="force_feedback_phone_note">Телефон передаёт удары, приземления и переключения передач, двигатель на высоких оборотах и резкие повороты.</string>
  <string name="force_feedback_gamepad_note">«Геймпад 1» передаёт эффекты игры как есть. Их силу задаёт сама игра: Options → Controllers → Force Feedback.</string>
  <string name="editor_snap_grid">Привязка к сетке</string>
- <string name="network_title">Сеть</string>
- <string name="network_address">Адрес устройства в сети: %1$s</string>
- <string name="network_no_address">Нет подключения к сети</string>
- <string name="network_port_label">Порт TCP/IP</string>
- <string name="network_port_modern">9803 · Modern Patch</string>
- <string name="network_port_original">1030 · оригинальная игра</string>
- <string name="network_hint">IPX сам находит гонки в этой сети Wi-Fi. TCP/IP соединяет с любым, кто знает адрес хоста, в том числе с ПК с оригинальной игрой или Modern Patch. У всех игроков должен быть один и тот же порт.</string>
  <string name="fps_unlimited">Без ограничения</string>
 </resources>

@@ -1,3 +1,4 @@
+#include "game_settings.h"
 #include "port_sound_slice.h"
 
 #include <cstdint>
@@ -25,7 +26,7 @@ constexpr reg32 kAllocName = 0x536a58;  // what the bank's memory is allocated a
 constexpr reg32 kBankAdd = 0x4e8d20, kBankHeaderSize = 0x4e8db0, kBankHeaderCopy = 0x4e8e20;
 constexpr reg32 kSeek = 0x4e9088, kRead = 0x4e9200;
 constexpr reg32 kBankNotKept = 7;  // what SND answers when it wants the header copied out
-constexpr Var<int32_t> kSplitScreen{0x6fd3b0}, kSurround{0x5525a4}, kUnitSet{0x6fbb4c};
+constexpr Var<int32_t> kSurround{0x5525a4};
 constexpr Table<reg32> kSpeakerNames{0x412920}, kUnitNames{0x412950};
 constexpr reg32 kAudioFolder = 0x7a2ab4;
 
@@ -70,7 +71,7 @@ void voiceBankLoad(App* app, CPU& cpu)
     if (eax == 0)
     {
         // No such archive: the units' bank file of the audio folder.
-        eax = reg32(kUnitSet(app));
+        eax = reg32(gameSettings(app).language);
         const reg32 unit = load<reg32>(app, units + 4 * eax);
         if (!g.call(kSprintf, {eax}, {name, 0x536a28, kAudioFolder, unit}, eax))
             return;
@@ -153,7 +154,7 @@ void carBankLoad(App* app, CPU& cpu)
     // The bank's name in the archive, and the file's ending without it.
     bool first = false;
     reg32 inArchive, ending;
-    const int32_t split = kSplitScreen(app);
+    const int32_t split = gameSettings(app).playMode;
     if (split == 1 && split != player)
     {
         inArchive = 0x536a5c;

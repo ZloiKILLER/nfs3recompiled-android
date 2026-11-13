@@ -1,5 +1,9 @@
+#include "native_frontend_screen.h"
+#include "game_settings.h"
 #include "native_controls_host.h"
+#include "native_ea_memory.h"
 #include "native_guest.h"
+#include "port_shapes.h"
 #include "port_text.h"
 
 #include <cstdint>
@@ -12,11 +16,15 @@
  *
  * Written as their code is, as native_frontend_text.cpp's: each push and pop
  * to the guest's stack, each call with the return address's slot, the
- * registers as the code leaves them.  What they call of the game's that is
- * not native yet -- the art's and the memory's functions -- they call by
- * address; what they ask of the mouse they ask of the port
- * (controls::directInput).  tools/game_checks holds each
- * against its generated code. */
+ * registers as the code leaves them.  The art's and the memory's functions
+ * they call as C++ (guest::direct: every register but eax kept, as those
+ * keep them), the shown screen's name by address; what they ask of the mouse
+ * they ask of the port (controls::directInput).  tools/game_checks holds each
+ * against its generated code.
+ *
+ * Plan step 5: each function a typed core in frontend::screen (native_frontend_screen.h) -- its
+ * arguments into the registers, the code run, the ret left to the adapter under the game's name,
+ * which the calls by address enter. */
 namespace nfs3hp
 {
 namespace watcom
@@ -27,6 +35,8 @@ void strcmp(win32::WinApplication* app, x86::CPU& cpu);
 
 namespace frontend
 {
+
+void placePointer(win32::WinApplication* app, x86::CPU& cpu);
 
 namespace
 {
@@ -45,9 +55,6 @@ constexpr reg32 kPointerRight = 0x5f38e8, kPointerBottom = 0x5f38ec;
 constexpr reg32 kPointerX = 0x5f38f0, kPointerY = 0x5f38f4;
 // The screens' art.
 constexpr reg32 kCurrentMenuName = 0x44ae00;  // the shown screen's name, or none
-constexpr reg32 kShapeByName = 0x4d5db0;      // a shape of the menus' art by its name
-constexpr reg32 kAllocate = 0x4e1620;         // eax a tag, edx bytes
-constexpr reg32 kFree = 0x4e1890;
 constexpr reg32 kNoTag = 0x537830;            // ""
 constexpr reg32 kPauseName = 0x53793c, kMainMultName = 0x537944, kPostGameName = 0x537950;
 constexpr reg32 kNetworkScreen = 0x555748;    // the screen is MAINMULT's, or a race's pause over the network
@@ -55,7 +62,6 @@ constexpr reg32 kArtLeft = 0x5f3fc8, kArtTop = 0x5f3fcc;
 constexpr reg32 kItemLines = 0x5f3fdc, kItemLinesBytes = 0x64;
 constexpr reg32 kItemText = 0x5f3fd0, kItemTextBytes = 0x384;
 constexpr reg32 kDetail = 0x7a3a58;           // bit 2: no glow
-constexpr reg32 kNetworkChoice = 0x6fd508;
 
 /* The shapes the screens draw their items with: each its name, where its
  * number goes (a word). */
@@ -115,21 +121,31 @@ void enter(win32::WinApplication* app, x86::CPU& cpu, std::initializer_list<reg3
     cpu.esp -= locals;
 }
 
+/* The registers popped, the ret left to the adapter (ret). */
 void leave(win32::WinApplication* app, x86::CPU& cpu, std::initializer_list<reg32*> saved)
 {
     cpu.esp = cpu.ebp;
     cpu.ebp = pop(app, cpu);
     for (auto r = std::rbegin(saved); r != std::rend(saved); ++r)
         **r = pop(app, cpu);
-    cpu.esp += 4;
+}
+
+/* ret, the adapters' end: the return address popped, unless the game stopped
+ * in the function. */
+void ret(x86::CPU& cpu)
+{
+    if (!cpu.terminate)
+        cpu.esp += 4;
 }
 
 }  // namespace
 
 /* 0x435230: the pointer put at eax, edx, inside its bounds, what the mouse
  * has buffered taken first. */
-void placePointer(win32::WinApplication* app, x86::CPU& cpu)
+void screen::placePointer(App* app, CPU& cpu, reg32 x, reg32 y)
 {
+    cpu.eax = x;
+    cpu.edx = y;
     enter(app, cpu, {&cpu.ebx, &cpu.ecx, &cpu.esi, &cpu.edi}, 4);
     const reg32 ebp = cpu.ebp;
     cpu.esi = cpu.eax;
@@ -172,8 +188,10 @@ void placePointer(win32::WinApplication* app, x86::CPU& cpu)
 
 /* 0x49bfc0: the menus' pointer to eax, edx on a 640 by 480 screen, and the
  * mouse's to there on the screen's own when the 3D card draws the menus. */
-void setPointer(win32::WinApplication* app, x86::CPU& cpu)
+void screen::setPointer(App* app, CPU& cpu, reg32 x, reg32 y)
 {
+    cpu.eax = x;
+    cpu.edx = y;
     push(app, cpu, cpu.ebx);
     push(app, cpu, cpu.ecx);
     push(app, cpu, cpu.ebp);
@@ -193,18 +211,18 @@ void setPointer(win32::WinApplication* app, x86::CPU& cpu)
         cpu.edx = cpu.eax;
     }
     cpu.eax = cpu.ecx;
-    if (!direct(app, cpu, placePointer))
+    // The adapter, not guest::direct: setPointer leaves edx as placePointer leaves it.
+    if (!direct(app, cpu, frontend::placePointer))
         return;
     cpu.ebp = pop(app, cpu);
     cpu.ecx = pop(app, cpu);
     cpu.ebx = pop(app, cpu);
-    cpu.esp += 4;
 }
 
 /* 0x440970: the screens' art for the one shown -- whether it is the network
  * game's, the shapes its items are drawn with (on the menus, not a race's
  * pause screens) -- and the items' buffers made anew, cleared. */
-void loadScreenArt(win32::WinApplication* app, x86::CPU& cpu)
+void screen::loadScreenArt(App* app, CPU& cpu)
 {
     enter(app, cpu, {&cpu.ebx, &cpu.ecx, &cpu.edx, &cpu.esi, &cpu.edi}, 0);
     cpu.edx = 0x251;
@@ -247,10 +265,13 @@ void loadScreenArt(win32::WinApplication* app, x86::CPU& cpu)
     }
     if (at(app, kInRace) == 0)
     {
+        // A shape of the menus' art by its name (port_shapes.cpp's).
         auto load = [&](const Shape& shape) {
             cpu.eax = shape.name;
-            if (!byAddress(app, cpu, kShapeByName))
+            const port::Result found = guest::direct<0x4d5db0, port::shapes::shapeNamed>(app, cpu, cpu.esp - 4, cpu.eax);
+            if (!found)
                 return false;
+            cpu.eax = reg32(*found);
             app->getMemory<x86::reg16>(shape.to) = cpu.ax;
             return true;
         };
@@ -262,18 +283,24 @@ void loadScreenArt(win32::WinApplication* app, x86::CPU& cpu)
                 if (!load(shape))
                     return;
     }
+    // The items' buffers given back and made anew: the memory's (native_ea_memory.cpp's), eax a tag,
+    // edx bytes, ebx the class.
     cpu.ebx = at(app, kItemLines);
     if (cpu.ebx != 0)
     {
         cpu.eax = cpu.ebx;
-        if (!byAddress(app, cpu, kFree))
+        const std::optional<reg32> freed = guest::direct<0x4e1890, ea::purgeBlock>(app, cpu, cpu.eax);
+        if (!freed)
             return;
+        cpu.eax = *freed;
     }
     cpu.edx = kItemLinesBytes;
     cpu.eax = kNoTag;
     cpu.ebx = 0;
-    if (!byAddress(app, cpu, kAllocate))
+    const std::optional<reg32> lines = guest::direct<0x4e1620, ea::reserved>(app, cpu, cpu.eax, cpu.edx, cpu.ebx);
+    if (!lines)
         return;
+    cpu.eax = *lines;
     put(app, kItemLines, cpu.eax);
     if (cpu.eax != 0)
     {
@@ -286,14 +313,18 @@ void loadScreenArt(win32::WinApplication* app, x86::CPU& cpu)
     if (cpu.esi != 0)
     {
         cpu.eax = cpu.esi;
-        if (!byAddress(app, cpu, kFree))
+        const std::optional<reg32> freed = guest::direct<0x4e1890, ea::purgeBlock>(app, cpu, cpu.eax);
+        if (!freed)
             return;
+        cpu.eax = *freed;
     }
     cpu.edx = kItemTextBytes;
     cpu.eax = kNoTag;
     cpu.ebx = 0;
-    if (!byAddress(app, cpu, kAllocate))
+    const std::optional<reg32> text = guest::direct<0x4e1620, ea::reserved>(app, cpu, cpu.eax, cpu.edx, cpu.ebx);
+    if (!text)
         return;
+    cpu.eax = *text;
     cpu.ebx = kItemTextBytes;
     cpu.edx = 0;
     put(app, kItemText, cpu.eax);
@@ -301,8 +332,28 @@ void loadScreenArt(win32::WinApplication* app, x86::CPU& cpu)
         return;
     cpu.edi = at(app, kInRace);
     if (cpu.edi == 0)
-        put(app, kNetworkChoice, cpu.edi);
+        gameSettings(app).networkLobby = cpu.edi;
     leave(app, cpu, {&cpu.ebx, &cpu.ecx, &cpu.edx, &cpu.esi, &cpu.edi});
+}
+
+/* The adapters under the game's names, which disassemble_nfs3hp.py binds the addresses to: the
+ * arguments from the registers, the core, the ret. */
+void placePointer(win32::WinApplication* app, x86::CPU& cpu)
+{
+    screen::placePointer(app, cpu, cpu.eax, cpu.edx);
+    ret(cpu);
+}
+
+void setPointer(win32::WinApplication* app, x86::CPU& cpu)
+{
+    screen::setPointer(app, cpu, cpu.eax, cpu.edx);
+    ret(cpu);
+}
+
+void loadScreenArt(win32::WinApplication* app, x86::CPU& cpu)
+{
+    screen::loadScreenArt(app, cpu);
+    ret(cpu);
 }
 
 }  // namespace frontend

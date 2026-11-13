@@ -1,0 +1,32 @@
+# address name kind: the functions native whole in src/nfs3hp/native_frontend_renda.cpp, frontend::name.
+# kind: how frontend_checks enters it (Menu, Key, Item, None).
+470a60 rendFogAmount None
+470aa0 rendFogColour None
+470ad0 rendFogDensity None
+470b20 rendFogDensityTimes None
+470b70 rendFogBoth None
+470b90 rendFogReset None
+476fb0 rendStringWidth None
+4774b0 rendSparksOnScreen None
+478cb0 rendMakeQuad None
+478dc0 rendViewRectangle None
+479080 rendSkyListStart None
+4790d0 rendSkyListKeep None
+479100 rendSkyListEnd None
+479160 rendBandPoints None
+4792e0 rendCurvePoints None
+479370 rendBandVertices None
+479500 rendRingPoints None
+479680 rendSkyGradientRing None
+479860 rendFoggedColour None
+4799d0 rendSkyHazeRing None
+479b90 rendSkyCloudRing None
+479ed0 rendSun None
+47a4c0 rendSkyFlat None
+47adc0 rendPointHeight None
+47ae10 rendCloudGrid None
+47b350 rendFlashesReset None
+47b390 rendFlashesResetAgain None
+47b3a0 rendFlashOnGrid None
+47b4f0 rendDomeVertices None
+47b5c0 rendSkyWeather None

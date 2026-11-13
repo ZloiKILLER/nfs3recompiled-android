@@ -1,6 +1,7 @@
 #ifndef NFS3HP_PORT_DRAW2D_H
 #define NFS3HP_PORT_DRAW2D_H
 
+#include "native_guest.h"
 #include "port.h"
 
 /* The game's 2D drawing, rewritten (port.h says how): what the menus, the
@@ -62,6 +63,12 @@ Result fieldBox(App* app, CPU& cpu, reg32 esp, int32_t x, int32_t y, int32_t wid
 /* A line from (x0, y0) to (x1, y1), shaded from `from` to `to`. */
 Result line(App* app, CPU& cpu, reg32 esp, int32_t x0, int32_t y0, int32_t x1, int32_t y1, uint32_t from,
             uint32_t to);
+// The game's 0x4d8ac0: fieldBox, but nothing on a race's pause screens (x back); esp the frame base.
+Result drawFieldBoxOf(App* app, CPU& cpu, reg32 esp, int32_t x, int32_t y, int32_t width, int32_t height,
+                      const uint32_t colours[4]);
+// The game's 0x4d8ed0: line, but nothing on a race's pause screens (x0 back); esp the frame base.
+Result drawLineOf(App* app, CPU& cpu, reg32 esp, int32_t x0, int32_t y0, int32_t x1, int32_t y1, uint32_t from,
+                  uint32_t to);
 /* A menu shape's first tile's texture over the rectangle from (left, top) to
  * (right, bottom), shaded from `from` at its left to `to` at its right. */
 Result tileRectangle(App* app, CPU& cpu, reg32 esp, int32_t shape, int32_t left, int32_t right, int32_t top,
@@ -143,6 +150,185 @@ void drawShadedQuad(App* app, CPU& cpu);        // 0x4db380
 
 }  // namespace draw2d
 }  // namespace port
+
+/* How the game's code calls by address the cores the menus call as C++ (guest::direct), for the checks'
+ * stand-ins: shadedRectangle (0x4d81b0), gradient (0x4d8550), shadedBox (0x4d8860), filled (0x4d8910), outline
+ * (0x4d8930), drawFieldBoxOf (0x4d8ac0), drawLineOf (0x4d8ed0), resetScreens (0x4daf80), texturedQuad
+ * (0x4db000).  A Result is nullopt when the game stopped in a call.  A core's `esp` is the frame base its
+ * adapter hands it: the game's esp on entry, at the return address.  A caller through guest::direct passes
+ * cpu.esp - 4 - 4 * N, N the stack words the game's call pushes: the esp the adapter hands it, so the core's
+ * frame lies where the game's does; by address the call makes it. */
+namespace guest
+{
+
+// Stdcall: the rectangle's left in eax, top in edx, right in ebx, bottom in ecx; the four colours pushed (ret 0x10).
+template <>
+struct ByAddress<port::draw2d::shadedRectangle>
+{
+    template <x86::reg32 Address>
+    static port::Result call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32, std::int32_t left,
+                             std::int32_t top, std::int32_t right, std::int32_t bottom, const std::uint32_t colours[4])
+    {
+        const KeptRegisters kept(cpu);
+        cpu.eax = x86::reg32(left);
+        cpu.edx = x86::reg32(top);
+        cpu.ebx = x86::reg32(right);
+        cpu.ecx = x86::reg32(bottom);
+        if (!guest::call(app, cpu, Address, {colours[0], colours[1], colours[2], colours[3]}))
+            return std::nullopt;
+        return std::int32_t(cpu.eax);
+    }
+};
+
+// Stdcall: the rectangle in eax, edx, ebx and ecx; its left's and right's colours pushed (ret 8).
+template <>
+struct ByAddress<port::draw2d::gradient>
+{
+    template <x86::reg32 Address>
+    static port::Result call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32, std::int32_t left,
+                             std::int32_t top, std::int32_t right, std::int32_t bottom, std::uint32_t from,
+                             std::uint32_t to)
+    {
+        const KeptRegisters kept(cpu);
+        cpu.eax = x86::reg32(left);
+        cpu.edx = x86::reg32(top);
+        cpu.ebx = x86::reg32(right);
+        cpu.ecx = x86::reg32(bottom);
+        if (!guest::call(app, cpu, Address, {from, to}))
+            return std::nullopt;
+        return std::int32_t(cpu.eax);
+    }
+};
+
+// Stdcall: x in eax, y in edx, the width in ebx, the height in ecx; the four colours pushed (ret 0x10).
+template <>
+struct ByAddress<port::draw2d::shadedBox>
+{
+    template <x86::reg32 Address>
+    static port::Result call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32, std::int32_t x, std::int32_t y,
+                             std::int32_t width, std::int32_t height, const std::uint32_t colours[4])
+    {
+        const KeptRegisters kept(cpu);
+        cpu.eax = x86::reg32(x);
+        cpu.edx = x86::reg32(y);
+        cpu.ebx = x86::reg32(width);
+        cpu.ecx = x86::reg32(height);
+        if (!guest::call(app, cpu, Address, {colours[0], colours[1], colours[2], colours[3]}))
+            return std::nullopt;
+        return std::int32_t(cpu.eax);
+    }
+};
+
+// Stdcall: x in eax, y in edx, the width in ebx, the height in ecx; the colour pushed (ret 4).
+template <>
+struct ByAddress<port::draw2d::filled>
+{
+    template <x86::reg32 Address>
+    static port::Result call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32, std::int32_t x, std::int32_t y,
+                             std::int32_t width, std::int32_t height, std::uint32_t colour)
+    {
+        const KeptRegisters kept(cpu);
+        cpu.eax = x86::reg32(x);
+        cpu.edx = x86::reg32(y);
+        cpu.ebx = x86::reg32(width);
+        cpu.ecx = x86::reg32(height);
+        if (!guest::call(app, cpu, Address, {colour}))
+            return std::nullopt;
+        return std::int32_t(cpu.eax);
+    }
+};
+
+// Stdcall: x in eax, y in edx, the width in ebx, the height in ecx; the colour pushed (ret 4).
+template <>
+struct ByAddress<port::draw2d::outline>
+{
+    template <x86::reg32 Address>
+    static port::Result call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32, std::int32_t x, std::int32_t y,
+                             std::int32_t width, std::int32_t height, std::uint32_t colour)
+    {
+        const KeptRegisters kept(cpu);
+        cpu.eax = x86::reg32(x);
+        cpu.edx = x86::reg32(y);
+        cpu.ebx = x86::reg32(width);
+        cpu.ecx = x86::reg32(height);
+        if (!guest::call(app, cpu, Address, {colour}))
+            return std::nullopt;
+        return std::int32_t(cpu.eax);
+    }
+};
+
+// Stdcall: x in eax, y in edx, the width in ebx, the height in ecx; the four colours pushed (ret 0x10).
+template <>
+struct ByAddress<port::draw2d::drawFieldBoxOf>
+{
+    template <x86::reg32 Address>
+    static port::Result call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32, std::int32_t x, std::int32_t y,
+                             std::int32_t width, std::int32_t height, const std::uint32_t colours[4])
+    {
+        const KeptRegisters kept(cpu);
+        cpu.eax = x86::reg32(x);
+        cpu.edx = x86::reg32(y);
+        cpu.ebx = x86::reg32(width);
+        cpu.ecx = x86::reg32(height);
+        if (!guest::call(app, cpu, Address, {colours[0], colours[1], colours[2], colours[3]}))
+            return std::nullopt;
+        return std::int32_t(cpu.eax);
+    }
+};
+
+// Stdcall: x0 in eax, y0 in edx, x1 in ebx, y1 in ecx; the two colours pushed (ret 8).
+template <>
+struct ByAddress<port::draw2d::drawLineOf>
+{
+    template <x86::reg32 Address>
+    static port::Result call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32, std::int32_t x0,
+                             std::int32_t y0, std::int32_t x1, std::int32_t y1, std::uint32_t from, std::uint32_t to)
+    {
+        const KeptRegisters kept(cpu);
+        cpu.eax = x86::reg32(x0);
+        cpu.edx = x86::reg32(y0);
+        cpu.ebx = x86::reg32(x1);
+        cpu.ecx = x86::reg32(y1);
+        if (!guest::call(app, cpu, Address, {from, to}))
+            return std::nullopt;
+        return std::int32_t(cpu.eax);
+    }
+};
+
+// `a` in eax, edx, ebx and ecx; eax back.
+template <>
+struct ByAddress<port::draw2d::resetScreens>
+{
+    template <x86::reg32 Address>
+    static port::Result call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32, const port::Args& a)
+    {
+        return watcomEax(app, cpu, Address, {a.eax, a.edx, a.ebx, a.ecx});
+    }
+};
+
+// Stdcall: the first two corners in eax, edx, ebx and ecx; the other two, the texture's places, the texture and
+// the colour pushed (ret 0x38).
+template <>
+struct ByAddress<port::draw2d::texturedQuad>
+{
+    template <x86::reg32 Address>
+    static port::Result call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32, const port::draw2d::ArtQuad& quad)
+    {
+        const KeptRegisters kept(cpu);
+        cpu.eax = x86::reg32(quad.x[0]);
+        cpu.edx = x86::reg32(quad.y[0]);
+        cpu.ebx = x86::reg32(quad.x[1]);
+        cpu.ecx = x86::reg32(quad.y[1]);
+        if (!guest::call(app, cpu, Address,
+                         {x86::reg32(quad.x[2]), x86::reg32(quad.y[2]), x86::reg32(quad.x[3]), x86::reg32(quad.y[3]),
+                          quad.u[0], quad.v[0], quad.u[1], quad.v[1], quad.u[2], quad.v[2], quad.u[3], quad.v[3],
+                          quad.texture, quad.colour}))
+            return std::nullopt;
+        return std::int32_t(cpu.eax);
+    }
+};
+
+}  // namespace guest
 }  // namespace nfs3hp
 
 #endif

@@ -254,8 +254,9 @@ bool makeEaMemoryArguments(CheckApp& g, const std::string& name, x86::CPU& cpu, 
         ++ib;
     // A free block larger than it lies, split, puts the rest over the blocks
     // after it -- over the free list's links: reservememadr's blocks as
-    // they lie.
-    const bool exact = name == "reservememadr";
+    // they lie (reservememStdcall's too, which calls it as C++ now, its code
+    // too).
+    const bool exact = name == "reservememadr" || name == "reservememStdcall";
     const EaMemClass a = makeEaMemClass(g, ia, kEaMemClassA, kEaMemClassB, exact);
     const EaMemClass b = makeEaMemClass(g, ib, kEaMemClassB, kEaMemClassesEnd, exact);
     // Those that read a class the table does not name -- 0 -- only where it
@@ -381,9 +382,22 @@ bool makeEaMemoryArguments(CheckApp& g, const std::string& name, x86::CPU& cpu, 
         cpu.eax = chance(95) ? block + 0x10 : 0;
     }
     else if (name == "reservememStdcall")
+    {
+        // As reservememadr's own: not so large that what it takes wraps round, the default class's
+        // flags as reservememadr is handed them.
         stack[0] = aSize();
+        if (x86::sreg32(stack[0]) > 0x10000000)
+            stack[0] &= 0x0fffffff;
+        g.word(kEaMemDefault) = (chance(80) ? c.index : anEaClass(a, b) & 0xf)
+                                | (chance(70) ? (chance(40) ? 0x10 : 0) | (chance(30) ? 0x20 : 0)
+                                                    | (chance(40) ? 0x100 : 0) | (chance(20) ? 0x200 : 0)
+                                                    | (chance(20) ? 0x400 : 0) | (chance(20) ? 0x800 : 0)
+                                              : random32() & 0xbff0);
+    }
     else if (name == "purgememStdcall")
-        stack[0] = chance(90) ? anEaBlock(c, 0) + 0x10 : random32();
+        // purgememadr is called as C++ now, its code too: no pointer it would not find in its classes'
+        // memory (none the game hands it), as purgememadr's own cases.
+        stack[0] = chance(90) ? anEaBlock(c, 0) + 0x10 : chance(50) ? 0 : kEaMemClassA + 0x10 + below(0x1f00);
     return true;
 }
 #endif

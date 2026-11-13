@@ -1,3 +1,4 @@
+#include "game_settings.h"
 #include "port_sound_slice.h"
 
 #include <cstdint>
@@ -20,15 +21,15 @@ namespace
 {
 
 constexpr Table<int32_t> kChaseLevels{0x552844}, kBeeps{0x55283c}, kBeepSounds{0x571110};
-constexpr Var<int32_t> kMusicLevel{0x552838}, kChaseMusic{0x55284c}, kCopBank{0x571160}, kSplitScreen{0x6fd3b0};
-constexpr Var<int32_t> kMusicOn{0x552910}, kSoundOff{0x6fbb54}, kMenuMusic{0x552914}, kMusicSetting{0x6fbbf0};
+constexpr Var<int32_t> kMusicLevel{0x552838}, kChaseMusic{0x55284c}, kCopBank{0x571160};
+constexpr Var<int32_t> kMusicOn{0x552910}, kMenuMusic{0x552914};
 constexpr Var<uint8_t> kCalmEvent{0x552834}, kOwnTune{0x552590};
 constexpr reg32 kTrace = 0x42d510, kSoundStatus = 0x4e8fd0, kBeepStart = 0x418930;
 
 // The pan of the player's side in the split screen, else the middle.
 reg32 sideOf(App* app, reg32 player)
 {
-    if (kSplitScreen(app) != 1)
+    if (gameSettings(app).playMode != 1)
         return 0;
     return player != 0 ? 0xc000 : 0x3fff;
 }
@@ -105,7 +106,7 @@ void musicEventResume(App* app, CPU& cpu)
     const HeldEbp ebp(cpu, frame);
     Game g(app, cpu, frame);
     reg32 eax = e.eax;
-    if (kMenuMusic(app) != 0 && kMusicOn(app) != 0 && kSoundOff(app) == 0 && kMusicSetting(app) != 0
+    if (kMenuMusic(app) != 0 && kMusicOn(app) != 0 && gameSettings(app).installIsRemote == 0 && gameSettings(app).raceMusicVolume != 0
         && kOwnTune(app) == 0)
     {
         if (!g.call(kPathEventInterrupt, {0, e.edx}, eax))
@@ -154,7 +155,7 @@ void chaseLevel(App* app, CPU& cpu)
         kChaseLevels.set(app, player, level);
         e.back(cpu, eax);
     };
-    const bool music = kMusicOn(app) != 0 && kSoundOff(app) == 0 && kMusicSetting(app) != 0 && kOwnTune(app) == 0
+    const bool music = kMusicOn(app) != 0 && gameSettings(app).installIsRemote == 0 && gameSettings(app).raceMusicVolume != 0 && kOwnTune(app) == 0
                        && player != 1;
     if (!music)
     {

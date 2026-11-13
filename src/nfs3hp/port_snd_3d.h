@@ -178,7 +178,6 @@ struct Calls
 
 // The game's state the sound's space is in.
 constexpr reg32 kListener = 0x570a78;      // the listener: its place, then its axes (+0xc, +0x24)
-constexpr Var<int32_t> kMirror{0x6fd4c4};  // the angle's side turned
 constexpr Var<reg32> kListenerDirection{0x570dcc};
 
 /* The sound's space (port_sound_3d.cpp).  `esp` is the game's code's on entering

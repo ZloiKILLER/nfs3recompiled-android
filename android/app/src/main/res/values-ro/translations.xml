@@ -31,13 +31,6 @@
  <string name="touch_settings">Comenzi tactile</string>
  <string name="screen_settings">Ecran</string>
  <string name="display_settings">Afișaj</string>
- <string name="screen_adjustment">Reglarea imaginii</string>
- <string name="brightness_label">Luminozitate</string>
- <string name="contrast_label">Contrast</string>
- <string name="adjust_hint">Mostrele arată rezultatul. Se aplică la următoarea pornire a jocului.</string>
- <string name="adjust_reset">Resetează</string>
- <string name="sample_dark">Noapte</string>
- <string name="sample_bright">Zi</string>
  <string name="back_to_launcher">Înapoi</string>
  <string name="switch_data">Activează</string>
  <string name="data_change">Schimbă…</string>
@@ -71,7 +64,6 @@
  <string name="orientation_landscape_reverse">Fix — orizontal, invers</string>
  <string name="fps_30">30 FPS</string>
  <string name="fps_60">60 FPS</string>
- <string name="gamma_label">Gama</string>
  <string name="fps_cap_label">Rata de cadre</string>
  <string name="fps_error">Introdu un număr întreg de la 1 la 240</string>
  <string name="save">Salvează</string>
@@ -156,6 +148,8 @@
  <string name="faq_mapping"><b>Gamepaduri</b>\nJocul vede mereu două gamepaduri: gamepadul 1 este jucătorul 1, împreună cu comenzile tactile, gamepadul 2 este jucătorul 2. În Comenzi → Gamepaduri alegi care gamepad e care apăsând un buton pe el și setezi ce face fiecare buton, apoi apeși o dată Gamepad ACTIV. Acesta scrie comenzile potrivite în setările jocului și face o copie a fișierului vechi. Stick-ul stâng virează, trăgaciele accelerează și frânează. Un gamepad are două seturi de butoane, așa cum comenzile tactile au două aranjamente: cel de cursă, pe care îl setezi aici, și unul fix pentru meniuri și reluări, unde Cross / A confirmă, Circle / B revine, iar crucea mută selecția. Pentru a juca de la tastatură, scrie în schimb Implicit în joc.</string>
  <string name="faq_lights"><b>Faruri și revenire pe pistă</b>\n☼ trimite L. ↻ trimite R pentru a reveni pe pistă. Tastele se pot schimba în Comenzi → Atingere → Taste.</string>
  <string name="faq_screen_data"><b>Ecran și datele jocului</b>\nPeisaj blochează jocul pe orizontală; Automat permite rotirea. Limita FPS restrânge rata de cadre; o valoare mai mică reduce munca pe secundă. «Datele jocului» gestionează importurile și arată setul activ. «Joacă» devine disponibil când un set este gata.</string>
+ <string name="faq_picture"><b>Luminozitate, contrast și gamma</b>\nSe reglează în jocul propriu-zis: Options → Graphics → Advanced Settings sau Graphics în meniul de pauză din timpul cursei. Imaginea se schimbă imediat ce miști glisorul. Done păstrează valorile, Cancel le readuce pe cele anterioare. Setările se aplică la curse, meniuri și filme.</string>
+ <string name="faq_network"><b>Curse în rețea</b>\nDeschide Connect Players pe primul ecran al jocului. Local WiFi găsește singur cursele dintre telefoane din aceeași rețea Wi-Fi. Network (TCP) se conectează cu oricine știe adresa gazdei, inclusiv cu un PC cu jocul original sau cu Modern Patch. Dedesubt apar adresa acestui telefon (Your IP) și TCP Port: o atingere comută între 9803 (Modern Patch) și 1030 (jocul original). Toți jucătorii unei curse TCP trebuie să folosească același port.</string>
  <string name="gamepad_buttons">Butoane</string>
  <string name="gamepad_buttons_title">Butoanele gamepadului %1$d</string>
  <string name="gamepad_buttons_hint">Ce face fiecare buton al acestui gamepad cât conduci. Stick-ul stâng virează, trăgaciul drept accelerează, iar cel stâng frânează. În meniuri și în reluări butoanele sunt fixe și nu se setează: Cross / A și Options / Menu confirmă, Circle / B și Create / View revin, crucea mută selecția. Acțiunile butoanelor ajung în joc după ce comenzile pentru gamepad sunt scrise în el.</string>
@@ -191,12 +185,5 @@
  <string name="force_feedback_phone_note">Telefonul redă ciocnirile, aterizările și schimbările de viteză, motorul la turații mari și virajele strânse.</string>
  <string name="force_feedback_gamepad_note">Gamepadul 1 redă efectele jocului așa cum sunt. Intensitatea lor se setează în joc: Options → Controllers → Force Feedback.</string>
  <string name="editor_snap_grid">Aliniere la grilă</string>
- <string name="network_title">Rețea</string>
- <string name="network_address">Adresa acestui dispozitiv în rețea: %1$s</string>
- <string name="network_no_address">Nicio conexiune la rețea</string>
- <string name="network_port_label">Port TCP/IP</string>
- <string name="network_port_modern">9803 · Modern Patch</string>
- <string name="network_port_original">1030 · jocul original</string>
- <string name="network_hint">IPX găsește singur cursele din această rețea Wi-Fi. TCP/IP conectează cu oricine știe adresa gazdei, inclusiv cu un PC cu jocul original sau cu Modern Patch. Toți jucătorii folosesc același port.</string>
  <string name="fps_unlimited">Nelimitat</string>
 </resources>

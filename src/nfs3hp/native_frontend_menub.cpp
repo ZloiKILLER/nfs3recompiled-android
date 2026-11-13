@@ -1,4 +1,30 @@
+#include "native_frontend_menub.h"
+#include "game_settings.h"
+#include "native_ea_support.h"
 #include "native_frontend.h"
+#include "native_frontend_eab.h"
+#include "native_frontend_glue.h"
+#include "native_frontend_loada.h"
+#include "native_frontend_loop.h"
+#include "native_frontend_loopa.h"
+#include "native_frontend_menuc.h"
+#include "native_frontend_menud.h"
+#include "native_frontend_menue.h"
+#include "native_frontend_misc.h"
+#include "native_frontend_neta.h"
+#include "native_frontend_screen.h"
+#include "native_frontend_showcase.h"
+#include "native_graphics.h"
+#include "native_load_cardb.h"
+#include "port_buttons.h"
+#include "port_dialogs.h"
+#include "port_draw2d.h"
+#include "port_fields.h"
+#include "port_loop.h"
+#include "port_shapes.h"
+#include "port_sound_effects.h"
+#include "port_sound_speech.h"
+#include "port_text.h"
 #include <nfs3hp.h>
 #include <cstring>
 #include <iterator>
@@ -18,8 +44,11 @@
  *   scored, and written out for the sheets;
  *   the direction pad widget (0x22 in the registry).
  *
- * Everything each of them calls is called by address, the other functions of
- * this file too. */
+ * Plan step 5: each function a typed core in frontend::menub (native_frontend_menub.h), in a
+ * frame of its own where the game's function has one (fe::Frame), and an adapter under the game's
+ * name for the calls by address.  A core calls another of this file's, or of
+ * native_frontend_menuc.cpp's, as C++ (guest::direct), and the typed cores of the other menu files,
+ * the port's and the libraries' too (fe::direct); the rest of the game still by address. */
 namespace nfs3hp
 {
 
@@ -29,6 +58,8 @@ namespace
 using fe::Guest;
 using fe::GuestString;
 using x86::reg32;
+using App = win32::WinApplication;
+using CPU = x86::CPU;
 
 constexpr std::uint8_t kEbxEcx = fe::kRestoreEbx | fe::kRestoreEcx;
 constexpr std::uint8_t kEsiEdi = fe::kRestoreEsi | fe::kRestoreEdi;
@@ -40,10 +71,6 @@ constexpr std::uint8_t kEbxEcxEdxEsi = kEbxEcxEdx | fe::kRestoreEsi;
 constexpr std::uint8_t kEbxEcxEdxEdi = kEbxEcxEdx | fe::kRestoreEdi;
 
 // The game's state.
-constexpr reg32 kPlayers = 0x6fd3b0;            // 0, 1 side by side, 2 a network
-constexpr reg32 kRaceType = 0x6fd3b8;           // 0 a single race, 1 a tournament, 2 a knockout, 3 a duel
-constexpr reg32 kTrack = 0x6fd4ac;
-constexpr reg32 kLaps = 0x6fd4b4;
 constexpr reg32 kInRace = 0x559234;
 constexpr reg32 kShownMenu = 0x559230;
 constexpr reg32 kPointerX = 0x55e5e4;
@@ -54,93 +81,26 @@ constexpr std::uint8_t kHardware3D = 0x02;
 constexpr reg32 kTicks = 0x79c1a4;
 
 // The game's functions.
-constexpr reg32 kCarLineSpeak = 0x4c9990;       // eax the line, edx the player
-constexpr reg32 kSpokenStatus = 0x4c99f0;
 constexpr reg32 kFillZero = 0x4e070c;           // eax, edx bytes
 constexpr reg32 kMenuShownNow = 0x44a660;       // eax the item, edx its widget
-constexpr reg32 kKeysTaken = 0x449df0;          // a key is being read for the controls: everything drawn grey
 constexpr reg32 kDrawMenuText = 0x452190;       // eax text, edx x, ebx y, ecx font; align and colour on the stack
-constexpr reg32 kSelectFont = 0x452100;
 constexpr reg32 kTextWidth = 0x452020;
-constexpr reg32 kLanguageText = 0x4d1850;
 constexpr reg32 kDrawShape = 0x4d7990;          // eax the shape, edx x, ebx y
-constexpr reg32 kDrawShapeSoft = 0x4d7560;
-constexpr reg32 kShadedBox = 0x4d8860;          // eax x, edx y, ebx width, ecx height; four colours on the stack
-constexpr reg32 kFrame = 0x4d8930;              // eax x, edx y, ebx width, ecx height; a colour on the stack
-constexpr reg32 kPointerInBox = 0x49c1f0;       // eax the box: y, x, width, height, words
-constexpr reg32 kPointerInRect = 0x49c240;      // eax y, edx x, ebx height, ecx width
-constexpr reg32 kSetPointer = 0x49bfc0;
-constexpr reg32 kPlayEffect = 0x4181d0;         // eax the effect, edx its volume
-constexpr reg32 kShapeByName = 0x4d5db0;
-constexpr reg32 kSetRenderState = 0x431900;
 constexpr reg32 kSetClip = 0x4bebe0;            // eax left, edx top, ebx right, ecx bottom
 constexpr reg32 kSprintf = 0x4df690;
 constexpr reg32 kStricmp = 0x4e9ec0;
 constexpr reg32 kStrcmp = 0x4ee310;
 constexpr reg32 kToUpper = 0x4eede0;
 constexpr reg32 kQsort = 0x4ee4f8;
-constexpr reg32 kFileExists = 0x4e0e60;
-constexpr reg32 kLoadShapes = 0x44ac90;
-constexpr reg32 kFindArtShape = 0x4ef1e0;       // eax the art, edx the shape's name
-constexpr reg32 kArtShapeTextures = 0x4d6390;   // eax the shape, edx 0
 constexpr reg32 kCarText = 0x439ab0;            // eax the car, edx the line of its text
-constexpr reg32 kCarName = 0x439250;
-constexpr reg32 kCarFolder = 0x4392b0;
 constexpr reg32 kCarFlag4 = 0x4395c0;
-constexpr reg32 kCarFileStem = 0x439290;
 constexpr reg32 kCarClass = 0x439730;
 constexpr reg32 kCarCount = 0x438bd0;
-constexpr reg32 kCarStat = 0x438f60;            // eax the car, edx the statistic
-constexpr reg32 kLoadCarList = 0x439d90;
-constexpr reg32 kMakeCarId = 0x438ad0;          // eax where to, edx the number
-constexpr reg32 kFindCarById = 0x439990;
-constexpr reg32 kParticipantById = 0x4554e0;    // eax the group, edx the id
-constexpr reg32 kResultsSort = 0x455c10;        // eax the group, edx the key, ebx descending
-constexpr reg32 kResultsNth = 0x455cd0;         // eax the group, edx the index, ebx a mask, ecx the state it must have
-constexpr reg32 kPostgameFinishers = 0x4cef80;
-constexpr reg32 kRecordsSelect = 0x44f670;      // eax the track, edx the class of laps
-constexpr reg32 kRecordsRead = 0x44fa90;        // eax, edx, ebx the holder's three names, to these buffers
 constexpr reg32 kLoadRecords = 0x44f510;
 constexpr reg32 kSaveRecords = 0x44f5f0;
-constexpr reg32 kLapsClassOf = 0x4cf160;        // eax the laps: which of three tables of records
-constexpr reg32 kFormatTime = 0x4cee40;         // eax the time, edx the buffer
-constexpr reg32 kFormatSpeed = 0x4cedd0;        // the speed, the buffer: on the stack
-constexpr reg32 kUnlockTrack = 0x442b60;        // eax the track
-constexpr reg32 kDrawSortMark = 0x46cce0;
-constexpr reg32 kSetDirection = 0x4654c0;       // x and y, floats, on the stack
 
-// This file's own.
-constexpr reg32 kAwardsClear = 0x44e7d0;
-constexpr reg32 kAwardsGrant = 0x44e7f0;        // eax the award, edx the player
-constexpr reg32 kAwardsForRace = 0x44e820;
-constexpr reg32 kAwardsSpeak = 0x44ea60;
+// This file's own by address: qsort's comparison, handed to it.
 constexpr reg32 kRecordsCompare = 0x44f6e0;
-constexpr reg32 kRecordsSortBy = 0x44f830;
-constexpr reg32 kRecordsCount = 0x44f8d0;
-constexpr reg32 kRecordByRank = 0x44f910;
-constexpr reg32 kRecordsTimeQualifies = 0x44f960;
-constexpr reg32 kRecordsClearMarks = 0x44f9b0;
-constexpr reg32 kRecordsInsert = 0x44fa10;
-constexpr reg32 kRecordsHolderMark = 0x44fb20;
-constexpr reg32 kRecordsSetHolder = 0x44fb30;
-constexpr reg32 kRecordsSheetSortMark = 0x44fc00;
-constexpr reg32 kRecordsSheetLayout = 0x450970;
-constexpr reg32 kRecordsEnterResult = 0x450fe0;
-constexpr reg32 kRecordsEnterPlayers = 0x4512f0;
-constexpr reg32 kTextFit = 0x452090;
-constexpr reg32 kCheatAdvance = 0x452420;
-constexpr reg32 kTextDrawFitted = 0x452120;
-constexpr reg32 kCarPassesFilter = 0x454730;
-constexpr reg32 kResultsHiddenRemote = 0x455020;
-constexpr reg32 kResultsNetworkNothing = 0x455060;
-constexpr reg32 kTournamentScore = 0x455070;
-constexpr reg32 kKnockoutEliminate = 0x455140;
-constexpr reg32 kResultsCollectFinishers = 0x455210;
-constexpr reg32 kResultsCollectLaps = 0x455280;
-constexpr reg32 kResultsAssign = 0x4552f0;
-constexpr reg32 kDirPadUnderPointer = 0x457270;
-constexpr reg32 kDirPadCentreUnderPointer = 0x4572d0;
-constexpr reg32 kDirPadChoose = 0x457340;
 
 std::int32_t signedWord(const Guest& guest, reg32 address)
 {
@@ -169,39 +129,37 @@ void copyDwords(Guest& guest, reg32 to, reg32 from, std::uint32_t count)
  * ------------------------------------------------------------------------- */
 
 constexpr reg32 kSkipPump = 0x559264;           // nonzero: not on this pass
-constexpr reg32 kPump = 0x4a75e0;
-constexpr reg32 kDrawItems = 0x44a4f0;
 constexpr reg32 kDialogShown = 0x4438b0;
-constexpr reg32 kDialogPass = 0x445f50;
-constexpr reg32 kFlushFonts = 0x4d1340;
 constexpr reg32 kDrawPointer = 0x434b60;
-constexpr reg32 kPassItems = 0x44a8b0;
-constexpr reg32 kCloseDialog = 0x445f10;
 constexpr reg32 kPassResult = 0x559254;
 constexpr reg32 kCaptureScreen = 0x4c4490;
 
 /* sub_44bdd0: a pass over the shown screen: its items drawn, and what they
  * answered, or a dialog's over them; the fonts flushed, the pointer on top, the
  * items told. */
-reg32 menuDrawPassBody(Guest& guest)
+reg32 menuDrawPassBody(App* app, CPU& cpu, Guest& guest)
 {
     if (guest.dword(kSkipPump) == 0)
-        guest.call(kPump);
-    reg32 result = guest.call(kDrawItems, fe::args({ guest.dword(kShownMenu) }));
-    if ((guest.call(kDialogShown) & 0xff) != 0)
-        result = guest.call(kDialogPass);
-    guest.call(kFlushFonts);
+        fe::direct<0x4a75e0, frontend::loopa::panelDraw>(app, cpu);
+    reg32 result =
+        reg32(*fe::direct<0x44a4f0, port::loop::drawItemsOf>(app, cpu, cpu.esp - 4, guest.dword(kShownMenu)));
+    // By address: the code hands all of eax it leaves (al its answer, the rest the items') on to the
+    // dialog's pass, and the core hands back al only.
+    const reg32 shown = guest.call(kDialogShown, fe::args({ result }));
+    if ((shown & 0xff) != 0)
+        result = reg32(*fe::direct<0x445f50, port::dialogs::dialogPassOf>(app, cpu, cpu.esp - 4, shown));
+    fe::direct<0x4d1340, port::text::fontsDrawn>(app, cpu, cpu.esp - 4);
     guest.call(kDrawPointer);
-    guest.call(kPassItems, fe::args({ guest.dword(kShownMenu) }));
+    fe::direct<0x44a8b0, port::loop::passItemsOf>(app, cpu, cpu.esp - 4, guest.dword(kShownMenu));
     guest.setDword(kPassResult, result);
     return result;
 }
 
 /* sub_44be20: out of the menus, and any dialog closed. */
-reg32 menuLeaveBody(Guest& guest)
+reg32 menuLeaveBody(App* app, CPU& cpu, Guest& guest)
 {
     guest.setDword(kInRace, 0);
-    return guest.call(kCloseDialog);
+    return reg32(*fe::direct<0x445f10, port::dialogs::closeDialogOf>(app, cpu, cpu.eax));
 }
 
 /* ---------------------------------------------------------------------------
@@ -212,13 +170,10 @@ reg32 menuLeaveBody(Guest& guest)
 constexpr reg32 kAwards = 0x664440;
 constexpr std::uint32_t kAwardsBytes = 0x68;
 
-constexpr reg32 kLocalPlayerId = 0x6fd4f4;
 constexpr reg32 kResultCount = 0x677d30;        // the race's group
 constexpr reg32 kAwardTrack = 0x55d020;         // the track a tournament's awards are for
-constexpr reg32 kDuelsWon = 0x6fd4b8;
 constexpr reg32 kSheet = 0x55936c;              // which of the postgame's sheets
 constexpr reg32 kAwardedCar = 0x6fdc30;
-constexpr reg32 kTournamentTrack = 0x6fd408;    // int16
 
 namespace participant
 {
@@ -260,57 +215,68 @@ reg32 awardsGrantBody(Guest& guest, reg32 award, reg32 player)
     const reg32 offset = player * 4;
     guest.setDword(kAwards + offset + award * 8, 1);
     guest.leaveEdx(offset);
-    return guest.eax();
+    return award;   // eax as it came
 }
 
 /* sub_44e820: what a player won in this race, by the kind of race.  Each award
  * is the first place of a sort, but for a duel's and a knockout's. */
-reg32 awardsForRaceBody(Guest& guest, reg32 player)
+reg32 awardsForRaceBody(App* app, CPU& cpu, Guest& guest, reg32 player)
 {
-    const reg32 id = player == 1 ? player : guest.dword(kLocalPlayerId);
-    reg32 found = guest.call(kParticipantById, fe::args({ 0, id }));
+    const reg32 id = player == 1 ? player : gameSettings(guest).localPlayer;
+    reg32 found = fe::direct<0x4554e0, frontend::misc::resultsParticipantById>(app, cpu, 0, id);
     if (found == 0)
     {
-        found = guest.call(kParticipantById, fe::args({ 1, id }));
+        found = fe::direct<0x4554e0, frontend::misc::resultsParticipantById>(app, cpu, 1, id);
         if (found == 0)
             return 0;
     }
-    const auto grant = [&](reg32 award) { return guest.call(kAwardsGrant, fe::args({ award, player })); };
-    const auto sorted = [&](reg32 key, reg32 descending) {
-        guest.call(kResultsSort, fe::args({ 0, key, descending }));
+    const auto grant = [&](reg32 award) {
+        return guest::direct<0x44e7f0, frontend::menub::awardsGrant>(app, cpu, award, player);
     };
-    const auto nth = [&](reg32 index) { return guest.call(kResultsNth, fe::args({ 0, index, 0, 0 })); };
+    const auto sorted = [&](reg32 key, reg32 descending) {
+        fe::direct<0x455c10, frontend::misc::resultsSort>(app, cpu, 0, key, descending);
+    };
+    // What a lookup leaves in eax is its answer, which the code goes on with.
+    const auto nth = [&](reg32 index) {
+        return fe::direct<0x455cd0, frontend::misc::resultsNth>(app, cpu, 0, index, 0, 0);
+    };
 
-    const reg32 raceType = guest.dword(kRaceType);
+    const reg32 raceType = gameSettings(guest).raceType;
     switch (raceType)
     {
     case 0:
+    {
         // A single race of more than one: the winner's.
         if (signedDword(guest, kResultCount) <= 1)
             return raceType;
         sorted(1, 0);
-        if (nth(0) != found)
-            return guest.eax();
+        const reg32 first = nth(0);
+        if (first != found)
+            return first;
         return grant(0xa);
+    }
     case 1:
+    {
         // A tournament: on its track, the first three.
-        if (guest.dword(kAwardTrack) != guest.dword(kTrack))
+        if (guest.dword(kAwardTrack) != gameSettings(guest).track)
             return raceType;
         sorted(4, 1);
         if (nth(0) == found)
             return grant(7);
         if (nth(1) == found)
             return grant(8);
-        if (nth(2) == found)
+        const reg32 third = nth(2);
+        if (third == found)
             return grant(9);
-        return guest.eax();
+        return third;
+    }
     case 2:
     {
         // A knockout, but for the car that was awarded already.
         const reg32 car = guest.dword(found + participant::kCar);
         if (guest.dword(kAwardedCar) == guest.dword(car + kCarIdent))
             return car;
-        const reg32 track = guest.dword(kTrack);
+        const reg32 track = gameSettings(guest).track;
         if (track == 8)
         {
             sorted(1, 0);
@@ -318,21 +284,21 @@ reg32 awardsForRaceBody(Guest& guest, reg32 player)
         }
         if (guest.dword(found + participant::kState) == kStateDisqualified)
             return grant(3);
-        return grant(reg32(signedWord(guest, kTournamentTrack)) == track ? 5 : 4);
+        return grant(reg32(std::int32_t(gameSettings(guest).knockout.tracks[5])) == track ? 5 : 4);
     }
     case 3:
         // A duel.
         if ((guest.byte(found + participant::kFlags) & participant::kLapResult) != 0)
         {
-            if (signedDword(guest, kDuelsWon) > signedDword(guest, found + participant::kDuelsBeaten))
+            if (std::int32_t(gameSettings(guest).pursuitWinCount) > signedDword(guest, found + participant::kDuelsBeaten))
                 return raceType;
             return grant(0xb);
         }
         if (guest.dword(found + participant::kState) == kStateDidNotFinish)
             return raceType;
         sorted(1, 0);
-        if (nth(0) != found)
-            return guest.eax();
+        if (const reg32 first = nth(0); first != found)
+            return first;
         return grant(0xc);
     default:
         return raceType;
@@ -354,10 +320,10 @@ constexpr AwardLine kDuelLines[] = { { 0xb, 8 } };
 
 /* sub_44ea60: the next line of this kind that a player has won said, one a pass,
  * and its flag spent.  Awards 1 and 2 with award 0 are one line. */
-reg32 awardsSpeakBody(Guest& guest, reg32 kind)
+reg32 awardsSpeakBody(App* app, CPU& cpu, Guest& guest, reg32 kind)
 {
-    const reg32 players = guest.dword(kPlayers) == 1 ? 2 : 1;
-    const reg32 status = guest.call(kSpokenStatus);
+    const reg32 players = gameSettings(guest).playMode == 1 ? 2 : 1;
+    const reg32 status = reg32(*fe::direct<0x4c99f0, port::spokenStatusOf>(app, cpu, cpu.esp - 4));
     if (status == 0)
         return status;
     const auto sayLines = [&](reg32 player, const AwardLine* lines, std::size_t count, reg32& said) {
@@ -365,7 +331,7 @@ reg32 awardsSpeakBody(Guest& guest, reg32 kind)
         {
             if (guest.dword(awardFlag(lines[i].award, player)) != 0)
             {
-                said = guest.call(kCarLineSpeak, fe::args({ lines[i].line, player }));
+                said = reg32(*fe::direct<0x4c9990, port::carLineSpoken>(app, cpu, cpu.esp - 4, lines[i].line, player));
                 guest.setDword(awardFlag(lines[i].award, player), 0);
                 return true;
             }
@@ -382,7 +348,7 @@ reg32 awardsSpeakBody(Guest& guest, reg32 kind)
             {
                 if (guest.dword(awardFlag(both.award, player)) != 0 && guest.dword(awardFlag(0, player)) != 0)
                 {
-                    guest.call(kCarLineSpeak, fe::args({ both.line, player }));
+                    fe::direct<0x4c9990, port::carLineSpoken>(app, cpu, cpu.esp - 4, both.line, player);
                     guest.setDword(awardFlag(both.award, player), 0);
                     guest.setDword(awardFlag(0, player), 0);
                     return 0;
@@ -415,22 +381,22 @@ reg32 awardsSpeakBody(Guest& guest, reg32 kind)
 }
 
 /* sub_44ed30: the lines of the sheet shown. */
-reg32 awardsSpeakForSheetBody(Guest& guest)
+reg32 awardsSpeakForSheetBody(App* app, CPU& cpu, Guest& guest)
 {
-    const reg32 raceType = guest.dword(kRaceType);
+    const reg32 raceType = gameSettings(guest).raceType;
     switch (guest.dword(kSheet))
     {
     case 1:
-        guest.call(kAwardsSpeak, fe::args({ 0 }));
+        guest::direct<0x44ea60, frontend::menub::awardsSpeak>(app, cpu, 0);
         break;
     case 2:
-        guest.call(kAwardsSpeak, fe::args({ reg32(raceType == 2 ? 3 : 1) }));
+        guest::direct<0x44ea60, frontend::menub::awardsSpeak>(app, cpu, reg32(raceType == 2 ? 3 : 1));
         break;
     case 3:
         if (raceType == 1)
-            guest.call(kAwardsSpeak, fe::args({ 2 }));
+            guest::direct<0x44ea60, frontend::menub::awardsSpeak>(app, cpu, 2);
         else if (raceType == 3)
-            guest.call(kAwardsSpeak, fe::args({ 4 }));
+            guest::direct<0x44ea60, frontend::menub::awardsSpeak>(app, cpu, 4);
         break;
     default:
         break;
@@ -585,31 +551,32 @@ reg32 recordByRankBody(Guest& guest, reg32 rank)
 
 /* sub_44f960: whether a time gets into the list: there is room, or it beats the
  * last. */
-reg32 recordsTimeQualifiesBody(Guest& guest, reg32 time)
+reg32 recordsTimeQualifiesBody(App* app, CPU& cpu, Guest& guest, reg32 time)
 {
     if (signedDword(guest, guest.dword(kRecordsList)) < std::int32_t(kMostRecords))
         return 1;
-    guest.call(kRecordsSortBy, fe::args({ kSortByTime }));
-    const reg32 last = guest.call(kRecordByRank, fe::args({ guest.dword(guest.dword(kRecordsList)) - 1 }));
+    guest::direct<0x44f830, frontend::menub::recordsSortBy>(app, cpu, kSortByTime);
+    const reg32 last =
+        guest::direct<0x44f910, frontend::menub::recordByRank>(app, cpu, guest.dword(guest.dword(kRecordsList)) - 1);
     if (last == 0 || std::int32_t(time) < signedDword(guest, last + record::kTime))
         return 1;
     return 0;
 }
 
 /* sub_44f9b0: no record of any track or laps is this race's any more. */
-reg32 recordsClearMarksBody(Guest& guest)
+reg32 recordsClearMarksBody(App* app, CPU& cpu, Guest& guest)
 {
     reg32 found = 0;
     for (reg32 lapsClass = 0; lapsClass < 3; ++lapsClass)
     {
         for (reg32 track = 0; track < 11; ++track)
         {
-            guest.call(kRecordsSelect, fe::args({ track, lapsClass }));
+            fe::direct<0x44f670, frontend::misc::recordsSelect>(app, cpu, track, lapsClass);
             guest.setDword(guest.dword(kRecordHolder) + kHolderIsNew, 0);
-            guest.call(kRecordsSortBy, fe::args({ kSortByTime, 0 }));
+            guest::direct<0x44f830, frontend::menub::recordsSortBy>(app, cpu, kSortByTime);   // and edx 0, unread
             for (reg32 rank = 0; rank < kMostRecords; ++rank)
             {
-                found = guest.call(kRecordByRank, fe::args({ rank }));
+                found = guest::direct<0x44f910, frontend::menub::recordByRank>(app, cpu, rank);
                 if (found != 0)
                     guest.setWord(found + record::kNew, 0);
             }
@@ -620,14 +587,14 @@ reg32 recordsClearMarksBody(Guest& guest)
 
 /* sub_44fa10: a record, by value on the stack, into the list: at its end, or
  * over the slowest when it is full; then each one's rank written into it. */
-reg32 recordsInsertBody(Guest& guest, reg32 newRecord)
+reg32 recordsInsertBody(App* app, CPU& cpu, Guest& guest, reg32 newRecord)
 {
-    guest.call(kRecordsSortBy, fe::args({ kSortByTime }));
+    guest::direct<0x44f830, frontend::menub::recordsSortBy>(app, cpu, kSortByTime);
     const reg32 list = guest.dword(kRecordsList);
     const reg32 count = guest.dword(list);
     if (count == kMostRecords)
     {
-        const reg32 slowest = guest.call(kRecordByRank, fe::args({ kMostRecords - 1 }));
+        const reg32 slowest = guest::direct<0x44f910, frontend::menub::recordByRank>(app, cpu, kMostRecords - 1);
         copyDwords(guest, slowest, newRecord, kRecordBytes / 4);
     }
     else
@@ -635,11 +602,11 @@ reg32 recordsInsertBody(Guest& guest, reg32 newRecord)
         copyDwords(guest, list + 4 + count * kRecordBytes, newRecord, kRecordBytes / 4);
         guest.setDword(list, guest.dword(list) + 1);
     }
-    guest.call(kRecordsSortBy, fe::args({ kSortByTime }));
+    guest::direct<0x44f830, frontend::menub::recordsSortBy>(app, cpu, kSortByTime);
     reg32 found = 0;
     for (reg32 rank = 0; rank < kMostRecords; ++rank)
     {
-        found = guest.call(kRecordByRank, fe::args({ rank }));
+        found = guest::direct<0x44f910, frontend::menub::recordByRank>(app, cpu, rank);
         if (found == 0)
             break;
         guest.setDword(found + record::kRank, rank);
@@ -715,23 +682,30 @@ constexpr std::uint32_t kRowColour = 0xff649dfd;
 constexpr std::uint32_t kMenuFont = 0x12;
 
 /* sub_44fc00: the mark on the column the list is sorted by. */
-reg32 recordsSheetSortMarkBody(Guest& guest, reg32 item)
+reg32 recordsSheetSortMarkBody(App* app, CPU& cpu, Guest& guest, reg32 item)
 {
     const std::uint16_t chosen = std::uint16_t(guest.word(item + sheet::kSortKey) - 1);
     const reg32 column = chosen <= 5 ? chosen : 0;
     const reg32 box = item + sheet::kColumnBoxes + column * 8;
     const reg32 place = guest.dword(box);
     const reg32 size = guest.dword(box + 4);
-    return guest.call(kDrawSortMark, fe::args({ column, size, place },
-                                               { place, size, reg32(signedWord(guest, item + sheet::kSortMarkShape)) }));
+    // The game's code hands it the column, the size and the place in eax, edx and ebx too: it reads edx
+    // (handed on to the line's text), the rest not.
+    cpu.eax = column;
+    cpu.edx = size;
+    cpu.ebx = place;
+    return fe::direct<0x46cce0, frontend::menuc::drawColumnSortMark>(
+        app, cpu, place, size, reg32(signedWord(guest, item + sheet::kSortMarkShape)));
 }
 
 /* sub_44fc70: the sheet, on every pass: sliding in or out, its lines, its
  * headers with the pointer's lit, a row for each record shown (place, driver,
  * car, time, speed, aids), the holder of the best lap under them, the scrolling
  * arrows.  Edx left as the code leaves it. */
-reg32 recordsSheetDrawBody(Guest& guest, reg32 item, reg32 hovering)
+reg32 recordsSheetDrawBody(App* app, CPU& cpu, Guest& guest, reg32 item, reg32 hovering)
 {
+    // By address: the widget's type it hands in edx, which the core does not take, is the edx the
+    // function leaves when the sheet is not shown.
     if (guest.call(kMenuShownNow, fe::args({ item, kRecordsWidget })) == 0)
         return 0;
 
@@ -758,7 +732,7 @@ reg32 recordsSheetDrawBody(Guest& guest, reg32 item, reg32 hovering)
     if (signedWord(guest, item + sheet::kSlide) == 3)
         return 0;
 
-    const reg32 grey = guest.call(kKeysTaken);
+    const reg32 grey = reg32(*fe::direct<0x449df0, port::loop::keysTakenOf>(app, cpu, cpu.esp - 4, cpu.eax));
     const auto ifNotGrey = [&](std::uint32_t colour) { return grey != 0 ? kGreyedOut : colour; };
 
     // Another track or number of laps: from the top.
@@ -770,16 +744,18 @@ reg32 recordsSheetDrawBody(Guest& guest, reg32 item, reg32 hovering)
     guest.setWord(item + sheet::kShownTrack, guest.word(kSheetTrack));
     guest.setWord(item + sheet::kShownLapsClass, guest.word(kSheetLapsClass));
 
-    guest.call(kRecordsSheetLayout, fe::args({ item }));
-    guest.call(kRecordsSelect, fe::args({ guest.dword(kSheetTrack), guest.dword(kSheetLapsClass) }));
-    guest.call(kRecordsSortBy, fe::args({ reg32(signedWord(guest, item + sheet::kSortKey)) }));
+    guest::direct<0x450970, frontend::menub::recordsSheetLayout>(app, cpu, item);
+    fe::direct<0x44f670, frontend::misc::recordsSelect>(app, cpu, guest.dword(kSheetTrack),
+                                                        guest.dword(kSheetLapsClass));
+    guest::direct<0x44f830, frontend::menub::recordsSortBy>(app, cpu, reg32(signedWord(guest, item + sheet::kSortKey)));
 
     std::int32_t width = 0;
     for (reg32 column = 0; column < sheet::kColumns; ++column)
         width += signedWord(guest, item + sheet::kColumnWidths + 2 * column);
     const std::int32_t height = signedWord(guest, item + sheet::kRowHeight) * (signedWord(guest, item + sheet::kRows) + 1);
     const std::int32_t records = std::int32_t(
-        guest.call(kRecordsCount, fe::args({ guest.dword(kSheetTrack), guest.dword(kSheetLapsClass) })));
+        guest::direct<0x44f8d0, frontend::menub::recordsCount>(app, cpu, guest.dword(kSheetTrack),
+                                                               guest.dword(kSheetLapsClass)));
     const bool scrolls = records > 1;
 
     const auto slideX = [&]() { return signedWord(guest, item + sheet::kSlideX); };
@@ -788,7 +764,8 @@ reg32 recordsSheetDrawBody(Guest& guest, reg32 item, reg32 hovering)
     const auto rows = [&]() { return signedWord(guest, item + sheet::kRows); };
     const auto box = [&](std::int32_t x, std::int32_t y, std::int32_t w, std::int32_t h, std::uint32_t c0,
                          std::uint32_t c1, std::uint32_t c2, std::uint32_t c3) {
-        guest.call(kShadedBox, fe::args({ reg32(x), reg32(y), reg32(w), reg32(h) }, { c0, c1, c2, c3 }));
+        const std::uint32_t colours[] = { c0, c1, c2, c3 };
+        fe::direct<0x4d8860, port::draw2d::shadedBox>(app, cpu, cpu.esp - 20, x, y, w, h, colours);
     };
 
     // The frame.
@@ -799,9 +776,10 @@ reg32 recordsSheetDrawBody(Guest& guest, reg32 item, reg32 hovering)
     box(slideX(), topY() + rowHeight() - 1, width, 2, kLineDark, kLineLight, kLineLight, kLineDark);
     if (rows() < records)
     {
-        guest.call(kFrame, fe::args({ reg32(signedWord(guest, item + sheet::kUpBox + 2) - 3),
-                                      reg32(signedWord(guest, item + sheet::kUpBox) - 1), 0x12, reg32(height + 4) },
-                                    { kLineLight }));
+        fe::direct<0x4d8930, port::draw2d::outline>(app, cpu, cpu.esp - 8,
+                                                    reg32(signedWord(guest, item + sheet::kUpBox + 2) - 3),
+                                                    reg32(signedWord(guest, item + sheet::kUpBox) - 1), 0x12,
+                                                    reg32(height + 4), kLineLight);
     }
     // Between the rows and the columns.
     std::int32_t lineY = topY() + rowHeight();
@@ -817,7 +795,7 @@ reg32 recordsSheetDrawBody(Guest& guest, reg32 item, reg32 hovering)
         lineX += signedWord(guest, item + sheet::kColumnWidths + 2 * column);
     }
     if (signedWord(guest, item + sheet::kSlide) == 0 && scrolls)
-        guest.call(kRecordsSheetSortMark, fe::args({ item, reg32(height) }));
+        guest::direct<0x44fc00, frontend::menub::recordsSheetSortMark>(app, cpu, item);   // edx the height, unread
 
     // The columns: their alignments, and each one's text from its left.
     constexpr std::int32_t kAlign[sheet::kColumns] = { 5, 3, 3, 5, 5, 5 };
@@ -837,16 +815,18 @@ reg32 recordsSheetDrawBody(Guest& guest, reg32 item, reg32 hovering)
         const std::int32_t x = textX[column] + signedWord(guest, columnBox + 2);
         const std::int32_t y = signedWord(guest, columnBox + 6) / 2 + signedWord(guest, columnBox) - 5;
         const reg32 title = guest.dword(item + column * 4 + sheet::kTitles);
-        const bool lit = scrolls && hovering != 0 && guest.call(kPointerInBox, fe::args({ columnBox })) != 0;
+        const bool lit = scrolls && hovering != 0
+            && fe::direct<0x49c1f0, frontend::glue::pointerInBox>(app, cpu, columnBox) != 0;
         if (lit)
         {
-            guest.call(kFrame, fe::args({ reg32(signedWord(guest, columnBox + 2) + 1), reg32(signedWord(guest, columnBox)),
-                                          reg32(signedWord(guest, columnBox + 4) - 1),
-                                          reg32(signedWord(guest, columnBox + 6) - 1) },
-                                        { kHeaderFrame }));
+            fe::direct<0x4d8930, port::draw2d::outline>(app, cpu, cpu.esp - 8,
+                                                        reg32(signedWord(guest, columnBox + 2) + 1),
+                                                        reg32(signedWord(guest, columnBox)),
+                                                        reg32(signedWord(guest, columnBox + 4) - 1),
+                                                        reg32(signedWord(guest, columnBox + 6) - 1), kHeaderFrame);
         }
-        guest.call(kDrawMenuText, fe::args({ title, reg32(x), reg32(y), kMenuFont },
-                                           { reg32(kAlign[column]), ifNotGrey(lit ? kYellow : kLineLight) }));
+        fe::direct<0x452190, port::text::menuTextDrawn>(app, cpu, cpu.esp - 12, title, reg32(x), reg32(y), kMenuFont,
+                                                        reg32(kAlign[column]), ifNotGrey(lit ? kYellow : kLineLight));
     }
 
     // The rows.
@@ -861,41 +841,49 @@ reg32 recordsSheetDrawBody(Guest& guest, reg32 item, reg32 hovering)
     std::int32_t rank = signedWord(guest, item + sheet::kFirstRow);
     for (std::int32_t shown = 0; rows() > shown && rank < std::int32_t(kMostRecords); ++shown)
     {
-        const reg32 found = guest.call(kRecordByRank, fe::args({ reg32(rank) }));
+        const reg32 found = guest::direct<0x44f910, frontend::menub::recordByRank>(app, cpu, reg32(rank));
         if (found == 0)
             break;
         // The place.
-        const reg32 place = guest.call(kLanguageText, fe::args({ guest.dword(found + record::kRank) + 0x30 }));
-        guest.call(kDrawMenuText, fe::args({ place, reg32(slideX() + textX[0]), reg32(rowY), kMenuFont },
-                                           { reg32(kAlign[0]), ifNotGrey(kRowColour) }));
+        const reg32 place = reg32(*fe::direct<0x4d1850, port::text::lineText>(app, cpu, cpu.esp - 4,
+                                                                              guest.dword(found + record::kRank) + 0x30,
+                                                                              cpu.edx));
+        fe::direct<0x452190, port::text::menuTextDrawn>(app, cpu, cpu.esp - 12, place, reg32(slideX() + textX[0]),
+                                                        reg32(rowY), kMenuFont, reg32(kAlign[0]),
+                                                        ifNotGrey(kRowColour));
         // The driver, this race's lit.
         const std::int32_t driverX = columnsTo(1) + textX[1];
         const bool isNew = guest.dword(kRecordsAnimated) != 0 && guest.word(found + record::kNew) != 0;
         const reg32 driverWidth = reg32(signedWord(guest, item + sheet::kColumnWidths + 2) - 3);
-        guest.call(kTextDrawFitted, fe::args({ found + record::kDriver, reg32(driverX), reg32(rowY), kMenuFont },
-                                             { reg32(kAlign[1]), ifNotGrey(isNew ? kYellow : kRowColour), driverWidth }));
+        guest::direct<0x452120, frontend::menub::textDrawFitted>(
+            app, cpu, found + record::kDriver, reg32(driverX), reg32(rowY), kMenuFont, reg32(kAlign[1]),
+            ifNotGrey(isNew ? kYellow : kRowColour), driverWidth);
         // The car, on two lines.
         const std::int32_t carX = columnsTo(2) + textX[2];
         const reg32 carWidth = reg32(signedWord(guest, item + sheet::kColumnWidths + 4) - 3);
         guest.copyString(buffer, found + record::kCarLine0);
-        guest.call(kTextDrawFitted, fe::args({ buffer, reg32(carX), reg32(rowY - 10), kMenuFont },
-                                             { reg32(kAlign[2]), ifNotGrey(kRowColour), carWidth }));
+        guest::direct<0x452120, frontend::menub::textDrawFitted>(
+            app, cpu, buffer, reg32(carX), reg32(rowY - 10), kMenuFont, reg32(kAlign[2]), ifNotGrey(kRowColour), carWidth);
         guest.copyString(buffer, found + record::kCarLine1);
-        guest.call(kTextDrawFitted, fe::args({ buffer, reg32(carX), reg32(rowY + 5), kMenuFont },
-                                             { reg32(kAlign[2]), ifNotGrey(kRowColour), carWidth }));
+        guest::direct<0x452120, frontend::menub::textDrawFitted>(
+            app, cpu, buffer, reg32(carX), reg32(rowY + 5), kMenuFont, reg32(kAlign[2]), ifNotGrey(kRowColour), carWidth);
         // The time.
-        guest.call(kFormatTime, fe::args({ guest.dword(found + record::kTime), buffer }));
-        guest.call(kDrawMenuText, fe::args({ buffer, reg32(columnsTo(3) + textX[3]), reg32(rowY), kMenuFont },
-                                           { reg32(kAlign[3]), ifNotGrey(kRowColour) }));
+        fe::direct<0x4cee40, frontend::menue::timeText>(app, cpu, guest.dword(found + record::kTime), buffer);
+        fe::direct<0x452190, port::text::menuTextDrawn>(app, cpu, cpu.esp - 12, buffer, reg32(columnsTo(3) + textX[3]),
+                                                        reg32(rowY), kMenuFont, reg32(kAlign[3]),
+                                                        ifNotGrey(kRowColour));
         // The speed.
         guest.leaveEdx(item);
-        guest.call(kFormatSpeed, fe::args({}, { guest.dword(found + record::kSpeed), buffer }));
-        guest.call(kDrawMenuText, fe::args({ buffer, reg32(columnsTo(4) + textX[4]), reg32(rowY), kMenuFont },
-                                           { reg32(kAlign[4]), ifNotGrey(kRowColour) }));
+        fe::direct<0x4cedd0, frontend::menue::metricText>(app, cpu, guest.floatAt(found + record::kSpeed), buffer);
+        fe::direct<0x452190, port::text::menuTextDrawn>(app, cpu, cpu.esp - 12, buffer, reg32(columnsTo(4) + textX[4]),
+                                                        reg32(rowY), kMenuFont, reg32(kAlign[4]),
+                                                        ifNotGrey(kRowColour));
         // The aids.
-        const reg32 aids = guest.call(kLanguageText, fe::args({ reg32(guest.word(found + record::kAids) != 0 ? 0xc4 : 0xc5) }));
-        guest.call(kDrawMenuText, fe::args({ aids, reg32(columnsTo(5) + textX[5] + kAlign[5]), reg32(rowY), kMenuFont },
-                                           { reg32(kAlign[5]), ifNotGrey(kRowColour) }));
+        const reg32 aids = reg32(*fe::direct<0x4d1850, port::text::lineText>(
+            app, cpu, cpu.esp - 4, reg32(guest.word(found + record::kAids) != 0 ? 0xc4 : 0xc5), cpu.edx));
+        fe::direct<0x452190, port::text::menuTextDrawn>(app, cpu, cpu.esp - 12, aids,
+                                                        reg32(columnsTo(5) + textX[5] + kAlign[5]), reg32(rowY),
+                                                        kMenuFont, reg32(kAlign[5]), ifNotGrey(kRowColour));
         rowY += rowHeight();
         ++rank;
     }
@@ -905,17 +893,19 @@ reg32 recordsSheetDrawBody(Guest& guest, reg32 item, reg32 hovering)
     const reg32 lapDriver = guest.frame() + 0x300;
     const reg32 lapLine0 = guest.frame() + 0x100;
     const reg32 lapLine1 = guest.frame() + 0x400;
-    const reg32 lap = guest.call(kRecordsRead, fe::args({ lapDriver, lapLine0, lapLine1 }));
+    const reg32 lap = fe::direct<0x44fa90, frontend::misc::recordsRead>(app, cpu, lapDriver, lapLine0, lapLine1);
     if (lap != 0)
     {
-        guest.call(kFormatTime, fe::args({ lap, buffer }));
-        const reg32 title = guest.call(kLanguageText, fe::args({ 0xea }));
+        fe::direct<0x4cee40, frontend::menue::timeText>(app, cpu, lap, buffer);
+        const reg32 title = reg32(*fe::direct<0x4d1850, port::text::lineText>(app, cpu, cpu.esp - 4, 0xea, cpu.edx));
         constexpr reg32 kHolderFormat = 0x53958c;   // "%s:  %s   %s   %s"
         guest.call(kSprintf, fe::args({}, { holderLine, kHolderFormat, title, lapDriver, lapLine1, buffer }));
         const std::int32_t x = width + slideX();
         const std::int32_t y = topY() + height + 0x18;
-        const bool blink = guest.dword(kRecordsAnimated) != 0 && (guest.call(kRecordsHolderMark) & 1) != 0
+        const bool blink = guest.dword(kRecordsAnimated) != 0
+            && (guest::direct<0x44fb20, frontend::menub::recordsHolderMark>(app, cpu) & 1) != 0
             && signedDword(guest, kTicks) % 0x80 < 0x40;
+        // By address: the last call when no arrow is drawn, whose edx the function leaves.
         guest.call(kDrawMenuText, fe::args({ holderLine, reg32(x), reg32(y), kMenuFont },
                                            { 4, ifNotGrey(blink ? kYellow : kLineLight) }));
     }
@@ -927,9 +917,9 @@ reg32 recordsSheetDrawBody(Guest& guest, reg32 item, reg32 hovering)
     {
         const reg32 x = reg32(signedWord(guest, item + sheet::kUpBox + 2));
         const reg32 y = reg32(signedWord(guest, item + sheet::kUpBox) + 1);
-        const bool lit = guest.call(kPointerInBox, fe::args({ item + sheet::kUpBox })) != 0;
+        const bool lit = fe::direct<0x49c1f0, frontend::glue::pointerInBox>(app, cpu, item + sheet::kUpBox) != 0;
         const reg32 shape = reg32(signedWord(guest, item + (lit ? sheet::kUpLitShape : sheet::kUpShape)));
-        guest.call(kDrawShape, fe::args({ shape, x, y }));
+        fe::direct<0x4d7990, port::shapes::drawShapeOf>(app, cpu, cpu.esp - 4, shape, x, y);
     }
     const std::int32_t firstRow = signedWord(guest, item + sheet::kFirstRow);
     if (rows() + firstRow >= records)
@@ -939,9 +929,9 @@ reg32 recordsSheetDrawBody(Guest& guest, reg32 item, reg32 hovering)
     }
     const reg32 x = reg32(signedWord(guest, item + sheet::kDownBox + 2));
     const reg32 y = reg32(signedWord(guest, item + sheet::kDownBox));
-    const bool lit = guest.call(kPointerInBox, fe::args({ item + sheet::kDownBox })) != 0;
+    const bool lit = fe::direct<0x49c1f0, frontend::glue::pointerInBox>(app, cpu, item + sheet::kDownBox) != 0;
     const reg32 shape = reg32(signedWord(guest, item + (lit ? sheet::kDownLitShape : sheet::kDownShape)));
-    guest.call(kDrawShape, fe::args({ shape, x, y }));
+    guest.call(kDrawShape, fe::args({ shape, x, y }));   // by address: the last call, whose edx the function leaves
     return 0;
 }
 
@@ -953,23 +943,30 @@ constexpr GuestString kArrowDown{ 0x5395a8, "bdn1" };
 constexpr GuestString kArrowUpLit{ 0x5395b0, "yup1" };
 constexpr GuestString kArrowDownLit{ 0x5395b8, "ydn1" };
 
-reg32 recordsSheetLoadBody(Guest& guest, reg32 item)
+reg32 recordsSheetLoadBody(App* app, CPU& cpu, Guest& guest, reg32 item)
 {
-    if (guest.call(kMenuShownNow, fe::args({ item, kRecordsWidget })) == 0)
+    if (fe::direct<0x44a660, frontend::loop::shownNow>(app, cpu, item) == 0)
         return 0;
     guest.call(kLoadRecords);
-    guest.setDword(kSheetTrack, guest.dword(kTrack));
-    const reg32 lapsClass = reg32(std::int16_t(guest.call(kLapsClassOf, fe::args({ reg32(signedWord(guest, kLaps)) }))));
+    guest.setDword(kSheetTrack, gameSettings(guest).track);
+    const reg32 lapsClass = reg32(std::int16_t(fe::direct<0x4cf160, frontend::menue::lapsToOption>(
+        app, cpu, reg32(std::int32_t(std::int16_t(gameSettings(guest).laps))))));
     guest.setDword(kSheetLapsClass, lapsClass);
-    guest.call(kRecordsSelect, fe::args({ guest.dword(kSheetTrack), lapsClass }));
+    fe::direct<0x44f670, frontend::misc::recordsSelect>(app, cpu, guest.dword(kSheetTrack), lapsClass);
     guest.setWord(item + sheet::kShownTrack, guest.word(kSheetTrack));
     guest.setWord(item + sheet::kShownLapsClass, guest.word(kSheetLapsClass));
     if (signedWord(guest, item + sheet::kRows) >= 10)
         guest.setWord(item + sheet::kRows, 10);
     static constexpr std::uint32_t kTitleTexts[sheet::kColumns] = { 0xe3, 0xc3, 2, 0x28, 0x29, 0x192 };
     for (reg32 column = 0; column < sheet::kColumns; ++column)
-        guest.setDword(item + sheet::kTitles + column * 4, guest.call(kLanguageText, fe::args({ kTitleTexts[column] })));
-    const auto shape = [&](const GuestString& name) { return guest.call(kShapeByName, fe::args({ name.address })); };
+    {
+        const auto title =
+            fe::direct<0x4d1850, port::text::lineText>(app, cpu, cpu.esp - 4, kTitleTexts[column], cpu.edx);
+        guest.setDword(item + sheet::kTitles + column * 4, reg32(*title));
+    }
+    const auto shape = [&](const GuestString& name) {
+        return reg32(*fe::direct<0x4d5db0, port::shapes::shapeNamed>(app, cpu, cpu.esp - 4, name.address));
+    };
     guest.setWord(item + sheet::kUpShape, std::uint16_t(shape(kArrowUp)));
     guest.setWord(item + sheet::kDownShape, std::uint16_t(shape(kArrowDown)));
     guest.setWord(item + sheet::kUpLitShape, std::uint16_t(shape(kArrowUpLit)));
@@ -990,11 +987,13 @@ reg32 recordsSheetLoadBody(Guest& guest, reg32 item)
         return left;
 
     const std::int32_t records = std::int32_t(
-        guest.call(kRecordsCount, fe::args({ guest.dword(kSheetTrack), guest.dword(kSheetLapsClass) })));
-    left = guest.call(kRecordsSortBy, fe::args({ reg32(signedWord(guest, item + sheet::kSortKey)) }));
+        guest::direct<0x44f8d0, frontend::menub::recordsCount>(app, cpu, guest.dword(kSheetTrack),
+                                                               guest.dword(kSheetLapsClass)));
+    left = guest::direct<0x44f830, frontend::menub::recordsSortBy>(app, cpu,
+                                                                   reg32(signedWord(guest, item + sheet::kSortKey)));
     for (std::int32_t rank = 0; rank < records; ++rank)
     {
-        const reg32 found = guest.call(kRecordByRank, fe::args({ reg32(rank) }));
+        const reg32 found = guest::direct<0x44f910, frontend::menub::recordByRank>(app, cpu, reg32(rank));
         if (found == 0)
             return 0;
         left = found;
@@ -1014,18 +1013,19 @@ reg32 recordsSheetLoadBody(Guest& guest, reg32 item)
 }
 
 /* sub_450950: its records saved as the screen closes. */
-reg32 recordsSheetSaveBody(Guest& guest, reg32 item)
+reg32 recordsSheetSaveBody(App* app, CPU& cpu, Guest& guest, reg32 item)
 {
-    if (guest.call(kMenuShownNow, fe::args({ item, kRecordsWidget })) != 0)
-        guest.call(kSaveRecords);
-    return guest.eax();
+    const reg32 shown = fe::direct<0x44a660, frontend::loop::shownNow>(app, cpu, item);
+    if (shown != 0)
+        return guest.call(kSaveRecords);
+    return shown;
 }
 
 /* sub_450970: the columns' boxes, and the arrows', from the column widths and
  * where the sheet has slid to.  Eax left as the code's sums leave it. */
-reg32 recordsSheetLayoutBody(Guest& guest, reg32 item)
+reg32 recordsSheetLayoutBody(App* app, CPU& cpu, Guest& guest, reg32 item)
 {
-    if (guest.call(kMenuShownNow, fe::args({ item, kRecordsWidget })) == 0)
+    if (fe::direct<0x44a660, frontend::loop::shownNow>(app, cpu, item) == 0)
         return 0;
     std::int32_t x = signedWord(guest, item + sheet::kSlideX);
     reg32 total = 0;
@@ -1064,32 +1064,33 @@ reg32 recordsSheetLayoutBody(Guest& guest, reg32 item)
 }
 
 /* The pointer moved into a box: three quarters across, half way down. */
-void pointerIntoBox(Guest& guest, reg32 box)
+void pointerIntoBox(App* app, CPU& cpu, Guest& guest, reg32 box)
 {
     const std::int32_t x = signedWord(guest, box + 2) + signedWord(guest, box + 4) * 3 / 4;
     const std::int32_t y = signedWord(guest, box) + signedWord(guest, box + 6) / 2;
     guest.setDword(kPointerX, reg32(x));
     guest.setDword(kPointerY, reg32(y));
-    guest.call(kSetPointer, fe::args({ reg32(x), reg32(y) }));
+    fe::direct<0x49bfc0, frontend::screen::setPointer>(app, cpu, reg32(x), reg32(y));
 }
 
 /* sub_450a90: the sheet's keys: Enter on a column sorts by it, the arrows go
  * across the columns, Page Up and Page Down and clicks on the arrows scroll.
  * What it answers stays in edx, ebx what the code leaves there. */
-reg32 recordsSheetKeyBody(Guest& guest, reg32 item, std::uint16_t key)
+reg32 recordsSheetKeyBody(App* app, CPU& cpu, Guest& guest, reg32 item, std::uint16_t key)
 {
     constexpr std::uint16_t kEnter = 0xd, kRight = 0x4d00, kLeft = 0x4b00, kPageUp = 0x4900, kPageDown = 0x5100;
     constexpr std::uint32_t kClick = 1, kVolume = 0x7f;
 
     std::int32_t column = -1;
     guest.leaveEbx(reg32(column));
-    if (guest.call(kMenuShownNow, fe::args({ item, kRecordsWidget })) == 0)
+    if (fe::direct<0x44a660, frontend::loop::shownNow>(app, cpu, item) == 0)
     {
         guest.leaveEdx(0);
         return 0;
     }
     const std::int32_t records = std::int32_t(
-        guest.call(kRecordsCount, fe::args({ guest.dword(kSheetTrack), guest.dword(kSheetLapsClass) })));
+        guest::direct<0x44f8d0, frontend::menub::recordsCount>(app, cpu, guest.dword(kSheetTrack),
+                                                               guest.dword(kSheetLapsClass)));
     if (records < 2)
     {
         guest.leaveEdx(0);
@@ -1097,7 +1098,7 @@ reg32 recordsSheetKeyBody(Guest& guest, reg32 item, std::uint16_t key)
     }
     for (reg32 i = 0; i < sheet::kColumns; ++i)
     {
-        if (guest.call(kPointerInBox, fe::args({ item + sheet::kColumnBoxes + i * 8 })) != 0)
+        if (fe::direct<0x49c1f0, frontend::glue::pointerInBox>(app, cpu, item + sheet::kColumnBoxes + i * 8) != 0)
         {
             column = std::int32_t(i);
             guest.leaveEbx(reg32(column));
@@ -1120,18 +1121,18 @@ reg32 recordsSheetKeyBody(Guest& guest, reg32 item, std::uint16_t key)
     {
         column = clamped(column + (key == kRight ? 1 : -1));
         guest.leaveEbx(reg32(column));
-        pointerIntoBox(guest, item + sheet::kColumnBoxes + reg32(column) * 8);
+        pointerIntoBox(app, cpu, guest, item + sheet::kColumnBoxes + reg32(column) * 8);
         answer = 2;
     }
     if (signedWord(guest, item + sheet::kRows) < records)
     {
         if (key == kPageUp && guest.word(item + sheet::kFirstRow) != 0)
         {
-            guest.call(kPlayEffect, fe::args({ kClick, kVolume }));
+            fe::direct<0x4181d0, port::playMenuEffectOf>(app, cpu, cpu.esp - 4, kClick, kVolume);
             const std::uint16_t first = guest.word(item + sheet::kFirstRow);
             guest.setWord(item + sheet::kFirstRow, std::uint16_t(first - 1));
             guest.leaveEbx(((reg32(column) & 0xffff0000) | first) - 1);
-            pointerIntoBox(guest, item + sheet::kUpBox);
+            pointerIntoBox(app, cpu, guest, item + sheet::kUpBox);
             answer = 2;
         }
         if (key == kPageDown)
@@ -1139,24 +1140,25 @@ reg32 recordsSheetKeyBody(Guest& guest, reg32 item, std::uint16_t key)
             guest.leaveEbx(reg32(records));
             if (canScrollDown())
             {
-                guest.call(kPlayEffect, fe::args({ kClick, kVolume }));
+                fe::direct<0x4181d0, port::playMenuEffectOf>(app, cpu, cpu.esp - 4, kClick, kVolume);
                 guest.setWord(item + sheet::kFirstRow, std::uint16_t(guest.word(item + sheet::kFirstRow) + 1));
-                pointerIntoBox(guest, item + sheet::kDownBox);
+                pointerIntoBox(app, cpu, guest, item + sheet::kDownBox);
                 answer = 2;
             }
         }
         if (key == kEnter)
         {
-            if (guest.call(kPointerInBox, fe::args({ item + sheet::kUpBox })) != 0
+            if (fe::direct<0x49c1f0, frontend::glue::pointerInBox>(app, cpu, item + sheet::kUpBox) != 0
                 && guest.word(item + sheet::kFirstRow) != 0)
             {
-                guest.call(kPlayEffect, fe::args({ kClick, kVolume }));
+                fe::direct<0x4181d0, port::playMenuEffectOf>(app, cpu, cpu.esp - 4, kClick, kVolume);
                 guest.setWord(item + sheet::kFirstRow, std::uint16_t(guest.word(item + sheet::kFirstRow) - 1));
                 answer = 2;
             }
-            if (guest.call(kPointerInBox, fe::args({ item + sheet::kDownBox })) != 0 && canScrollDown())
+            if (fe::direct<0x49c1f0, frontend::glue::pointerInBox>(app, cpu, item + sheet::kDownBox) != 0
+                && canScrollDown())
             {
-                guest.call(kPlayEffect, fe::args({ kClick, kVolume }));
+                fe::direct<0x4181d0, port::playMenuEffectOf>(app, cpu, cpu.esp - 4, kClick, kVolume);
                 guest.setWord(item + sheet::kFirstRow, std::uint16_t(guest.word(item + sheet::kFirstRow) + 1));
                 answer = 2;
             }
@@ -1167,19 +1169,20 @@ reg32 recordsSheetKeyBody(Guest& guest, reg32 item, std::uint16_t key)
 }
 
 /* sub_450e30: a widget's slot with nothing to do. */
-reg32 recordsSheetIdleBody(Guest& guest, reg32 item)
+reg32 recordsSheetIdleBody(App* app, CPU& cpu, Guest& guest, reg32 item)
 {
-    guest.call(kMenuShownNow, fe::args({ item, kRecordsWidget }));
+    fe::direct<0x44a660, frontend::loop::shownNow>(app, cpu, item);
     return 0;
 }
 
-constexpr reg32 kDrivers = 0x6fd52c;
 constexpr std::uint32_t kDriverBytes = 0x6c;
 constexpr reg32 kDriverCar = 0x14;
 constexpr reg32 kDriverName = 0x34;
 
 /* The aids a race had on, which a record keeps together. */
-constexpr reg32 kAidsOn[] = { 0x6fd490, 0x6fd494, 0x6fd498, 0x6fd49c, 0x6fd4a0, 0x6fd4a4 };
+constexpr reg32 GameSettings::* kAidsOn[] = { &GameSettings::raceOptionComputerDrives, &GameSettings::raceOptionLaneVotes,
+                                              &GameSettings::raceOptionCones, &GameSettings::raceOptionCopRadio,
+                                              &GameSettings::raceOptionHazard, &GameSettings::raceOptionSimulation };
 
 constexpr std::uint32_t kEnteredBestLap = 1;
 constexpr std::uint32_t kEnteredBestTime = 2;
@@ -1187,52 +1190,55 @@ constexpr std::uint32_t kEnteredTime = 4;
 
 /* sub_450fe0: a participant's race into the chosen list and its best lap, for
  * the awards: which it got.  The record built in the frame, and handed by value. */
-reg32 recordsEnterResultBody(Guest& guest, x86::CPU& cpu, reg32 found)
+reg32 recordsEnterResultBody(App* app, CPU& cpu, Guest& guest, reg32 found)
 {
-    const reg32 driver = kDrivers + guest.dword(found + participant::kDriver) * kDriverBytes;
-    const reg32 car = guest.dword(driver + kDriverCar);
+    const reg32 entry = guest.dword(found + participant::kDriver);
+    const reg32 driver = SETTINGS_ADDRESS(entries) + entry * kDriverBytes;
+    const reg32 car = gameSettings(guest).entries[entry].car;
     const reg32 newRecord = guest.frame();
     const reg32 ignored = guest.frame() + 0x51c;
     std::uint32_t entered = 0;
 
-    const reg32 holderLap = guest.call(kRecordsRead, fe::args({ ignored, ignored, ignored }));
+    const reg32 holderLap = fe::direct<0x44fa90, frontend::misc::recordsRead>(app, cpu, ignored, ignored, ignored);
     const reg32 ownCar = guest.dword(guest.dword(found + participant::kCar) + kCarIdent);
     if (ownCar == guest.dword(kAwardedCar))
         return 0;
     if ((guest.byte(found + participant::kFlags) & participant::kFinisher) == 0)
         return 0;
 
-    if (guest.call(kRecordsTimeQualifies, fe::args({ guest.dword(found + participant::kTime) })) != 0)
+    const reg32 raceTime = guest.dword(found + participant::kTime);
+    if (guest::direct<0x44f960, frontend::menub::recordsTimeQualifies>(app, cpu, raceTime) != 0)
     {
         guest.copyString(newRecord + record::kDriver, driver + kDriverName);
-        guest.copyString(newRecord + record::kCarName, guest.call(kCarName, fe::args({ car })));
-        guest.copyString(newRecord + record::kCarLine0, guest.call(kCarText, fe::args({ car, 0 })));
-        guest.copyString(newRecord + record::kCarLine1, guest.call(kCarText, fe::args({ car, 1 })));
+        guest.copyString(newRecord + record::kCarName, *fe::direct<0x439250, load::nameOf>(app, cpu, car));
+        const auto carLine = [&](std::int32_t n) {
+            return reg32(*fe::direct<0x439ab0, port::fields::carTextOf>(app, cpu, cpu.esp - 4, car, n));
+        };
+        guest.copyString(newRecord + record::kCarLine0, carLine(0));
+        guest.copyString(newRecord + record::kCarLine1, carLine(1));
         guest.setDword(newRecord + record::kTime, guest.dword(found + participant::kTime));
         guest.setDword(newRecord + record::kSpeed, guest.dword(found + participant::kTopSpeed));
         std::uint16_t aids = 0;
-        for (const reg32 aid : kAidsOn)
-            aids = std::uint16_t(aids | guest.word(aid));
+        for (reg32 GameSettings::*aid : kAidsOn)
+            aids = std::uint16_t(aids | std::uint16_t(gameSettings(guest).*aid));
         guest.setWord(newRecord + record::kAids, aids);
         guest.setWord(newRecord + record::kNew, 1);
 
-        guest.call(kRecordsSortBy, fe::args({ kSortByTime }));
-        const reg32 best = guest.call(kRecordByRank, fe::args({ 0 }));
+        guest::direct<0x44f830, frontend::menub::recordsSortBy>(app, cpu, kSortByTime);
+        const reg32 best = guest::direct<0x44f910, frontend::menub::recordByRank>(app, cpu, 0);
         if (best != 0
             && signedDword(guest, best + record::kTime) > signedDword(guest, found + participant::kTime))
             entered = kEnteredBestTime;
         else
             entered |= kEnteredTime;
 
-        cpu.esp -= kRecordBytes;
-        copyDwords(guest, cpu.esp, newRecord, kRecordBytes / 4);
-        guest.call(kRecordsInsert);
-        cpu.esp += kRecordBytes;
+        // By value on the stack in the game's code; the core reads it where it is.
+        fe::direct<0x44fa10, frontend::menub::recordsInsert>(app, cpu, newRecord);
     }
 
     // Its best lap.
     std::int32_t bestLap = 0;
-    for (std::int32_t lap = 0; lap < signedDword(guest, kLaps); ++lap)
+    for (std::int32_t lap = 0; lap < std::int32_t(gameSettings(guest).laps); ++lap)
     {
         const std::int32_t time = signedDword(guest, found + participant::kLapTimes + 4 * lap);
         if (time != 0 && (time < bestLap || bestLap == 0))
@@ -1244,9 +1250,13 @@ reg32 recordsEnterResultBody(Guest& guest, x86::CPU& cpu, reg32 found)
         const reg32 holderLine0 = guest.frame() + 0x61c;
         const reg32 holderLine1 = guest.frame() + 0x41c;
         guest.copyString(holderDriver, driver + kDriverName);
-        guest.copyString(holderLine0, guest.call(kCarText, fe::args({ car, 0 })));
-        guest.copyString(holderLine1, guest.call(kCarText, fe::args({ car, 1 })));
-        guest.call(kRecordsSetHolder, fe::args({ holderDriver, holderLine0, holderLine1, reg32(bestLap) }, { 1 }));
+        const auto carLine = [&](std::int32_t n) {
+            return reg32(*fe::direct<0x439ab0, port::fields::carTextOf>(app, cpu, cpu.esp - 4, car, n));
+        };
+        guest.copyString(holderLine0, carLine(0));
+        guest.copyString(holderLine1, carLine(1));
+        guest::direct<0x44fb30, frontend::menub::recordsSetHolder>(app, cpu, holderDriver, holderLine0, holderLine1,
+                                                                   reg32(bestLap), 1);
         entered |= kEnteredBestLap;
     }
     return entered;
@@ -1254,26 +1264,30 @@ reg32 recordsEnterResultBody(Guest& guest, x86::CPU& cpu, reg32 found)
 
 /* sub_4512f0: the player's race, and a second player's beside it, entered; and
  * what they got turned into awards. */
-reg32 recordsEnterPlayersBody(Guest& guest)
+reg32 recordsEnterPlayersBody(App* app, CPU& cpu, Guest& guest)
 {
-    const reg32 lapsClass = reg32(std::int16_t(guest.call(kLapsClassOf, fe::args({ reg32(signedWord(guest, kLaps)) }))));
-    guest.call(kRecordsSelect, fe::args({ guest.dword(kTrack), lapsClass }));
+    const reg32 lapsClass = reg32(std::int16_t(fe::direct<0x4cf160, frontend::menue::lapsToOption>(
+        app, cpu, reg32(std::int32_t(std::int16_t(gameSettings(guest).laps))))));
+    fe::direct<0x44f670, frontend::misc::recordsSelect>(app, cpu, gameSettings(guest).track, lapsClass);
+    // What the calls leave in eax, the last one's: the cores called as C++ hand theirs back.
+    reg32 left = 0;
     const auto enter = [&](reg32 id, reg32 player) {
-        const reg32 found = guest.call(kParticipantById, fe::args({ 0, id }));
+        const reg32 found = left = fe::direct<0x4554e0, frontend::misc::resultsParticipantById>(app, cpu, 0, id);
         if (found == 0 || guest.dword(found + participant::kState) == kStateDidNotFinish)
             return;
-        const reg32 entered = guest.call(kRecordsEnterResult, fe::args({ found }));
+        const reg32 entered = left =
+            guest::direct<0x450fe0, frontend::menub::recordsEnterResult>(app, cpu, found);
         if (entered & kEnteredBestLap)
-            guest.call(kAwardsGrant, fe::args({ 0, player }));
+            left = guest::direct<0x44e7f0, frontend::menub::awardsGrant>(app, cpu, 0, player);
         if (entered & kEnteredTime)
-            guest.call(kAwardsGrant, fe::args({ 2, player }));
+            left = guest::direct<0x44e7f0, frontend::menub::awardsGrant>(app, cpu, 2, player);
         if (entered & kEnteredBestTime)
-            guest.call(kAwardsGrant, fe::args({ 1, player }));
+            left = guest::direct<0x44e7f0, frontend::menub::awardsGrant>(app, cpu, 1, player);
     };
-    enter(guest.dword(kLocalPlayerId), 0);
-    if (guest.dword(kPlayers) == 1)
+    enter(gameSettings(guest).localPlayer, 0);
+    if (gameSettings(guest).playMode == 1)
         enter(1, 1);
-    return guest.eax();
+    return left;
 }
 
 /* ---------------------------------------------------------------------------
@@ -1282,10 +1296,11 @@ reg32 recordsEnterPlayersBody(Guest& guest)
 
 /* sub_452090: a text cut to a width in a font, its end made "..." when it was
  * cut.  The text is changed where it is. */
-reg32 textFitBody(Guest& guest, reg32 text, std::int32_t most, reg32 font)
+reg32 textFitBody(App* app, CPU& cpu, Guest& guest, reg32 text, std::int32_t most, reg32 font)
 {
     std::uint32_t length = guest.length(text);
-    guest.call(kSelectFont, fe::args({ font, font }));
+    fe::direct<0x452100, port::text::selectFontOf>(app, cpu, font);   // the game's code: the font in edx too, unread
+    // The widths by address: the last call, whose edx the function leaves.
     reg32 left = guest.call(kTextWidth, fe::args({ text, font }));
     if (std::int32_t(left) <= most)
         return left;
@@ -1309,11 +1324,13 @@ reg32 textFitBody(Guest& guest, reg32 text, std::int32_t most, reg32 font)
 }
 
 /* sub_452120: a copy of a text, fitted to a width, drawn. */
-reg32 textDrawFittedBody(Guest& guest, reg32 text, reg32 x, reg32 y, reg32 font, reg32 align, reg32 colour, reg32 most)
+reg32 textDrawFittedBody(App* app, CPU& cpu, Guest& guest, reg32 text, reg32 x, reg32 y, reg32 font, reg32 align,
+                         reg32 colour, reg32 most)
 {
     const reg32 copy = guest.frame();
     guest.copyString(copy, text);
-    guest.call(kTextFit, fe::args({ copy, most, font }));
+    guest::direct<0x452090, frontend::menub::textFit>(app, cpu, copy, most, font);
+    // By address: the last call, whose ebx and edx the function leaves.
     return guest.call(kDrawMenuText, fe::args({ copy, x, y, font }, { align, colour }));
 }
 
@@ -1328,11 +1345,6 @@ constexpr std::int32_t kCodeLetterShift = 9;
 constexpr reg32 kJumpState = 0x559538;          // "GO" and two digits: a track at once
 constexpr reg32 kJumpTrack = 0x55953c;
 constexpr std::int32_t kLastTrackJump = 0x15;
-constexpr reg32 kUnlockedCars = 0x6fd2a8;       // byte
-constexpr reg32 kUnlockedAll = 0x6fd2ac;
-constexpr reg32 kChosenCheats = 0x6fd4fc;       // byte
-constexpr reg32 kChosenTrackJump = 0x6fd500;
-constexpr reg32 kPlayerCar = 0x6fd2bc;
 constexpr std::uint32_t kCodeEffect = 5, kCodeVolume = 0x7f;
 
 /* sub_452420: a key against a code: its place in the code moved on, or back to
@@ -1354,19 +1366,23 @@ reg32 cheatAdvanceBody(Guest& guest, reg32 key, reg32 progress, reg32 code)
 /* sub_4524e0: a key typed on any screen, in a game of one or two at a single
  * race or a duel: "GO" and a number, a track; and the codes, each its own
  * unlock.  Those of a car have it chosen, in the kinds of race it is for. */
-reg32 cheatKeyBody(Guest& guest, reg32 key)
+reg32 cheatKeyBody(App* app, CPU& cpu, Guest& guest, reg32 key)
 {
     if (key == 0)
         return key;
-    const reg32 players = guest.dword(kPlayers);
+    const reg32 players = gameSettings(guest).playMode;
     if (players != 0 && players != 1)
         return key;
-    const reg32 raceType = guest.dword(kRaceType);
+    const reg32 raceType = gameSettings(guest).raceType;
     if (raceType != 3 && raceType != 0)
         return key;
 
-    const std::int32_t letter = std::int32_t(guest.call(kToUpper, fe::args({ key })));
-    const auto effect = [&]() { guest.call(kPlayEffect, fe::args({ kCodeEffect, kCodeVolume })); };
+    // What the calls leave in eax, the last one's: the core called as C++ hands its back.
+    reg32 left = guest.call(kToUpper, fe::args({ key }));
+    const std::int32_t letter = std::int32_t(left);
+    const auto effect = [&]() {
+        left = reg32(*fe::direct<0x4181d0, port::playMenuEffectOf>(app, cpu, cpu.esp - 4, kCodeEffect, kCodeVolume));
+    };
     const auto isDigit = [&]() { return letter >= '0' && letter <= '9'; };
     const reg32 state = guest.dword(kJumpState);
     switch (state)
@@ -1397,8 +1413,8 @@ reg32 cheatKeyBody(Guest& guest, reg32 key)
             if (track >= 0 && track <= kLastTrackJump)
             {
                 effect();
-                guest.setByte(kChosenCheats, guest.byte(kChosenCheats) | 2);
-                guest.setDword(kChosenTrackJump, guest.dword(kJumpTrack));
+                gameSettings(guest).raceFlagsByte = std::uint8_t(gameSettings(guest).raceFlags) | 2;
+                gameSettings(guest).cheatTrack = guest.dword(kJumpTrack);
             }
         }
         guest.setDword(kJumpState, 0);
@@ -1409,19 +1425,21 @@ reg32 cheatKeyBody(Guest& guest, reg32 key)
 
     reg32 carGroup = 0;
     const auto unlockCar = [&](std::uint8_t bit, reg32 group) {
-        if ((guest.byte(kUnlockedCars) & bit) != 0)
+        if ((std::uint8_t(gameSettings(guest).unlockedCars) & bit) != 0)
             return;
         effect();
-        guest.setByte(kUnlockedCars, guest.byte(kUnlockedCars) | bit);
+        gameSettings(guest).unlockedCarsByte = std::uint8_t(gameSettings(guest).unlockedCars) | bit;
         carGroup = group;
     };
     const auto choose = [&](std::uint8_t bit) {
         effect();
-        guest.setByte(kChosenCheats, guest.byte(kChosenCheats) | bit);
+        gameSettings(guest).raceFlagsByte = std::uint8_t(gameSettings(guest).raceFlags) | bit;
     };
     for (reg32 i = 0; i < kCodeCount; ++i)
     {
-        if (guest.call(kCheatAdvance, fe::args({ reg32(letter), kCodeProgress + 4 * i, guest.dword(kCodes + 4 * i) })) == 0)
+        left = guest::direct<0x452420, frontend::menub::cheatAdvance>(app, cpu, reg32(letter), kCodeProgress + 4 * i,
+                                                                      guest.dword(kCodes + 4 * i));
+        if (left == 0)
             continue;
         switch (i)
         {
@@ -1432,14 +1450,14 @@ reg32 cheatKeyBody(Guest& guest, reg32 key)
         case 4: unlockCar(0x10, 5); break;
         case 5:
             effect();
-            guest.setByte(kUnlockedCars, guest.byte(kUnlockedCars) | 0x1f);
+            gameSettings(guest).unlockedCarsByte = std::uint8_t(gameSettings(guest).unlockedCars) | 0x1f;
             carGroup = 1;
             break;
         case 6:
             effect();
-            guest.setDword(kUnlockedAll, 1);
-            guest.setDword(kTrack, 8);
-            guest.call(kUnlockTrack, fe::args({ 8 }));
+            gameSettings(guest).unlockedAll = 1;
+            gameSettings(guest).track = 8;
+            left = fe::direct<0x442b60, frontend::misc::postgameUnlockTrack>(app, cpu, 8);
             break;
         case 7: choose(0x01); break;
         case 9: choose(0x02); break;
@@ -1452,10 +1470,10 @@ reg32 cheatKeyBody(Guest& guest, reg32 key)
         }
     }
     if (carGroup == 0)
-        return guest.eax();
+        return left;
 
-    guest.call(kLoadCarList);
-    const bool duel = guest.dword(kRaceType) == 3;
+    fe::direct<0x439d90, load::loadCars>(app, cpu);
+    const bool duel = gameSettings(guest).raceType == 3;
     reg32 carNumber = 0;
     bool taken = false;
     switch (carGroup)
@@ -1468,10 +1486,10 @@ reg32 cheatKeyBody(Guest& guest, reg32 key)
     default: break;
     }
     const reg32 id = guest.frame();
-    guest.call(kMakeCarId, fe::args({ id, carNumber }));
-    const reg32 car = guest.call(kFindCarById, fe::args({ id }));
+    fe::direct<0x438ad0, load::makeId>(app, cpu, id, carNumber);
+    const reg32 car = fe::direct<0x439990, load::placeById>(app, cpu, id);
     if (taken)
-        guest.setDword(kPlayerCar, car);
+        gameSettings(guest).players[0].car = car;
     return car;
 }
 
@@ -1479,7 +1497,6 @@ reg32 cheatKeyBody(Guest& guest, reg32 key)
  * The showcase's car sheets
  * ------------------------------------------------------------------------- */
 
-constexpr reg32 kRacesClosed = 0x6fbb54;
 constexpr reg32 kArtFolder = 0x7a2db4;
 constexpr reg32 kShowcaseCar = 0x664798;
 constexpr reg32 kStatsPage = 0x55957c;
@@ -1491,26 +1508,26 @@ constexpr std::int32_t kRowStep = 0xf;
 
 /* sub_4530c0: whether a car has its art: its file exists, in the showcase's
  * folder or the cars'. */
-reg32 carArtExistsBody(Guest& guest, reg32 car)
+reg32 carArtExistsBody(App* app, CPU& cpu, Guest& guest, reg32 car)
 {
     constexpr reg32 kOwnFolderFormat = 0x539684;    // "%s%s\\SH%s.qfs"
     constexpr reg32 kCarsFormat = 0x539694;         // "%sSH%s.qfs"
     constexpr reg32 kShowcaseFolder = 0x7a28b4;
     constexpr reg32 kCarsFolder = 0x7a3234;
-    const reg32 folder = guest.call(kCarFolder, fe::args({ car }));
-    if (guest.dword(kRacesClosed) != 0 || folder == 0)
+    const reg32 folder = *fe::direct<0x4392b0, load::folderOf>(app, cpu, car);
+    if (gameSettings(guest).installIsRemote != 0 || folder == 0)
         return 0;
     const reg32 path = guest.frame();
     if (guest.call(kCarFlag4, fe::args({ car })) != 0)
     {
-        const reg32 stem = guest.call(kCarFileStem, fe::args({ car }));
+        const reg32 stem = fe::direct<0x439290, frontend::showcase::carFileStem>(app, cpu, car);
         guest.call(kSprintf, fe::args({}, { path, kOwnFolderFormat, kShowcaseFolder, folder, stem }));
     }
     else
     {
         guest.call(kSprintf, fe::args({}, { path, kCarsFormat, kCarsFolder, folder }));
     }
-    return guest.call(kFileExists, fe::args({ path })) != 0 ? 1 : 0;
+    return *fe::direct<0x4e0e60, ea::fileThere>(app, cpu, path) ? 1 : 0;
 }
 
 /* sub_4534d0: the screen left remembered for the car screen's way back, but for
@@ -1529,27 +1546,33 @@ reg32 carViewRememberBody(Guest& guest, reg32 name)
     return second;
 }
 
-/* A statistic's row: its title from the language's, its value from the car's text. */
-void statRow(Guest& guest, bool grey, std::int32_t y, reg32 title, reg32 line)
+/* A statistic's row: its title from the language's, its value from the car's text.  What the
+ * last call leaves in eax. */
+reg32 statRow(App* app, CPU& cpu, Guest& guest, bool grey, std::int32_t y, reg32 title, reg32 line)
 {
     const std::uint32_t colour = grey ? kGreyedOut : kWhite;
-    const reg32 titleText = guest.call(kLanguageText, fe::args({ title }));
-    guest.call(kDrawMenuText, fe::args({ titleText, reg32(kStatTitleX), reg32(y), kMenuFont }, { 0, colour }));
-    const reg32 value = guest.call(kCarText, fe::args({ guest.dword(kShowcaseCar), line }));
-    guest.call(kDrawMenuText, fe::args({ value, reg32(kStatValueX), reg32(y), kMenuFont }, { 1, colour }));
+    const reg32 titleText = reg32(*fe::direct<0x4d1850, port::text::lineText>(app, cpu, cpu.esp - 4, title, cpu.edx));
+    fe::direct<0x452190, port::text::menuTextDrawn>(app, cpu, cpu.esp - 12, titleText, reg32(kStatTitleX), reg32(y),
+                                                    kMenuFont, 0, colour);
+    const reg32 value = reg32(*fe::direct<0x439ab0, port::fields::carTextOf>(app, cpu, cpu.esp - 4,
+                                                                             guest.dword(kShowcaseCar), line));
+    return reg32(*fe::direct<0x452190, port::text::menuTextDrawn>(app, cpu, cpu.esp - 12, value, reg32(kStatValueX),
+                                                                  reg32(y), kMenuFont, 1, colour));
 }
 
 /* sub_453940: a page of the car's statistics. */
-reg32 carStatsDrawBody(Guest& guest)
+reg32 carStatsDrawBody(App* app, CPU& cpu, Guest& guest)
 {
-    const bool grey = guest.call(kKeysTaken) != 0;
+    const bool grey = reg32(*fe::direct<0x449df0, port::loop::keysTakenOf>(app, cpu, cpu.esp - 4, cpu.eax)) != 0;
     if ((guest.byte(kGraphicsFlags) & kHardware3D) != 0)
-        guest.call(kSetRenderState, fe::args({ 6, 1 }));
+        fe::direct<0x431900, graphics::sendState>(app, cpu, 6, 1);
     std::int32_t y = 0x9a;
+    // What the calls leave in eax, the last one's: the cores hand theirs back.
+    reg32 left = 0;
     const auto rows = [&](reg32 count, reg32 firstTitle, reg32 firstLine) {
         for (reg32 i = 0; i < count; ++i)
         {
-            statRow(guest, grey, y, firstTitle + i, firstLine + i);
+            left = statRow(app, cpu, guest, grey, y, firstTitle + i, firstLine + i);
             y += kRowStep;
         }
     };
@@ -1562,8 +1585,9 @@ reg32 carStatsDrawBody(Guest& guest)
     case 1:
     {
         rows(3, 0x168, 0x11);
-        const reg32 header = guest.call(kLanguageText, fe::args({ 0x16b }));
-        guest.call(kDrawMenuText, fe::args({ header, 0xa2, reg32(y), kMenuFont }, { 0, grey ? kGreyedOut : kYellow }));
+        const reg32 header = reg32(*fe::direct<0x4d1850, port::text::lineText>(app, cpu, cpu.esp - 4, 0x16b, cpu.edx));
+        fe::direct<0x452190, port::text::menuTextDrawn>(app, cpu, cpu.esp - 12, header, 0xa2, reg32(y), kMenuFont, 0,
+                                                        grey ? kGreyedOut : kYellow);
         y += kRowStep;
         rows(2, 0x16c, 0x14);
         break;
@@ -1574,24 +1598,28 @@ reg32 carStatsDrawBody(Guest& guest)
     default:
         return page;
     }
-    return guest.eax();
+    return left;
 }
 
 /* sub_453f60: the car's specifications, the one selected lit. */
-reg32 carSpecsDrawBody(Guest& guest)
+reg32 carSpecsDrawBody(App* app, CPU& cpu, Guest& guest)
 {
-    const bool grey = guest.call(kKeysTaken) != 0;
+    const bool grey = reg32(*fe::direct<0x449df0, port::loop::keysTakenOf>(app, cpu, cpu.esp - 4, cpu.eax)) != 0;
     if ((guest.byte(kGraphicsFlags) & kHardware3D) != 0)
-        guest.call(kSetRenderState, fe::args({ 6, 1 }));
+        fe::direct<0x431900, graphics::sendState>(app, cpu, 6, 1);
     std::int32_t y = 0x87;
+    // What the calls leave in eax, the last one's: the core hands its back.
+    reg32 left = 0;
     for (reg32 i = 0; i < 7; ++i)
     {
         const std::uint32_t colour = grey ? kGreyedOut : i == guest.dword(kSpecsSelected) ? kYellow : kWhite;
-        const reg32 value = guest.call(kCarText, fe::args({ guest.dword(kShowcaseCar), 0x17 + i }));
-        guest.call(kDrawMenuText, fe::args({ value, reg32(kStatValueX), reg32(y), kMenuFont }, { 1, colour }));
+        const reg32 value = reg32(*fe::direct<0x439ab0, port::fields::carTextOf>(app, cpu, cpu.esp - 4,
+                                                                                 guest.dword(kShowcaseCar), 0x17 + i));
+        left = reg32(*fe::direct<0x452190, port::text::menuTextDrawn>(app, cpu, cpu.esp - 12, value, reg32(kStatValueX),
+                                                                      reg32(y), kMenuFont, 1, colour));
         y += kRowStep;
     }
-    return guest.eax();
+    return left;
 }
 
 constexpr reg32 kCarFilter = 0x559570;          // 0, 1 all; 2, 3, 4 a class
@@ -1617,8 +1645,8 @@ constexpr reg32 kArrowLeftOn = 0x6647a0;
 constexpr reg32 kArrowRightOff = 0x6647a2;
 constexpr reg32 kArrowRightOn = 0x66479e;
 
-/* sub_454730: whether a car (in eax, for sub_439730) is in the class shown. */
-reg32 carPassesFilterBody(Guest& guest)
+/* sub_454730: whether a car is in the class shown (sub_439730's, of the car in eax as it came). */
+reg32 carPassesFilterBody(Guest& guest, reg32 car)
 {
     switch (guest.dword(kCarFilter))
     {
@@ -1626,11 +1654,11 @@ reg32 carPassesFilterBody(Guest& guest)
     case 1:
         return 1;
     case 2:
-        return guest.call(kCarClass) == 0 ? 1 : 0;
+        return guest.call(kCarClass, fe::args({ car })) == 0 ? 1 : 0;
     case 3:
-        return guest.call(kCarClass) == 1 ? 1 : 0;
+        return guest.call(kCarClass, fe::args({ car })) == 1 ? 1 : 0;
     case 4:
-        return guest.call(kCarClass) == 2 ? 1 : 0;
+        return guest.call(kCarClass, fe::args({ car })) == 2 ? 1 : 0;
     default:
         return 0;
     }
@@ -1638,23 +1666,28 @@ reg32 carPassesFilterBody(Guest& guest)
 
 /* sub_454780: the list of the class's cars, each with a bar of the statistic
  * chosen, scrolled by two arrows pressed with the pointer. */
-reg32 carListDrawBody(Guest& guest)
+reg32 carListDrawBody(App* app, CPU& cpu, Guest& guest)
 {
-    const std::uint32_t colour = guest.call(kKeysTaken) != 0 ? kGreyedOut : kYellow;
+    const bool grey = reg32(*fe::direct<0x449df0, port::loop::keysTakenOf>(app, cpu, cpu.esp - 4, cpu.eax)) != 0;
+    const std::uint32_t colour = grey ? kGreyedOut : kYellow;
     const std::int32_t cars = std::int32_t(guest.call(kCarCount) - guest.dword(kExtraCars));
     std::int32_t inClass = 0;
     for (std::int32_t car = 0; car < cars; ++car)
     {
-        if (guest.call(kCarPassesFilter, fe::args({ reg32(car) })) != 0)
+        if (guest::direct<0x454730, frontend::menub::carPassesFilter>(app, cpu, reg32(car)) != 0)
             ++inClass;
     }
+    // An arrow, and what its last call leaves in eax.
     const auto arrow = [&](reg32 off, reg32 on, reg32 y, std::int32_t step) {
-        guest.call(kDrawShape, fe::args({ reg32(signedWord(guest, off)), 0xb9, y }));
-        if (guest.call(kPointerInRect, fe::args({ 0xb7, y - 2, 0xf, 0xf })) == 0)
-            return;
-        guest.call(kDrawShape, fe::args({ reg32(signedWord(guest, on)), 0xb9, y }));
+        fe::direct<0x4d7990, port::shapes::drawShapeOf>(app, cpu, cpu.esp - 4, reg32(signedWord(guest, off)), 0xb9, y);
+        const reg32 over = fe::direct<0x49c240, frontend::menud::pointerOverRect>(app, cpu, 0xb7, y - 2, 0xf, 0xf);
+        if (over == 0)
+            return over;
+        const auto drawn = fe::direct<0x4d7990, port::shapes::drawShapeOf>(app, cpu, cpu.esp - 4,
+                                                                           reg32(signedWord(guest, on)), 0xb9, y);
         if (guest.dword(kPointerPressed) != 0)
             guest.setDword(kCarListScroll, guest.dword(kCarListScroll) + reg32(step));
+        return reg32(*drawn);
     };
     if (signedDword(guest, kCarListScroll) + inClass < kListRows)
         guest.setDword(kCarListScroll, 0);
@@ -1662,23 +1695,21 @@ reg32 carListDrawBody(Guest& guest)
         arrow(kArrowLeftOff, kArrowLeftOn, 0x9d, -1);
     reg32 left = guest.dword(kCarListScroll) + kListRows;
     if (std::int32_t(left) < inClass)
-    {
-        arrow(kArrowRightOff, kArrowRightOn, 0x19c, 1);
-        left = guest.eax();
-    }
+        left = arrow(kArrowRightOff, kArrowRightOn, 0x19c, 1);
 
     std::int32_t shown = 0;
     std::int32_t y = 0x9b;
     for (std::int32_t car = signedDword(guest, kCarListScroll); car < cars; ++car)
     {
-        left = guest.call(kCarPassesFilter, fe::args({ reg32(car) }));
+        left = guest::direct<0x454730, frontend::menub::carPassesFilter>(app, cpu, reg32(car));
         if (left == 0 || shown >= kListRows)
             continue;
         ++shown;
-        const reg32 name = guest.call(kCarText, fe::args({ reg32(car), 2 }));
-        guest.call(kDrawMenuText, fe::args({ name, 0xc8, reg32(y), kMenuFont }, { 0, colour }));
+        const reg32 name = reg32(*fe::direct<0x439ab0, port::fields::carTextOf>(app, cpu, cpu.esp - 4, reg32(car), 2));
+        fe::direct<0x452190, port::text::menuTextDrawn>(app, cpu, cpu.esp - 12, name, 0xc8, reg32(y), kMenuFont, 0,
+                                                        colour);
         const reg32 statistic = guest.dword(kCarStatIds + guest.dword(kCarListStat) * 4);
-        std::int32_t stat = std::int32_t(guest.call(kCarStat, fe::args({ reg32(car), statistic })));
+        std::int32_t stat = std::int32_t(fe::direct<0x438f60, frontend::loada::carStat>(app, cpu, reg32(car), statistic));
         if (stat > kStatMost)
             stat = kStatMost;
         std::int32_t right, x;
@@ -1693,7 +1724,8 @@ reg32 carListDrawBody(Guest& guest)
             x = 0x145;
         }
         guest.call(kSetClip, fe::args({ 0, 0, reg32(right), reg32(kClipBottom) }));
-        guest.call(kDrawShape, fe::args({ guest.dword(kBarMiddle), reg32(x), reg32(y) }));
+        fe::direct<0x4d7990, port::shapes::drawShapeOf>(app, cpu, cpu.esp - 4, guest.dword(kBarMiddle), reg32(x),
+                                                        reg32(y));
         left = guest.call(kSetClip, fe::args({ 0, 0, reg32(kClipRight), reg32(kClipBottom) }));
         y += kRowStep;
     }
@@ -1702,16 +1734,18 @@ reg32 carListDrawBody(Guest& guest)
 
 /* sub_4549c0: two cars' statistics compared: four rows of two bars, growing
  * from the middle, the better one's bright. */
-reg32 carCompareDrawBody(Guest& guest, reg32 item)
+reg32 carCompareDrawBody(App* app, CPU& cpu, Guest& guest, reg32 item)
 {
+    // By address: the widget's type it hands in edx, which the core does not take, is the edx the
+    // function leaves when the comparison is not shown.
     if (guest.call(kMenuShownNow, fe::args({ item, 0x1c })) == 0)
         return 0;
     std::int32_t left[4], right[4];
     for (reg32 i = 0; i < 4; ++i)
     {
         const auto stat = [&](reg32 car) {
-            const std::int32_t value = std::int32_t(
-                guest.call(kCarStat, fe::args({ guest.dword(car), guest.dword(kCarStatIds + 4 * i) })));
+            const std::int32_t value = std::int32_t(fe::direct<0x438f60, frontend::loada::carStat>(
+                app, cpu, guest.dword(car), guest.dword(kCarStatIds + 4 * i)));
             return value > kStatMost ? kStatMost : value;
         };
         left[i] = stat(kCompareLeftCar);
@@ -1722,8 +1756,11 @@ reg32 carCompareDrawBody(Guest& guest, reg32 item)
     {
         const bool hardware = (guest.byte(kGraphicsFlags) & kHardware3D) != 0;
         const std::int32_t rowY = std::int32_t(0x127 + i * 30);
-        const reg32 title = guest.call(kLanguageText, fe::args({ guest.dword(kCompareTitles + 4 * i) }));
-        guest.call(kDrawMenuText, fe::args({ title, 0x17a, reg32(rowY - (hardware ? 3 : 0)), kMenuFont }, { 2, kYellow }));
+        const reg32 title = reg32(*fe::direct<0x4d1850, port::text::lineText>(app, cpu, cpu.esp - 4,
+                                                                              guest.dword(kCompareTitles + 4 * i),
+                                                                              cpu.edx));
+        fe::direct<0x452190, port::text::menuTextDrawn>(app, cpu, cpu.esp - 12, title, 0x17a,
+                                                        reg32(rowY - (hardware ? 3 : 0)), kMenuFont, 2, kYellow);
         reg32 leftBar = guest.dword(kBarMiddle);
         reg32 rightBar = guest.dword(kBarLeast);
         if (right[i] > left[i])
@@ -1734,14 +1771,15 @@ reg32 carCompareDrawBody(Guest& guest, reg32 item)
         const std::int32_t leftEdge = 0x147 - barLength(left[i]);
         guest.call(kSetClip, fe::args({ reg32(leftEdge), 0, reg32(kClipRight - leftEdge), reg32(kClipBottom) }));
         const reg32 barY = reg32((guest.byte(kGraphicsFlags) & kHardware3D) != 0 ? rowY + 0xe : rowY);
-        guest.call(kDrawShape, fe::args({ leftBar, 0xd6, barY }));
+        fe::direct<0x4d7990, port::shapes::drawShapeOf>(app, cpu, cpu.esp - 4, leftBar, 0xd6, barY);
         guest.call(kSetClip, fe::args({ 0, 0, reg32(barLength(right[i]) + 0x1af), reg32(kClipBottom) }));
         if ((guest.byte(kGraphicsFlags) & kHardware3D) != 0)
-            guest.call(kDrawShape, fe::args({ rightBar, 0x181, reg32(rowY + 0xe) }));
+            fe::direct<0x4d7990, port::shapes::drawShapeOf>(app, cpu, cpu.esp - 4, rightBar, 0x181, reg32(rowY + 0xe));
         else
-            guest.call(kDrawShapeSoft, fe::args({ rightBar, 0x154, reg32(rowY) }));
+            fe::direct<0x4d7560, frontend::menue::drawArtTiles>(app, cpu, rightBar, 0x154, reg32(rowY));
         guest.call(kSetClip, fe::args({ 0, 0, reg32(kClipRight), reg32(kClipBottom) }));
     }
+    // The emblems by address: the last calls, whose edx the function leaves.
     const reg32 leftEmblem = guest.dword(kCompareLeftEmblem);
     if (leftEmblem != 0)
         guest.call(kDrawShape, fe::args({ leftEmblem, 0x7a, 0x4e }));
@@ -1758,17 +1796,17 @@ constexpr GuestString kBarNames[] = {
     { 0x5398bc, "gtgr" }, { 0x5398c4, "redb" }, { 0x5398cc, "grnb" },
 };
 
-reg32 carCompareLoadArtBody(Guest& guest, reg32 item)
+reg32 carCompareLoadArtBody(App* app, CPU& cpu, Guest& guest, reg32 item)
 {
-    if (guest.call(kMenuShownNow, fe::args({ item, 0x1c })) == 0)
+    if (fe::direct<0x44a660, frontend::loop::shownNow>(app, cpu, item) == 0)
         return 0;
     constexpr reg32 kArtFormat = 0x539864;          // "%scompare.fsh"
     const reg32 path = guest.frame();
     guest.call(kSprintf, fe::args({}, { path, kArtFormat, kArtFolder }));
-    const reg32 art = guest.call(kLoadShapes, fe::args({ path }));
+    const reg32 art = reg32(*fe::direct<0x44ac90, port::buttons::shapesLoaded>(app, cpu, cpu.esp - 4, path, cpu.ebx));
     const auto bar = [&](const GuestString& name) {
-        const reg32 shape = guest.call(kFindArtShape, fe::args({ art, name.address }));
-        return guest.call(kArtShapeTextures, fe::args({ shape, 0 }));
+        const reg32 shape = fe::direct<0x4ef1e0, frontend::eab::shapeFileFind>(app, cpu, art, name.address);
+        return reg32(*fe::direct<0x4d6390, port::shapes::artTexturesOf>(app, cpu, cpu.esp - 4, shape, 0, cpu.ecx));
     };
     if ((guest.byte(kGraphicsFlags) & kHardware3D) != 0)
     {
@@ -1797,23 +1835,14 @@ constexpr reg32 kNetworkDropped = 0x7a22ca;     // int16 for each driver
 constexpr reg32 kResultsOfRace = 0x6647b0;
 constexpr reg32 kResultsOfLaps = 0x66e270;
 constexpr reg32 kLapResultCount = 0x677d34;
-constexpr reg32 kReplaying = 0x6fd3a0;
-constexpr reg32 kResultsBuildStart = 0x4c7ea0;
 constexpr reg32 kTournamentPointsTable = 0x454f10;  // int16 for each place, in the code's own data
-constexpr reg32 kTournamentRaceScores = 0x6fd42e;   // int16 for each player
-constexpr reg32 kTournamentTotals = 0x6fd44e;       // int16 for each player
-constexpr reg32 kTournamentPlaces = 0x6fd40e;       // int16 for each player
-constexpr reg32 kTournamentRaces = 0x6fd40c;        // int16
-constexpr reg32 kKnockoutIn = 0x6fd3de;             // int16 for each player
-constexpr reg32 kKnockoutPlaces = 0x6fd3be;         // int16 for each player
-constexpr reg32 kKnockoutRounds = 0x6fd3bc;         // int16
 constexpr std::uint32_t kPlayerWords = 0x20;
 
 /* sub_455020: a network player's car that has dropped out: left out of the results. */
 reg32 resultsHiddenRemoteBody(Guest& guest, reg32 car)
 {
     if (car != 0 && (guest.byte(car + participant::kFlags) & participant::kRemoteSide) != 0
-        && signedDword(guest, kPlayers) > 1
+        && std::int32_t(gameSettings(guest).playMode) > 1
         && guest.word(kNetworkDropped + 2 * guest.dword(car + participant::kDriver)) != 0)
         return 1;
     return 0;
@@ -1821,78 +1850,78 @@ reg32 resultsHiddenRemoteBody(Guest& guest, reg32 car)
 
 /* sub_455070: a tournament's race scored: a place's points for each player and
  * the total, then the order of the totals.  Not once the finishers have gone. */
-reg32 tournamentScoreBody(Guest& guest)
+reg32 tournamentScoreBody(App* app, CPU& cpu, Guest& guest)
 {
-    reg32 left = guest.call(kPostgameFinishers);
+    reg32 left = fe::direct<0x4cef80, frontend::misc::postgameFinishers>(app, cpu);
     if (left != 0)
         return left;
-    guest.call(kResultsSort, fe::args({ 0, 1, 0 }));
+    fe::direct<0x455c10, frontend::misc::resultsSort>(app, cpu, 0, 1, 0);
     const auto slotOf = [&](reg32 found) {
         return guest.dword(guest.dword(found + participant::kCar) + kCarSlot);
     };
     for (std::int32_t place = 0; place < signedDword(guest, kResultCount); ++place)
     {
-        const reg32 found = guest.call(kResultsNth, fe::args({ 0, reg32(place), 0, 0 }));
+        const reg32 found = fe::direct<0x455cd0, frontend::misc::resultsNth>(app, cpu, 0, reg32(place), 0, 0);
         if (found == 0)
             continue;
         const std::uint16_t points = guest.word(kTournamentPointsTable + 2 * place);
-        guest.setWord(kTournamentRaceScores + slotOf(found) * 2, points);
-        const reg32 total = kTournamentTotals + slotOf(found) * 2;
-        guest.setWord(total, std::uint16_t(guest.word(total) + points));
+        gameSettings(guest).tournament.raceScores[slotOf(found)] = points;
+        std::int16_t& total = gameSettings(guest).tournament.totals[slotOf(found)];
+        total = std::int16_t(std::uint16_t(std::uint16_t(total) + points));
     }
-    guest.call(kFillZero, fe::args({ kTournamentPlaces, kPlayerWords }));
-    guest.call(kResultsSort, fe::args({ 0, 1, 1 }));
+    guest.call(kFillZero, fe::args({ SETTINGS_ADDRESS(tournament.places), kPlayerWords }));
+    fe::direct<0x455c10, frontend::misc::resultsSort>(app, cpu, 0, 1, 1);
     std::uint16_t place = 0;
     for (reg32 i = 0; i <= 8; ++i)
     {
-        left = guest.call(kResultsNth, fe::args({ 0, i, 0, 0 }));
+        left = fe::direct<0x455cd0, frontend::misc::resultsNth>(app, cpu, 0, i, 0, 0);
         if (left != 0)
         {
             left = slotOf(left);
-            guest.setWord(kTournamentPlaces + left * 2, place++);
+            gameSettings(guest).tournament.places[left] = place++;
         }
     }
-    guest.setWord(kTournamentRaces, std::uint16_t(guest.word(kTournamentRaces) + 1));
+    gameSettings(guest).tournament.stage = std::uint16_t(std::uint16_t(gameSettings(guest).tournament.stage) + 1);
     return left;
 }
 
 /* sub_455140: a knockout's round: the last of those still in is out, and the
  * order of those left written down. */
-reg32 knockoutEliminateBody(Guest& guest)
+reg32 knockoutEliminateBody(App* app, CPU& cpu, Guest& guest)
 {
-    guest.call(kResultsSort, fe::args({ 0, 1, 1, 2 }));
-    const reg32 last = guest.call(kResultsNth, fe::args({ 0, 0, 0x20, 2 }));
+    fe::direct<0x455c10, frontend::misc::resultsSort>(app, cpu, 0, 1, 1);   // ecx 2 too: the next call's
+    const reg32 last = fe::direct<0x455cd0, frontend::misc::resultsNth>(app, cpu, 0, 0, 0x20, 2);
     const auto slotOf = [&](reg32 found) {
         return guest.dword(guest.dword(found + participant::kCar) + kCarSlot);
     };
     if (last != 0 && signedDword(guest, kResultCount) > 1)
     {
-        guest.setWord(kKnockoutIn + slotOf(last) * 2, 0);
+        gameSettings(guest).knockout.stillIn[slotOf(last)] = 0;
         guest.setDword(last + participant::kState, kStateDisqualified);
     }
-    guest.call(kFillZero, fe::args({ kKnockoutPlaces, kPlayerWords }));
-    guest.call(kResultsSort, fe::args({ 0, 1, 1 }));
+    guest.call(kFillZero, fe::args({ SETTINGS_ADDRESS(knockout.places), kPlayerWords }));
+    fe::direct<0x455c10, frontend::misc::resultsSort>(app, cpu, 0, 1, 1);
     reg32 left = 0;
     std::uint16_t place = 0;
     for (reg32 i = 0; i <= 8; ++i)
     {
-        const reg32 found = guest.call(kResultsNth, fe::args({ 0, i, 0, 0 }));
+        const reg32 found = fe::direct<0x455cd0, frontend::misc::resultsNth>(app, cpu, 0, i, 0, 0);
         left = found;
         if (found == 0)
             continue;
         const bool inTable = (guest.byte(found + participant::kFlags) & participant::kInKnockoutTable) != 0;
         left = slotOf(found);
-        if (inTable && guest.word(kKnockoutIn + left * 2) == 0)
+        if (inTable && gameSettings(guest).knockout.stillIn[left] == 0)
             continue;
-        guest.setWord(kKnockoutPlaces + left * 2, place++);
+        gameSettings(guest).knockout.places[left] = place++;
     }
-    guest.setWord(kKnockoutRounds, std::uint16_t(guest.word(kKnockoutRounds) + 1));
+    gameSettings(guest).knockout.stage = std::uint16_t(std::uint16_t(gameSettings(guest).knockout.stage) + 1);
     return left;
 }
 
 /* sub_455210, sub_455280: the race's cars with a flag copied whole into a table
  * of the results, but for those that have dropped out. */
-reg32 resultsCollectBody(Guest& guest, reg32 table, reg32 count, std::uint8_t flag)
+reg32 resultsCollectBody(App* app, CPU& cpu, Guest& guest, reg32 table, reg32 count, std::uint8_t flag)
 {
     guest.setDword(count, 0);
     reg32 left = table;
@@ -1902,7 +1931,7 @@ reg32 resultsCollectBody(Guest& guest, reg32 table, reg32 count, std::uint8_t fl
         left = car;
         if ((guest.byte(car + participant::kFlags) & flag) == 0)
             continue;
-        left = guest.call(kResultsHiddenRemote, fe::args({ car }));
+        left = guest::direct<0x455020, frontend::menub::resultsHiddenRemote>(app, cpu, car);
         if (left != 0)
             continue;
         copyDwords(guest, table + guest.dword(count) * participant::kBytes, guest.dword(kRaceCars + 4 * i),
@@ -1915,21 +1944,21 @@ reg32 resultsCollectBody(Guest& guest, reg32 table, reg32 count, std::uint8_t fl
 
 /* sub_4552f0: the results settled: in a knockout those out are marked out; those
  * lapped get their times after the last's; then everyone's place. */
-reg32 resultsAssignBody(Guest& guest)
+reg32 resultsAssignBody(App* app, CPU& cpu, Guest& guest)
 {
     constexpr std::uint32_t kPlaceFlagLapped = 0x10;
-    if (guest.dword(kRaceType) == 2)
+    if (gameSettings(guest).raceType == 2)
     {
-        guest.call(kResultsSort, fe::args({ 0, 1, 1 }));
+        fe::direct<0x455c10, frontend::misc::resultsSort>(app, cpu, 0, 1, 1);
         for (std::int32_t i = 0; i < signedDword(guest, kResultCount); ++i)
         {
-            const reg32 found = guest.call(kResultsNth, fe::args({ 0, reg32(i), 0, 0 }));
+            const reg32 found = fe::direct<0x455cd0, frontend::misc::resultsNth>(app, cpu, 0, reg32(i), 0, 0);
             if (found != 0 && (guest.byte(found + participant::kFlags) & participant::kOut) != 0)
                 guest.setDword(found + participant::kState, kStateDisqualified);
         }
     }
-    guest.call(kResultsSort, fe::args({ 0, 1, 1, 2 }));
-    const reg32 lastIn = guest.call(kResultsNth, fe::args({ 0, 0, 0x20, 2 }));
+    fe::direct<0x455c10, frontend::misc::resultsSort>(app, cpu, 0, 1, 1);   // ecx 2 too: the next call's
+    const reg32 lastIn = fe::direct<0x455cd0, frontend::misc::resultsNth>(app, cpu, 0, 0, 0x20, 2);
     if (lastIn != 0)
     {
         reg32 time = guest.dword(lastIn + participant::kTime) + 0x3c;
@@ -1937,7 +1966,8 @@ reg32 resultsAssignBody(Guest& guest)
         {
             for (std::int32_t i = 0; i < signedDword(guest, kResultCount); ++i)
             {
-                const reg32 found = guest.call(kResultsNth, fe::args({ 0, reg32(i), kPlaceFlagLapped, state }));
+                const reg32 found = fe::direct<0x455cd0, frontend::misc::resultsNth>(
+                    app, cpu, 0, reg32(i), kPlaceFlagLapped, state);
                 if (found != 0)
                 {
                     ++time;
@@ -1946,47 +1976,55 @@ reg32 resultsAssignBody(Guest& guest)
             }
         }
     }
-    guest.call(kResultsSort, fe::args({ 0, 1, 0 }));
+    // What the calls leave in eax, the last one's: the cores hand theirs back.
+    reg32 left = fe::direct<0x455c10, frontend::misc::resultsSort>(app, cpu, 0, 1, 0);
     for (std::int32_t i = 0; i < signedDword(guest, kResultCount); ++i)
     {
-        const reg32 found = guest.call(kResultsNth, fe::args({ 0, reg32(i), 0, 0 }));
+        const reg32 found = left = fe::direct<0x455cd0, frontend::misc::resultsNth>(app, cpu, 0, reg32(i), 0, 0);
         if (found != 0)
             guest.setDword(found + participant::kPlace, reg32(i + 1));
     }
-    return guest.eax();
+    return left;
 }
 
 /* sub_455410: the race's results made, as the race ends: the awards cleared,
  * the results copied and sorted, a tournament's and a knockout's scored, the
  * records entered and saved. */
-reg32 resultsBuildBody(Guest& guest)
+reg32 resultsBuildBody(App* app, CPU& cpu, Guest& guest)
 {
-    if (guest.dword(kReplaying) != 0)
+    if (gameSettings(guest).replayMode != 0)
         return guest.eax();
-    guest.call(kResultsBuildStart);
-    guest.call(kAwardsClear);
+    fe::direct<0x4c7ea0, frontend::neta::sendRaceResults>(app, cpu);
+    guest::direct<0x44e7d0, frontend::menub::awardsClear>(app, cpu);
     guest.call(kLoadRecords);
-    guest.call(kResultsCollectFinishers, fe::args({ kResultsOfRace, kResultCount }));
-    guest.call(kResultsCollectLaps, fe::args({ kResultsOfLaps, kLapResultCount, 0 }));
-    guest.call(kResultsSort, fe::args({ 0, 0, 0 }));
-    guest.call(kResultsSort, fe::args({ 1, 0, 0 }));
-    guest.call(kResultsAssign);
-    if (guest.dword(kRaceType) == 1)
-        guest.call(kTournamentScore);
-    if (guest.dword(kRaceType) == 2)
-        guest.call(kKnockoutEliminate);
-    guest.call(kRecordsClearMarks);
-    if (guest.call(kPostgameFinishers) == 0)
+    guest::direct<0x455210, frontend::menub::resultsCollectFinishers>(app, cpu, kResultsOfRace, kResultCount);
+    // The game's code hands it 0 in ebx too, which it does not read.
+    guest::direct<0x455280, frontend::menub::resultsCollectLaps>(app, cpu, kResultsOfLaps, kLapResultCount);
+    fe::direct<0x455c10, frontend::misc::resultsSort>(app, cpu, 0, 0, 0);
+    fe::direct<0x455c10, frontend::misc::resultsSort>(app, cpu, 1, 0, 0);
+    guest::direct<0x4552f0, frontend::menub::resultsAssign>(app, cpu);
+    if (gameSettings(guest).raceType == 1)
+        guest::direct<0x455070, frontend::menub::tournamentScore>(app, cpu);
+    if (gameSettings(guest).raceType == 2)
+        guest::direct<0x455140, frontend::menub::knockoutEliminate>(app, cpu);
+    guest::direct<0x44f9b0, frontend::menub::recordsClearMarks>(app, cpu);
+    if (fe::direct<0x4cef80, frontend::misc::postgameFinishers>(app, cpu) == 0)
     {
-        guest.call(kRecordsEnterPlayers);
-        guest.call(kAwardsForRace, fe::args({ 0 }));
-        if (guest.dword(kPlayers) == 1)
-            guest.call(kAwardsForRace, fe::args({ 1 }));
+        guest::direct<0x4512f0, frontend::menub::recordsEnterPlayers>(app, cpu);
+        guest::direct<0x44e820, frontend::menub::awardsForRace>(app, cpu, 0);
+        if (gameSettings(guest).playMode == 1)
+            guest::direct<0x44e820, frontend::menub::awardsForRace>(app, cpu, 1);
     }
-    guest.call(kSaveRecords);
-    if (signedDword(guest, kPlayers) > 1 && guest.call(kPostgameFinishers) == 0)
-        guest.call(kResultsNetworkNothing);
-    return guest.eax();
+    // What the calls leave in eax, the last one's: the cores hand theirs back, the network's nothing
+    // leaves it as it came.
+    reg32 left = guest.call(kSaveRecords);
+    if (std::int32_t(gameSettings(guest).playMode) > 1)
+    {
+        left = fe::direct<0x4cef80, frontend::misc::postgameFinishers>(app, cpu);
+        if (left == 0)
+            fe::direct<0x455060, frontend::menub::resultsNetworkNothing>(app, cpu);
+    }
+    return left;
 }
 
 /* The participant's driver, with what the code leaves in edx on the way. */
@@ -1994,7 +2032,7 @@ reg32 driverRecord(Guest& guest, reg32 found)
 {
     const reg32 driver = guest.dword(found + participant::kDriver);
     guest.leaveEdx(driver * 12);
-    return kDrivers + driver * kDriverBytes;
+    return SETTINGS_ADDRESS(entries) + driver * kDriverBytes;
 }
 
 /* sub_455570: a participant's name into a buffer; empty for none. */
@@ -2009,21 +2047,22 @@ reg32 resultsNameBody(Guest& guest, reg32 found, reg32 buffer)
 }
 
 /* sub_4555c0: a participant's place, in words. */
-reg32 resultsPlaceTextBody(Guest& guest, reg32 found, reg32 buffer)
+reg32 resultsPlaceTextBody(App* app, CPU& cpu, Guest& guest, reg32 found, reg32 buffer)
 {
-    const reg32 text = guest.call(kLanguageText, fe::args({ guest.dword(found + participant::kPlace) + 0x2f }));
+    const reg32 text = reg32(*fe::direct<0x4d1850, port::text::lineText>(
+        app, cpu, cpu.esp - 4, guest.dword(found + participant::kPlace) + 0x2f, cpu.edx));
     guest.copyString(buffer, text);
     return afterInlineCopy(text);
 }
 
 /* sub_455600: a participant's car, by name. */
-reg32 resultsCarNameBody(Guest& guest, reg32 found, reg32 buffer)
+reg32 resultsCarNameBody(App* app, CPU& cpu, Guest& guest, reg32 found, reg32 buffer)
 {
     guest.setByte(buffer, 0);
     if (found == 0)
         return 0;
     const reg32 driver = driverRecord(guest, found);
-    const reg32 name = guest.call(kCarName, fe::args({ guest.dword(driver + kDriverCar) }));
+    const reg32 name = *fe::direct<0x439250, load::nameOf>(app, cpu, guest.dword(driver + kDriverCar));
     guest.copyString(buffer, name);
     return afterInlineCopy(name);
 }
@@ -2035,6 +2074,7 @@ reg32 resultsCarLineBody(Guest& guest, reg32 found, reg32 buffer, reg32 line)
     if (found == 0)
         return 0;
     const reg32 driver = driverRecord(guest, found);
+    // By address: the last call, whose edx the function leaves.
     const reg32 text = guest.call(kCarText, fe::args({ guest.dword(driver + kDriverCar), line }));
     guest.copyString(buffer, text);
     return afterInlineCopy(text);
@@ -2042,9 +2082,8 @@ reg32 resultsCarLineBody(Guest& guest, reg32 found, reg32 buffer, reg32 line)
 
 /* sub_455720: a participant's top speed written out, in the units chosen; "---"
  * when it has none. */
-reg32 resultsTopSpeedTextBody(Guest& guest, reg32 found, reg32 buffer)
+reg32 resultsTopSpeedTextBody(App* app, CPU& cpu, Guest& guest, reg32 found, reg32 buffer)
 {
-    constexpr reg32 kUnits = 0x6fbc68;
     constexpr reg32 kToKmh = 0x539910, kToMph = 0x539914;       // floats
     constexpr reg32 kSpeedFormat = 0x539900;                    // "%5.2f %s"
     constexpr reg32 kNoSpeed = 0x53990c;                        // "---"
@@ -2052,9 +2091,10 @@ reg32 resultsTopSpeedTextBody(Guest& guest, reg32 found, reg32 buffer)
     const std::uint16_t status = fp::compare(x86::Float(1.0), x86::Float(speed));
     if (!(status & kStatusBelow))
         return guest.call(kSprintf, fe::args({}, { buffer, kNoSpeed }));
-    const reg32 units = guest.dword(kUnits);
+    const reg32 units = gameSettings(guest).hud[0].speedometerForm;
     const bool metric = units == 3 || units == 4;
-    const reg32 unitName = guest.call(kLanguageText, fe::args({ reg32(metric ? 0x157 : 0x156) }));
+    const reg32 unitName = reg32(*fe::direct<0x4d1850, port::text::lineText>(app, cpu, cpu.esp - 4,
+                                                                             reg32(metric ? 0x157 : 0x156), cpu.edx));
     const double value = double(fp::mul(x86::Float(speed), x86::Float(guest.floatAt(metric ? kToKmh : kToMph))));
     reg32 words[2];
     std::memcpy(words, &value, sizeof words);
@@ -2110,7 +2150,7 @@ reg32 dirPadCentreUnderPointerBody(Guest& guest)
 
 /* sub_457340: an arrow chosen: the direction it stands for handed on; -1 none.
  * Past them the code hands on its locals as they stand. */
-reg32 dirPadChooseBody(Guest& guest, reg32 arrow)
+reg32 dirPadChooseBody(App* app, CPU& cpu, Guest& guest, reg32 arrow)
 {
     constexpr reg32 kOne = 0x3f800000, kMinusOne = 0xbf800000;
     struct Direction
@@ -2125,10 +2165,11 @@ reg32 dirPadChooseBody(Guest& guest, reg32 arrow)
     const reg32 index = arrow + 1;
     const Direction direction = index <= 8 ? kDirections[index]
                                            : Direction{ guest.dword(guest.frame()), guest.dword(guest.frame() + 4) };
-    return guest.call(kSetDirection, fe::args({}, { direction.x, direction.y }));
+    return guest::direct<0x4654c0, frontend::menuc::setSliderComponents>(app, cpu, direction.x, direction.y);
 }
 
-/* One of the pad's shapes, where the item is. */
+/* One of the pad's shapes, where the item is.  By address: the pad's last call, whose edx the
+ * function leaves. */
 void drawDirPadShape(Guest& guest, reg32 item, reg32 shape, reg32 xTable, reg32 yTable, reg32 index)
 {
     const std::int32_t y = signedWord(guest, item + sheet::kY) - (kPadOriginY - signedWord(guest, yTable + 2 * index));
@@ -2137,19 +2178,21 @@ void drawDirPadShape(Guest& guest, reg32 item, reg32 shape, reg32 xTable, reg32 
 }
 
 /* sub_457460: the pad drawn: only what the pointer is on, base and lit. */
-reg32 dirPadDrawBody(Guest& guest, reg32 item, reg32 active)
+reg32 dirPadDrawBody(App* app, CPU& cpu, Guest& guest, reg32 item, reg32 active)
 {
     guest.setDword(kDirPadActive, active);
+    // By address: the widget's type it hands in edx, which the core does not take, is the edx the
+    // function leaves when the pad is not shown.
     if (guest.call(kMenuShownNow, fe::args({ item, kDirPadWidget })) == 0)
         return 0;
     constexpr reg32 kCentre = 8;
-    const reg32 arrow = guest.call(kDirPadUnderPointer);
+    const reg32 arrow = guest::direct<0x457270, frontend::menub::dirPadUnderPointer>(app, cpu);
     if (arrow != reg32(-1))
     {
         drawDirPadShape(guest, item, kDirPadShapes, kBaseX, kBaseY, arrow);
         drawDirPadShape(guest, item, kDirPadLitShapes, kLitX, kLitY, arrow);
     }
-    else if (guest.call(kDirPadCentreUnderPointer) != 0)
+    else if (guest::direct<0x4572d0, frontend::menub::dirPadCentreUnderPointer>(app, cpu) != 0)
     {
         drawDirPadShape(guest, item, kDirPadShapes, kBaseX, kBaseY, kCentre);
         drawDirPadShape(guest, item, kDirPadLitShapes, kLitX, kLitY, kCentre);
@@ -2158,9 +2201,11 @@ reg32 dirPadDrawBody(Guest& guest, reg32 item, reg32 active)
 }
 
 /* sub_4575a0: its keys: Enter on an arrow chooses it, on the centre stops. */
-reg32 dirPadKeyBody(Guest& guest, reg32 item, std::uint16_t key)
+reg32 dirPadKeyBody(App* app, CPU& cpu, Guest& guest, reg32 item, std::uint16_t key)
 {
     constexpr std::uint16_t kEnter = 0xd, kLeft = 0x4b00, kRight = 0x4d00, kSpace = 0x20;
+    // By address: the widget's type it hands in edx, which the core does not take, is the edx the
+    // function leaves when the pad is not shown or not active.
     if (guest.call(kMenuShownNow, fe::args({ item, kDirPadWidget })) == 0)
         return 0;
     if (guest.dword(kDirPadActive) == 0)
@@ -2168,19 +2213,19 @@ reg32 dirPadKeyBody(Guest& guest, reg32 item, std::uint16_t key)
     const reg32 answer = key == kLeft || key == kRight || key == kSpace ? 2 : 0;
     if (key == kEnter)
     {
-        const reg32 arrow = guest.call(kDirPadUnderPointer);
+        const reg32 arrow = guest::direct<0x457270, frontend::menub::dirPadUnderPointer>(app, cpu);
         if (arrow != reg32(-1))
-            guest.call(kDirPadChoose, fe::args({ arrow }));
-        else if (guest.call(kDirPadCentreUnderPointer) != 0)
-            guest.call(kSetDirection, fe::args({}, { 0, 0 }));
+            guest::direct<0x457340, frontend::menub::dirPadChoose>(app, cpu, arrow);
+        else if (guest::direct<0x4572d0, frontend::menub::dirPadCentreUnderPointer>(app, cpu) != 0)
+            guest::direct<0x4654c0, frontend::menuc::setSliderComponents>(app, cpu, 0, 0);
     }
     return answer;
 }
 
 /* sub_457630: its box round the item. */
-reg32 dirPadLayoutBody(Guest& guest, reg32 item)
+reg32 dirPadLayoutBody(App* app, CPU& cpu, Guest& guest, reg32 item)
 {
-    if (guest.call(kMenuShownNow, fe::args({ item, kDirPadWidget })) != 0)
+    if (fe::direct<0x44a660, frontend::loop::shownNow>(app, cpu, item) != 0)
     {
         constexpr std::uint16_t kSide = 0x3d;
         guest.setWord(item + 0x1e, kSide);
@@ -2192,7 +2237,7 @@ reg32 dirPadLayoutBody(Guest& guest, reg32 item)
 }
 
 /* sub_457680: its shapes by name: "int1" to "int9" and "inta" to "inti". */
-reg32 dirPadLoadShapesBody(Guest& guest)
+reg32 dirPadLoadShapesBody(App* app, CPU& cpu, Guest& guest)
 {
     const reg32 name = guest.frame();
     guest.setByte(name, 'i');
@@ -2203,9 +2248,10 @@ reg32 dirPadLoadShapesBody(Guest& guest)
     for (reg32 i = 0; i < 9; ++i)
     {
         guest.setByte(name + 3, std::uint8_t('1' + i));
-        guest.setDword(kDirPadShapes + 4 * i, guest.call(kShapeByName, fe::args({ name })));
+        const auto base = fe::direct<0x4d5db0, port::shapes::shapeNamed>(app, cpu, cpu.esp - 4, name);
+        guest.setDword(kDirPadShapes + 4 * i, reg32(*base));
         guest.setByte(name + 3, std::uint8_t('a' + i));
-        left = guest.call(kShapeByName, fe::args({ name }));
+        left = reg32(*fe::direct<0x4d5db0, port::shapes::shapeNamed>(app, cpu, cpu.esp - 4, name));
         guest.setDword(kDirPadLitShapes + 4 * i, left);
     }
     return left;
@@ -2213,428 +2259,841 @@ reg32 dirPadLoadShapesBody(Guest& guest)
 
 }
 
+x86::reg32 frontend::menub::menuDrawPass(App* app, CPU& cpu)
+{
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 8);
+    return menuDrawPassBody(app, cpu, guest);
+}
+
 void frontend::menuDrawPass(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_44bdd0", 0, 8, nullptr, 0, fe::kRestoreEdx };
-    fe::runWhole(app, cpu, site, [](Guest& guest) { return menuDrawPassBody(guest); });
+    static fe::Site site{ "sub_44bdd0", 0, 0, nullptr, 0, fe::kRestoreEdx };
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menub::menuDrawPass(app, cpu); });
+}
+
+x86::reg32 frontend::menub::menuLeave(App* app, CPU& cpu)
+{
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 8);
+    return menuLeaveBody(app, cpu, guest);
 }
 
 void frontend::menuLeave(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_44be20", 0, 8, nullptr, 0, fe::kRestoreEdx };
-    fe::runWhole(app, cpu, site, [](Guest& guest) { return menuLeaveBody(guest); });
+    static fe::Site site{ "sub_44be20", 0, 0, nullptr, 0, fe::kRestoreEdx };
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menub::menuLeave(app, cpu); });
+}
+
+x86::reg32 frontend::menub::awardsClear(App* app, CPU& cpu)
+{
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 8);
+    return awardsClearBody(guest);
 }
 
 void frontend::awardsClear(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_44e7d0", 0, 8, nullptr, 0, fe::kRestoreEdx };
-    fe::runWhole(app, cpu, site, [](Guest& guest) { return awardsClearBody(guest); });
+    static fe::Site site{ "sub_44e7d0", 0, 0, nullptr, 0, fe::kRestoreEdx };
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menub::awardsClear(app, cpu); });
+}
+
+x86::reg32 frontend::menub::awardsGrant(App* app, CPU& cpu, reg32 award, reg32 player)
+{
+    Guest guest(app, cpu);
+    return awardsGrantBody(guest, award, player);
 }
 
 void frontend::awardsGrant(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_44e7f0", 0, 4, nullptr, 0, 0 };
+    static fe::Site site{ "sub_44e7f0", 0, 0, nullptr, 0, 0 };
     const reg32 award = cpu.eax, player = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest& guest) { return awardsGrantBody(guest, award, player); });
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menub::awardsGrant(app, cpu, award, player); });
+}
+
+x86::reg32 frontend::menub::awardsForRace(App* app, CPU& cpu, reg32 player)
+{
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 24);
+    return awardsForRaceBody(app, cpu, guest, player);
 }
 
 void frontend::awardsForRace(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_44e820", 0, 24, nullptr, 0, fe::kRestoreAll };
+    static fe::Site site{ "sub_44e820", 0, 0, nullptr, 0, fe::kRestoreAll };
     const reg32 player = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest& guest) { return awardsForRaceBody(guest, player); });
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menub::awardsForRace(app, cpu, player); });
+}
+
+x86::reg32 frontend::menub::awardsSpeak(App* app, CPU& cpu, reg32 kind)
+{
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 20);
+    return awardsSpeakBody(app, cpu, guest, kind);
 }
 
 void frontend::awardsSpeak(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_44ea60", 0, 20, nullptr, 0, kEbxEcxEdxEdi };
+    static fe::Site site{ "sub_44ea60", 0, 0, nullptr, 0, kEbxEcxEdxEdi };
     const reg32 kind = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest& guest) { return awardsSpeakBody(guest, kind); });
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menub::awardsSpeak(app, cpu, kind); });
+}
+
+x86::reg32 frontend::menub::awardsSpeakForSheet(App* app, CPU& cpu)
+{
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 4);
+    return awardsSpeakForSheetBody(app, cpu, guest);
 }
 
 void frontend::awardsSpeakForSheet(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_44ed30", 0, 4, nullptr, 0, 0 };
-    fe::runWhole(app, cpu, site, [](Guest& guest) { return awardsSpeakForSheetBody(guest); });
+    static fe::Site site{ "sub_44ed30", 0, 0, nullptr, 0, 0 };
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menub::awardsSpeakForSheet(app, cpu); });
+}
+
+x86::reg32 frontend::menub::recordsCompare(App* app, CPU& cpu, reg32 slotA, reg32 slotB)
+{
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 20);
+    return recordsCompareBody(guest, slotA, slotB);
 }
 
 void frontend::recordsCompare(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_44f6e0", 0, 20, nullptr, 0, kEbxEcxEsiEdi };
-    const reg32 a = cpu.eax, b = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest& guest) { return recordsCompareBody(guest, a, b); });
+    static fe::Site site{ "sub_44f6e0", 0, 0, nullptr, 0, kEbxEcxEsiEdi };
+    const reg32 slotA = cpu.eax, slotB = cpu.edx;
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menub::recordsCompare(app, cpu, slotA, slotB); });
+}
+
+x86::reg32 frontend::menub::recordsSortBy(App* app, CPU& cpu, reg32 key)
+{
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 20 + 0x28);
+    return recordsSortByBody(guest, key);
 }
 
 void frontend::recordsSortBy(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_44f830", 0, 20 + 0x28, nullptr, 0, kEbxEcxEdxEsi };
+    static fe::Site site{ "sub_44f830", 0, 0, nullptr, 0, kEbxEcxEdxEsi };
     const reg32 key = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest& guest) { return recordsSortByBody(guest, key); });
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menub::recordsSortBy(app, cpu, key); });
+}
+
+x86::reg32 frontend::menub::recordsCount(App* app, CPU& cpu, reg32 track, reg32 lapsClass)
+{
+    Guest guest(app, cpu);
+    return recordsCountBody(guest, track, lapsClass);
 }
 
 void frontend::recordsCount(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_44f8d0", 0, 12, nullptr, 0, kEbxEcx };
+    static fe::Site site{ "sub_44f8d0", 0, 0, nullptr, 0, kEbxEcx };
     const reg32 track = cpu.eax, lapsClass = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest& guest) { return recordsCountBody(guest, track, lapsClass); });
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menub::recordsCount(app, cpu, track, lapsClass); });
+}
+
+x86::reg32 frontend::menub::recordByRank(App* app, CPU& cpu, reg32 rank)
+{
+    Guest guest(app, cpu);
+    return recordByRankBody(guest, rank);
 }
 
 void frontend::recordByRank(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_44f910", 0, 8, nullptr, 0, fe::kRestoreEdx };
+    static fe::Site site{ "sub_44f910", 0, 0, nullptr, 0, fe::kRestoreEdx };
     const reg32 rank = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest& guest) { return recordByRankBody(guest, rank); });
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menub::recordByRank(app, cpu, rank); });
+}
+
+x86::reg32 frontend::menub::recordsTimeQualifies(App* app, CPU& cpu, reg32 time)
+{
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 8);
+    return recordsTimeQualifiesBody(app, cpu, guest, time);
 }
 
 void frontend::recordsTimeQualifies(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_44f960", 0, 8, nullptr, 0, fe::kRestoreEdx };
+    static fe::Site site{ "sub_44f960", 0, 0, nullptr, 0, fe::kRestoreEdx };
     const reg32 time = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest& guest) { return recordsTimeQualifiesBody(guest, time); });
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menub::recordsTimeQualifies(app, cpu, time); });
+}
+
+x86::reg32 frontend::menub::recordsClearMarks(App* app, CPU& cpu)
+{
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 16);
+    return recordsClearMarksBody(app, cpu, guest);
 }
 
 void frontend::recordsClearMarks(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_44f9b0", 0, 16, nullptr, 0, kEbxEcxEdx };
-    fe::runWhole(app, cpu, site, [](Guest& guest) { return recordsClearMarksBody(guest); });
+    static fe::Site site{ "sub_44f9b0", 0, 0, nullptr, 0, kEbxEcxEdx };
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menub::recordsClearMarks(app, cpu); });
+}
+
+x86::reg32 frontend::menub::recordsInsert(App* app, CPU& cpu, reg32 newRecord)
+{
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 20);
+    return recordsInsertBody(app, cpu, guest, newRecord);
 }
 
 void frontend::recordsInsert(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_44fa10", kRecordBytes, 20, nullptr, 0, kEcxEdx | kEsiEdi };
+    static fe::Site site{ "sub_44fa10", kRecordBytes, 0, nullptr, 0, kEcxEdx | kEsiEdi };
     const reg32 newRecord = cpu.esp + 4;
-    fe::runWhole(app, cpu, site, [&](Guest& guest) { return recordsInsertBody(guest, newRecord); });
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menub::recordsInsert(app, cpu, newRecord); });
+}
+
+x86::reg32 frontend::menub::recordsHolderMark(App* app, CPU& cpu)
+{
+    Guest guest(app, cpu);
+    return recordsHolderMarkBody(guest);
 }
 
 void frontend::recordsHolderMark(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_44fb20", 0, 4, nullptr, 0, 0 };
-    fe::runWhole(app, cpu, site, [](Guest& guest) { return recordsHolderMarkBody(guest); });
+    static fe::Site site{ "sub_44fb20", 0, 0, nullptr, 0, 0 };
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menub::recordsHolderMark(app, cpu); });
+}
+
+x86::reg32 frontend::menub::recordsSetHolder(App* app, CPU& cpu, reg32 driver, reg32 line0, reg32 line1, reg32 time,
+                                             reg32 mark)
+{
+    Guest guest(app, cpu);
+    return recordsSetHolderBody(guest, driver, line0, line1, time, mark);
 }
 
 void frontend::recordsSetHolder(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_44fb30", 4, 12, nullptr, 0, kEsiEdi };
-    const reg32 driver = cpu.eax, line0 = cpu.edx, line1 = cpu.ebx, time = cpu.ecx;
-    const reg32 mark = app->getMemory<reg32>(cpu.esp + 4);
-    fe::runWhole(app, cpu, site, [&](Guest& guest) {
-        return recordsSetHolderBody(guest, driver, line0, line1, time, mark);
+    static fe::Site site{ "sub_44fb30", 4, 0, nullptr, 0, kEsiEdi };
+    const reg32 driver = cpu.eax, line0 = cpu.edx, line1 = cpu.ebx;
+    const reg32 time = cpu.ecx, mark = app->getMemory<reg32>(cpu.esp + 4);
+    fe::runWhole(app, cpu, site, [&](Guest&) {
+        return menub::recordsSetHolder(app, cpu, driver, line0, line1, time, mark);
     });
+}
+
+x86::reg32 frontend::menub::recordsSheetSortMark(App* app, CPU& cpu, reg32 item)
+{
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 12);
+    return recordsSheetSortMarkBody(app, cpu, guest, item);
 }
 
 void frontend::recordsSheetSortMark(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_44fc00", 0, 12, nullptr, 0, kEbxEcx };
+    static fe::Site site{ "sub_44fc00", 0, 0, nullptr, 0, kEbxEcx };
     const reg32 item = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest& guest) { return recordsSheetSortMarkBody(guest, item); });
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menub::recordsSheetSortMark(app, cpu, item); });
+}
+
+x86::reg32 frontend::menub::recordsSheetDraw(App* app, CPU& cpu, reg32 item, reg32 hovering)
+{
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 20 + 0x580);
+    return recordsSheetDrawBody(app, cpu, guest, item, hovering);
 }
 
 void frontend::recordsSheetDraw(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_44fc70", 0, 20 + 0x580, nullptr, 0, kEbxEcxEsiEdi };
+    static fe::Site site{ "sub_44fc70", 0, 0, nullptr, 0, kEbxEcxEsiEdi };
     const reg32 item = cpu.eax, hovering = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest& guest) { return recordsSheetDrawBody(guest, item, hovering); });
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menub::recordsSheetDraw(app, cpu, item, hovering); });
+}
+
+x86::reg32 frontend::menub::recordsSheetLoad(App* app, CPU& cpu, reg32 item)
+{
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 16);
+    return recordsSheetLoadBody(app, cpu, guest, item);
 }
 
 void frontend::recordsSheetLoad(win32::WinApplication* app, x86::CPU& cpu)
 {
     static constexpr GuestString kNames[] = { kArrowUp, kArrowDown, kArrowUpLit, kArrowDownLit };
-    static fe::Site site{ "sub_450770", 0, 16, kNames, std::size(kNames), kEbxEcxEdx };
+    static fe::Site site{ "sub_450770", 0, 0, kNames, std::size(kNames), kEbxEcxEdx };
     const reg32 item = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest& guest) { return recordsSheetLoadBody(guest, item); });
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menub::recordsSheetLoad(app, cpu, item); });
+}
+
+x86::reg32 frontend::menub::recordsSheetSave(App* app, CPU& cpu, reg32 item)
+{
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 8);
+    return recordsSheetSaveBody(app, cpu, guest, item);
 }
 
 void frontend::recordsSheetSave(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_450950", 0, 8, nullptr, 0, fe::kRestoreEdx };
+    static fe::Site site{ "sub_450950", 0, 0, nullptr, 0, fe::kRestoreEdx };
     const reg32 item = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest& guest) { return recordsSheetSaveBody(guest, item); });
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menub::recordsSheetSave(app, cpu, item); });
+}
+
+x86::reg32 frontend::menub::recordsSheetLayout(App* app, CPU& cpu, reg32 item)
+{
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 24);
+    return recordsSheetLayoutBody(app, cpu, guest, item);
 }
 
 void frontend::recordsSheetLayout(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_450970", 0, 24, nullptr, 0, kEbxEcxEdxEsi };
+    static fe::Site site{ "sub_450970", 0, 0, nullptr, 0, kEbxEcxEdxEsi };
     const reg32 item = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest& guest) { return recordsSheetLayoutBody(guest, item); });
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menub::recordsSheetLayout(app, cpu, item); });
+}
+
+x86::reg32 frontend::menub::recordsSheetKey(App* app, CPU& cpu, reg32 item, reg32, reg32 key)
+{
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 24);
+    return recordsSheetKeyBody(app, cpu, guest, item, std::uint16_t(key));
 }
 
 void frontend::recordsSheetKey(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_450a90", 0, 24, nullptr, 0, kEcxEsiEdi };
-    const reg32 item = cpu.eax;
-    const std::uint16_t key = std::uint16_t(cpu.ebx);
-    fe::runWhole(app, cpu, site, [&](Guest& guest) { return recordsSheetKeyBody(guest, item, key); });
+    static fe::Site site{ "sub_450a90", 0, 0, nullptr, 0, kEcxEsiEdi };
+    const reg32 item = cpu.eax, menu = cpu.edx, key = cpu.ebx;
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menub::recordsSheetKey(app, cpu, item, menu, key); });
+}
+
+x86::reg32 frontend::menub::recordsSheetIdle(App* app, CPU& cpu, reg32 item)
+{
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 8);
+    return recordsSheetIdleBody(app, cpu, guest, item);
 }
 
 void frontend::recordsSheetIdle(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_450e30", 0, 8, nullptr, 0, fe::kRestoreEdx };
+    static fe::Site site{ "sub_450e30", 0, 0, nullptr, 0, fe::kRestoreEdx };
     const reg32 item = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest& guest) { return recordsSheetIdleBody(guest, item); });
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menub::recordsSheetIdle(app, cpu, item); });
+}
+
+x86::reg32 frontend::menub::recordsEnterResult(App* app, CPU& cpu, reg32 found)
+{
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 24 + 0x730);
+    return recordsEnterResultBody(app, cpu, guest, found);
 }
 
 void frontend::recordsEnterResult(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_450fe0", 0, 24 + 0x730, nullptr, 0, fe::kRestoreAll };
+    static fe::Site site{ "sub_450fe0", 0, 0, nullptr, 0, fe::kRestoreAll };
     const reg32 found = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest& guest) { return recordsEnterResultBody(guest, cpu, found); });
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menub::recordsEnterResult(app, cpu, found); });
+}
+
+x86::reg32 frontend::menub::recordsEnterPlayers(App* app, CPU& cpu)
+{
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 12);
+    return recordsEnterPlayersBody(app, cpu, guest);
 }
 
 void frontend::recordsEnterPlayers(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_4512f0", 0, 12, nullptr, 0, kEcxEdx };
-    fe::runWhole(app, cpu, site, [](Guest& guest) { return recordsEnterPlayersBody(guest); });
+    static fe::Site site{ "sub_4512f0", 0, 0, nullptr, 0, kEcxEdx };
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menub::recordsEnterPlayers(app, cpu); });
+}
+
+x86::reg32 frontend::menub::textFit(App* app, CPU& cpu, reg32 text, reg32 most, reg32 font)
+{
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 20);
+    return textFitBody(app, cpu, guest, text, std::int32_t(most), font);
 }
 
 void frontend::textFit(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_452090", 0, 20, nullptr, 0, kEcxEsiEdi };
+    static fe::Site site{ "sub_452090", 0, 0, nullptr, 0, kEcxEsiEdi };
     const reg32 text = cpu.eax, most = cpu.edx, font = cpu.ebx;
-    fe::runWhole(app, cpu, site, [&](Guest& guest) { return textFitBody(guest, text, std::int32_t(most), font); });
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menub::textFit(app, cpu, text, most, font); });
+}
+
+x86::reg32 frontend::menub::textDrawFitted(App* app, CPU& cpu, reg32 text, reg32 x, reg32 y, reg32 font, reg32 align,
+                                           reg32 colour, reg32 most)
+{
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 12 + 0x108);
+    return textDrawFittedBody(app, cpu, guest, text, x, y, font, align, colour, most);
 }
 
 void frontend::textDrawFitted(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_452120", 12, 12 + 0x108, nullptr, 0, kEsiEdi };
+    static fe::Site site{ "sub_452120", 12, 0, nullptr, 0, kEsiEdi };
     const reg32 text = cpu.eax, x = cpu.edx, y = cpu.ebx, font = cpu.ecx;
     const reg32 align = app->getMemory<reg32>(cpu.esp + 4), colour = app->getMemory<reg32>(cpu.esp + 8);
     const reg32 most = app->getMemory<reg32>(cpu.esp + 12);
-    fe::runWhole(app, cpu, site, [&](Guest& guest) {
-        return textDrawFittedBody(guest, text, x, y, font, align, colour, most);
+    fe::runWhole(app, cpu, site, [&](Guest&) {
+        return menub::textDrawFitted(app, cpu, text, x, y, font, align, colour, most);
     });
+}
+
+x86::reg32 frontend::menub::menuCaptureScreen(App* app, CPU& cpu)
+{
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 4);
+    return guest.call(kCaptureScreen);
 }
 
 void frontend::menuCaptureScreen(win32::WinApplication* app, x86::CPU& cpu)
 {
     // sub_452410: the screen's picture taken, the key's work.
-    static fe::Site site{ "sub_452410", 0, 4, nullptr, 0, 0 };
-    fe::runWhole(app, cpu, site, [](Guest& guest) { return guest.call(kCaptureScreen); });
+    static fe::Site site{ "sub_452410", 0, 0, nullptr, 0, 0 };
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menub::menuCaptureScreen(app, cpu); });
+}
+
+x86::reg32 frontend::menub::cheatAdvance(App* app, CPU& cpu, reg32 key, reg32 progress, reg32 code)
+{
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 8);
+    return cheatAdvanceBody(guest, key, progress, code);
 }
 
 void frontend::cheatAdvance(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_452420", 0, 8, nullptr, 0, fe::kRestoreEcx };
+    static fe::Site site{ "sub_452420", 0, 0, nullptr, 0, fe::kRestoreEcx };
     const reg32 key = cpu.eax, progress = cpu.edx, code = cpu.ebx;
-    fe::runWhole(app, cpu, site, [&](Guest& guest) { return cheatAdvanceBody(guest, key, progress, code); });
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menub::cheatAdvance(app, cpu, key, progress, code); });
+}
+
+x86::reg32 frontend::menub::cheatKey(App* app, CPU& cpu, reg32 key)
+{
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 24 + 0x18);
+    return cheatKeyBody(app, cpu, guest, key);
 }
 
 void frontend::cheatKey(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_4524e0", 0, 24 + 0x18, nullptr, 0, fe::kRestoreAll };
+    static fe::Site site{ "sub_4524e0", 0, 0, nullptr, 0, fe::kRestoreAll };
     const reg32 key = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest& guest) { return cheatKeyBody(guest, key); });
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menub::cheatKey(app, cpu, key); });
+}
+
+x86::reg32 frontend::menub::carArtExists(App* app, CPU& cpu, reg32 car)
+{
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 20 + 0x100);
+    return carArtExistsBody(app, cpu, guest, car);
 }
 
 void frontend::carArtExists(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_4530c0", 0, 20 + 0x100, nullptr, 0, kEbxEcxEdxEsi };
+    static fe::Site site{ "sub_4530c0", 0, 0, nullptr, 0, kEbxEcxEdxEsi };
     const reg32 car = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest& guest) { return carArtExistsBody(guest, car); });
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menub::carArtExists(app, cpu, car); });
+}
+
+x86::reg32 frontend::menub::carViewRemember(App* app, CPU& cpu, reg32 name)
+{
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 12);
+    return carViewRememberBody(guest, name);
 }
 
 void frontend::carViewRemember(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_4534d0", 0, 12, kCompareNames, std::size(kCompareNames), kEcxEdx };
+    static fe::Site site{ "sub_4534d0", 0, 0, kCompareNames, std::size(kCompareNames), kEcxEdx };
     const reg32 name = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest& guest) { return carViewRememberBody(guest, name); });
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menub::carViewRemember(app, cpu, name); });
+}
+
+x86::reg32 frontend::menub::carStatsDraw(App* app, CPU& cpu)
+{
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 24 + 0x10);
+    return carStatsDrawBody(app, cpu, guest);
 }
 
 void frontend::carStatsDraw(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_453940", 0, 24 + 0x10, nullptr, 0, fe::kRestoreAll };
-    fe::runWhole(app, cpu, site, [](Guest& guest) { return carStatsDrawBody(guest); });
+    static fe::Site site{ "sub_453940", 0, 0, nullptr, 0, fe::kRestoreAll };
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menub::carStatsDraw(app, cpu); });
+}
+
+x86::reg32 frontend::menub::carSpecsDraw(App* app, CPU& cpu)
+{
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 24 + 4);
+    return carSpecsDrawBody(app, cpu, guest);
 }
 
 void frontend::carSpecsDraw(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_453f60", 0, 24 + 4, nullptr, 0, fe::kRestoreAll };
-    fe::runWhole(app, cpu, site, [](Guest& guest) { return carSpecsDrawBody(guest); });
+    static fe::Site site{ "sub_453f60", 0, 0, nullptr, 0, fe::kRestoreAll };
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menub::carSpecsDraw(app, cpu); });
+}
+
+x86::reg32 frontend::menub::carPassesFilter(App* app, CPU& cpu, reg32 car)
+{
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 12);
+    return carPassesFilterBody(guest, car);
 }
 
 void frontend::carPassesFilter(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_454730", 0, 12, nullptr, 0, kEcxEdx };
-    fe::runWhole(app, cpu, site, [](Guest& guest) { return carPassesFilterBody(guest); });
+    static fe::Site site{ "sub_454730", 0, 0, nullptr, 0, kEcxEdx };
+    const reg32 car = cpu.eax;
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menub::carPassesFilter(app, cpu, car); });
+}
+
+x86::reg32 frontend::menub::carListDraw(App* app, CPU& cpu)
+{
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 24 + 0xc);
+    return carListDrawBody(app, cpu, guest);
 }
 
 void frontend::carListDraw(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_454780", 0, 24 + 0xc, nullptr, 0, fe::kRestoreAll };
-    fe::runWhole(app, cpu, site, [](Guest& guest) { return carListDrawBody(guest); });
+    static fe::Site site{ "sub_454780", 0, 0, nullptr, 0, fe::kRestoreAll };
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menub::carListDraw(app, cpu); });
+}
+
+x86::reg32 frontend::menub::carCompareDraw(App* app, CPU& cpu, reg32 item)
+{
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 20 + 0x2c);
+    return carCompareDrawBody(app, cpu, guest, item);
 }
 
 void frontend::carCompareDraw(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_4549c0", 0, 20 + 0x2c, nullptr, 0, kEbxEcxEsiEdi };
+    static fe::Site site{ "sub_4549c0", 0, 0, nullptr, 0, kEbxEcxEsiEdi };
     const reg32 item = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest& guest) { return carCompareDrawBody(guest, item); });
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menub::carCompareDraw(app, cpu, item); });
+}
+
+x86::reg32 frontend::menub::carCompareLoadArt(App* app, CPU& cpu, reg32 item)
+{
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 12 + 0x100);
+    return carCompareLoadArtBody(app, cpu, guest, item);
 }
 
 void frontend::carCompareLoadArt(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_454bf0", 0, 12 + 0x100, kBarNames, std::size(kBarNames), kEcxEdx };
+    static fe::Site site{ "sub_454bf0", 0, 0, kBarNames, std::size(kBarNames), kEcxEdx };
     const reg32 item = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest& guest) { return carCompareLoadArtBody(guest, item); });
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menub::carCompareLoadArt(app, cpu, item); });
+}
+
+x86::reg32 frontend::menub::resultsHiddenRemote(App* app, CPU& cpu, reg32 car)
+{
+    Guest guest(app, cpu);
+    return resultsHiddenRemoteBody(guest, car);
 }
 
 void frontend::resultsHiddenRemote(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_455020", 0, 4, nullptr, 0, 0 };
+    static fe::Site site{ "sub_455020", 0, 0, nullptr, 0, 0 };
     const reg32 car = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest& guest) { return resultsHiddenRemoteBody(guest, car); });
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menub::resultsHiddenRemote(app, cpu, car); });
+}
+
+void frontend::menub::resultsNetworkNothing(App*, CPU&)
+{
 }
 
 void frontend::resultsNetworkNothing(win32::WinApplication* app, x86::CPU& cpu)
 {
     // sub_455060: nothing: what a network game does more at this point in the
     // results, in the original.
-    static fe::Site site{ "sub_455060", 0, 4, nullptr, 0, 0 };
-    fe::runWhole(app, cpu, site, [](Guest& guest) { return guest.eax(); });
+    static fe::Site site{ "sub_455060", 0, 0, nullptr, 0, 0 };
+    fe::runWhole(app, cpu, site, [&](Guest&) {
+        menub::resultsNetworkNothing(app, cpu);
+        return cpu.eax;
+    });
+}
+
+x86::reg32 frontend::menub::tournamentScore(App* app, CPU& cpu)
+{
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 24);
+    return tournamentScoreBody(app, cpu, guest);
 }
 
 void frontend::tournamentScore(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_455070", 0, 24, nullptr, 0, fe::kRestoreAll };
-    fe::runWhole(app, cpu, site, [](Guest& guest) { return tournamentScoreBody(guest); });
+    static fe::Site site{ "sub_455070", 0, 0, nullptr, 0, fe::kRestoreAll };
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menub::tournamentScore(app, cpu); });
+}
+
+x86::reg32 frontend::menub::knockoutEliminate(App* app, CPU& cpu)
+{
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 24);
+    return knockoutEliminateBody(app, cpu, guest);
 }
 
 void frontend::knockoutEliminate(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_455140", 0, 24, nullptr, 0, fe::kRestoreAll };
-    fe::runWhole(app, cpu, site, [](Guest& guest) { return knockoutEliminateBody(guest); });
+    static fe::Site site{ "sub_455140", 0, 0, nullptr, 0, fe::kRestoreAll };
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menub::knockoutEliminate(app, cpu); });
+}
+
+x86::reg32 frontend::menub::resultsCollectFinishers(App* app, CPU& cpu, reg32 table, reg32 count)
+{
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 24);
+    return resultsCollectBody(app, cpu, guest, table, count, participant::kFinisher);
 }
 
 void frontend::resultsCollectFinishers(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_455210", 0, 24, nullptr, 0, kEbxEcxEsiEdi };
+    static fe::Site site{ "sub_455210", 0, 0, nullptr, 0, kEbxEcxEsiEdi };
     const reg32 table = cpu.eax, count = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest& guest) {
-        return resultsCollectBody(guest, table, count, participant::kFinisher);
-    });
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menub::resultsCollectFinishers(app, cpu, table, count); });
+}
+
+x86::reg32 frontend::menub::resultsCollectLaps(App* app, CPU& cpu, reg32 table, reg32 count)
+{
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 24);
+    return resultsCollectBody(app, cpu, guest, table, count, participant::kLapResult);
 }
 
 void frontend::resultsCollectLaps(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_455280", 0, 24, nullptr, 0, kEbxEcxEsiEdi };
+    static fe::Site site{ "sub_455280", 0, 0, nullptr, 0, kEbxEcxEsiEdi };
     const reg32 table = cpu.eax, count = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest& guest) {
-        return resultsCollectBody(guest, table, count, participant::kLapResult);
-    });
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menub::resultsCollectLaps(app, cpu, table, count); });
+}
+
+x86::reg32 frontend::menub::resultsAssign(App* app, CPU& cpu)
+{
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 24);
+    return resultsAssignBody(app, cpu, guest);
 }
 
 void frontend::resultsAssign(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_4552f0", 0, 24, nullptr, 0, fe::kRestoreAll };
-    fe::runWhole(app, cpu, site, [](Guest& guest) { return resultsAssignBody(guest); });
+    static fe::Site site{ "sub_4552f0", 0, 0, nullptr, 0, fe::kRestoreAll };
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menub::resultsAssign(app, cpu); });
+}
+
+x86::reg32 frontend::menub::resultsBuild(App* app, CPU& cpu)
+{
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 16);
+    return resultsBuildBody(app, cpu, guest);
 }
 
 void frontend::resultsBuild(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_455410", 0, 16, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEdx | fe::kRestoreEsi };
-    fe::runWhole(app, cpu, site, [](Guest& guest) { return resultsBuildBody(guest); });
+    static fe::Site site{ "sub_455410", 0, 0, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEdx | fe::kRestoreEsi };
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menub::resultsBuild(app, cpu); });
+}
+
+x86::reg32 frontend::menub::resultsName(App* app, CPU& cpu, reg32 found, reg32 buffer)
+{
+    Guest guest(app, cpu);
+    return resultsNameBody(guest, found, buffer);
 }
 
 void frontend::resultsName(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_455570", 0, 12, nullptr, 0, kEsiEdi };
+    static fe::Site site{ "sub_455570", 0, 0, nullptr, 0, kEsiEdi };
     const reg32 found = cpu.eax, buffer = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest& guest) { return resultsNameBody(guest, found, buffer); });
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menub::resultsName(app, cpu, found, buffer); });
+}
+
+x86::reg32 frontend::menub::resultsPlaceText(App* app, CPU& cpu, reg32 found, reg32 buffer)
+{
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 12);
+    return resultsPlaceTextBody(app, cpu, guest, found, buffer);
 }
 
 void frontend::resultsPlaceText(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_4555c0", 0, 12, nullptr, 0, kEsiEdi };
+    static fe::Site site{ "sub_4555c0", 0, 0, nullptr, 0, kEsiEdi };
     const reg32 found = cpu.eax, buffer = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest& guest) { return resultsPlaceTextBody(guest, found, buffer); });
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menub::resultsPlaceText(app, cpu, found, buffer); });
+}
+
+x86::reg32 frontend::menub::resultsCarName(App* app, CPU& cpu, reg32 found, reg32 buffer)
+{
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 12);
+    return resultsCarNameBody(app, cpu, guest, found, buffer);
 }
 
 void frontend::resultsCarName(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_455600", 0, 12, nullptr, 0, kEsiEdi };
+    static fe::Site site{ "sub_455600", 0, 0, nullptr, 0, kEsiEdi };
     const reg32 found = cpu.eax, buffer = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest& guest) { return resultsCarNameBody(guest, found, buffer); });
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menub::resultsCarName(app, cpu, found, buffer); });
+}
+
+x86::reg32 frontend::menub::resultsCarLine0(App* app, CPU& cpu, reg32 found, reg32 buffer)
+{
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 12);
+    return resultsCarLineBody(guest, found, buffer, 0);
 }
 
 void frontend::resultsCarLine0(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_455660", 0, 12, nullptr, 0, kEsiEdi };
+    static fe::Site site{ "sub_455660", 0, 0, nullptr, 0, kEsiEdi };
     const reg32 found = cpu.eax, buffer = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest& guest) { return resultsCarLineBody(guest, found, buffer, 0); });
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menub::resultsCarLine0(app, cpu, found, buffer); });
+}
+
+x86::reg32 frontend::menub::resultsCarLine1(App* app, CPU& cpu, reg32 found, reg32 buffer)
+{
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 12);
+    return resultsCarLineBody(guest, found, buffer, 1);
 }
 
 void frontend::resultsCarLine1(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_4556c0", 0, 12, nullptr, 0, kEsiEdi };
+    static fe::Site site{ "sub_4556c0", 0, 0, nullptr, 0, kEsiEdi };
     const reg32 found = cpu.eax, buffer = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest& guest) { return resultsCarLineBody(guest, found, buffer, 1); });
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menub::resultsCarLine1(app, cpu, found, buffer); });
+}
+
+x86::reg32 frontend::menub::resultsTopSpeedText(App* app, CPU& cpu, reg32 found, reg32 buffer)
+{
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 12);
+    return resultsTopSpeedTextBody(app, cpu, guest, found, buffer);
 }
 
 void frontend::resultsTopSpeedText(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_455720", 0, 12, nullptr, 0, fe::kRestoreEcx };
+    static fe::Site site{ "sub_455720", 0, 0, nullptr, 0, fe::kRestoreEcx };
     const reg32 found = cpu.eax, buffer = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest& guest) { return resultsTopSpeedTextBody(guest, found, buffer); });
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menub::resultsTopSpeedText(app, cpu, found, buffer); });
+}
+
+x86::reg32 frontend::menub::dirPadUnderPointer(App* app, CPU& cpu)
+{
+    Guest guest(app, cpu);
+    return dirPadUnderPointerBody(guest);
 }
 
 void frontend::dirPadUnderPointer(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_457270", 0, 16, nullptr, 0, kEbxEcxEdx };
-    fe::runWhole(app, cpu, site, [](Guest& guest) { return dirPadUnderPointerBody(guest); });
+    static fe::Site site{ "sub_457270", 0, 0, nullptr, 0, kEbxEcxEdx };
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menub::dirPadUnderPointer(app, cpu); });
+}
+
+x86::reg32 frontend::menub::dirPadCentreUnderPointer(App* app, CPU& cpu)
+{
+    Guest guest(app, cpu);
+    return dirPadCentreUnderPointerBody(guest);
 }
 
 void frontend::dirPadCentreUnderPointer(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_4572d0", 0, 8, nullptr, 0, fe::kRestoreEdx };
-    fe::runWhole(app, cpu, site, [](Guest& guest) { return dirPadCentreUnderPointerBody(guest); });
+    static fe::Site site{ "sub_4572d0", 0, 0, nullptr, 0, fe::kRestoreEdx };
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menub::dirPadCentreUnderPointer(app, cpu); });
+}
+
+x86::reg32 frontend::menub::dirPadChoose(App* app, CPU& cpu, reg32 arrow)
+{
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 24 + 8);
+    return dirPadChooseBody(app, cpu, guest, arrow);
 }
 
 void frontend::dirPadChoose(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_457340", 0, 24 + 8, nullptr, 0, fe::kRestoreAll };
+    static fe::Site site{ "sub_457340", 0, 0, nullptr, 0, fe::kRestoreAll };
     const reg32 arrow = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest& guest) { return dirPadChooseBody(guest, arrow); });
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menub::dirPadChoose(app, cpu, arrow); });
+}
+
+x86::reg32 frontend::menub::dirPadDraw(App* app, CPU& cpu, reg32 item, reg32 active)
+{
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 20);
+    return dirPadDrawBody(app, cpu, guest, item, active);
 }
 
 void frontend::dirPadDraw(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_457460", 0, 20, nullptr, 0, kEbxEcxEsiEdi };
+    static fe::Site site{ "sub_457460", 0, 0, nullptr, 0, kEbxEcxEsiEdi };
     const reg32 item = cpu.eax, active = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest& guest) { return dirPadDrawBody(guest, item, active); });
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menub::dirPadDraw(app, cpu, item, active); });
+}
+
+x86::reg32 frontend::menub::dirPadKey(App* app, CPU& cpu, reg32 item, reg32, reg32 key)
+{
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 8);
+    return dirPadKeyBody(app, cpu, guest, item, std::uint16_t(key));
 }
 
 void frontend::dirPadKey(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_4575a0", 0, 8, nullptr, 0, fe::kRestoreEcx };
-    const reg32 item = cpu.eax;
-    const std::uint16_t key = std::uint16_t(cpu.ebx);
-    fe::runWhole(app, cpu, site, [&](Guest& guest) { return dirPadKeyBody(guest, item, key); });
+    static fe::Site site{ "sub_4575a0", 0, 0, nullptr, 0, fe::kRestoreEcx };
+    const reg32 item = cpu.eax, menu = cpu.edx, key = cpu.ebx;
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menub::dirPadKey(app, cpu, item, menu, key); });
+}
+
+x86::reg32 frontend::menub::dirPadAnswer(App*, CPU&)
+{
+    return reg32(-3);
 }
 
 void frontend::dirPadAnswer(win32::WinApplication* app, x86::CPU& cpu)
 {
     // sub_457620: a widget's slot: what it answers, always.
-    static fe::Site site{ "sub_457620", 0, 4, nullptr, 0, 0 };
-    fe::runWhole(app, cpu, site, [](Guest&) { return reg32(-3); });
+    static fe::Site site{ "sub_457620", 0, 0, nullptr, 0, 0 };
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menub::dirPadAnswer(app, cpu); });
+}
+
+x86::reg32 frontend::menub::dirPadLayout(App* app, CPU& cpu, reg32 item)
+{
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 12);
+    return dirPadLayoutBody(app, cpu, guest, item);
 }
 
 void frontend::dirPadLayout(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_457630", 0, 12, nullptr, 0, kEcxEdx };
+    static fe::Site site{ "sub_457630", 0, 0, nullptr, 0, kEcxEdx };
     const reg32 item = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest& guest) { return dirPadLayoutBody(guest, item); });
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menub::dirPadLayout(app, cpu, item); });
+}
+
+void frontend::menub::dirPadNothing(App*, CPU&)
+{
 }
 
 void frontend::dirPadNothing(win32::WinApplication* app, x86::CPU& cpu)
 {
     // sub_457670: a widget's slot with nothing in it.
-    static fe::Site site{ "sub_457670", 0, 4, nullptr, 0, 0 };
-    fe::runWhole(app, cpu, site, [](Guest& guest) { return guest.eax(); });
+    static fe::Site site{ "sub_457670", 0, 0, nullptr, 0, 0 };
+    fe::runWhole(app, cpu, site, [&](Guest&) {
+        menub::dirPadNothing(app, cpu);
+        return cpu.eax;
+    });
+}
+
+x86::reg32 frontend::menub::dirPadLoadShapes(App* app, CPU& cpu)
+{
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 16 + 8);
+    return dirPadLoadShapesBody(app, cpu, guest);
 }
 
 void frontend::dirPadLoadShapes(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_457680", 0, 16 + 8, nullptr, 0, kEsiEdi | fe::kRestoreEdx };
-    fe::runWhole(app, cpu, site, [](Guest& guest) { return dirPadLoadShapesBody(guest); });
+    static fe::Site site{ "sub_457680", 0, 0, nullptr, 0, kEsiEdi | fe::kRestoreEdx };
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menub::dirPadLoadShapes(app, cpu); });
 }
 
 }

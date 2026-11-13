@@ -1,19 +1,30 @@
 #include "native_controls_host.h"
+#include "native_controls_input.h"
 #include "native_guest.h"
+#include "native_windows.h"
+#include <winapi/kernel32.h>
+#include <winapi/user32.h>
 
 #include <cstdint>
 #include <initializer_list>
 #include <iterator>
+#include <optional>
 
 /* The game's side of DirectInput: the devices found and opened, the mouse, the
  * keyboard and the joysticks read, their force-feedback effects.
  * disassemble_nfs3hp.py binds each address to the function of that name here
  * (CONTROLS_INPUT_NATIVES), and the generated code calls it by name.
  *
- * Written as their code is, as native_frontend_text.cpp's: each push and pop
- * to the guest's stack, each call with the return address's slot, the
- * frames' locals in the guest's memory, the registers as the code leaves
- * them.  What the game asked of DirectInput -- DirectInputCreateA and each
+ * Each is a typed function under a name of its own, with an adapter under the
+ * game's name for the callers still on registers and the dispatch: it leaves
+ * the registers as the game's code does -- where a callee the code calls may
+ * keep a register, the core sets it as the code has it at the call.  A frame
+ * whose address a callee is handed (a DIPROPDWORD, DirectInput's buffers)
+ * stays on the guest's stack as deep as the code has it (GuestFrame), and a
+ * core calling a core makes room for the return address's slot as the call
+ * does.  What the code leaves in a register no caller reads after it
+ * (readMouse's and updateEffect's ebx, ecx and edx) is left as it comes.
+ * What the game asked of DirectInput -- DirectInputCreateA and each
  * method of its objects -- it asks of the port (controls::directInput,
  * native_controls_host.h), with the arguments the game's code pushes: there
  * is no DirectInput behind it, only the port's pads, mouse and keyboard.
@@ -95,6 +106,8 @@ constexpr reg32 kCloseHandle = 0x534488, kCreateEvent = 0x534494, kGetModuleHand
 constexpr reg32 kSetCursor = 0x534780, kShowCursor = 0x534794, kSwapMouseButton = 0x53479c;
 constexpr reg32 kMessageHandler = 0x4cc660, kSetMessageHandler = 0x4cc6d0;  // the window's, by message
 constexpr reg32 kPlacePointer = 0x435230;
+constexpr reg32 kJoystickFound = 0x436980;  // EnumDevices' callback
+constexpr reg32 kHideCursor = 0x436930;     // our WM_SETCURSOR handler
 constexpr reg32 kSetCursorMessage = 0x20;
 // IDirectInputA's methods.
 constexpr reg32 kRelease = 8, kCreateDevice = 0xc, kEnumDevices = 0x10;
@@ -113,18 +126,6 @@ void push(win32::WinApplication* app, x86::CPU& cpu, reg32 value)
 {
     cpu.esp -= 4;
     put(app, cpu.esp, value);
-}
-
-reg32 pop(win32::WinApplication* app, x86::CPU& cpu)
-{
-    const reg32 value = at(app, cpu.esp);
-    cpu.esp += 4;
-    return value;
-}
-
-void putHalf(win32::WinApplication* app, reg32 address, x86::reg16 value)
-{
-    app->getMemory<x86::reg16>(address) = value;
 }
 
 /* A call as the code makes it: the return address's slot, and esp as the
@@ -147,47 +148,124 @@ bool byAddress(win32::WinApplication* app, x86::CPU& cpu, reg32 target)
     return !cpu.terminate;
 }
 
-/* push ebp, mov ebp, esp after the registers named, and sub esp, `locals`;
- * mov esp, ebp and the pops the other way round, ret `popped`. */
-void enter(win32::WinApplication* app, x86::CPU& cpu, std::initializer_list<reg32*> saved, reg32 locals)
+using App = win32::WinApplication;
+using CPU = x86::CPU;
+using i16 = std::int16_t;
+using x86::reg8;
+
+constexpr reg32 kEffectBytes = 0x88;
+constexpr reg8 kForceFeedback = 8;  // in a joystick's kind
+// DISFFC_: SendForceFeedbackCommand's commands.
+constexpr reg32 kReset = 1, kStopAll = 2, kPause = 4, kContinue = 8, kActuatorsOn = 0x10, kActuatorsOff = 0x20;
+constexpr reg32 kEffectsMade = 0x1e;  // the effects' records
+
+/* The guest's stack as a function's code has it: `pushed` bytes of saved
+ * registers below esp, then `bytes` of locals, esp left below them; esp as it
+ * was when it ends.  Its base is where ebp would point.  For a frame whose
+ * address a callee is handed. */
+class GuestFrame
 {
-    for (reg32* r : saved)
-        push(app, cpu, *r);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    cpu.esp -= locals;
+public:
+    GuestFrame(CPU& cpu, reg32 pushed, reg32 bytes) : cpu(cpu), esp(cpu.esp), base(cpu.esp - pushed)
+    {
+        cpu.esp = base - bytes;
+    }
+    ~GuestFrame() { cpu.esp = esp; }
+    reg32 operator-(reg32 offset) const { return base - offset; }
+
+private:
+    CPU& cpu;
+    const reg32 esp;
+    const reg32 base;
+};
+
+/* The registers a function's code pushes and pops again, kept to be put back. */
+struct Kept
+{
+    reg32 ebx, ecx, edx, esi, edi, ebp;
+    explicit Kept(const CPU& cpu) : ebx(cpu.ebx), ecx(cpu.ecx), edx(cpu.edx), esi(cpu.esi), edi(cpu.edi), ebp(cpu.ebp)
+    {
+    }
+};
+
+bool isJoystick(reg32 device)
+{
+    return sreg32(device) >= 0 && sreg32(device) < 0x10;
 }
 
-void leave(win32::WinApplication* app, x86::CPU& cpu, std::initializer_list<reg32*> saved, reg32 popped = 0)
+/* Joystick `joystick`'s device (0 none), and whether it has force feedback. */
+reg32 joystickDevice(App* app, reg32 joystick)
 {
-    cpu.esp = cpu.ebp;
-    cpu.ebp = pop(app, cpu);
-    for (auto r = std::rbegin(saved); r != std::rend(saved); ++r)
-        **r = pop(app, cpu);
-    cpu.esp += 4 + popped;
+    return at(app, kJoysticks + joystick * 4);
 }
 
-/* rep movsd, then rep movsb of what is left: ecx bytes from esi to edi. */
-void copyBytes(win32::WinApplication* app, x86::CPU& cpu)
+bool forceFeedback(App* app, reg32 joystick)
 {
-    cpu.eax = cpu.ecx;
-    cpu.ecx >>= 2;
-    for (; cpu.ecx != 0; --cpu.ecx, cpu.esi += 4, cpu.edi += 4)
-        put(app, cpu.edi, at(app, cpu.esi));
-    cpu.cl = cpu.al;
-    cpu.cl &= 3;
-    for (; cpu.ecx != 0; --cpu.ecx, ++cpu.esi, ++cpu.edi)
-        putByte(app, cpu.edi, byte(app, cpu.esi));
+    return byte(app, kJoystickRecords + joystick * kJoystickBytes) & kForceFeedback;
 }
 
-/* An effect's or a joystick's record: its number times 0x88, as the code
- * makes it (shl 4, add, shl 3). */
-reg32 times17(reg32 n)
+reg32 effectObject(App* app, reg32 effect)
 {
-    return (n << 4) + n;
+    return at(app, kEffects + effect * 4);
+}
+
+/* An effect's number as the code reads it: ax, as a signed word. */
+reg32 effectIn(const CPU& cpu)
+{
+    return reg32(sreg32(i16(cpu.ax)));
+}
+
+/* Method `method` of DirectInput's object `object` (stdcall: the object, then
+ * `words`), as the code calls it: the object's table of methods read into
+ * edx, where the code has it.  Its HRESULT; nothing when the game stopped. */
+std::optional<reg32> callMethod(App* app, CPU& cpu, Object kind, reg32 object, reg32 method,
+                                std::initializer_list<reg32> words)
+{
+    for (auto w = std::rbegin(words); w != std::rend(words); ++w)
+        push(app, cpu, *w);
+    push(app, cpu, object);
+    cpu.edx = at(app, object);
+    if (!directInput(app, cpu, kind, method))
+        return std::nullopt;
+    return cpu.eax;
+}
+
+/* A function of Windows' (`Function`), handed `words`: the port's own, called
+ * as C++ (native_windows.h); in the check through its import's slot `Slot`
+ * (stdcall).  Its result; nothing when the game stopped. */
+template <reg32 Slot, auto Function, typename... Words>
+std::optional<reg32> callWindows(App* app, CPU& cpu, Words... words)
+{
+    return guest::windows<Slot, Function>(app, cpu, words...);
 }
 
 }  // namespace
+
+namespace
+{
+bool startInput(App* app, CPU& cpu);
+bool stopAllEffects(App* app, CPU& cpu, reg32 joystick);
+bool resetJoysticks(App* app, CPU& cpu);
+std::optional<reg32> acquire(App* app, CPU& cpu, reg32 device);
+bool acquiredBy(reg32 result);
+std::optional<reg32> effectMethod(App* app, CPU& cpu, reg32 effect, reg32 method);
+reg32 effectPlays(App* app, reg32 effect);
+std::optional<reg32> readZone(App* app, CPU& cpu, reg32 joystick, reg32 axis, reg32 which);
+std::optional<reg32> openTheMouse(App* app, CPU& cpu);
+std::optional<reg32> cooperate(App* app, CPU& cpu, reg32 device, reg32 flags);
+std::optional<Zone> axisZone(App* app, CPU& cpu, reg32 joystick, reg32 axis, bool read, reg32 which, reg32 percent);
+void zoneRegisters(App* app, CPU& cpu, reg32 joystick, reg32 axis, bool read, reg32 percent, const Zone& zone);
+
+/* The game's fill with zeros (nfs3hp::fillZero): `bytes` from `address`.
+ * False when the game stopped. */
+bool zero(App* app, CPU& cpu, reg32 address, reg32 bytes)
+{
+    cpu.eax = address;
+    cpu.edx = bytes;
+    return direct(app, cpu, fillZero);
+}
+}  // namespace
+
 
 void openMouse(win32::WinApplication* app, x86::CPU& cpu);
 void setPointerBounds(win32::WinApplication* app, x86::CPU& cpu);
@@ -204,2288 +282,2078 @@ void acquireResult(win32::WinApplication* app, x86::CPU& cpu);
 void effectPlaying(win32::WinApplication* app, x86::CPU& cpu);
 void axisProperty(win32::WinApplication* app, x86::CPU& cpu);
 
+namespace
+{
+
 /* 0x434f20: DirectInput started, where it is not: the joysticks' records
  * cleared, their devices and the effects' none, DirectInputCreateA asked for
- * version 5, and the mouse opened (openMouse).  Nothing kept if it fails. */
+ * version 5, and the mouse opened (openMouse).  Nothing kept if it fails.
+ * False when the game stopped. */
+bool startInput(App* app, CPU& cpu)
+{
+    if (at(app, kDirectInput) != 0)
+        return true;
+    const GuestFrame frame(cpu, 0x18, 0);  // ebx, ecx, edx, esi, edi, ebp pushed
+    if (!zero(app, cpu, kJoystickRecords, kAllJoystickBytes))
+        return false;
+    for (reg32 joystick = 0; joystick < 0x10; ++joystick)
+    {
+        put(app, kJoysticks + joystick * 4, 0);
+        put(app, kJoystickResolution + joystick * kJoystickBytes, 0x4b);
+    }
+    for (reg32 effect = 0; effect < kEffectsMade; ++effect)
+        put(app, kEffects + effect * 4, 0);
+    put(app, kJoystickCount, 0);
+    cpu.eax = kEffectsMade;  // as the effects' count leaves it: GetModuleHandle may hand it back
+    const std::optional<reg32> instance =
+        callWindows<kGetModuleHandle, &win32::kernel32::GetModuleHandleA>(app, cpu, 0);
+    if (!instance)
+        return false;
+    // DirectInputCreateA(the instance, version 5, &DirectInput, no outer)
+    push(app, cpu, 0);
+    push(app, cpu, kDirectInput);
+    push(app, cpu, 0x500);
+    push(app, cpu, *instance);
+    if (!directInput(app, cpu, Object::DirectInput, kCreate))
+        return false;
+    if (cpu.eax != 0)
+    {
+        put(app, kDirectInput, 0);
+        return true;
+    }
+    return direct(app, cpu, openMouse);
+}
+
+}  // namespace
+
+/* 0x434f20: startInput. */
 void startDirectInput(win32::WinApplication* app, x86::CPU& cpu)
 {
-    enter(app, cpu, {&cpu.ebx, &cpu.ecx, &cpu.edx, &cpu.esi, &cpu.edi}, 0);
-    if (at(app, kDirectInput) == 0)
-    {
-        cpu.edx = kAllJoystickBytes;
-        cpu.eax = kJoystickRecords;
-        if (!direct(app, cpu, fillZero))
-            return;
-        cpu.edx = 0;
-        do
-        {
-            cpu.eax = cpu.edx;
-            cpu.ebx = 0x4b;
-            cpu.eax <<= 4;
-            cpu.ecx = 0;
-            cpu.eax += cpu.edx;
-            put(app, kJoysticks + cpu.edx * 4, cpu.ecx);
-            ++cpu.edx;
-            put(app, kJoystickResolution + cpu.eax * 8, cpu.ebx);
-        } while (sreg32(cpu.edx) < 0x10);
-        cpu.eax = 1;
-        cpu.esi = 0;
-        put(app, kEffects - 4 + cpu.eax * 4, cpu.esi);
-        while (sreg32(cpu.eax) < 0x1e)
-        {
-            ++cpu.eax;
-            cpu.esi = 0;
-            put(app, kEffects - 4 + cpu.eax * 4, cpu.esi);
-        }
-        cpu.edi = 0;
-        push(app, cpu, cpu.edi);
-        push(app, cpu, kDirectInput);
-        push(app, cpu, 0x500);
-        push(app, cpu, cpu.edi);
-        put(app, kJoystickCount, cpu.edi);
-        if (!byAddress(app, cpu, at(app, kGetModuleHandle)))
-            return;
-        push(app, cpu, cpu.eax);
-        if (!directInput(app, cpu, Object::DirectInput, kCreate))
-            return;
-        if (cpu.eax != 0)
-            put(app, kDirectInput, cpu.edi);
-        else if (!direct(app, cpu, openMouse))
-            return;
-    }
-    leave(app, cpu, {&cpu.ebx, &cpu.ecx, &cpu.edx, &cpu.esi, &cpu.edi});
+    const Kept kept(cpu);
+    if (!startInput(app, cpu))
+        return;
+    cpu.ebx = kept.ebx;
+    cpu.ecx = kept.ecx;
+    cpu.edx = kept.edx;
+    cpu.esi = kept.esi;
+    cpu.edi = kept.edi;
+    cpu.ebp = kept.ebp;
+    cpu.esp += 4;
 }
 
 /* 0x434fd0: DirectInput stopped: the mouse let go and released (its event's
  * handle closed, though kept), the keyboard, each joystick, then DirectInput
- * itself; no joysticks. */
-void stopDirectInput(win32::WinApplication* app, x86::CPU& cpu)
+ * itself; no joysticks.  False when the game stopped. */
+bool stopInput(App* app, CPU& cpu)
 {
-    enter(app, cpu, {&cpu.ebx, &cpu.ecx, &cpu.edx, &cpu.esi, &cpu.edi}, 0);
+    const GuestFrame frame(cpu, 0x18, 0);  // ebx, ecx, edx, esi, edi, ebp pushed
     if (at(app, kDirectInput) != 0)
     {
         if (at(app, kMouse) != 0)
         {
-            cpu.ebx = at(app, kMouseEvent);
-            if (cpu.ebx != 0)
-            {
-                push(app, cpu, cpu.ebx);
-                if (!byAddress(app, cpu, at(app, kCloseHandle)))
-                    return;
-            }
-            cpu.eax = at(app, kMouse);
-            push(app, cpu, cpu.eax);
-            cpu.edx = at(app, cpu.eax);
-            if (!directInput(app, cpu, Object::Device, kUnacquire))
-                return;
-            cpu.eax = at(app, kMouse);
-            push(app, cpu, cpu.eax);
-            cpu.edx = at(app, cpu.eax);
-            cpu.edi = 0;
-            if (!directInput(app, cpu, Object::Device, kRelease))
-                return;
-            put(app, kMouse, cpu.edi);
+            const reg32 event = at(app, kMouseEvent);
+            if (event != 0 && !callWindows<kCloseHandle, &win32::kernel32::CloseHandle>(app, cpu, event))
+                return false;
+            if (!callMethod(app, cpu, Object::Device, at(app, kMouse), kUnacquire, {}))
+                return false;
+            if (!callMethod(app, cpu, Object::Device, at(app, kMouse), kRelease, {}))
+                return false;
+            put(app, kMouse, 0);
         }
-        cpu.eax = at(app, kKeyboard);
-        if (cpu.eax != 0)
+        if (at(app, kKeyboard) != 0)
         {
-            push(app, cpu, cpu.eax);
-            cpu.edx = at(app, cpu.eax);
-            if (!directInput(app, cpu, Object::Device, kUnacquire))
-                return;
-            cpu.eax = at(app, kKeyboard);
-            push(app, cpu, cpu.eax);
-            cpu.edx = at(app, cpu.eax);
-            if (!directInput(app, cpu, Object::Device, kRelease))
-                return;
-            cpu.edx = 0;
-            put(app, kKeyboard, cpu.edx);
+            if (!callMethod(app, cpu, Object::Device, at(app, kKeyboard), kUnacquire, {}))
+                return false;
+            if (!callMethod(app, cpu, Object::Device, at(app, kKeyboard), kRelease, {}))
+                return false;
+            put(app, kKeyboard, 0);
         }
-        cpu.esi = 0;
-        do
+        for (reg32 joystick = 0; joystick < 0x10; ++joystick)
         {
-            cpu.ebx = cpu.esi * 4;
-            cpu.ecx = at(app, cpu.ebx + kJoysticks);
-            if (cpu.ecx != 0)
-            {
-                push(app, cpu, cpu.ecx);
-                cpu.edx = at(app, cpu.ecx);
-                if (!directInput(app, cpu, Object::Device, kUnacquire))
-                    return;
-                cpu.eax = at(app, cpu.ebx + kJoysticks);
-                push(app, cpu, cpu.eax);
-                cpu.edx = at(app, cpu.eax);
-                cpu.edi = 0;
-                if (!directInput(app, cpu, Object::Device, kRelease))
-                    return;
-                put(app, cpu.ebx + kJoysticks, cpu.edi);
-            }
-            ++cpu.esi;
-        } while (sreg32(cpu.esi) < 0x10);
-        cpu.eax = at(app, kDirectInput);
-        push(app, cpu, cpu.eax);
-        cpu.edx = at(app, cpu.eax);
-        if (!directInput(app, cpu, Object::DirectInput, kRelease))
-            return;
-        cpu.eax = 0;
-        put(app, kDirectInput, cpu.eax);
+            if (joystickDevice(app, joystick) == 0)
+                continue;
+            if (!callMethod(app, cpu, Object::Device, joystickDevice(app, joystick), kUnacquire, {}))
+                return false;
+            if (!callMethod(app, cpu, Object::Device, joystickDevice(app, joystick), kRelease, {}))
+                return false;
+            put(app, kJoysticks + joystick * 4, 0);
+        }
+        if (!callMethod(app, cpu, Object::DirectInput, at(app, kDirectInput), kRelease, {}))
+            return false;
+        put(app, kDirectInput, 0);
     }
-    cpu.edx = 0;
-    put(app, kJoystickCount, cpu.edx);
-    leave(app, cpu, {&cpu.ebx, &cpu.ecx, &cpu.edx, &cpu.esi, &cpu.edi});
+    put(app, kJoystickCount, 0);
+    return true;
+}
+
+/* 0x434fd0: stopInput; eax 0 where DirectInput was started, as the code
+ * leaves it. */
+void stopDirectInput(win32::WinApplication* app, x86::CPU& cpu)
+{
+    const Kept kept(cpu);
+    const bool started = at(app, kDirectInput) != 0;
+    if (!stopInput(app, cpu))
+        return;
+    if (started)
+        cpu.eax = 0;
+    cpu.ebx = kept.ebx;
+    cpu.ecx = kept.ecx;
+    cpu.edx = kept.edx;
+    cpu.esi = kept.esi;
+    cpu.edi = kept.edi;
+    cpu.ebp = kept.ebp;
+    cpu.esp += 4;
+}
+
+namespace
+{
+
+/* A function of the game's by address (stdcall): its result; nothing when
+ * the game stopped. */
+std::optional<reg32> callGame(App* app, CPU& cpu, reg32 address, std::initializer_list<reg32> words)
+{
+    for (auto w = std::rbegin(words); w != std::rend(words); ++w)
+        push(app, cpu, *w);
+    if (!byAddress(app, cpu, address))
+        return std::nullopt;
+    return cpu.eax;
 }
 
 /* 0x4350a0: the mouse opened, DirectInput started first if it is not: the
  * buttons' swap asked of Windows (and put back), the device made, its
  * format the mouse's, exclusive in the foreground, an event for its data
- * and a buffer of 32 events, the window's WM_SETCURSOR handler ours
- * (hideCursor, the old one kept); then acquired, the buttons and the wheel
- * none, the pointer's bounds the 640 by 480 screen.  1, or 0 when it fails. */
-void openMouse(win32::WinApplication* app, x86::CPU& cpu)
+ * and a buffer of 32 events (a DIPROPDWORD on the guest's stack), the
+ * window's WM_SETCURSOR handler ours (hideCursor, the old one kept); then
+ * acquired, the buttons and the wheel none, the pointer's bounds the 640 by
+ * 480 screen.  1, or 0 when it fails; nothing when the game stopped. */
+std::optional<reg32> openTheMouse(App* app, CPU& cpu)
 {
-    enter(app, cpu, {&cpu.ebx, &cpu.ecx, &cpu.edx, &cpu.esi}, 0x14);
-    const reg32 ebp = cpu.ebp;
-    auto done = [&] { leave(app, cpu, {&cpu.ebx, &cpu.ecx, &cpu.edx, &cpu.esi}); };
+    const GuestFrame frame(cpu, 0x14, 0x14);  // ebx, ecx, edx, esi, ebp pushed; the DIPROPDWORD
     if (at(app, kDirectInput) == 0)
     {
-        if (!direct(app, cpu, startDirectInput))
-            return;
-        if (at(app, kDirectInput) == 0)
         {
-            cpu.eax = 0;
-            return done();
+            const GuestFrame call(cpu, 0, 4);
+            if (!startInput(app, cpu))
+                return std::nullopt;
         }
+        if (at(app, kDirectInput) == 0)
+            return 0;
     }
-    cpu.ebx = at(app, kMouse);
-    if (cpu.ebx == 0)
+    if (at(app, kMouse) == 0)
     {
-        push(app, cpu, 1);
-        if (!byAddress(app, cpu, at(app, kSwapMouseButton)))
-            return;
-        if (cpu.eax != 0)
+        const std::optional<reg32> swapped =
+            callWindows<kSwapMouseButton, &win32::user32::SwapMouseButton>(app, cpu, 1);
+        if (!swapped)
+            return std::nullopt;
+        if (*swapped != 0)
             put(app, kButtonsSwapped, 1);
         else
         {
-            push(app, cpu, cpu.ebx);
-            put(app, kButtonsSwapped, cpu.ebx);
-            if (!byAddress(app, cpu, at(app, kSwapMouseButton)))
-                return;
+            put(app, kButtonsSwapped, 0);
+            if (!callWindows<kSwapMouseButton, &win32::user32::SwapMouseButton>(app, cpu, 0))
+                return std::nullopt;
         }
-        // CreateDevice(DirectInput, GUID_SysMouse, &the mouse, none)
-        push(app, cpu, 0);
-        push(app, cpu, kMouse);
-        cpu.eax = at(app, kDirectInput);
-        push(app, cpu, kSysMouse);
-        cpu.edx = at(app, cpu.eax);
-        push(app, cpu, cpu.eax);
-        if (!directInput(app, cpu, Object::DirectInput, kCreateDevice))
-            return;
-        if (cpu.eax != 0)
+        std::optional<reg32> result =
+            callMethod(app, cpu, Object::DirectInput, at(app, kDirectInput), kCreateDevice, {kSysMouse, kMouse, 0});
+        if (!result)
+            return std::nullopt;
+        if (*result != 0)
+            return 0;
+        result = callMethod(app, cpu, Object::Device, at(app, kMouse), kSetDataFormat, {kMouseFormat});
+        if (!result)
+            return std::nullopt;
+        if (*result != 0)
+            return 0;
         {
-            cpu.eax = 0;
-            return done();
+            const GuestFrame call(cpu, 0, 4);
+            result = cooperate(app, cpu, kTheMouse, 5);  // DISCL_EXCLUSIVE | DISCL_FOREGROUND
         }
-        push(app, cpu, kMouseFormat);
-        cpu.eax = at(app, kMouse);
-        push(app, cpu, cpu.eax);
-        cpu.edx = at(app, cpu.eax);
-        if (!directInput(app, cpu, Object::Device, kSetDataFormat))
-            return;
-        if (cpu.eax != 0)
-        {
-            cpu.eax = 0;
-            return done();
-        }
-        cpu.edx = 5;  // DISCL_EXCLUSIVE | DISCL_FOREGROUND
-        cpu.eax = kTheMouse;
-        if (!direct(app, cpu, setCooperativeLevel))
-            return;
-        if (cpu.eax == 0)
-            return done();
-        for (int i = 0; i < 4; ++i)
-            push(app, cpu, 0);
-        if (!byAddress(app, cpu, at(app, kCreateEvent)))
-            return;
-        put(app, kMouseEvent, cpu.eax);
-        if (cpu.eax == 0)
-            return done();
-        push(app, cpu, cpu.eax);
-        cpu.edx = at(app, kMouse);
-        push(app, cpu, cpu.edx);
-        cpu.ecx = at(app, cpu.edx);
-        if (!directInput(app, cpu, Object::Device, kSetEventNotification))
-            return;
-        if (cpu.eax != 0)
-        {
-            cpu.eax = 0;
-            return done();
-        }
+        if (!result)
+            return std::nullopt;
+        if (*result == 0)
+            return 0;
+        const std::optional<reg32> event =
+            callWindows<kCreateEvent, &win32::kernel32::CreateEventA>(app, cpu, 0, 0, 0, 0);
+        if (!event)
+            return std::nullopt;
+        put(app, kMouseEvent, *event);
+        if (*event == 0)
+            return 0;
+        result = callMethod(app, cpu, Object::Device, at(app, kMouse), kSetEventNotification, {*event});
+        if (!result)
+            return std::nullopt;
+        if (*result != 0)
+            return 0;
         // SetProperty(the mouse, DIPROP_BUFFERSIZE, {0x14, 0x10, 0, DIPH_DEVICE, 32})
-        cpu.eax = 0x14;
-        cpu.edx = 0x10;
-        cpu.esi = 0x20;
-        cpu.ecx = 0;
-        put(app, ebp - 0x14, cpu.eax);
-        put(app, ebp - 0xc, cpu.ecx);
-        put(app, ebp - 8, cpu.ecx);
-        cpu.ecx = ebp - 0x14;
-        put(app, ebp - 0x10, cpu.edx);
-        push(app, cpu, cpu.ecx);
-        cpu.eax = at(app, kMouse);
-        put(app, ebp - 4, cpu.esi);
-        push(app, cpu, 1);
-        cpu.edx = at(app, cpu.eax);
-        push(app, cpu, cpu.eax);
-        if (!directInput(app, cpu, Object::Device, kSetProperty))
-            return;
-        if (cpu.eax != 0)
-        {
-            cpu.eax = 0;
-            return done();
-        }
-        push(app, cpu, cpu.esi);
-        if (!byAddress(app, cpu, kMessageHandler))
-            return;
-        push(app, cpu, 0x436930);  // hideCursor
-        push(app, cpu, cpu.esi);
-        put(app, kOldSetCursor, cpu.eax);
-        if (!byAddress(app, cpu, kSetMessageHandler))
-            return;
+        const reg32 record = frame - 0x14;
+        put(app, record, 0x14);
+        put(app, record + 8, 0);
+        put(app, record + 0xc, 0);
+        put(app, record + 4, 0x10);
+        put(app, record + 0x10, 0x20);
+        result = callMethod(app, cpu, Object::Device, at(app, kMouse), kSetProperty, {1, record});
+        if (!result)
+            return std::nullopt;
+        if (*result != 0)
+            return 0;
+        const std::optional<reg32> old = callGame(app, cpu, kMessageHandler, {kSetCursorMessage});
+        if (!old)
+            return std::nullopt;
+        put(app, kOldSetCursor, *old);
+        if (!callGame(app, cpu, kSetMessageHandler, {kSetCursorMessage, kHideCursor}))
+            return std::nullopt;
     }
     if (at(app, kMouse) != 0)
     {
-        cpu.eax = kTheMouse;
-        if (!direct(app, cpu, acquireDevice))
-            return;
+        const GuestFrame call(cpu, 0, 4);
+        if (!acquire(app, cpu, kTheMouse))
+            return std::nullopt;
     }
-    cpu.ecx = 0x1e0;
-    cpu.ebx = 0x280;
-    cpu.eax = 0;
-    cpu.edx = 0;
-    put(app, kButtons, cpu.eax);
-    put(app, kWheel, cpu.eax);
-    if (!direct(app, cpu, setPointerBounds))
-        return;
-    cpu.eax = 1;
-    done();
+    put(app, kButtons, 0);
+    put(app, kWheel, 0);
+    const GuestFrame call(cpu, 0, 4);
+    if (!boundPointer(app, cpu, 0, 0, 0x280, 0x1e0))
+        return std::nullopt;
+    return 1;
 }
 
-/* 0x4352d0: the pointer's bounds -- eax left, edx top, ebx right, ecx
- * bottom -- and the pointer put back inside them (placePointer), where
- * there is a mouse. */
-void setPointerBounds(win32::WinApplication* app, x86::CPU& cpu)
+}  // namespace
+
+/* 0x4350a0: openTheMouse. */
+void openMouse(win32::WinApplication* app, x86::CPU& cpu)
 {
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    if (at(app, kMouse) != 0)
-    {
-        put(app, kPointerLeft, cpu.eax);
-        put(app, kPointerTop, cpu.edx);
-        put(app, kPointerRight, cpu.ebx);
-        cpu.edx = at(app, kPointerY);
-        cpu.eax = at(app, kPointerX);
-        put(app, kPointerBottom, cpu.ecx);
-        if (!byAddress(app, cpu, kPlacePointer))
-            return;
-    }
-    cpu.ebp = pop(app, cpu);
+    const Kept kept(cpu);
+    const std::optional<reg32> opened = openTheMouse(app, cpu);
+    if (!opened)
+        return;
+    cpu.eax = *opened;
+    cpu.ebx = kept.ebx;
+    cpu.ecx = kept.ecx;
+    cpu.edx = kept.edx;
+    cpu.esi = kept.esi;
+    cpu.ebp = kept.ebp;
     cpu.esp += 4;
 }
 
-/* 0x435310: the mouse read -- what it has buffered, up to 32 events: the
- * pointer moved within its bounds, the wheel, buttons 0 to 3 pressed and let
- * go (swapped as Windows has them) -- into [eax] the buttons, [edx] x, [ebx]
- * y, [ecx] the wheel, where not 0; the game's handler called with those let
- * go.  Lost or not acquired, the mouse is acquired again, and what it had
- * handed back. */
+/* 0x4352d0: the pointer's bounds, and the pointer put back inside them, where
+ * there is a mouse: frontend::placePointer, by address, with x in eax and y
+ * in edx, the right and bottom bounds in ebx and ecx as the code leaves
+ * them.  False when the game stopped. */
+bool boundPointer(App* app, CPU& cpu, reg32 left, reg32 top, reg32 right, reg32 bottom)
+{
+    if (at(app, kMouse) == 0)
+        return true;
+    put(app, kPointerLeft, left);
+    put(app, kPointerTop, top);
+    put(app, kPointerRight, right);
+    const reg32 y = at(app, kPointerY), x = at(app, kPointerX);
+    put(app, kPointerBottom, bottom);
+    const GuestFrame frame(cpu, 4, 0);  // ebp pushed
+    cpu.eax = x;
+    cpu.edx = y;
+    cpu.ebx = right;
+    cpu.ecx = bottom;
+    return byAddress(app, cpu, kPlacePointer);
+}
+
+/* 0x4352d0: boundPointer, eax left, edx top, ebx right, ecx bottom; the
+ * registers as placePointer leaves them. */
+void setPointerBounds(win32::WinApplication* app, x86::CPU& cpu)
+{
+    const reg32 ebp = cpu.ebp;
+    if (!boundPointer(app, cpu, cpu.eax, cpu.edx, cpu.ebx, cpu.ecx))
+        return;
+    cpu.ebp = ebp;
+    cpu.esp += 4;
+}
+
+namespace
+{
+
+// DirectInput's buffer of the mouse's events: 32 DIDEVICEOBJECTDATA at most,
+// an event's offset in DIMOUSESTATE at 0, its data at 4.
+constexpr reg32 kMostEvents = 0x20, kEventBytes = 0x10;
+constexpr reg32 kMouseX = 0, kMouseY = 4, kMouseWheel = 8, kFirstButton = 0xc, kLastButton = 0xf;
+constexpr reg32 kPressed = 0x80;         // in a button's data
+constexpr reg32 kButtonBits = 0xf;       // buttons 0 to 3, a bit each
+constexpr reg32 kLetGo = 0xf00;          // kButtons' word: those let go, its second byte
+
+/* The game's handler of the mouse's buttons let go ([0x56446c], Watcom),
+ * handed the buttons' word, those let go only, in eax: what it gives back;
+ * nothing when the game stopped. */
+std::optional<reg32> buttonsLetGo(App* app, CPU& cpu, reg32 handler, reg32 letGo)
+{
+    cpu.eax = letGo;
+    if (!byAddress(app, cpu, handler))
+        return std::nullopt;
+    return cpu.eax;
+}
+
+/* The pointer's x or y at `place` moved by `by`, put back within [low] and
+ * [high]: where it moved to before it was put back. */
+reg32 movePointer(App* app, reg32 place, reg32 low, reg32 high, reg32 by)
+{
+    const reg32 moved = at(app, place) + by;
+    put(app, place, moved);
+    if (sreg32(moved) < sreg32(at(app, low)))
+        put(app, place, at(app, low));
+    else if (sreg32(moved) > sreg32(at(app, high)))
+        put(app, place, at(app, high));
+    return moved;
+}
+
+/* The buttons, the wheel, x and y, in that order, handed out where they are
+ * asked for ([buttonsAt] and so on, not 0): the last word handed out, none
+ * where none was asked for. */
+std::optional<reg32> handOut(App* app, reg32 buttonsAt, reg32 xAt, reg32 yAt, reg32 wheelAt)
+{
+    std::optional<reg32> last;
+    auto give = [&](reg32 to, reg32 from) {
+        if (to == 0)
+            return;
+        last = at(app, from);
+        put(app, to, *last);
+    };
+    give(buttonsAt, kButtons);
+    give(wheelAt, kWheel);
+    give(xAt, kPointerX);
+    give(yAt, kPointerY);
+    return last;
+}
+
+}  // namespace
+
+/* 0x435310: the mouse read -- what DirectInput has buffered of it, up to 32
+ * events: the pointer moved within its bounds, the wheel, buttons 0 to 3
+ * pressed and let go (the first two swapped as Windows has them, and the
+ * other two with them) -- and handed out (handOut), the game's handler called
+ * with the buttons let go.  Lost or not acquired, the mouse is acquired
+ * again; read or not, what it had is handed out, the buttons none.
+ *
+ * What the code leaves in eax, which 0x4bc530 and 0x451500 give back as
+ * theirs (their callers read none of it): the buttons' address where there is
+ * no mouse; DirectInput's answer where it would not read, or how many devices
+ * it acquired again; the handler's answer; else the last word handed out, or
+ * without one what the last event left -- where it moved the pointer to, the
+ * wheel, the button's offset -- or the buttons held where there was none.
+ * Nothing when the game stopped. */
+std::optional<reg32> mouseRead(App* app, CPU& cpu, reg32 buttonsAt, reg32 xAt, reg32 yAt, reg32 wheelAt)
+{
+    const reg32 mouse = at(app, kMouse);
+    if (mouse == 0)
+        return buttonsAt;
+    const GuestFrame frame(cpu, 0xc, 0x208);  // esi, edi, ebp pushed; the events, how many
+    const reg32 events = frame - 0x208, count = frame - 8;
+    put(app, count, kMostEvents);
+    put(app, kWheel, 0);
+    // GetDeviceData(the mouse, an event's bytes, the events, &how many, 0), the mouse left in eax
+    // as the code has it: a method that keeps eax answers it.
+    cpu.eax = mouse;
+    const std::optional<reg32> result =
+        callMethod(app, cpu, Object::Device, mouse, kGetDeviceData, {kEventBytes, events, count, 0});
+    if (!result)
+        return std::nullopt;
+    if (*result != 0)
+    {
+        put(app, kButtons, 0);
+        handOut(app, buttonsAt, xAt, yAt, wheelAt);
+        if (*result != kNotAcquired && *result != kInputLost)
+            return *result;
+        const GuestFrame call(cpu, 0, 4);  // the return address's slot
+        return acquire(app, cpu, kTheMouse);
+    }
+    reg32 left = at(app, kButtons) & kButtonBits;  // those held; those let go forgotten
+    put(app, kButtons, left);
+    const reg32 read = at(app, count);
+    for (reg32 i = 0; i < read; ++i)
+    {
+        const reg32 event = events + i * kEventBytes;
+        reg32 offset = at(app, event);
+        const reg32 data = at(app, event + 4);
+        if (offset == kMouseX)
+            left = movePointer(app, kPointerX, kPointerLeft, kPointerRight, data);
+        else if (offset == kMouseY)
+            left = movePointer(app, kPointerY, kPointerTop, kPointerBottom, data);
+        else if (offset == kMouseWheel)
+        {
+            put(app, kWheel, data);
+            left = data;
+        }
+        else
+        {
+            const bool button = offset >= kFirstButton && offset <= kLastButton;
+            if (button && at(app, kButtonsSwapped) != 0)
+                offset ^= 1;  // 0 and 1 swapped, 2 and 3
+            if (button)
+            {
+                const reg8 bit = reg8(1 << (offset - kFirstButton));
+                if (data & kPressed)
+                    putByte(app, kButtons, byte(app, kButtons) | bit);
+                else
+                {
+                    putByte(app, kButtons, byte(app, kButtons) ^ bit);
+                    putByte(app, kButtonsLetGo, byte(app, kButtonsLetGo) | bit);
+                }
+            }
+            left = offset;
+        }
+    }
+    const std::optional<reg32> handed = handOut(app, buttonsAt, xAt, yAt, wheelAt);
+    const reg32 handler = at(app, kButtonHandler);
+    if (handler != 0 && (byte(app, kButtonsLetGo) & kButtonBits) != 0)
+        return buttonsLetGo(app, cpu, handler, at(app, kButtons) & kLetGo);
+    return handed.value_or(left);
+}
+
+/* 0x435310: mouseRead into [eax] the buttons, [edx] x, [ebx] y, [ecx] the
+ * wheel; eax as the code leaves it. */
 void readMouse(win32::WinApplication* app, x86::CPU& cpu)
 {
-    enter(app, cpu, {&cpu.esi, &cpu.edi}, 0x208);
-    const reg32 ebp = cpu.ebp;
-    auto done = [&] { leave(app, cpu, {&cpu.esi, &cpu.edi}); };
-    put(app, ebp - 4, cpu.eax);
-    cpu.esi = cpu.edx;
-    cpu.edi = cpu.ebx;
-    cpu.ebx = cpu.ecx;
-    cpu.edx = 0x20;
-    cpu.ecx = at(app, kMouse);
-    put(app, ebp - 8, cpu.edx);
-    if (cpu.ecx == 0)
-        return done();
-    // GetDeviceData(the mouse, 0x10, the frame's events, &32, 0)
-    push(app, cpu, 0);
-    cpu.edx = ebp - 8;
-    push(app, cpu, cpu.edx);
-    cpu.edx = ebp - 0x208;
-    cpu.eax = 0;
-    push(app, cpu, cpu.edx);
-    put(app, kWheel, cpu.eax);
-    push(app, cpu, 0x10);
-    cpu.eax = cpu.ecx;
-    cpu.ecx = at(app, cpu.ecx);
-    push(app, cpu, cpu.eax);
-    if (!directInput(app, cpu, Object::Device, kGetDeviceData))
+    const Kept kept(cpu);
+    const std::optional<reg32> left = mouseRead(app, cpu, cpu.eax, cpu.edx, cpu.ebx, cpu.ecx);
+    if (!left)
         return;
-    if (cpu.eax != 0)
-    {
-        cpu.edx = 0;
-        cpu.ecx = at(app, ebp - 4);
-        put(app, kButtons, cpu.edx);
-        if (cpu.ecx != 0)
-            put(app, cpu.ecx, cpu.edx);
-        if (cpu.ebx != 0)
-        {
-            cpu.edx = at(app, kWheel);
-            put(app, cpu.ebx, cpu.edx);
-        }
-        if (cpu.esi != 0)
-        {
-            cpu.edx = at(app, kPointerX);
-            put(app, cpu.esi, cpu.edx);
-        }
-        if (cpu.edi != 0)
-        {
-            cpu.edx = at(app, kPointerY);
-            put(app, cpu.edi, cpu.edx);
-        }
-        if (cpu.eax == kNotAcquired || cpu.eax == kInputLost)
-        {
-            cpu.eax = kTheMouse;
-            if (!direct(app, cpu, acquireDevice))
-                return;
-        }
-        return done();
-    }
-    cpu.eax = at(app, kButtons);
-    cpu.eax &= 0xf;
-    cpu.edx = 0;
-    put(app, kButtons, cpu.eax);
-    // Each event: its offset in DIMOUSESTATE at 0, its data at 4.
-    for (; cpu.edx < at(app, ebp - 8); ++cpu.edx)
-    {
-        cpu.ecx = cpu.edx << 4;
-        cpu.eax = at(app, cpu.ecx + ebp - 0x208);
-        if (cpu.eax == 0 || cpu.eax == 4)
-        {
-            const reg32 place = cpu.eax == 0 ? kPointerX : kPointerY;
-            const reg32 low = cpu.eax == 0 ? kPointerLeft : kPointerTop;
-            const reg32 high = cpu.eax == 0 ? kPointerRight : kPointerBottom;
-            cpu.eax = at(app, cpu.ecx + ebp - 0x204);
-            cpu.ecx = at(app, place);
-            cpu.ecx += cpu.eax;
-            put(app, place, cpu.ecx);
-            cpu.eax = cpu.ecx;
-            cpu.ecx = at(app, low);
-            if (sreg32(cpu.eax) < sreg32(cpu.ecx))
-                put(app, place, cpu.ecx);
-            else
-            {
-                cpu.ecx = at(app, high);
-                if (sreg32(cpu.eax) > sreg32(cpu.ecx))
-                    put(app, place, cpu.ecx);
-            }
-            continue;
-        }
-        if (cpu.eax == 8)
-        {
-            cpu.eax = at(app, cpu.ecx + ebp - 0x204);
-            put(app, kWheel, cpu.eax);
-            continue;
-        }
-        if (at(app, kButtonsSwapped) != 0)
-        {
-            if (cpu.eax == 0xc)
-                cpu.eax = 0xd;
-            else if (cpu.eax == 0xd)
-                cpu.eax = 0xc;
-            else if (cpu.eax == 0xe)
-                cpu.eax = 0xf;
-            else if (cpu.eax == 0xf)
-                cpu.eax = 0xe;
-        }
-        cpu.ecx = cpu.edx << 4;
-        if (cpu.eax >= 0xc && cpu.eax <= 0xf)
-        {
-            const x86::reg8 bit = x86::reg8(1 << (cpu.eax - 0xc));
-            if (byte(app, cpu.ecx + ebp - 0x204) & 0x80)
-                putByte(app, kButtons, byte(app, kButtons) | bit);
-            else
-            {
-                putByte(app, kButtons, byte(app, kButtons) ^ bit);
-                putByte(app, kButtonsLetGo, byte(app, kButtonsLetGo) | bit);
-            }
-        }
-    }
-    if (at(app, ebp - 4) != 0)
-    {
-        cpu.edx = at(app, ebp - 4);
-        cpu.eax = at(app, kButtons);
-        put(app, cpu.edx, cpu.eax);
-    }
-    if (cpu.ebx != 0)
-    {
-        cpu.eax = at(app, kWheel);
-        put(app, cpu.ebx, cpu.eax);
-    }
-    if (cpu.esi != 0)
-    {
-        cpu.eax = at(app, kPointerX);
-        put(app, cpu.esi, cpu.eax);
-    }
-    if (cpu.edi != 0)
-    {
-        cpu.eax = at(app, kPointerY);
-        put(app, cpu.edi, cpu.eax);
-    }
-    if (at(app, kButtonHandler) != 0 && (byte(app, kButtonsLetGo) & 0xf) != 0)
-    {
-        cpu.eax = at(app, kButtons);
-        cpu.eax &= 0xf00;
-        if (!byAddress(app, cpu, at(app, kButtonHandler)))
-            return;
-    }
-    done();
+    cpu.eax = *left;
+    cpu.esi = kept.esi;
+    cpu.edi = kept.edi;
+    cpu.ebp = kept.ebp;
+    cpu.esp += 4;
 }
 
 /* 0x435600: the joysticks, looked for once -- EnumDevices for the attached
  * ones (joystickFound), each described (describeJoystick) -- and acquired,
  * their force feedback reset, when there are any.  How many there are; 0
- * when DirectInput will not start. */
-void findJoysticks(win32::WinApplication* app, x86::CPU& cpu)
+ * when DirectInput will not start; nothing when the game stopped. */
+std::optional<reg32> lookForJoysticks(App* app, CPU& cpu)
 {
-    enter(app, cpu, {&cpu.ecx, &cpu.edx, &cpu.esi, &cpu.edi}, 0);
+    const GuestFrame frame(cpu, 0x14, 0);  // ecx, edx, esi, edi, ebp pushed
     bool look = true;
     if (at(app, kDirectInput) == 0)
     {
-        if (!direct(app, cpu, startDirectInput))
-            return;
+        const GuestFrame slot(cpu, 0, 4);
+        if (!startInput(app, cpu))
+            return std::nullopt;
         if (at(app, kDirectInput) == 0)
-        {
-            cpu.eax = 0;
-            return leave(app, cpu, {&cpu.ecx, &cpu.edx, &cpu.esi, &cpu.edi});
-        }
+            return 0;
     }
     else if (at(app, kJoysticksLooked) != 0)
         look = false;
     if (look)
     {
-        cpu.esi = 1;
-        cpu.edi = at(app, kJoystickCount);
-        put(app, kJoysticksLooked, cpu.esi);
-        if (cpu.edi == 0)
+        const reg32 count = at(app, kJoystickCount);
+        put(app, kJoysticksLooked, 1);
+        if (count == 0)
         {
             // EnumDevices(DirectInput, DIDEVTYPE_JOYSTICK, joystickFound, DirectInput, DIEDFL_ATTACHEDONLY)
-            push(app, cpu, cpu.esi);
-            cpu.eax = at(app, kDirectInput);
-            push(app, cpu, cpu.eax);
-            push(app, cpu, 0x436980);  // joystickFound
-            push(app, cpu, 4);
-            cpu.edx = at(app, cpu.eax);
-            push(app, cpu, cpu.eax);
-            if (!directInput(app, cpu, Object::DirectInput, kEnumDevices))
-                return;
-            cpu.eax = kAllJoysticks;
-            if (!direct(app, cpu, describeJoystick))
-                return;
+            const reg32 input = at(app, kDirectInput);
+            if (!callMethod(app, cpu, Object::DirectInput, input, kEnumDevices, {4, kJoystickFound, input, 1}))
+                return std::nullopt;
+            const GuestFrame slot(cpu, 0, 4);
+            if (!describe(app, cpu, kAllJoysticks))
+                return std::nullopt;
         }
         if (at(app, kJoystickCount) != 0)
         {
-            cpu.eax = kAllJoysticks;
-            if (!direct(app, cpu, acquireDevice))
-                return;
-            if (!direct(app, cpu, resetForceFeedback))
-                return;
+            const GuestFrame slot(cpu, 0, 4);
+            if (!acquire(app, cpu, kAllJoysticks))
+                return std::nullopt;
+            if (!resetJoysticks(app, cpu))
+                return std::nullopt;
         }
     }
-    cpu.eax = at(app, kJoystickCount);
-    leave(app, cpu, {&cpu.ecx, &cpu.edx, &cpu.esi, &cpu.edi});
+    return at(app, kJoystickCount);
 }
 
-/* 0x435690: joystick eax described, where it is not yet -- acquired; whether
- * it has force feedback, the buttons (up to 32), hats (4) and axes (8) it
- * has, by asking for each object's info, and each axis's dead zone and
- * saturation (readAxisZone).  Its record, or 0; 0x10 every joystick. */
-void describeJoystick(win32::WinApplication* app, x86::CPU& cpu)
+/* 0x435600: lookForJoysticks. */
+void findJoysticks(win32::WinApplication* app, x86::CPU& cpu)
 {
-    enter(app, cpu, {&cpu.ebx, &cpu.ecx, &cpu.edx, &cpu.esi, &cpu.edi}, 0x190);
-    const reg32 ebp = cpu.ebp;
-    auto done = [&] { leave(app, cpu, {&cpu.ebx, &cpu.ecx, &cpu.edx, &cpu.esi, &cpu.edi}); };
-    put(app, ebp - 4, cpu.eax);
-    // The axes' offsets in DIJOYSTATE, to the frame.
-    cpu.ecx = 8;
-    cpu.edi = ebp - 0x28;
-    cpu.esi = kAxisOffsets;
-    for (; cpu.ecx != 0; --cpu.ecx, cpu.esi += 4, cpu.edi += 4)
-        put(app, cpu.edi, at(app, cpu.esi));
-    if (sreg32(cpu.eax) > 0x10 || sreg32(cpu.eax) < 0)
-    {
-        cpu.eax = 0;
-        return done();
-    }
-    if (cpu.eax == kAllJoysticks)
-    {
-        cpu.ebx = 0xf;
-        do
-        {
-            cpu.eax = cpu.ebx;
-            if (!direct(app, cpu, describeJoystick))
-                return;
-            --cpu.ebx;
-        } while (sreg32(cpu.ebx) > 0);
-        cpu.eax = 0;
-        if (!direct(app, cpu, describeJoystick))
-            return;
-        return done();
-    }
-    if (at(app, kDirectInput) == 0)
-    {
-        if (!direct(app, cpu, startDirectInput))
-            return;
-        if (at(app, kDirectInput) == 0)
-        {
-            cpu.eax = 0;
-            return done();
-        }
-    }
-    cpu.esi = at(app, ebp - 4);
-    cpu.esi <<= 2;
-    cpu.eax = at(app, cpu.esi + kJoysticks);
-    if (cpu.eax == 0)
-        return done();
-    cpu.edx = at(app, ebp - 4);
-    cpu.ebx = cpu.edx;
-    cpu.ebx <<= 4;
-    cpu.ebx += cpu.edx;
-    cpu.eax = at(app, ebp - 4);
-    cpu.ebx <<= 3;
-    if (!direct(app, cpu, acquireDevice))
+    const Kept kept(cpu);
+    const std::optional<reg32> count = lookForJoysticks(app, cpu);
+    if (!count)
         return;
-    if (at(app, cpu.ebx + kJoystickButtons) == 0 && at(app, cpu.ebx + kJoystickAxes) == 0)
-    {
-        // GetCapabilities(the joystick, a DIDEVCAPS of 0x2c at [ebp - 0x54])
-        cpu.ecx = ebp - 0x54;
-        cpu.edi = 0x2c;
-        push(app, cpu, cpu.ecx);
-        cpu.eax = at(app, cpu.esi + kJoysticks);
-        put(app, ebp - 0x54, cpu.edi);
-        push(app, cpu, cpu.eax);
-        cpu.edx = at(app, cpu.eax);
-        if (!directInput(app, cpu, Object::Device, kGetCapabilities))
-            return;
-        if (cpu.eax != 0)
-        {
-            cpu.eax = 0;
-            return done();
-        }
-        if (byte(app, ebp - 0x4f) & 1)  // DIDC_FORCEFEEDBACK
-            putByte(app, cpu.ebx + kJoystickRecords, byte(app, cpu.ebx + kJoystickRecords) | 8);
-        // Each object: GetObjectInfo(the joystick, a DIDEVICEOBJECTINSTANCE of
-        // 0x13c at [ebp - 0x190], its offset, DIPH_BYOFFSET).
-        cpu.eax = 0x13c;
-        cpu.esi = 0;
-        cpu.ebx = 0;
-        put(app, ebp - 0x190, cpu.eax);
-        // The buttons: at 0x30 on.
-        while (cpu.esi < at(app, ebp - 0x44) && sreg32(cpu.ebx) < 0x20)
-        {
-            push(app, cpu, 1);
-            cpu.ecx = cpu.ebx + 0x30;
-            cpu.eax = at(app, ebp - 4);
-            push(app, cpu, cpu.ecx);
-            cpu.ecx = ebp - 0x190;
-            cpu.eax = at(app, cpu.eax * 4 + kJoysticks);
-            push(app, cpu, cpu.ecx);
-            cpu.edx = at(app, cpu.eax);
-            push(app, cpu, cpu.eax);
-            if (!directInput(app, cpu, Object::Device, kGetObjectInfo))
-                return;
-            if (cpu.eax == 0)
-            {
-                cpu.edx = at(app, ebp - 4);
-                cpu.eax = cpu.edx;
-                cpu.eax <<= 4;
-                cpu.cl = cpu.bl;
-                cpu.eax += cpu.edx;
-                cpu.edx = 1;
-                cpu.edx <<= cpu.cl & 31;
-                cpu.ecx = at(app, cpu.eax * 8 + kJoystickButtons);
-                cpu.ecx |= cpu.edx;
-                ++cpu.esi;
-                put(app, cpu.eax * 8 + kJoystickButtons, cpu.ecx);
-            }
-            ++cpu.ebx;
-        }
-        // The hats: at 0x20 on.
-        cpu.ebx = 0;
-        cpu.esi = 0;
-        while (cpu.esi < at(app, ebp - 0x40) && sreg32(cpu.ebx) < 4)
-        {
-            cpu.edx = cpu.ebx * 4;
-            push(app, cpu, 1);
-            cpu.edx += 0x20;
-            cpu.eax = at(app, ebp - 4);
-            push(app, cpu, cpu.edx);
-            cpu.edx = ebp - 0x190;
-            cpu.eax = at(app, cpu.eax * 4 + kJoysticks);
-            push(app, cpu, cpu.edx);
-            cpu.ecx = at(app, cpu.eax);
-            push(app, cpu, cpu.eax);
-            if (!directInput(app, cpu, Object::Device, kGetObjectInfo))
-                return;
-            if (cpu.eax == 0)
-            {
-                cpu.edx = at(app, ebp - 4);
-                cpu.eax = cpu.edx;
-                cpu.eax <<= 4;
-                cpu.cl = cpu.bl;
-                cpu.eax += cpu.edx;
-                cpu.edx = 1;
-                cpu.edx <<= cpu.cl & 31;
-                cpu.ecx = at(app, cpu.eax * 8 + kJoystickHats);
-                cpu.ecx |= cpu.edx;
-                ++cpu.esi;
-                put(app, cpu.eax * 8 + kJoystickHats, cpu.ecx);
-            }
-            ++cpu.ebx;
-        }
-        // The axes: at the frame's offsets; each one's zones.
-        cpu.esi = 0;
-        put(app, ebp - 8, cpu.esi);
-        while (cpu.esi < at(app, ebp - 0x48) && sreg32(at(app, ebp - 8)) < 8)
-        {
-            cpu.ecx = at(app, ebp - 8);
-            push(app, cpu, 1);
-            cpu.ebx = at(app, ebp + cpu.ecx * 4 - 0x28);
-            cpu.eax = at(app, ebp - 4);
-            push(app, cpu, cpu.ebx);
-            cpu.ecx = ebp - 0x190;
-            cpu.eax = at(app, cpu.eax * 4 + kJoysticks);
-            push(app, cpu, cpu.ecx);
-            cpu.edx = at(app, cpu.eax);
-            push(app, cpu, cpu.eax);
-            if (!directInput(app, cpu, Object::Device, kGetObjectInfo))
-                return;
-            if (cpu.eax == 0)
-            {
-                cpu.edx = at(app, ebp - 4);
-                cpu.eax = cpu.edx;
-                cpu.eax <<= 4;
-                cpu.eax += cpu.edx;
-                cpu.cl = byte(app, ebp - 8);
-                cpu.edx = 1;
-                cpu.edi = at(app, cpu.eax * 8 + kJoystickAxes);
-                cpu.edx <<= cpu.cl & 31;
-                cpu.ebx = 0;
-                cpu.edi |= cpu.edx;
-                cpu.edx = at(app, ebp - 8);
-                put(app, cpu.eax * 8 + kJoystickAxes, cpu.edi);
-                cpu.eax = at(app, ebp - 4);
-                if (!direct(app, cpu, readAxisZone))
-                    return;
-                cpu.ebx = 1;
-                cpu.edx = at(app, ebp - 8);
-                cpu.eax = at(app, ebp - 4);
-                ++cpu.esi;
-                if (!direct(app, cpu, readAxisZone))
-                    return;
-            }
-            put(app, ebp - 8, at(app, ebp - 8) + 1);
-        }
-        cpu.ebx = at(app, ebp - 4);
-        cpu.eax = cpu.ebx;
-        cpu.eax <<= 4;
-        cpu.eax += cpu.ebx;
-    }
-    else
-    {
-        cpu.edx = at(app, ebp - 4);
-        cpu.eax = cpu.edx;
-        cpu.eax <<= 4;
-        cpu.eax += cpu.edx;
-    }
-    cpu.eax <<= 3;
-    cpu.eax += kJoystickRecords;
-    done();
-}
-
-/* 0x4358f0: joystick eax read into the DIJOYSTATE at edx -- polled, its
- * state taken -- and made the game's after it: the axes copied to 0x50, the
- * buttons pressed as bits at 0x70, the 4 hats' directions at 0x74 (1 up to
- * 8 round from north, 0 centred or none).  The state, or 0; lost or not
- * acquired, the joystick acquired again. */
-void readJoystick(win32::WinApplication* app, x86::CPU& cpu)
-{
-    enter(app, cpu, {&cpu.ebx, &cpu.ecx, &cpu.esi, &cpu.edi}, 4);
-    const reg32 ebp = cpu.ebp;
-    auto done = [&] { leave(app, cpu, {&cpu.ebx, &cpu.ecx, &cpu.esi, &cpu.edi}); };
-    cpu.esi = cpu.eax;
-    cpu.ebx = cpu.edx;
-    cpu.edi = cpu.edx;
-    if (sreg32(cpu.eax) >= 0x10 || sreg32(cpu.eax) < 0)
-    {
-        cpu.eax = 0;
-        return done();
-    }
-    cpu.eax <<= 2;
-    cpu.edx = at(app, cpu.eax + kJoysticks);
-    put(app, ebp - 4, cpu.eax);
-    if (cpu.edx == 0 || cpu.ebx == 0)
-    {
-        cpu.eax = 0;
-        return done();
-    }
-    cpu.eax = cpu.edx;
-    push(app, cpu, cpu.eax);
-    cpu.edx = at(app, cpu.edx);
-    if (!directInput(app, cpu, Object::Device, kPoll))
-        return;
-    if (cpu.eax != 0)
-    {
-        if (cpu.eax == kInputLost || cpu.eax == kNotAcquired)
-        {
-            cpu.eax = cpu.esi;
-            if (!direct(app, cpu, acquireDevice))
-                return;
-        }
-        cpu.eax = 0;
-        return done();
-    }
-    push(app, cpu, cpu.ebx);
-    cpu.eax = at(app, ebp - 4);
-    push(app, cpu, 0x50);
-    cpu.eax = at(app, cpu.eax + kJoysticks);
-    push(app, cpu, cpu.eax);
-    cpu.edx = at(app, cpu.eax);
-    if (!directInput(app, cpu, Object::Device, kGetDeviceState))
-        return;
-    if (cpu.eax != 0)
-    {
-        if (cpu.eax == kInputLost)
-        {
-            cpu.eax = cpu.esi;
-            if (!direct(app, cpu, acquireDevice))
-                return;
-        }
-        cpu.eax = 0;
-        return done();
-    }
-    cpu.eax = at(app, cpu.ebx);
-    put(app, cpu.ebx + 0x70, 0);
-    put(app, cpu.ebx + 0x50, cpu.eax);
-    for (reg32 i = 4; i < 0x20; i += 4)
-    {
-        cpu.eax = at(app, cpu.ebx + i);
-        put(app, cpu.ebx + 0x50 + i, cpu.eax);
-    }
-    cpu.eax = 0;
-    do
-    {
-        cpu.edx = cpu.edi + cpu.eax;
-        if (byte(app, cpu.edx + 0x30) & 0x80)
-        {
-            cpu.edx = 1;
-            cpu.cl = cpu.al;
-            cpu.edx <<= cpu.cl & 31;
-            put(app, cpu.edi + 0x70, at(app, cpu.edi + 0x70) | cpu.edx);
-        }
-        ++cpu.eax;
-    } while (sreg32(cpu.eax) < 0x20);
-    cpu.edx = 0;
-    do
-    {
-        cpu.eax = cpu.esi;
-        cpu.eax <<= 4;
-        cpu.cl = cpu.dl;
-        cpu.ebx = cpu.esi + cpu.eax;
-        cpu.eax = 1;
-        cpu.ebx <<= 3;
-        cpu.eax <<= cpu.cl & 31;
-        bool centred = true;
-        if (at(app, cpu.ebx + kJoystickHats) & cpu.eax)
-        {
-            cpu.eax = cpu.edx * 4;
-            cpu.eax += cpu.edi;
-            cpu.ebx = at(app, cpu.eax + 0x20);
-            if (cpu.ebx < 0xffff)
-            {
-                centred = false;
-                static const reg32 kDirections[] = {0, 0x1194, 0x2328, 0x34bc, 0x4650, 0x57e4, 0x6978, 0x7b0c};
-                reg32 direction = 0;
-                for (reg32 i = 0; i < 8; ++i)
-                    if (cpu.ebx == kDirections[i])
-                    {
-                        direction = i + 1;
-                        break;
-                    }
-                put(app, cpu.eax + 0x74, direction);
-            }
-        }
-        if (centred)
-            put(app, cpu.edi + cpu.edx * 4 + 0x74, 0);
-        ++cpu.edx;
-    } while (sreg32(cpu.edx) < 4);
-    cpu.eax = cpu.edi;
-    done();
-}
-
-/* 0x435ae0: joystick eax's axis edx's dead zone (ebx 0) or saturation (ebx
- * 1) asked of DirectInput (axisProperty), in percent, kept in its record --
- * the saturation as 100 less it.  What was kept. */
-void readAxisZone(win32::WinApplication* app, x86::CPU& cpu)
-{
-    enter(app, cpu, {&cpu.ecx, &cpu.esi, &cpu.edi}, 4);
-    const reg32 ebp = cpu.ebp;
-    cpu.esi = cpu.eax;
-    put(app, ebp - 4, cpu.edx);
-    cpu.edi = cpu.ebx;
-    push(app, cpu, 0);
-    cpu.ecx = cpu.ebx;
-    cpu.ebx = 1;
-    if (!direct(app, cpu, axisProperty))
-        return;
-    cpu.ebx = cpu.eax;
-    cpu.edx = cpu.eax;
-    cpu.eax = cpu.esi;
-    cpu.eax <<= 4;
-    cpu.eax += cpu.esi;
-    cpu.esi = at(app, ebp - 4);
-    cpu.eax <<= 3;
-    cpu.esi <<= 3;
-    cpu.eax += cpu.esi;
-    if (cpu.edi == 0)
-        put(app, cpu.eax + kJoystickDeadZone, cpu.ebx);
-    else
-    {
-        cpu.edx = 0x64;
-        cpu.edx -= cpu.ebx;
-        put(app, cpu.eax + kJoystickSaturation, cpu.edx);
-    }
-    cpu.eax = cpu.edx;
-    leave(app, cpu, {&cpu.ecx, &cpu.esi, &cpu.edi});
-}
-
-/* 0x435b40: joystick eax's axis edx's dead zone (ebx 0) or saturation (ebx
- * 1, ecx as 100 less it) set to ecx percent (axisProperty). */
-void setAxisZone(win32::WinApplication* app, x86::CPU& cpu)
-{
-    push(app, cpu, cpu.esi);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    if (cpu.ebx == 1)
-    {
-        cpu.esi = 0x64;
-        cpu.esi -= cpu.ecx;
-        cpu.ecx = cpu.esi;
-    }
-    push(app, cpu, cpu.ecx);
-    cpu.ecx = cpu.ebx;
-    cpu.ebx = 0;
-    if (!direct(app, cpu, axisProperty))
-        return;
-    cpu.ebp = pop(app, cpu);
-    cpu.esi = pop(app, cpu);
+    cpu.eax = *count;
+    cpu.ebx = kept.ebx;
+    cpu.ecx = kept.ecx;
+    cpu.edx = kept.edx;
+    cpu.esi = kept.esi;
+    cpu.edi = kept.edi;
+    cpu.ebp = kept.ebp;
     cpu.esp += 4;
 }
 
-/* 0x435b60: the joysticks with force feedback reset (DISFFC_RESET), looked
- * for first when there are none. */
-void resetForceFeedback(win32::WinApplication* app, x86::CPU& cpu)
+/* 0x435690: joystick `joystick` described, where it is not yet -- acquired;
+ * whether it has force feedback, the buttons (up to 32), hats (4) and axes
+ * (8) it has, by asking for each object's info, and each axis's dead zone
+ * and saturation (readZone).  The DIDEVCAPS and the
+ * DIDEVICEOBJECTINSTANCE DirectInput fills are on the guest's stack.  Its
+ * record, or 0; for all of them (0x10) each from the 15th down, joystick
+ * 0's.  Nothing when the game stopped. */
+std::optional<reg32> describe(App* app, CPU& cpu, reg32 joystick)
 {
-    enter(app, cpu, {&cpu.ebx, &cpu.ecx, &cpu.edx, &cpu.esi}, 0);
-    if (at(app, kJoystickCount) == 0 && !direct(app, cpu, findJoysticks))
-        return;
-    for (cpu.ebx = 0; sreg32(cpu.ebx) < sreg32(at(app, kJoystickCount)); ++cpu.ebx)
+    const GuestFrame frame(cpu, 0x18, 0x190);  // ebx, ecx, edx, esi, edi, ebp pushed; the locals
+    if (sreg32(joystick) > 0x10 || sreg32(joystick) < 0)
+        return 0;
+    const GuestFrame slot(cpu, 0, 4);
+    if (joystick == kAllJoysticks)
     {
-        cpu.ecx = cpu.ebx * 4;
-        cpu.esi = at(app, cpu.ecx + kJoysticks);
-        if (cpu.esi == 0)
-            continue;
-        cpu.eax = times17(cpu.ebx);
-        if (byte(app, cpu.eax * 8 + kJoystickRecords) & 8)
+        std::optional<reg32> record;
+        for (reg32 each = 0x10; each-- > 0;)
+            if (!(record = describe(app, cpu, each)))
+                return std::nullopt;
+        return record;
+    }
+    if (at(app, kDirectInput) == 0)
+    {
+        if (!startInput(app, cpu))
+            return std::nullopt;
+        if (at(app, kDirectInput) == 0)
+            return 0;
+    }
+    if (joystickDevice(app, joystick) == 0)
+        return 0;
+    const reg32 record = joystick * kJoystickBytes;
+    if (!acquire(app, cpu, joystick))
+        return std::nullopt;
+    if (at(app, record + kJoystickButtons) == 0 && at(app, record + kJoystickAxes) == 0)
+    {
+        // GetCapabilities(the joystick, a DIDEVCAPS of 0x2c): its flags at 4, axes at 0xc, buttons at
+        // 0x10, hats at 0x14.
+        const reg32 caps = frame - 0x54;
+        put(app, caps, 0x2c);
+        std::optional<reg32> result =
+            callMethod(app, cpu, Object::Device, joystickDevice(app, joystick), kGetCapabilities, {caps});
+        if (!result)
+            return std::nullopt;
+        if (*result != 0)
+            return 0;
+        if (byte(app, caps + 5) & 1)  // DIDC_FORCEFEEDBACK
+            app->getMemory<reg8>(kJoystickRecords + record) |= kForceFeedback;
+        // Each object: GetObjectInfo(the joystick, a DIDEVICEOBJECTINSTANCE of 0x13c, its offset,
+        // DIPH_BYOFFSET); whether it is there.
+        const reg32 info = frame - 0x190;
+        put(app, info, 0x13c);
+        auto there = [&](reg32 offset) -> std::optional<bool> {
+            const std::optional<reg32> found =
+                callMethod(app, cpu, Object::Device, joystickDevice(app, joystick), kGetObjectInfo, {info, offset, 1});
+            if (!found)
+                return std::nullopt;
+            return *found == 0;
+        };
+        // The buttons: at 0x30 on.
+        for (reg32 button = 0, found = 0; found < at(app, caps + 0x10) && sreg32(button) < 0x20; ++button)
         {
-            push(app, cpu, 1);
-            cpu.edx = at(app, cpu.esi);
-            push(app, cpu, cpu.esi);
-            if (!directInput(app, cpu, Object::Device, kSendForceFeedbackCommand))
-                return;
+            const std::optional<bool> is = there(button + 0x30);
+            if (!is)
+                return std::nullopt;
+            if (*is)
+            {
+                put(app, record + kJoystickButtons, at(app, record + kJoystickButtons) | reg32(1) << button);
+                ++found;
+            }
+        }
+        // The hats: at 0x20 on.
+        for (reg32 hat = 0, found = 0; found < at(app, caps + 0x14) && sreg32(hat) < 4; ++hat)
+        {
+            const std::optional<bool> is = there(hat * 4 + 0x20);
+            if (!is)
+                return std::nullopt;
+            if (*is)
+            {
+                put(app, record + kJoystickHats, at(app, record + kJoystickHats) | reg32(1) << hat);
+                ++found;
+            }
+        }
+        // The axes: at their offsets in DIJOYSTATE; each one's zones.
+        for (reg32 axis = 0, found = 0; found < at(app, caps + 0xc) && sreg32(axis) < 8; ++axis)
+        {
+            const std::optional<bool> is = there(at(app, kAxisOffsets + axis * 4));
+            if (!is)
+                return std::nullopt;
+            if (!*is)
+                continue;
+            put(app, record + kJoystickAxes, at(app, record + kJoystickAxes) | reg32(1) << axis);
+            if (!readZone(app, cpu, joystick, axis, 0))
+                return std::nullopt;
+            ++found;
+            if (!readZone(app, cpu, joystick, axis, 1))
+                return std::nullopt;
         }
     }
-    leave(app, cpu, {&cpu.ebx, &cpu.ecx, &cpu.edx, &cpu.esi});
+    return kJoystickRecords + record;
 }
 
-/* 0x435bc0: joystick eax's autocentring on (edx not 0) or off, where it has
- * force feedback; 0x10 or 0x13 every joystick. */
-void setAutocenter(win32::WinApplication* app, x86::CPU& cpu)
+/* 0x435690: describe joystick eax. */
+void describeJoystick(win32::WinApplication* app, x86::CPU& cpu)
 {
-    enter(app, cpu, {&cpu.ebx, &cpu.ecx, &cpu.esi, &cpu.edi}, 0x14);
-    const reg32 ebp = cpu.ebp;
-    cpu.ebx = cpu.edx;
-    if (cpu.eax == kAllJoysticks || cpu.eax == kEveryDevice)
-    {
-        cpu.ecx = 0;
-        do
-        {
-            cpu.edx = cpu.ebx;
-            cpu.eax = cpu.ecx;
-            if (!direct(app, cpu, setAutocenter))
-                return;
-            ++cpu.ecx;
-        } while (sreg32(cpu.ecx) < 0x10);
-    }
-    else if (sreg32(cpu.eax) < 0x10 && sreg32(cpu.eax) >= 0 && at(app, cpu.eax * 4 + kJoysticks) != 0)
-    {
-        cpu.edx = times17(cpu.eax);
-        if (byte(app, cpu.edx * 8 + kJoystickRecords) & 8)
-        {
-            // SetProperty(the joystick, DIPROP_AUTOCENTER, {0x14, 0x10, 0, DIPH_DEVICE, on})
-            cpu.ecx = 0x14;
-            cpu.esi = 0x10;
-            cpu.edi = 0;
-            put(app, ebp - 0x14, cpu.ecx);
-            put(app, ebp - 0x10, cpu.esi);
-            put(app, ebp - 0xc, cpu.edi);
-            put(app, ebp - 8, cpu.edi);
-            put(app, ebp - 4, cpu.ebx != 0 ? 1 : cpu.edi);
-            cpu.edx = ebp - 0x14;
-            push(app, cpu, cpu.edx);
-            cpu.eax = at(app, cpu.eax * 4 + kJoysticks);
-            push(app, cpu, 9);
-            cpu.ecx = at(app, cpu.eax);
-            push(app, cpu, cpu.eax);
-            if (!directInput(app, cpu, Object::Device, kSetProperty))
-                return;
-        }
-    }
-    leave(app, cpu, {&cpu.ebx, &cpu.ecx, &cpu.esi, &cpu.edi});
+    const Kept kept(cpu);
+    const std::optional<reg32> record = describe(app, cpu, cpu.eax);
+    if (!record)
+        return;
+    cpu.eax = *record;
+    cpu.ebx = kept.ebx;
+    cpu.ecx = kept.ecx;
+    cpu.edx = kept.edx;
+    cpu.esi = kept.esi;
+    cpu.edi = kept.edi;
+    cpu.ebp = kept.ebp;
+    cpu.esp += 4;
 }
 
 namespace
 {
 
-/* 0x435c60, 0x435cc0, 0x435d90: a force-feedback command to joystick eax,
- * where it has force feedback; 0x10 or 0x13 every joystick. */
-void sendCommand(win32::WinApplication* app, x86::CPU& cpu, reg32 command,
-                 void (*self)(win32::WinApplication*, x86::CPU&))
+/* acquire, as acquireDevice leaves the registers: all but eax kept.  False
+ * when the game stopped. */
+bool acquireKeeping(App* app, CPU& cpu, reg32 device)
 {
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.edx);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    if (cpu.eax == kAllJoysticks || cpu.eax == kEveryDevice)
+    const reg32 ecx = cpu.ecx, edx = cpu.edx;
+    const std::optional<reg32> acquired = acquire(app, cpu, device);
+    if (!acquired)
+        return false;
+    cpu.eax = *acquired;
+    cpu.ecx = ecx;
+    cpu.edx = edx;
+    return true;
+}
+
+}  // namespace
+
+/* 0x4358f0: joystick `joystick` read into the DIJOYSTATE at `state` --
+ * polled, its state taken -- and made the game's after it: the axes copied
+ * to 0x50, the buttons pressed as bits at 0x70, the 4 hats' directions at
+ * 0x74 (1 up to 8 round from north, 0 centred or none).  `state`, or 0;
+ * lost or not acquired, the joystick acquired again.  Nothing when the game
+ * stopped. */
+std::optional<reg32> readState(App* app, CPU& cpu, reg32 joystick, reg32 state)
+{
+    if (!isJoystick(joystick) || joystickDevice(app, joystick) == 0 || state == 0)
+        return 0;
+    std::optional<reg32> result = callMethod(app, cpu, Object::Device, joystickDevice(app, joystick), kPoll, {});
+    if (!result)
+        return std::nullopt;
+    if (*result != 0)
     {
-        cpu.edx = 0;
-        do
-        {
-            cpu.eax = cpu.edx;
-            if (!direct(app, cpu, self))
-                return;
-            ++cpu.edx;
-        } while (sreg32(cpu.edx) < 0x10);
+        if ((*result == kInputLost || *result == kNotAcquired) && !acquireKeeping(app, cpu, joystick))
+            return std::nullopt;
+        return 0;
     }
-    else if (sreg32(cpu.eax) < 0x10 && sreg32(cpu.eax) >= 0)
+    result = callMethod(app, cpu, Object::Device, joystickDevice(app, joystick), kGetDeviceState, {0x50, state});
+    if (!result)
+        return std::nullopt;
+    if (*result != 0)
     {
-        cpu.edx = cpu.eax * 4;
-        if (at(app, cpu.edx + kJoysticks) != 0)
+        if (*result == kInputLost && !acquireKeeping(app, cpu, joystick))
+            return std::nullopt;
+        return 0;
+    }
+    const reg32 first = at(app, state);
+    put(app, state + 0x70, 0);
+    put(app, state + 0x50, first);
+    for (reg32 i = 4; i < 0x20; i += 4)
+        put(app, state + 0x50 + i, at(app, state + i));
+    for (reg32 button = 0; button < 0x20; ++button)
+        if (byte(app, state + 0x30 + button) & 0x80)
+            put(app, state + 0x70, at(app, state + 0x70) | reg32(1) << button);
+    static const reg32 kDirections[] = {0, 0x1194, 0x2328, 0x34bc, 0x4650, 0x57e4, 0x6978, 0x7b0c};
+    for (reg32 hat = 0; hat < 4; ++hat)
+    {
+        const reg32 pov = at(app, state + 0x20 + hat * 4);
+        if ((at(app, kJoystickHats + joystick * kJoystickBytes) & reg32(1) << hat) && pov < 0xffff)
         {
-            cpu.ecx = cpu.eax;
-            cpu.eax <<= 4;
-            cpu.eax += cpu.ecx;
-            if (byte(app, cpu.eax * 8 + kJoystickRecords) & 8)
-            {
-                push(app, cpu, command);
-                cpu.eax = at(app, cpu.edx + kJoysticks);
-                push(app, cpu, cpu.eax);
-                cpu.edx = at(app, cpu.eax);
-                if (!directInput(app, cpu, Object::Device, kSendForceFeedbackCommand))
-                    return;
-            }
+            reg32 direction = 0;
+            for (reg32 i = 0; i < 8; ++i)
+                if (pov == kDirections[i])
+                {
+                    direction = i + 1;
+                    break;
+                }
+            put(app, state + hat * 4 + 0x74, direction);
         }
+        else
+            put(app, state + hat * 4 + 0x74, 0);
     }
-    cpu.ebp = pop(app, cpu);
-    cpu.edx = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
+    return state;
+}
+
+/* 0x4358f0: readState for joystick eax into edx; edx as the code leaves it:
+ * the joystick's device where it or the state is none, 4 where read, else as
+ * the call left it (the number given back where it is no joystick). */
+void readJoystick(win32::WinApplication* app, x86::CPU& cpu)
+{
+    const Kept kept(cpu);
+    const reg32 joystick = cpu.eax, state = cpu.edx;
+    const std::optional<reg32> read = readState(app, cpu, joystick, state);
+    if (!read)
+        return;
+    if (isJoystick(joystick))
+    {
+        if (joystickDevice(app, joystick) == 0 || state == 0)
+            cpu.edx = joystickDevice(app, joystick);
+        else if (*read != 0)
+            cpu.edx = 4;
+    }
+    cpu.eax = *read;
+    cpu.ebx = kept.ebx;
+    cpu.ecx = kept.ecx;
+    cpu.esi = kept.esi;
+    cpu.edi = kept.edi;
+    cpu.ebp = kept.ebp;
+    cpu.esp += 4;
+}
+
+namespace
+{
+
+/* 0x435ae0: joystick `joystick`'s axis `axis`'s dead zone (`which` 0) or
+ * saturation asked of DirectInput (axisZone), in percent, kept in its record
+ * -- the saturation as 100 less it.  What was asked; nothing when the game
+ * stopped. */
+std::optional<reg32> readZone(App* app, CPU& cpu, reg32 joystick, reg32 axis, reg32 which)
+{
+    const GuestFrame frame(cpu, 0x10, 4);  // ecx, esi, edi, ebp pushed; the axis kept
+    std::optional<Zone> zone;
+    {
+        const GuestFrame call(cpu, 0, 8);  // the percent's word and the return address's slot
+        zone = axisZone(app, cpu, joystick, axis, true, which, 0);
+    }
+    if (!zone)
+        return std::nullopt;
+    const reg32 record = joystick * kJoystickBytes + axis * 8;
+    if (which == 0)
+        put(app, record + kJoystickDeadZone, zone->percent);
+    else
+        put(app, record + kJoystickSaturation, 100 - zone->percent);
+    return zone->percent;
+}
+
+}  // namespace
+
+/* 0x435b40: joystick `joystick`'s axis `axis`'s dead zone (`which` 0) or
+ * saturation (`which` 1: `percent` as 100 less it) set to `percent`
+ * (axisZone).  Nothing when the game stopped. */
+std::optional<Zone> setZone(App* app, CPU& cpu, reg32 joystick, reg32 axis, reg32 which, reg32 percent)
+{
+    const GuestFrame frame(cpu, 8, 0);  // esi, ebp pushed
+    const GuestFrame call(cpu, 0, 8);   // the percent's word and the return address's slot
+    return axisZone(app, cpu, joystick, axis, false, which, which == 1 ? 100 - percent : percent);
+}
+
+/* 0x435ae0: readZone for joystick eax, axis edx, which ebx; eax and edx what
+ * was kept, ebx what was asked, as the code leaves them. */
+void readAxisZone(win32::WinApplication* app, x86::CPU& cpu)
+{
+    const Kept kept(cpu);
+    const reg32 which = cpu.ebx;
+    const std::optional<reg32> percent = readZone(app, cpu, cpu.eax, cpu.edx, which);
+    if (!percent)
+        return;
+    cpu.ebx = *percent;
+    cpu.edx = which == 0 ? *percent : 100 - *percent;
+    cpu.eax = cpu.edx;
+    cpu.ecx = kept.ecx;
+    cpu.esi = kept.esi;
+    cpu.edi = kept.edi;
+    cpu.ebp = kept.ebp;
+    cpu.esp += 4;
+}
+
+/* 0x435b40: setZone for joystick eax, axis edx, which ebx, percent ecx; the
+ * registers as axisProperty leaves them. */
+void setAxisZone(win32::WinApplication* app, x86::CPU& cpu)
+{
+    const Kept kept(cpu);
+    const reg32 joystick = cpu.eax, axis = cpu.edx, which = cpu.ebx;
+    const reg32 asked = cpu.ecx, percent = which == 1 ? 100 - asked : asked;
+    // As the code hands them to axisProperty.
+    cpu.ebx = 0;
+    cpu.ecx = which;
+    const std::optional<Zone> zone = setZone(app, cpu, joystick, axis, which, asked);
+    if (!zone)
+        return;
+    zoneRegisters(app, cpu, joystick, axis, false, percent, *zone);
+    cpu.esi = kept.esi;
+    cpu.ebp = kept.ebp;
+    cpu.esp += 4;
+}
+
+namespace
+{
+
+/* 0x435b60: the joysticks with force feedback reset (DISFFC_RESET)
+ * (resetEach), looked for first when there are none.  False when the game
+ * stopped. */
+bool resetEach(App* app, CPU& cpu)
+{
+    for (reg32 joystick = 0; sreg32(joystick) < sreg32(at(app, kJoystickCount)); ++joystick)
+    {
+        const reg32 device = joystickDevice(app, joystick);
+        if (device != 0 && forceFeedback(app, joystick)
+            && !callMethod(app, cpu, Object::Device, device, kSendForceFeedbackCommand, {kReset}))
+            return false;
+    }
+    return true;
+}
+
+bool resetJoysticks(App* app, CPU& cpu)
+{
+    const GuestFrame frame(cpu, 0x14, 0);  // ebx, ecx, edx, esi, ebp pushed
+    if (at(app, kJoystickCount) == 0)
+    {
+        const GuestFrame slot(cpu, 0, 4);
+        if (!lookForJoysticks(app, cpu))
+            return false;
+    }
+    return resetEach(app, cpu);
+}
+
+}  // namespace
+
+/* 0x435b60: resetJoysticks; eax as the code leaves it: the last joystick
+ * there's record's number times 17, or its reset's HRESULT. */
+void resetForceFeedback(win32::WinApplication* app, x86::CPU& cpu)
+{
+    const Kept kept(cpu);
+    {
+        const GuestFrame frame(cpu, 0x14, 0);  // ebx, ecx, edx, esi, ebp pushed
+        if (at(app, kJoystickCount) == 0)
+        {
+            const GuestFrame slot(cpu, 0, 4);
+            const std::optional<reg32> count = lookForJoysticks(app, cpu);
+            if (!count)
+                return;
+            cpu.eax = *count;
+        }
+        if (!resetEach(app, cpu))
+            return;
+    }
+    for (reg32 joystick = at(app, kJoystickCount); sreg32(joystick) > 0;)
+    {
+        --joystick;
+        if (joystickDevice(app, joystick) == 0)
+            continue;
+        if (!forceFeedback(app, joystick))
+            cpu.eax = joystick * 17;
+        break;
+    }
+    cpu.ebx = kept.ebx;
+    cpu.ecx = kept.ecx;
+    cpu.edx = kept.edx;
+    cpu.esi = kept.esi;
+    cpu.ebp = kept.ebp;
+    cpu.esp += 4;
+}
+
+namespace
+{
+
+/* SetProperty(the joystick, `property`, the DIPROPDWORD at `record`) as
+ * setAutocenter's and setGain's code calls it: the joystick's table of
+ * methods in ecx, the DIPROPDWORD's address left in edx.  Its HRESULT;
+ * nothing when the game stopped. */
+std::optional<reg32> setDeviceProperty(App* app, CPU& cpu, reg32 device, reg32 property, reg32 record)
+{
+    push(app, cpu, record);
+    push(app, cpu, property);
+    push(app, cpu, device);
+    cpu.ecx = at(app, device);
+    cpu.edx = record;
+    if (!directInput(app, cpu, Object::Device, kSetProperty))
+        return std::nullopt;
+    return cpu.eax;
+}
+
+/* A DIPROPDWORD for the whole device (DIPH_DEVICE): {0x14, 0x10, 0, 0, `value`}. */
+void deviceRecord(App* app, reg32 record, reg32 value)
+{
+    put(app, record, 0x14);
+    put(app, record + 4, 0x10);
+    put(app, record + 8, 0);
+    put(app, record + 0xc, 0);
+    put(app, record + 0x10, value);
+}
+
+/* 0x435bc0: joystick `joystick`'s autocentring on (`on` not 0) or off
+ * (DIPROP_AUTOCENTER), where it has force feedback; every joystick's for all
+ * of them (0x10) or every device (0x13).  False when the game stopped. */
+bool autocenter(App* app, CPU& cpu, reg32 joystick, reg32 on)
+{
+    const GuestFrame frame(cpu, 0x14, 0x14);  // ebx, ecx, esi, edi, ebp pushed; the DIPROPDWORD
+    if (joystick == kAllJoysticks || joystick == kEveryDevice)
+    {
+        for (reg32 each = 0; each < 0x10; ++each)
+        {
+            const GuestFrame slot(cpu, 0, 4);
+            if (!autocenter(app, cpu, each, on))
+                return false;
+        }
+        return true;
+    }
+    if (!isJoystick(joystick) || joystickDevice(app, joystick) == 0 || !forceFeedback(app, joystick))
+        return true;
+    const reg32 record = frame - 0x14;
+    deviceRecord(app, record, on != 0 ? 1 : 0);
+    return setDeviceProperty(app, cpu, joystickDevice(app, joystick), 9, record).has_value();
+}
+
+/* eax and edx as setAutocenter's and setGain's code leaves them for
+ * `joystick` (the last joystick's for all of them), `asked` the word asked
+ * for (edx): where the property was set, as the call left them; else the
+ * joystick's number, times 17 where it is there, and `asked`. */
+void propertyLeft(App* app, CPU& cpu, reg32 joystick, reg32 asked, bool seventeenInEdx)
+{
+    if (joystick == kAllJoysticks || joystick == kEveryDevice)
+        joystick = 0xf;
+    if (!isJoystick(joystick) || joystickDevice(app, joystick) == 0)
+    {
+        cpu.eax = joystick;
+        cpu.edx = asked;
+    }
+    else if (!forceFeedback(app, joystick))
+    {
+        cpu.eax = seventeenInEdx ? joystick : joystick * 17;
+        cpu.edx = seventeenInEdx ? joystick * 17 : asked;
+    }
+}
+
+}  // namespace
+
+/* 0x435bc0: autocenter joystick eax, on edx. */
+void setAutocenter(win32::WinApplication* app, x86::CPU& cpu)
+{
+    const Kept kept(cpu);
+    const reg32 joystick = cpu.eax;
+    if (!autocenter(app, cpu, joystick, kept.edx))
+        return;
+    propertyLeft(app, cpu, joystick, kept.edx, true);
+    cpu.ebx = kept.ebx;
+    cpu.ecx = kept.ecx;
+    cpu.esi = kept.esi;
+    cpu.edi = kept.edi;
+    cpu.ebp = kept.ebp;
+    cpu.esp += 4;
+}
+
+namespace
+{
+
+/* 0x435c60, 0x435cc0, 0x435d90: force-feedback command `command` to joystick
+ * `joystick` (SendForceFeedbackCommand), where it has force feedback; to
+ * every joystick for all of them (0x10) or every device (0x13).  False when
+ * the game stopped. */
+bool commandJoystick(App* app, CPU& cpu, reg32 joystick, reg32 command)
+{
+    if (joystick == kAllJoysticks || joystick == kEveryDevice)
+    {
+        for (reg32 each = 0; each < 0x10; ++each)
+            if (!commandJoystick(app, cpu, each, command))
+                return false;
+        return true;
+    }
+    if (!isJoystick(joystick) || joystickDevice(app, joystick) == 0 || !forceFeedback(app, joystick))
+        return true;
+    return callMethod(app, cpu, Object::Device, joystickDevice(app, joystick), kSendForceFeedbackCommand, {command})
+        .has_value();
+}
+
+/* eax as a joystick's command's code leaves it (the last joystick's for all
+ * of them): the HRESULT where the command was sent, as the call left it;
+ * else the joystick's number, times 17 where the code has made its record's
+ * there (`seventeen`). */
+reg32 commandLeft(App* app, reg32 joystick, reg32 sent, bool seventeen)
+{
+    if (joystick == kAllJoysticks || joystick == kEveryDevice)
+        joystick = 0xf;
+    if (!isJoystick(joystick) || joystickDevice(app, joystick) == 0)
+        return joystick;
+    if (!forceFeedback(app, joystick))
+        return seventeen ? joystick * 17 : joystick;
+    return sent;
+}
+
+/* An adapter for commandJoystick, for joystick eax. */
+void commandAdapter(App* app, CPU& cpu, reg32 command)
+{
+    const Kept kept(cpu);
+    const reg32 joystick = cpu.eax;
+    if (!commandJoystick(app, cpu, joystick, command))
+        return;
+    cpu.eax = commandLeft(app, joystick, cpu.eax, true);
+    cpu.ecx = kept.ecx;
+    cpu.edx = kept.edx;
+    cpu.ebp = kept.ebp;
     cpu.esp += 4;
 }
 
 }  // namespace
 
+/* 0x435d20: joystick `joystick`'s effects stopped (stopAllEffects) and its
+ * actuators on (DISFFC_SETACTUATORSON), where it has force feedback; every
+ * joystick's for all of them (0x10) or every device (0x13).  False when the
+ * game stopped. */
+bool actuatorsOnFor(App* app, CPU& cpu, reg32 joystick)
+{
+    if (joystick == kAllJoysticks || joystick == kEveryDevice)
+    {
+        for (reg32 each = 0; each < 0x10; ++each)
+            if (!actuatorsOnFor(app, cpu, each))
+                return false;
+        return true;
+    }
+    if (!isJoystick(joystick) || joystickDevice(app, joystick) == 0 || !forceFeedback(app, joystick))
+        return true;
+    if (!stopAllEffects(app, cpu, joystick))
+        return false;
+    return callMethod(app, cpu, Object::Device, joystickDevice(app, joystick), kSendForceFeedbackCommand,
+                      {kActuatorsOn})
+        .has_value();
+}
+
 /* 0x435c60: joystick eax's effects paused (DISFFC_PAUSE). */
 void pauseEffects(win32::WinApplication* app, x86::CPU& cpu)
 {
-    sendCommand(app, cpu, 4, pauseEffects);
+    commandAdapter(app, cpu, kPause);
 }
 
 /* 0x435cc0: joystick eax's effects going on (DISFFC_CONTINUE). */
 void continueEffects(win32::WinApplication* app, x86::CPU& cpu)
 {
-    sendCommand(app, cpu, 8, continueEffects);
+    commandAdapter(app, cpu, kContinue);
 }
 
-/* 0x435d20: joystick eax's effects stopped (stopEffects) and its actuators
- * on (DISFFC_SETACTUATORSON). */
+/* 0x435d20: actuatorsOnFor joystick eax. */
 void actuatorsOn(win32::WinApplication* app, x86::CPU& cpu)
 {
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.edx);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    if (cpu.eax == kAllJoysticks || cpu.eax == kEveryDevice)
-    {
-        cpu.edx = 0;
-        do
-        {
-            cpu.eax = cpu.edx;
-            if (!direct(app, cpu, actuatorsOn))
-                return;
-            ++cpu.edx;
-        } while (sreg32(cpu.edx) < 0x10);
-    }
-    else if (sreg32(cpu.eax) < 0x10 && sreg32(cpu.eax) >= 0)
-    {
-        cpu.ecx = cpu.eax * 4;
-        if (at(app, cpu.ecx + kJoysticks) != 0)
-        {
-            cpu.edx = times17(cpu.eax);
-            if (byte(app, cpu.edx * 8 + kJoystickRecords) & 8)
-            {
-                if (!direct(app, cpu, stopEffects))
-                    return;
-                push(app, cpu, 0x10);
-                cpu.eax = at(app, cpu.ecx + kJoysticks);
-                push(app, cpu, cpu.eax);
-                cpu.edx = at(app, cpu.eax);
-                if (!directInput(app, cpu, Object::Device, kSendForceFeedbackCommand))
-                    return;
-            }
-        }
-    }
-    cpu.ebp = pop(app, cpu);
-    cpu.edx = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
+    const Kept kept(cpu);
+    const reg32 joystick = cpu.eax;
+    if (!actuatorsOnFor(app, cpu, joystick))
+        return;
+    cpu.eax = commandLeft(app, joystick, cpu.eax, false);
+    cpu.ecx = kept.ecx;
+    cpu.edx = kept.edx;
+    cpu.ebp = kept.ebp;
     cpu.esp += 4;
+}
+
+/* 0x435d90's core: joystick `joystick`'s actuators off (commandJoystick of
+ * DISFFC_SETACTUATORSOFF).  False when the game stopped. */
+bool actuatorsOffFor(App* app, CPU& cpu, reg32 joystick)
+{
+    return commandJoystick(app, cpu, joystick, kActuatorsOff);
 }
 
 /* 0x435d90: joystick eax's actuators off (DISFFC_SETACTUATORSOFF). */
 void actuatorsOff(win32::WinApplication* app, x86::CPU& cpu)
 {
-    sendCommand(app, cpu, 0x20, actuatorsOff);
-}
-
-/* 0x435df0: joystick eax's force-feedback gain set to edx percent (100 most,
- * 0 for less than none), the effects unloaded around it and downloaded
- * again; 0x10 or 0x13 every joystick. */
-void setGain(win32::WinApplication* app, x86::CPU& cpu)
-{
-    enter(app, cpu, {&cpu.ebx, &cpu.ecx, &cpu.esi, &cpu.edi}, 0x14);
-    const reg32 ebp = cpu.ebp;
-    cpu.ecx = cpu.eax;
-    cpu.ebx = cpu.edx;
-    if (cpu.eax == kAllJoysticks || cpu.eax == kEveryDevice)
-    {
-        cpu.ecx = 0;
-        do
-        {
-            cpu.edx = cpu.ebx;
-            cpu.eax = cpu.ecx;
-            if (!direct(app, cpu, setGain))
-                return;
-            ++cpu.ecx;
-        } while (sreg32(cpu.ecx) < 0x10);
-    }
-    else if (sreg32(cpu.ecx) < 0x10 && sreg32(cpu.ecx) >= 0 && at(app, cpu.ecx * 4 + kJoysticks) != 0)
-    {
-        cpu.eax = times17(cpu.ecx);
-        if (byte(app, cpu.eax * 8 + kJoystickRecords) & 8)
-        {
-            // SetProperty(the joystick, DIPROP_FFGAIN, {0x14, 0x10, 0, DIPH_DEVICE, percent * 100})
-            cpu.edi = 0x10;
-            cpu.esi = 0x14;
-            cpu.eax = 0;
-            put(app, ebp - 0x10, cpu.edi);
-            put(app, ebp - 0xc, cpu.eax);
-            put(app, ebp - 8, cpu.eax);
-            put(app, ebp - 0x14, cpu.esi);
-            if (sreg32(cpu.ebx) > 0x64)
-                put(app, ebp - 4, 0x2710);
-            else
-            {
-                if (sreg32(cpu.ebx) >= 0)
-                {
-                    cpu.eax = cpu.ebx * 4;
-                    cpu.eax -= cpu.ebx;
-                    cpu.eax <<= 3;
-                    cpu.eax += cpu.ebx;
-                    cpu.eax <<= 2;
-                }
-                put(app, ebp - 4, cpu.eax);
-            }
-            for (cpu.ebx = 0; sreg32(cpu.ebx) < sreg32(at(app, kEffectCount)); ++cpu.ebx)
-            {
-                cpu.eax = reg32(sreg32(x86::sreg16(cpu.bx)));
-                if (!direct(app, cpu, unloadEffect))
-                    return;
-            }
-            cpu.edx = ebp - 0x14;
-            push(app, cpu, cpu.edx);
-            cpu.eax = at(app, cpu.ecx * 4 + kJoysticks);
-            push(app, cpu, 7);
-            cpu.ecx = at(app, cpu.eax);
-            push(app, cpu, cpu.eax);
-            cpu.ebx = 0;
-            if (!directInput(app, cpu, Object::Device, kSetProperty))
-                return;
-            for (; sreg32(cpu.ebx) < sreg32(at(app, kEffectCount)); ++cpu.ebx)
-            {
-                cpu.eax = reg32(sreg32(x86::sreg16(cpu.bx)));
-                if (!direct(app, cpu, downloadEffect))
-                    return;
-            }
-        }
-    }
-    leave(app, cpu, {&cpu.ebx, &cpu.ecx, &cpu.esi, &cpu.edi});
-}
-
-/* 0x435f10: an effect made on joystick eax from the description at edx --
- * its type at 0, its type's parameters (0x30 bytes) at 4, its duration in
- * ms (0xffffff for ever) at 0x34, gain at 0x38, axes (0 x, 1 y, else both)
- * at 0x3c, trigger button (-1 none) at 0x40, repeat at 0x44, direction in
- * degrees at 0x48 -- into the next effect's record, created (and unloaded
- * straight away).  Its number, or -1: no room for it, no force feedback, a
- * type past 12, or DirectInput would not. */
-void createEffect(win32::WinApplication* app, x86::CPU& cpu)
-{
-    enter(app, cpu, {&cpu.ebx, &cpu.ecx, &cpu.esi, &cpu.edi}, 0);
-    auto done = [&] { leave(app, cpu, {&cpu.ebx, &cpu.ecx, &cpu.esi, &cpu.edi}); };
-    auto none = [&] {
-        cpu.eax = 0xffffffff;
-        done();
-    };
-    cpu.ebx = cpu.eax;
-    if (sreg32(at(app, kEffectCount)) >= 0x1e || sreg32(cpu.eax) >= 0x10 || sreg32(cpu.eax) < 0
-        || at(app, cpu.eax * 4 + kJoysticks) == 0)
-        return none();
-    cpu.eax <<= 4;
-    cpu.eax += cpu.ebx;
-    if (!(byte(app, cpu.eax * 8 + kJoystickRecords) & 8))
-        return none();
-    // The duration, in microseconds.
-    cpu.edi = at(app, cpu.edx + 0x34);
-    if (cpu.edi == 0xffffff)
-        cpu.esi = 0xffffffff;
-    else
-    {
-        cpu.eax = cpu.edi * 4;
-        cpu.eax -= cpu.edi;
-        cpu.eax <<= 3;
-        cpu.eax += cpu.edi;
-        cpu.eax <<= 3;
-        cpu.esi = cpu.eax * 4;
-        cpu.esi += cpu.eax;
-    }
-    cpu.ecx = at(app, kEffectCount);
-    cpu.eax = times17(cpu.ecx);
-    put(app, cpu.eax * 8 + kEffectDuration, cpu.esi);
-    cpu.ecx = at(app, cpu.edx + 0x38);
-    put(app, cpu.eax * 8 + kEffectGain, cpu.ecx);
-    cpu.eax = at(app, cpu.edx + 0x40);
-    cpu.esi = cpu.eax == 0xffffffff ? cpu.eax : cpu.eax + 0x30;
-    cpu.eax = at(app, kEffectCount);
-    cpu.ecx = times17(cpu.eax);
-    cpu.ecx <<= 3;
-    put(app, cpu.ecx + kEffectTrigger, cpu.esi);
-    cpu.eax = at(app, cpu.edx + 0x44);
-    put(app, cpu.ecx + kEffectRepeat, cpu.eax);
-    cpu.esi = at(app, cpu.edx + 0x48);
-    cpu.eax = cpu.esi * 4;
-    cpu.eax -= cpu.esi;
-    cpu.eax <<= 3;
-    cpu.eax += cpu.esi;
-    cpu.eax <<= 2;
-    put(app, cpu.ecx + kEffectDirection, cpu.eax);
-    // Its axes: x, y, or both.
-    cpu.esi = at(app, cpu.edx + 0x3c);
-    if (cpu.esi == 0)
-    {
-        cpu.eax = kEffectAxes;
-        cpu.edi = 1;
-        put(app, cpu.ecx + kEffectAxisList, cpu.eax);
-        put(app, kEffectAxes, cpu.esi);
-        put(app, cpu.ecx + kEffectAxisCount, cpu.edi);
-    }
-    else if (cpu.esi == 1)
-    {
-        cpu.eax = kEffectAxes;
-        put(app, cpu.ecx + kEffectAxisCount, cpu.esi);
-        put(app, cpu.ecx + kEffectAxisList, cpu.eax);
-        put(app, kEffectAxes, 4);
-    }
-    else
-    {
-        cpu.edi = kEffectAxes;
-        cpu.esi = 2;
-        put(app, cpu.ecx + kEffectAxisList, cpu.edi);
-        cpu.eax = 0;
-        put(app, cpu.ecx + kEffectAxisCount, cpu.esi);
-        cpu.ecx = 4;
-        put(app, kEffectAxes, cpu.eax);
-        put(app, kEffectAxes + 4, cpu.ecx);
-    }
-    // Its type's parameters, to the record.
-    cpu.ecx = at(app, kEffectCount);
-    cpu.eax = times17(cpu.ecx);
-    cpu.eax <<= 3;
-    cpu.esi = cpu.edx + 4;
-    cpu.eax += kEffectRecords;
-    cpu.ecx = 0x30;
-    cpu.edi = cpu.eax + 0x34;
-    push(app, cpu, cpu.edi);
-    copyBytes(app, cpu);
-    cpu.edi = pop(app, cpu);
-    // The rest of the DIEFFECT.
-    cpu.ecx = at(app, kEffectCount);
-    cpu.eax = times17(cpu.ecx);
-    cpu.esi = 0x34;
-    cpu.eax <<= 3;
-    cpu.edi = 0x22;  // DIEFF_OBJECTOFFSETS | DIEFF_POLAR
-    put(app, cpu.eax + kEffectRecords, cpu.esi);
-    cpu.ecx = 0x7d0;
-    put(app, cpu.eax + kEffectFlags, cpu.edi);
-    put(app, cpu.eax + kEffectPeriod, cpu.ecx);
-    cpu.edi = 0;
-    put(app, cpu.eax + kEffectDirection2, cpu.edi);
-    cpu.ecx = kEffectRecords;
-    put(app, cpu.eax + kEffectEnvelope, cpu.edi);
-    cpu.ecx += cpu.eax;
-    put(app, cpu.eax + kEffectPlaying, cpu.edi);
-    cpu.esi += cpu.ecx;
-    cpu.ecx += 0x78;
-    put(app, cpu.eax + kEffectParameters, cpu.esi);
-    put(app, cpu.eax + kEffectDirections, cpu.ecx);
-    put(app, cpu.eax + kEffectParameters, cpu.esi);
-    cpu.ecx = at(app, cpu.edx);
-    put(app, cpu.eax + kEffectType, cpu.ecx);
-    if (cpu.ecx > 0xc)
-        return none();
-    // The parameters' size by the type, as the game's jump table has it.
-    switch (at(app, kParameterSizes + cpu.ecx * 4))
-    {
-    case 0x436103:  // a constant force
-        cpu.ecx = at(app, kEffectCount);
-        cpu.eax = times17(cpu.ecx);
-        put(app, cpu.eax * 8 + kEffectParameterBytes, 4);
-        break;
-    case 0x43611d:  // a ramp
-        put(app, cpu.eax + kEffectParameterBytes, 8);
-        break;
-    case 0x436129:  // a square wave
-        put(app, cpu.eax + kEffectParameterBytes, 0x10);
-        break;
-    case 0x436135:  // the other waves
-        cpu.ecx = at(app, kEffectCount);
-        cpu.eax = times17(cpu.ecx);
-        put(app, cpu.eax * 8 + kEffectParameterBytes, 0x10);
-        break;
-    case 0x43614f:  // a condition
-        cpu.ecx = at(app, kEffectCount);
-        cpu.eax = times17(cpu.ecx);
-        put(app, cpu.eax * 8 + kEffectParameterBytes, 0x18);
-        break;
-    default:  // 0x436169: a condition on each of two axes
-        put(app, cpu.eax + kEffectParameterBytes, 0x30);
-        break;
-    }
-    // CreateEffect(the joystick, its type's GUID, the record, &the effect, none)
-    cpu.eax = at(app, kEffectCount);
-    cpu.eax <<= 2;
-    push(app, cpu, 0);
-    cpu.eax += kEffects;
-    cpu.ecx = at(app, kEffectCount);
-    push(app, cpu, cpu.eax);
-    cpu.eax = times17(cpu.ecx);
-    cpu.eax <<= 3;
-    cpu.eax += kEffectRecords;
-    push(app, cpu, cpu.eax);
-    cpu.eax = at(app, cpu.edx);
-    cpu.edi = at(app, cpu.eax * 4 + kEffectGuids);
-    cpu.ebx = at(app, cpu.ebx * 4 + kJoysticks);
-    push(app, cpu, cpu.edi);
-    cpu.esi = at(app, cpu.ebx);
-    push(app, cpu, cpu.ebx);
-    if (!directInput(app, cpu, Object::Device, kCreateEffect))
-        return;
-    if (cpu.eax != 0)
-        return none();
-    cpu.eax = reg32(sreg32(at(app, kEffectCount - 2)) >> 16);
-    if (!direct(app, cpu, unloadEffect))
-        return;
-    cpu.eax = at(app, kEffectCount);
-    cpu.edx = cpu.eax + 1;
-    put(app, kEffectCount, cpu.edx);
-    done();
-}
-
-/* 0x4361e0: effect ax started, once; whether it plays as DirectInput says. */
-void startEffect(win32::WinApplication* app, x86::CPU& cpu)
-{
-    push(app, cpu, cpu.ebx);
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.edx);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    if (x86::sreg16(cpu.ax) >= 0)
-    {
-        push(app, cpu, 0);
-        cpu.ebx = reg32(sreg32(x86::sreg16(cpu.ax)));
-        push(app, cpu, 1);
-        cpu.eax = at(app, cpu.ebx * 4 + kEffects);
-        push(app, cpu, cpu.eax);
-        cpu.edx = at(app, cpu.eax);
-        if (!directInput(app, cpu, Object::Effect, kStart))
-            return;
-        cpu.edx = cpu.eax;
-        cpu.eax = times17(cpu.ebx);
-        cpu.eax <<= 3;
-        if (cpu.edx == 0)
-            put(app, cpu.eax + kEffectPlaying, 1);
-        else
-        {
-            cpu.ecx = 0;
-            put(app, cpu.eax + kEffectPlaying, cpu.ecx);
-        }
-    }
-    cpu.ebp = pop(app, cpu);
-    cpu.edx = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
-    cpu.ebx = pop(app, cpu);
-    cpu.esp += 4;
-}
-
-/* 0x436230: effect ax stopped; it plays no more. */
-void stopEffect(win32::WinApplication* app, x86::CPU& cpu)
-{
-    push(app, cpu, cpu.ebx);
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.edx);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    if (x86::sreg16(cpu.ax) >= 0)
-    {
-        cpu.ebx = reg32(sreg32(x86::sreg16(cpu.ax)));
-        cpu.eax = at(app, cpu.ebx * 4 + kEffects);
-        push(app, cpu, cpu.eax);
-        cpu.edx = at(app, cpu.eax);
-        if (!directInput(app, cpu, Object::Effect, kStop))
-            return;
-        cpu.eax = cpu.ebx;
-        cpu.eax <<= 4;
-        cpu.edx = cpu.ebx;
-        cpu.eax += cpu.ebx;
-        cpu.edx ^= cpu.ebx;
-        put(app, cpu.eax * 8 + kEffectPlaying, cpu.edx);
-    }
-    cpu.ebp = pop(app, cpu);
-    cpu.edx = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
-    cpu.ebx = pop(app, cpu);
-    cpu.esp += 4;
-}
-
-/* 0x436270: joystick eax's effects all stopped (DISFFC_STOPALL), where it
- * has force feedback, and none of the 30 plays; 0x10 or 0x13 each joystick
- * there is. */
-void stopEffects(win32::WinApplication* app, x86::CPU& cpu)
-{
-    enter(app, cpu, {&cpu.ebx, &cpu.ecx, &cpu.edx, &cpu.esi}, 0);
-    if (cpu.eax == kAllJoysticks || cpu.eax == kEveryDevice)
-    {
-        for (cpu.edx = 0; sreg32(cpu.edx) < sreg32(at(app, kJoystickCount)); ++cpu.edx)
-        {
-            cpu.eax = cpu.edx;
-            if (!direct(app, cpu, stopEffects))
-                return;
-        }
-    }
-    else if (sreg32(cpu.eax) < 0x10 && sreg32(cpu.eax) >= 0)
-    {
-        cpu.ecx = cpu.eax * 4;
-        cpu.ebx = at(app, cpu.ecx + kJoysticks);
-        if (cpu.ebx != 0)
-        {
-            cpu.edx = cpu.eax;
-            cpu.eax <<= 4;
-            cpu.eax += cpu.edx;
-            if (byte(app, cpu.eax * 8 + kJoystickRecords) & 8)
-            {
-                push(app, cpu, 2);
-                cpu.edx = at(app, cpu.ebx);
-                push(app, cpu, cpu.ebx);
-                if (!directInput(app, cpu, Object::Device, kSendForceFeedbackCommand))
-                    return;
-                cpu.edx = 0;
-                do
-                {
-                    cpu.eax = times17(cpu.edx);
-                    cpu.esi = 0;
-                    ++cpu.edx;
-                    put(app, cpu.eax * 8 + kEffectPlaying, cpu.esi);
-                } while (sreg32(cpu.edx) < 0x1e);
-            }
-        }
-    }
-    leave(app, cpu, {&cpu.ebx, &cpu.ecx, &cpu.edx, &cpu.esi});
+    commandAdapter(app, cpu, kActuatorsOff);
 }
 
 namespace
 {
 
-/* 0x4362f0, 0x436310: a method of effect ax's. */
-void effectMethod(win32::WinApplication* app, x86::CPU& cpu, reg32 method)
+/* effectMethod for an effect's number as a signed word (none below 0), ecx
+ * and edx kept, as downloadEffect and unloadEffect leave them.  False when
+ * the game stopped. */
+bool effectKeeping(App* app, CPU& cpu, reg32 effect, reg32 method)
 {
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.edx);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    if (x86::sreg16(cpu.ax) >= 0)
+    const reg32 ecx = cpu.ecx, edx = cpu.edx;
+    const reg32 number = reg32(sreg32(i16(effect)));
+    if (sreg32(number) >= 0)
     {
-        cpu.eax = reg32(sreg32(x86::sreg16(cpu.ax)));
-        cpu.eax = at(app, cpu.eax * 4 + kEffects);
-        push(app, cpu, cpu.eax);
-        cpu.edx = at(app, cpu.eax);
-        if (!directInput(app, cpu, Object::Effect, method))
-            return;
+        const std::optional<reg32> result = effectMethod(app, cpu, number, method);
+        if (!result)
+            return false;
+        cpu.eax = *result;
     }
-    cpu.ebp = pop(app, cpu);
-    cpu.edx = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
+    cpu.ecx = ecx;
+    cpu.edx = edx;
+    return true;
+}
+
+}  // namespace
+
+/* 0x435df0: joystick `joystick`'s force-feedback gain set to `percent`
+ * (DIPROP_FFGAIN in hundredths: 100 most, 0 for less than none), where it
+ * has force feedback, the effects unloaded around it and downloaded again;
+ * every joystick's for all of them (0x10) or every device (0x13).  False
+ * when the game stopped. */
+bool gain(App* app, CPU& cpu, reg32 joystick, reg32 percent)
+{
+    const GuestFrame frame(cpu, 0x14, 0x14);  // ebx, ecx, esi, edi, ebp pushed; the DIPROPDWORD
+    if (joystick == kAllJoysticks || joystick == kEveryDevice)
+    {
+        for (reg32 each = 0; each < 0x10; ++each)
+        {
+            const GuestFrame slot(cpu, 0, 4);
+            if (!gain(app, cpu, each, percent))
+                return false;
+        }
+        return true;
+    }
+    if (!isJoystick(joystick) || joystickDevice(app, joystick) == 0 || !forceFeedback(app, joystick))
+        return true;
+    const reg32 record = frame - 0x14;
+    put(app, record + 4, 0x10);
+    put(app, record + 8, 0);
+    put(app, record + 0xc, 0);
+    put(app, record, 0x14);
+    put(app, record + 0x10, sreg32(percent) > 100 ? 10000 : sreg32(percent) >= 0 ? percent * 100 : 0);
+    for (reg32 effect = 0; sreg32(effect) < sreg32(at(app, kEffectCount)); ++effect)
+        if (!effectKeeping(app, cpu, effect, kUnload))
+            return false;
+    if (!setDeviceProperty(app, cpu, joystickDevice(app, joystick), 7, record))
+        return false;
+    for (reg32 effect = 0; sreg32(effect) < sreg32(at(app, kEffectCount)); ++effect)
+        if (!effectKeeping(app, cpu, effect, kDownload))
+            return false;
+    return true;
+}
+
+/* 0x435df0: gain for joystick eax, percent edx. */
+void setGain(win32::WinApplication* app, x86::CPU& cpu)
+{
+    const Kept kept(cpu);
+    const reg32 joystick = cpu.eax;
+    if (!gain(app, cpu, joystick, kept.edx))
+        return;
+    propertyLeft(app, cpu, joystick, kept.edx, false);
+    cpu.ebx = kept.ebx;
+    cpu.ecx = kept.ecx;
+    cpu.esi = kept.esi;
+    cpu.edi = kept.edi;
+    cpu.ebp = kept.ebp;
+    cpu.esp += 4;
+}
+
+/* 0x435f10: an effect made on joystick `joystick` from the description at
+ * `description` -- its type at 0, its type's parameters (0x30 bytes) at 4,
+ * its duration in ms (0xffffff for ever) at 0x34, gain at 0x38, axes (0 x,
+ * 1 y, else both) at 0x3c, trigger button (-1 none) at 0x40, repeat at
+ * 0x44, direction in degrees at 0x48 -- into the next effect's record, a
+ * DIEFFECT, created (CreateEffect) and unloaded straight away.  Its number,
+ * or -1: no room for it, no force feedback, a type past 12, or DirectInput
+ * would not.  As the code leaves it at the call, edx the description.
+ * Nothing when the game stopped. */
+std::optional<reg32> makeEffect(App* app, CPU& cpu, reg32 joystick, reg32 description)
+{
+    constexpr reg32 kNone = 0xffffffff, kForever = 0xffffff, kNoButton = 0xffffffff;
+    if (sreg32(at(app, kEffectCount)) >= sreg32(kEffectsMade) || !isJoystick(joystick)
+        || joystickDevice(app, joystick) == 0 || !forceFeedback(app, joystick))
+        return kNone;
+    const reg32 number = at(app, kEffectCount), record = number * kEffectBytes;
+    const reg32 duration = at(app, description + 0x34);
+    put(app, record + kEffectDuration, duration == kForever ? 0xffffffff : duration * 1000);  // in microseconds
+    put(app, record + kEffectGain, at(app, description + 0x38));
+    const reg32 button = at(app, description + 0x40);
+    put(app, record + kEffectTrigger, button == kNoButton ? button : button + 0x30);  // its offset in DIJOYSTATE
+    put(app, record + kEffectRepeat, at(app, description + 0x44));
+    put(app, record + kEffectDirection, at(app, description + 0x48) * 100);
+    // Its axes: x, y, or both.
+    const reg32 axes = at(app, description + 0x3c);
+    if (axes == 0)
+    {
+        put(app, record + kEffectAxisList, kEffectAxes);
+        put(app, kEffectAxes, 0);
+        put(app, record + kEffectAxisCount, 1);
+    }
+    else if (axes == 1)
+    {
+        put(app, record + kEffectAxisCount, 1);
+        put(app, record + kEffectAxisList, kEffectAxes);
+        put(app, kEffectAxes, 4);
+    }
+    else
+    {
+        put(app, record + kEffectAxisList, kEffectAxes);
+        put(app, record + kEffectAxisCount, 2);
+        put(app, kEffectAxes, 0);
+        put(app, kEffectAxes + 4, 4);
+    }
+    // Its type's parameters, to the record.
+    for (reg32 i = 0; i < 0x30; i += 4)
+        put(app, kEffectRecords + 0x34 + record + i, at(app, description + 4 + i));
+    // The rest of the DIEFFECT.
+    const reg32 effect = kEffectRecords + record;
+    put(app, effect, 0x34);                        // its size
+    put(app, record + kEffectFlags, 0x22);         // DIEFF_OBJECTOFFSETS | DIEFF_POLAR
+    put(app, record + kEffectPeriod, 0x7d0);
+    put(app, record + kEffectDirection2, 0);
+    put(app, record + kEffectEnvelope, 0);
+    put(app, record + kEffectPlaying, 0);
+    put(app, record + kEffectParameters, effect + 0x34);
+    put(app, record + kEffectDirections, effect + 0x78);
+    put(app, record + kEffectParameters, effect + 0x34);
+    const reg32 type = at(app, description);
+    put(app, record + kEffectType, type);
+    if (type > 0xc)
+        return kNone;
+    // The parameters' size by the type, as the game's jump table has it.
+    reg32 bytes;
+    switch (at(app, kParameterSizes + type * 4))
+    {
+    case 0x436103:  // a constant force
+        bytes = 4;
+        break;
+    case 0x43611d:  // a ramp
+        bytes = 8;
+        break;
+    case 0x436129:  // a square wave
+    case 0x436135:  // the other waves
+        bytes = 0x10;
+        break;
+    case 0x43614f:  // a condition
+        bytes = 0x18;
+        break;
+    default:  // 0x436169: a condition on each of two axes
+        bytes = 0x30;
+        break;
+    }
+    put(app, record + kEffectParameterBytes, bytes);
+    // CreateEffect(the joystick, its type's GUID, the record, &the effect, none)
+    const reg32 device = joystickDevice(app, joystick);
+    push(app, cpu, 0);
+    push(app, cpu, kEffects + number * 4);
+    push(app, cpu, effect);
+    push(app, cpu, at(app, kEffectGuids + type * 4));
+    push(app, cpu, device);
+    cpu.edx = description;
+    if (!directInput(app, cpu, Object::Device, kCreateEffect))
+        return std::nullopt;
+    if (cpu.eax != 0)
+        return kNone;
+    if (!effectKeeping(app, cpu, number, kUnload))
+        return std::nullopt;
+    put(app, kEffectCount, number + 1);
+    return number;
+}
+
+/* 0x435f10: makeEffect on joystick eax from the description at edx; edx the
+ * effects' count after it where it was made, as the code leaves it. */
+void createEffect(win32::WinApplication* app, x86::CPU& cpu)
+{
+    const Kept kept(cpu);
+    const std::optional<reg32> made = makeEffect(app, cpu, cpu.eax, cpu.edx);
+    if (!made)
+        return;
+    cpu.eax = *made;
+    if (*made != 0xffffffff)
+        cpu.edx = *made + 1;
+    cpu.ebx = kept.ebx;
+    cpu.ecx = kept.ecx;
+    cpu.esi = kept.esi;
+    cpu.edi = kept.edi;
+    cpu.ebp = kept.ebp;
+    cpu.esp += 4;
+}
+
+/* 0x4361e0: effect `effect` (0 or more) started, once (Start(1, 0)): it
+ * plays where DirectInput says so.  Whether it does; nothing when the game
+ * stopped. */
+std::optional<bool> startOnce(App* app, CPU& cpu, reg32 effect)
+{
+    const std::optional<reg32> result =
+        callMethod(app, cpu, Object::Effect, effectObject(app, effect), kStart, {1, 0});
+    if (!result)
+        return std::nullopt;
+    put(app, kEffectPlaying + effect * kEffectBytes, *result == 0 ? 1 : 0);
+    return *result == 0;
+}
+
+/* 0x436230: effect `effect` (0 or more) stopped; it plays no more.  False
+ * when the game stopped. */
+bool stopOne(App* app, CPU& cpu, reg32 effect)
+{
+    if (!callMethod(app, cpu, Object::Effect, effectObject(app, effect), kStop, {}))
+        return false;
+    put(app, kEffectPlaying + effect * kEffectBytes, 0);
+    return true;
+}
+
+/* What startOnce leaves of effect `effect` (0 or more): whether its record
+ * says it plays. */
+bool effectStarted(App* app, reg32 effect)
+{
+    return at(app, kEffectPlaying + effect * kEffectBytes) != 0;
+}
+
+/* 0x4361e0: startOnce for effect ax, where it is one; eax its record's offset
+ * as the code leaves it. */
+void startEffect(win32::WinApplication* app, x86::CPU& cpu)
+{
+    const Kept kept(cpu);
+    const reg32 effect = effectIn(cpu);
+    if (sreg32(effect) >= 0)
+    {
+        if (!startOnce(app, cpu, effect))
+            return;
+        cpu.eax = effect * kEffectBytes;
+    }
+    cpu.ebx = kept.ebx;
+    cpu.ecx = kept.ecx;
+    cpu.edx = kept.edx;
+    cpu.ebp = kept.ebp;
+    cpu.esp += 4;
+}
+
+/* 0x436230: stopOne for effect ax, where it is one; eax its number times 17,
+ * as the code leaves it. */
+void stopEffect(win32::WinApplication* app, x86::CPU& cpu)
+{
+    const Kept kept(cpu);
+    const reg32 effect = effectIn(cpu);
+    if (sreg32(effect) >= 0)
+    {
+        if (!stopOne(app, cpu, effect))
+            return;
+        cpu.eax = effect * 17;
+    }
+    cpu.ebx = kept.ebx;
+    cpu.ecx = kept.ecx;
+    cpu.edx = kept.edx;
+    cpu.ebp = kept.ebp;
+    cpu.esp += 4;
+}
+
+namespace
+{
+
+/* 0x436270: joystick `joystick`'s effects all stopped (DISFFC_STOPALL), where
+ * it has force feedback, and none of the 30 plays; each joystick there is
+ * for all of them (0x10) or every device (0x13).  False when the game
+ * stopped. */
+bool stopAllEffects(App* app, CPU& cpu, reg32 joystick)
+{
+    if (joystick == kAllJoysticks || joystick == kEveryDevice)
+    {
+        for (reg32 each = 0; sreg32(each) < sreg32(at(app, kJoystickCount)); ++each)
+            if (!stopAllEffects(app, cpu, each))
+                return false;
+        return true;
+    }
+    if (!isJoystick(joystick))
+        return true;
+    const reg32 device = joystickDevice(app, joystick);
+    if (device == 0 || !forceFeedback(app, joystick))
+        return true;
+    if (!callMethod(app, cpu, Object::Device, device, kSendForceFeedbackCommand, {kStopAll}))
+        return false;
+    for (reg32 effect = 0; effect < kEffectsMade; ++effect)
+        put(app, kEffectPlaying + effect * kEffectBytes, 0);
+    return true;
+}
+
+/* eax as stopEffects' code leaves it for `joystick` (the last joystick's for
+ * all of them): the last effect's number times 17 where it stopped them, the
+ * joystick's times 17 where it is there, else its number. */
+reg32 stopEffectsLeft(App* app, reg32 joystick)
+{
+    if (joystick == kAllJoysticks || joystick == kEveryDevice)
+    {
+        const reg32 count = at(app, kJoystickCount);
+        return sreg32(count) > 0 ? stopEffectsLeft(app, count - 1) : joystick;
+    }
+    if (!isJoystick(joystick) || joystickDevice(app, joystick) == 0)
+        return joystick;
+    return forceFeedback(app, joystick) ? (kEffectsMade - 1) * 17 : joystick * 17;
+}
+
+/* 0x4362f0, 0x436310: method `method` of effect `effect`'s (0 or more): its
+ * HRESULT; nothing when the game stopped. */
+std::optional<reg32> effectMethod(App* app, CPU& cpu, reg32 effect, reg32 method)
+{
+    return callMethod(app, cpu, Object::Effect, effectObject(app, effect), method, {});
+}
+
+/* effectMethod for effect ax, where it is one; eax its HRESULT. */
+void effectMethodAdapter(App* app, CPU& cpu, reg32 method)
+{
+    const Kept kept(cpu);
+    const reg32 effect = effectIn(cpu);
+    if (sreg32(effect) >= 0)
+    {
+        const std::optional<reg32> result = effectMethod(app, cpu, effect, method);
+        if (!result)
+            return;
+        cpu.eax = *result;
+    }
+    cpu.ecx = kept.ecx;
+    cpu.edx = kept.edx;
+    cpu.ebp = kept.ebp;
     cpu.esp += 4;
 }
 
 }  // namespace
 
+/* 0x436270: stopAllEffects for joystick eax. */
+void stopEffects(win32::WinApplication* app, x86::CPU& cpu)
+{
+    const Kept kept(cpu);
+    const reg32 joystick = cpu.eax;
+    if (!stopAllEffects(app, cpu, joystick))
+        return;
+    cpu.eax = stopEffectsLeft(app, joystick);
+    cpu.ebx = kept.ebx;
+    cpu.ecx = kept.ecx;
+    cpu.edx = kept.edx;
+    cpu.esi = kept.esi;
+    cpu.ebp = kept.ebp;
+    cpu.esp += 4;
+}
+
 /* 0x4362f0: effect ax downloaded to its joystick. */
 void downloadEffect(win32::WinApplication* app, x86::CPU& cpu)
 {
-    effectMethod(app, cpu, kDownload);
+    effectMethodAdapter(app, cpu, kDownload);
+}
+
+/* 0x436310's core: effect `effect` (0 or more) unloaded from its joystick
+ * (effectMethod of Unload): its HRESULT; nothing when the game stopped. */
+std::optional<reg32> unloadOne(App* app, CPU& cpu, reg32 effect)
+{
+    return effectMethod(app, cpu, effect, kUnload);
 }
 
 /* 0x436310: effect ax unloaded from its joystick. */
 void unloadEffect(win32::WinApplication* app, x86::CPU& cpu)
 {
-    effectMethod(app, cpu, kUnload);
+    effectMethodAdapter(app, cpu, kUnload);
 }
 
-/* 0x436330: effect ax changed where it is asked to -- [ebx] its direction in
- * degrees (0 to 360), [ecx] its duration in ms (1500 most, 0xffffff for
- * ever), and the stack's: [first] its gain in percent, the type's
- * parameters at the second, [third] its trigger button (-1 none), its
- * envelope's 4 words at the fourth -- the arguments made DirectInput's as it
- * goes; what changed set (SetParameters), and with edx 1 or 2 started if it
- * does not play, with 3 downloaded (3 also when nothing changed, 1 started).
- * Whether anything changed; 0 for no effect. */
-void updateEffect(win32::WinApplication* app, x86::CPU& cpu)
+namespace
 {
-    enter(app, cpu, {&cpu.esi, &cpu.edi}, 0xc);
-    const reg32 ebp = cpu.ebp;
-    auto done = [&] { leave(app, cpu, {&cpu.esi, &cpu.edi}, 0x10); };
-    // The effect: the word at [ebp - 4], from the dword at [ebp - 6].
-    auto effect = [&] { return reg32(sreg32(at(app, ebp - 6)) >> 16); };
-    cpu.edi = at(app, ebp + 0x10);
-    putHalf(app, ebp - 4, cpu.ax);
-    put(app, ebp - 8, cpu.edx);
-    cpu.edx = 0;
-    if (x86::sreg16(cpu.ax) < 0)
+
+// DIEP_: what SetParameters is told changed.
+constexpr reg32 kNewDuration = 1, kNewGain = 4, kNewTrigger = 8, kNewDirection = 0x40, kNewEnvelope = 0x80;
+constexpr reg32 kNewParameters = 0x100;
+constexpr reg32 kEffectParameterValues = 0x5f2924;  // the type's parameters, where kEffectParameters points
+constexpr reg32 kMostDegrees = 360, kLongest = 1500, kForEver = 0xffffff;  // ms
+constexpr reg32 kInfinite = 0xffffffff, kNominalMax = 10000;              // INFINITE, DI_FFNOMINALMAX
+constexpr reg32 kNoTrigger = 0xffffffff, kButtonOffset = 0x30;          // DIEB_NOTRIGGER, DIJOFS_BUTTON0
+constexpr sreg32 kTriggerButtons = 0x20;
+// changeEffect's `how`: started where it does not play; the same only where
+// something changed; downloaded where nothing changed.
+constexpr reg32 kPlay = 1, kPlayChanged = 2, kDownloadSame = 3;
+
+/* repe cmpsb: whether `bytes` from `a` are those from `b`. */
+bool sameBytes(App* app, reg32 a, reg32 b, reg32 bytes)
+{
+    for (reg32 i = 0; i < bytes; ++i)
+        if (byte(app, a + i) != byte(app, b + i))
+            return false;
+    return true;
+}
+
+/* rep movsd, then rep movsb of what is left: `bytes` from `from` to `to`. */
+void copyBytes(App* app, reg32 to, reg32 from, reg32 bytes)
+{
+    for (reg32 n = bytes >> 2; n != 0; --n, from += 4, to += 4)
+        put(app, to, at(app, from));
+    for (reg32 n = bytes & 3; n != 0; --n, ++from, ++to)
+        putByte(app, to, byte(app, from));
+}
+
+}  // namespace
+
+/* 0x436330: effect `effect` (0 or more) changed where it is asked to, each
+ * word asked for made DirectInput's in place as it goes: [directionAt] its
+ * direction in degrees (0 to 360) into hundredths, [durationAt] its duration
+ * in ms (1500 most, 0xffffff for ever) into microseconds, [gainAt] its gain
+ * in percent, its type's parameters at parametersAt, [triggerAt] its trigger
+ * button (-1 none), its envelope's 4 words at envelopeAt.  What changed set
+ * (SetParameters), and with `how` 1 or 2 it is started where it does not
+ * play; where nothing changed, with 1 started so, with 3 downloaded.
+ * Whether anything changed; nothing when the game stopped. */
+std::optional<bool> changeEffect(App* app, CPU& cpu, reg32 effect, reg32 how, reg32 directionAt, reg32 durationAt,
+                                 reg32 gainAt, reg32 parametersAt, reg32 triggerAt, reg32 envelopeAt)
+{
+    const reg32 record = effect * kEffectBytes;
+    reg32 changed = 0;
+    if (directionAt != 0)
     {
-        cpu.eax = 0;
-        return done();
-    }
-    if (cpu.ebx != 0)
-    {
-        cpu.esi = at(app, cpu.ebx);
-        if (sreg32(cpu.esi) > 0x168)
-            put(app, cpu.ebx, 0x168);
-        else if (sreg32(cpu.esi) < 0)
-            put(app, cpu.ebx, cpu.edx);
-        cpu.esi = at(app, cpu.ebx);
-        cpu.eax = cpu.esi * 4;
-        cpu.eax -= cpu.esi;
-        cpu.eax <<= 3;
-        cpu.eax += cpu.esi;
-        cpu.esi = at(app, ebp - 6);
-        cpu.eax <<= 2;
-        cpu.esi = reg32(sreg32(cpu.esi) >> 16);
-        put(app, cpu.ebx, cpu.eax);
-        cpu.eax = times17(cpu.esi);
-        cpu.eax <<= 3;
-        cpu.esi = at(app, cpu.eax + kEffectDirection);
-        if (cpu.esi != at(app, cpu.ebx))
+        const reg32 degrees = at(app, directionAt);
+        if (sreg32(degrees) > sreg32(kMostDegrees))
+            put(app, directionAt, kMostDegrees);
+        else if (sreg32(degrees) < 0)
+            put(app, directionAt, 0);
+        put(app, directionAt, at(app, directionAt) * 100);
+        const reg32 direction = at(app, directionAt);
+        if (at(app, kEffectDirection + record) != direction)
         {
-            cpu.ebx = at(app, cpu.ebx);
-            cpu.dl |= 0x40;  // DIEP_DIRECTION
-            put(app, cpu.eax + kEffectDirection, cpu.ebx);
+            changed |= kNewDirection;
+            put(app, kEffectDirection + record, direction);
         }
     }
-    if (cpu.ecx != 0)
+    if (durationAt != 0)
     {
-        cpu.ebx = at(app, cpu.ecx);
-        if (cpu.ebx == 0xffffff)
-            put(app, cpu.ecx, 0xffffffff);
+        const reg32 ms = at(app, durationAt);
+        if (ms == kForEver)
+            put(app, durationAt, kInfinite);
         else
         {
-            if (cpu.ebx > 0x5dc)
-                put(app, cpu.ecx, 0x5dc);
-            cpu.ebx = at(app, cpu.ecx);
-            cpu.eax = cpu.ebx * 4;
-            cpu.eax -= cpu.ebx;
-            cpu.eax <<= 3;
-            cpu.eax += cpu.ebx;
-            cpu.eax <<= 3;
-            cpu.ebx = cpu.eax;
-            cpu.eax <<= 2;
-            cpu.eax += cpu.ebx;
-            put(app, cpu.ecx, cpu.eax);
+            if (ms > kLongest)
+                put(app, durationAt, kLongest);
+            put(app, durationAt, at(app, durationAt) * 1000);
         }
-        cpu.ebx = effect();
-        cpu.eax = times17(cpu.ebx);
-        cpu.eax <<= 3;
-        cpu.esi = at(app, cpu.ecx);
-        if (cpu.esi != at(app, cpu.eax + kEffectDuration))
+        const reg32 duration = at(app, durationAt);
+        if (duration != at(app, kEffectDuration + record))
         {
-            cpu.dl |= 1;  // DIEP_DURATION
-            put(app, cpu.eax + kEffectDuration, cpu.esi);
+            changed |= kNewDuration;
+            put(app, kEffectDuration + record, duration);
         }
     }
-    if (cpu.edi != 0)
+    if (gainAt != 0)
     {
-        cpu.ecx = at(app, cpu.edi);
-        cpu.eax = cpu.ecx * 4;
-        cpu.eax -= cpu.ecx;
-        cpu.eax <<= 3;
-        cpu.ecx += cpu.eax;
-        cpu.ecx <<= 2;
-        if (cpu.ecx > 0x2710)
-            cpu.ecx = 0x2710;
-        cpu.ebx = effect();
-        cpu.eax = times17(cpu.ebx);
-        cpu.eax <<= 3;
-        if (cpu.ecx != at(app, cpu.eax + kEffectGain))
+        const reg32 percent = at(app, gainAt) * 100;
+        const reg32 gain = percent > kNominalMax ? kNominalMax : percent;
+        if (gain != at(app, kEffectGain + record))
         {
-            cpu.dl |= 4;  // DIEP_GAIN
-            put(app, cpu.eax + kEffectGain, cpu.ecx);
+            changed |= kNewGain;
+            put(app, kEffectGain + record, gain);
         }
     }
-    if (at(app, ebp + 0x14) != 0)
+    if (parametersAt != 0
+        && !sameBytes(app, kEffectParameterValues + record, parametersAt, at(app, kEffectParameterBytes + record)))
     {
-        cpu.ecx = effect();
-        cpu.eax = times17(cpu.ecx);
-        cpu.ebx = kEffectRecords;
-        cpu.eax <<= 3;
-        cpu.ebx += cpu.eax;
-        cpu.edi = at(app, ebp + 0x14);
-        cpu.ebx += 0x34;
-        cpu.ecx = at(app, cpu.eax + kEffectParameterBytes);
-        cpu.esi = cpu.ebx;
-        put(app, ebp - 0xc, cpu.eax);
-        cpu.eax = 0;
-        // repe cmpsb: the parameters against the record's.
-        bool same = true, below = false;
-        while (cpu.ecx != 0)
+        changed |= kNewParameters;
+        copyBytes(app, kEffectParameterValues + record, parametersAt, at(app, kEffectParameterBytes + record));
+    }
+    if (triggerAt != 0)
+    {
+        const reg32 button = at(app, triggerAt);
+        if (sreg32(button) < kTriggerButtons)
         {
-            const x86::reg8 a = byte(app, cpu.esi), b = byte(app, cpu.edi);
-            ++cpu.esi;
-            ++cpu.edi;
-            --cpu.ecx;
-            same = a == b;
-            below = a < b;
-            if (!same)
-                break;
-        }
-        if (!same)
-            cpu.eax = below ? 0xffffffff : 1;
-        if (cpu.eax != 0)
-        {
-            cpu.ecx = at(app, ebp - 0xc);
-            cpu.esi = at(app, ebp + 0x14);
-            cpu.edi = cpu.ebx;
-            cpu.ecx = at(app, cpu.ecx + kEffectParameterBytes);
-            cpu.dh |= 1;  // DIEP_TYPESPECIFICPARAMS
-            push(app, cpu, cpu.edi);
-            copyBytes(app, cpu);
-            cpu.edi = pop(app, cpu);
+            changed |= kNewTrigger;
+            put(app, kEffectTrigger + record, button == kNoTrigger ? button : button + kButtonOffset);
         }
     }
-    cpu.edi = at(app, ebp + 0x18);
-    if (cpu.edi != 0)
+    if (envelopeAt != 0)
     {
-        cpu.ecx = at(app, cpu.edi);
-        if (sreg32(cpu.ecx) < 0x20)
-        {
-            if (cpu.ecx != 0xffffffff)
-                cpu.ecx += 0x30;
-            cpu.ebx = effect();
-            cpu.eax = times17(cpu.ebx);
-            cpu.dl |= 8;  // DIEP_TRIGGERBUTTON
-            put(app, cpu.eax * 8 + kEffectTrigger, cpu.ecx);
-        }
-    }
-    cpu.esi = at(app, ebp + 0x1c);
-    if (cpu.esi != 0)
-    {
-        cpu.ecx = effect();
-        cpu.eax = times17(cpu.ecx);
-        cpu.eax <<= 3;
-        cpu.edi = at(app, cpu.esi);
-        bool same = false;
-        if (cpu.edi == at(app, cpu.eax + kEffectEnvelopeValues))
-        {
-            cpu.esi = at(app, cpu.esi + 4);
-            if (cpu.esi == at(app, cpu.eax + kEffectEnvelopeValues + 4))
-            {
-                cpu.ebx = at(app, ebp + 0x1c);
-                cpu.ecx = at(app, cpu.eax + kEffectEnvelopeValues + 8);
-                if (cpu.ecx == at(app, cpu.ebx + 8))
-                {
-                    cpu.ebx = at(app, cpu.ebx + 0xc);
-                    same = cpu.ebx == at(app, cpu.eax + kEffectEnvelopeValues + 0xc);
-                }
-            }
-        }
+        const reg32 held = kEffectEnvelopeValues + record;
+        const bool same = at(app, envelopeAt) == at(app, held) && at(app, envelopeAt + 4) == at(app, held + 4)
+                          && at(app, held + 8) == at(app, envelopeAt + 8)
+                          && at(app, envelopeAt + 0xc) == at(app, held + 0xc);
         if (!same)
         {
-            cpu.ecx = effect();
-            cpu.eax = times17(cpu.ecx);
+            changed |= kNewEnvelope;
             for (reg32 i = 0; i < 0x10; i += 4)
-            {
-                cpu.ecx = at(app, ebp + 0x1c);
-                cpu.ecx = at(app, cpu.ecx + i);
-                if (i == 0xc)
-                    cpu.dl |= 0x80;  // DIEP_ENVELOPE
-                put(app, cpu.eax * 8 + kEffectEnvelopeValues + i, cpu.ecx);
-            }
+                put(app, held + i, at(app, envelopeAt + i));
         }
     }
-    if (cpu.edx == 0)
+    // effectPlaying, then startEffect where it does not play.  False when the game stopped.
+    auto startIfStill = [&]() -> bool {
+        if (effectPlays(app, effect) != 0)
+            return true;
+        const GuestFrame call(cpu, 0, 4);  // the return address's slot
+        return startOnce(app, cpu, effect).has_value();
+    };
+    if (changed == 0)
     {
-        if (at(app, ebp - 8) == 1)
+        if (how == kPlay && !startIfStill())
+            return std::nullopt;
+        if (how == kDownloadSame)
         {
-            cpu.edx = effect();
-            cpu.eax = cpu.edx;
-            if (!direct(app, cpu, effectPlaying))
-                return;
-            if (cpu.eax == 0)
-            {
-                cpu.eax = cpu.edx;
-                if (!direct(app, cpu, startEffect))
-                    return;
-            }
+            const GuestFrame call(cpu, 0, 4);
+            if (!effectMethod(app, cpu, effect, kDownload))
+                return std::nullopt;
         }
-        if (at(app, ebp - 8) == 3)
-        {
-            cpu.eax = effect();
-            if (!direct(app, cpu, downloadEffect))
-                return;
-        }
-        cpu.eax = 0;
-        return done();
+        return false;
     }
     // SetParameters(the effect, its record, what changed)
-    cpu.eax = effect();
-    push(app, cpu, cpu.edx);
-    cpu.edx = cpu.eax;
-    cpu.ecx = at(app, cpu.eax * 4 + kEffects);
-    cpu.eax <<= 4;
-    cpu.eax += cpu.edx;
-    cpu.eax <<= 3;
-    cpu.eax += kEffectRecords;
-    push(app, cpu, cpu.eax);
-    cpu.ebx = at(app, cpu.ecx);
-    push(app, cpu, cpu.ecx);
-    if (!directInput(app, cpu, Object::Effect, kSetParameters))
-        return;
-    cpu.eax = at(app, ebp - 8);
-    if (cpu.eax == 1 || cpu.eax == 2)
-    {
-        cpu.edx = effect();
-        cpu.eax = cpu.edx;
-        if (!direct(app, cpu, effectPlaying))
-            return;
-        if (cpu.eax == 0)
-        {
-            cpu.eax = cpu.edx;
-            if (!direct(app, cpu, startEffect))
-                return;
-        }
-        else if (at(app, ebp - 8) == 3)
-        {
-            cpu.eax = cpu.edx;
-            if (!direct(app, cpu, downloadEffect))
-                return;
-        }
-    }
-    cpu.eax = 1;
-    done();
+    if (!callMethod(app, cpu, Object::Effect, effectObject(app, effect), kSetParameters,
+                    {kEffectRecords + record, changed}))
+        return std::nullopt;
+    if ((how == kPlay || how == kPlayChanged) && !startIfStill())
+        return std::nullopt;
+    return true;
 }
 
-/* 0x436610: device eax's cooperative level with the game's window edx;
- * 0x10 each joystick's.  1, or 0 where DirectInput would not or there is no
- * window; 1 for a device that is not there. */
+/* 0x436330 (stdcall, 4 words): changeEffect for effect ax, `how` edx,
+ * directionAt ebx, durationAt ecx, the stack's words the rest; 0 for none
+ * (ax below 0). */
+void updateEffect(win32::WinApplication* app, x86::CPU& cpu)
+{
+    const Kept kept(cpu);
+    const reg32 effect = effectIn(cpu);
+    bool changed = false;
+    if (sreg32(effect) >= 0)
+    {
+        const std::optional<bool> done =
+            changeEffect(app, cpu, effect, cpu.edx, cpu.ebx, cpu.ecx, at(app, cpu.esp + 4), at(app, cpu.esp + 8),
+                         at(app, cpu.esp + 0xc), at(app, cpu.esp + 0x10));
+        if (!done)
+            return;
+        changed = *done;
+    }
+    cpu.eax = changed ? 1 : 0;
+    cpu.esi = kept.esi;
+    cpu.edi = kept.edi;
+    cpu.ebp = kept.ebp;
+    cpu.esp += 4 + 0x10;
+}
+
+namespace
+{
+
+/* The game's window (AcquireWindow).  Nothing when the game stopped. */
+std::optional<reg32> gameWindow(App* app, CPU& cpu)
+{
+    if (!direct(app, cpu, AcquireWindow))
+        return std::nullopt;
+    return cpu.eax;
+}
+
+/* 0x436610: device `device`'s cooperative level `flags` with the game's
+ * window (SetCooperativeLevel, the window asked again for it); each
+ * joystick's for all of them (0x10).  1, or 0 where DirectInput would not or
+ * there is no window; 1 for a device that is not there.  As the code leaves
+ * it at the call, edx a joystick's device, else `flags`.  Nothing when the
+ * game stopped. */
+std::optional<reg32> cooperate(App* app, CPU& cpu, reg32 device, reg32 flags)
+{
+    cpu.edx = flags;  // where the callers hand it, as the code leaves it where it asks nothing
+    const std::optional<reg32> window = gameWindow(app, cpu);
+    if (!window)
+        return std::nullopt;
+    if (*window == 0)
+        return 0;
+    auto level = [&](reg32 slot, reg32 leftInEdx) -> std::optional<reg32> {
+        const std::optional<reg32> again = gameWindow(app, cpu);
+        if (!again)
+            return std::nullopt;
+        push(app, cpu, flags);
+        push(app, cpu, *again);
+        push(app, cpu, at(app, slot));
+        cpu.edx = leftInEdx;
+        if (!directInput(app, cpu, Object::Device, kSetCooperativeLevel))
+            return std::nullopt;
+        return cpu.eax != 0 ? 0 : 1;
+    };
+    if (sreg32(device) < 0x10)
+    {
+        const reg32 slot = kJoysticks + device * 4;
+        if (at(app, slot) != 0)
+            return level(slot, at(app, slot));
+        cpu.edx = 0;
+    }
+    else if (device == kAllJoysticks)
+    {
+        for (reg32 each = 0; each < 0x10; ++each)
+            if (!cooperate(app, cpu, each, flags))
+                return std::nullopt;
+    }
+    else if (device == kTheMouse)
+        return level(kMouse, flags);
+    else if (device == kTheKeyboard)
+        return level(kKeyboard, flags);
+    return 1;
+}
+
+}  // namespace
+
+/* 0x436610: cooperate device eax, flags edx; edx as the code leaves it. */
 void setCooperativeLevel(win32::WinApplication* app, x86::CPU& cpu)
 {
-    enter(app, cpu, {&cpu.ebx, &cpu.ecx, &cpu.esi, &cpu.edi}, 0);
-    auto done = [&] { leave(app, cpu, {&cpu.ebx, &cpu.ecx, &cpu.esi, &cpu.edi}); };
-    cpu.esi = cpu.eax;
-    cpu.ebx = cpu.edx;
-    if (!direct(app, cpu, AcquireWindow))
+    const Kept kept(cpu);
+    const std::optional<reg32> done = cooperate(app, cpu, cpu.eax, cpu.edx);
+    if (!done)
         return;
-    if (cpu.eax == 0)
-        return done();
-    // SetCooperativeLevel(the device, the window, the flags)
-    if (sreg32(cpu.esi) < 0x10)
-    {
-        cpu.esi <<= 2;
-        cpu.edx = at(app, cpu.esi + kJoysticks);
-        if (cpu.edx != 0)
-        {
-            push(app, cpu, cpu.ebx);
-            cpu.edi = at(app, cpu.edx);
-            if (!direct(app, cpu, AcquireWindow))
-                return;
-            push(app, cpu, cpu.eax);
-            cpu.ecx = at(app, cpu.esi + kJoysticks);
-            push(app, cpu, cpu.ecx);
-            if (!directInput(app, cpu, Object::Device, kSetCooperativeLevel))
-                return;
-            if (cpu.eax != 0)
-            {
-                cpu.eax = 0;
-                return done();
-            }
-        }
-    }
-    else if (cpu.esi == kAllJoysticks)
-    {
-        cpu.esi = 0;
-        do
-        {
-            cpu.edx = cpu.ebx;
-            cpu.eax = cpu.esi;
-            if (!direct(app, cpu, setCooperativeLevel))
-                return;
-            ++cpu.esi;
-        } while (sreg32(cpu.esi) < 0x10);
-    }
-    else if (cpu.esi == kTheMouse)
-    {
-        cpu.eax = at(app, kMouse);
-        push(app, cpu, cpu.ebx);
-        cpu.esi = at(app, cpu.eax);
-        if (!direct(app, cpu, AcquireWindow))
-            return;
-        push(app, cpu, cpu.eax);
-        cpu.ebx = at(app, kMouse);
-        push(app, cpu, cpu.ebx);
-        if (!directInput(app, cpu, Object::Device, kSetCooperativeLevel))
-            return;
-        if (cpu.eax != 0)
-        {
-            cpu.eax = 0;
-            return done();
-        }
-    }
-    else if (cpu.esi == kTheKeyboard)
-    {
-        cpu.eax = at(app, kKeyboard);
-        push(app, cpu, cpu.ebx);
-        cpu.esi = at(app, cpu.eax);
-        if (!direct(app, cpu, AcquireWindow))
-            return;
-        push(app, cpu, cpu.eax);
-        cpu.edi = at(app, kKeyboard);
-        push(app, cpu, cpu.edi);
-        if (!directInput(app, cpu, Object::Device, kSetCooperativeLevel))
-            return;
-        if (cpu.eax != 0)
-        {
-            cpu.eax = 0;
-            return done();
-        }
-    }
-    cpu.eax = 1;
-    done();
+    cpu.eax = *done;
+    cpu.ebx = kept.ebx;
+    cpu.ecx = kept.ecx;
+    cpu.esi = kept.esi;
+    cpu.edi = kept.edi;
+    cpu.ebp = kept.ebp;
+    cpu.esp += 4;
 }
 
-/* 0x4366e0: device eax acquired, where DirectInput is started and the device
- * is there: whether it is (acquireResult); 0x10 how many joysticks are,
- * 0x13 the mouse's, the keyboard's and that added up; 0 past 0x13. */
+namespace
+{
+
+/* 0x4368c0: whether Acquire's HRESULT says the device is acquired: DI_OK, or
+ * S_FALSE (it was). */
+bool acquiredBy(reg32 result)
+{
+    return result == 0 || result == 1;
+}
+
+/* 0x4366e0: device `device` acquired (Acquire), where DirectInput is started
+ * and the device is there: whether it is (acquiredBy); for all the joysticks
+ * (0x10) how many are, for every device (0x13) the mouse's, the keyboard's
+ * and that added up; 0 past 0x13.  Nothing when the game stopped. */
+std::optional<reg32> acquire(App* app, CPU& cpu, reg32 device)
+{
+    if (at(app, kDirectInput) == 0)
+        return 0;
+    if (device == kEveryDevice)
+    {
+        const std::optional<reg32> mouse = acquire(app, cpu, kTheMouse);
+        if (!mouse)
+            return std::nullopt;
+        const std::optional<reg32> keyboard = acquire(app, cpu, kTheKeyboard);
+        if (!keyboard)
+            return std::nullopt;
+        const std::optional<reg32> joysticks = acquire(app, cpu, kAllJoysticks);
+        if (!joysticks)
+            return std::nullopt;
+        return *joysticks + (*mouse + *keyboard);
+    }
+    auto one = [&](reg32 object) -> std::optional<reg32> {
+        if (object == 0)
+            return 0;
+        const std::optional<reg32> result = callMethod(app, cpu, Object::Device, object, kAcquire, {});
+        if (!result)
+            return std::nullopt;
+        return acquiredBy(*result) ? 1 : 0;
+    };
+    if (device == kTheMouse)
+        return one(at(app, kMouse));
+    if (device == kTheKeyboard)
+        return one(at(app, kKeyboard));
+    if (device == kAllJoysticks)
+    {
+        reg32 acquired = 0;
+        for (reg32 joystick = 0; joystick < 0x10; ++joystick)
+        {
+            if (joystickDevice(app, joystick) == 0)
+                continue;
+            const std::optional<reg32> done = one(joystickDevice(app, joystick));
+            if (!done)
+                return std::nullopt;
+            if (*done != 0)
+                ++acquired;
+        }
+        return acquired;
+    }
+    if (sreg32(device) > 0x13)
+        return 0;
+    return one(joystickDevice(app, device));
+}
+
+/* 0x436800: device `device` let go (Unacquire), where it is there; each
+ * joystick for all of them (0x10), the mouse, the keyboard and the joysticks
+ * for every device (0x13).  False when the game stopped. */
+bool letGo(App* app, CPU& cpu, reg32 device)
+{
+    if (device == kEveryDevice)
+    {
+        for (const reg32 each : {kTheMouse, kTheKeyboard, kAllJoysticks})
+            if (!letGo(app, cpu, each))
+                return false;
+        return true;
+    }
+    if (device == kAllJoysticks)
+    {
+        for (reg32 each = 0; each < 0x10; ++each)
+            if (!letGo(app, cpu, each))
+                return false;
+        return true;
+    }
+    const reg32 object = device == kTheMouse      ? at(app, kMouse)
+                         : device == kTheKeyboard ? at(app, kKeyboard)
+                         : isJoystick(device)     ? joystickDevice(app, device)
+                                                  : 0;
+    if (object == 0)
+        return true;
+    return callMethod(app, cpu, Object::Device, object, kUnacquire, {}).has_value();
+}
+
+}  // namespace
+
+/* 0x4366e0: acquire device eax. */
 void acquireDevice(win32::WinApplication* app, x86::CPU& cpu)
 {
-    enter(app, cpu, {&cpu.ebx, &cpu.ecx, &cpu.edx, &cpu.esi, &cpu.edi}, 0);
-    auto done = [&] { leave(app, cpu, {&cpu.ebx, &cpu.ecx, &cpu.edx, &cpu.esi, &cpu.edi}); };
-    // Acquire(the device), what it hands back made whether (acquireResult).
-    auto acquire = [&](reg32 device) {
-        push(app, cpu, device);
-        cpu.edx = at(app, device);
-        if (!directInput(app, cpu, Object::Device, kAcquire))
-            return false;
-        cpu.edx = cpu.ebx;
-        return direct(app, cpu, acquireResult);
-    };
-    cpu.ebx = cpu.eax;
-    cpu.edx = at(app, kDirectInput);
-    cpu.esi = 0;
-    if (cpu.edx == 0)
-    {
-        cpu.eax = cpu.esi;
-        return done();
-    }
-    if (cpu.eax == kEveryDevice)
-    {
-        cpu.eax = kTheMouse;
-        if (!direct(app, cpu, acquireDevice))
-            return;
-        cpu.ebx = cpu.eax;
-        cpu.eax = kTheKeyboard;
-        if (!direct(app, cpu, acquireDevice))
-            return;
-        cpu.ebx += cpu.eax;
-        cpu.eax = kAllJoysticks;
-        if (!direct(app, cpu, acquireDevice))
-            return;
-        cpu.eax += cpu.ebx;
-        return done();
-    }
-    if (cpu.eax == kTheMouse)
-    {
-        cpu.ecx = at(app, kMouse);
-        if (cpu.ecx == 0)
-        {
-            cpu.eax = cpu.esi;
-            return done();
-        }
-        if (!acquire(cpu.ecx))
-            return;
-        return done();
-    }
-    if (cpu.eax == kTheKeyboard)
-    {
-        cpu.edi = at(app, kKeyboard);
-        if (cpu.edi == 0)
-        {
-            cpu.eax = cpu.esi;
-            return done();
-        }
-        if (!acquire(cpu.edi))
-            return;
-        return done();
-    }
-    if (cpu.eax == kAllJoysticks)
-    {
-        cpu.ebx ^= cpu.eax;
-        do
-        {
-            cpu.eax = cpu.ebx * 4;
-            cpu.edx = at(app, cpu.eax + kJoysticks);
-            if (cpu.edx != 0)
-            {
-                cpu.eax = cpu.edx;
-                if (!acquire(cpu.eax))
-                    return;
-                if (cpu.eax != 0)
-                    ++cpu.esi;
-            }
-            ++cpu.ebx;
-        } while (sreg32(cpu.ebx) < 0x10);
-        cpu.eax = cpu.esi;
-        return done();
-    }
-    if (sreg32(cpu.ebx) > 0x13)
-    {
-        cpu.eax = 0;
-        return done();
-    }
-    cpu.eax = cpu.ebx * 4;
-    cpu.ecx = at(app, cpu.eax + kJoysticks);
-    if (cpu.ecx == 0)
-    {
-        cpu.eax = cpu.esi;
-        return done();
-    }
-    if (!acquire(cpu.ecx))
+    const Kept kept(cpu);
+    const std::optional<reg32> acquired = acquire(app, cpu, cpu.eax);
+    if (!acquired)
         return;
-    done();
+    cpu.eax = *acquired;
+    cpu.ebx = kept.ebx;
+    cpu.ecx = kept.ecx;
+    cpu.edx = kept.edx;
+    cpu.esi = kept.esi;
+    cpu.edi = kept.edi;
+    cpu.ebp = kept.ebp;
+    cpu.esp += 4;
 }
 
-/* 0x436800: device eax let go (Unacquire), where it is there; 0x10 each
- * joystick, 0x13 the mouse, the keyboard and the joysticks. */
+/* 0x436800: letGo device eax; eax as the code leaves it: the HRESULT where
+ * the last device was let go, as the call left it; the last joystick's
+ * number times 4 where it has none; else the device's number. */
 void unacquireDevice(win32::WinApplication* app, x86::CPU& cpu)
 {
-    enter(app, cpu, {&cpu.ebx, &cpu.ecx, &cpu.edx, &cpu.esi}, 0);
-    auto unacquire = [&](reg32 device) {
-        push(app, cpu, device);
-        cpu.edx = at(app, device);
-        return directInput(app, cpu, Object::Device, kUnacquire);
-    };
-    cpu.edx = cpu.eax;
-    if (cpu.eax == kEveryDevice)
-    {
-        for (const reg32 device : {kTheMouse, kTheKeyboard, kAllJoysticks})
-        {
-            cpu.eax = device;
-            if (!direct(app, cpu, unacquireDevice))
-                return;
-        }
-    }
-    else if (cpu.eax == kAllJoysticks)
-    {
-        cpu.edx ^= cpu.eax;
-        do
-        {
-            cpu.eax = cpu.edx;
-            if (!direct(app, cpu, unacquireDevice))
-                return;
-            ++cpu.edx;
-        } while (sreg32(cpu.edx) < 0x10);
-        return leave(app, cpu, {&cpu.ebx, &cpu.ecx, &cpu.edx, &cpu.esi});
-    }
-    if (cpu.edx == kTheMouse)
-    {
-        cpu.edx = at(app, kMouse);
-        if (cpu.edx != 0)
-        {
-            cpu.eax = cpu.edx;
-            if (!unacquire(cpu.eax))
-                return;
-        }
-    }
-    else if (cpu.edx == kTheKeyboard)
-    {
-        cpu.ecx = at(app, kKeyboard);
-        if (cpu.ecx != 0 && !unacquire(cpu.ecx))
-            return;
-    }
-    else if (sreg32(cpu.edx) >= 0 && sreg32(cpu.edx) < 0x10)
-    {
-        cpu.eax = cpu.edx * 4;
-        cpu.esi = at(app, cpu.eax + kJoysticks);
-        if (cpu.esi != 0 && !unacquire(cpu.esi))
-            return;
-    }
-    leave(app, cpu, {&cpu.ebx, &cpu.ecx, &cpu.edx, &cpu.esi});
+    const Kept kept(cpu);
+    const reg32 device = cpu.eax;
+    if (!letGo(app, cpu, device))
+        return;
+    const reg32 last = device == kEveryDevice || device == kAllJoysticks ? 0xf : device;
+    if (isJoystick(last) && joystickDevice(app, last) == 0)
+        cpu.eax = last * 4;
+    cpu.ebx = kept.ebx;
+    cpu.ecx = kept.ecx;
+    cpu.edx = kept.edx;
+    cpu.esi = kept.esi;
+    cpu.ebp = kept.ebp;
+    cpu.esp += 4;
 }
 
-/* 0x4368c0: whether Acquire's HRESULT eax says the device is acquired: 1 for
- * DI_OK and S_FALSE (already), 0 for anything else. */
+/* 0x4368c0: acquiredBy HRESULT eax, 1 or 0. */
 void acquireResult(win32::WinApplication* app, x86::CPU& cpu)
 {
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    if (cpu.eax == 0)
-        cpu.eax = 1;
-    else if (cpu.eax != 1)
-        cpu.eax = 0;
-    cpu.ebp = pop(app, cpu);
+    (void)app;
+    cpu.eax = acquiredBy(cpu.eax) ? 1 : 0;
     cpu.esp += 4;
 }
 
-/* 0x4368f0: whether effect ax plays: 0 for none, and for one whose type is
- * 0 (a constant force). */
-void effectPlaying(win32::WinApplication* app, x86::CPU& cpu)
+namespace
 {
-    push(app, cpu, cpu.edx);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    if (x86::sreg16(cpu.ax) < 0)
-        cpu.eax = 0;
-    else
-    {
-        cpu.edx = reg32(sreg32(x86::sreg16(cpu.ax)));
-        cpu.eax = times17(cpu.edx);
-        cpu.eax <<= 3;
-        cpu.eax = at(app, cpu.eax + kEffectType) == 0 ? 0 : at(app, cpu.eax + kEffectPlaying);
-    }
-    cpu.ebp = pop(app, cpu);
-    cpu.edx = pop(app, cpu);
-    cpu.esp += 4;
+
+/* 0x4368f0: whether effect `effect` plays: not for none (below 0), nor for
+ * one whose type is 0 (a constant force); else its record's flag. */
+reg32 effectPlays(App* app, reg32 effect)
+{
+    if (sreg32(effect) < 0)
+        return 0;
+    const reg32 record = effect * kEffectBytes;
+    return at(app, record + kEffectType) == 0 ? 0 : at(app, record + kEffectPlaying);
 }
 
-/* 0x436930: the window's WM_SETCURSOR handler while the mouse is open
- * (stdcall, 6 words): the one before it called with them, then no cursor
- * (SetCursor(0), ShowCursor(FALSE)).  1. */
-void hideCursor(win32::WinApplication* app, x86::CPU& cpu)
+/* 0x436930: the window's WM_SETCURSOR handler while the mouse is open: the
+ * one before it called with its six words -- the first left in edx and the
+ * last in ecx, as the code has them -- then no cursor (SetCursor(0),
+ * ShowCursor(FALSE)).  False when the game stopped. */
+bool noCursor(App* app, CPU& cpu, const reg32 (&words)[6])
 {
-    push(app, cpu, cpu.ebx);
-    push(app, cpu, cpu.esi);
-    push(app, cpu, cpu.edi);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    const reg32 ebp = cpu.ebp;
     if (at(app, kOldSetCursor) != 0)
     {
-        cpu.ecx = at(app, ebp + 0x28);
-        push(app, cpu, cpu.ecx);
-        cpu.ebx = at(app, ebp + 0x24);
-        push(app, cpu, cpu.ebx);
-        cpu.esi = at(app, ebp + 0x20);
-        push(app, cpu, cpu.esi);
-        cpu.edi = at(app, ebp + 0x1c);
-        push(app, cpu, cpu.edi);
-        cpu.eax = at(app, ebp + 0x18);
-        push(app, cpu, cpu.eax);
-        cpu.edx = at(app, ebp + 0x14);
-        push(app, cpu, cpu.edx);
+        for (int i = 5; i >= 0; --i)
+            push(app, cpu, words[i]);
+        cpu.ecx = words[5];
+        cpu.edx = words[0];
         if (!byAddress(app, cpu, at(app, kOldSetCursor)))
-            return;
+            return false;
     }
-    push(app, cpu, 0);
-    if (!byAddress(app, cpu, at(app, kSetCursor)))
-        return;
-    push(app, cpu, 0);
-    if (!byAddress(app, cpu, at(app, kShowCursor)))
+    return callWindows<kSetCursor, &win32::user32::SetCursor>(app, cpu, 0)
+           && callWindows<kShowCursor, &win32::user32::ShowCursor>(app, cpu, 0);
+}
+
+}  // namespace
+
+/* 0x4368f0: effectPlays for effect ax. */
+void effectPlaying(win32::WinApplication* app, x86::CPU& cpu)
+{
+    cpu.eax = effectPlays(app, effectIn(cpu));
+    cpu.esp += 4;
+}
+
+/* 0x436930: noCursor (stdcall, its six words); 1. */
+void hideCursor(win32::WinApplication* app, x86::CPU& cpu)
+{
+    const Kept kept(cpu);
+    reg32 words[6];
+    for (reg32 i = 0; i < 6; ++i)
+        words[i] = at(app, cpu.esp + 4 + 4 * i);
+    if (!noCursor(app, cpu, words))
         return;
     cpu.eax = 1;
-    cpu.ebp = pop(app, cpu);
-    cpu.edi = pop(app, cpu);
-    cpu.esi = pop(app, cpu);
-    cpu.ebx = pop(app, cpu);
+    cpu.ebx = kept.ebx;
+    cpu.esi = kept.esi;
+    cpu.edi = kept.edi;
+    cpu.ebp = kept.ebp;
     cpu.esp += 4 + 0x18;
 }
 
-/* 0x436980: EnumDevices' callback (stdcall: the DIDEVICEINSTANCE, the
- * DirectInput it was handed) for each joystick attached: the next record
- * named after its product, its kind from its subtype (a wheel 2, a gamepad
- * 4, else 1); the device made, its format a joystick's, its
- * IDirectInputDevice2 kept, exclusive in the background -- one more
- * joystick.  1 to go on, 0 to stop when the cooperative level fails. */
-void joystickFound(win32::WinApplication* app, x86::CPU& cpu)
+namespace
 {
-    enter(app, cpu, {&cpu.ebx, &cpu.esi, &cpu.edi}, 4);
-    const reg32 ebp = cpu.ebp;
-    auto done = [&] { leave(app, cpu, {&cpu.ebx, &cpu.esi, &cpu.edi}, 8); };
-    // Its record's name: the product's, 0x32 characters, ended.
-    cpu.edx = at(app, kJoystickCount);
-    cpu.eax = times17(cpu.edx);
-    cpu.eax <<= 3;
-    cpu.dl = 0;
-    putByte(app, cpu.eax + kJoystickName, cpu.dl);
-    cpu.eax += kJoystickRecords;
-    cpu.edi = cpu.eax + 4;
-    cpu.ecx = 0xffffffff;
-    cpu.eax = 0;
-    while (cpu.ecx != 0)
-    {
-        const x86::reg8 b = byte(app, cpu.edi);
-        ++cpu.edi;
-        --cpu.ecx;
-        if (b == cpu.al)
-            break;
-    }
-    cpu.ecx = ~cpu.ecx;
-    --cpu.ecx;
-    cpu.edx = at(app, kJoystickCount);
-    cpu.eax = cpu.edx;
-    cpu.ebx = 0x32;
-    cpu.eax <<= 4;
-    cpu.ebx -= cpu.ecx;
-    cpu.eax += cpu.edx;
-    cpu.ecx = at(app, ebp + 0x14);
-    cpu.eax <<= 3;
-    cpu.ecx += 0x12c;  // tszProductName
-    cpu.eax += kJoystickRecords;
-    cpu.edx = cpu.ecx;
-    cpu.eax += 4;
-    if (!direct(app, cpu, watcom::strncpy))
-        return;
-    cpu.edx = at(app, kJoystickCount);
-    cpu.eax = cpu.edx;
-    cpu.eax <<= 4;
-    cpu.ecx = at(app, ebp + 0x14);
-    cpu.edx += cpu.eax;
-    cpu.bl = 0;
-    cpu.edx <<= 3;
-    cpu.eax = 0;
-    putByte(app, cpu.edx + kJoystickNameEnd, cpu.bl);
-    cpu.ax = app->getMemory<x86::reg16>(cpu.ecx + 0x24);  // dwDevType's subtype
-    cpu.eax = reg32(sreg32(cpu.eax) >> 8);
-    cpu.eax &= 0xff;
-    cpu.esi = at(app, ebp + 0x18);
-    if (cpu.al == 4)  // DIDEVTYPEJOYSTICK_GAMEPAD
-        put(app, cpu.edx + kJoystickRecords, 4);
-    else if (cpu.al == 6)  // DIDEVTYPEJOYSTICK_WHEEL
-        put(app, cpu.edx + kJoystickRecords, 2);
-    else
-    {
-        cpu.edx = at(app, kJoystickCount);
-        cpu.eax = times17(cpu.edx);
-        put(app, cpu.eax * 8 + kJoystickRecords, 1);
-    }
-    // CreateDevice(DirectInput, its guidInstance, &[ebp - 4], none)
-    push(app, cpu, 0);
-    cpu.eax = ebp - 4;
-    push(app, cpu, cpu.eax);
-    cpu.eax = at(app, ebp + 0x14);
-    cpu.eax += 4;
-    push(app, cpu, cpu.eax);
-    cpu.edx = at(app, cpu.esi);
-    push(app, cpu, cpu.esi);
-    if (!directInput(app, cpu, Object::DirectInput, kCreateDevice))
-        return;
-    if (cpu.eax != 0)
-    {
-        cpu.eax = 1;
-        return done();
-    }
-    // Released, it goes on to the next.
-    auto release = [&](reg32* r) {
-        *r = at(app, ebp - 4);
-        cpu.eax = at(app, ebp - 4);
-        push(app, cpu, *r);
-        cpu.eax = at(app, cpu.eax);
-        if (!directInput(app, cpu, Object::Device, kRelease))
-            return false;
-        cpu.eax = 1;
-        return true;
-    };
-    push(app, cpu, kJoystickFormat);
-    cpu.edx = at(app, ebp - 4);
-    cpu.eax = at(app, ebp - 4);
-    push(app, cpu, cpu.edx);
-    cpu.eax = at(app, cpu.eax);
-    if (!directInput(app, cpu, Object::Device, kSetDataFormat))
-        return;
-    if (cpu.eax != 0)
-    {
-        if (!release(&cpu.ecx))
-            return;
-        return done();
-    }
-    // QueryInterface(the device, IID_IDirectInputDevice2A, &the joystick's)
-    cpu.eax = at(app, ebp - 4);
-    cpu.edx = at(app, cpu.eax);
-    cpu.eax = at(app, kJoystickCount);
-    cpu.eax <<= 2;
-    cpu.eax += kJoysticks;
-    push(app, cpu, cpu.eax);
-    push(app, cpu, kDevice2Interface);
-    cpu.ebx = at(app, ebp - 4);
-    push(app, cpu, cpu.ebx);
-    if (!directInput(app, cpu, Object::Device, kQueryInterface))
-        return;
-    if (cpu.eax != 0)
-    {
-        if (!release(&cpu.esi))
-            return;
-        return done();
-    }
-    cpu.edx = 9;  // DISCL_EXCLUSIVE | DISCL_BACKGROUND
-    cpu.eax = at(app, kJoystickCount);
-    if (!direct(app, cpu, setCooperativeLevel))
-        return;
-    if (cpu.eax == 0)
-        return done();
-    if (!release(&cpu.edi))
-        return;
-    put(app, kJoystickCount, at(app, kJoystickCount) + cpu.eax);
-    done();
+
+/* cooperate, as setCooperativeLevel leaves the registers: ecx kept. */
+std::optional<reg32> cooperateKeeping(App* app, CPU& cpu, reg32 device, reg32 flags)
+{
+    const reg32 ecx = cpu.ecx;
+    const std::optional<reg32> done = cooperate(app, cpu, device, flags);
+    if (done)
+        cpu.ecx = ecx;
+    return done;
 }
 
-/* 0x436b10: joystick eax's dead zone (ecx 0) or saturation (ecx not 0) of
- * axis edx -- 8 the whole device -- asked for (ebx not 0) or set to the
- * stack's percent (0 to 100) (stdcall, 1 word).  In percent, or -1 for no
- * such joystick or axis, or what DirectInput would not. */
+/* 0x436980: EnumDevices' callback for each joystick attached, `instance` its
+ * DIDEVICEINSTANCE, `input` the DirectInput it was handed: the next record
+ * named after its product (strncpy, 0x32 characters, ended), its kind from
+ * its subtype (a wheel 2, a gamepad 4, else 1); the device made (into the
+ * guest's stack), its format a joystick's, its IDirectInputDevice2 kept,
+ * exclusive in the background -- one more joystick.  1 to go on, 0 to stop
+ * when the cooperative level fails.  The registers the callees may keep are
+ * set as the code leaves them at each call.  Nothing when the game
+ * stopped. */
+std::optional<reg32> joystickAttached(App* app, CPU& cpu, reg32 instance, reg32 input)
+{
+    const GuestFrame frame(cpu, 0x10, 4);  // ebx, esi, edi, ebp pushed; the device made
+    const reg32 made = frame - 4;
+    const reg32 count = at(app, kJoystickCount), record = count * kJoystickBytes;
+    putByte(app, kJoystickName + record, 0);
+    cpu.eax = kJoystickName + record;
+    cpu.ecx = instance + 0x12c;  // tszProductName
+    cpu.edx = instance + 0x12c;
+    cpu.ebx = 0x32;
+    if (!direct(app, cpu, watcom::strncpy))
+        return std::nullopt;
+    putByte(app, kJoystickNameEnd + record, 0);
+    const reg8 subtype = byte(app, instance + 0x25);  // dwDevType's
+    put(app, kJoystickRecords + record, subtype == 4 ? 4 : subtype == 6 ? 2 : 1);  // a gamepad, a wheel, a stick
+    // CreateDevice(DirectInput, its guidInstance, &the device, none), the instance left in ecx.
+    cpu.ecx = instance;
+    std::optional<reg32> result =
+        callMethod(app, cpu, Object::DirectInput, input, kCreateDevice, {instance + 4, made, 0});
+    if (!result)
+        return std::nullopt;
+    if (*result != 0)
+        return 1;
+    auto release = [&] {
+        push(app, cpu, at(app, made));
+        return directInput(app, cpu, Object::Device, kRelease);
+    };
+    // SetDataFormat(the device, a joystick's), the device left in edx.
+    push(app, cpu, kJoystickFormat);
+    push(app, cpu, at(app, made));
+    cpu.edx = at(app, made);
+    if (!directInput(app, cpu, Object::Device, kSetDataFormat))
+        return std::nullopt;
+    if (cpu.eax != 0)
+    {
+        cpu.ecx = at(app, made);  // as the code leaves it
+        if (!release())
+            return std::nullopt;
+        return 1;
+    }
+    // QueryInterface(the device, IID_IDirectInputDevice2A, &the joystick's)
+    result = callMethod(app, cpu, Object::Device, at(app, made), kQueryInterface,
+                        {kDevice2Interface, kJoysticks + count * 4});
+    if (!result)
+        return std::nullopt;
+    if (*result != 0)
+    {
+        if (!release())
+            return std::nullopt;
+        return 1;
+    }
+    result = cooperateKeeping(app, cpu, count, 9);  // DISCL_EXCLUSIVE | DISCL_BACKGROUND
+    if (!result)
+        return std::nullopt;
+    if (*result == 0)
+        return 0;
+    if (!release())
+        return std::nullopt;
+    put(app, kJoystickCount, at(app, kJoystickCount) + 1);
+    return 1;
+}
+
+}  // namespace
+
+/* 0x436980: joystickAttached (stdcall: the DIDEVICEINSTANCE, DirectInput);
+ * ecx and edx as the code leaves them. */
+void joystickFound(win32::WinApplication* app, x86::CPU& cpu)
+{
+    const Kept kept(cpu);
+    const std::optional<reg32> more = joystickAttached(app, cpu, at(app, cpu.esp + 4), at(app, cpu.esp + 8));
+    if (!more)
+        return;
+    cpu.eax = *more;
+    cpu.ebx = kept.ebx;
+    cpu.esi = kept.esi;
+    cpu.edi = kept.edi;
+    cpu.ebp = kept.ebp;
+    cpu.esp += 4 + 8;
+}
+
+namespace
+{
+
+/* 0x436b10: joystick `joystick`'s dead zone (`which` 0) or saturation of
+ * axis `axis` -- 8 the whole device -- asked for (`read`) or set to
+ * `percent` (0 to 100), a DIPROPDWORD in hundredths on the guest's stack
+ * (DIPROP_DEADZONE, DIPROP_SATURATION).  In percent, or -1 for no such
+ * joystick or axis, or where DirectInput would not (the remainder then
+ * none); nothing when the game stopped.  As the code leaves them at the
+ * call: the device in ecx when asking, `which` there when setting, its table
+ * of methods in edx. */
+std::optional<Zone> axisZone(App* app, CPU& cpu, reg32 joystick, reg32 axis, bool read, reg32 which, reg32 percent)
+{
+    if (!isJoystick(joystick) || sreg32(axis) > 8 || joystickDevice(app, joystick) == 0)
+        return Zone{0xffffffff, std::nullopt};
+    // (For all the joysticks the code would ask each: never, the number is a joystick's here.)
+    const GuestFrame frame(cpu, 0xc, 0x14);  // esi, edi, ebp pushed; the DIPROPDWORD
+    const reg32 record = frame - 0x14;
+    put(app, record, 0x14);
+    put(app, record + 4, 0x10);
+    if (axis == 8)
+    {
+        put(app, record + 0xc, 0);  // DIPH_DEVICE
+        put(app, record + 8, 0);
+    }
+    else
+    {
+        put(app, record + 8, at(app, kHatOffsets + axis * 4));
+        put(app, record + 0xc, 1);  // DIPH_BYOFFSET
+    }
+    const reg32 property = which == 0 ? 5 : 6;
+    const reg32 device = joystickDevice(app, joystick);
+    std::optional<reg32> result;
+    if (read)
+    {
+        cpu.ecx = device;
+        result = callMethod(app, cpu, Object::Device, device, kGetProperty, {property, record});
+    }
+    else
+    {
+        const sreg32 clamped = sreg32(percent) < 0 ? 0 : sreg32(percent) > 100 ? 100 : sreg32(percent);
+        put(app, record + 0x10, reg32(clamped) * 100);
+        cpu.ecx = which;
+        result = callMethod(app, cpu, Object::Device, device, kSetProperty, {property, record});
+    }
+    if (!result)
+        return std::nullopt;
+    if (sreg32(*result) < 0)
+        return Zone{0xffffffff, std::nullopt};
+    const sreg32 hundredths = sreg32(at(app, record + 0x10));
+    return Zone{reg32(hundredths / 100), reg32(hundredths % 100)};
+}
+
+/* The registers but eax as axisProperty's code leaves them, `percent` its
+ * stack's word: where it asked nothing, edx the word; where it did, ebx the
+ * device when setting, and ecx 100 and edx the remainder where DirectInput
+ * answered -- else as the call left them. */
+void zoneRegisters(App* app, CPU& cpu, reg32 joystick, reg32 axis, bool read, reg32 percent, const Zone& zone)
+{
+    cpu.eax = zone.percent;
+    if (!isJoystick(joystick) || sreg32(axis) > 8 || joystickDevice(app, joystick) == 0)
+    {
+        cpu.edx = percent;
+        return;
+    }
+    if (!read)
+        cpu.ebx = joystickDevice(app, joystick);
+    if (zone.remainder)
+    {
+        cpu.ecx = 100;
+        cpu.edx = *zone.remainder;
+    }
+}
+
+}  // namespace
+
+/* 0x436b10: axisZone for joystick eax, axis edx, asked for where ebx is not
+ * 0, which ecx, the stack's percent (stdcall, 1 word). */
 void axisProperty(win32::WinApplication* app, x86::CPU& cpu)
 {
-    enter(app, cpu, {&cpu.esi, &cpu.edi}, 0x14);
-    const reg32 ebp = cpu.ebp;
-    auto done = [&] { leave(app, cpu, {&cpu.esi, &cpu.edi}, 4); };
-    cpu.esi = cpu.eax;
-    cpu.eax = cpu.edx;
-    cpu.edx = at(app, ebp + 0x10);
-    if (sreg32(cpu.esi) >= 0x10 || sreg32(cpu.esi) < 0 || sreg32(cpu.eax) > 8)
-    {
-        cpu.eax = 0xffffffff;
-        return done();
-    }
-    cpu.edi = cpu.esi;
-    cpu.edi <<= 2;
-    if (at(app, cpu.edi + kJoysticks) == 0)
-    {
-        cpu.eax = 0xffffffff;
-        return done();
-    }
-    if (cpu.esi == kAllJoysticks || cpu.esi == kEveryDevice)
-    {
-        // Never: esi is a joystick's here.
-        push(app, cpu, cpu.edx);
-        cpu.edx = cpu.eax;
-        cpu.eax = cpu.esi;
-        if (!direct(app, cpu, axisProperty))
-            return;
-        return done();
-    }
-    // {0x14, 0x10, the axis's offset in DIJOYSTATE, DIPH_BYOFFSET} or the device's.
-    put(app, ebp - 0x14, 0x14);
-    put(app, ebp - 0x10, 0x10);
-    if (cpu.eax == 8)
-    {
-        cpu.eax = 0;
-        put(app, ebp - 8, cpu.eax);
-        put(app, ebp - 0xc, cpu.eax);
-    }
-    else
-    {
-        cpu.eax = at(app, cpu.eax * 4 + kHatOffsets);
-        put(app, ebp - 0xc, cpu.eax);
-        put(app, ebp - 8, 1);
-    }
-    // DIPROP_DEADZONE (5) or DIPROP_SATURATION (6).
-    if (cpu.ebx != 0)
-    {
-        cpu.eax = ebp - 0x14;
-        cpu.edx = at(app, cpu.esi * 4 + kJoysticks);
-        push(app, cpu, cpu.eax);
-        cpu.edx = at(app, cpu.edx);
-        cpu.eax = cpu.ecx == 0 ? 5 : 6;
-        push(app, cpu, cpu.eax);
-        cpu.ecx = at(app, cpu.esi * 4 + kJoysticks);
-        push(app, cpu, cpu.ecx);
-        if (!directInput(app, cpu, Object::Device, kGetProperty))
-            return;
-    }
-    else
-    {
-        if (sreg32(cpu.edx) < 0)
-            cpu.edx = 0;
-        else if (sreg32(cpu.edx) > 0x64)
-            cpu.edx = 0x64;
-        cpu.eax = cpu.edx * 4;
-        cpu.eax -= cpu.edx;
-        cpu.eax <<= 3;
-        cpu.eax += cpu.edx;
-        cpu.eax <<= 2;
-        cpu.edx = at(app, cpu.esi * 4 + kJoysticks);
-        put(app, ebp - 4, cpu.eax);
-        cpu.eax = ebp - 0x14;
-        cpu.edx = at(app, cpu.edx);
-        push(app, cpu, cpu.eax);
-        cpu.eax = cpu.ecx == 0 ? 5 : 6;
-        push(app, cpu, cpu.eax);
-        cpu.ebx = at(app, cpu.esi * 4 + kJoysticks);
-        push(app, cpu, cpu.ebx);
-        if (!directInput(app, cpu, Object::Device, kSetProperty))
-            return;
-    }
-    if (sreg32(cpu.eax) < 0)
-    {
-        cpu.eax = 0xffffffff;
-        return done();
-    }
-    cpu.eax = at(app, ebp - 4);
-    cpu.edx = cpu.eax;
-    cpu.ecx = 0x64;
-    cpu.edx = reg32(sreg32(cpu.edx) >> 31);
-    const std::int64_t dividend = std::int64_t(sreg32(cpu.eax));
-    cpu.eax = reg32(sreg32(dividend / 0x64));
-    cpu.edx = reg32(sreg32(dividend % 0x64));
-    done();
+    const Kept kept(cpu);
+    const reg32 joystick = cpu.eax, axis = cpu.edx, which = cpu.ecx, percent = at(app, cpu.esp + 4);
+    const bool read = cpu.ebx != 0;
+    const std::optional<Zone> zone = axisZone(app, cpu, joystick, axis, read, which, percent);
+    if (!zone)
+        return;
+    zoneRegisters(app, cpu, joystick, axis, read, percent, *zone);
+    cpu.esi = kept.esi;
+    cpu.edi = kept.edi;
+    cpu.ebp = kept.ebp;
+    cpu.esp += 4 + 4;
 }
 
 }  // namespace controls

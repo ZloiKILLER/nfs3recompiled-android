@@ -1,4 +1,11 @@
+#include "native_frontend_menue.h"
+#include "game_settings.h"
 #include "native_frontend.h"
+#include "native_ea_formats.h"
+#include "native_ea_memory.h"
+#include "native_frontend_eab.h"
+#include "native_graphics.h"
+#include "port_shapes.h"
 #include <nfs3hp.h>
 #include <cstring>
 
@@ -14,7 +21,14 @@
  *                         effects, render::bouncers), the colour picker's
  *                         triangle, the effects' band colour.
  *
- * What they call -- the 2D layer, sprintf, EA's bitmaps -- is called by address. */
+ * What they call -- the 2D layer, the render state, sprintf, EA's bitmaps -- the
+ * typed cores as C++, the rest by address.
+ *
+ * Plan step 5: each function a typed core in frontend::menue (native_frontend_menue.h), in a
+ * frame of its own where the game's function has one (fe::Frame: what it calls runs at the stack
+ * addresses it did), and an adapter under the game's name for the calls by address.  A core of
+ * the menu files, the port's or a typed library's is called as C++ (guest::direct, fe::direct);
+ * the rest of the game by address, and so is a call whose registers the code goes on with. */
 namespace nfs3hp
 {
 
@@ -67,50 +81,59 @@ std::int32_t int16At(const Guest& guest, reg32 address)
  * The sheets' text
  * ------------------------------------------------------------------------- */
 
-constexpr reg32 kSpeedUnits = 0x6fbc68;
 constexpr std::uint32_t kKilometresA = 3, kKilometresB = 4;
 constexpr reg32 kToKilometres = 0x5404d8;      // float, 3.6
 constexpr reg32 kToMiles = 0x5404dc;           // float, 2.2369
 constexpr reg32 kSpeedFormat = 0x5404cc;       // "%5.2f"; the check puts its own there, to see the double
 constexpr GuestString kNoSpeed{ 0x5404d4, "---" };
 
+}  // namespace
+
 /* sub_4cedd0: a speed in metres per second into `buffer`, in the player's
  * units; "---" for 1 or less. */
-reg32 metricTextBody(Guest& guest, Float speed, reg32 buffer)
+x86::reg32 frontend::menue::metricText(App* app, CPU& cpu, float speed, reg32 buffer)
 {
-    if (!belowOrUnordered(Float(1.0), speed))
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 12);
+    if (!belowOrUnordered(Float(1.0), Float(speed)))
     {
         guest.call(kSprintf, args({}, { buffer, kNoSpeed.address }));
         return guest.eax();
     }
-    const std::uint32_t units = guest.dword(kSpeedUnits);
+    const std::uint32_t units = gameSettings(guest).hud[0].speedometerForm;
     const reg32 toUnits = units == kKilometresA || units == kKilometresB ? kToKilometres : kToMiles;
-    const double shown = fp::mul(speed, Float(guest.floatAt(toUnits)));
+    const double shown = fp::mul(Float(speed), Float(guest.floatAt(toUnits)));
     std::uint64_t bits;
     std::memcpy(&bits, &shown, sizeof bits);
     guest.call(kSprintf, args({}, { buffer, kSpeedFormat, reg32(bits), reg32(bits >> 32) }));
     return guest.eax();
 }
 
+namespace
+{
+
 constexpr reg32 kToHundredths = 0x5404f8;      // double, 100/64: the game's times are in 64ths of a second
 constexpr GuestString kTimeFormat{ 0x5404e0, "%01d%c%02d%c%02d" };
-constexpr reg32 kLanguage = 0x6fbb4c;
 constexpr reg32 kMinuteMarks = 0x561b28;       // a language's mark after the minutes (bytes)
 constexpr reg32 kSecondMarks = 0x561b2e;       // and after the seconds
 constexpr std::int32_t kHundredthsAMinute = 6000;
 constexpr std::int32_t kHundredthsASecond = 100;
 
+}  // namespace
+
 /* sub_4cee40: a time into `buffer` as minutes, seconds and hundredths with the
  * language's marks.  The parts go through 16 bits, as the game takes them. */
-reg32 timeTextBody(Guest& guest, reg32 time, reg32 buffer)
+x86::reg32 frontend::menue::timeText(App* app, CPU& cpu, reg32 time, reg32 buffer)
 {
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 28);
     X87 x87(guest);
     const std::int32_t hundredths = x87.truncated(fp::mul(X87::integer(std::int32_t(time)), doubleAt(guest, kToHundredths)));
     const std::int32_t minutes = std::int16_t(hundredths / kHundredthsAMinute);
     const std::int32_t pastMinute = std::int32_t(reg32(hundredths) - reg32(minutes) * reg32(kHundredthsAMinute));
     const std::int32_t seconds = std::int16_t(pastMinute / kHundredthsASecond);
     const std::int32_t rest = std::int16_t(reg32(pastMinute) - reg32(seconds) * reg32(kHundredthsASecond));
-    const reg32 language = guest.dword(kLanguage);
+    const reg32 language = gameSettings(guest).language;
     const reg32 secondMark = guest.byte(language + kSecondMarks);
     const reg32 minuteMark = guest.byte(language + kMinuteMarks);
     guest.leaveEdx(secondMark);
@@ -124,7 +147,7 @@ reg32 timeTextBody(Guest& guest, reg32 time, reg32 buffer)
 
 /* sub_4cf160: 2 laps the list's first place (al cleared, the rest of eax as it
  * came), 4 the second, others the third. */
-reg32 lapsToOptionBody(reg32 laps)
+x86::reg32 frontend::menue::lapsToOption(App*, CPU&, reg32 laps)
 {
     const std::uint16_t count = std::uint16_t(laps);
     if (count == 2)
@@ -133,7 +156,7 @@ reg32 lapsToOptionBody(reg32 laps)
 }
 
 /* sub_4cf190: the laps of a place in the list. */
-reg32 optionToLapsBody(reg32 option)
+x86::reg32 frontend::menue::optionToLaps(App*, CPU&, reg32 option)
 {
     const std::uint16_t place = std::uint16_t(option);
     if (place == 0)
@@ -145,18 +168,28 @@ reg32 optionToLapsBody(reg32 option)
  * The language's text
  * ------------------------------------------------------------------------- */
 
+namespace
+{
+
 constexpr reg32 kLanguageTexts = 0x563a80;     // its block, once loaded
-constexpr reg32 kFree = 0x4e1890;
+
+}  // namespace
 
 /* sub_4d1880: the language's block given back. */
-reg32 freeLanguageTextsBody(Guest& guest)
+x86::reg32 frontend::menue::freeLanguageTexts(App* app, CPU& cpu)
 {
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 12);
     const reg32 texts = guest.dword(kLanguageTexts);
+    reg32 result = guest.eax();
     if (texts != 0)
-        guest.call(kFree, args({ texts }));
+        result = *fe::direct<0x4e1890, ea::purgeBlock>(app, cpu, texts);
     guest.setDword(kLanguageTexts, 0);
-    return guest.eax();
+    return result;
 }
+
+namespace
+{
 
 /* ---------------------------------------------------------------------------
  * The 2D screens' quad
@@ -181,7 +214,6 @@ constexpr reg32 kOneBits = 0x3f800000;  // 1.0f
 constexpr reg32 kClipW = 0x7d34f8, kClipLeft = 0x7d34fc, kClipBottom = 0x7d3500, kClipTop = 0x7d3504, kClipRight = 0x7d350c;
 constexpr std::uint8_t kOffLeft = 1, kOffRight = 2, kOffBottom = 4, kOffTop = 8, kBehind = 0x10;
 
-constexpr reg32 kSetRenderState = 0x431900;    // eax a state, edx its value
 constexpr reg32 kRenderStateTexture = 1;
 constexpr reg32 kClipQuad = 0x4c12e0;          // the four corners' addresses
 
@@ -284,13 +316,16 @@ constexpr reg32 kTileRow = 0x08;               // int16
 constexpr std::int32_t kTilePitch = 32;
 constexpr reg32 kNotLoadedLog = 0x42d500;
 constexpr reg32 kNotLoadedFormat = 0x549630;   // "ERROR: shape %d not loaded in texture po..."
-constexpr reg32 kWaitForKey = 0x4f0120;
+
+}  // namespace
 
 /* sub_4d7560: art record `art` at (x, y), a textured square white for each of
  * its tiles, with the whole texture on it; nothing in a race or without
  * translucency. */
-reg32 drawArtTilesBody(Guest& guest, reg32 art, std::int32_t x, std::int32_t y)
+x86::reg32 frontend::menue::drawArtTiles(App* app, CPU& cpu, reg32 art, std::int32_t x, std::int32_t y)
 {
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 16 + 0x1c);
     if ((guest.byte(kDisplayFlags) & kNoTranslucency) != 0 || guest.dword(kInRace) != 0)
         return guest.eax();
     const reg32 record = kArtRecords + kArtSize * art;
@@ -298,8 +333,9 @@ reg32 drawArtTilesBody(Guest& guest, reg32 art, std::int32_t x, std::int32_t y)
     if (first == -1)
     {
         guest.leaveEdx(art);
+        // By address: the log's hook takes nothing, but the game's code pushes its format and the record.
         guest.call(kNotLoadedLog, args({ reg32(first) }, { kNotLoadedFormat, art }));
-        return guest.call(kWaitForKey);
+        return *fe::direct<0x4f0120, ea::waitKey>(app, cpu);
     }
     placeDepth(guest);
     for (reg32 i = 0; i < 4; ++i)
@@ -318,7 +354,7 @@ reg32 drawArtTilesBody(Guest& guest, reg32 art, std::int32_t x, std::int32_t y)
         const Float right = fp::add(left, side);
         const Float bottom = fp::add(side, Float(top));
         placeCorners(guest, float(left), top, float(right), float(bottom));
-        guest.call(kSetRenderState, args({ kRenderStateTexture, guest.dword(at + kTileTexture) }));
+        fe::direct<0x431900, graphics::sendState>(app, cpu, kRenderStateTexture, guest.dword(at + kTileTexture));
         clipAndDrawQuad(guest);
     }
     restoreTexture(guest);
@@ -326,6 +362,9 @@ reg32 drawArtTilesBody(Guest& guest, reg32 art, std::int32_t x, std::int32_t y)
     guest.leaveEbx(kOneBits);
     return reg32(end);
 }
+
+namespace
+{
 
 /* ---------------------------------------------------------------------------
  * The bouncing pictures
@@ -354,10 +393,14 @@ Float fadeAlong(const Guest& guest, float distance, reg32 perUnit)
     return fp::mul(share, doubleAt(guest, kFadeStrength));
 }
 
+}  // namespace
+
 /* sub_4d7cc0 (stdcall): the top byte of the colour of a corner at (x, y), of a
  * picture of `alpha`. */
-reg32 cornerFadeBody(Guest& guest, float x, float y, reg32 alpha)
+x86::reg32 frontend::menue::cornerFade(App* app, CPU& cpu, float x, float y, reg32 alpha)
 {
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 12 + 0x1c);
     X87 x87(guest);
     const float awayX = fadeDistance(guest, x, kFadeCentreX);
     const Float afterX = fp::sub(doubleAt(guest, kFadeTop), fadeAlong(guest, awayX, kFadePerX));
@@ -369,7 +412,9 @@ reg32 cornerFadeBody(Guest& guest, float x, float y, reg32 alpha)
     return reg32(scaled) << 24;
 }
 
-constexpr reg32 kCornerFade = 0x4d7cc0;
+namespace
+{
+
 constexpr reg32 kTexelSize = 0x5496ac;         // float, 1/256
 
 struct Bouncer
@@ -380,11 +425,18 @@ struct Bouncer
     reg32 colour;
 };
 
+}  // namespace
+
 /* sub_4d7d90 (stdcall 0x14): a stretch of a texture drawn scaled at (x, y), the
  * colour its tint and its top byte the alpha, each corner fading by its place
  * on the screen. */
-reg32 drawBouncerBody(Guest& guest, const Bouncer& b)
+x86::reg32 frontend::menue::drawBouncer(App* app, CPU& cpu, reg32 texture, std::int32_t x, std::int32_t y,
+                                        std::int32_t fromU, std::int32_t fromV, std::int32_t width, std::int32_t height,
+                                        float scale, reg32 colour)
 {
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 12 + 0x18);
+    const Bouncer b{ texture, x, y, fromU, fromV, width, height, scale, colour };
     const Float widthValue = X87::integer(b.width);
     const Float heightValue = X87::integer(b.height);
     const Float scaledWidth = fp::mul(widthValue, Float(b.scale));
@@ -401,7 +453,8 @@ reg32 drawBouncerBody(Guest& guest, const Bouncer& b)
     const reg32 tint = b.colour & 0xffffff;
     for (reg32 i = 0; i < 4; ++i)
     {
-        const reg32 fade = guest.call(kCornerFade, args({}, { guest.dword(corner(i) + kCornerX), guest.dword(corner(i) + kCornerY), alpha }));
+        const reg32 fade = guest::direct<0x4d7cc0, menue::cornerFade>(app, cpu, guest.floatAt(corner(i) + kCornerX),
+                                                                      guest.floatAt(corner(i) + kCornerY), alpha);
         guest.setDword(corner(i) + kCornerColour, tint + fade);
     }
 
@@ -420,7 +473,7 @@ reg32 drawBouncerBody(Guest& guest, const Bouncer& b)
     };
     placeTexture(guest, bitsOf(uFrom), bitsOf(vFrom), bitsOf(uTo), bitsOf(vFrom), bitsOf(uTo), bitsOf(vTo), bitsOf(uFrom), bitsOf(vTo));
 
-    guest.call(kSetRenderState, args({ kRenderStateTexture, b.texture }));
+    fe::direct<0x431900, graphics::sendState>(app, cpu, kRenderStateTexture, b.texture);
     const reg32 drawn = clipAndDrawQuad(guest);
     restoreTexture(guest);
     guest.leaveEdx(0);
@@ -434,8 +487,9 @@ reg32 drawBouncerBody(Guest& guest, const Bouncer& b)
 /* sub_4d9180: a colour's red, green and blue scaled by `scale`/256, its alpha as
  * it is; a quarter by masks, the whole not at all.  edx is left the sum before
  * the blue. */
-reg32 scaleColourBody(Guest& guest, reg32 colour, std::int32_t scale)
+x86::reg32 frontend::menue::scaleColour(App* app, CPU& cpu, reg32 colour, std::int32_t scale)
 {
+    Guest guest(app, cpu);
     constexpr std::int32_t kWhole = 0x100, kQuarter = 0x40;
     if (scale == kWhole)
         return colour;
@@ -458,6 +512,9 @@ reg32 scaleColourBody(Guest& guest, reg32 colour, std::int32_t scale)
     return blue + alphaRedGreen;
 }
 
+namespace
+{
+
 /* ---------------------------------------------------------------------------
  * The menus' pointer
  * ------------------------------------------------------------------------- */
@@ -472,19 +529,23 @@ constexpr std::int32_t kPointerKinds = 13, kPointerFrames = 10;
 constexpr reg32 kShapeCentreX = 0x08, kShapeCentreY = 0x0a;   // int16 of a shape
 constexpr GuestString kPointerName{ 0x5496dc, "c%02d%d" };
 
-constexpr reg32 kNewBitmap = 0x4ef190;
 constexpr reg32 kFindShape = 0x4ef270;         // eax a file, edx a name
-constexpr reg32 kShapeTexture = 0x4d6070;      // shape edx into [eax], ebx the most a side, ecx the format
-constexpr reg32 kFreeBitmap = 0x4eff00;
 constexpr reg32 kPointerSide = 0x20;
+
+constexpr reg32 kDrawShadedTriangle = 0x4d8570;
+
+}  // namespace
 
 /* sub_4daa10: the pointer's shapes, c<kind><frame>, out of their file: for each
  * there is its hot spot, and a texture.  A bitmap of 32 by 32 is made for the
  * time of it. */
-reg32 loadPointerBody(Guest& guest, reg32 file)
+x86::reg32 frontend::menue::loadPointer(App* app, CPU& cpu, reg32 file)
 {
+    Guest guest(app, cpu);
+    const fe::Frame stackFrame(guest, cpu, 24 + 0x48);
     const reg32 name = guest.frame();
-    const reg32 canvas = guest.call(kNewBitmap, args({ kPointerSide, kPointerSide, kPointerSide, 0 }));
+    const reg32 canvas =
+        fe::direct<0x4ef190, eab::windowBitmapCreateDefault>(app, cpu, kPointerSide, kPointerSide, kPointerSide, 0);
     for (std::int32_t kind = 0; kind < kPointerKinds; ++kind)
     {
         for (std::int32_t frame = 0; frame < kPointerFrames; ++frame)
@@ -496,20 +557,23 @@ reg32 loadPointerBody(Guest& guest, reg32 file)
             const reg32 hotSpot = kHotSpots + kHotSpotsPerKind * reg32(kind) + kHotSpotSize * reg32(frame);
             guest.setDword(hotSpot, reg32(int16At(guest, shape + kShapeCentreX)));
             guest.setDword(hotSpot + 4, reg32(int16At(guest, shape + kShapeCentreY)));
-            guest.call(kShapeTexture, args({ kPointerTextures + kPointerTexturesPerKind * reg32(kind) + 4 * reg32(frame), shape, kPointerSide, 0 }));
+            fe::direct<0x4d6070, port::shapes::textureOf>(
+                app, cpu, cpu.esp - 4, kPointerTextures + kPointerTexturesPerKind * reg32(kind) + 4 * reg32(frame), shape,
+                std::int32_t(kPointerSide), 0);
         }
     }
-    return guest.call(kFreeBitmap, args({ canvas }));
+    return fe::direct<0x4eff00, eab::windowBitmapFree>(app, cpu, canvas);
 }
 
 /* sub_4dab10: the shown pointer's hot spot into [xAt] and [yAt].  In a race the
  * two the code holds, for kind 0 and for kinds 8 to 11, the others left as they
  * are; in the menus its first frame's, 0 for a kind out of the table. */
-reg32 pointerHotSpotBody(Guest& guest, reg32 xAt, reg32 yAt)
+x86::reg32 frontend::menue::pointerHotSpot(App* app, CPU& cpu, reg32 xAt, reg32 yAt)
 {
+    Guest guest(app, cpu);
     constexpr reg32 kRaceFirstKind = 0, kRaceOthersFirst = 8, kRaceOthersLast = 11;
     const reg32 kind = guest.dword(kPointerKind);
-    reg32 result = guest.eax();
+    reg32 result = xAt;  // eax as it came
     if (guest.dword(kInRace) != 0)
     {
         if (kind == kRaceFirstKind)
@@ -539,8 +603,15 @@ reg32 pointerHotSpotBody(Guest& guest, reg32 xAt, reg32 yAt)
     return result;
 }
 
-constexpr reg32 kDrawShadedTriangle = 0x4d8570;
-
+/* sub_4d88c0 (stdcall 0x14): the colour picker's triangle (sub_43e310) handed on
+ * to the 2D layer's as it came, its registers and the five on the stack. */
+x86::reg32 frontend::menue::shadedTriangle(App* app, CPU& cpu, reg32 x0, reg32 y0, reg32 x1, reg32 y1, reg32 x2,
+                                           reg32 y2, reg32 colour0, reg32 colour1, reg32 colour2)
+{
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 12);
+    // By address: what the function leaves in ebx, ecx and edx, this one leaves.
+    return guest.call(kDrawShadedTriangle, args({ x0, y0, x1, y1 }, { x2, y2, colour0, colour1, colour2 }));
 }
 
 /* ---------------------------------------------------------------------------
@@ -550,59 +621,59 @@ constexpr reg32 kDrawShadedTriangle = 0x4d8570;
 void frontend::resultsMetricText(win32::WinApplication* app, x86::CPU& cpu)
 {
     static const GuestString kStrings[] = { kNoSpeed };
-    static fe::Site site{ "sub_4cedd0", 8, 12, kStrings, 1 };
+    static fe::Site site{ "sub_4cedd0", 8, 0, kStrings, 1 };
     const float speed = app->getMemory<float>(cpu.esp + 4);
     const reg32 buffer = stackArgument(app, cpu, 1);
-    fe::runWhole(app, cpu, site, [&](Guest& guest) { return metricTextBody(guest, Float(speed), buffer); });
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menue::metricText(app, cpu, speed, buffer); });
 }
 
 void frontend::resultsTimeText(win32::WinApplication* app, x86::CPU& cpu)
 {
     static const GuestString kStrings[] = { kTimeFormat };
-    static fe::Site site{ "sub_4cee40", 0, 28, kStrings, 1, kPushedEbxEcxEsiEdi };
+    static fe::Site site{ "sub_4cee40", 0, 0, kStrings, 1, kPushedEbxEcxEsiEdi };
     const reg32 time = cpu.eax, buffer = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest& guest) { return timeTextBody(guest, time, buffer); });
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menue::timeText(app, cpu, time, buffer); });
 }
 
 void frontend::lapsToOption(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_4cf160", 0, 4, nullptr, 0 };
+    static fe::Site site{ "sub_4cf160", 0, 0, nullptr, 0 };
     const reg32 laps = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return lapsToOptionBody(laps); });
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menue::lapsToOption(app, cpu, laps); });
 }
 
 void frontend::optionToLaps(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_4cf190", 0, 4, nullptr, 0 };
+    static fe::Site site{ "sub_4cf190", 0, 0, nullptr, 0 };
     const reg32 option = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return optionToLapsBody(option); });
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menue::optionToLaps(app, cpu, option); });
 }
 
 void frontend::languageTextsFree(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_4d1880", 0, 12, nullptr, 0, kPushedEcxEdx };
-    fe::runWhole(app, cpu, site, [&](Guest& guest) { return freeLanguageTextsBody(guest); });
+    static fe::Site site{ "sub_4d1880", 0, 0, nullptr, 0, kPushedEcxEdx };
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menue::freeLanguageTexts(app, cpu); });
 }
 
 void frontend::artTilesDraw(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_4d7560", 0, 16 + 0x1c, nullptr, 0, kPushedEcxEsiEdi };
+    static fe::Site site{ "sub_4d7560", 0, 0, nullptr, 0, kPushedEcxEsiEdi };
     const reg32 art = cpu.eax;
     const std::int32_t x = std::int32_t(cpu.edx), y = std::int32_t(cpu.ebx);
-    fe::runWhole(app, cpu, site, [&](Guest& guest) { return drawArtTilesBody(guest, art, x, y); });
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menue::drawArtTiles(app, cpu, art, x, y); });
 }
 
 void frontend::bouncerCornerFade(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_4d7cc0", 12, 12 + 0x1c, nullptr, 0, kPushedEcxEdx };
+    static fe::Site site{ "sub_4d7cc0", 12, 0, nullptr, 0, kPushedEcxEdx };
     const float x = app->getMemory<float>(cpu.esp + 4), y = app->getMemory<float>(cpu.esp + 8);
     const reg32 alpha = stackArgument(app, cpu, 2);
-    fe::runWhole(app, cpu, site, [&](Guest& guest) { return cornerFadeBody(guest, x, y, alpha); });
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menue::cornerFade(app, cpu, x, y, alpha); });
 }
 
 void frontend::bouncerDraw(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_4d7d90", 0x14, 12 + 0x18, nullptr, 0, kPushedEsiEdi };
+    static fe::Site site{ "sub_4d7d90", 0x14, 0, nullptr, 0, kPushedEsiEdi };
     const Bouncer bouncer{ cpu.eax,
                            std::int32_t(cpu.edx),
                            std::int32_t(cpu.ebx),
@@ -612,40 +683,44 @@ void frontend::bouncerDraw(win32::WinApplication* app, x86::CPU& cpu)
                            std::int32_t(stackArgument(app, cpu, 2)),
                            app->getMemory<float>(cpu.esp + 4 + 4 * 3),
                            stackArgument(app, cpu, 4) };
-    fe::runWhole(app, cpu, site, [&](Guest& guest) { return drawBouncerBody(guest, bouncer); });
+    fe::runWhole(app, cpu, site, [&](Guest&) {
+        return menue::drawBouncer(app, cpu, bouncer.texture, bouncer.x, bouncer.y, bouncer.u, bouncer.v, bouncer.width,
+                                  bouncer.height, bouncer.scale, bouncer.colour);
+    });
 }
 
-/* sub_4d88c0 (stdcall 0x14): the colour picker's triangle (sub_43e310) handed on
- * to the 2D layer's as it came, its registers and the five on the stack. */
 void frontend::pickerShadedTriangle(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_4d88c0", 0x14, 12, nullptr, 0, kPushedEsiEdi };
-    const fe::Arguments forwarded = args({}, { stackArgument(app, cpu, 0), stackArgument(app, cpu, 1), stackArgument(app, cpu, 2),
-                                               stackArgument(app, cpu, 3), stackArgument(app, cpu, 4) });
-    fe::runWhole(app, cpu, site, [&](Guest& guest) { return guest.call(kDrawShadedTriangle, forwarded); });
+    static fe::Site site{ "sub_4d88c0", 0x14, 0, nullptr, 0, kPushedEsiEdi };
+    const reg32 x0 = cpu.eax, y0 = cpu.edx, x1 = cpu.ebx, y1 = cpu.ecx;
+    const reg32 x2 = stackArgument(app, cpu, 0), y2 = stackArgument(app, cpu, 1);
+    const reg32 colour0 = stackArgument(app, cpu, 2), colour1 = stackArgument(app, cpu, 3), colour2 = stackArgument(app, cpu, 4);
+    fe::runWhole(app, cpu, site, [&](Guest&) {
+        return menue::shadedTriangle(app, cpu, x0, y0, x1, y1, x2, y2, colour0, colour1, colour2);
+    });
 }
 
 void frontend::effectsBandColourScaled(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_4d9180", 0, 20 + 4, nullptr, 0, kPushedEbxEcxEsiEdi };
+    static fe::Site site{ "sub_4d9180", 0, 0, nullptr, 0, kPushedEbxEcxEsiEdi };
     const reg32 colour = cpu.eax;
     const std::int32_t scale = std::int32_t(cpu.edx);
-    fe::runWhole(app, cpu, site, [&](Guest& guest) { return scaleColourBody(guest, colour, scale); });
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menue::scaleColour(app, cpu, colour, scale); });
 }
 
 void frontend::menuPointerLoad(win32::WinApplication* app, x86::CPU& cpu)
 {
     static const GuestString kStrings[] = { kPointerName };
-    static fe::Site site{ "sub_4daa10", 0, 24 + 0x48, kStrings, 1 };
+    static fe::Site site{ "sub_4daa10", 0, 0, kStrings, 1 };
     const reg32 file = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest& guest) { return loadPointerBody(guest, file); });
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menue::loadPointer(app, cpu, file); });
 }
 
 void frontend::menuPointerHotSpot(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_4dab10", 0, 16, nullptr, 0, kPushedEbxEcxEsiEdi };
+    static fe::Site site{ "sub_4dab10", 0, 0, nullptr, 0, kPushedEbxEcxEsiEdi };
     const reg32 xAt = cpu.eax, yAt = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest& guest) { return pointerHotSpotBody(guest, xAt, yAt); });
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menue::pointerHotSpot(app, cpu, xAt, yAt); });
 }
 
 }

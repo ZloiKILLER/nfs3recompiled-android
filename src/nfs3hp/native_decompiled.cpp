@@ -1,3 +1,4 @@
+#include "game_settings.h"
 #include "native_guest.h"
 
 #include <cstdint>
@@ -95,7 +96,6 @@ void resetMenuHelp(win32::WinApplication* app, x86::CPU& cpu)
 
 /* The settings' effects and engine volumes, and a race's own, which its pause
  * screen moves (native_frontend_options.cpp's names). */
-constexpr reg32 kEffectsVolume = 0x6fbbf4, kEngineVolume = 0x6fbbf8;
 constexpr reg32 kRaceEffectsVolume = 0x552920, kRaceEngineVolume = 0x552924;
 constexpr reg32 kRaceVolumesToSettings = 0x552909;  // byte: the race's volumes go back to the settings next
 
@@ -111,22 +111,22 @@ void swapRaceVolumes(win32::WinApplication* app, x86::CPU& cpu)
     cpu.dl = byte(app, kRaceVolumesToSettings);
     if (cpu.dl != 0)
     {
-        cpu.eax = at(app, kEffectsVolume);
+        cpu.eax = gameSettings(app).effectsVolume;
         cpu.edx = 0;
         put(app, kRaceEffectsVolume, cpu.eax);
-        cpu.eax = at(app, kEngineVolume);
-        put(app, kEffectsVolume, cpu.edx);
+        cpu.eax = gameSettings(app).engineVolume;
+        gameSettings(app).effectsVolume = cpu.edx;
         put(app, kRaceEngineVolume, cpu.eax);
-        put(app, kEngineVolume, cpu.edx);
+        gameSettings(app).engineVolume = cpu.edx;
         cpu.dl = 0;
     }
     else
     {
         cpu.eax = at(app, kRaceEffectsVolume);
-        put(app, kEffectsVolume, cpu.eax);
+        gameSettings(app).effectsVolume = cpu.eax;
         cpu.eax = at(app, kRaceEngineVolume);
         cpu.dl = 1;
-        put(app, kEngineVolume, cpu.eax);
+        gameSettings(app).engineVolume = cpu.eax;
     }
     putByte(app, kRaceVolumesToSettings, cpu.dl);
     cpu.ebp = pop(app, cpu);

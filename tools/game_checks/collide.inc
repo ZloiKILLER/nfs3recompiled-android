@@ -221,6 +221,13 @@ void makeCollideCar(CheckApp& g, x86::reg32 car)
         g.word(car + 0x98 + 4 * i) = aCollideFloat(chance(70) ? 4 : 40);
         g.word(car + 0xa4 + 4 * i) = aCollideFloat(chance(50) ? 5 : 60);
         g.word(car + 0xe4 + 4 * i) = aCollideFloat(3);
+        // Nor a NaN in the velocity or the spin: the cars' response
+        // (raceload::carsCollide's impulses) multiplies the point's speed's
+        // NaN by another, whose bits the host's compiler picks (an infinity
+        // instead, the NaNs it makes all of one kind).
+        for (const x86::reg32 at : {car + 0xa4 + 4 * i, car + 0xe4 + 4 * i})
+            if ((g.word(at) & 0x7f800000) == 0x7f800000)
+                g.word(at) &= 0xff800000;
         // Never a NaN: a NaN times a NaN (a dot product's) takes either one's
         // bits as the host's compiler orders the product, on either side.
         g.word(car + 0x114 + 4 * i) = chance(95) ? aCollideFloat(1) & 0x7fffffff : aCollideFloat(3);

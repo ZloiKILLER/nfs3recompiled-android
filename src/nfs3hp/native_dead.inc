@@ -87,6 +87,7 @@ DEAD(0x439970)  // 5 instructions
 DEAD(0x439980)  // 5 instructions
 DEAD(0x43b330)  // 36 instructions
 DEAD(0x43bde0)  // 37 instructions
+DEAD(0x43da60)  // 23 instructions
 DEAD(0x4417f0)  // 74 instructions
 DEAD(0x442d30)  // 12 instructions
 DEAD(0x442d50)  // 5 instructions
@@ -138,7 +139,16 @@ DEAD(0x4900b0)  // 35 instructions
 DEAD(0x490110)  // 17 instructions
 DEAD(0x490140)  // 153 instructions; "NETSCAPE"
 DEAD(0x4902f0)  // 92 instructions; "NETREPORT"
+DEAD(0x4957a0)  // 47 instructions
+DEAD(0x495860)  // 14 instructions
+DEAD(0x495890)  // 15 instructions
+DEAD(0x4958c0)  // 33 instructions
+DEAD(0x495920)  // 69 instructions
 DEAD(0x495a00)  // 5 instructions
+DEAD(0x495a10)  // 18 instructions
+DEAD(0x495a50)  // 64 instructions
+DEAD(0x495b10)  // 9 instructions
+DEAD(0x495b30)  // 17 instructions
 DEAD(0x496370)  // 11 instructions
 DEAD(0x496390)  // 75 instructions
 DEAD(0x496440)  // 13 instructions
@@ -170,6 +180,8 @@ DEAD(0x49f940)  // 122 instructions
 DEAD(0x49fa90)  // 44 instructions; GetTickCount
 DEAD(0x49fc80)  // 91 instructions
 DEAD(0x49fda0)  // 12 instructions
+DEAD(0x4a31f0)  // 87 instructions
+DEAD(0x4a32f0)  // 65 instructions; "write"
 DEAD(0x4a5aa0)  // 30 instructions; FreeLibrary
 DEAD(0x4a5d70)  // 38 instructions
 DEAD(0x4a5f20)  // 7 instructions
@@ -205,6 +217,29 @@ DEAD(0x4cc820)  // 11 instructions; LeaveCriticalSection
 DEAD(0x4cc840)  // 11 instructions; EnterCriticalSection
 DEAD(0x4cca00)  // 55 instructions; EnterCriticalSection, LeaveCriticalSection
 DEAD(0x4ccbb0)  // 3 instructions
+DEAD(0x4ccbb7)  // 18 instructions
+DEAD(0x4ccbc9)  // 18 instructions
+DEAD(0x4ccbd0)  // 18 instructions
+DEAD(0x4ccbd7)  // 18 instructions
+DEAD(0x4ccbde)  // 3 instructions
+DEAD(0x4ccbe5)  // 3 instructions
+DEAD(0x4ccbec)  // 3 instructions
+DEAD(0x4ccbf3)  // 3 instructions
+DEAD(0x4ccc01)  // 3 instructions
+DEAD(0x4ccc08)  // 3 instructions
+DEAD(0x4ccc0f)  // 3 instructions
+DEAD(0x4ccc16)  // 3 instructions
+DEAD(0x4ccc1d)  // 3 instructions
+DEAD(0x4ccc24)  // 3 instructions
+DEAD(0x4ccc2b)  // 3 instructions
+DEAD(0x4ccc32)  // 3 instructions
+DEAD(0x4ccc39)  // 3 instructions
+DEAD(0x4ccc40)  // 3 instructions
+DEAD(0x4ccc47)  // 3 instructions
+DEAD(0x4ccc4e)  // 3 instructions
+DEAD(0x4ccc55)  // 3 instructions
+DEAD(0x4ccc5c)  // 3 instructions
+DEAD(0x4ccc63)  // 3 instructions
 DEAD(0x4cdc20)  // 20 instructions; GetSystemMetrics
 DEAD(0x4cdcd0)  // 17 instructions
 DEAD(0x4cebf0)  // 78 instructions
@@ -234,6 +269,7 @@ DEAD(0x4dc2e0)  // 8 instructions
 DEAD(0x4dc300)  // 43 instructions
 DEAD(0x4dc350)  // 34 instructions
 DEAD(0x4dd1f0)  // 23 instructions
+DEAD(0x4dee80)  // 283 instructions; ClientToScreen
 DEAD(0x4df350)  // 19 instructions
 DEAD(0x4df380)  // 5 instructions
 DEAD(0x4df390)  // 4 instructions
@@ -241,6 +277,7 @@ DEAD(0x4df3a0)  // 43 instructions
 DEAD(0x4df420)  // 90 instructions
 DEAD(0x4df530)  // 21 instructions; "%04X.prf"
 DEAD(0x4df570)  // 30 instructions
+DEAD(0x4df5c0)  // 51 instructions
 DEAD(0x4e00c0)  // 28 instructions
 DEAD(0x4e0250)  // 13 instructions
 DEAD(0x4e04e0)  // 76 instructions
@@ -276,6 +313,7 @@ DEAD(0x4ea910)  // 3 instructions
 DEAD(0x4ea990)  // 16 instructions
 DEAD(0x4ead10)  // 1 instructions
 DEAD(0x4ead80)  // 2 instructions
+DEAD(0x4eae90)  // 2 instructions
 DEAD(0x4eaea0)  // 2 instructions
 DEAD(0x4eb810)  // 8 instructions
 DEAD(0x4eb830)  // 29 instructions
@@ -327,6 +365,9 @@ DEAD(0x4f15e0)  // 8 instructions
 DEAD(0x4f15f0)  // 10 instructions
 DEAD(0x4f1610)  // 83 instructions; "win/async.c"
 DEAD(0x4f1710)  // 42 instructions; "win/async.c"
+DEAD(0x4f1ea0)  // 27 instructions
+DEAD(0x4f20b0)  // 68 instructions; "win/cpuspeed.c"
+DEAD(0x4f21c0)  // 79 instructions
 DEAD(0x4f2360)  // 10 instructions
 DEAD(0x4f2d00)  // 12 instructions
 DEAD(0x4f2d20)  // 10 instructions
@@ -334,6 +375,14 @@ DEAD(0x4f2d40)  // 12 instructions
 DEAD(0x4f2d60)  // 10 instructions
 DEAD(0x4f2da0)  // 45 instructions
 DEAD(0x4f2f30)  // 10 instructions
+DEAD(0x4f30d0)  // 182 instructions
+DEAD(0x4f3350)  // 34 instructions
+DEAD(0x4f33b0)  // 11 instructions
+DEAD(0x4f33e0)  // 21 instructions
+DEAD(0x4f3420)  // 80 instructions
+DEAD(0x4f34f0)  // 42 instructions
+DEAD(0x4f3560)  // 45 instructions
+DEAD(0x4f3600)  // 262 instructions
 DEAD(0x4f3a30)  // 15 instructions
 DEAD(0x4f43ac)  // 8 instructions
 DEAD(0x4f4438)  // 3 instructions
@@ -406,8 +455,17 @@ DEAD(0x4fd130)  // 20 instructions
 DEAD(0x4fd160)  // 20 instructions
 DEAD(0x4fd190)  // 20 instructions
 DEAD(0x4fd420)  // 35 instructions
+DEAD(0x4fd61c)  // 60 instructions
+DEAD(0x4fd6ef)  // 57 instructions
+DEAD(0x4fd7b6)  // 63 instructions
+DEAD(0x4fd892)  // 35 instructions
+DEAD(0x4fd8ee)  // 50 instructions
+DEAD(0x4fd98c)  // 54 instructions
+DEAD(0x4fda20)  // 179 instructions
+DEAD(0x4fdc90)  // 337 instructions
 DEAD(0x4ff0e0)  // 3 instructions
 DEAD(0x4ff5d0)  // 3 instructions
+DEAD(0x4ff624)  // 16 instructions
 DEAD(0x5028b8)  // 4 instructions
 DEAD(0x503700)  // 45 instructions
 DEAD(0x5037a0)  // 39 instructions
@@ -434,6 +492,7 @@ DEAD(0x508fd0)  // 16 instructions
 DEAD(0x5093d0)  // 90 instructions
 DEAD(0x509bd0)  // 13 instructions
 DEAD(0x509ec0)  // 17 instructions
+DEAD(0x50a520)  // 27 instructions
 DEAD(0x50a700)  // 106 instructions; "win/convshp.c"
 DEAD(0x50af80)  // 8 instructions
 DEAD(0x50afa0)  // 15 instructions
@@ -442,7 +501,16 @@ DEAD(0x50dbd0)  // 10 instructions
 DEAD(0x50e360)  // 53 instructions; EnterCriticalSection, LeaveCriticalSection; "qhighpriority"
 DEAD(0x50e670)  // 72 instructions; EnterCriticalSection, LeaveCriticalSection; "qfetchindex"
 DEAD(0x50e740)  // 61 instructions; EnterCriticalSection, LeaveCriticalSection; "qfetchnext"
+DEAD(0x50ea68)  // 19 instructions
+DEAD(0x50ea85)  // 21 instructions
+DEAD(0x50eaa7)  // 15 instructions
+DEAD(0x5102f0)  // 118 instructions
 DEAD(0x510740)  // 10 instructions
+DEAD(0x510a50)  // 98 instructions
+DEAD(0x510bb3)  // 75 instructions
+DEAD(0x510cbd)  // 84 instructions
+DEAD(0x510e48)  // 146 instructions
+DEAD(0x510ff8)  // 152 instructions
 DEAD(0x511200)  // 8 instructions
 DEAD(0x5116ac)  // 33 instructions; "cmn/spktplay.c"
 DEAD(0x511d30)  // 43 instructions; "cmn/capture.c"
@@ -918,26 +986,4 @@ DEAD(0x533ec8)  // 1 instructions; DdeConnect
 DEAD(0x533ece)  // 1 instructions; DdeCreateStringHandleA
 DEAD(0x533ed4)  // 1 instructions; DdeUninitialize
 DEAD(0x533eda)  // 1 instructions; DdeInitializeA
-DEAD(0x4ff624)
-DEAD(0x51f320)
-DEAD(0x5269d4)
-DEAD(0x526aeb)
-DEAD(0x50ea68)
-DEAD(0x50ea85)
-DEAD(0x50eaa7)
-DEAD(0x4f1ea0)
-DEAD(0x4f21c0)
-DEAD(0x4f20b0)
-DEAD(0x4df5c0)
-DEAD(0x51f272)
-DEAD(0x503280)
-DEAD(0x503281)
-DEAD(0x50356c)
-DEAD(0x50356d)
-// Data decoded as code, found reading them 2026-11-03: the fields' blank buffers, shape names, a table.
-DEAD(0x457260)
-DEAD(0x4576e0)
-DEAD(0x469020)
-DEAD(0x49fdd0)
-DEAD(0x4b6a10)
-DEAD(0x4a78b6)
+DEAD(0x533ee0)  // 1 instructions; DirectInputCreateA

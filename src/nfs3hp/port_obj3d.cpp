@@ -1,3 +1,4 @@
+#include "game_settings.h"
 #include "port_obj3d.h"
 #include "port_draw2d.h"
 
@@ -142,7 +143,6 @@ constexpr Var<reg32> kPauseTurn{0x55302c};
 /* Whose cars and which track: players' (the cars' menu's 1 and 2), the
  * track, the generic car's count of players, the cars shown, the random car
  * last drawn. */
-constexpr Var<int32_t> kPlayer1Car{0x6fd2bc}, kPlayer2Car{0x6fd328}, kTrack{0x6fd4ac}, kPlayers{0x6fd4d4};
 constexpr Var<int32_t> kCarShown9{0x664788}, kCarShown10{0x664784}, kRandomCar{0x55a4dc};
 /* The projection: the scale and centre of x and y. */
 constexpr Var<float> kScaleX{0x56009c}, kScaleY{0x5600a0}, kCentreX{0x5600a4}, kCentreY{0x5600a8};
@@ -1102,23 +1102,23 @@ Result chooseFilesOf(App* app, CPU& cpu, reg32 esp, reg32 item)
     };
     if (kind == 9 || kind == 10 || kind == kPlayer1 || kind == kPlayer2)
     {
-        const Var<int32_t> global = kind == 9 ? kCarShown9 : kind == 10 ? kCarShown10
-                                  : kind == kPlayer1 ? kPlayer1Car : kPlayer2Car;
-        if (!car(global(app)))
+        const reg32& global = kind == 9 ? *&app->getMemory<reg32>(kCarShown9.at) : kind == 10 ? *&app->getMemory<reg32>(kCarShown10.at)
+                            : gameSettings(app).players[kind == kPlayer1 ? 0 : 1].car;
+        if (!car(int32_t(global)))
             return {};
         identified = true;
-        id = app->getMemory<int16_t>(global.at);
+        id = int16_t(global);
     }
     else if (kind == kTrackKind)
     {
         if (!trackVivPathOf(app, cpu, callee(frame, 0), o.loader))
             return {};
-        const Result name = trackModelNameOf(app, cpu, callee(frame, 0), kTrack(app));
+        const Result name = trackModelNameOf(app, cpu, callee(frame, 0), std::int32_t(gameSettings(app).track));
         if (!name)
             return {};
         prefix = reg32(*name);
         identified = true;
-        id = app->getMemory<int16_t>(kTrack.at);
+        id = int16_t(gameSettings(app).track);
     }
     else if (kind == 4 || kind == 6)
     {
@@ -1161,13 +1161,13 @@ Result chooseFilesOf(App* app, CPU& cpu, reg32 esp, reg32 item)
     }
     else if (kind == kSplit)
     {
-        cpu.edi = reg32(kPlayers(app));
-        if (kPlayers(app) < 4)
+        cpu.edi = reg32(gameSettings(app).opponentClass);
+        if (std::int32_t(gameSettings(app).opponentClass) < 4)
             return 0;
-        if (!car(kPlayers(app) - 4))
+        if (!car(std::int32_t(gameSettings(app).opponentClass) - 4))
             return {};
         identified = true;
-        id = app->getMemory<int16_t>(kPlayers.at);
+        id = int16_t(gameSettings(app).opponentClass);
     }
     else
     {
@@ -1459,12 +1459,14 @@ Result wantedChangedOf(App* app, CPU&, reg32, reg32 item)
             eax &= 0xffff;
             // Each kind's car (or track) against the one shown: another one
             // wanted, unless one is loading already.
-            static const reg32 globals[10] = {0x6fd2bc, 0x6fd328, 0, 0, 0x6fd4ac, 0, 0, 0x6fd4d4, 0x664788, 0x664784};
-            const reg32 global = globals[eax];
-            if (global != 0)
+            GameSettings& settings = gameSettings(app);
+            const reg32* const globals[10] = {&settings.players[0].car, &settings.players[1].car, nullptr, nullptr, &settings.track, nullptr, nullptr,
+                                              &settings.opponentClass, &app->getMemory<reg32>(0x664788), &app->getMemory<reg32>(0x664784)};
+            const reg32* const global = globals[eax];
+            if (global != nullptr)
             {
                 eax = reg32(int32_t(o.shownId));
-                if (int32_t(eax) != int32_t(word(app, global)) && o.loading == 0)
+                if (int32_t(eax) != int32_t(*global) && o.loading == 0)
                     o.wanted = 1;
             }
             else if (eax == 2 && o.loading == 0 && o.wanted == 0)
@@ -1702,12 +1704,12 @@ Result carColourOf(App* app, CPU& cpu, reg32 esp, reg32 item, reg32 out)
     case 1:
     {
         // The players': the colour they chose, as hue, saturation and value.
-        const Var<int32_t> car = index == 0 ? kPlayer1Car : kPlayer2Car;
+        const auto car = [&] { return int32_t(gameSettings(app).players[index == 0 ? 0 : 1].car); };
         reg32 r;
-        if (!callGame(app, cpu, frame, kCarColourIndex, {reg32(car(app)), index}, {}, r))
+        if (!callGame(app, cpu, frame, kCarColourIndex, {reg32(car()), index}, {}, r))
             return {};
-        cpu.esi = reg32(car(app));
-        if (!callGame(app, cpu, frame, kCarColourRgb, {reg32(car(app)), r, index, rgb},
+        cpu.esi = reg32(car());
+        if (!callGame(app, cpu, frame, kCarColourRgb, {reg32(car()), r, index, rgb},
                       {ebp - 0x10, ebp - 0xc, ebp - 8})
             || !callGame(app, cpu, frame, kRgbToHsv, {rgb, out}))
             return {};
@@ -1807,7 +1809,7 @@ Result drawObject(App* app, CPU& cpu, reg32 esp, reg32 item, reg32 edx)
     if (r == 0)
         return 0;
     Object& o = record<Object>(app, item);
-    if (o.kind == kSplit && kPlayers(app) < 4)
+    if (o.kind == kSplit && std::int32_t(gameSettings(app).opponentClass) < 4)
     {
         // The split screen's object with fewer than 4 players: no car.
         o.shownId = -1;
@@ -2071,7 +2073,7 @@ Result objectPass(App* app, CPU& cpu, reg32 esp, reg32 item)
     if (kNoMouse(app) != 0)
         return 0;
     const Object& o = record<Object>(app, item);
-    if (o.kind == kSplit && kPlayers(app) < 4)
+    if (o.kind == kSplit && std::int32_t(gameSettings(app).opponentClass) < 4)
         return 0;
     if (o.loading != 0 || o.wanted != 0)
         return 4;
@@ -2100,7 +2102,7 @@ Result objectUp(App* app, CPU& cpu, reg32 esp, reg32 item)
     if (r == 0)
         return 0;
     Object& o = record<Object>(app, item);
-    if (o.kind == kSplit && kPlayers(app) < 4)
+    if (o.kind == kSplit && std::int32_t(gameSettings(app).opponentClass) < 4)
     {
         o.rect[1] = 0;
         o.rect[2] = 0;

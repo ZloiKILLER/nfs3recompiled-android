@@ -1,0 +1,15 @@
+# address name kind: the functions native whole in src/nfs3hp/native_frontend_rendb.cpp, frontend::name.
+# kind: how frontend_checks enters it (Menu, Key, Item, None).
+47bc20 rendKindIsText None
+47bc40 rendSetUpHudVertices None
+47d1d0 rendDrawBox None
+47d480 rendUpdateCopMarkers None
+47d580 rendDrawPursuitMark None
+47ee80 rendPrepareStandings None
+47f090 rendTurnMatrixToRoad None
+47f2e0 rendCopyRectangle None
+47f340 rendLayScalesIntoHud None
+47f590 rendLoadHudPictures None
+47fbe0 rendQueueEightQuads None
+47fcb0 rendUnqueueEightQuads None
+47fd80 rendFitFrameToScreen None

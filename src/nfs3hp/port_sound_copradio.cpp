@@ -1,3 +1,4 @@
+#include "game_settings.h"
 #include "port_snd_speech.h"
 
 #include <cstdint>
@@ -62,7 +63,7 @@ static Result carRadioHeard(App* app, CPU& cpu, reg32 esp, reg32 car)
     if (!distance)
         return {};
     reg32 pan;
-    if (kSplitScreenMode(app) == 1)
+    if (gameSettings(app).playMode == 1)
         pan = player != 0 ? kSideRight : kSideLeft;
     else if (!callWith(app, cpu, sp, kAngleFrom, Args{kListener, place, player, 0}, {}, car, edi, pan))
         return {};
@@ -81,7 +82,7 @@ static Result playerCopRadioHeard(App* app, CPU& cpu, reg32 esp, reg32 car, int3
     const reg32 driver = load<reg32>(app, car + 0x624);
     writePlace(app, place, driver);
     const reg32 player = load<reg32>(app, driver + 0x1f0);
-    if (kSplitScreenMode(app) == 1
+    if (gameSettings(app).playMode == 1
         && !callResult(app, cpu, sp, kCameraView, Args{player, kListener, 0, 0}, {}, reg32(kind), cpu.edi))
         return {};
     const Result distance = callResult(app, cpu, sp, kDistanceFrom, Args{kListener, place, 0, 0}, {}, reg32(kind), cpu.edi);
@@ -106,7 +107,7 @@ Result copLineChosen(App* app, CPU& cpu, reg32 esp, int32_t event)
     const auto pastHalf = [&]() { return nextRandom(app) % 100 > 0x32; };
     // The last line said, with eax as the code has it there.
     const auto last = [&](reg32 eax) { return callResult(app, cpu, sp, kLastLine, Args{eax, 0, 0, 0}, {}, cpu.esi, cpu.edi); };
-    const int32_t split = kSplitScreenMode(app);
+    const int32_t split = gameSettings(app).playMode;
     if (split == 1)
     {
         if (event == 1)

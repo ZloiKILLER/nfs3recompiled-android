@@ -10,6 +10,7 @@ namespace nfs3hp
 
 /* The game's functions the port has natively, where their code was
  * (disassemble_nfs3hp.py): the generated code calls them by name. */
+namespace pieces { void stub_0x401000(win32::WinApplication* app, x86::CPU& cpu); }  // 0x401000
 void Error(win32::WinApplication* app, x86::CPU& cpu);  // 0x401010
 namespace airace { void nothingAtStart(win32::WinApplication* app, x86::CPU& cpu); }  // 0x401220
 namespace airace { void nothingAtLoad(win32::WinApplication* app, x86::CPU& cpu); }  // 0x401230
@@ -120,6 +121,7 @@ namespace aidrive { void extraCarStep(win32::WinApplication* app, x86::CPU& cpu)
 namespace dead { void stub_0x405e50(win32::WinApplication* app, x86::CPU& cpu); }  // 0x405e50
 namespace aidrive { void setDrivingConstants(win32::WinApplication* app, x86::CPU& cpu); }  // 0x405e60
 namespace aidrive { void drivingNothing(win32::WinApplication* app, x86::CPU& cpu); }  // 0x405fb0
+namespace pieces { void stub_0x405fc0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x405fc0
 namespace aidrive { void setReverse(win32::WinApplication* app, x86::CPU& cpu); }  // 0x405fd0
 namespace aidrive { void reverseCheck(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4060d0
 namespace aidrive { void reverseWhenSlow(win32::WinApplication* app, x86::CPU& cpu); }  // 0x406120
@@ -303,6 +305,7 @@ namespace aiplan { void startSound(win32::WinApplication* app, x86::CPU& cpu); }
 namespace aiplan { void restartSound(win32::WinApplication* app, x86::CPU& cpu); }  // 0x40fcf0
 namespace port { void soundExit(win32::WinApplication* app, x86::CPU& cpu); }  // 0x40feb0
 namespace port { void deleteMusicCopy(win32::WinApplication* app, x86::CPU& cpu); }  // 0x40fed0
+namespace pieces { void stub_0x40ff20(win32::WinApplication* app, x86::CPU& cpu); }  // 0x40ff20
 namespace port { void raceTuneOf(win32::WinApplication* app, x86::CPU& cpu); }  // 0x40ffd0
 namespace port { void raceMusicPrepare(win32::WinApplication* app, x86::CPU& cpu); }  // 0x410030
 namespace port { void musicStreamMake(win32::WinApplication* app, x86::CPU& cpu); }  // 0x410330
@@ -442,6 +445,7 @@ namespace track { void newArena(win32::WinApplication* app, x86::CPU& cpu); }  /
 namespace track { void freeArena(win32::WinApplication* app, x86::CPU& cpu); }  // 0x419b90
 namespace track { void arenaTake(win32::WinApplication* app, x86::CPU& cpu); }  // 0x419bc0
 namespace track { void frdRead(win32::WinApplication* app, x86::CPU& cpu); }  // 0x419bf0
+namespace loader { void frd(win32::WinApplication* app, x86::CPU& cpu); }  // 0x419c20
 namespace track { void loadGeometry(win32::WinApplication* app, x86::CPU& cpu); }  // 0x41a100
 namespace track { void projectedTriangle(win32::WinApplication* app, x86::CPU& cpu); }  // 0x41a120
 namespace vertices { void projectedTriangle(win32::WinApplication* app, x86::CPU& cpu); }  // 0x41a360
@@ -569,6 +573,7 @@ namespace carstate { void cockpitShown(win32::WinApplication* app, x86::CPU& cpu
 namespace dead { void stub_0x422b70(win32::WinApplication* app, x86::CPU& cpu); }  // 0x422b70
 namespace carstate { void cameraCar(win32::WinApplication* app, x86::CPU& cpu); }  // 0x422ba0
 namespace carstate { void cameraTarget(win32::WinApplication* app, x86::CPU& cpu); }  // 0x422bd0
+namespace pieces { void stub_0x422c00(win32::WinApplication* app, x86::CPU& cpu); }  // 0x422c00
 namespace dead { void stub_0x422c40(win32::WinApplication* app, x86::CPU& cpu); }  // 0x422c40
 namespace dead { void stub_0x422c80(win32::WinApplication* app, x86::CPU& cpu); }  // 0x422c80
 namespace carstate { void initCameras(win32::WinApplication* app, x86::CPU& cpu); }  // 0x422cf0
@@ -587,15 +592,27 @@ namespace carstate { void bitsBroken(win32::WinApplication* app, x86::CPU& cpu);
 namespace carstate { void dampVector(win32::WinApplication* app, x86::CPU& cpu); }  // 0x424030
 namespace carstate { void chaseOffset(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4240c0
 namespace carstate { void chaseOffsetLevel(win32::WinApplication* app, x86::CPU& cpu); }  // 0x424260
+namespace frontend { void simCameraChase(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4243a0
+namespace frontend { void simCameraOrbit(win32::WinApplication* app, x86::CPU& cpu); }  // 0x424690
+namespace frontend { void simCameraChaseLow(win32::WinApplication* app, x86::CPU& cpu); }  // 0x424740
+namespace frontend { void simCameraCircleCar(win32::WinApplication* app, x86::CPU& cpu); }  // 0x424b50
+namespace frontend { void simCameraLookAround(win32::WinApplication* app, x86::CPU& cpu); }  // 0x424ce0
+namespace frontend { void simCameraSideOfCar(win32::WinApplication* app, x86::CPU& cpu); }  // 0x424e30
+namespace frontend { void simCameraEaseTurn(win32::WinApplication* app, x86::CPU& cpu); }  // 0x424f30
+namespace frontend { void simCameraMoveTowards(win32::WinApplication* app, x86::CPU& cpu); }  // 0x424fd0
 namespace frontend { void simCameraBesideRoad(win32::WinApplication* app, x86::CPU& cpu); }  // 0x425060
 namespace frontend { void simCameraNearestSpot(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4251f0
 namespace frontend { void simCameraPlayPath(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4253d0
 namespace frontend { void simCameraEndPath(win32::WinApplication* app, x86::CPU& cpu); }  // 0x425640
+namespace frontend { void simCameraBesideCar(win32::WinApplication* app, x86::CPU& cpu); }  // 0x425990
+namespace frontend { void simCameraOnCar(win32::WinApplication* app, x86::CPU& cpu); }  // 0x425ab0
+namespace frontend { void simCameraGlideTowards(win32::WinApplication* app, x86::CPU& cpu); }  // 0x425b40
 namespace frontend { void simCameraOverRoad(win32::WinApplication* app, x86::CPU& cpu); }  // 0x425bf0
 namespace frontend { void simCameraFlyover(win32::WinApplication* app, x86::CPU& cpu); }  // 0x425d50
 namespace frontend { void simCameraStill(win32::WinApplication* app, x86::CPU& cpu); }  // 0x426290
 namespace frontend { void simCameraWaitThenHandOn(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4262a0
 namespace frontend { void simCameraBackFromWait(win32::WinApplication* app, x86::CPU& cpu); }  // 0x426310
+namespace frontend { void simCameraPrepare(win32::WinApplication* app, x86::CPU& cpu); }  // 0x426370
 namespace frontend { void simCameraStep(win32::WinApplication* app, x86::CPU& cpu); }  // 0x426450
 namespace frontend { void simCameraForcedMode(win32::WinApplication* app, x86::CPU& cpu); }  // 0x426560
 namespace frontend { void simCamerasStep(win32::WinApplication* app, x86::CPU& cpu); }  // 0x426680
@@ -642,8 +659,16 @@ namespace frontend { void tuningFitButtons(win32::WinApplication* app, x86::CPU&
 namespace frontend { void tuningPrepare(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4281e0
 namespace frontend { void tuningOnEnter(win32::WinApplication* app, x86::CPU& cpu); }  // 0x428360
 namespace frontend { void tuningOnExit(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4283b0
+namespace frontend { void loadingRaceCarSteps(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4283d0
+namespace pieces { void stub_0x428460(win32::WinApplication* app, x86::CPU& cpu); }  // 0x428460
 namespace dead { void stub_0x428480(win32::WinApplication* app, x86::CPU& cpu); }  // 0x428480
 namespace dead { void stub_0x4284b0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4284b0
+namespace frontend { void loadingCarAddEvent(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4284e0
+namespace frontend { void loadingCarClearDriving(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4285f0
+namespace frontend { void loadingCarJoinLists(win32::WinApplication* app, x86::CPU& cpu); }  // 0x428700
+namespace frontend { void loadingCarReset(win32::WinApplication* app, x86::CPU& cpu); }  // 0x428970
+namespace frontend { void loadingCarPlaceIsClear(win32::WinApplication* app, x86::CPU& cpu); }  // 0x428ad0
+namespace frontend { void loadingCarPlaceOnRoad(win32::WinApplication* app, x86::CPU& cpu); }  // 0x428d60
 namespace racestart { void respawnCar(win32::WinApplication* app, x86::CPU& cpu); }  // 0x428f90
 namespace racestart { void resetCar(win32::WinApplication* app, x86::CPU& cpu); }  // 0x429100
 namespace racestart { void stuckCheck(win32::WinApplication* app, x86::CPU& cpu); }  // 0x429260
@@ -867,6 +892,7 @@ namespace collide { void clearMessages(win32::WinApplication* app, x86::CPU& cpu
 namespace collide { void clearMessageLine(win32::WinApplication* app, x86::CPU& cpu); }  // 0x436dc0
 namespace collide { void addMessageText(win32::WinApplication* app, x86::CPU& cpu); }  // 0x436e10
 namespace collide { void addMessageCharacter(win32::WinApplication* app, x86::CPU& cpu); }  // 0x436e90
+namespace pieces { void stub_0x436fc0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x436fc0
 namespace collide { void copyMessageLines(win32::WinApplication* app, x86::CPU& cpu); }  // 0x437080
 namespace collide { void messagesScrolled(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4371a0
 namespace collide { void messagesNothing(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4371c0
@@ -911,6 +937,7 @@ namespace load { void makeCarId(win32::WinApplication* app, x86::CPU& cpu); }  /
 namespace load { void firstCarGlobal(win32::WinApplication* app, x86::CPU& cpu); }  // 0x438af0
 namespace load { void nextCarGlobal(win32::WinApplication* app, x86::CPU& cpu); }  // 0x438b10
 namespace dead { void stub_0x438b40(win32::WinApplication* app, x86::CPU& cpu); }  // 0x438b40
+namespace frontend { void loadingCarBefore(win32::WinApplication* app, x86::CPU& cpu); }  // 0x438b70
 namespace load { void appendCar(win32::WinApplication* app, x86::CPU& cpu); }  // 0x438b90
 namespace load { void carCount(win32::WinApplication* app, x86::CPU& cpu); }  // 0x438bd0
 namespace load { void countCars(win32::WinApplication* app, x86::CPU& cpu); }  // 0x438be0
@@ -922,6 +949,7 @@ namespace load { void takePoliceCars(win32::WinApplication* app, x86::CPU& cpu);
 namespace load { void takeClasslessCars(win32::WinApplication* app, x86::CPU& cpu); }  // 0x438dc0
 namespace load { void takeOrdinaryCars(win32::WinApplication* app, x86::CPU& cpu); }  // 0x438e30
 namespace load { void sortCars(win32::WinApplication* app, x86::CPU& cpu); }  // 0x438eb0
+namespace frontend { void loadingCarStat(win32::WinApplication* app, x86::CPU& cpu); }  // 0x438f60
 namespace dead { void stub_0x438fc0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x438fc0
 namespace dead { void stub_0x4390f0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4390f0
 namespace dead { void stub_0x4391d0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4391d0
@@ -931,10 +959,15 @@ namespace load { void carFolder(win32::WinApplication* app, x86::CPU& cpu); }  /
 namespace load { void carFilePrefix(win32::WinApplication* app, x86::CPU& cpu); }  // 0x439300
 namespace port { namespace obj3d { void carVivPath(win32::WinApplication* app, x86::CPU& cpu); } }  // 0x439360
 namespace dead { void stub_0x439450(win32::WinApplication* app, x86::CPU& cpu); }  // 0x439450
+namespace frontend { void loadingCarExtras(win32::WinApplication* app, x86::CPU& cpu); }  // 0x439510
 namespace load { void carId(win32::WinApplication* app, x86::CPU& cpu); }  // 0x439520
+namespace frontend { void loadingCarIdIsPlain(win32::WinApplication* app, x86::CPU& cpu); }  // 0x439530
 namespace load { void carFlag40(win32::WinApplication* app, x86::CPU& cpu); }  // 0x439570
 namespace dead { void stub_0x439590(win32::WinApplication* app, x86::CPU& cpu); }  // 0x439590
+namespace frontend { void loadingCarIsKept(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4395a0
 namespace load { void carFlag4(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4395c0
+namespace frontend { void loadingCarFlag2(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4395e0
+namespace pieces { void stub_0x439600(win32::WinApplication* app, x86::CPU& cpu); }  // 0x439600
 namespace load { void carHasNumericId(win32::WinApplication* app, x86::CPU& cpu); }  // 0x439610
 namespace load { void idIsNumeric(win32::WinApplication* app, x86::CPU& cpu); }  // 0x439620
 namespace load { void numericId(win32::WinApplication* app, x86::CPU& cpu); }  // 0x439660
@@ -944,6 +977,7 @@ namespace load { void carIsPolice(win32::WinApplication* app, x86::CPU& cpu); } 
 namespace dead { void stub_0x4396d0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4396d0
 namespace load { void carIsFerrariOrMercedes(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4396e0
 namespace dead { void stub_0x439700(win32::WinApplication* app, x86::CPU& cpu); }  // 0x439700
+namespace frontend { void loadingCarByte3a0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x439710
 namespace load { void carClass(win32::WinApplication* app, x86::CPU& cpu); }  // 0x439730
 namespace dead { void stub_0x439740(win32::WinApplication* app, x86::CPU& cpu); }  // 0x439740
 namespace port { namespace fields { void carColourCount(win32::WinApplication* app, x86::CPU& cpu); } }  // 0x439760
@@ -961,19 +995,30 @@ namespace dead { void stub_0x439970(win32::WinApplication* app, x86::CPU& cpu); 
 namespace dead { void stub_0x439980(win32::WinApplication* app, x86::CPU& cpu); }  // 0x439980
 namespace load { void findCarById(win32::WinApplication* app, x86::CPU& cpu); }  // 0x439990
 namespace load { void clearCarCache(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4399f0
+namespace frontend { void loadingPlayerToListedCar(win32::WinApplication* app, x86::CPU& cpu); }  // 0x439a10
 namespace load { void carRecord(win32::WinApplication* app, x86::CPU& cpu); }  // 0x439a50
 namespace port { namespace fields { void carText(win32::WinApplication* app, x86::CPU& cpu); } }  // 0x439ab0
 namespace load { void fecText(win32::WinApplication* app, x86::CPU& cpu); }  // 0x439af0
 namespace load { void findCarByName(win32::WinApplication* app, x86::CPU& cpu); }  // 0x439b20
+namespace frontend { void loadingFreeCars(win32::WinApplication* app, x86::CPU& cpu); }  // 0x439b70
+namespace frontend { void loadingCarFreeData(win32::WinApplication* app, x86::CPU& cpu); }  // 0x439bb0
 namespace load { void attachFecTexts(win32::WinApplication* app, x86::CPU& cpu); }  // 0x439bd0
+namespace frontend { void loadingCarFreeBlock(win32::WinApplication* app, x86::CPU& cpu); }  // 0x439bf0
 namespace load { void bonusCarLocked(win32::WinApplication* app, x86::CPU& cpu); }  // 0x439c10
+namespace frontend { void simBonusCarLocked(win32::WinApplication* app, x86::CPU& cpu); }  // 0x439cc0
 namespace frontend { void creditsHaveBonusCar(win32::WinApplication* app, x86::CPU& cpu); }  // 0x439ce0
 namespace load { void checkDuplicateCars(win32::WinApplication* app, x86::CPU& cpu); }  // 0x439d20
 namespace load { void loadCarList(win32::WinApplication* app, x86::CPU& cpu); }  // 0x439d90
+namespace frontend { void loadingCarCompareNames(win32::WinApplication* app, x86::CPU& cpu); }  // 0x43a4d0
 namespace load { void carSelectable(win32::WinApplication* app, x86::CPU& cpu); }  // 0x43a4f0
 namespace load { void buildCarClassLists(win32::WinApplication* app, x86::CPU& cpu); }  // 0x43a580
+namespace frontend { void loadingCarInClass(win32::WinApplication* app, x86::CPU& cpu); }  // 0x43a6b0
+namespace frontend { void loadingCarFilterLists(win32::WinApplication* app, x86::CPU& cpu); }  // 0x43a6e0
+namespace pieces { void stub_0x43ace0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x43ace0
 namespace load { void copyCarAsNew(win32::WinApplication* app, x86::CPU& cpu); }  // 0x43ae60
+namespace frontend { void loadingCarRemoveFolder(win32::WinApplication* app, x86::CPU& cpu); }  // 0x43b2a0
 namespace dead { void stub_0x43b330(win32::WinApplication* app, x86::CPU& cpu); }  // 0x43b330
+namespace frontend { void loadingRemoveKeptCars(win32::WinApplication* app, x86::CPU& cpu); }  // 0x43b390
 namespace load { void loadCarSpecs(win32::WinApplication* app, x86::CPU& cpu); }  // 0x43b3f0
 namespace load { void writeCarFec(win32::WinApplication* app, x86::CPU& cpu); }  // 0x43b4f0
 namespace load { void readCarFecBody(win32::WinApplication* app, x86::CPU& cpu); }  // 0x43b570
@@ -993,7 +1038,9 @@ namespace load { void setLastCarId(win32::WinApplication* app, x86::CPU& cpu); }
 namespace load { void setLastCarName(win32::WinApplication* app, x86::CPU& cpu); }  // 0x43bc40
 namespace load { void setLastCarFlags(win32::WinApplication* app, x86::CPU& cpu); }  // 0x43bc70
 namespace load { void markLastCarFlag8(win32::WinApplication* app, x86::CPU& cpu); }  // 0x43bc90
+namespace frontend { void loopLoadingScreenFlag(win32::WinApplication* app, x86::CPU& cpu); }  // 0x43bcb0
 namespace frontend { void viewInteriorMapX(win32::WinApplication* app, x86::CPU& cpu); }  // 0x43bcc0
+namespace frontend { void carsRemoveNumberedFolders(win32::WinApplication* app, x86::CPU& cpu); }  // 0x43bcf0
 namespace dead { void stub_0x43bde0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x43bde0
 namespace frontend { void controlsPollJoystickBinding(win32::WinApplication* app, x86::CPU& cpu); }  // 0x43be40
 namespace frontend { void bindingIsDigital(win32::WinApplication* app, x86::CPU& cpu); }  // 0x43c000
@@ -1016,6 +1063,7 @@ namespace frontend { void controlsBindingKeyName(win32::WinApplication* app, x86
 namespace frontend { void controlsSampleAxes(win32::WinApplication* app, x86::CPU& cpu); }  // 0x43d920
 namespace frontend { void deadZoneFillList(win32::WinApplication* app, x86::CPU& cpu); }  // 0x43d9a0
 namespace frontend { void controllerName(win32::WinApplication* app, x86::CPU& cpu); }  // 0x43d9f0
+namespace dead { void stub_0x43da60(win32::WinApplication* app, x86::CPU& cpu); }  // 0x43da60
 namespace frontend { void connectApplyPlayerVector(win32::WinApplication* app, x86::CPU& cpu); }  // 0x43dab0
 namespace frontend { void colourMakeHueRamp(win32::WinApplication* app, x86::CPU& cpu); }  // 0x43db20
 namespace port { namespace fields { void wheelFromCarColour(win32::WinApplication* app, x86::CPU& cpu); } }  // 0x43dbe0
@@ -1400,6 +1448,7 @@ namespace port { namespace text { void drawTextAt(win32::WinApplication* app, x8
 namespace port { namespace fields { void drawFieldText(win32::WinApplication* app, x86::CPU& cpu); } }  // 0x4515e0
 namespace dead { void stub_0x451640(win32::WinApplication* app, x86::CPU& cpu); }  // 0x451640
 namespace dead { void stub_0x451670(win32::WinApplication* app, x86::CPU& cpu); }  // 0x451670
+namespace frontend { void loadingDiskHasRoom(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4516a0
 namespace port { namespace text { void joystickKey(win32::WinApplication* app, x86::CPU& cpu); } }  // 0x451700
 namespace dead { void stub_0x451715(win32::WinApplication* app, x86::CPU& cpu); }  // 0x451715
 namespace dead { void stub_0x4517d0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4517d0
@@ -1426,6 +1475,7 @@ namespace frontend { void cheatAdvance(win32::WinApplication* app, x86::CPU& cpu
 namespace frontend { void cheatKey(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4524e0
 namespace dead { void stub_0x452910(win32::WinApplication* app, x86::CPU& cpu); }  // 0x452910
 namespace port { namespace menus { void appendBackslash(win32::WinApplication* app, x86::CPU& cpu); } }  // 0x4529a0
+namespace frontend { void loadingCopyFile(win32::WinApplication* app, x86::CPU& cpu); }  // 0x452a00
 namespace frontend { void setupRaceAnswered(win32::WinApplication* app, x86::CPU& cpu); }  // 0x452ac0
 namespace frontend { void setupAskRace(win32::WinApplication* app, x86::CPU& cpu); }  // 0x452bd0
 namespace frontend { void setupTwoPlayersClicked(win32::WinApplication* app, x86::CPU& cpu); }  // 0x452d40
@@ -1525,7 +1575,7 @@ namespace port { namespace fields { void chooseColour(win32::WinApplication* app
 namespace port { namespace fields { void colourListKey(win32::WinApplication* app, x86::CPU& cpu); } }  // 0x457030
 namespace port { namespace fields { void layoutColourList(win32::WinApplication* app, x86::CPU& cpu); } }  // 0x4571e0
 namespace port { namespace fields { void colourListHidden(win32::WinApplication* app, x86::CPU& cpu); } }  // 0x457250
-namespace dead { void stub_0x457260(win32::WinApplication* app, x86::CPU& cpu); }  // 0x457260
+namespace pieces { void stub_0x457260(win32::WinApplication* app, x86::CPU& cpu); }  // 0x457260
 namespace frontend { void dirPadUnderPointer(win32::WinApplication* app, x86::CPU& cpu); }  // 0x457270
 namespace frontend { void dirPadCentreUnderPointer(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4572d0
 namespace dead { void stub_0x457310(win32::WinApplication* app, x86::CPU& cpu); }  // 0x457310
@@ -1536,7 +1586,7 @@ namespace frontend { void dirPadAnswer(win32::WinApplication* app, x86::CPU& cpu
 namespace frontend { void dirPadLayout(win32::WinApplication* app, x86::CPU& cpu); }  // 0x457630
 namespace frontend { void dirPadNothing(win32::WinApplication* app, x86::CPU& cpu); }  // 0x457670
 namespace frontend { void dirPadLoadShapes(win32::WinApplication* app, x86::CPU& cpu); }  // 0x457680
-namespace dead { void stub_0x4576e0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4576e0
+namespace pieces { void stub_0x4576e0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4576e0
 namespace port { namespace fields { void editKey(win32::WinApplication* app, x86::CPU& cpu); } }  // 0x457ae0
 namespace port { namespace fields { void drawIntField(win32::WinApplication* app, x86::CPU& cpu); } }  // 0x457c40
 namespace port { namespace fields { void intRangeMessage(win32::WinApplication* app, x86::CPU& cpu); } }  // 0x457df0
@@ -1573,7 +1623,12 @@ namespace port { namespace fields { void fixedFieldShown(win32::WinApplication* 
 namespace port { namespace fields { void fixedFieldHidden(win32::WinApplication* app, x86::CPU& cpu); } }  // 0x4592f0
 namespace port { namespace fields { void bindFixedField(win32::WinApplication* app, x86::CPU& cpu); } }  // 0x459320
 namespace graphics { void drawFlatRectangle(win32::WinApplication* app, x86::CPU& cpu); }  // 0x459350
+namespace frontend { void loopItemFrame(win32::WinApplication* app, x86::CPU& cpu); }  // 0x459410
 namespace graphics { void hudEditorFrame(win32::WinApplication* app, x86::CPU& cpu); }  // 0x459440
+namespace frontend { void hudEditElementFits(win32::WinApplication* app, x86::CPU& cpu); }  // 0x459670
+namespace frontend { void hudEditElementMoved(win32::WinApplication* app, x86::CPU& cpu); }  // 0x459db0
+namespace frontend { void hudEditorDrop(win32::WinApplication* app, x86::CPU& cpu); }  // 0x459fe0
+namespace frontend { void hudEditorDrag(win32::WinApplication* app, x86::CPU& cpu); }  // 0x45a120
 namespace frontend { void hudDrawElement(win32::WinApplication* app, x86::CPU& cpu); }  // 0x45ab30
 namespace frontend { void hudElementPickCursor(win32::WinApplication* app, x86::CPU& cpu); }  // 0x45b940
 namespace frontend { void hudElementDraw(win32::WinApplication* app, x86::CPU& cpu); }  // 0x45bcb0
@@ -1707,7 +1762,7 @@ namespace port { namespace obj3d { void wantedChanged(win32::WinApplication* app
 namespace port { namespace obj3d { void runLoader(win32::WinApplication* app, x86::CPU& cpu); } }  // 0x468860
 namespace port { namespace obj3d { void carColour(win32::WinApplication* app, x86::CPU& cpu); } }  // 0x468da0
 namespace port { namespace obj3d { void makeTexture(win32::WinApplication* app, x86::CPU& cpu); } }  // 0x468f00
-namespace dead { void stub_0x469020(win32::WinApplication* app, x86::CPU& cpu); }  // 0x469020
+namespace pieces { void stub_0x469020(win32::WinApplication* app, x86::CPU& cpu); }  // 0x469020
 namespace port { namespace fields { void sliderPartSizes(win32::WinApplication* app, x86::CPU& cpu); } }  // 0x469080
 namespace port { namespace fields { void sliderPartUnderPointer(win32::WinApplication* app, x86::CPU& cpu); } }  // 0x4692c0
 namespace port { namespace fields { void sliderThumbPlace(win32::WinApplication* app, x86::CPU& cpu); } }  // 0x469340
@@ -1737,6 +1792,7 @@ namespace port { namespace fields { void setUpTwoAxis(win32::WinApplication* app
 namespace port { namespace fields { void twoAxisBox(win32::WinApplication* app, x86::CPU& cpu); } }  // 0x46c8b0
 namespace port { namespace fields { void sliderSetValue(win32::WinApplication* app, x86::CPU& cpu); } }  // 0x46c950
 namespace frontend { void sliderValue(win32::WinApplication* app, x86::CPU& cpu); }  // 0x46c9b0
+namespace pieces { void stub_0x46ca10(win32::WinApplication* app, x86::CPU& cpu); }  // 0x46ca10
 namespace port { namespace view { void recordFloatByKind(win32::WinApplication* app, x86::CPU& cpu); } }  // 0x46ca70
 namespace frontend { void sliderSetOnMove(win32::WinApplication* app, x86::CPU& cpu); }  // 0x46cac0
 namespace port { namespace fields { void sliderDraw(win32::WinApplication* app, x86::CPU& cpu); } }  // 0x46cae0
@@ -1773,7 +1829,13 @@ namespace frontend { void roundsTableHidden(win32::WinApplication* app, x86::CPU
 namespace frontend { void headToHeadShown(win32::WinApplication* app, x86::CPU& cpu); }  // 0x470360
 namespace frontend { void headToHeadPass(win32::WinApplication* app, x86::CPU& cpu); }  // 0x470390
 namespace frontend { void headToHeadDraw(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4703a0
+namespace frontend { void rendFogAmount(win32::WinApplication* app, x86::CPU& cpu); }  // 0x470a60
 namespace dead { void stub_0x470a70(win32::WinApplication* app, x86::CPU& cpu); }  // 0x470a70
+namespace frontend { void rendFogColour(win32::WinApplication* app, x86::CPU& cpu); }  // 0x470aa0
+namespace frontend { void rendFogDensity(win32::WinApplication* app, x86::CPU& cpu); }  // 0x470ad0
+namespace frontend { void rendFogDensityTimes(win32::WinApplication* app, x86::CPU& cpu); }  // 0x470b20
+namespace frontend { void rendFogBoth(win32::WinApplication* app, x86::CPU& cpu); }  // 0x470b70
+namespace frontend { void rendFogReset(win32::WinApplication* app, x86::CPU& cpu); }  // 0x470b90
 namespace controls { void steadyEngineRumble(win32::WinApplication* app, x86::CPU& cpu); }  // 0x470bc0
 namespace controls { void startEngineRumble(win32::WinApplication* app, x86::CPU& cpu); }  // 0x470c60
 namespace controls { void silenceEngineRumble(win32::WinApplication* app, x86::CPU& cpu); }  // 0x470cb0
@@ -1822,59 +1884,163 @@ namespace frontend { void menusEnter(win32::WinApplication* app, x86::CPU& cpu);
 namespace frontend { void menusLeave(win32::WinApplication* app, x86::CPU& cpu); }  // 0x473080
 namespace frontend { void frontEndFirstStart(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4730d0
 namespace frontend { void postgameRun(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4732b0
+namespace frontend { void loadingRosterClearUsed(win32::WinApplication* app, x86::CPU& cpu); }  // 0x473340
+namespace frontend { void loadingRosterPickLeastUsed(win32::WinApplication* app, x86::CPU& cpu); }  // 0x473360
+namespace frontend { void loadingRosterMarkUsed(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4733b0
 namespace port { namespace view { void colourNearest(win32::WinApplication* app, x86::CPU& cpu); } }  // 0x4733c0
+namespace frontend { void loadingRosterPickOpponentCar(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4734d0
+namespace frontend { void loadingRosterPickOpponentDriver(win32::WinApplication* app, x86::CPU& cpu); }  // 0x473550
+namespace frontend { void loadingRosterPickCopDriver(win32::WinApplication* app, x86::CPU& cpu); }  // 0x473570
+namespace frontend { void loadingRosterPickTrafficCar(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4735c0
+namespace frontend { void loadingRosterEntryFinalist(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4736c0
+namespace frontend { void loadingRosterEntryHuman(win32::WinApplication* app, x86::CPU& cpu); }  // 0x473710
+namespace frontend { void loadingRosterEntryCop(win32::WinApplication* app, x86::CPU& cpu); }  // 0x473890
+namespace frontend { void loadingRosterEntryOpponent(win32::WinApplication* app, x86::CPU& cpu); }  // 0x473960
+namespace frontend { void loadingRosterEntryTraffic(win32::WinApplication* app, x86::CPU& cpu); }  // 0x473a70
+namespace frontend { void loadingRosterTournamentTracks(win32::WinApplication* app, x86::CPU& cpu); }  // 0x473ac0
+namespace frontend { void loadingRosterGridOrder(win32::WinApplication* app, x86::CPU& cpu); }  // 0x473b70
+namespace frontend { void loadingRosterBuildRegular(win32::WinApplication* app, x86::CPU& cpu); }  // 0x473bf0
+namespace frontend { void loadingRosterBuildTournament(win32::WinApplication* app, x86::CPU& cpu); }  // 0x473ee0
+namespace frontend { void loadingRosterBuildKnockout(win32::WinApplication* app, x86::CPU& cpu); }  // 0x474310
+namespace frontend { void loadingRosterBuildHotPursuit(win32::WinApplication* app, x86::CPU& cpu); }  // 0x474640
+namespace frontend { void loadingRosterSeedByte(win32::WinApplication* app, x86::CPU& cpu); }  // 0x474c60
+namespace frontend { void loadingRosterBuild(win32::WinApplication* app, x86::CPU& cpu); }  // 0x474ca0
+namespace pieces { void stub_0x474d20(win32::WinApplication* app, x86::CPU& cpu); }  // 0x474d20
 namespace frontend { void textLookClearLights(win32::WinApplication* app, x86::CPU& cpu); }  // 0x474d50
 namespace port { namespace view { void edgeTriangles(win32::WinApplication* app, x86::CPU& cpu); } }  // 0x474db0
 namespace port { namespace view { void glyphResource(win32::WinApplication* app, x86::CPU& cpu); } }  // 0x475240
+namespace frontend { void loopFreeLoadedBlock(win32::WinApplication* app, x86::CPU& cpu); }  // 0x475b10
 namespace render { void solidText(win32::WinApplication* app, x86::CPU& cpu); }  // 0x475b50
 namespace dead { void stub_0x476f30(win32::WinApplication* app, x86::CPU& cpu); }  // 0x476f30
 namespace dead { void stub_0x476f60(win32::WinApplication* app, x86::CPU& cpu); }  // 0x476f60
 namespace dead { void stub_0x476f90(win32::WinApplication* app, x86::CPU& cpu); }  // 0x476f90
+namespace frontend { void rendStringWidth(win32::WinApplication* app, x86::CPU& cpu); }  // 0x476fb0
 namespace dead { void stub_0x477030(win32::WinApplication* app, x86::CPU& cpu); }  // 0x477030
 namespace frontend { void textLookSetFlat(win32::WinApplication* app, x86::CPU& cpu); }  // 0x477070
 namespace dead { void stub_0x4770c0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4770c0
 namespace dead { void stub_0x477120(win32::WinApplication* app, x86::CPU& cpu); }  // 0x477120
 namespace frontend { void textLookSetDirectional(win32::WinApplication* app, x86::CPU& cpu); }  // 0x477170
 namespace frontend { void textLookAddLight(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4771c0
+namespace pieces { void stub_0x477290(win32::WinApplication* app, x86::CPU& cpu); }  // 0x477290
 namespace dead { void stub_0x477380(win32::WinApplication* app, x86::CPU& cpu); }  // 0x477380
 namespace frontend { void textLookSetTexture(win32::WinApplication* app, x86::CPU& cpu); }  // 0x477470
+namespace frontend { void rendSparksOnScreen(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4774b0
 namespace dead { void stub_0x477690(win32::WinApplication* app, x86::CPU& cpu); }  // 0x477690
 namespace dead { void stub_0x4776f0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4776f0
 namespace dead { void stub_0x477740(win32::WinApplication* app, x86::CPU& cpu); }  // 0x477740
 namespace dead { void stub_0x4777a0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4777a0
 namespace dead { void stub_0x4777b0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4777b0
 namespace dead { void stub_0x4777c0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4777c0
+namespace frontend { void ghostSaveFile(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4777d0
+namespace frontend { void ghostPoseSetRotation(win32::WinApplication* app, x86::CPU& cpu); }  // 0x477830
+namespace frontend { void ghostPosePosition(win32::WinApplication* app, x86::CPU& cpu); }  // 0x477850
+namespace frontend { void ghostPoseSetPosition(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4778c0
+namespace frontend { void ghostPoseBetween(win32::WinApplication* app, x86::CPU& cpu); }  // 0x477990
+namespace frontend { void ghostRecordedAt(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4779e0
+namespace frontend { void ghostLoadedAt(win32::WinApplication* app, x86::CPU& cpu); }  // 0x477a10
+namespace frontend { void ghostRecordingStart(win32::WinApplication* app, x86::CPU& cpu); }  // 0x477a50
 namespace load { void saveGhost(win32::WinApplication* app, x86::CPU& cpu); }  // 0x477a90
 namespace load { void writeGhost(win32::WinApplication* app, x86::CPU& cpu); }  // 0x477ac0
 namespace load { void readGhost(win32::WinApplication* app, x86::CPU& cpu); }  // 0x477b00
+namespace frontend { void ghostLoadFile(win32::WinApplication* app, x86::CPU& cpu); }  // 0x477b50
 namespace frontend { void clearLoadFlag(win32::WinApplication* app, x86::CPU& cpu); }  // 0x477c00
+namespace frontend { void ghostRecordCar(win32::WinApplication* app, x86::CPU& cpu); }  // 0x477c20
+namespace frontend { void ghostPlaybackPose(win32::WinApplication* app, x86::CPU& cpu); }  // 0x477d90
 namespace dead { void stub_0x477df0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x477df0
+namespace frontend { void netRaceLoadStep(win32::WinApplication* app, x86::CPU& cpu); }  // 0x477f60
+namespace frontend { void netRaceMusicStep(win32::WinApplication* app, x86::CPU& cpu); }  // 0x477fd0
 namespace frontend { void raceEndEmpty(win32::WinApplication* app, x86::CPU& cpu); }  // 0x478000
 namespace frontend { void pauseCheckSaveable(win32::WinApplication* app, x86::CPU& cpu); }  // 0x478010
+namespace frontend { void loadingSavedResolvePlayers(win32::WinApplication* app, x86::CPU& cpu); }  // 0x478090
+namespace frontend { void loadingSavedResolveEntries(win32::WinApplication* app, x86::CPU& cpu); }  // 0x478100
+namespace frontend { void loadingSavedNameEntries(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4781b0
+namespace frontend { void loadingScreenSizeChosen(win32::WinApplication* app, x86::CPU& cpu); }  // 0x478280
+namespace frontend { void loadingScreenSizeNumber(win32::WinApplication* app, x86::CPU& cpu); }  // 0x478290
+namespace frontend { void loadingScreenSizeNumberOf(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4782b0
+namespace frontend { void loadingHorizonStartCall(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4782c0
+namespace frontend { void loadingHorizonFreeCall(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4782d0
+namespace frontend { void loadingSkyViewTo(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4782e0
+namespace frontend { void loadingShapeSize(win32::WinApplication* app, x86::CPU& cpu); }  // 0x478320
 namespace load { void loadHorizon(win32::WinApplication* app, x86::CPU& cpu); }  // 0x478340
+namespace frontend { void loadingHorizonSetPieces(win32::WinApplication* app, x86::CPU& cpu); }  // 0x478b70
+namespace frontend { void loadingHorizonMeasure(win32::WinApplication* app, x86::CPU& cpu); }  // 0x478bb0
+namespace frontend { void loadingHorizonStart(win32::WinApplication* app, x86::CPU& cpu); }  // 0x478c70
+namespace frontend { void loadingHorizonFree(win32::WinApplication* app, x86::CPU& cpu); }  // 0x478c80
+namespace frontend { void rendMakeQuad(win32::WinApplication* app, x86::CPU& cpu); }  // 0x478cb0
+namespace frontend { void rendViewRectangle(win32::WinApplication* app, x86::CPU& cpu); }  // 0x478dc0
+namespace frontend { void effectsFogAtCamera(win32::WinApplication* app, x86::CPU& cpu); }  // 0x478e10
+namespace frontend { void rendSkyListStart(win32::WinApplication* app, x86::CPU& cpu); }  // 0x479080
+namespace frontend { void rendSkyListKeep(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4790d0
+namespace frontend { void rendSkyListEnd(win32::WinApplication* app, x86::CPU& cpu); }  // 0x479100
+namespace frontend { void rendBandPoints(win32::WinApplication* app, x86::CPU& cpu); }  // 0x479160
+namespace frontend { void rendCurvePoints(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4792e0
+namespace frontend { void rendBandVertices(win32::WinApplication* app, x86::CPU& cpu); }  // 0x479370
+namespace frontend { void rendRingPoints(win32::WinApplication* app, x86::CPU& cpu); }  // 0x479500
+namespace frontend { void rendSkyGradientRing(win32::WinApplication* app, x86::CPU& cpu); }  // 0x479680
+namespace frontend { void rendFoggedColour(win32::WinApplication* app, x86::CPU& cpu); }  // 0x479860
+namespace frontend { void rendSkyHazeRing(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4799d0
+namespace frontend { void rendSkyCloudRing(win32::WinApplication* app, x86::CPU& cpu); }  // 0x479b90
+namespace frontend { void rendSun(win32::WinApplication* app, x86::CPU& cpu); }  // 0x479ed0
 namespace render { void sky(win32::WinApplication* app, x86::CPU& cpu); }  // 0x47a190
 namespace render { void flatSky(win32::WinApplication* app, x86::CPU& cpu); }  // 0x47a1f0
+namespace frontend { void rendSkyFlat(win32::WinApplication* app, x86::CPU& cpu); }  // 0x47a4c0
 namespace render { void viewSky(win32::WinApplication* app, x86::CPU& cpu); }  // 0x47a880
+namespace frontend { void skyLoad(win32::WinApplication* app, x86::CPU& cpu); }  // 0x47a970
 namespace load { void loadSky(win32::WinApplication* app, x86::CPU& cpu); }  // 0x47ac30
+namespace frontend { void rendPointHeight(win32::WinApplication* app, x86::CPU& cpu); }  // 0x47adc0
+namespace frontend { void rendCloudGrid(win32::WinApplication* app, x86::CPU& cpu); }  // 0x47ae10
+namespace frontend { void rendFlashesReset(win32::WinApplication* app, x86::CPU& cpu); }  // 0x47b350
 namespace dead { void stub_0x47b380(win32::WinApplication* app, x86::CPU& cpu); }  // 0x47b380
+namespace frontend { void rendFlashesResetAgain(win32::WinApplication* app, x86::CPU& cpu); }  // 0x47b390
+namespace frontend { void rendFlashOnGrid(win32::WinApplication* app, x86::CPU& cpu); }  // 0x47b3a0
+namespace frontend { void rendDomeVertices(win32::WinApplication* app, x86::CPU& cpu); }  // 0x47b4f0
+namespace frontend { void rendSkyWeather(win32::WinApplication* app, x86::CPU& cpu); }  // 0x47b5c0
 namespace render { void glareVertices(win32::WinApplication* app, x86::CPU& cpu); }  // 0x47b7d0
 namespace render { void skyDome(win32::WinApplication* app, x86::CPU& cpu); }  // 0x47b850
+namespace pieces { void stub_0x47bbb8(win32::WinApplication* app, x86::CPU& cpu); }  // 0x47bbb8
+namespace frontend { void rendKindIsText(win32::WinApplication* app, x86::CPU& cpu); }  // 0x47bc20
+namespace frontend { void rendSetUpHudVertices(win32::WinApplication* app, x86::CPU& cpu); }  // 0x47bc40
+namespace frontend { void rendDrawBox(win32::WinApplication* app, x86::CPU& cpu); }  // 0x47d1d0
+namespace frontend { void rendUpdateCopMarkers(win32::WinApplication* app, x86::CPU& cpu); }  // 0x47d480
+namespace frontend { void rendDrawPursuitMark(win32::WinApplication* app, x86::CPU& cpu); }  // 0x47d580
+namespace frontend { void rendPrepareStandings(win32::WinApplication* app, x86::CPU& cpu); }  // 0x47ee80
+namespace frontend { void rendTurnMatrixToRoad(win32::WinApplication* app, x86::CPU& cpu); }  // 0x47f090
+namespace frontend { void rendCopyRectangle(win32::WinApplication* app, x86::CPU& cpu); }  // 0x47f2e0
+namespace frontend { void rendLayScalesIntoHud(win32::WinApplication* app, x86::CPU& cpu); }  // 0x47f340
+namespace frontend { void rendLoadHudPictures(win32::WinApplication* app, x86::CPU& cpu); }  // 0x47f590
 namespace render { void hudFrame(win32::WinApplication* app, x86::CPU& cpu); }  // 0x47f650
+namespace frontend { void rendQueueEightQuads(win32::WinApplication* app, x86::CPU& cpu); }  // 0x47fbe0
+namespace frontend { void rendUnqueueEightQuads(win32::WinApplication* app, x86::CPU& cpu); }  // 0x47fcb0
+namespace frontend { void rendFitFrameToScreen(win32::WinApplication* app, x86::CPU& cpu); }  // 0x47fd80
 namespace render { void hudBand(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4800a0
+namespace frontend { void hudUnqueueViewQuads(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4808b0
 namespace render { void hudRect(win32::WinApplication* app, x86::CPU& cpu); }  // 0x480910
+namespace frontend { void hudSetAlignments(win32::WinApplication* app, x86::CPU& cpu); }  // 0x480a00
 namespace render { void hudPicture(win32::WinApplication* app, x86::CPU& cpu); }  // 0x480fc0
+namespace frontend { void hudPlaceDialArt(win32::WinApplication* app, x86::CPU& cpu); }  // 0x481170
+namespace frontend { void hudLayMarkersFrame(win32::WinApplication* app, x86::CPU& cpu); }  // 0x481290
 namespace render { void hudDial(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4812e0
+namespace frontend { void hudLayPanel(win32::WinApplication* app, x86::CPU& cpu); }  // 0x481510
+namespace frontend { void hudLayNothing(win32::WinApplication* app, x86::CPU& cpu); }  // 0x481570
+namespace frontend { void hudLayReplayBar(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4815d0
+namespace frontend { void hudLayGrid(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4818b0
 namespace render { void hudPanel(win32::WinApplication* app, x86::CPU& cpu); }  // 0x481aa0
 namespace render { void hudTable(win32::WinApplication* app, x86::CPU& cpu); }  // 0x481c50
+namespace frontend { void hudMapPaneIsSmall(win32::WinApplication* app, x86::CPU& cpu); }  // 0x481f90
+namespace frontend { void hudSetGridHighlight(win32::WinApplication* app, x86::CPU& cpu); }  // 0x482030
+namespace frontend { void hudDrawGridHighlight(win32::WinApplication* app, x86::CPU& cpu); }  // 0x482190
 namespace dead { void stub_0x482610(win32::WinApplication* app, x86::CPU& cpu); }  // 0x482610
 namespace render { void countdown(win32::WinApplication* app, x86::CPU& cpu); }  // 0x482620
+namespace frontend { void hudDrawReplayBar(win32::WinApplication* app, x86::CPU& cpu); }  // 0x482880
 namespace graphics { void hudMessageBox(win32::WinApplication* app, x86::CPU& cpu); }  // 0x482940
 namespace render { void hud(win32::WinApplication* app, x86::CPU& cpu); }  // 0x482b00
+namespace frontend { void hudFlushFrameQueue(win32::WinApplication* app, x86::CPU& cpu); }  // 0x484030
 namespace port { namespace hud { void loadingTextPrepared(win32::WinApplication* app, x86::CPU& cpu); } }  // 0x484040
 namespace port { namespace hud { void hudStarted(win32::WinApplication* app, x86::CPU& cpu); } }  // 0x484070
 namespace frontend { void hudClearRebuildFlag(win32::WinApplication* app, x86::CPU& cpu); }  // 0x484220
 namespace dead { void stub_0x484230(win32::WinApplication* app, x86::CPU& cpu); }  // 0x484230
 namespace frontend { void hudToggleShown(win32::WinApplication* app, x86::CPU& cpu); }  // 0x484260
+namespace pieces { void stub_0x484330(win32::WinApplication* app, x86::CPU& cpu); }  // 0x484330
 namespace dead { void stub_0x484390(win32::WinApplication* app, x86::CPU& cpu); }  // 0x484390
 namespace dead { void stub_0x4843f0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4843f0
 namespace frontend { void hudToggleRearView(win32::WinApplication* app, x86::CPU& cpu); }  // 0x484450
@@ -1885,6 +2051,7 @@ namespace port { namespace hud { void labelTextSet(win32::WinApplication* app, x
 namespace frontend { void hudRebuildElement(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4853c0
 namespace frontend { void hudRebuildView(win32::WinApplication* app, x86::CPU& cpu); }  // 0x485640
 namespace frontend { void hudEditLoadDefaults(win32::WinApplication* app, x86::CPU& cpu); }  // 0x485680
+namespace frontend { void simHudDefaults(win32::WinApplication* app, x86::CPU& cpu); }  // 0x485880
 namespace port { namespace hud { void standingsGapMeasured(win32::WinApplication* app, x86::CPU& cpu); } }  // 0x485a60
 namespace port { namespace hud { void floatsSwapped(win32::WinApplication* app, x86::CPU& cpu); } }  // 0x485c20
 namespace port { namespace hud { void pointClipped(win32::WinApplication* app, x86::CPU& cpu); } }  // 0x485c30
@@ -1970,10 +2137,12 @@ namespace controls { void bindControl(win32::WinApplication* app, x86::CPU& cpu)
 namespace controls { void bindFunctionKeys(win32::WinApplication* app, x86::CPU& cpu); }  // 0x48f970
 namespace controls { void queueRaceControls(win32::WinApplication* app, x86::CPU& cpu); }  // 0x48fa10
 namespace dead { void stub_0x48faa0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x48faa0
+namespace pieces { void stub_0x48fb40(win32::WinApplication* app, x86::CPU& cpu); }  // 0x48fb40
 namespace dead { void stub_0x4900b0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4900b0
 namespace dead { void stub_0x490110(win32::WinApplication* app, x86::CPU& cpu); }  // 0x490110
 namespace dead { void stub_0x490140(win32::WinApplication* app, x86::CPU& cpu); }  // 0x490140
 namespace dead { void stub_0x4902f0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4902f0
+namespace pieces { void stub_0x490430(win32::WinApplication* app, x86::CPU& cpu); }  // 0x490430
 namespace controls { void controlsFor(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4904d0
 namespace controls { void defaultControls(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4904f0
 namespace controls { void setControls(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4905b0
@@ -1990,59 +2159,150 @@ namespace controls { void keyboardControls(win32::WinApplication* app, x86::CPU&
 namespace controls { void gamePadControls(win32::WinApplication* app, x86::CPU& cpu); }  // 0x490cb0
 namespace controls { void joystickControls(win32::WinApplication* app, x86::CPU& cpu); }  // 0x490e30
 namespace controls { void otherControllerControls(win32::WinApplication* app, x86::CPU& cpu); }  // 0x490fa0
+namespace frontend { void rendBlinkColour(win32::WinApplication* app, x86::CPU& cpu); }  // 0x491120
 namespace render { void glow(win32::WinApplication* app, x86::CPU& cpu); }  // 0x491190
 namespace render { void roadLight(win32::WinApplication* app, x86::CPU& cpu); }  // 0x491bc0
 namespace vertices { void lightGlow(win32::WinApplication* app, x86::CPU& cpu); }  // 0x492370
 namespace vertices { void headlightBeam(win32::WinApplication* app, x86::CPU& cpu); }  // 0x492980
+namespace frontend { void rendConeSideOffset(win32::WinApplication* app, x86::CPU& cpu); }  // 0x493380
+namespace frontend { void rendConeEdgePoint(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4934c0
+namespace frontend { void rendConesPlace(win32::WinApplication* app, x86::CPU& cpu); }  // 0x493640
+namespace frontend { void rendConeCountPass(win32::WinApplication* app, x86::CPU& cpu); }  // 0x493a30
+namespace frontend { void rendConesHit(win32::WinApplication* app, x86::CPU& cpu); }  // 0x493ad0
+namespace frontend { void rendConesReset(win32::WinApplication* app, x86::CPU& cpu); }  // 0x493e50
+namespace frontend { void rendConesLoad(win32::WinApplication* app, x86::CPU& cpu); }  // 0x493ef0
+namespace frontend { void rendConesFree(win32::WinApplication* app, x86::CPU& cpu); }  // 0x493fb0
+namespace frontend { void rendConesStep(win32::WinApplication* app, x86::CPU& cpu); }  // 0x494010
+namespace frontend { void rendConesDraw(win32::WinApplication* app, x86::CPU& cpu); }  // 0x494170
+namespace frontend { void rendBoltsClear(win32::WinApplication* app, x86::CPU& cpu); }  // 0x494360
+namespace frontend { void rendBoltGlow(win32::WinApplication* app, x86::CPU& cpu); }  // 0x494390
+namespace frontend { void rendBoltFreeNode(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4943e0
+namespace frontend { void rendBoltBranch(win32::WinApplication* app, x86::CPU& cpu); }  // 0x494420
+namespace frontend { void rendBoltStrike(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4945a0
+namespace frontend { void rendBoltsStep(win32::WinApplication* app, x86::CPU& cpu); }  // 0x494630
 namespace render { void lightning(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4946e0
 namespace graphics { void drawLoadingAborted(win32::WinApplication* app, x86::CPU& cpu); }  // 0x494bd0
 namespace render { void loadingScreen(win32::WinApplication* app, x86::CPU& cpu); }  // 0x494cb0
 namespace graphics { void showLoadingScreen(win32::WinApplication* app, x86::CPU& cpu); }  // 0x494fa0
+namespace frontend { void loopBarScale(win32::WinApplication* app, x86::CPU& cpu); }  // 0x495190
 namespace graphics { void drawLoadingProgress(win32::WinApplication* app, x86::CPU& cpu); }  // 0x495230
+namespace frontend { void rendBackImage(win32::WinApplication* app, x86::CPU& cpu); }  // 0x495600
 namespace frontend { void loadQfs(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4956f0
+namespace dead { void stub_0x4957a0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4957a0
+namespace dead { void stub_0x495860(win32::WinApplication* app, x86::CPU& cpu); }  // 0x495860
+namespace dead { void stub_0x495890(win32::WinApplication* app, x86::CPU& cpu); }  // 0x495890
+namespace dead { void stub_0x4958c0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4958c0
+namespace dead { void stub_0x495920(win32::WinApplication* app, x86::CPU& cpu); }  // 0x495920
 namespace dead { void stub_0x495a00(win32::WinApplication* app, x86::CPU& cpu); }  // 0x495a00
+namespace dead { void stub_0x495a10(win32::WinApplication* app, x86::CPU& cpu); }  // 0x495a10
+namespace dead { void stub_0x495a50(win32::WinApplication* app, x86::CPU& cpu); }  // 0x495a50
+namespace dead { void stub_0x495b10(win32::WinApplication* app, x86::CPU& cpu); }  // 0x495b10
+namespace dead { void stub_0x495b30(win32::WinApplication* app, x86::CPU& cpu); }  // 0x495b30
+namespace frontend { void winaMovieNextFrame(win32::WinApplication* app, x86::CPU& cpu); }  // 0x495b60
+namespace movie { void play(win32::WinApplication* app, x86::CPU& cpu); }  // 0x495bc0
 namespace frontend { void playMovie(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4960e0
 namespace frontend { void resetAttractTimer(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4961e0
 namespace frontend { void attractMode(win32::WinApplication* app, x86::CPU& cpu); }  // 0x496200
+namespace pieces { void stub_0x496300(win32::WinApplication* app, x86::CPU& cpu); }  // 0x496300
+namespace frontend { void mathMakeRootTable(win32::WinApplication* app, x86::CPU& cpu); }  // 0x496310
 namespace dead { void stub_0x496370(win32::WinApplication* app, x86::CPU& cpu); }  // 0x496370
 namespace dead { void stub_0x496390(win32::WinApplication* app, x86::CPU& cpu); }  // 0x496390
 namespace dead { void stub_0x496440(win32::WinApplication* app, x86::CPU& cpu); }  // 0x496440
 namespace dead { void stub_0x496490(win32::WinApplication* app, x86::CPU& cpu); }  // 0x496490
+namespace frontend { void rendWrapFraction(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4964d0
+namespace frontend { void rendApproxDistance(win32::WinApplication* app, x86::CPU& cpu); }  // 0x496550
 namespace frontend { void simQuickDistance(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4965b0
 namespace dead { void stub_0x496690(win32::WinApplication* app, x86::CPU& cpu); }  // 0x496690
 namespace frontend { void simPlanarLength(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4967e0
 namespace vertices { void groundHeight(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4968a0
+namespace frontend { void simTrackPointOnPlane(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4969c0
+namespace frontend { void simFrameOfTriangle(win32::WinApplication* app, x86::CPU& cpu); }  // 0x496a50
 namespace dead { void stub_0x496b10(win32::WinApplication* app, x86::CPU& cpu); }  // 0x496b10
 namespace dead { void stub_0x496b60(win32::WinApplication* app, x86::CPU& cpu); }  // 0x496b60
+namespace frontend { void rendRotatePlane(win32::WinApplication* app, x86::CPU& cpu); }  // 0x496bf0
 namespace dead { void stub_0x496c40(win32::WinApplication* app, x86::CPU& cpu); }  // 0x496c40
 namespace dead { void stub_0x496cb0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x496cb0
 namespace dead { void stub_0x496df0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x496df0
+namespace frontend { void rendWithinFlatDistance(win32::WinApplication* app, x86::CPU& cpu); }  // 0x496f20
 namespace dead { void stub_0x496fc0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x496fc0
 namespace dead { void stub_0x497010(win32::WinApplication* app, x86::CPU& cpu); }  // 0x497010
+namespace frontend { void simFixedNormalise(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4970c0
 namespace dead { void stub_0x497240(win32::WinApplication* app, x86::CPU& cpu); }  // 0x497240
 namespace vertices { void normalise(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4972f0
 namespace dead { void stub_0x497360(win32::WinApplication* app, x86::CPU& cpu); }  // 0x497360
 namespace dead { void stub_0x497370(win32::WinApplication* app, x86::CPU& cpu); }  // 0x497370
 namespace dead { void stub_0x497380(win32::WinApplication* app, x86::CPU& cpu); }  // 0x497380
 namespace dead { void stub_0x4973e0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4973e0
+namespace frontend { void loopFillRootBytes(win32::WinApplication* app, x86::CPU& cpu); }  // 0x497430
 namespace dead { void stub_0x497490(win32::WinApplication* app, x86::CPU& cpu); }  // 0x497490
+namespace frontend { void mathQuickNormal(win32::WinApplication* app, x86::CPU& cpu); }  // 0x497500
 namespace frontend { void hudVectorLength(win32::WinApplication* app, x86::CPU& cpu); }  // 0x497590
+namespace frontend { void memViewerRun(win32::WinApplication* app, x86::CPU& cpu); }  // 0x497620
+namespace frontend { void memViewerOpen(win32::WinApplication* app, x86::CPU& cpu); }  // 0x497ba0
+namespace frontend { void memViewerClose(win32::WinApplication* app, x86::CPU& cpu); }  // 0x497cb0
+namespace frontend { void memViewerFirstDraw(win32::WinApplication* app, x86::CPU& cpu); }  // 0x497cc0
+namespace frontend { void memViewerStatsLine(win32::WinApplication* app, x86::CPU& cpu); }  // 0x497d20
+namespace frontend { void memViewerListBlocks(win32::WinApplication* app, x86::CPU& cpu); }  // 0x497fe0
+namespace frontend { void memViewerHeader(win32::WinApplication* app, x86::CPU& cpu); }  // 0x498090
+namespace frontend { void memViewerRows(win32::WinApplication* app, x86::CPU& cpu); }  // 0x498370
+namespace frontend { void memViewerStatusLine(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4989a0
+namespace frontend { void memViewerDescribeBlock(win32::WinApplication* app, x86::CPU& cpu); }  // 0x498a40
+namespace frontend { void memViewerCountShapes(win32::WinApplication* app, x86::CPU& cpu); }  // 0x498b70
+namespace frontend { void memViewerMenu(win32::WinApplication* app, x86::CPU& cpu); }  // 0x498bf0
+namespace frontend { void memViewerNextClass(win32::WinApplication* app, x86::CPU& cpu); }  // 0x498e10
+namespace frontend { void memViewerFlagText(win32::WinApplication* app, x86::CPU& cpu); }  // 0x498e40
+namespace frontend { void memViewerSortMode(win32::WinApplication* app, x86::CPU& cpu); }  // 0x498f00
+namespace frontend { void memViewerCompare(win32::WinApplication* app, x86::CPU& cpu); }  // 0x499150
 namespace dead { void stub_0x4992f0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4992f0
 namespace dead { void stub_0x499300(win32::WinApplication* app, x86::CPU& cpu); }  // 0x499300
+namespace frontend { void memPoolTotals(win32::WinApplication* app, x86::CPU& cpu); }  // 0x499330
+namespace frontend { void memPoolFirstBlock(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4993b0
+namespace frontend { void memPoolCountBlocks(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4993d0
+namespace frontend { void memPoolNextBlock(win32::WinApplication* app, x86::CPU& cpu); }  // 0x499400
+namespace frontend { void viewerBlockSize(win32::WinApplication* app, x86::CPU& cpu); }  // 0x499460
+namespace frontend { void memBlockData(win32::WinApplication* app, x86::CPU& cpu); }  // 0x499480
+namespace frontend { void viewerBlockFlags(win32::WinApplication* app, x86::CPU& cpu); }  // 0x499490
+namespace frontend { void memBlockKind(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4994a0
+namespace frontend { void memBlockIsFree(win32::WinApplication* app, x86::CPU& cpu); }  // 0x499580
+namespace frontend { void memViewerViewShapes(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4995b0
+namespace frontend { void memViewerViewWindow(win32::WinApplication* app, x86::CPU& cpu); }  // 0x499b30
+namespace frontend { void memViewerViewBitmap(win32::WinApplication* app, x86::CPU& cpu); }  // 0x499d30
+namespace frontend { void memShapeBits(win32::WinApplication* app, x86::CPU& cpu); }  // 0x499e90
+namespace frontend { void memViewerHexDump(win32::WinApplication* app, x86::CPU& cpu); }  // 0x499ea0
+namespace frontend { void memViewerHexPage(win32::WinApplication* app, x86::CPU& cpu); }  // 0x499f70
+namespace frontend { void memViewerWriteMap(win32::WinApplication* app, x86::CPU& cpu); }  // 0x49a120
+namespace frontend { void memViewerFreeFileName(win32::WinApplication* app, x86::CPU& cpu); }  // 0x49a400
+namespace frontend { void netMakeLocks(win32::WinApplication* app, x86::CPU& cpu); }  // 0x49a490
 namespace frontend { void freeNetworkLocks(win32::WinApplication* app, x86::CPU& cpu); }  // 0x49a4d0
+namespace frontend { void netLobbyChanged(win32::WinApplication* app, x86::CPU& cpu); }  // 0x49a520
+namespace frontend { void netSendMyCar(win32::WinApplication* app, x86::CPU& cpu); }  // 0x49a8e0
+namespace frontend { void netSendSettings(win32::WinApplication* app, x86::CPU& cpu); }  // 0x49aa80
 namespace frontend { void allPlayersReady(win32::WinApplication* app, x86::CPU& cpu); }  // 0x49ab60
+namespace frontend { void netAllReady(win32::WinApplication* app, x86::CPU& cpu); }  // 0x49abd0
+namespace frontend { void netPlayersToRace(win32::WinApplication* app, x86::CPU& cpu); }  // 0x49acd0
 namespace frontend { void lobbyDrawPlayers(win32::WinApplication* app, x86::CPU& cpu); }  // 0x49ae30
+namespace frontend { void netSettingsPacket(win32::WinApplication* app, x86::CPU& cpu); }  // 0x49b2b0
+namespace frontend { void netPlayerPacket(win32::WinApplication* app, x86::CPU& cpu); }  // 0x49b310
+namespace frontend { void netCarFileToHost(win32::WinApplication* app, x86::CPU& cpu); }  // 0x49b3e0
+namespace frontend { void netCarFileToClient(win32::WinApplication* app, x86::CPU& cpu); }  // 0x49b470
+namespace frontend { void netCarChunkToHost(win32::WinApplication* app, x86::CPU& cpu); }  // 0x49b500
+namespace frontend { void netCarChunkToClient(win32::WinApplication* app, x86::CPU& cpu); }  // 0x49b520
 namespace load { void beginCarpReceive(win32::WinApplication* app, x86::CPU& cpu); }  // 0x49b540
 namespace load { void receiveCarpChunk(win32::WinApplication* app, x86::CPU& cpu); }  // 0x49b5f0
 namespace load { void beginCarpSend(win32::WinApplication* app, x86::CPU& cpu); }  // 0x49b800
+namespace frontend { void netSendCarFile(win32::WinApplication* app, x86::CPU& cpu); }  // 0x49b9b0
+namespace frontend { void netExchangeCars(win32::WinApplication* app, x86::CPU& cpu); }  // 0x49bab0
+namespace frontend { void hudQueueStart(win32::WinApplication* app, x86::CPU& cpu); }  // 0x49bc80
 namespace port { namespace text { void takeQuad(win32::WinApplication* app, x86::CPU& cpu); } }  // 0x49bcd0
 namespace dead { void stub_0x49bcf0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x49bcf0
+namespace frontend { void hudQueueTakeCorners(win32::WinApplication* app, x86::CPU& cpu); }  // 0x49bd10
 namespace port { namespace text { void queueQuad(win32::WinApplication* app, x86::CPU& cpu); } }  // 0x49bd30
 namespace port { namespace text { void unqueueQuad(win32::WinApplication* app, x86::CPU& cpu); } }  // 0x49bdc0
 namespace port { namespace text { void flushQuads(win32::WinApplication* app, x86::CPU& cpu); } }  // 0x49be40
 namespace frontend { void hudSurfaceReset(win32::WinApplication* app, x86::CPU& cpu); }  // 0x49bef0
 namespace frontend { void hudSurfaceTakeVertices(win32::WinApplication* app, x86::CPU& cpu); }  // 0x49bf40
 namespace graphics { void flushLineMesh(win32::WinApplication* app, x86::CPU& cpu); }  // 0x49bf60
+namespace frontend { void simOrFlags(win32::WinApplication* app, x86::CPU& cpu); }  // 0x49bfb0
 namespace frontend { void setPointer(win32::WinApplication* app, x86::CPU& cpu); }  // 0x49bfc0
 namespace port { namespace text { void mouseMenuKey(win32::WinApplication* app, x86::CPU& cpu); } }  // 0x49c000
 namespace frontend { void mouseKey(win32::WinApplication* app, x86::CPU& cpu); }  // 0x49c080
@@ -2058,6 +2318,10 @@ namespace frontend { void menuPointerFreeArt(win32::WinApplication* app, x86::CP
 namespace dead { void stub_0x49c2d0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x49c2d0
 namespace dead { void stub_0x49c310(win32::WinApplication* app, x86::CPU& cpu); }  // 0x49c310
 namespace dead { void stub_0x49c3b0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x49c3b0
+namespace frontend { void rendObjectsBegin(win32::WinApplication* app, x86::CPU& cpu); }  // 0x49c410
+namespace frontend { void rendObjectsDraw(win32::WinApplication* app, x86::CPU& cpu); }  // 0x49c420
+namespace frontend { void rendObjectsEnd(win32::WinApplication* app, x86::CPU& cpu); }  // 0x49c470
+namespace frontend { void rendObjectsCopy(win32::WinApplication* app, x86::CPU& cpu); }  // 0x49c4a0
 namespace graphics { void showPicture(win32::WinApplication* app, x86::CPU& cpu); }  // 0x49c570
 namespace graphics { void textureFormatFor(win32::WinApplication* app, x86::CPU& cpu); }  // 0x49c5c0
 namespace graphics { void allocTexture(win32::WinApplication* app, x86::CPU& cpu); }  // 0x49c600
@@ -2068,24 +2332,42 @@ namespace load { void hsvToRgb(win32::WinApplication* app, x86::CPU& cpu); }  //
 namespace load { void tintPixel(win32::WinApplication* app, x86::CPU& cpu); }  // 0x49cc50
 namespace load { void scaleTexture(win32::WinApplication* app, x86::CPU& cpu); }  // 0x49cd00
 namespace load { void fitTexture(win32::WinApplication* app, x86::CPU& cpu); }  // 0x49cea0
+namespace loader { void fceRecords(win32::WinApplication* app, x86::CPU& cpu); }  // 0x49cfa0
 namespace load { void loadArtTextures(win32::WinApplication* app, x86::CPU& cpu); }  // 0x49d130
 namespace load { void nearestModelColor(win32::WinApplication* app, x86::CPU& cpu); }  // 0x49d240
 namespace load { void loadTgaTexture(win32::WinApplication* app, x86::CPU& cpu); }  // 0x49d320
 namespace load { void loadCarModel(win32::WinApplication* app, x86::CPU& cpu); }  // 0x49d450
+namespace frontend { void rendModelFree(win32::WinApplication* app, x86::CPU& cpu); }  // 0x49d5a0
+namespace frontend { void rendModelTransformAll(win32::WinApplication* app, x86::CPU& cpu); }  // 0x49d5c0
 namespace decompiled { void resetSunLighting(win32::WinApplication* app, x86::CPU& cpu); }  // 0x49d640
+namespace frontend { void rendModelSetAlphas(win32::WinApplication* app, x86::CPU& cpu); }  // 0x49d720
+namespace frontend { void rendModelSetShading(win32::WinApplication* app, x86::CPU& cpu); }  // 0x49d750
+namespace frontend { void rendModelSetLight(win32::WinApplication* app, x86::CPU& cpu); }  // 0x49d760
+namespace frontend { void rendModelSetEnvironment(win32::WinApplication* app, x86::CPU& cpu); }  // 0x49d780
 namespace render { void glareColours(win32::WinApplication* app, x86::CPU& cpu); }  // 0x49d800
+namespace frontend { void rendModelSetColour(win32::WinApplication* app, x86::CPU& cpu); }  // 0x49d8f0
 namespace vertices { void objectVerticesNearest(win32::WinApplication* app, x86::CPU& cpu); }  // 0x49d9d0
 namespace vertices { void shadeNormals(win32::WinApplication* app, x86::CPU& cpu); }  // 0x49da30
 namespace vertices { void envMapCoords(win32::WinApplication* app, x86::CPU& cpu); }  // 0x49db70
 namespace vertices { void cullPolygons(win32::WinApplication* app, x86::CPU& cpu); }  // 0x49dbf0
+namespace frontend { void rendModelTransformPart(win32::WinApplication* app, x86::CPU& cpu); }  // 0x49de20
+namespace frontend { void netHostStart(win32::WinApplication* app, x86::CPU& cpu); }  // 0x49e080
+namespace frontend { void netJoinRaceNet(win32::WinApplication* app, x86::CPU& cpu); }  // 0x49e220
+namespace frontend { void netHostRaceNet(win32::WinApplication* app, x86::CPU& cpu); }  // 0x49e2e0
+namespace frontend { void netPendingAdd(win32::WinApplication* app, x86::CPU& cpu); }  // 0x49e320
 namespace frontend { void connectConnectionAvailable(win32::WinApplication* app, x86::CPU& cpu); }  // 0x49e360
 namespace frontend { void connectListSessions(win32::WinApplication* app, x86::CPU& cpu); }  // 0x49e3d0
 namespace frontend { void connectCreateSession(win32::WinApplication* app, x86::CPU& cpu); }  // 0x49e5f0
 namespace frontend { void connectJoinSession(win32::WinApplication* app, x86::CPU& cpu); }  // 0x49e800
 namespace frontend { void connectUseTcp(win32::WinApplication* app, x86::CPU& cpu); }  // 0x49e9d0
 namespace frontend { void connectFindAddress(win32::WinApplication* app, x86::CPU& cpu); }  // 0x49ea70
+namespace frontend { void netHostLobby(win32::WinApplication* app, x86::CPU& cpu); }  // 0x49eae0
+namespace frontend { void netDropGone(win32::WinApplication* app, x86::CPU& cpu); }  // 0x49ec70
 namespace ea { void dropMachine(win32::WinApplication* app, x86::CPU& cpu); }  // 0x49ecb0
 namespace ea { void announceMachineLeft(win32::WinApplication* app, x86::CPU& cpu); }  // 0x49ecf0
+namespace frontend { void netGonePacket(win32::WinApplication* app, x86::CPU& cpu); }  // 0x49edb0
+namespace frontend { void netLobbyOpen(win32::WinApplication* app, x86::CPU& cpu); }  // 0x49ede0
+namespace frontend { void netLobbyClose(win32::WinApplication* app, x86::CPU& cpu); }  // 0x49ee50
 namespace ea { void endNetworkGame(win32::WinApplication* app, x86::CPU& cpu); }  // 0x49eed0
 namespace frontend { void connectSetUpEndpoint(win32::WinApplication* app, x86::CPU& cpu); }  // 0x49efb0
 namespace frontend { void connectEnumerateServices(win32::WinApplication* app, x86::CPU& cpu); }  // 0x49f030
@@ -2099,12 +2381,20 @@ namespace frontend { void connectClearPeerSlots(win32::WinApplication* app, x86:
 namespace ea { void forgetPendingPlayer(win32::WinApplication* app, x86::CPU& cpu); }  // 0x49f550
 namespace frontend { void connectRememberPeer(win32::WinApplication* app, x86::CPU& cpu); }  // 0x49f5c0
 namespace frontend { void connectClearQueue(win32::WinApplication* app, x86::CPU& cpu); }  // 0x49f650
+namespace frontend { void netPendingEmpty(win32::WinApplication* app, x86::CPU& cpu); }  // 0x49f680
 namespace frontend { void connectEnqueuePeer(win32::WinApplication* app, x86::CPU& cpu); }  // 0x49f6a0
+namespace frontend { void netNextPending(win32::WinApplication* app, x86::CPU& cpu); }  // 0x49f730
+namespace frontend { void netRasAvailable(win32::WinApplication* app, x86::CPU& cpu); }  // 0x49f790
+namespace frontend { void netNetworkThere(win32::WinApplication* app, x86::CPU& cpu); }  // 0x49f810
+namespace frontend { void netRasPhoneBook(win32::WinApplication* app, x86::CPU& cpu); }  // 0x49f880
 namespace dead { void stub_0x49f940(win32::WinApplication* app, x86::CPU& cpu); }  // 0x49f940
 namespace dead { void stub_0x49fa90(win32::WinApplication* app, x86::CPU& cpu); }  // 0x49fa90
+namespace frontend { void netRasLoaded(win32::WinApplication* app, x86::CPU& cpu); }  // 0x49fb10
+namespace frontend { void netRasLoad(win32::WinApplication* app, x86::CPU& cpu); }  // 0x49fb60
+namespace frontend { void netRasFree(win32::WinApplication* app, x86::CPU& cpu); }  // 0x49fc50
 namespace dead { void stub_0x49fc80(win32::WinApplication* app, x86::CPU& cpu); }  // 0x49fc80
 namespace dead { void stub_0x49fda0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x49fda0
-namespace dead { void stub_0x49fdd0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x49fdd0
+namespace pieces { void stub_0x49fdd0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x49fdd0
 namespace frontend { void simCarTiltedOver(win32::WinApplication* app, x86::CPU& cpu); }  // 0x49fde0
 namespace port { namespace conv { void fn49fe70(win32::WinApplication* app, x86::CPU& cpu); } }  // 0x49fe70
 namespace frontend { void simSliceHeading(win32::WinApplication* app, x86::CPU& cpu); }  // 0x49fee0
@@ -2136,19 +2426,46 @@ namespace frontend { void simTrackTurnMatrix(win32::WinApplication* app, x86::CP
 namespace port { namespace conv { void fn4a2e20(win32::WinApplication* app, x86::CPU& cpu); } }  // 0x4a2e20
 namespace frontend { void simTrackSpinThirtySecond(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4a2f10
 namespace frontend { void simTrackSpinSixtyFourth(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4a2f30
+namespace pieces { void stub_0x4a3050(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4a3050
+namespace frontend { void exceptionName(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4a3070
+namespace dead { void stub_0x4a31f0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4a31f0
+namespace dead { void stub_0x4a32f0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4a32f0
+namespace frontend { void loopGameStart(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4a3390
+namespace frontend { void loopGameEnd(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4a33a0
+namespace frontend { void loopRaceRestart(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4a33b0
+namespace frontend { void loadingStopCheck(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4a33d0
+namespace frontend { void loopRaceLoad(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4a3400
 namespace graphics { void takeDownRace(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4a35d0
+namespace frontend { void loopRaceSession(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4a3690
+namespace frontend { void winaAlreadyRunning(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4a38c0
+namespace frontend { void winaVersionText(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4a38f0
 namespace graphics { void gameMain(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4a39f0
+namespace frontend { void simOpenWebPage(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4a4020
+namespace frontend { void rendSkyRandomBetween(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4a4060
+namespace frontend { void rendSkySpritePlace(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4a40c0
 namespace frontend { void effectsLogoTextureStart(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4a4390
 namespace render { void bouncers(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4a4410
+namespace frontend { void carBadgeColour(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4a46f0
 namespace frontend { void effectsBandDraw(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4a47c0
 namespace frontend { void effectsScreenDraw(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4a49c0
 namespace frontend { void effectsScreenStart(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4a4a10
 namespace frontend { void effectsLoadScreenArt(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4a4ba0
 namespace frontend { void effectsLogoDraw(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4a4c20
+namespace frontend { void commandLineRead(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4a5080
+namespace frontend { void npsLoadDll(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4a54f0
+namespace frontend { void npsDevelopMode(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4a5780
+namespace frontend { void npsDllPath(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4a5880
+namespace frontend { void npsEnsureDll(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4a59c0
 namespace dead { void stub_0x4a5aa0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4a5aa0
+namespace frontend { void netThisLink(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4a5af0
+namespace frontend { void netNpsStart(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4a5b00
 namespace ea { void sendOverLink(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4a5d10
 namespace dead { void stub_0x4a5d70(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4a5d70
+namespace frontend { void netNpsStop(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4a5dd0
+namespace frontend { void netNpsMessage(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4a5e50
+namespace frontend { void netNpsReceived(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4a5ef0
 namespace dead { void stub_0x4a5f20(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4a5f20
+namespace frontend { void netEndpointOfLink(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4a5f30
 namespace dead { void stub_0x4a5f80(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4a5f80
 namespace dead { void stub_0x4a5f90(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4a5f90
 namespace dead { void stub_0x4a5fb0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4a5fb0
@@ -2159,10 +2476,28 @@ namespace dead { void stub_0x4a60ab(win32::WinApplication* app, x86::CPU& cpu); 
 namespace dead { void stub_0x4a60d0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4a60d0
 namespace ea { void sendPacket(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4a60e0
 namespace ea { void resetNetwork(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4a6390
+namespace frontend { void netEndpointHandlers(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4a6410
+namespace frontend { void netDispatchPacket(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4a6440
+namespace frontend { void netEndpointLost(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4a6470
+namespace frontend { void netEndpointTimedOut(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4a64c0
+namespace frontend { void netSessionReset(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4a6500
+namespace frontend { void netHostGone(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4a65b0
 namespace ea { void closeNetwork(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4a65e0
 namespace ea { void machineNumber(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4a6650
 namespace ea { void playerMachine(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4a6690
-namespace dead { void stub_0x4a78b6(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4a78b6
+namespace frontend { void netSendSetup(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4a66c0
+namespace frontend { void netSetupPacket(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4a68d0
+namespace frontend { void netClientLobby(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4a69c0
+namespace frontend { void netBarrier(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4a6a10
+namespace frontend { void netBarrierPacket(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4a6c40
+namespace frontend { void netCompareVersions(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4a6ce0
+namespace frontend { void netVersionPacket(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4a6df0
+namespace frontend { void installFileRead(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4a6e10
+namespace frontend { void loopNothingToEnd(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4a6f70
+namespace frontend { void loopPanelQuad(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4a7080
+namespace frontend { void loopPanelTexturedQuad(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4a7310
+namespace frontend { void loopPanelDraw(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4a75e0
+namespace pieces { void stub_0x4a78b6(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4a78b6
 namespace handling { void applyTuning(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4a78d6
 namespace dead { void stub_0x4a83af(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4a83af
 namespace drivetrain { void computerDriver(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4a83d3
@@ -2201,12 +2536,42 @@ namespace physics { void yawDamping(win32::WinApplication* app, x86::CPU& cpu); 
 namespace physics { void idleDamping(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4aeffc
 namespace physics { void coastDamping(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4af140
 namespace physics { void spinTorque(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4af254
+namespace frontend { void carDataReadInteger(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4b0700
+namespace pieces { void stub_0x4b0790(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4b0790
+namespace frontend { void carDataReadByte(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4b07b0
+namespace pieces { void stub_0x4b07c0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4b07c0
+namespace frontend { void carDataReadFloat(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4b07d0
+namespace pieces { void stub_0x4b0880(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4b0880
+namespace frontend { void carDataReadFixed(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4b08b0
+namespace pieces { void stub_0x4b08d0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4b08d0
+namespace frontend { void carDataLineHasValues(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4b0900
+namespace frontend { void carDataFindKey(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4b0940
+namespace frontend { void carDataNextLine(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4b09d0
+namespace frontend { void carDataFillDefaults(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4b0bb0
+namespace frontend { void carDataRead(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4b1380
+namespace pieces { void stub_0x4b22d0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4b22d0
+namespace pieces { void stub_0x4b48d0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4b48d0
 namespace dead { void stub_0x4b54f0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4b54f0
+namespace frontend { void winaTickCount(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4b56d0
 namespace render { void transformBuffer(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4b56e0
+namespace frontend { void rendFreeBlock(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4b5700
 namespace dead { void stub_0x4b5710(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4b5710
+namespace frontend { void rendChooseDriver(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4b5720
+namespace frontend { void winaCheckLibrary(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4b5860
+namespace frontend { void rendReadDriverFeatures(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4b5940
 namespace render { void startDriver(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4b59c0
+namespace frontend { void winaFatalMessage(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4b5e50
 namespace graphics { void warnTextureMemory(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4b5ea0
+namespace frontend { void winaCheckMemory(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4b5f10
+namespace frontend { void winaDeviceAnswer(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4b5ff0
+namespace frontend { void loopGameInit(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4b6020
 namespace graphics { void shutDown(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4b6250
+namespace frontend { void loopInstallIsRemote(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4b62a0
+namespace frontend { void discCheck(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4b6320
+namespace frontend { void winaThrashDevice(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4b6400
+namespace frontend { void winaThrashDescription(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4b64c0
+namespace frontend { void winaDesktopSetting(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4b6520
+namespace frontend { void winaDirectXVersion(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4b6590
 namespace frontend { void pauseQuitToAnswered(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4b67b0
 namespace frontend { void pauseQuitToAsk(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4b6810
 namespace frontend { void pauseQuitToReplay(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4b6870
@@ -2214,8 +2579,12 @@ namespace frontend { void pauseQuitToPost(win32::WinApplication* app, x86::CPU& 
 namespace frontend { void pauseQuitToMain(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4b68d0
 namespace frontend { void pauseQuitToSystem(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4b6910
 namespace frontend { void pauseQuitToOnEnter(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4b6930
-namespace dead { void stub_0x4b6a10(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4b6a10
+namespace pieces { void stub_0x4b6a10(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4b6a10
+namespace frontend { void poseBlend(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4b6a30
 namespace dead { void stub_0x4b6bb0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4b6bb0
+namespace frontend { void poseMatrixOfRotation(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4b6ca0
+namespace frontend { void poseRotationNearest(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4b6d90
+namespace frontend { void poseRotationOfMatrix(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4b6e80
 namespace dead { void stub_0x4b70b0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4b70b0
 namespace frontend { void simPoseBlend(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4b70f0
 namespace dead { void stub_0x4b7180(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4b7180
@@ -2233,25 +2602,95 @@ namespace dead { void stub_0x4b7920(win32::WinApplication* app, x86::CPU& cpu); 
 namespace frontend { void simMatrixQuarterTurn(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4b79c0
 namespace load { void loadVivCarModel(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4b7a60
 namespace load { void copyVivCarModel(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4b7ba0
+namespace frontend { void loadingCopKeepLight(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4b7c20
+namespace frontend { void loadingCopLoadModel(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4b7c60
+namespace frontend { void rendFreePlayerModel(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4b7d00
 namespace render { void carTextures(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4b7d30
+namespace frontend { void rendFreeCarModel(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4b7eb0
 namespace dead { void stub_0x4b7f30(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4b7f30
+namespace frontend { void rendShadowCorners(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4b7f80
+namespace frontend { void rendCarShadow(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4b81a0
+namespace frontend { void rendCarLights(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4b8740
+namespace frontend { void rendBodyShake(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4b90e0
+namespace frontend { void rendFrontWheelTurn(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4b9140
+namespace frontend { void rendRearWheelTurn(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4b9280
+namespace frontend { void rendBodyLean(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4b93c0
+namespace frontend { void rendTrackLitColour(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4b9550
 namespace render { void nightColour(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4b97b0
 namespace render { void carLights(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4b9bc0
+namespace frontend { void rendReplayPose(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4b9df0
+namespace frontend { void rendCarStates(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ba320
+namespace frontend { void rendCarShade(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ba350
+namespace frontend { void rendCarAverageColour(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ba810
+namespace frontend { void rendCarFarthest(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ba960
+namespace frontend { void rendCarFar(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4baa50
+namespace frontend { void rendCarNear(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4bab70
 namespace render { void detailedCarLights(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4bae00
+namespace frontend { void rendCarSimpleNear(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4bb110
 namespace render { void mediumCarLights(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4bb200
+namespace frontend { void rendDrawCar(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4bb4c0
 namespace vertices { void carDetail(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4bb5d0
+namespace frontend { void rendDetailInUse(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4bba10
+namespace frontend { void rendLowerDetail(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4bba50
+namespace frontend { void rendFitDetailBudget(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4bbad0
+namespace frontend { void rendCars(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4bbba0
 namespace dead { void stub_0x4bbcc0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4bbcc0
 namespace dead { void stub_0x4bbd00(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4bbd00
 namespace dead { void stub_0x4bbd30(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4bbd30
+namespace frontend { void rendArenaRewind(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4bbd70
+namespace frontend { void rendArenaCreate(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4bbd80
+namespace frontend { void rendArenaFree(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4bbdc0
+namespace frontend { void rendArenaTake(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4bbde0
+namespace frontend { void rendArenaHere(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4bbe40
+namespace frontend { void rendEmptyList(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4bbe70
+namespace frontend { void rendListOfOne(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4bbe90
+namespace frontend { void rendJoinLists(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4bbec0
+namespace frontend { void rendOpenListStart(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4bbf20
+namespace frontend { void rendOpenListAppend(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4bbf40
+namespace frontend { void rendOpenListTake(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4bbf80
+namespace frontend { void rendOpenListClose(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4bbfc0
+namespace frontend { void rendFlushAndList(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4bc000
+namespace frontend { void rendDrawListPlain(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4bc030
+namespace frontend { void rendDrawListAt(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4bc060
+namespace frontend { void rendDrawListMirrored(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4bc0b0
+namespace frontend { void raceLoopViewForHud(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4bc100
+namespace frontend { void raceLoopViewForScene(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4bc130
 namespace graphics { void raceFrame(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4bc160
 namespace frontend { void simViewPass(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4bc470
 namespace frontend { void pauseResetRaceMouse(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4bc530
+namespace frontend { void raceLoopPointerIdle(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4bc560
+namespace frontend { void raceLoopEndFrame(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4bc620
+namespace frontend { void raceLoopTextAndCount(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4bc650
 namespace frontend { void pauseMenuAgain(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4bc660
 namespace frontend { void pauseEndRestorePointer(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4bc670
+namespace frontend { void raceLoopPauseDraw(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4bc680
+namespace frontend { void raceLoopNothing(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4bc820
+namespace frontend { void loadingRaceSteps(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4bc830
+namespace frontend { void loadingRaceResetSteps(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4bc870
+namespace frontend { void raceEffectsReset(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4bc8b0
+namespace frontend { void simRaceLeaveTasks(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4bc8e0
+namespace frontend { void simRaceAddTasks(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4bc910
+namespace frontend { void raceEffectsFree(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4bc950
+namespace frontend { void raceLoopDrawStart(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4bc980
+namespace frontend { void raceLoopDrawEnd(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4bc990
+namespace frontend { void replayModeOff(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4bc9a0
+namespace frontend { void replayPackRow(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4bc9b0
+namespace frontend { void replayUnpackRow(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4bca80
+namespace frontend { void loadingReadReplayKeepingSettings(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4bcb00
+namespace frontend { void replayStart(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4bcb90
+namespace frontend { void replayEnd(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4bcd60
+namespace frontend { void replayStoreBlock(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4bcda0
+namespace frontend { void replayTakeBlock(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4bcee0
+namespace frontend { void replayRecordControls(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4bd000
+namespace frontend { void replayPlayControls(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4bd090
 namespace load { void saveRaceReplay(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4bd1e0
 namespace load { void readRaceReplay(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4bd2e0
+namespace frontend { void replayCarTask(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4bd380
+namespace frontend { void raceLoopPointerAtChoice(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4bd3f0
 namespace frontend { void simPanelPointer(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4bd4d0
 namespace frontend { void simPanelKeys(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4bd640
+namespace frontend { void replayNoteEvent(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4bd9d0
+namespace frontend { void replayRecordEvents(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4bda00
 namespace frontend { void simTvSetCamera(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4bdb60
 namespace frontend { void simTvNextCamera(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4bdbd0
 namespace frontend { void simTvShotOver(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4bdc70
@@ -2259,43 +2698,85 @@ namespace frontend { void simTvStartShot(win32::WinApplication* app, x86::CPU& c
 namespace frontend { void simTvBusiest(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4bdd10
 namespace frontend { void simTvDirect(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4bdd70
 namespace frontend { void simIsNumberCharacter(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4be000
+namespace frontend { void raceLoopReadNumber(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4be020
 namespace dead { void stub_0x4be090(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4be090
 namespace frontend { void simOffBeat(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4be1a0
+namespace frontend { void simTaskListNew(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4be1f0
+namespace frontend { void taskBlockFree(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4be240
+namespace frontend { void simTaskListAdd(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4be250
+namespace frontend { void loadingListRemove(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4be2f0
+namespace frontend { void taskListRun(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4be3a0
 namespace frontend { void pauseFillViewQuads(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4be3d0
 namespace graphics { void modeSize(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4be570
+namespace frontend { void viewsLayout(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4be5e0
 namespace graphics { void drawViewSurround(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4be8e0
+namespace frontend { void raceViewsResize(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4be970
+namespace frontend { void raceViewResize(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4bea40
 namespace frontend { void pauseSetRectFirst(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4beb00
 namespace frontend { void pauseReadRect(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4beb20
 namespace frontend { void pauseSetRectSecond(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4beb40
 namespace dead { void stub_0x4beb60(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4beb60
 namespace port { namespace text { void viewport(win32::WinApplication* app, x86::CPU& cpu); } }  // 0x4beb80
+namespace frontend { void simSetClipRect(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4bebb0
 namespace graphics { void setClip(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4bebe0
 namespace dead { void stub_0x4becd0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4becd0
+namespace frontend { void viewsUseWithProjection(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4bed20
+namespace frontend { void viewsProjectionOnly(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4bed50
+namespace frontend { void viewsUseClip(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4bed70
 namespace graphics { void listScreenModes(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4bed90
 namespace graphics { void findScreenMode(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4bee80
 namespace render { void screenMode(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4bef50
+namespace frontend { void rendFillReciprocals(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4bf110
 namespace dead { void stub_0x4bf160(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4bf160
+namespace frontend { void rendSetClipBounds(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4bf1b0
+namespace frontend { void rendSetProjection(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4bf260
+namespace frontend { void rendProjectPoints(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4bf370
 namespace vertices { void objectVertices(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4bf4c0
 namespace render { void clipByZ(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4bf790
 namespace render { void line(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4c0b20
 namespace graphics { void dead_0x4c0f60(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4c0f60
 namespace vertices { void clipTriangle(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4c11b0
 namespace vertices { void clipQuad(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4c12e0
+namespace frontend { void rendDrawQuadClipped(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4c1900
+namespace frontend { void rendDrawQuadSplit(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4c19e0
 namespace vertices { void clipTriangleByZ(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4c1aa0
 namespace vertices { void quadMesh(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4c1e20
 namespace render { void quadByZ(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4c20e0
 namespace vertices { void clipPolygon(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4c2cd0
 namespace render { void nearTriangle(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4c3ad0
 namespace frontend { void connectStartConnection(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4c3f90
+namespace frontend { void netStatusPacket(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4c4190
 namespace frontend { void connectListModems(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4c41d0
 namespace frontend { void connectSetUpLink(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4c4230
 namespace frontend { void connectShakeHands(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4c4310
 namespace dead { void stub_0x4c4480(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4c4480
 namespace graphics { void captureScreen(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4c4490
+namespace frontend { void netClearInputCounts(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4c45d0
+namespace frontend { void simRaceOpen(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4c45f0
+namespace frontend { void simRaceRestart(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4c4740
+namespace frontend { void raceEndSaveConfig(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4c4820
+namespace frontend { void raceEndTeardown(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4c4830
+namespace frontend { void raceFrameRun(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4c48d0
+namespace frontend { void inpaRaceDebugKeys(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4c4ac0
+namespace frontend { void inpaPauseMenuStep(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4c4be0
+namespace frontend { void raceEndStop(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4c4d80
+namespace frontend { void raceEndAsked(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4c4de0
+namespace frontend { void inpaRunRaceLoop(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4c4e40
+namespace frontend { void inpaNetworkLockMake(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4c5520
+namespace frontend { void inpaHoldClear(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4c5540
+namespace frontend { void inpaNetworkLockFree(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4c5560
+namespace frontend { void inpaNetworkHold(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4c55a0
+namespace frontend { void netRaceQuitVote(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4c5720
+namespace frontend { void netQuitPacket(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4c5b00
 namespace graphics { void showWaitMessage(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4c5c00
+namespace frontend { void netRaceSettings(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4c5e80
 namespace controls { void appendToPacket(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4c6080
 namespace controls { void sendOwnInput(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4c60c0
 namespace controls { void receiveInput(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4c61e0
+namespace frontend { void inpaRaceSetUp(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4c62a0
+namespace frontend { void inpaInputLocksMake(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4c63c0
+namespace frontend { void inpaInputReset(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4c63f0
+namespace frontend { void inpaInputLocksFree(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4c64e0
 namespace controls { void queueInput(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4c6530
 namespace controls { void queueRemoteInput(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4c66a0
 namespace controls { void takeQueuedFrame(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4c67a0
@@ -2308,14 +2789,50 @@ namespace controls { void queueLead(win32::WinApplication* app, x86::CPU& cpu); 
 namespace controls { void noteLag(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4c6a10
 namespace controls { void setQueueDelays(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4c6a40
 namespace controls { void queueFull(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4c6ae0
+namespace frontend { void effectsSkidSegmentPut(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4c6c70
+namespace frontend { void rendSkidAddSegment(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4c6cb0
+namespace frontend { void rendSkidMarksDraw(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4c6f00
+namespace frontend { void effectsSkidStripsTake(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4c70f0
+namespace frontend { void effectsSkidStripsReset(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4c7130
+namespace frontend { void effectsSkidStripsFree(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4c7150
+namespace frontend { void rendPolygonDepths(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4c7180
+namespace frontend { void rendPolygonsIntoBuckets(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4c7260
 namespace vertices { void gatherSorted(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4c7320
+namespace frontend { void rendPolygonsSorted(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4c7380
+namespace frontend { void rendClearDepthBuckets(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4c73e0
+namespace frontend { void rendDepthBucketAppend(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4c7400
+namespace frontend { void rendDepthBucketsAdd(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4c7480
+namespace frontend { void rendDepthBucketsGather(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4c7580
+namespace frontend { void rendClearFarBuckets(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4c75f0
 namespace vertices { void sortedBuckets(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4c7610
+namespace frontend { void rendFarBucketsGather(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4c76e0
+namespace frontend { void rendClearBuckets(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4c7750
 namespace vertices { void depthBuckets(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4c7790
+namespace frontend { void rendDrawListAdd(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4c7940
 namespace vertices { void gatherBuckets(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4c79a0
 namespace decompiled { void setDepthOffsets(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4c7a60
+namespace frontend { void simDepthOffsets(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4c7b10
+namespace frontend { void raceEffectsEndEmpty(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4c7b20
+namespace frontend { void inpaQueueLockMake(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4c7b30
+namespace frontend { void raceQueuesClear(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4c7b50
+namespace frontend { void inpaQueueLockFree(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4c7bb0
+namespace frontend { void simNetSendPlace(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4c7bd0
+namespace frontend { void netInputPacket(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4c7d30
+namespace frontend { void netSendPlayerGone(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4c7e50
+namespace frontend { void netPlayerLeftPacket(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4c7e80
+namespace frontend { void netSendRaceResults(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4c7ea0
+namespace frontend { void netResultsPacket(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4c7f90
+namespace frontend { void netClearRing(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4c7fd0
+namespace frontend { void netPlayerControls(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4c8040
+namespace frontend { void netTakeInputsOnTick(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4c81c0
 namespace dead { void stub_0x4c8200(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4c8200
+namespace frontend { void netTakeInputs(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4c8250
+namespace frontend { void netPackControls(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4c8310
+namespace frontend { void netUnpackControls(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4c8350
 namespace port { void speechInit(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4c8370
 namespace port { void speechFree(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4c8440
+namespace frontend { void trackPlaceNear(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4c8470
+namespace frontend { void trackPlaceAt(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4c8550
 namespace port { void speechLine(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4c85a0
 namespace port { void speechTick(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4c86d0
 namespace port { void radioTick(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4c8810
@@ -2342,19 +2859,116 @@ namespace port { void carLineSpeak(win32::WinApplication* app, x86::CPU& cpu); }
 namespace port { void spokenStop(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4c99d0
 namespace port { void spokenStatus(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4c99f0
 namespace port { void raceVoiceFree(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4c9a00
+namespace frontend { void trackLaneOffset(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4c9a80
+namespace frontend { void simPlaceInLane(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4c9bc0
+namespace frontend { void simRaceClearA(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4c9d70
+namespace frontend { void raceEndClearRecords(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4c9d90
+namespace frontend { void simRaceClearB(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4c9db0
 namespace frontend { void simSirenOn(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4c9dd0
 namespace frontend { void simSirenOff(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4c9f50
+namespace frontend { void rendBlinkingQuads(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4c9f70
+namespace frontend { void raceStripUnderWheels(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ca160
+namespace pieces { void stub_0x4ca480(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ca480
+namespace frontend { void effectsParticleSlot(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ca4b0
+namespace frontend { void effectsDropsOnView(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ca500
+namespace frontend { void effectsParticleSpawn(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ca850
+namespace frontend { void effectsParticleChildren(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4cab60
+namespace frontend { void effectsSparks(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4cac20
+namespace frontend { void effectsCrashPuff(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4cae00
+namespace frontend { void effectsRespawnSparkle(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4caea0
+namespace frontend { void effectsWheelParticles(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4cb010
+namespace frontend { void rendFadeParticles(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4cb220
 namespace vertices { void moveParticles(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4cb2c0
+namespace frontend { void rendLoadParticleTextures(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4cb590
 namespace render { void clearBuffers(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4cb670
+namespace frontend { void rendClearParticles(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4cb6f0
+namespace frontend { void rendClearParticleStates(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4cb730
 namespace vertices { void drops(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4cb750
 namespace vertices { void particles(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4cbc90
+namespace frontend { void rendParticlesCameraChanged(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4cc540
+namespace frontend { void rendParticlesPass(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4cc5c0
+namespace frontend { void rendDropsPass(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4cc600
+namespace frontend { void winaCompareHandlers(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4cc650
+namespace frontend { void winaHandlerOf(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4cc660
+namespace frontend { void winaHandlerSet(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4cc6d0
+namespace frontend { void winaPostMessage(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4cc7c0
 namespace dead { void stub_0x4cc820(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4cc820
 namespace dead { void stub_0x4cc840(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4cc840
+namespace frontend { void winaSetFocusCallback(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4cc860
+namespace frontend { void winaNoWindowTask(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4cc870
+namespace frontend { void winaMovePointer(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4cc890
+namespace frontend { void winaPushKey(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4cc8e0
 namespace frontend { void nextKey(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4cc970
 namespace dead { void stub_0x4cca00(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4cca00
+namespace frontend { void winaKeyOfMessage(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ccaa0
 namespace dead { void stub_0x4ccbb0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ccbb0
+namespace dead { void stub_0x4ccbb7(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ccbb7
+namespace dead { void stub_0x4ccbc9(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ccbc9
+namespace dead { void stub_0x4ccbd0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ccbd0
+namespace dead { void stub_0x4ccbd7(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ccbd7
+namespace dead { void stub_0x4ccbde(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ccbde
+namespace dead { void stub_0x4ccbe5(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ccbe5
+namespace dead { void stub_0x4ccbec(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ccbec
+namespace dead { void stub_0x4ccbf3(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ccbf3
+namespace pieces { void stub_0x4ccbfa(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ccbfa
+namespace dead { void stub_0x4ccc01(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ccc01
+namespace dead { void stub_0x4ccc08(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ccc08
+namespace dead { void stub_0x4ccc0f(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ccc0f
+namespace dead { void stub_0x4ccc16(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ccc16
+namespace dead { void stub_0x4ccc1d(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ccc1d
+namespace dead { void stub_0x4ccc24(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ccc24
+namespace dead { void stub_0x4ccc2b(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ccc2b
+namespace dead { void stub_0x4ccc32(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ccc32
+namespace dead { void stub_0x4ccc39(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ccc39
+namespace dead { void stub_0x4ccc40(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ccc40
+namespace dead { void stub_0x4ccc47(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ccc47
+namespace dead { void stub_0x4ccc4e(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ccc4e
+namespace dead { void stub_0x4ccc55(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ccc55
+namespace dead { void stub_0x4ccc5c(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ccc5c
+namespace dead { void stub_0x4ccc63(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ccc63
+namespace frontend { void winaKeyboardHook(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ccc70
+namespace frontend { void winaOnSetFocus(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ccd60
+namespace frontend { void winaOnKillFocus(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ccdd0
+namespace frontend { void winaOnClose(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4cce40
+namespace frontend { void winaOnQuitAsked(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4cce60
+namespace frontend { void winaOnDestroy(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4cce80
+namespace frontend { void winaOnSysCommand(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4cce90
+namespace frontend { void winaOnSettingChange(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4cced0
+namespace frontend { void winaOnMoved(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ccf50
+namespace frontend { void winaOnChar(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ccfc0
+namespace frontend { void winaOnKeyDown(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4cd020
+namespace frontend { void winaOnKeyUp(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4cd0e0
+namespace frontend { void winaOnMouseDown(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4cd130
+namespace frontend { void winaOnMouseUp(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4cd190
+namespace frontend { void winaOnPaint(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4cd1f0
+namespace frontend { void winaOnEraseBackground(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4cd2a0
+namespace frontend { void winaWindowProc(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4cd2d0
+namespace frontend { void winaCreateWindow(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4cd350
+namespace frontend { void winaWindowThread(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4cd4e0
+namespace frontend { void winaOpenWindow(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4cd6c0
+namespace frontend { void winaCloseWindow(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4cdaa0
+namespace frontend { void winaPlaceWindow(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4cdb10
+namespace frontend { void winaCentreWindow(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4cdbd0
 namespace dead { void stub_0x4cdc20(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4cdc20
+namespace frontend { void winaHookOff(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4cdc50
+namespace frontend { void winaHookOn(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4cdc90
 namespace dead { void stub_0x4cdcd0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4cdcd0
+namespace frontend { void lapsStandingsStart(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4cdd00
+namespace frontend { void lapsCompareCars(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4cdd30
+namespace frontend { void lapsStandingsUpdate(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4cde00
+namespace frontend { void lapsPlaceOf(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4cded0
+namespace frontend { void lapsRacerCount(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4cdee0
+namespace frontend { void lapsCarInPlace(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4cdef0
+namespace frontend { void lapsPerformanceTimes(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4cdf10
+namespace frontend { void lapsCarTask(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ce280
+namespace frontend { void lapsEstimateRest(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ce5a0
+namespace frontend { void lapsCloseRace(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ce750
+namespace frontend { void lapsSetStates(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ce800
+namespace frontend { void lapsAllFinishedKnockout(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ce840
+namespace frontend { void lapsAllFinishedTimed(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ce8e0
+namespace frontend { void lapsAllFinishedSides(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ce960
+namespace frontend { void lapsCheckRaceEnd(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ceae0
+namespace frontend { void lapsClearShortTimes(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ceb50
 namespace dead { void stub_0x4cebf0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4cebf0
 namespace dead { void stub_0x4cecc0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4cecc0
 namespace frontend { void resultsMetricText(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4cedd0
@@ -2368,13 +2982,45 @@ namespace frontend { void postgameRaceAgain(win32::WinApplication* app, x86::CPU
 namespace dead { void stub_0x4cf120(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4cf120
 namespace frontend { void lapsToOption(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4cf160
 namespace frontend { void optionToLaps(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4cf190
+namespace frontend { void winaStreamCheck(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4cf1c0
+namespace frontend { void winaRingBetween(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4cf1f0
+namespace frontend { void winaStreamConsume(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4cf220
+namespace frontend { void winaStreamTakeFree(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4cf280
+namespace frontend { void winaStreamQueueFile(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4cf2f0
+namespace frontend { void winaStreamFindFile(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4cf340
+namespace frontend { void winaStreamUnlinkFile(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4cf380
+namespace frontend { void winaStreamClassify(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4cf3f0
+namespace frontend { void winaStreamParse(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4cf440
+namespace frontend { void winaStreamFileOpened(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4cf570
+namespace frontend { void winaStreamFileSwitched(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4cf5a0
+namespace frontend { void winaStreamFilled(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4cf5e0
+namespace frontend { void winaStreamNextFile(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4cf6b0
+namespace frontend { void winaStreamReadMore(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4cf810
+namespace frontend { void winaStreamHeaderSize(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4cfa40
+namespace frontend { void winaStreamCreate(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4cfa80
+namespace frontend { void winaStreamSetRule(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4cfca0
+namespace frontend { void winaStreamClose(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4cfd30
 namespace dead { void stub_0x4cfda0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4cfda0
+namespace frontend { void winaStreamSetLowWater(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4cfdd0
+namespace frontend { void winaStreamSetBelow(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4cfe30
+namespace frontend { void winaStreamChannel(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4cfe70
 namespace dead { void stub_0x4cfec0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4cfec0
+namespace frontend { void winaStreamOpenFile(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4cfef0
+namespace frontend { void winaStreamOpenMemory(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4cffb0
+namespace frontend { void winaStreamCloseFile(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4d0060
+namespace frontend { void winaStreamFlush(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4d0220
+namespace frontend { void winaStreamNextChunk(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4d0300
+namespace frontend { void winaStreamFreeChunk(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4d03c0
+namespace frontend { void winaChannelBytes(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4d0460
+namespace frontend { void winaChannelState(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4d0490
+namespace frontend { void winaChannelDone(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4d04c0
+namespace frontend { void winaChannelRingSize(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4d0500
 namespace dead { void stub_0x4d0540(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4d0540
 namespace dead { void stub_0x4d0570(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4d0570
 namespace dead { void stub_0x4d0610(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4d0610
 namespace port { namespace text { void drawCharacter(win32::WinApplication* app, x86::CPU& cpu); } }  // 0x4d06f0
 namespace render { void pictureTexture(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4d0a10
+namespace frontend { void textLoadFonts(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4d0d50
 namespace port { namespace text { void drawText(win32::WinApplication* app, x86::CPU& cpu); } }  // 0x4d1000
 namespace frontend { void hudTextToRightEdge(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4d10e0
 namespace graphics { void drawTextBox(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4d1120
@@ -2394,6 +3040,7 @@ namespace port { namespace text { void loadLanguageText(win32::WinApplication* a
 namespace port { namespace text { void specialText(win32::WinApplication* app, x86::CPU& cpu); } }  // 0x4d17b0
 namespace port { namespace text { void languageText(win32::WinApplication* app, x86::CPU& cpu); } }  // 0x4d1850
 namespace frontend { void languageTextsFree(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4d1880
+namespace frontend { void rendFormatBits(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4d18b0
 namespace port { namespace shapes { void scan4444(win32::WinApplication* app, x86::CPU& cpu); } }  // 0x4d18e0
 namespace port { namespace shapes { void scan8888(win32::WinApplication* app, x86::CPU& cpu); } }  // 0x4d1950
 namespace port { namespace shapes { void scanNibbles(win32::WinApplication* app, x86::CPU& cpu); } }  // 0x4d19b0
@@ -2422,25 +3069,36 @@ namespace port { namespace shapes { void rgb565To8888(win32::WinApplication* app
 namespace port { namespace shapes { void argb1555To565(win32::WinApplication* app, x86::CPU& cpu); } }  // 0x4d2fb0
 namespace port { namespace shapes { void argb1555To4444(win32::WinApplication* app, x86::CPU& cpu); } }  // 0x4d30f0
 namespace port { namespace shapes { void argb1555To8888(win32::WinApplication* app, x86::CPU& cpu); } }  // 0x4d3230
+namespace frontend { void rendExpandPalettedShape(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4d3380
 namespace dead { void stub_0x4d3410(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4d3410
 namespace dead { void stub_0x4d34b0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4d34b0
 namespace port { namespace shapes { void shapeToPixels(win32::WinApplication* app, x86::CPU& cpu); } }  // 0x4d37a0
 namespace render { void squareTexture(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4d3f50
+namespace frontend { void rendLoadShapeTexture(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4d4080
+namespace frontend { void rendFitPowerOfTwo(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4d4120
 namespace render { void paletteTexture(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4d41a0
 namespace dead { void stub_0x4d43e0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4d43e0
+namespace frontend { void rendCopyCabinBar(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4d4440
 namespace render { void pieceTexture(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4d4580
 namespace render { void cabinTextures(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4d4ae0
 namespace dead { void stub_0x4d5030(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4d5030
+namespace pieces { void stub_0x4d5060(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4d5060
+namespace pieces { void stub_0x4d5220(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4d5220
 namespace dead { void stub_0x4d5360(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4d5360
+namespace frontend { void rendLoadEffectTextures(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4d5370
+namespace frontend { void rendNothing(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4d56b0
 namespace dead { void stub_0x4d56c0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4d56c0
 namespace dead { void stub_0x4d56d0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4d56d0
 namespace dead { void stub_0x4d56e0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4d56e0
+namespace frontend { void rendLoadEffects(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4d56f0
 namespace frontend { void simRaceFrameEnd(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4d5720
+namespace frontend { void raceEffectsEndNothing(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4d5730
 namespace port { namespace draw2d { void quadOutcodes(win32::WinApplication* app, x86::CPU& cpu); } }  // 0x4d5840
 namespace dead { void stub_0x4d5a80(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4d5a80
 namespace port { namespace shapes { void resetTextures(win32::WinApplication* app, x86::CPU& cpu); } }  // 0x4d5c40
 namespace graphics { void clearWithDepth(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4d5c90
 namespace graphics { void beginDrawing(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4d5cc0
+namespace frontend { void raceLoopClearDrawnFlag(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4d5d10
 namespace graphics { void clearBothBuffers(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4d5d30
 namespace graphics { void clearBothBuffersAndReset(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4d5d70
 namespace port { namespace shapes { void shapeByName(win32::WinApplication* app, x86::CPU& cpu); } }  // 0x4d5db0
@@ -2494,8 +3152,22 @@ namespace port { namespace draw2d { void drawPointer(win32::WinApplication* app,
 namespace port { namespace draw2d { void startScreens(win32::WinApplication* app, x86::CPU& cpu); } }  // 0x4daf80
 namespace port { namespace draw2d { void drawTexturedQuad(win32::WinApplication* app, x86::CPU& cpu); } }  // 0x4db000
 namespace port { namespace draw2d { void drawShadedQuad(win32::WinApplication* app, x86::CPU& cpu); } }  // 0x4db380
+namespace frontend { void rendSkidSubdivide(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4db750
+namespace frontend { void effectsWheelMarkCut(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4db860
+namespace frontend { void rendSkidStrip(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4db8b0
+namespace frontend { void rendSkidWheel(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4db940
+namespace frontend { void effectsWheelMarksResetAtLoad(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4dbba0
+namespace frontend { void effectsWheelMarksReset(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4dbbc0
+namespace frontend { void effectsWheelMarksEndEmpty(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4dbbe0
+namespace frontend { void raceLoadTrackPieces(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4dbbf0
+namespace frontend { void rendDefaultFieldOfView(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4dbcc0
+namespace frontend { void viewsSetProjection(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4dbce0
+namespace frontend { void simViewProjection(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4dbda0
 namespace frontend { void simSetView(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4dbde0
 namespace vertices { void objectVerticesList(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4dbef0
+namespace frontend { void udffOpen(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4dc0e0
+namespace frontend { void udffClose(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4dc1b0
+namespace frontend { void udffReadWord(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4dc1e0
 namespace dead { void stub_0x4dc220(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4dc220
 namespace dead { void stub_0x4dc260(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4dc260
 namespace dead { void stub_0x4dc2a0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4dc2a0
@@ -2507,6 +3179,7 @@ namespace load { void specUsed(win32::WinApplication* app, x86::CPU& cpu); }  //
 namespace load { void specCarName(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4dc440
 namespace load { void findSpec(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4dc490
 namespace load { void freeSpecSlot(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4dc500
+namespace frontend { void loadingTuningOf(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4dc550
 namespace load { void setSpec(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4dc5a0
 namespace load { void defaultSpecs(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4dc670
 namespace load { void refreshSpecs(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4dc710
@@ -2516,11 +3189,29 @@ namespace load { void loadPlayerSpecs(win32::WinApplication* app, x86::CPU& cpu)
 namespace load { void savePlayerSpecs(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4dca50
 namespace frontend { void tuningAdvancedDiffers(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4dcaf0
 namespace frontend { void tuningCopyAdvanced(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4dcb60
+namespace frontend { void loadingTuningForPlayers(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4dcbc0
+namespace frontend { void simWeatherStep(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4dcd10
 namespace load { void loadWeatherShapes(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4dcd20
+namespace frontend { void simRainAmount(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4dcdd0
+namespace frontend { void weatherSetUp(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4dcdf0
 namespace dead { void stub_0x4dd1f0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4dd1f0
+namespace frontend { void weatherScatterAtCut(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4dd230
+namespace frontend { void weatherFadeByTime(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4dd330
+namespace frontend { void weatherFallingAtNode(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4dd3d0
+namespace frontend { void weatherShareSeen(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4dd4c0
+namespace frontend { void weatherViewChanged(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4dd510
+namespace frontend { void weatherMoveDrops(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4dd5e0
+namespace frontend { void rendSmokeEmit(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4dd930
 namespace render { void sparks(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ddb40
 namespace render { void smoke(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4de070
 namespace render { void streaks(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4de700
+namespace frontend { void weatherPassOverView(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4dece0
+namespace frontend { void rendSparksPass(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4dedf0
+namespace dead { void stub_0x4dee80(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4dee80
+namespace frontend { void movieDisplayOpen(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4df1f0
+namespace movie { void showFrameAt(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4df2b0
+namespace frontend { void movieDisplayClose(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4df310
+namespace frontend { void movieDisplayMode(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4df340
 namespace dead { void stub_0x4df350(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4df350
 namespace dead { void stub_0x4df380(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4df380
 namespace dead { void stub_0x4df390(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4df390
@@ -2572,7 +3263,11 @@ namespace ea { void axisRotation(win32::WinApplication* app, x86::CPU& cpu); }  
 namespace vertices { void addVectors(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4dffb0
 namespace vertices { void subtractVectors(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4e0000
 namespace vertices { void scaleVectors(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4e0050
+namespace frontend { void simVectorDistance(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4e0090
 namespace dead { void stub_0x4e00c0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4e00c0
+namespace frontend { void simTranspose(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4e0110
+namespace frontend { void simCross(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4e0160
+namespace frontend { void simUnitCross(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4e01a0
 namespace vertices { void unitVector(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4e01c0
 namespace vertices { void dotPush(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4e01f0
 namespace vertices { void dotProducts(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4e0210
@@ -2584,6 +3279,8 @@ namespace dead { void stub_0x4e04e0(win32::WinApplication* app, x86::CPU& cpu); 
 namespace dead { void stub_0x4e05b0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4e05b0
 namespace dead { void stub_0x4e0620(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4e0620
 namespace watcom { void memset(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4e0640
+namespace frontend { void nothingA(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4e0658
+namespace frontend { void nothingB(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4e0659
 namespace dead { void stub_0x4e0660(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4e0660
 namespace vertices { void vectorLengthOf(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4e06a0
 namespace dead { void stub_0x4e06c4(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4e06c4
@@ -2692,7 +3389,11 @@ namespace ea { void lockHandleDrive(win32::WinApplication* app, x86::CPU& cpu); 
 namespace ea { void unlockHandleDrive(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4e40f0
 namespace ea { void openMemoryHandle(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4e4140
 namespace ea { void handleMemory(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4e41f0
+namespace frontend { void winaFileSizeAndSeek(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4e4230
 namespace dead { void stub_0x4e42e0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4e42e0
+namespace frontend { void winaFileLockOf(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4e4320
+namespace frontend { void fileSizeOpened(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4e4360
+namespace frontend { void fileSize(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4e43a0
 namespace dead { void stub_0x4e43b0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4e43b0
 namespace dead { void stub_0x4e43c0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4e43c0
 namespace dead { void stub_0x4e43d0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4e43d0
@@ -2702,6 +3403,7 @@ namespace port { void initStreamStructFirst(win32::WinApplication* app, x86::CPU
 namespace port { void initStream(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4e45f0
 namespace port { void initStreamSecond(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4e4780
 namespace port { void initStreamFirst(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4e4790
+namespace pieces { void stub_0x4e47a0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4e47a0
 namespace dead { void stub_0x4e4a10(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4e4a10
 namespace port { void deleteStreamStruct(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4e4a30
 namespace port { void deleteStream(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4e4b50
@@ -2822,10 +3524,13 @@ namespace dead { void stub_0x4ea330(win32::WinApplication* app, x86::CPU& cpu); 
 namespace dead { void stub_0x4ea360(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ea360
 namespace dead { void stub_0x4ea390(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ea390
 namespace dead { void stub_0x4ea3b0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ea3b0
+namespace frontend { void bigFileCount(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ea440
+namespace frontend { void bigFileName(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ea4a0
 namespace ea { void memmove(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ea4f0
 namespace frontend { void simAngle(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ea570
 namespace frontend { void simPackCount(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ea654
 namespace frontend { void simPackEntry(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ea658
+namespace frontend { void winaTableEntry(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ea665
 namespace frontend { void simTurnAboutFirstRow(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ea680
 namespace dead { void stub_0x4ea750(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ea750
 namespace frontend { void simTurnAboutLastRow(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ea820
@@ -2833,10 +3538,27 @@ namespace dead { void stub_0x4ea8f0(win32::WinApplication* app, x86::CPU& cpu); 
 namespace dead { void stub_0x4ea900(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ea900
 namespace dead { void stub_0x4ea910(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ea910
 namespace frontend { void simSquareRoot(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ea920
+namespace frontend { void simSine(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ea930
+namespace frontend { void simCosine(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ea950
+namespace frontend { void simSineCosine(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ea970
 namespace dead { void stub_0x4ea990(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ea990
+namespace frontend { void simAngleOfFloats(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ea9c0
+namespace frontend { void simRotateX(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ea9e0
+namespace frontend { void simRotateY(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4eaab0
+namespace frontend { void simRotateZ(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4eab80
+namespace frontend { void angleSineCosine(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4eac60
 namespace dead { void stub_0x4ead10(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ead10
+namespace frontend { void windowApply(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ead20
 namespace dead { void stub_0x4ead80(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ead80
+namespace frontend { void bitmapDrawToScreen(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ead90
+namespace frontend { void bitmapDrawInto(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4eada0
+namespace dead { void stub_0x4eae90(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4eae90
 namespace dead { void stub_0x4eaea0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4eaea0
+namespace frontend { void bitmapReadPixels(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4eaeb0
+namespace frontend { void bitmapTgaSize(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4eaf60
+namespace frontend { void bitmapWriteTga(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4eafc0
+namespace frontend { void bitmapSaveTga(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4eb160
+namespace frontend { void keyStateByte(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4eb1c0
 namespace watcom { void mkdir(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4eb1d0
 namespace watcom { void initrandnext(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4eb1f0
 namespace watcom { void rand(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4eb1fc
@@ -2849,29 +3571,53 @@ namespace ea { void leaveLock(win32::WinApplication* app, x86::CPU& cpu); }  // 
 namespace ea { void freeLock(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4eb360
 namespace watcom { void strncmp(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4eb390
 namespace graphics { void makeReciprocals(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4eb3c0
+namespace pieces { void stub_0x4eb420(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4eb420
+namespace frontend { void ddrawCreate(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4eb430
+namespace frontend { void ddrawMakePrimary(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4eb490
+namespace frontend { void ddrawLockSurface(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4eb5e0
 namespace dead { void stub_0x4eb810(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4eb810
 namespace dead { void stub_0x4eb830(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4eb830
+namespace frontend { void countBits(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4eb880
+namespace frontend { void ddrawNoteMode(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4eb8a0
 namespace dead { void stub_0x4eba30(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4eba30
 void AcquireWindow(win32::WinApplication* app, x86::CPU& cpu);  // 0x4eba70
+namespace frontend { void movieScreenDevice(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4eba80
+namespace frontend { void movieDirectDraw(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4eba90
 namespace dead { void stub_0x4ebaa0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ebaa0
 namespace dead { void stub_0x4ebae0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ebae0
+namespace frontend { void ddrawInit(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ebaf0
 namespace dead { void stub_0x4ebd50(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ebd50
+namespace frontend { void ddrawAccessDisplay(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ebe50
+namespace frontend { void ddrawRemoveSurfaces(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ec0d0
+namespace frontend { void ddrawConfigDisplay(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ec1a0
+namespace frontend { void ddrawSetDisplayMode(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ec870
+namespace frontend { void ddrawDisposeDisplay(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ecd50
 namespace dead { void stub_0x4ece00(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ece00
 namespace dead { void stub_0x4ece20(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ece20
 namespace dead { void stub_0x4ece60(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ece60
 namespace dead { void stub_0x4eceb0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4eceb0
+namespace pieces { void stub_0x4ecef0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ecef0
 namespace dead { void stub_0x4ecf20(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ecf20
+namespace frontend { void ddrawApplyPalette(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ecf60
 namespace dead { void stub_0x4ed060(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ed060
+namespace frontend { void ddrawLockBitmap(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ed0f0
+namespace frontend { void ddrawUnlockBitmap(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ed2a0
+namespace frontend { void ddrawRelockSurface(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ed330
 namespace dead { void stub_0x4ed440(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ed440
+namespace frontend { void ddrawMakeSurface(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ed480
+namespace frontend { void ddrawFreeSurface(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ed730
 namespace dead { void stub_0x4ed760(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ed760
+namespace frontend { void ddrawBackSurface(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ed770
 namespace dead { void stub_0x4ed7a0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ed7a0
 namespace dead { void stub_0x4ed7d0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ed7d0
 namespace dead { void stub_0x4ed800(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ed800
+namespace frontend { void ddrawSurfaceSize(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ed820
 namespace dead { void stub_0x4ed910(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ed910
 namespace dead { void stub_0x4ed950(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ed950
 namespace dead { void stub_0x4ed990(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ed990
 namespace dead { void stub_0x4eda10(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4eda10
 namespace dead { void stub_0x4edb80(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4edb80
+namespace frontend { void ddrawEnumModeCallback(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4edbc0
 namespace watcom { void open_flags(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4edd80
 namespace watcom { void doopen(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4edebc
 namespace watcom { void fsopen(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4edfa4
@@ -2897,20 +3643,50 @@ namespace load { void savefileadrQuietly(win32::WinApplication* app, x86::CPU& c
 namespace watcom { void fwrite(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4eebd0
 namespace watcom { void toupper(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4eede0
 namespace watcom { void strncat(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4eedf0
+namespace frontend { void windowBitmapCreate(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4eee30
+namespace frontend { void windowBitmapCreateDefault(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ef190
 namespace dead { void stub_0x4ef1a0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ef1a0
+namespace frontend { void drawClearClip(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ef1b0
+namespace frontend { void shapeFileFind(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ef1e0
 namespace ea { void locateShape(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ef270
+namespace frontend { void copyNibblesKeyed(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ef2b0
+namespace frontend { void copyBytesKeyed(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ef320
+namespace frontend { void copyWordsKeyed(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ef340
+namespace frontend { void copyTriplesKeyed(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ef370
+namespace frontend { void copyLongsKeyed(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ef3c0
+namespace frontend { void shapeDrawKeyed(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ef3f0
 namespace dead { void stub_0x4ef4a0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ef4a0
+namespace frontend { void shapeDrawKeyedAtHotspot(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ef4c0
 namespace dead { void stub_0x4ef4e0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ef4e0
 namespace dead { void stub_0x4ef500(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ef500
+namespace frontend { void fontUse(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ef520
+namespace frontend { void paletteNearest(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ef6c0
+namespace frontend { void colourPack(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ef760
+namespace frontend { void fontSetColours(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ef830
+namespace frontend { void fontGlyphSearch(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4efa10
+namespace frontend { void fontGlyphFind(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4efa70
+namespace frontend { void fontKerning(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4efb10
+namespace frontend { void textDrawAtPen(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4efb50
+namespace frontend { void textDrawAt(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4efe30
+namespace frontend { void textMeasureUpTo(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4efe50
+namespace frontend { void textMeasureAll(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4efef0
+namespace frontend { void windowBitmapFree(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4eff00
 namespace watcom { void strtok(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4eff60
 namespace ea { void keyCharacter(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f0010
+namespace frontend { void keyNextLow16(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f00d0
+namespace frontend { void keyNextDispatch(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f00e0
+namespace frontend { void keySetHookFlag(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f00f0
 namespace ea { void keyFromHook(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f0100
 namespace ea { void inkey(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f0120
 namespace dead { void stub_0x4f0160(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f0160
 namespace dead { void stub_0x4f01c0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f01c0
+namespace frontend { void inputStateOpen(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f01f0
+namespace frontend { void inputStateClose(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f0230
 namespace ea { void flushKeys(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f0240
 namespace dead { void stub_0x4f0250(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f0250
 namespace watcom { void chdir(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f0260
+namespace frontend { void findNextFile(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f0280
+namespace frontend { void findFirstFile(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f0330
 namespace watcom { void atoi(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f0430
 namespace watcom { void atol(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f0490
 namespace watcom { void cget_string(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f04f0
@@ -2919,45 +3695,103 @@ namespace watcom { void vsscanf(win32::WinApplication* app, x86::CPU& cpu); }  /
 namespace watcom { void sscanf(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f0548
 namespace watcom { void fgets(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f0570
 namespace watcom { void access(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f05f0
+namespace frontend { void timerNow(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f0630
 namespace dead { void stub_0x4f0640(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f0640
+namespace frontend { void timerSinceLast(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f0650
 namespace dead { void stub_0x4f0670(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f0670
 namespace dead { void stub_0x4f0690(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f0690
 namespace dead { void stub_0x4f06a1(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f06a1
 namespace dead { void stub_0x4f06c0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f06c0
+namespace frontend { void timerWait(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f06e0
 namespace watcom { void sleep(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f0710
 namespace watcom { void getcwd(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f0730
 namespace watcom { void getdiskfree(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f07d0
+namespace frontend { void textDepth(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f0840
+namespace frontend { void textSetPen(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f0850
+namespace frontend { void textSetAttribute(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f0860
 namespace dead { void stub_0x4f0870(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f0870
+namespace frontend { void mixA4Bit(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f0880
+namespace frontend { void mixA16Bit(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f0890
+namespace frontend { void mixA24Bit(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f08a0
+namespace frontend { void mixA32Bit(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f08c0
+namespace frontend { void mixB4Bit(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f08d0
+namespace frontend { void mixB16Bit(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f08e0
+namespace frontend { void mixB24Bit(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f08f0
+namespace frontend { void mixB32Bit(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f0910
+namespace frontend { void mixC4Bit(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f0920
+namespace frontend { void mixC16Bit(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f0930
+namespace frontend { void mixC24Bit(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f0940
+namespace frontend { void mixC32Bit(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f0960
+namespace frontend { void mixD4Bit(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f0970
+namespace frontend { void mixD16Bit(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f0980
+namespace frontend { void mixD24Bit(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f0990
+namespace frontend { void mixD32Bit(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f09b0
+namespace frontend { void blitDispatch(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f09c0
+namespace frontend { void blitShapeAtPosition(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f0a10
 namespace dead { void stub_0x4f0a30(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f0a30
 namespace dead { void stub_0x4f0a50(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f0a50
 namespace dead { void stub_0x4f0a70(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f0a70
+namespace frontend { void surfaceFillAndDraw(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f0a90
 namespace watcom { void tolower(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f0ae0
+namespace frontend { void textMeasureGlyph(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f0af0
+namespace frontend { void textMeasureBox(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f0b60
+namespace frontend { void textMeasure(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f0c90
+namespace frontend { void asyncRequestHasId(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f0cb0
+namespace frontend { void asyncNoRequest(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f0cc0
+namespace frontend { void asyncCancelCurrent(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f0cd0
+namespace frontend { void asyncRunCallbacks(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f0d20
+namespace frontend { void asyncInit(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f0da0
+namespace frontend { void asyncShutdown(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f0f40
 namespace dead { void stub_0x4f1110(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f1110
 namespace dead { void stub_0x4f1230(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f1230
 namespace dead { void stub_0x4f1240(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f1240
 namespace dead { void stub_0x4f1360(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f1360
+namespace frontend { void asyncSetFile(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f1370
 namespace dead { void stub_0x4f14b0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f14b0
 namespace dead { void stub_0x4f14f0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f14f0
+namespace frontend { void asyncReadAt(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f1500
+namespace frontend { void asyncRead(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f15d0
 namespace dead { void stub_0x4f15e0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f15e0
 namespace dead { void stub_0x4f15f0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f15f0
 namespace dead { void stub_0x4f1610(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f1610
 namespace dead { void stub_0x4f1710(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f1710
+namespace frontend { void asyncReadStatus(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f1790
+namespace frontend { void asyncThreadMain(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f1820
 namespace watcom { void floor(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f1c30
 namespace removed { void processorChecked(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f1c70
 namespace dead { void stub_0x4f1ea0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f1ea0
 namespace removed { void processorSpeed(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f1ef0
 namespace dead { void stub_0x4f20b0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f20b0
+namespace frontend { void processorCountLoops(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f2170
 namespace dead { void stub_0x4f21c0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f21c0
 namespace watcom { void time(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f22b0
+namespace frontend { void fileLoadInto(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f22e0
 namespace dead { void stub_0x4f2360(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f2360
 namespace load { void fixedSine(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f2380
 namespace load { void fixedCosine(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f23f0
+namespace frontend { void winaShapeHotspots(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f2460
+namespace frontend { void shapeFindHotspot(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f24e0
 namespace ea { void unpackQuietly(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f2560
 namespace ea { void unpack(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f2620
 namespace ea { void unpackSizeQuietly(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f26a0
 namespace ea { void unpacksize(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f2710
+namespace frontend { void lowTimerTicks(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f2790
+namespace frontend { void lowTimerThread(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f27a0
 namespace ea { void stopLowTimer(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f2830
+namespace frontend { void lowTimerStart(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f2890
+namespace frontend { void lowTimerAdd(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f2930
 namespace ea { void removeLowTimer(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f29b0
+namespace frontend { void lowTimerSignal(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f2a60
+namespace frontend { void atexitJump(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f2a78
+namespace frontend { void exitGameNow(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f2a7d
+namespace frontend { void memCopyAligned(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f2ad0
+namespace frontend { void memMoveLibrary(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f2bf0
+namespace frontend { void memMoveHalfBytes(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f2c40
+namespace frontend { void memMoveBytes(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f2c50
+namespace frontend { void memMoveWords(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f2c60
+namespace frontend { void memMoveTriples(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f2c70
+namespace frontend { void memMoveLongs(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f2c90
+namespace frontend { void shapeMoveWithSpot(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f2cb0
 namespace dead { void stub_0x4f2d00(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f2d00
 namespace dead { void stub_0x4f2d20(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f2d20
 namespace dead { void stub_0x4f2d40(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f2d40
@@ -2967,6 +3801,14 @@ namespace dead { void stub_0x4f2da0(win32::WinApplication* app, x86::CPU& cpu); 
 namespace ea { void loadpackadr(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f2e20
 namespace dead { void stub_0x4f2f30(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f2f30
 namespace port { void SNDSTRM_requeststatus(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f2f50
+namespace dead { void stub_0x4f30d0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f30d0
+namespace dead { void stub_0x4f3350(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f3350
+namespace dead { void stub_0x4f33b0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f33b0
+namespace dead { void stub_0x4f33e0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f33e0
+namespace dead { void stub_0x4f3420(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f3420
+namespace dead { void stub_0x4f34f0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f34f0
+namespace dead { void stub_0x4f3560(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f3560
+namespace dead { void stub_0x4f3600(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f3600
 namespace port { void streamMemory(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f3a10
 namespace dead { void stub_0x4f3a30(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f3a30
 namespace port { void SNDSTRM_createqueued(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f3a60
@@ -2992,26 +3834,118 @@ namespace dead { void stub_0x4f43ac(win32::WinApplication* app, x86::CPU& cpu); 
 namespace port { void SNDSTRM_destroy(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f43c0
 namespace dead { void stub_0x4f4438(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f4438
 namespace port { void SNDSTRM_purge(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f4440
+namespace frontend { void simFixedTranspose(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f44e0
+namespace frontend { void simFixedMatrixTimes(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f4544
 namespace watcom { void stackavail(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f45c0
+namespace frontend { void nothingC(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f45d0
 namespace dead { void stub_0x4f45d1(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f45d1
+namespace pieces { void stub_0x4f45e1(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f45e1
 namespace watcom { void GRO(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f4610
 namespace dead { void stub_0x4f4630(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f4630
+namespace frontend { void registryAddEntry(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f4650
+namespace frontend { void screenPixels(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f46b0
+namespace frontend { void windowSave(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f46d0
+namespace frontend { void windowRestore(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f4700
+namespace frontend { void textStateSave(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f4740
+namespace frontend { void textStateRestore(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f4760
+namespace frontend { void blockChecksum(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f4780
+namespace frontend { void shapeEndsAtBend(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f47c0
 namespace dead { void stub_0x4f4810(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f4810
 namespace dead { void stub_0x4f48f0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f48f0
+namespace frontend { void windowCheckField(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f4920
+namespace frontend { void windowCheck(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f4a80
 namespace watcom { void fprintf(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f4b80
+namespace frontend { void netSameGuid(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f4bb0
+namespace frontend { void netExit(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f4c10
 namespace ea { void netTrace(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f4c50
+namespace frontend { void netGetServices(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f4c70
+namespace frontend { void netInitService(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f4d10
+namespace frontend { void netKillService(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f4e60
+namespace frontend { void netGetGames(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f4eb0
+namespace frontend { void netSetGame(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f4ed0
 namespace dead { void stub_0x4f4ef0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f4ef0
+namespace frontend { void netNewGame(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f4f10
+namespace pieces { void stub_0x4f4f30(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f4f30
 namespace ea { void netShutGame(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f4f50
+namespace frontend { void netOpenGame(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f4f70
 namespace ea { void netEndGame(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f4f90
 namespace dead { void stub_0x4f4fd0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f4fd0
 namespace ea { void netKillPlayer(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f4ff0
 namespace dead { void stub_0x4f5010(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f5010
 namespace ea { void netCheckPlayer(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f5040
+namespace frontend { void netServicePollCall(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f5050
 namespace dead { void stub_0x4f5070(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f5070
 namespace dead { void stub_0x4f5090(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f5090
+namespace frontend { void netAnswerNo(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f50b0
+namespace frontend { void netCloseServices(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f50c0
+namespace frontend { void netPollOne(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f50f0
+namespace frontend { void netPollServices(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f5110
+namespace frontend { void netServiceCall(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f5130
+namespace frontend { void netServicesReady(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f5230
 namespace ea { void connRestore(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f5280
 namespace ea { void connSend(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f5310
 namespace ea { void connClose(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f5330
+namespace frontend { void netFindGame(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f5390
+namespace frontend { void netServicePoll(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f53f0
+namespace frontend { void netServiceOpenGame(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f54f0
+namespace frontend { void netServiceCloseGame(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f55e0
+namespace frontend { void netGameListed(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f56c0
+namespace frontend { void netServiceRoom(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f56e0
+namespace frontend { void netServiceAsk(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f5700
+namespace frontend { void netServiceRead(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f5710
+namespace frontend { void netServiceWrite(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f57c0
+namespace frontend { void netSendQueued(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f5850
+namespace frontend { void netFromSockaddr(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f5880
+namespace frontend { void netToSockaddr(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f58c0
+namespace frontend { void netPortToSockaddr(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f5900
+namespace frontend { void netIpxRecvFrom(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f5950
+namespace frontend { void netIpxAnswerName(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f5a30
+namespace frontend { void netPacketMatch(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f5a80
+namespace frontend { void netMarkPacket(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f5ac0
+namespace frontend { void netIpxThread(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f5b10
+namespace frontend { void netIpxStartup(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f5ba0
+namespace frontend { void netWinsockClose(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f5bf0
+namespace frontend { void netIpxOpen(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f5c10
+namespace frontend { void netIpxClose(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f5ea0
+namespace frontend { void netIpxPort(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f5f50
+namespace frontend { void netIpxKey(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f5f70
+namespace frontend { void netIpxJump(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f5f90
+namespace frontend { void netIpxSetName(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f5fa0
+namespace frontend { void netIpxForgetName(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f5fc0
+namespace frontend { void netAnswerYes(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f5fd0
+namespace frontend { void netSameNode(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f5fe0
+namespace frontend { void netIpxOwnAddress(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f6010
+namespace frontend { void netIpxReady(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f6030
+namespace frontend { void netIpxSend(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f60b0
+namespace frontend { void netIpxReceive(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f61f0
+namespace frontend { void tcpFlushQueue(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f6350
+namespace frontend { void ipxOpenWinsock(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f63d0
+namespace frontend { void tcpListenSocket(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f6490
+namespace frontend { void tcpSetSocketOptions(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f6510
+namespace frontend { void tcpFillSelectSets(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f6570
+namespace frontend { void tcpReceivePacket(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f6640
+namespace frontend { void tcpSendPending(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f67b0
+namespace frontend { void tcpExceptionSeen(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f6860
+namespace frontend { void tcpConnectionDropped(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f6870
+namespace frontend { void tcpServerThread(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f68c0
+namespace frontend { void tcpOpenConnection(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f6c50
+namespace frontend { void tcpSendConnection(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f7030
+namespace frontend { void tcpCloseConnection(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f71a0
+namespace frontend { void tcpSameAddressParts(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f7220
+namespace frontend { void tcpHostGame(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f7280
+namespace frontend { void tcpEndGame(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f7320
+namespace frontend { void netReturnZero(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f7370
+namespace frontend { void tcpOpenNetwork(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f7380
+namespace frontend { void tcpStartWinsock(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f73a0
+namespace frontend { void tcpStopWinsock(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f7420
+namespace frontend { void tcpOpen(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f7450
+namespace frontend { void tcpClose(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f75d0
+namespace frontend { void tcpFirstField(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f7660
+namespace frontend { void tcpResolve(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f7670
+namespace frontend { void tcpAddressText(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f7750
+namespace frontend { void tcpSameAddress(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f77c0
+namespace frontend { void tcpLocalName(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f77f0
+namespace frontend { void tcpOpenWinsock(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f7830
 namespace watcom { void nmalloc(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f7900
 namespace watcom { void nfree(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f79f0
 namespace watcom { void TryInit(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f7af8
@@ -3025,6 +3959,7 @@ namespace watcom { void global_unwind(win32::WinApplication* app, x86::CPU& cpu)
 namespace watcom { void local_unwind(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f7bc3
 namespace dead { void stub_0x4f7c09(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f7c09
 namespace watcom { void atexit(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f7c20
+namespace frontend { void exitFunctionsRun(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f7c48
 namespace watcom { void control87(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f7c90
 namespace watcom { void kbhit(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f7ce0
 namespace watcom { void fflush(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f7d70
@@ -3037,51 +3972,144 @@ namespace watcom { void localtime_(win32::WinApplication* app, x86::CPU& cpu); }
 namespace watcom { void localtime(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f8094
 namespace dead { void stub_0x4f80ac(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f80ac
 namespace watcom { void IF_DEXP(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f80b4
+namespace pieces { void stub_0x4f80b6(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f80b6
+namespace pieces { void stub_0x4f80e5(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f80e5
 namespace watcom { void exp(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f8116
 namespace watcom { void Strtold(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f8122
 namespace watcom { void strtod(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f82b6
 void THRASH_opendll(win32::WinApplication* app, x86::CPU& cpu);  // 0x4f8390
+namespace frontend { void winaReleaseDriverSlot(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f87a0
+namespace frontend { void thrashOpenByName(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f87e0
 namespace graphics { void setScreenFunctions(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f8830
 namespace dead { void stub_0x4f88c0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f88c0
+namespace frontend { void graphicsStart(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f8930
 namespace watcom { void setenv(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f8b50
 namespace watcom { void setenv_(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f8ce8
 namespace watcom { void findenv(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f8f38
+namespace frontend { void ddrawNoteChange(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f9060
 namespace ea { void surfaceLocked(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f9070
+namespace frontend { void lineNoFlag(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f9088
 namespace dead { void stub_0x4f9090(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f9090
 namespace dead { void stub_0x4f90a0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f90a0
 namespace dead { void stub_0x4f90d0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f90d0
+namespace frontend { void windowReshow(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f90e0
+namespace frontend { void winaHasFocus(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f9120
 namespace dead { void stub_0x4f9140(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f9140
 namespace dead { void stub_0x4f9170(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f9170
 namespace dead { void stub_0x4f9190(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f9190
 namespace dead { void stub_0x4f91b0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f91b0
+namespace frontend { void singleInstanceCheck(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f91d0
+namespace frontend { void memClassNoPurge(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f9260
+namespace frontend { void memClassCreateRam(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f9270
+namespace frontend { void heapStart(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f92b0
+namespace frontend { void heapStartDefault(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f92d0
 namespace dead { void stub_0x4f92e0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f92e0
 namespace dead { void stub_0x4f92f0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f92f0
 namespace dead { void stub_0x4f9310(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f9310
+namespace frontend { void fontsStart(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f9320
+namespace frontend { void winaVideoClose(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f9360
+namespace frontend { void pathInDirectory(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f9390
+namespace frontend { void driveNumberOfPath(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f93f0
+namespace frontend { void driveIsCd(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f9410
 namespace dead { void stub_0x4f9470(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f9470
 namespace watcom { void IF_DACOS(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f9482
 namespace dead { void stub_0x4f94bf(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f94bf
+namespace frontend { void lineCallback(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f9500
+namespace frontend { void lineShutdown(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f97c0
+namespace frontend { void tapiSetup(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f9920
+namespace frontend { void tapiInitialize(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f99f0
+namespace frontend { void tapiSelectModem(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f9a50
+namespace frontend { void tapiEnumerateModems(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f9ac0
+namespace frontend { void tapiOpenLine(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f9d20
+namespace frontend { void tapiGetCommHandleConfig(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f9df0
+namespace frontend { void tapiSetCommConfig(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f9ea0
+namespace frontend { void tapiGetDevCaps(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4f9f30
+namespace frontend { void tapiMakeCall(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4fa030
+namespace frontend { void tapiGetModemHandle(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4fa0f0
+namespace frontend { void tapiHangUp(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4fa1d0
+namespace frontend { void tapiThread(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4fa210
+namespace frontend { void modemOpen(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4fa310
+namespace frontend { void modemClose(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4fa450
+namespace frontend { void modemPoll(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4fa480
+namespace frontend { void modemSendReady(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4fa4e0
+namespace frontend { void modemReceiveReady(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4fa4f0
+namespace frontend { void modemSend(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4fa500
+namespace frontend { void modemReceive(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4fa530
+namespace frontend { void modemOpenNetwork(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4fa550
+namespace frontend { void modemName(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4fa5f0
+namespace frontend { void serialOpen(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4fa620
+namespace frontend { void serialClose(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4fa6d0
+namespace frontend { void serialPoll(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4fa6e0
+namespace frontend { void serialSendReady(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4fa710
+namespace frontend { void serialReceiveReady(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4fa720
+namespace frontend { void serialSend(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4fa730
+namespace frontend { void serialReceive(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4fa760
+namespace frontend { void serialOpenNetwork(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4fa780
 namespace dead { void stub_0x4fa830(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4fa830
 namespace dead { void stub_0x4faa40(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4faa40
 namespace dead { void stub_0x4fabe0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4fabe0
 namespace dead { void stub_0x4faea0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4faea0
 namespace dead { void stub_0x4fb030(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4fb030
+namespace frontend { void winaFreeKeptBlock(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4fb060
 namespace dead { void stub_0x4fb080(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4fb080
 namespace dead { void stub_0x4fb140(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4fb140
 namespace dead { void stub_0x4fb170(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4fb170
 namespace dead { void stub_0x4fb1a0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4fb1a0
 namespace port { void SNDbankpatpresent(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4fb1e0
 namespace watcom { void bsearch(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4fb300
+namespace frontend { void screenTakeSize(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4fb380
+namespace frontend { void screenLockCountUp(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4fb3b0
+namespace frontend { void screenLockCountDown(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4fb3c0
+namespace frontend { void screenInstallDriver(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4fb3d0
+namespace pieces { void stub_0x4fb440(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4fb440
+namespace frontend { void winaPointerMoved(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4fb470
+namespace pieces { void stub_0x4fb4c0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4fb4c0
+namespace pieces { void stub_0x4fb4d0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4fb4d0
+namespace pieces { void stub_0x4fb4ea(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4fb4ea
+namespace pieces { void stub_0x4fb50b(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4fb50b
+namespace pieces { void stub_0x4fb51b(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4fb51b
+namespace pieces { void stub_0x4fb527(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4fb527
+namespace pieces { void stub_0x4fb536(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4fb536
 namespace dead { void stub_0x4fb560(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4fb560
 namespace dead { void stub_0x4fb590(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4fb590
 namespace dead { void stub_0x4fb5a0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4fb5a0
+namespace pieces { void stub_0x4fb6a0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4fb6a0
+namespace pieces { void stub_0x4fb6a7(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4fb6a7
+namespace pieces { void stub_0x4fb6ae(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4fb6ae
+namespace pieces { void stub_0x4fb6b5(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4fb6b5
+namespace pieces { void stub_0x4fb6c2(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4fb6c2
+namespace pieces { void stub_0x4fb6d7(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4fb6d7
 namespace dead { void stub_0x4fb6f0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4fb6f0
+namespace frontend { void numLockOff(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4fb700
+namespace frontend { void lockKeySet(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4fb710
+namespace frontend { void bigFileOpenEntry(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4fb790
+namespace frontend { void watbKeyMatches(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4fb820
+namespace frontend { void watbNoMatch(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4fb82b
+namespace frontend { void watbSortKey(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4fb830
 namespace dead { void stub_0x4fb850(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4fb850
+namespace frontend { void fileDeviceStart(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4fb860
+namespace frontend { void winaFileOpAllocate(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4fb990
+namespace frontend { void winaFileOpQueue(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4fbb60
+namespace frontend { void winaFileOpSetName(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4fbbe0
+namespace frontend { void asyncOpenFile(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4fbc30
+namespace frontend { void fileOpFind(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4fbd10
+namespace frontend { void asyncFileThread(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4fbda0
+namespace frontend { void asyncFilesShutdown(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4fc170
+namespace frontend { void asyncFilesInit(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4fc250
+namespace frontend { void fileOpStatus(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4fc340
 namespace dead { void stub_0x4fc400(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4fc400
 namespace dead { void stub_0x4fc480(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4fc480
 namespace dead { void stub_0x4fc510(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4fc510
+namespace frontend { void fileOpComplete(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4fc600
+namespace frontend { void fileOpWait(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4fc780
 namespace dead { void stub_0x4fc860(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4fc860
+namespace frontend { void winaFileOpCallback(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4fc8e0
+namespace frontend { void winaFileOpPriority(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4fc9b0
 namespace dead { void stub_0x4fca00(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4fca00
 namespace dead { void stub_0x4fca30(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4fca30
+namespace frontend { void winaFileOpOpen(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4fca60
+namespace frontend { void winaFileOpClose(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4fca90
+namespace frontend { void winaFileOpRead(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4fcab0
 namespace dead { void stub_0x4fcb00(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4fcb00
 namespace dead { void stub_0x4fcb50(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4fcb50
 namespace dead { void stub_0x4fcb70(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4fcb70
@@ -3092,6 +4120,7 @@ namespace dead { void stub_0x4fcce0(win32::WinApplication* app, x86::CPU& cpu); 
 namespace dead { void stub_0x4fce20(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4fce20
 namespace dead { void stub_0x4fce30(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4fce30
 namespace dead { void stub_0x4fce40(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4fce40
+namespace frontend { void winaFileSlotOfName(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4fce50
 namespace dead { void stub_0x4fce90(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4fce90
 namespace dead { void stub_0x4fcea0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4fcea0
 namespace dead { void stub_0x4fceb0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4fceb0
@@ -3099,13 +4128,33 @@ namespace dead { void stub_0x4fcf40(win32::WinApplication* app, x86::CPU& cpu); 
 namespace dead { void stub_0x4fcfe0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4fcfe0
 namespace dead { void stub_0x4fd020(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4fd020
 namespace dead { void stub_0x4fd040(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4fd040
+namespace frontend { void winaFileCloseWait(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4fd060
 namespace dead { void stub_0x4fd090(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4fd090
 namespace dead { void stub_0x4fd0c0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4fd0c0
 namespace dead { void stub_0x4fd0f0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4fd0f0
 namespace dead { void stub_0x4fd130(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4fd130
 namespace dead { void stub_0x4fd160(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4fd160
 namespace dead { void stub_0x4fd190(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4fd190
+namespace frontend { void watbShapeClut(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4fd1c0
+namespace frontend { void projectionCentre(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4fd280
+namespace frontend { void projectionView(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4fd2b0
+namespace frontend { void projectionViewDegrees(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4fd3f0
 namespace dead { void stub_0x4fd420(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4fd420
+namespace frontend { void winaFillHalved(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4fd490
+namespace frontend { void winaFillSame(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4fd4b0
+namespace frontend { void winaFillDoubled(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4fd4c0
+namespace frontend { void winaFillWords(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4fd4e0
+namespace frontend { void winaFillTriples(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4fd500
+namespace frontend { void winaFillQuadrupled(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4fd520
+namespace frontend { void watbDrawFilledRect(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4fd540
+namespace dead { void stub_0x4fd61c(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4fd61c
+namespace dead { void stub_0x4fd6ef(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4fd6ef
+namespace dead { void stub_0x4fd7b6(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4fd7b6
+namespace dead { void stub_0x4fd892(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4fd892
+namespace dead { void stub_0x4fd8ee(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4fd8ee
+namespace dead { void stub_0x4fd98c(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4fd98c
+namespace dead { void stub_0x4fda20(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4fda20
+namespace dead { void stub_0x4fdc90(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4fdc90
 namespace watcom { void prtf(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4fe1d0
 namespace watcom { void prtfSpec(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4fe578
 namespace watcom { void prtfFlags(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4fe6cc
@@ -3119,11 +4168,14 @@ namespace watcom { void prtfZeros(win32::WinApplication* app, x86::CPU& cpu); } 
 namespace watcom { void prtfWideOut(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4fe970
 namespace watcom { void prtfConvert(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4fe9d4
 namespace watcom { void prtfUpper(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4fefdc
+namespace frontend { void watbReturnZero(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4feffc
 namespace watcom { void file_putc(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ff000
 namespace watcom { void vfprintf(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ff014
 namespace dead { void stub_0x4ff0e0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ff0e0
 namespace watcom { void GetThreadPtr(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ff0ec
 namespace watcom { void NullAccess(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ff0f4
+namespace frontend { void watbAllocHandleJump(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ff0f8
+namespace frontend { void watbFreeHandleJump(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ff100
 namespace watcom { void NTInit(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ff108
 namespace watcom { void NTMain(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ff338
 namespace watcom { void exit_(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ff38c
@@ -3132,8 +4184,15 @@ namespace watcom { void callRoutine(win32::WinApplication* app, x86::CPU& cpu); 
 namespace watcom { void InitRtns(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ff41c
 namespace watcom { void FiniRtns(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ff46c
 namespace watcom { void STOSB(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ff4c0
+namespace pieces { void stub_0x4ff4f2(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ff4f2
 namespace watcom { void STOSD(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ff4f7
+namespace frontend { void watbInitFloatFormatters(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ff570
+namespace pieces { void stub_0x4ff590(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ff590
+namespace pieces { void stub_0x4ff598(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ff598
+namespace frontend { void watbInitChipBugHooks(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ff59c
 namespace dead { void stub_0x4ff5d0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ff5d0
+namespace frontend { void watbInit8087(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ff5dc
+namespace frontend { void watbNothing4ff620(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ff620
 namespace dead { void stub_0x4ff624(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ff624
 namespace port { void setTopupFunction(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ff660
 namespace port { void topUpStream(win32::WinApplication* app, x86::CPU& cpu); }  // 0x4ff670
@@ -3225,12 +4284,12 @@ namespace port { void iSNDwinsetfx(win32::WinApplication* app, x86::CPU& cpu); }
 namespace port { void setBusFx(win32::WinApplication* app, x86::CPU& cpu); }  // 0x5030ac
 namespace port { void busLevelSet(win32::WinApplication* app, x86::CPU& cpu); }  // 0x5030c4
 namespace port { void SNDfxlevel(win32::WinApplication* app, x86::CPU& cpu); }  // 0x5030d0
-namespace dead { void stub_0x503280(win32::WinApplication* app, x86::CPU& cpu); }  // 0x503280
-namespace dead { void stub_0x503281(win32::WinApplication* app, x86::CPU& cpu); }  // 0x503281
+namespace pieces { void stub_0x503280(win32::WinApplication* app, x86::CPU& cpu); }  // 0x503280
+namespace pieces { void stub_0x503281(win32::WinApplication* app, x86::CPU& cpu); }  // 0x503281
 namespace mix { void copySwapped(win32::WinApplication* app, x86::CPU& cpu); }  // 0x5033e4
 namespace mix { void copy(win32::WinApplication* app, x86::CPU& cpu); }  // 0x5033e5
-namespace dead { void stub_0x50356c(win32::WinApplication* app, x86::CPU& cpu); }  // 0x50356c
-namespace dead { void stub_0x50356d(win32::WinApplication* app, x86::CPU& cpu); }  // 0x50356d
+namespace pieces { void stub_0x50356c(win32::WinApplication* app, x86::CPU& cpu); }  // 0x50356c
+namespace pieces { void stub_0x50356d(win32::WinApplication* app, x86::CPU& cpu); }  // 0x50356d
 namespace port { void mul64(win32::WinApplication* app, x86::CPU& cpu); }  // 0x503670
 namespace dead { void stub_0x503700(win32::WinApplication* app, x86::CPU& cpu); }  // 0x503700
 namespace port { void div64(win32::WinApplication* app, x86::CPU& cpu); }  // 0x503760
@@ -3242,15 +4301,94 @@ namespace dead { void stub_0x503910(win32::WinApplication* app, x86::CPU& cpu); 
 namespace dead { void stub_0x503990(win32::WinApplication* app, x86::CPU& cpu); }  // 0x503990
 namespace dead { void stub_0x503a10(win32::WinApplication* app, x86::CPU& cpu); }  // 0x503a10
 namespace dead { void stub_0x503aa0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x503aa0
+namespace frontend { void winaShiftTo64(win32::WinApplication* app, x86::CPU& cpu); }  // 0x503b00
 namespace dead { void stub_0x503b60(win32::WinApplication* app, x86::CPU& cpu); }  // 0x503b60
+namespace frontend { void watbReadPixel(win32::WinApplication* app, x86::CPU& cpu); }  // 0x503bc0
+namespace frontend { void winaPaletteToSurface(win32::WinApplication* app, x86::CPU& cpu); }  // 0x503cd0
+namespace frontend { void winaPaletteSet(win32::WinApplication* app, x86::CPU& cpu); }  // 0x503e50
 namespace dead { void stub_0x503e80(win32::WinApplication* app, x86::CPU& cpu); }  // 0x503e80
+namespace frontend { void winaPaletteGet(win32::WinApplication* app, x86::CPU& cpu); }  // 0x503ec0
 namespace dead { void stub_0x503f10(win32::WinApplication* app, x86::CPU& cpu); }  // 0x503f10
 namespace dead { void stub_0x503f50(win32::WinApplication* app, x86::CPU& cpu); }  // 0x503f50
 namespace dead { void stub_0x503f90(win32::WinApplication* app, x86::CPU& cpu); }  // 0x503f90
+namespace frontend { void rendPixels565To1555(win32::WinApplication* app, x86::CPU& cpu); }  // 0x5040b8
+namespace frontend { void rendPixels1555To565(win32::WinApplication* app, x86::CPU& cpu); }  // 0x504133
+namespace frontend { void rendPixelsPal8To32(win32::WinApplication* app, x86::CPU& cpu); }  // 0x5041ae
+namespace frontend { void rendPixelsPal8To16(win32::WinApplication* app, x86::CPU& cpu); }  // 0x5041d0
+namespace frontend { void rendPixelsRgb24ToArgb(win32::WinApplication* app, x86::CPU& cpu); }  // 0x50425d
+namespace frontend { void rendPixelsSwapRedBlue(win32::WinApplication* app, x86::CPU& cpu); }  // 0x5042c4
+namespace frontend { void rendPixelsPal4To16(win32::WinApplication* app, x86::CPU& cpu); }  // 0x504335
+namespace graphics { void dead_0x5043f0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x5043f0
+namespace graphics { void dead_0x5049c0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x5049c0
+namespace graphics { void dead_0x5049f0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x5049f0
+namespace graphics { void dead_0x504a30(win32::WinApplication* app, x86::CPU& cpu); }  // 0x504a30
+namespace graphics { void dead_0x504af0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x504af0
+namespace graphics { void dead_0x504b70(win32::WinApplication* app, x86::CPU& cpu); }  // 0x504b70
+namespace graphics { void dead_0x504bf0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x504bf0
+namespace graphics { void dead_0x504c00(win32::WinApplication* app, x86::CPU& cpu); }  // 0x504c00
+namespace graphics { void dead_0x504c20(win32::WinApplication* app, x86::CPU& cpu); }  // 0x504c20
+namespace graphics { void dead_0x504c40(win32::WinApplication* app, x86::CPU& cpu); }  // 0x504c40
+namespace graphics { void dead_0x504c80(win32::WinApplication* app, x86::CPU& cpu); }  // 0x504c80
+namespace graphics { void dead_0x504e00(win32::WinApplication* app, x86::CPU& cpu); }  // 0x504e00
+namespace graphics { void dead_0x504f90(win32::WinApplication* app, x86::CPU& cpu); }  // 0x504f90
+namespace graphics { void dead_0x5050b0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x5050b0
+namespace graphics { void dead_0x5050e0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x5050e0
+namespace graphics { void dead_0x5050f0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x5050f0
+namespace graphics { void dead_0x5051c0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x5051c0
+namespace graphics { void dead_0x505250(win32::WinApplication* app, x86::CPU& cpu); }  // 0x505250
+namespace graphics { void dead_0x505280(win32::WinApplication* app, x86::CPU& cpu); }  // 0x505280
+namespace graphics { void dead_0x5052a0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x5052a0
+namespace graphics { void dead_0x505320(win32::WinApplication* app, x86::CPU& cpu); }  // 0x505320
+namespace graphics { void dead_0x505500(win32::WinApplication* app, x86::CPU& cpu); }  // 0x505500
+namespace graphics { void dead_0x505570(win32::WinApplication* app, x86::CPU& cpu); }  // 0x505570
+namespace graphics { void dead_0x505650(win32::WinApplication* app, x86::CPU& cpu); }  // 0x505650
+namespace graphics { void dead_0x5057d0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x5057d0
+namespace graphics { void dead_0x505830(win32::WinApplication* app, x86::CPU& cpu); }  // 0x505830
+namespace graphics { void dead_0x505870(win32::WinApplication* app, x86::CPU& cpu); }  // 0x505870
+namespace graphics { void dead_0x505920(win32::WinApplication* app, x86::CPU& cpu); }  // 0x505920
+namespace graphics { void dead_0x505950(win32::WinApplication* app, x86::CPU& cpu); }  // 0x505950
+namespace graphics { void dead_0x505970(win32::WinApplication* app, x86::CPU& cpu); }  // 0x505970
+namespace graphics { void dead_0x505980(win32::WinApplication* app, x86::CPU& cpu); }  // 0x505980
+namespace graphics { void dead_0x5059d0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x5059d0
+namespace graphics { void dead_0x505a50(win32::WinApplication* app, x86::CPU& cpu); }  // 0x505a50
+namespace graphics { void dead_0x505a80(win32::WinApplication* app, x86::CPU& cpu); }  // 0x505a80
+namespace graphics { void dead_0x505b30(win32::WinApplication* app, x86::CPU& cpu); }  // 0x505b30
+namespace graphics { void dead_0x506230(win32::WinApplication* app, x86::CPU& cpu); }  // 0x506230
+namespace graphics { void dead_0x506310(win32::WinApplication* app, x86::CPU& cpu); }  // 0x506310
+namespace graphics { void dead_0x506360(win32::WinApplication* app, x86::CPU& cpu); }  // 0x506360
+namespace graphics { void dead_0x5063d0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x5063d0
+namespace graphics { void dead_0x506440(win32::WinApplication* app, x86::CPU& cpu); }  // 0x506440
+namespace graphics { void dead_0x506690(win32::WinApplication* app, x86::CPU& cpu); }  // 0x506690
+namespace graphics { void dead_0x506910(win32::WinApplication* app, x86::CPU& cpu); }  // 0x506910
+namespace graphics { void dead_0x506ac0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x506ac0
+namespace graphics { void dead_0x506ca0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x506ca0
+namespace graphics { void dead_0x507240(win32::WinApplication* app, x86::CPU& cpu); }  // 0x507240
+namespace graphics { void dead_0x5074b0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x5074b0
+namespace graphics { void dead_0x5075d0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x5075d0
+namespace graphics { void dead_0x507720(win32::WinApplication* app, x86::CPU& cpu); }  // 0x507720
+namespace graphics { void dead_0x507900(win32::WinApplication* app, x86::CPU& cpu); }  // 0x507900
+namespace graphics { void dead_0x5079a0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x5079a0
+namespace graphics { void dead_0x507a60(win32::WinApplication* app, x86::CPU& cpu); }  // 0x507a60
+namespace graphics { void dead_0x507b10(win32::WinApplication* app, x86::CPU& cpu); }  // 0x507b10
+namespace graphics { void dead_0x507bc0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x507bc0
+namespace graphics { void dead_0x507d00(win32::WinApplication* app, x86::CPU& cpu); }  // 0x507d00
+namespace graphics { void dead_0x507ed0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x507ed0
+namespace graphics { void dead_0x507f30(win32::WinApplication* app, x86::CPU& cpu); }  // 0x507f30
+namespace graphics { void dead_0x508170(win32::WinApplication* app, x86::CPU& cpu); }  // 0x508170
+namespace graphics { void dead_0x5082f0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x5082f0
+namespace graphics { void dead_0x508390(win32::WinApplication* app, x86::CPU& cpu); }  // 0x508390
+namespace graphics { void dead_0x5084e0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x5084e0
 namespace dead { void stub_0x508500(win32::WinApplication* app, x86::CPU& cpu); }  // 0x508500
+namespace graphics { void dead_0x508510(win32::WinApplication* app, x86::CPU& cpu); }  // 0x508510
 namespace dead { void stub_0x5085a0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x5085a0
 namespace dead { void stub_0x5085c0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x5085c0
+namespace graphics { void dead_0x508970(win32::WinApplication* app, x86::CPU& cpu); }  // 0x508970
+namespace frontend { void rendSetDisplayMode(win32::WinApplication* app, x86::CPU& cpu); }  // 0x5089d0
 namespace dead { void stub_0x508b20(win32::WinApplication* app, x86::CPU& cpu); }  // 0x508b20
+namespace frontend { void watbInitVideoWindow(win32::WinApplication* app, x86::CPU& cpu); }  // 0x508b80
+namespace frontend { void videoWindowMake(win32::WinApplication* app, x86::CPU& cpu); }  // 0x508c70
+namespace frontend { void videoWindowUpdate(win32::WinApplication* app, x86::CPU& cpu); }  // 0x508da0
+namespace frontend { void videoWindowFree(win32::WinApplication* app, x86::CPU& cpu); }  // 0x508e70
 namespace dead { void stub_0x508ec0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x508ec0
 namespace dead { void stub_0x508ee0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x508ee0
 namespace dead { void stub_0x508f00(win32::WinApplication* app, x86::CPU& cpu); }  // 0x508f00
@@ -3259,6 +4397,7 @@ namespace watcom { void sopen(win32::WinApplication* app, x86::CPU& cpu); }  // 
 namespace watcom { void sopen_(win32::WinApplication* app, x86::CPU& cpu); }  // 0x50901c
 namespace watcom { void allocfp(win32::WinApplication* app, x86::CPU& cpu); }  // 0x509250
 namespace watcom { void freefp(win32::WinApplication* app, x86::CPU& cpu); }  // 0x509314
+namespace frontend { void watbFreeClosedStreams(win32::WinApplication* app, x86::CPU& cpu); }  // 0x509350
 namespace watcom { void chktty(win32::WinApplication* app, x86::CPU& cpu); }  // 0x509380
 namespace watcom { void getpid(win32::WinApplication* app, x86::CPU& cpu); }  // 0x5093c0
 namespace dead { void stub_0x5093d0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x5093d0
@@ -3267,12 +4406,72 @@ namespace watcom { void close(win32::WinApplication* app, x86::CPU& cpu); }  // 
 namespace watcom { void fixed_GetFileAttributesA(win32::WinApplication* app, x86::CPU& cpu); }  // 0x509640
 namespace watcom { void qwrite(win32::WinApplication* app, x86::CPU& cpu); }  // 0x5096c0
 namespace watcom { void fputc(win32::WinApplication* app, x86::CPU& cpu); }  // 0x5097b0
+namespace frontend { void watbShapeTypeForDepth(win32::WinApplication* app, x86::CPU& cpu); }  // 0x5098d0
+namespace frontend { void watbInitRowTable(win32::WinApplication* app, x86::CPU& cpu); }  // 0x509940
+namespace frontend { void watbFreeRowTable(win32::WinApplication* app, x86::CPU& cpu); }  // 0x509a00
+namespace frontend { void watbMakeRow(win32::WinApplication* app, x86::CPU& cpu); }  // 0x509a30
+namespace frontend { void watbRemoveRow(win32::WinApplication* app, x86::CPU& cpu); }  // 0x509b10
 namespace dead { void stub_0x509bd0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x509bd0
+namespace frontend { void watbFindBlockHeader(win32::WinApplication* app, x86::CPU& cpu); }  // 0x509c00
+namespace frontend { void watbCopyNibbles(win32::WinApplication* app, x86::CPU& cpu); }  // 0x509c50
+namespace frontend { void watbCopyBytes(win32::WinApplication* app, x86::CPU& cpu); }  // 0x509c60
+namespace frontend { void watbBytesToNibbles(win32::WinApplication* app, x86::CPU& cpu); }  // 0x509c70
+namespace frontend { void watbNibblesToBytes(win32::WinApplication* app, x86::CPU& cpu); }  // 0x509cd0
+namespace frontend { void watb565ToIndex(win32::WinApplication* app, x86::CPU& cpu); }  // 0x509d20
+namespace frontend { void watb8888To1555Keyed(win32::WinApplication* app, x86::CPU& cpu); }  // 0x509df0
+namespace frontend { void watb8888To1555(win32::WinApplication* app, x86::CPU& cpu); }  // 0x509e50
+namespace frontend { void watbCopyWords(win32::WinApplication* app, x86::CPU& cpu); }  // 0x509eb0
 namespace dead { void stub_0x509ec0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x509ec0
+namespace frontend { void watb8888To565Keyed(win32::WinApplication* app, x86::CPU& cpu); }  // 0x509ef0
+namespace frontend { void watb8888To565(win32::WinApplication* app, x86::CPU& cpu); }  // 0x509f50
+namespace frontend { void watb8888To4444(win32::WinApplication* app, x86::CPU& cpu); }  // 0x509fb0
+namespace frontend { void watb1555To4444(win32::WinApplication* app, x86::CPU& cpu); }  // 0x50a020
+namespace frontend { void watb8888To8565(win32::WinApplication* app, x86::CPU& cpu); }  // 0x50a0a0
+namespace frontend { void watbIndexTo888(win32::WinApplication* app, x86::CPU& cpu); }  // 0x50a100
+namespace frontend { void watb565To888(win32::WinApplication* app, x86::CPU& cpu); }  // 0x50a150
+namespace frontend { void watbCopyTriples(win32::WinApplication* app, x86::CPU& cpu); }  // 0x50a1c0
+namespace frontend { void watb8888To888(win32::WinApplication* app, x86::CPU& cpu); }  // 0x50a1e0
+namespace frontend { void watb1555To8888(win32::WinApplication* app, x86::CPU& cpu); }  // 0x50a240
+namespace frontend { void watb565To8888(win32::WinApplication* app, x86::CPU& cpu); }  // 0x50a2b0
+namespace frontend { void watb4444To8888(win32::WinApplication* app, x86::CPU& cpu); }  // 0x50a330
+namespace frontend { void watb8555To8888(win32::WinApplication* app, x86::CPU& cpu); }  // 0x50a3c0
+namespace frontend { void watb8565To8888(win32::WinApplication* app, x86::CPU& cpu); }  // 0x50a440
+namespace frontend { void watb888To8888(win32::WinApplication* app, x86::CPU& cpu); }  // 0x50a4c0
+namespace frontend { void watbCopyDwords(win32::WinApplication* app, x86::CPU& cpu); }  // 0x50a510
+namespace dead { void stub_0x50a520(win32::WinApplication* app, x86::CPU& cpu); }  // 0x50a520
+namespace frontend { void watbDepthIndex16(win32::WinApplication* app, x86::CPU& cpu); }  // 0x50a543
+namespace frontend { void watbDepthIndex32(win32::WinApplication* app, x86::CPU& cpu); }  // 0x50a550
+namespace frontend { void watbDepthIndex15(win32::WinApplication* app, x86::CPU& cpu); }  // 0x50a559
+namespace frontend { void watbDepthIndex(win32::WinApplication* app, x86::CPU& cpu); }  // 0x50a570
+namespace frontend { void watbClutPointer(win32::WinApplication* app, x86::CPU& cpu); }  // 0x50a5d0
 namespace dead { void stub_0x50a700(win32::WinApplication* app, x86::CPU& cpu); }  // 0x50a700
+namespace frontend { void watbClut16aPointer(win32::WinApplication* app, x86::CPU& cpu); }  // 0x50a830
+namespace frontend { void watbConverterFor(win32::WinApplication* app, x86::CPU& cpu); }  // 0x50a960
+namespace frontend { void watbConvertShape(win32::WinApplication* app, x86::CPU& cpu); }  // 0x50aad0
 namespace dead { void stub_0x50af80(win32::WinApplication* app, x86::CPU& cpu); }  // 0x50af80
 namespace dead { void stub_0x50afa0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x50afa0
+namespace frontend { void watbSpanTo16Keyed(win32::WinApplication* app, x86::CPU& cpu); }  // 0x50afc0
+namespace frontend { void watbSpanTwoSteps(win32::WinApplication* app, x86::CPU& cpu); }  // 0x50b080
+namespace frontend { void watbMoveShape(win32::WinApplication* app, x86::CPU& cpu); }  // 0x50b0b0
+namespace frontend { void watbNextByte(win32::WinApplication* app, x86::CPU& cpu); }  // 0x50b540
+namespace frontend { void watbCharWidthEntry(win32::WinApplication* app, x86::CPU& cpu); }  // 0x50b560
+namespace frontend { void watbNextChar(win32::WinApplication* app, x86::CPU& cpu); }  // 0x50b580
+namespace frontend { void watbTextAlpha(win32::WinApplication* app, x86::CPU& cpu); }  // 0x50b5c0
+namespace frontend { void watbTextPlotted(win32::WinApplication* app, x86::CPU& cpu); }  // 0x50ba90
+namespace frontend { void watbTextMono(win32::WinApplication* app, x86::CPU& cpu); }  // 0x50bb80
+namespace frontend { void watbBlendTable(win32::WinApplication* app, x86::CPU& cpu); }  // 0x50bdf0
+namespace frontend { void watbFadeTable(win32::WinApplication* app, x86::CPU& cpu); }  // 0x50bfd0
+namespace frontend { void watbInitTextDraw(win32::WinApplication* app, x86::CPU& cpu); }  // 0x50c0d0
+namespace frontend { void watbTextPalette(win32::WinApplication* app, x86::CPU& cpu); }  // 0x50c180
+namespace frontend { void watbFreeTextDraw(win32::WinApplication* app, x86::CPU& cpu); }  // 0x50c1e0
+namespace frontend { void watbPlotMask8(win32::WinApplication* app, x86::CPU& cpu); }  // 0x50c220
+namespace frontend { void watbPlotMask16(win32::WinApplication* app, x86::CPU& cpu); }  // 0x50c270
+namespace frontend { void watbPlotMask24(win32::WinApplication* app, x86::CPU& cpu); }  // 0x50c2c0
+namespace frontend { void watbPlotMask32(win32::WinApplication* app, x86::CPU& cpu); }  // 0x50c350
+namespace frontend { void watbColourToArgb(win32::WinApplication* app, x86::CPU& cpu); }  // 0x50c3a0
 namespace watcom { void setbits(win32::WinApplication* app, x86::CPU& cpu); }  // 0x50c540
+namespace frontend { void watbDispatchKey(win32::WinApplication* app, x86::CPU& cpu); }  // 0x50c584
+namespace frontend { void watbRegisterKey(win32::WinApplication* app, x86::CPU& cpu); }  // 0x50c5d4
 namespace watcom { void cgetc(win32::WinApplication* app, x86::CPU& cpu); }  // 0x50c640
 namespace watcom { void uncget(win32::WinApplication* app, x86::CPU& cpu); }  // 0x50c648
 namespace watcom { void scnf(win32::WinApplication* app, x86::CPU& cpu); }  // 0x50c650
@@ -3287,18 +4486,44 @@ namespace watcom { void scan_float(win32::WinApplication* app, x86::CPU& cpu); }
 namespace watcom { void scan_int(win32::WinApplication* app, x86::CPU& cpu); }  // 0x50d0f0
 namespace watcom { void radix_value(win32::WinApplication* app, x86::CPU& cpu); }  // 0x50d510
 namespace watcom { void chktrm(win32::WinApplication* app, x86::CPU& cpu); }  // 0x50d538
+namespace frontend { void watbCopyBlock(win32::WinApplication* app, x86::CPU& cpu); }  // 0x50d560
+namespace frontend { void watbNothing50d6d0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x50d6d0
+namespace frontend { void watbBlendSpanIndexed(win32::WinApplication* app, x86::CPU& cpu); }  // 0x50d6e0
+namespace frontend { void watbBlendSpan1555(win32::WinApplication* app, x86::CPU& cpu); }  // 0x50d7e0
+namespace frontend { void watbBlendSpan565(win32::WinApplication* app, x86::CPU& cpu); }  // 0x50d880
+namespace frontend { void watbBlendSpan888(win32::WinApplication* app, x86::CPU& cpu); }  // 0x50d910
+namespace frontend { void watbBlendSpan8888(win32::WinApplication* app, x86::CPU& cpu); }  // 0x50d9c0
+namespace frontend { void watbBlendSpanPalette565(win32::WinApplication* app, x86::CPU& cpu); }  // 0x50daa0
+namespace frontend { void watbDrawAlphaShape(win32::WinApplication* app, x86::CPU& cpu); }  // 0x50db30
 namespace dead { void stub_0x50dbb0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x50dbb0
 namespace dead { void stub_0x50dbd0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x50dbd0
+namespace frontend { void watbNothing50dbf0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x50dbf0
 namespace ea { void qnth(win32::WinApplication* app, x86::CPU& cpu); }  // 0x50dc00
 namespace ea { void qunlink(win32::WinApplication* app, x86::CPU& cpu); }  // 0x50dc20
+namespace frontend { void qinit(win32::WinApplication* app, x86::CPU& cpu); }  // 0x50dcd0
+namespace frontend { void qinitpeer(win32::WinApplication* app, x86::CPU& cpu); }  // 0x50dd60
 namespace ea { void qfree(win32::WinApplication* app, x86::CPU& cpu); }  // 0x50dde0
+namespace frontend { void qpush(win32::WinApplication* app, x86::CPU& cpu); }  // 0x50de50
+namespace frontend { void qbottom(win32::WinApplication* app, x86::CPU& cpu); }  // 0x50ded0
+namespace frontend { void qpop(win32::WinApplication* app, x86::CPU& cpu); }  // 0x50df60
+namespace frontend { void qpoplast(win32::WinApplication* app, x86::CPU& cpu); }  // 0x50dff0
+namespace frontend { void qinsert(win32::WinApplication* app, x86::CPU& cpu); }  // 0x50e0a0
 namespace ea { void qremove(win32::WinApplication* app, x86::CPU& cpu); }  // 0x50e150
 namespace ea { void qlength(win32::WinApplication* app, x86::CPU& cpu); }  // 0x50e1d0
 namespace ea { void qposition(win32::WinApplication* app, x86::CPU& cpu); }  // 0x50e220
+namespace frontend { void qlowpriority(win32::WinApplication* app, x86::CPU& cpu); }  // 0x50e2d0
 namespace dead { void stub_0x50e360(win32::WinApplication* app, x86::CPU& cpu); }  // 0x50e360
+namespace frontend { void qfind(win32::WinApplication* app, x86::CPU& cpu); }  // 0x50e3f0
 namespace ea { void qfindindex(win32::WinApplication* app, x86::CPU& cpu); }  // 0x50e470
+namespace frontend { void qfindpriority(win32::WinApplication* app, x86::CPU& cpu); }  // 0x50e500
+namespace frontend { void watbQueueFetch(win32::WinApplication* app, x86::CPU& cpu); }  // 0x50e5a0
 namespace dead { void stub_0x50e670(win32::WinApplication* app, x86::CPU& cpu); }  // 0x50e670
 namespace dead { void stub_0x50e740(win32::WinApplication* app, x86::CPU& cpu); }  // 0x50e740
+namespace frontend { void winaQueueTakeByPriority(win32::WinApplication* app, x86::CPU& cpu); }  // 0x50e800
+namespace frontend { void qiterate(win32::WinApplication* app, x86::CPU& cpu); }  // 0x50e8e0
+namespace frontend { void qsafeiterate(win32::WinApplication* app, x86::CPU& cpu); }  // 0x50e9b0
+namespace frontend { void fileLockEnter(win32::WinApplication* app, x86::CPU& cpu); }  // 0x50ea20
+namespace frontend { void fileLockLeave(win32::WinApplication* app, x86::CPU& cpu); }  // 0x50ea40
 namespace watcom { void modf(win32::WinApplication* app, x86::CPU& cpu); }  // 0x50ea4e
 namespace dead { void stub_0x50ea68(win32::WinApplication* app, x86::CPU& cpu); }  // 0x50ea68
 namespace dead { void stub_0x50ea85(win32::WinApplication* app, x86::CPU& cpu); }  // 0x50ea85
@@ -3308,12 +4533,21 @@ namespace watcom { void getctime(win32::WinApplication* app, x86::CPU& cpu); }  
 namespace watcom { void mktime(win32::WinApplication* app, x86::CPU& cpu); }  // 0x50eba0
 namespace ea { void huffUnpack(win32::WinApplication* app, x86::CPU& cpu); }  // 0x50ed50
 namespace ea { void runUnpack(win32::WinApplication* app, x86::CPU& cpu); }  // 0x510110
+namespace loader { void refpack(win32::WinApplication* app, x86::CPU& cpu); }  // 0x5102a4
+namespace dead { void stub_0x5102f0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x5102f0
+namespace pieces { void stub_0x510337(win32::WinApplication* app, x86::CPU& cpu); }  // 0x510337
+namespace pieces { void stub_0x51039e(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51039e
 namespace ea { void dxtBlock(win32::WinApplication* app, x86::CPU& cpu); }  // 0x510420
 namespace dead { void stub_0x510740(win32::WinApplication* app, x86::CPU& cpu); }  // 0x510740
 namespace ea { void dxtUnpack(win32::WinApplication* app, x86::CPU& cpu); }  // 0x510760
 namespace ea { void pairExpand(win32::WinApplication* app, x86::CPU& cpu); }  // 0x510820
 namespace ea { void pairUnpack(win32::WinApplication* app, x86::CPU& cpu); }  // 0x510870
 namespace port { void findRequest(win32::WinApplication* app, x86::CPU& cpu); }  // 0x510a10
+namespace dead { void stub_0x510a50(win32::WinApplication* app, x86::CPU& cpu); }  // 0x510a50
+namespace dead { void stub_0x510bb3(win32::WinApplication* app, x86::CPU& cpu); }  // 0x510bb3
+namespace dead { void stub_0x510cbd(win32::WinApplication* app, x86::CPU& cpu); }  // 0x510cbd
+namespace dead { void stub_0x510e48(win32::WinApplication* app, x86::CPU& cpu); }  // 0x510e48
+namespace dead { void stub_0x510ff8(win32::WinApplication* app, x86::CPU& cpu); }  // 0x510ff8
 namespace dead { void stub_0x511200(win32::WinApplication* app, x86::CPU& cpu); }  // 0x511200
 namespace port { void playerMemory(win32::WinApplication* app, x86::CPU& cpu); }  // 0x511210
 namespace port { void SNDPKTPLAY_create(win32::WinApplication* app, x86::CPU& cpu); }  // 0x511228
@@ -3336,14 +4570,57 @@ namespace watcom { void fatalWrite(win32::WinApplication* app, x86::CPU& cpu); }
 namespace watcom { void fatal_runtime_error(win32::WinApplication* app, x86::CPU& cpu); }  // 0x511d0c
 namespace dead { void stub_0x511d30(win32::WinApplication* app, x86::CPU& cpu); }  // 0x511d30
 namespace dead { void stub_0x511dc0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x511dc0
+namespace frontend { void commEvent(win32::WinApplication* app, x86::CPU& cpu); }  // 0x512180
 namespace ea { void layerSend(win32::WinApplication* app, x86::CPU& cpu); }  // 0x5123b0
+namespace frontend { void layerReceiveLast(win32::WinApplication* app, x86::CPU& cpu); }  // 0x512470
 namespace ea { void layerCallPacker(win32::WinApplication* app, x86::CPU& cpu); }  // 0x512530
+namespace frontend { void layerCallUnpacker(win32::WinApplication* app, x86::CPU& cpu); }  // 0x5125b0
 namespace ea { void layerPackFromTop(win32::WinApplication* app, x86::CPU& cpu); }  // 0x512630
+namespace frontend { void layerReceiveFromTop(win32::WinApplication* app, x86::CPU& cpu); }  // 0x512650
+namespace frontend { void connInitFilter(win32::WinApplication* app, x86::CPU& cpu); }  // 0x512660
 namespace ea { void layerFree(win32::WinApplication* app, x86::CPU& cpu); }  // 0x5126c0
+namespace frontend { void layerReceive(win32::WinApplication* app, x86::CPU& cpu); }  // 0x5126f0
 namespace dead { void stub_0x512710(win32::WinApplication* app, x86::CPU& cpu); }  // 0x512710
 namespace ea { void layerSendPacket(win32::WinApplication* app, x86::CPU& cpu); }  // 0x512770
 namespace dead { void stub_0x512790(win32::WinApplication* app, x86::CPU& cpu); }  // 0x512790
 namespace dead { void stub_0x5127b0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x5127b0
+namespace frontend { void ipxBroadcastOpen(win32::WinApplication* app, x86::CPU& cpu); }  // 0x5127d0
+namespace frontend { void ipxScanInterfaces(win32::WinApplication* app, x86::CPU& cpu); }  // 0x512890
+namespace frontend { void ipxAdvertiseTo(win32::WinApplication* app, x86::CPU& cpu); }  // 0x512940
+namespace frontend { void ipxIsRequest(win32::WinApplication* app, x86::CPU& cpu); }  // 0x512980
+namespace frontend { void ipxServerSocket(win32::WinApplication* app, x86::CPU& cpu); }  // 0x5129e0
+namespace frontend { void ipxServerThread(win32::WinApplication* app, x86::CPU& cpu); }  // 0x512ad0
+namespace frontend { void ipxStartServer(win32::WinApplication* app, x86::CPU& cpu); }  // 0x512c80
+namespace frontend { void ipxStopServer(win32::WinApplication* app, x86::CPU& cpu); }  // 0x512d70
+namespace pieces { void stub_0x512dd0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x512dd0
+namespace frontend { void gameGuidText(win32::WinApplication* app, x86::CPU& cpu); }  // 0x512f60
+namespace frontend { void setResponseTimeout(win32::WinApplication* app, x86::CPU& cpu); }  // 0x512fc0
+namespace frontend { void responseTimedOut(win32::WinApplication* app, x86::CPU& cpu); }  // 0x512fd0
+namespace frontend { void netReturnZeroToo(win32::WinApplication* app, x86::CPU& cpu); }  // 0x512ff0
+namespace frontend { void netCountBits(win32::WinApplication* app, x86::CPU& cpu); }  // 0x513000
+namespace frontend { void sendGameInfo(win32::WinApplication* app, x86::CPU& cpu); }  // 0x513030
+namespace frontend { void sendServerRequest(win32::WinApplication* app, x86::CPU& cpu); }  // 0x513190
+namespace frontend { void findPlayerByAddress(win32::WinApplication* app, x86::CPU& cpu); }  // 0x5132a0
+namespace frontend { void addNewPlayer(win32::WinApplication* app, x86::CPU& cpu); }  // 0x513320
+namespace frontend { void sessionMessage(win32::WinApplication* app, x86::CPU& cpu); }  // 0x5133a0
+namespace frontend { void netcGatherPulse(win32::WinApplication* app, x86::CPU& cpu); }  // 0x5140e0
+namespace frontend { void netcGatherPulseStart(win32::WinApplication* app, x86::CPU& cpu); }  // 0x514260
+namespace frontend { void netOpen(win32::WinApplication* app, x86::CPU& cpu); }  // 0x514280
+namespace frontend { void netClose(win32::WinApplication* app, x86::CPU& cpu); }  // 0x514320
+namespace frontend { void netcGatherRequest(win32::WinApplication* app, x86::CPU& cpu); }  // 0x5143d0
+namespace frontend { void netcGatherJoin(win32::WinApplication* app, x86::CPU& cpu); }  // 0x5144b0
+namespace frontend { void netcGatherGameInfo(win32::WinApplication* app, x86::CPU& cpu); }  // 0x5145b0
+namespace frontend { void netcGatherNewGame(win32::WinApplication* app, x86::CPU& cpu); }  // 0x514650
+namespace frontend { void netcGatherSetGameInfo(win32::WinApplication* app, x86::CPU& cpu); }  // 0x514820
+namespace frontend { void netcGatherCloseGame(win32::WinApplication* app, x86::CPU& cpu); }  // 0x514850
+namespace frontend { void netcGatherReopenGame(win32::WinApplication* app, x86::CPU& cpu); }  // 0x5148b0
+namespace frontend { void netcGatherLeave(win32::WinApplication* app, x86::CPU& cpu); }  // 0x514970
+namespace frontend { void netcGatherEnumPlayers(win32::WinApplication* app, x86::CPU& cpu); }  // 0x514af0
+namespace frontend { void netcGatherKillPlayer(win32::WinApplication* app, x86::CPU& cpu); }  // 0x514dc0
+namespace frontend { void netcGatherOpenConnection(win32::WinApplication* app, x86::CPU& cpu); }  // 0x514ec0
+namespace frontend { void netcGatherReceive(win32::WinApplication* app, x86::CPU& cpu); }  // 0x514f70
+namespace frontend { void netcLoadRasApi(win32::WinApplication* app, x86::CPU& cpu); }  // 0x515050
+namespace frontend { void netLocalAddress(win32::WinApplication* app, x86::CPU& cpu); }  // 0x5150f0
 namespace watcom { void MemAllocator(win32::WinApplication* app, x86::CPU& cpu); }  // 0x515300
 namespace watcom { void MemFree(win32::WinApplication* app, x86::CPU& cpu); }  // 0x5153b0
 namespace watcom { void LinkUpNewNHeap(win32::WinApplication* app, x86::CPU& cpu); }  // 0x5154e0
@@ -3355,9 +4632,15 @@ namespace watcom { void NTRealKey(win32::WinApplication* app, x86::CPU& cpu); } 
 namespace watcom { void openConsoles(win32::WinApplication* app, x86::CPU& cpu); }  // 0x5156b8
 namespace watcom { void NTConsoleInput(win32::WinApplication* app, x86::CPU& cpu); }  // 0x515728
 namespace watcom { void NTConsoleOutput(win32::WinApplication* app, x86::CPU& cpu); }  // 0x515734
+namespace frontend { void watbInitStreams(win32::WinApplication* app, x86::CPU& cpu); }  // 0x515740
+namespace frontend { void watbCloseStreams(win32::WinApplication* app, x86::CPU& cpu); }  // 0x5157e0
+namespace pieces { void stub_0x5157ec(win32::WinApplication* app, x86::CPU& cpu); }  // 0x5157ec
+namespace frontend { void watbCloseStreamsFrom(win32::WinApplication* app, x86::CPU& cpu); }  // 0x5157f4
 namespace watcom { void flushall(win32::WinApplication* app, x86::CPU& cpu); }  // 0x515850
 namespace watcom { void flushall_(win32::WinApplication* app, x86::CPU& cpu); }  // 0x515858
 namespace watcom { void mainStart(win32::WinApplication* app, x86::CPU& cpu); }  // 0x5158a0
+namespace frontend { void watbBuildArgv(win32::WinApplication* app, x86::CPU& cpu); }  // 0x515900
+namespace frontend { void watbSplitCommandLine(win32::WinApplication* app, x86::CPU& cpu); }  // 0x5159e4
 namespace dead { void stub_0x515af0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x515af0
 namespace dead { void stub_0x515b0c(win32::WinApplication* app, x86::CPU& cpu); }  // 0x515b0c
 namespace watcom { void tzWindows(win32::WinApplication* app, x86::CPU& cpu); }  // 0x515b34
@@ -3381,15 +4664,41 @@ namespace watcom { void scalePowers(win32::WinApplication* app, x86::CPU& cpu); 
 namespace watcom { void scaleEnd(win32::WinApplication* app, x86::CPU& cpu); }  // 0x5166cf
 namespace watcom { void scaleBy(win32::WinApplication* app, x86::CPU& cpu); }  // 0x5166d8
 namespace watcom { void LDScale10x(win32::WinApplication* app, x86::CPU& cpu); }  // 0x516759
+namespace frontend { void watbLongDoubleToDigits(win32::WinApplication* app, x86::CPU& cpu); }  // 0x5167b3
+namespace frontend { void watbDigitsLoop(win32::WinApplication* app, x86::CPU& cpu); }  // 0x5169ef
+namespace frontend { void watbEightDigits(win32::WinApplication* app, x86::CPU& cpu); }  // 0x516a87
+namespace frontend { void watbFourDigits(win32::WinApplication* app, x86::CPU& cpu); }  // 0x516a9d
+namespace frontend { void watbTwoDigits(win32::WinApplication* app, x86::CPU& cpu); }  // 0x516ab4
+namespace frontend { void watbAfterEightDigits(win32::WinApplication* app, x86::CPU& cpu); }  // 0x516acc
+namespace frontend { void watbRoundDigits(win32::WinApplication* app, x86::CPU& cpu); }  // 0x516ae2
+namespace frontend { void watbEndLongDouble(win32::WinApplication* app, x86::CPU& cpu); }  // 0x516be2
+namespace frontend { void watbFormatF(win32::WinApplication* app, x86::CPU& cpu); }  // 0x516bf5
+namespace frontend { void watbEndFormat(win32::WinApplication* app, x86::CPU& cpu); }  // 0x516dfa
+namespace frontend { void watbFormatE(win32::WinApplication* app, x86::CPU& cpu); }  // 0x516e13
 namespace graphics { void useDriverSlot(win32::WinApplication* app, x86::CPU& cpu); }  // 0x517170
 namespace graphics { void keepDriverSlot(win32::WinApplication* app, x86::CPU& cpu); }  // 0x517370
 namespace dead { void stub_0x517560(win32::WinApplication* app, x86::CPU& cpu); }  // 0x517560
 namespace dead { void stub_0x517570(win32::WinApplication* app, x86::CPU& cpu); }  // 0x517570
+namespace frontend { void winaGraphicsClose(win32::WinApplication* app, x86::CPU& cpu); }  // 0x517580
+namespace frontend { void winaGraphicsAskClose(win32::WinApplication* app, x86::CPU& cpu); }  // 0x5175b0
 namespace graphics { void setVideoMode(win32::WinApplication* app, x86::CPU& cpu); }  // 0x517610
 namespace graphics { void lockFrameBuffer(win32::WinApplication* app, x86::CPU& cpu); }  // 0x517890
 namespace graphics { void releaseFrameLock(win32::WinApplication* app, x86::CPU& cpu); }  // 0x5178d0
+namespace frontend { void winaGraphicsPalette(win32::WinApplication* app, x86::CPU& cpu); }  // 0x517920
 namespace graphics { void releaseAndFlip(win32::WinApplication* app, x86::CPU& cpu); }  // 0x517990
 namespace graphics { void setUpScreen(win32::WinApplication* app, x86::CPU& cpu); }  // 0x5179d0
+namespace frontend { void eaTextStart(win32::WinApplication* app, x86::CPU& cpu); }  // 0x517b30
+namespace frontend { void eaTextEnd(win32::WinApplication* app, x86::CPU& cpu); }  // 0x517b70
+namespace frontend { void keyboardIsPc98(win32::WinApplication* app, x86::CPU& cpu); }  // 0x517ba0
+namespace frontend { void memPoolDump(win32::WinApplication* app, x86::CPU& cpu); }  // 0x517bf0
+namespace frontend { void memPoolDumpDefault(win32::WinApplication* app, x86::CPU& cpu); }  // 0x517d60
+namespace frontend { void debugKeyDisplayFlag(win32::WinApplication* app, x86::CPU& cpu); }  // 0x517d70
+namespace frontend { void debugKeyScreenshot(win32::WinApplication* app, x86::CPU& cpu); }  // 0x517da0
+namespace frontend { void debugKeysBind(win32::WinApplication* app, x86::CPU& cpu); }  // 0x517de0
+namespace frontend { void blockHasCrcTag(win32::WinApplication* app, x86::CPU& cpu); }  // 0x517e50
+namespace frontend { void blockCrcGood(win32::WinApplication* app, x86::CPU& cpu); }  // 0x517eb0
+namespace frontend { void blockCheckCrc(win32::WinApplication* app, x86::CPU& cpu); }  // 0x517f10
+namespace frontend { void eaSetLoadHook(win32::WinApplication* app, x86::CPU& cpu); }  // 0x518040
 namespace watcom { void mbslen(win32::WinApplication* app, x86::CPU& cpu); }  // 0x518050
 namespace watcom { void mbstowcs(win32::WinApplication* app, x86::CPU& cpu); }  // 0x518080
 namespace dead { void stub_0x518100(win32::WinApplication* app, x86::CPU& cpu); }  // 0x518100
@@ -3397,14 +4706,32 @@ namespace watcom { void wsetenv(win32::WinApplication* app, x86::CPU& cpu); }  /
 namespace watcom { void wfindenv(win32::WinApplication* app, x86::CPU& cpu); }  // 0x518498
 namespace watcom { void nrealloc(win32::WinApplication* app, x86::CPU& cpu); }  // 0x5185c0
 namespace watcom { void memmove(win32::WinApplication* app, x86::CPU& cpu); }  // 0x518640
+namespace graphics { void dead_0x518690(win32::WinApplication* app, x86::CPU& cpu); }  // 0x518690
+namespace graphics { void dead_0x518870(win32::WinApplication* app, x86::CPU& cpu); }  // 0x518870
+namespace graphics { void dead_0x518d50(win32::WinApplication* app, x86::CPU& cpu); }  // 0x518d50
+namespace graphics { void dead_0x518df0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x518df0
+namespace graphics { void dead_0x518e40(win32::WinApplication* app, x86::CPU& cpu); }  // 0x518e40
+namespace graphics { void dead_0x518eb0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x518eb0
+namespace graphics { void dead_0x518ee0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x518ee0
+namespace graphics { void dead_0x518ef0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x518ef0
+namespace frontend { void rendFontAlloc(win32::WinApplication* app, x86::CPU& cpu); }  // 0x518f80
+namespace frontend { void rendFontFree(win32::WinApplication* app, x86::CPU& cpu); }  // 0x518fc0
+namespace frontend { void videoBuffersStart(win32::WinApplication* app, x86::CPU& cpu); }  // 0x518fd0
 namespace dead { void stub_0x519080(win32::WinApplication* app, x86::CPU& cpu); }  // 0x519080
+namespace frontend { void winaReleaseVideoBuffers(win32::WinApplication* app, x86::CPU& cpu); }  // 0x519140
 namespace dead { void stub_0x5191b0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x5191b0
 namespace dead { void stub_0x519560(win32::WinApplication* app, x86::CPU& cpu); }  // 0x519560
 namespace dead { void stub_0x5195b0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x5195b0
+namespace frontend { void fontFindGlyph(win32::WinApplication* app, x86::CPU& cpu); }  // 0x5199b0
 namespace dead { void stub_0x519a10(win32::WinApplication* app, x86::CPU& cpu); }  // 0x519a10
+namespace frontend { void fontGlyph(win32::WinApplication* app, x86::CPU& cpu); }  // 0x519a50
 namespace dead { void stub_0x519ae0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x519ae0
 namespace dead { void stub_0x519e30(win32::WinApplication* app, x86::CPU& cpu); }  // 0x519e30
+namespace frontend { void fontBitsPerPixel(win32::WinApplication* app, x86::CPU& cpu); }  // 0x519ea0
+namespace frontend { void fontCreate(win32::WinApplication* app, x86::CPU& cpu); }  // 0x519f10
+namespace frontend { void winaFreeSurface(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51a170
 namespace dead { void stub_0x51a188(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51a188
+namespace pieces { void stub_0x51a1b8(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51a1b8
 namespace watcom { void DSQRT(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51a1ba
 namespace dead { void stub_0x51a1f0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51a1f0
 namespace dead { void stub_0x51a200(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51a200
@@ -3415,42 +4742,142 @@ namespace dead { void stub_0x51a3b0(win32::WinApplication* app, x86::CPU& cpu); 
 namespace dead { void stub_0x51a3e0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51a3e0
 namespace dead { void stub_0x51a400(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51a400
 namespace dead { void stub_0x51a420(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51a420
+namespace frontend { void netcModemResponse(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51a470
+namespace frontend { void netcModemCommand(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51a7b0
+namespace frontend { void netcModemAttention(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51a930
 namespace dead { void stub_0x51ab10(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51ab10
+namespace frontend { void netcSerialCloseAll(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51ab40
+namespace frontend { void netcSerialCommand(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51ab70
+namespace frontend { void netcSerialStartIo(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51abc0
+namespace frontend { void netcSerialFinishIo(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51ad70
+namespace frontend { void netcSerialWaitEvents(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51aeb0
+namespace frontend { void netcSerialThread(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51af10
+namespace frontend { void netcSerialIsOpen(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51b030
 namespace dead { void stub_0x51b060(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51b060
 namespace dead { void stub_0x51b0d0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51b0d0
 namespace dead { void stub_0x51b140(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51b140
+namespace frontend { void netcSerialDropInput(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51b1c0
+namespace frontend { void netcSerialDropOutput(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51b1e0
+namespace frontend { void netcSerialClose(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51b200
+namespace frontend { void netcSerialOpenHandle(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51b2f0
+namespace frontend { void netcSerialOpen(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51b480
+namespace frontend { void netcSerialWriteWhole(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51b530
 namespace dead { void stub_0x51b5a0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51b5a0
+namespace frontend { void netcSerialWrite(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51b5f0
+namespace frontend { void netcSerialSet(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51b710
 namespace dead { void stub_0x51b830(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51b830
+namespace frontend { void netcSerialInCount(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51b8a0
+namespace frontend { void netcSerialOutRoom(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51b900
+namespace frontend { void netcSerialPeek(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51b970
+namespace frontend { void netcSerialRead(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51ba50
 namespace dead { void stub_0x51bae0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51bae0
 namespace dead { void stub_0x51bb60(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51bb60
+namespace frontend { void netcSerialWaitIn(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51bbd0
+namespace frontend { void netcFrameChecksum(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51bc70
+namespace frontend { void netcFrameChecksumGood(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51bca0
+namespace frontend { void netcFrameBuild(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51bcd0
+namespace frontend { void netcFrameSend(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51bcf0
+namespace frontend { void netcFrameSendControl(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51bd50
+namespace frontend { void netcUnreliableShutdown(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51bdc0
+namespace frontend { void netcUnreliableReceiveFrame(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51be90
+namespace frontend { void netcUnreliableReceive(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51bfd0
+namespace frontend { void netcUnreliableNotify(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51c0a0
+namespace frontend { void netcUnreliableOpen(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51c100
+namespace frontend { void netcUnreliableSend(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51c510
+namespace frontend { void netcUnreliableProcess(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51c5c0
+namespace frontend { void netcUnreliableClose(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51c690
+namespace frontend { void netcSequenceWiden(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51c7a0
+namespace frontend { void netcPacketChecksum(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51c7c0
+namespace frontend { void netcPacketChecksumGood(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51c7f0
+namespace frontend { void netcPacketAckNumber(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51c820
+namespace frontend { void netcPacketBuild(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51c890
+namespace frontend { void netcPacketSend(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51c8f0
+namespace frontend { void netcPacketSendControl(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51ca50
+namespace frontend { void netcPacketSendNak(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51caf0
+namespace frontend { void netcPacketGotAck(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51cb50
+namespace frontend { void netcPacketGotNak(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51cc00
+namespace frontend { void netcPacketShutdown(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51cc80
+namespace frontend { void netcPacketReceiveFrame(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51cd50
+namespace frontend { void netcPacketReceive(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51cf30
+namespace frontend { void netcPacketQueueKey(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51d000
+namespace frontend { void netcPacketCountDown(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51d010
+namespace frontend { void netcPacketResendDue(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51d040
+namespace frontend { void netcPacketNotify(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51d050
+namespace frontend { void netcPacketOpen(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51d270
+namespace frontend { void netcPacketSubmit(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51d810
+namespace frontend { void netcPacketProcess(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51d8f0
+namespace frontend { void netcPacketClose(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51d9e0
 namespace dead { void stub_0x51db20(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51db20
 namespace dead { void stub_0x51dd50(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51dd50
 namespace dead { void stub_0x51ddf0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51ddf0
+namespace frontend { void paletteFrom6Bits(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51de60
 namespace dead { void stub_0x51def0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51def0
+namespace frontend { void paletteFrom8Bits(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51df60
 namespace dead { void stub_0x51dfb0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51dfb0
 namespace dead { void stub_0x51e020(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51e020
 namespace watcom { void wctomb_(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51e060
 namespace watcom { void utoa(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51e0a0
 namespace watcom { void itoa(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51e0ec
+namespace frontend { void watcFpNotLoaded(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51e110
 namespace watcom { void ulltoa(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51e130
 namespace dead { void stub_0x51e1c8(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51e1c8
 namespace watcom { void prtfUtoa(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51e220
 namespace dead { void stub_0x51e26c(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51e26c
 namespace dead { void stub_0x51e290(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51e290
+namespace frontend { void watcSetMbcpZero(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51e2a0
 namespace watcom { void handlesFull(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51e2b0
 namespace watcom { void allocPOSIXHandle(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51e304
+namespace frontend { void watcSetOsHandle(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51e388
 namespace watcom { void freePOSIXHandle(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51e45c
 namespace watcom { void initPOSIXHandles(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51e490
 namespace watcom { void NTGetFakeHandle(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51e4f0
+namespace frontend { void watcFreeHandleTable(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51e51c
+namespace frontend { void watcNothing51e540(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51e540
+namespace frontend { void watcNewSemaphore(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51e544
+namespace frontend { void watcDeleteKeptSemaphores(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51e5e8
+namespace frontend { void watcDeleteExtraSemaphores(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51e618
+namespace frontend { void watcClearLock(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51e670
+namespace frontend { void watcLockStreams(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51e680
+namespace frontend { void watcUnlockStreams(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51e68c
+namespace frontend { void watcLockFile(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51e698
+namespace frontend { void watcUnlockFile(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51e6a8
+namespace frontend { void watcAllocHandleHook(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51e6b8
+namespace frontend { void watcFreeHandleHook(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51e6c0
+namespace frontend { void watcLockHeap(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51e6dc
+namespace frontend { void watcUnlockHeap(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51e6e4
+namespace frontend { void watcLockFileTable(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51e6f0
+namespace frontend { void watcUnlockFileTable(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51e6f8
+namespace frontend { void watcLockThreadList(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51e704
+namespace frontend { void watcUnlockThreadList(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51e70c
+namespace frontend { void watcLockHandleTable(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51e714
+namespace frontend { void watcLock(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51e71c
+namespace frontend { void watcUnlockHandleTable(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51e778
+namespace frontend { void watcUnlock(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51e780
+namespace frontend { void watcThreadData(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51e7a8
 namespace watcom { void initThreadData(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51e7ec
+namespace frontend { void watcAllocTlsIndex(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51e828
+namespace frontend { void watcAttachThread(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51e888
+namespace frontend { void watcDetachThread(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51e8dc
+namespace frontend { void watcEndThreads(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51e934
+namespace frontend { void watcFreeTlsIndex(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51e940
+namespace frontend { void watcInitThreads(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51e964
+namespace frontend { void watcFiniThreads(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51ea7c
 namespace watcom { void moduleWideName(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51eb00
 namespace watcom { void copyCommandLine(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51eba0
 namespace watcom { void copyWideCommandLine(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51ebf0
 namespace watcom { void stackLimits(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51ec20
+namespace frontend { void watcHasActiveWindow(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51ec90
+namespace frontend { void watcReportAppend(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51eccc
+namespace frontend { void watcReportException(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51ed24
+namespace frontend { void watcExceptionHandler(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51ef08
 namespace watcom { void InitExceptionHandling(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51f0d0
 namespace watcom { void DoneExceptionHandler(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51f11c
-namespace dead { void stub_0x51f272(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51f272
-namespace dead { void stub_0x51f320(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51f320
+namespace frontend { void watcFormatFloat(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51f140
+namespace frontend { void watcScanFloat(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51f254
+namespace frontend { void watcNothing51f270(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51f270
+namespace pieces { void stub_0x51f272(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51f272
+namespace frontend { void fdivBugCheck(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51f2a0
+namespace pieces { void stub_0x51f320(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51f320
 namespace port { void panSides(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51f520
 namespace port { void volumeMonoPair(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51f580
 namespace port { void volumeMonoLevels(win32::WinApplication* app, x86::CPU& cpu); }  // 0x51f5a4
@@ -3582,6 +5009,8 @@ namespace snd { void dead_0x523118(win32::WinApplication* app, x86::CPU& cpu); }
 namespace port { void reverbLength(win32::WinApplication* app, x86::CPU& cpu); }  // 0x523200
 namespace port { void reverbInit(win32::WinApplication* app, x86::CPU& cpu); }  // 0x52325c
 namespace port { void setVoiceSend(win32::WinApplication* app, x86::CPU& cpu); }  // 0x523310
+namespace graphics { void dead_0x523332(win32::WinApplication* app, x86::CPU& cpu); }  // 0x523332
+namespace graphics { void dead_0x523465(win32::WinApplication* app, x86::CPU& cpu); }  // 0x523465
 namespace dead { void stub_0x523488(win32::WinApplication* app, x86::CPU& cpu); }  // 0x523488
 namespace dead { void stub_0x5234a0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x5234a0
 namespace watcom { void GetNTAccessAttr(win32::WinApplication* app, x86::CPU& cpu); }  // 0x5234d0
@@ -3591,6 +5020,10 @@ namespace dead { void stub_0x5235d0(win32::WinApplication* app, x86::CPU& cpu); 
 namespace dead { void stub_0x5235dc(win32::WinApplication* app, x86::CPU& cpu); }  // 0x5235dc
 namespace dead { void stub_0x5235f0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x5235f0
 namespace watcom { void fullpath(win32::WinApplication* app, x86::CPU& cpu); }  // 0x523610
+namespace frontend { void watcShapeRowBytes(win32::WinApplication* app, x86::CPU& cpu); }  // 0x5236c0
+namespace frontend { void watcPutPixel(win32::WinApplication* app, x86::CPU& cpu); }  // 0x523760
+namespace frontend { void watcBlend4To8(win32::WinApplication* app, x86::CPU& cpu); }  // 0x5239ec
+namespace frontend { void watcWritePixel(win32::WinApplication* app, x86::CPU& cpu); }  // 0x523b00
 namespace watcom { void mbtowc(win32::WinApplication* app, x86::CPU& cpu); }  // 0x523c00
 namespace watcom { void FDFS(win32::WinApplication* app, x86::CPU& cpu); }  // 0x523ca0
 namespace watcom { void U8M(win32::WinApplication* app, x86::CPU& cpu); }  // 0x523cec
@@ -3606,16 +5039,38 @@ namespace watcom { void callMain(win32::WinApplication* app, x86::CPU& cpu); }  
 namespace watcom { void wcstombs(win32::WinApplication* app, x86::CPU& cpu); }  // 0x5242f0
 namespace watcom { void reporterror(win32::WinApplication* app, x86::CPU& cpu); }  // 0x5243a7
 namespace watcom { void reportError(win32::WinApplication* app, x86::CPU& cpu); }  // 0x5243b1
+namespace frontend { void longDoubleKind(win32::WinApplication* app, x86::CPU& cpu); }  // 0x52448c
 namespace graphics { void driverIdle(win32::WinApplication* app, x86::CPU& cpu); }  // 0x5244e0
+namespace frontend { void winaGraphicsIdle(win32::WinApplication* app, x86::CPU& cpu); }  // 0x5244f0
+namespace frontend { void winaSetDirectDraw(win32::WinApplication* app, x86::CPU& cpu); }  // 0x524500
+namespace frontend { void winaGraphicsLock(win32::WinApplication* app, x86::CPU& cpu); }  // 0x524550
+namespace frontend { void winaDriverMessage(win32::WinApplication* app, x86::CPU& cpu); }  // 0x5245a0
+namespace frontend { void winaDriverEvent(win32::WinApplication* app, x86::CPU& cpu); }  // 0x5245f0
+namespace frontend { void winaCloseDriverOnly(win32::WinApplication* app, x86::CPU& cpu); }  // 0x524620
 namespace graphics { void closeDriverAtExit(win32::WinApplication* app, x86::CPU& cpu); }  // 0x524640
 namespace graphics { void closeDriver(win32::WinApplication* app, x86::CPU& cpu); }  // 0x524650
+namespace pieces { void stub_0x52468f(win32::WinApplication* app, x86::CPU& cpu); }  // 0x52468f
 namespace graphics { void openDriver(win32::WinApplication* app, x86::CPU& cpu); }  // 0x5246a0
+namespace pieces { void stub_0x5247ab(win32::WinApplication* app, x86::CPU& cpu); }  // 0x5247ab
+namespace frontend { void winaSetScreenSize(win32::WinApplication* app, x86::CPU& cpu); }  // 0x5247c0
 namespace graphics { void dead_0x524820(win32::WinApplication* app, x86::CPU& cpu); }  // 0x524820
 namespace graphics { void unlockFrameBuffer(win32::WinApplication* app, x86::CPU& cpu); }  // 0x5248f0
+namespace frontend { void debugBoxCopyScreen(win32::WinApplication* app, x86::CPU& cpu); }  // 0x524930
+namespace frontend { void debugBoxPutBack(win32::WinApplication* app, x86::CPU& cpu); }  // 0x524950
+namespace frontend { void debugBoxAsk(win32::WinApplication* app, x86::CPU& cpu); }  // 0x524970
+namespace frontend { void exitConfirm(win32::WinApplication* app, x86::CPU& cpu); }  // 0x524bb0
+namespace frontend { void debugBanner(win32::WinApplication* app, x86::CPU& cpu); }  // 0x524c30
+namespace frontend { void debugKeyPause(win32::WinApplication* app, x86::CPU& cpu); }  // 0x524d90
+namespace frontend { void debugKeyViewerFirst(win32::WinApplication* app, x86::CPU& cpu); }  // 0x524dd0
+namespace frontend { void debugKeyViewerSecond(win32::WinApplication* app, x86::CPU& cpu); }  // 0x524de0
+namespace frontend { void blockResize(win32::WinApplication* app, x86::CPU& cpu); }  // 0x524df0
 namespace dead { void stub_0x524f80(win32::WinApplication* app, x86::CPU& cpu); }  // 0x524f80
+namespace frontend { void watcInitEnviron(win32::WinApplication* app, x86::CPU& cpu); }  // 0x524f88
+namespace frontend { void watcFreeEnviron(win32::WinApplication* app, x86::CPU& cpu); }  // 0x52506c
 namespace watcom { void mbterm(win32::WinApplication* app, x86::CPU& cpu); }  // 0x5250c0
 namespace watcom { void mbsinc(win32::WinApplication* app, x86::CPU& cpu); }  // 0x525100
 namespace dead { void stub_0x525130(win32::WinApplication* app, x86::CPU& cpu); }  // 0x525130
+namespace pieces { void stub_0x5251a0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x5251a0
 namespace watcom { void create_wide_environment(win32::WinApplication* app, x86::CPU& cpu); }  // 0x5252a0
 namespace watcom { void wcslen(win32::WinApplication* app, x86::CPU& cpu); }  // 0x525300
 namespace watcom { void memcpy(win32::WinApplication* app, x86::CPU& cpu); }  // 0x525320
@@ -3626,22 +5081,56 @@ namespace watcom { void nexpand(win32::WinApplication* app, x86::CPU& cpu); }  /
 namespace watcom { void HeapManager_expand(win32::WinApplication* app, x86::CPU& cpu); }  // 0x5253cc
 namespace watcom { void nexpandFailed(win32::WinApplication* app, x86::CPU& cpu); }  // 0x525578
 namespace dead { void stub_0x525590(win32::WinApplication* app, x86::CPU& cpu); }  // 0x525590
+namespace frontend { void winaFreeSurfaceCache(win32::WinApplication* app, x86::CPU& cpu); }  // 0x525600
+namespace frontend { void winaNextByte(win32::WinApplication* app, x86::CPU& cpu); }  // 0x525630
+namespace frontend { void winaMapCharacter(win32::WinApplication* app, x86::CPU& cpu); }  // 0x525650
+namespace frontend { void winaNextCharacter(win32::WinApplication* app, x86::CPU& cpu); }  // 0x525670
 namespace dead { void stub_0x5256b0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x5256b0
+namespace frontend { void fontSetProperty(win32::WinApplication* app, x86::CPU& cpu); }  // 0x5257c0
+namespace frontend { void fontGetProperty(win32::WinApplication* app, x86::CPU& cpu); }  // 0x5259d0
 namespace dead { void stub_0x525ac0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x525ac0
+namespace frontend { void rendFontSetOrigin(win32::WinApplication* app, x86::CPU& cpu); }  // 0x525b80
 namespace dead { void stub_0x525b90(win32::WinApplication* app, x86::CPU& cpu); }  // 0x525b90
+namespace frontend { void watcSetMbcp(win32::WinApplication* app, x86::CPU& cpu); }  // 0x525ba0
 namespace dead { void stub_0x525d04(win32::WinApplication* app, x86::CPU& cpu); }  // 0x525d04
 namespace watcom { void U8D(win32::WinApplication* app, x86::CPU& cpu); }  // 0x525d59
 namespace watcom { void calloc(win32::WinApplication* app, x86::CPU& cpu); }  // 0x525df0
+namespace frontend { void watcAttachThisThread(win32::WinApplication* app, x86::CPU& cpu); }  // 0x525e10
+namespace frontend { void watcResizeThreadData(win32::WinApplication* app, x86::CPU& cpu); }  // 0x525e4c
+namespace frontend { void watcAddThread(win32::WinApplication* app, x86::CPU& cpu); }  // 0x525f20
+namespace frontend { void watcRemoveThread(win32::WinApplication* app, x86::CPU& cpu); }  // 0x525f84
 namespace dead { void stub_0x525fd0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x525fd0
+namespace frontend { void watcFreeThreadList(win32::WinApplication* app, x86::CPU& cpu); }  // 0x525ff8
 namespace watcom { void initThread(win32::WinApplication* app, x86::CPU& cpu); }  // 0x526030
+namespace frontend { void watcFreeThreadListJump(win32::WinApplication* app, x86::CPU& cpu); }  // 0x526060
+namespace frontend { void watcClearFpExceptions(win32::WinApplication* app, x86::CPU& cpu); }  // 0x526070
+namespace frontend { void watcSetSignalHandler(win32::WinApplication* app, x86::CPU& cpu); }  // 0x526080
+namespace frontend { void watcSignalHandler(win32::WinApplication* app, x86::CPU& cpu); }  // 0x5260c8
+namespace frontend { void watcSignalMask(win32::WinApplication* app, x86::CPU& cpu); }  // 0x5260ec
+namespace frontend { void watcSignalForCode(win32::WinApplication* app, x86::CPU& cpu); }  // 0x526110
+namespace frontend { void watcConsoleControl(win32::WinApplication* app, x86::CPU& cpu); }  // 0x52612c
+namespace frontend { void watcConsoleWanted(win32::WinApplication* app, x86::CPU& cpu); }  // 0x526194
 namespace dead { void stub_0x5261cc(win32::WinApplication* app, x86::CPU& cpu); }  // 0x5261cc
+namespace frontend { void watcConsoleUnhook(win32::WinApplication* app, x86::CPU& cpu); }  // 0x5261fc
 namespace dead { void stub_0x526238(win32::WinApplication* app, x86::CPU& cpu); }  // 0x526238
+namespace frontend { void watcRaiseFp(win32::WinApplication* app, x86::CPU& cpu); }  // 0x526244
 namespace dead { void stub_0x526288(win32::WinApplication* app, x86::CPU& cpu); }  // 0x526288
-namespace dead { void stub_0x5269d4(win32::WinApplication* app, x86::CPU& cpu); }  // 0x5269d4
-namespace dead { void stub_0x526aeb(win32::WinApplication* app, x86::CPU& cpu); }  // 0x526aeb
+namespace frontend { void watcRaise(win32::WinApplication* app, x86::CPU& cpu); }  // 0x526338
+namespace frontend { void watcInitThreadSignals(win32::WinApplication* app, x86::CPU& cpu); }  // 0x5263a8
+namespace frontend { void watcFiniThreadSignals(win32::WinApplication* app, x86::CPU& cpu); }  // 0x5263f0
+namespace frontend { void watcHookThreadSignals(win32::WinApplication* app, x86::CPU& cpu); }  // 0x526420
+namespace frontend { void doubleDivide(win32::WinApplication* app, x86::CPU& cpu); }  // 0x52643c
+namespace frontend { void doubleSubtract(win32::WinApplication* app, x86::CPU& cpu); }  // 0x526642
+namespace frontend { void doubleProductFromX87(win32::WinApplication* app, x86::CPU& cpu); }  // 0x526674
+namespace frontend { void doubleMultiply(win32::WinApplication* app, x86::CPU& cpu); }  // 0x5267ff
+namespace frontend { void doubleCompare(win32::WinApplication* app, x86::CPU& cpu); }  // 0x52699c
+namespace pieces { void stub_0x5269d4(win32::WinApplication* app, x86::CPU& cpu); }  // 0x5269d4
+namespace pieces { void stub_0x526aeb(win32::WinApplication* app, x86::CPU& cpu); }  // 0x526aeb
+namespace frontend { void safeDivideCall(win32::WinApplication* app, x86::CPU& cpu); }  // 0x526f87
 namespace dead { void stub_0x526f9a(win32::WinApplication* app, x86::CPU& cpu); }  // 0x526f9a
 namespace dead { void stub_0x526fad(win32::WinApplication* app, x86::CPU& cpu); }  // 0x526fad
 namespace dead { void stub_0x526fc0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x526fc0
+namespace frontend { void safeDivide(win32::WinApplication* app, x86::CPU& cpu); }  // 0x52700c
 namespace dead { void stub_0x527058(win32::WinApplication* app, x86::CPU& cpu); }  // 0x527058
 namespace dead { void stub_0x5270a4(win32::WinApplication* app, x86::CPU& cpu); }  // 0x5270a4
 namespace mix { void interpolateMono8(win32::WinApplication* app, x86::CPU& cpu); }  // 0x5270f0
@@ -3748,13 +5237,40 @@ namespace watcom { void putch(win32::WinApplication* app, x86::CPU& cpu); }  // 
 namespace snd { void dead_0x52b300(win32::WinApplication* app, x86::CPU& cpu); }  // 0x52b300
 namespace snd { void dead_0x52b4d0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x52b4d0
 namespace port { void setSendLevel(win32::WinApplication* app, x86::CPU& cpu); }  // 0x52b500
+namespace frontend { void watcPowError(win32::WinApplication* app, x86::CPU& cpu); }  // 0x52b523
 namespace watcom { void mbclen(win32::WinApplication* app, x86::CPU& cpu); }  // 0x52b5b0
 namespace watcom { void mbcicmp(win32::WinApplication* app, x86::CPU& cpu); }  // 0x52b5e0
 namespace watcom { void startHook(win32::WinApplication* app, x86::CPU& cpu); }  // 0x52b640
 namespace dead { void stub_0x52b641(win32::WinApplication* app, x86::CPU& cpu); }  // 0x52b641
 namespace watcom { void printMathError(win32::WinApplication* app, x86::CPU& cpu); }  // 0x52b647
 namespace watcom { void callMatherr(win32::WinApplication* app, x86::CPU& cpu); }  // 0x52b68f
+namespace frontend { void watcSetRectClip(win32::WinApplication* app, x86::CPU& cpu); }  // 0x52b6c0
+namespace frontend { void watcDrawBox(win32::WinApplication* app, x86::CPU& cpu); }  // 0x52b720
 namespace dead { void stub_0x52b7d0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x52b7d0
+namespace frontend { void watcTextCentred(win32::WinApplication* app, x86::CPU& cpu); }  // 0x52b860
+namespace frontend { void watcClipWholeRect(win32::WinApplication* app, x86::CPU& cpu); }  // 0x52b8b0
+namespace frontend { void watcViewerOnWindow(win32::WinApplication* app, x86::CPU& cpu); }  // 0x52b8d0
+namespace frontend { void watcWindowStart(win32::WinApplication* app, x86::CPU& cpu); }  // 0x52b8e0
+namespace frontend { void watcWindowEnd(win32::WinApplication* app, x86::CPU& cpu); }  // 0x52b8f0
+namespace frontend { void watcWindowSize(win32::WinApplication* app, x86::CPU& cpu); }  // 0x52b910
+namespace frontend { void watcPrintAtCell(win32::WinApplication* app, x86::CPU& cpu); }  // 0x52b970
+namespace frontend { void watcNothing52b9d0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x52b9d0
+namespace frontend { void watcBlitOnBlack(win32::WinApplication* app, x86::CPU& cpu); }  // 0x52b9e0
+namespace frontend { void watcSetTextColours(win32::WinApplication* app, x86::CPU& cpu); }  // 0x52ba00
+namespace frontend { void watcDebugColour(win32::WinApplication* app, x86::CPU& cpu); }  // 0x52ba70
+namespace frontend { void watcWaitKey(win32::WinApplication* app, x86::CPU& cpu); }  // 0x52bac0
+namespace frontend { void watcFillCells(win32::WinApplication* app, x86::CPU& cpu); }  // 0x52baf0
+namespace frontend { void watcViewerOnMono(win32::WinApplication* app, x86::CPU& cpu); }  // 0x52bb20
+namespace frontend { void watcMonoSize(win32::WinApplication* app, x86::CPU& cpu); }  // 0x52bb50
+namespace frontend { void watcMonoClearJump(win32::WinApplication* app, x86::CPU& cpu); }  // 0x52bb80
+namespace frontend { void watcShowCentred(win32::WinApplication* app, x86::CPU& cpu); }  // 0x52bb90
+namespace frontend { void watcMonoAttribute(win32::WinApplication* app, x86::CPU& cpu); }  // 0x52bbf0
+namespace frontend { void watcPrintInWindow(win32::WinApplication* app, x86::CPU& cpu); }  // 0x52bc00
+namespace frontend { void watcMonoAttributeOf(win32::WinApplication* app, x86::CPU& cpu); }  // 0x52bd00
+namespace frontend { void watcMonoWaitKey(win32::WinApplication* app, x86::CPU& cpu); }  // 0x52bd20
+namespace frontend { void watcMonoFill(win32::WinApplication* app, x86::CPU& cpu); }  // 0x52bd50
+namespace frontend { void watcInheritHandles(win32::WinApplication* app, x86::CPU& cpu); }  // 0x52bdb0
+namespace frontend { void watcClearEnviron(win32::WinApplication* app, x86::CPU& cpu); }  // 0x52bed0
 namespace dead { void stub_0x52bf70(win32::WinApplication* app, x86::CPU& cpu); }  // 0x52bf70
 namespace dead { void stub_0x52bfe0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x52bfe0
 namespace watcom { void wputenv(win32::WinApplication* app, x86::CPU& cpu); }  // 0x52c178
@@ -3766,8 +5282,17 @@ namespace dead { void stub_0x52c580(win32::WinApplication* app, x86::CPU& cpu); 
 namespace dead { void stub_0x52c5d0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x52c5d0
 namespace dead { void stub_0x52c720(win32::WinApplication* app, x86::CPU& cpu); }  // 0x52c720
 namespace dead { void stub_0x52c7b0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x52c7b0
+namespace frontend { void watcReturnZero52c810(win32::WinApplication* app, x86::CPU& cpu); }  // 0x52c810
 namespace dead { void stub_0x52c814(win32::WinApplication* app, x86::CPU& cpu); }  // 0x52c814
+namespace frontend { void watcThreadEndHook(win32::WinApplication* app, x86::CPU& cpu); }  // 0x52c81c
+namespace frontend { void watcThreadStartHook(win32::WinApplication* app, x86::CPU& cpu); }  // 0x52c824
 namespace dead { void stub_0x52c82c(win32::WinApplication* app, x86::CPU& cpu); }  // 0x52c82c
+namespace pieces { void stub_0x52c870(win32::WinApplication* app, x86::CPU& cpu); }  // 0x52c870
+namespace frontend { void watcAbnormalTermination(win32::WinApplication* app, x86::CPU& cpu); }  // 0x52c878
+namespace frontend { void watcDoubleZero(win32::WinApplication* app, x86::CPU& cpu); }  // 0x52c88a
+namespace pieces { void stub_0x52c88f(win32::WinApplication* app, x86::CPU& cpu); }  // 0x52c88f
+namespace frontend { void watcDoubleInfinityHook(win32::WinApplication* app, x86::CPU& cpu); }  // 0x52c89b
+namespace frontend { void watcDoubleInfinity(win32::WinApplication* app, x86::CPU& cpu); }  // 0x52c8a7
 namespace dead { void stub_0x52c8c7(win32::WinApplication* app, x86::CPU& cpu); }  // 0x52c8c7
 namespace port { void pcmPlayed(win32::WinApplication* app, x86::CPU& cpu); }  // 0x52c8f0
 namespace port { void pcmOnceDecode(win32::WinApplication* app, x86::CPU& cpu); }  // 0x52c8f4
@@ -3801,25 +5326,45 @@ namespace port { void codedFrame(win32::WinApplication* app, x86::CPU& cpu); }  
 namespace watcom { void mbccpy(win32::WinApplication* app, x86::CPU& cpu); }  // 0x52e310
 namespace watcom { void mbsupr(win32::WinApplication* app, x86::CPU& cpu); }  // 0x52e350
 namespace watcom { void mbccmp(win32::WinApplication* app, x86::CPU& cpu); }  // 0x52e3a0
+namespace frontend { void watcZeroJump(win32::WinApplication* app, x86::CPU& cpu); }  // 0x52e3f8
 namespace watcom { void get_std_stream(win32::WinApplication* app, x86::CPU& cpu); }  // 0x52e400
+namespace frontend { void winaTextStart(win32::WinApplication* app, x86::CPU& cpu); }  // 0x52e420
+namespace frontend { void textBackgroundBox(win32::WinApplication* app, x86::CPU& cpu); }  // 0x52e440
+namespace frontend { void watcTextAt(win32::WinApplication* app, x86::CPU& cpu); }  // 0x52e4e0
+namespace frontend { void watcStrtol(win32::WinApplication* app, x86::CPU& cpu); }  // 0x52e500
 namespace dead { void stub_0x52e654(win32::WinApplication* app, x86::CPU& cpu); }  // 0x52e654
+namespace frontend { void watcStrtolSigned(win32::WinApplication* app, x86::CPU& cpu); }  // 0x52e660
+namespace frontend { void watcDigitValue(win32::WinApplication* app, x86::CPU& cpu); }  // 0x52e670
+namespace frontend { void watcPutenv(win32::WinApplication* app, x86::CPU& cpu); }  // 0x52e6d0
+namespace frontend { void watcEnvironSet(win32::WinApplication* app, x86::CPU& cpu); }  // 0x52e88c
+namespace frontend { void watcEnvironFind(win32::WinApplication* app, x86::CPU& cpu); }  // 0x52ea3c
 namespace dead { void stub_0x52eb40(win32::WinApplication* app, x86::CPU& cpu); }  // 0x52eb40
+namespace frontend { void watcThreadStart(win32::WinApplication* app, x86::CPU& cpu); }  // 0x52eb70
+namespace frontend { void watcBeginThread(win32::WinApplication* app, x86::CPU& cpu); }  // 0x52ec04
+namespace frontend { void watcEndThread(win32::WinApplication* app, x86::CPU& cpu); }  // 0x52ecf0
+namespace frontend { void watcMathErrorHook(win32::WinApplication* app, x86::CPU& cpu); }  // 0x52ed20
 namespace watcom { void mbsnextc(win32::WinApplication* app, x86::CPU& cpu); }  // 0x52ed30
 namespace watcom { void mbctoupper(win32::WinApplication* app, x86::CPU& cpu); }  // 0x52ed70
 namespace watcom { void mbvtop(win32::WinApplication* app, x86::CPU& cpu); }  // 0x52ede0
+namespace frontend { void watcReturnZero52edfa(win32::WinApplication* app, x86::CPU& cpu); }  // 0x52edfa
+namespace frontend { void watcSetClip(win32::WinApplication* app, x86::CPU& cpu); }  // 0x52ee00
+namespace frontend { void watcMbschr(win32::WinApplication* app, x86::CPU& cpu); }  // 0x52ee60
 namespace watcom { void mbcupper932(win32::WinApplication* app, x86::CPU& cpu); }  // 0x52eec0
 namespace watcom { void mbclower(win32::WinApplication* app, x86::CPU& cpu); }  // 0x52eee0
 namespace watcom { void mbclegal(win32::WinApplication* app, x86::CPU& cpu); }  // 0x52ef30
 namespace watcom { void mbbtrail(win32::WinApplication* app, x86::CPU& cpu); }  // 0x52ef70
+namespace frontend { void watcTapiFind(win32::WinApplication* app, x86::CPU& cpu); }  // 0x52f318
 namespace dead { void stub_0x52f370(win32::WinApplication* app, x86::CPU& cpu); }  // 0x52f370
 namespace dead { void stub_0x52f3bb(win32::WinApplication* app, x86::CPU& cpu); }  // 0x52f3bb
 namespace dead { void stub_0x52f406(win32::WinApplication* app, x86::CPU& cpu); }  // 0x52f406
 namespace dead { void stub_0x52f451(win32::WinApplication* app, x86::CPU& cpu); }  // 0x52f451
 namespace dead { void stub_0x52f49c(win32::WinApplication* app, x86::CPU& cpu); }  // 0x52f49c
 namespace dead { void stub_0x52f4e3(win32::WinApplication* app, x86::CPU& cpu); }  // 0x52f4e3
+namespace frontend { void watcLineAnswer(win32::WinApplication* app, x86::CPU& cpu); }  // 0x52f535
 namespace dead { void stub_0x52f580(win32::WinApplication* app, x86::CPU& cpu); }  // 0x52f580
 namespace dead { void stub_0x52f5cb(win32::WinApplication* app, x86::CPU& cpu); }  // 0x52f5cb
 namespace dead { void stub_0x52f616(win32::WinApplication* app, x86::CPU& cpu); }  // 0x52f616
+namespace frontend { void watcLineClose(win32::WinApplication* app, x86::CPU& cpu); }  // 0x52f661
 namespace dead { void stub_0x52f6a4(win32::WinApplication* app, x86::CPU& cpu); }  // 0x52f6a4
 namespace dead { void stub_0x52f6f3(win32::WinApplication* app, x86::CPU& cpu); }  // 0x52f6f3
 namespace dead { void stub_0x52f742(win32::WinApplication* app, x86::CPU& cpu); }  // 0x52f742
@@ -3829,11 +5374,13 @@ namespace dead { void stub_0x52f823(win32::WinApplication* app, x86::CPU& cpu); 
 namespace dead { void stub_0x52f878(win32::WinApplication* app, x86::CPU& cpu); }  // 0x52f878
 namespace dead { void stub_0x52f8cd(win32::WinApplication* app, x86::CPU& cpu); }  // 0x52f8cd
 namespace dead { void stub_0x52f922(win32::WinApplication* app, x86::CPU& cpu); }  // 0x52f922
+namespace frontend { void watcLineDeallocateCall(win32::WinApplication* app, x86::CPU& cpu); }  // 0x52f969
 namespace dead { void stub_0x52f9ac(win32::WinApplication* app, x86::CPU& cpu); }  // 0x52f9ac
 namespace dead { void stub_0x52f9fe(win32::WinApplication* app, x86::CPU& cpu); }  // 0x52f9fe
 namespace dead { void stub_0x52fa4d(win32::WinApplication* app, x86::CPU& cpu); }  // 0x52fa4d
 namespace dead { void stub_0x52fa98(win32::WinApplication* app, x86::CPU& cpu); }  // 0x52fa98
 namespace dead { void stub_0x52fae3(win32::WinApplication* app, x86::CPU& cpu); }  // 0x52fae3
+namespace frontend { void watcLineDrop(win32::WinApplication* app, x86::CPU& cpu); }  // 0x52fb2e
 namespace dead { void stub_0x52fb79(win32::WinApplication* app, x86::CPU& cpu); }  // 0x52fb79
 namespace dead { void stub_0x52fbd1(win32::WinApplication* app, x86::CPU& cpu); }  // 0x52fbd1
 namespace dead { void stub_0x52fc29(win32::WinApplication* app, x86::CPU& cpu); }  // 0x52fc29
@@ -3847,6 +5394,9 @@ namespace dead { void stub_0x52fe76(win32::WinApplication* app, x86::CPU& cpu); 
 namespace dead { void stub_0x52fec8(win32::WinApplication* app, x86::CPU& cpu); }  // 0x52fec8
 namespace dead { void stub_0x52ff1d(win32::WinApplication* app, x86::CPU& cpu); }  // 0x52ff1d
 namespace dead { void stub_0x52ff72(win32::WinApplication* app, x86::CPU& cpu); }  // 0x52ff72
+namespace pieces { void stub_0x52ffc7(win32::WinApplication* app, x86::CPU& cpu); }  // 0x52ffc7
+namespace pieces { void stub_0x530019(win32::WinApplication* app, x86::CPU& cpu); }  // 0x530019
+namespace pieces { void stub_0x53006b(win32::WinApplication* app, x86::CPU& cpu); }  // 0x53006b
 namespace dead { void stub_0x5300bd(win32::WinApplication* app, x86::CPU& cpu); }  // 0x5300bd
 namespace dead { void stub_0x530108(win32::WinApplication* app, x86::CPU& cpu); }  // 0x530108
 namespace dead { void stub_0x530153(win32::WinApplication* app, x86::CPU& cpu); }  // 0x530153
@@ -3869,16 +5419,20 @@ namespace dead { void stub_0x53061f(win32::WinApplication* app, x86::CPU& cpu); 
 namespace dead { void stub_0x530666(win32::WinApplication* app, x86::CPU& cpu); }  // 0x530666
 namespace dead { void stub_0x5306b1(win32::WinApplication* app, x86::CPU& cpu); }  // 0x5306b1
 namespace dead { void stub_0x5306fc(win32::WinApplication* app, x86::CPU& cpu); }  // 0x5306fc
+namespace frontend { void watcLineGetDevCaps(win32::WinApplication* app, x86::CPU& cpu); }  // 0x530747
 namespace dead { void stub_0x530799(win32::WinApplication* app, x86::CPU& cpu); }  // 0x530799
 namespace dead { void stub_0x5307eb(win32::WinApplication* app, x86::CPU& cpu); }  // 0x5307eb
+namespace frontend { void watcLineGetDevConfig(win32::WinApplication* app, x86::CPU& cpu); }  // 0x53083d
 namespace dead { void stub_0x530888(win32::WinApplication* app, x86::CPU& cpu); }  // 0x530888
 namespace dead { void stub_0x5308d3(win32::WinApplication* app, x86::CPU& cpu); }  // 0x5308d3
 namespace dead { void stub_0x53091e(win32::WinApplication* app, x86::CPU& cpu); }  // 0x53091e
 namespace dead { void stub_0x53096d(win32::WinApplication* app, x86::CPU& cpu); }  // 0x53096d
 namespace dead { void stub_0x5309b8(win32::WinApplication* app, x86::CPU& cpu); }  // 0x5309b8
 namespace dead { void stub_0x530a03(win32::WinApplication* app, x86::CPU& cpu); }  // 0x530a03
+namespace frontend { void watcLineGetID(win32::WinApplication* app, x86::CPU& cpu); }  // 0x530a4e
 namespace dead { void stub_0x530aa3(win32::WinApplication* app, x86::CPU& cpu); }  // 0x530aa3
 namespace dead { void stub_0x530af8(win32::WinApplication* app, x86::CPU& cpu); }  // 0x530af8
+namespace frontend { void watcLineGetLineDevStatus(win32::WinApplication* app, x86::CPU& cpu); }  // 0x530b4d
 namespace dead { void stub_0x530b94(win32::WinApplication* app, x86::CPU& cpu); }  // 0x530b94
 namespace dead { void stub_0x530bdb(win32::WinApplication* app, x86::CPU& cpu); }  // 0x530bdb
 namespace dead { void stub_0x530c22(win32::WinApplication* app, x86::CPU& cpu); }  // 0x530c22
@@ -3897,14 +5451,18 @@ namespace dead { void stub_0x530f9a(win32::WinApplication* app, x86::CPU& cpu); 
 namespace dead { void stub_0x530fe5(win32::WinApplication* app, x86::CPU& cpu); }  // 0x530fe5
 namespace dead { void stub_0x531030(win32::WinApplication* app, x86::CPU& cpu); }  // 0x531030
 namespace dead { void stub_0x53107b(win32::WinApplication* app, x86::CPU& cpu); }  // 0x53107b
+namespace frontend { void watcLineInitialize(win32::WinApplication* app, x86::CPU& cpu); }  // 0x5310be
 namespace dead { void stub_0x531110(win32::WinApplication* app, x86::CPU& cpu); }  // 0x531110
 namespace dead { void stub_0x531168(win32::WinApplication* app, x86::CPU& cpu); }  // 0x531168
+namespace frontend { void watcLineMakeCall(win32::WinApplication* app, x86::CPU& cpu); }  // 0x5311c0
 namespace dead { void stub_0x531212(win32::WinApplication* app, x86::CPU& cpu); }  // 0x531212
 namespace dead { void stub_0x531264(win32::WinApplication* app, x86::CPU& cpu); }  // 0x531264
 namespace dead { void stub_0x5312b6(win32::WinApplication* app, x86::CPU& cpu); }  // 0x5312b6
 namespace dead { void stub_0x5312fd(win32::WinApplication* app, x86::CPU& cpu); }  // 0x5312fd
 namespace dead { void stub_0x531344(win32::WinApplication* app, x86::CPU& cpu); }  // 0x531344
+namespace frontend { void watcLineNegotiateAPIVersion(win32::WinApplication* app, x86::CPU& cpu); }  // 0x53138f
 namespace dead { void stub_0x5313e4(win32::WinApplication* app, x86::CPU& cpu); }  // 0x5313e4
+namespace frontend { void watcLineOpen(win32::WinApplication* app, x86::CPU& cpu); }  // 0x531439
 namespace dead { void stub_0x531497(win32::WinApplication* app, x86::CPU& cpu); }  // 0x531497
 namespace dead { void stub_0x5314f5(win32::WinApplication* app, x86::CPU& cpu); }  // 0x5314f5
 namespace dead { void stub_0x531553(win32::WinApplication* app, x86::CPU& cpu); }  // 0x531553
@@ -3940,12 +5498,14 @@ namespace dead { void stub_0x531e0a(win32::WinApplication* app, x86::CPU& cpu); 
 namespace dead { void stub_0x531e51(win32::WinApplication* app, x86::CPU& cpu); }  // 0x531e51
 namespace dead { void stub_0x531ea3(win32::WinApplication* app, x86::CPU& cpu); }  // 0x531ea3
 namespace dead { void stub_0x531eea(win32::WinApplication* app, x86::CPU& cpu); }  // 0x531eea
+namespace frontend { void watcLineSetDevConfig(win32::WinApplication* app, x86::CPU& cpu); }  // 0x531f31
 namespace dead { void stub_0x531f80(win32::WinApplication* app, x86::CPU& cpu); }  // 0x531f80
 namespace dead { void stub_0x531fcf(win32::WinApplication* app, x86::CPU& cpu); }  // 0x531fcf
 namespace dead { void stub_0x53201e(win32::WinApplication* app, x86::CPU& cpu); }  // 0x53201e
 namespace dead { void stub_0x532069(win32::WinApplication* app, x86::CPU& cpu); }  // 0x532069
 namespace dead { void stub_0x5320d0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x5320d0
 namespace dead { void stub_0x532117(win32::WinApplication* app, x86::CPU& cpu); }  // 0x532117
+namespace frontend { void watcLineSetStatusMessages(win32::WinApplication* app, x86::CPU& cpu); }  // 0x532162
 namespace dead { void stub_0x5321ad(win32::WinApplication* app, x86::CPU& cpu); }  // 0x5321ad
 namespace dead { void stub_0x532205(win32::WinApplication* app, x86::CPU& cpu); }  // 0x532205
 namespace dead { void stub_0x532254(win32::WinApplication* app, x86::CPU& cpu); }  // 0x532254
@@ -3956,6 +5516,7 @@ namespace dead { void stub_0x53239c(win32::WinApplication* app, x86::CPU& cpu); 
 namespace dead { void stub_0x5323f1(win32::WinApplication* app, x86::CPU& cpu); }  // 0x5323f1
 namespace dead { void stub_0x53243c(win32::WinApplication* app, x86::CPU& cpu); }  // 0x53243c
 namespace dead { void stub_0x532487(win32::WinApplication* app, x86::CPU& cpu); }  // 0x532487
+namespace frontend { void watcLineShutdown(win32::WinApplication* app, x86::CPU& cpu); }  // 0x5324d2
 namespace dead { void stub_0x532515(win32::WinApplication* app, x86::CPU& cpu); }  // 0x532515
 namespace dead { void stub_0x53255c(win32::WinApplication* app, x86::CPU& cpu); }  // 0x53255c
 namespace dead { void stub_0x5325b4(win32::WinApplication* app, x86::CPU& cpu); }  // 0x5325b4
@@ -4188,13 +5749,42 @@ namespace dead { void stub_0x533dc6(win32::WinApplication* app, x86::CPU& cpu); 
 namespace dead { void stub_0x533dcc(win32::WinApplication* app, x86::CPU& cpu); }  // 0x533dcc
 namespace dead { void stub_0x533dd2(win32::WinApplication* app, x86::CPU& cpu); }  // 0x533dd2
 namespace dead { void stub_0x533dd8(win32::WinApplication* app, x86::CPU& cpu); }  // 0x533dd8
+namespace imports { void thunk_0x533dde(win32::WinApplication* app, x86::CPU& cpu); }  // 0x533dde
 namespace watcom { void RtlUnwindThunk(win32::WinApplication* app, x86::CPU& cpu); }  // 0x533de4
+namespace imports { void thunk_0x533dea(win32::WinApplication* app, x86::CPU& cpu); }  // 0x533dea
+namespace imports { void thunk_0x533df0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x533df0
+namespace imports { void thunk_0x533df6(win32::WinApplication* app, x86::CPU& cpu); }  // 0x533df6
+namespace imports { void thunk_0x533dfc(win32::WinApplication* app, x86::CPU& cpu); }  // 0x533dfc
+namespace imports { void thunk_0x533e02(win32::WinApplication* app, x86::CPU& cpu); }  // 0x533e02
+namespace imports { void thunk_0x533e08(win32::WinApplication* app, x86::CPU& cpu); }  // 0x533e08
+namespace imports { void thunk_0x533e0e(win32::WinApplication* app, x86::CPU& cpu); }  // 0x533e0e
+namespace imports { void thunk_0x533e14(win32::WinApplication* app, x86::CPU& cpu); }  // 0x533e14
+namespace imports { void thunk_0x533e1a(win32::WinApplication* app, x86::CPU& cpu); }  // 0x533e1a
+namespace imports { void thunk_0x533e20(win32::WinApplication* app, x86::CPU& cpu); }  // 0x533e20
+namespace imports { void thunk_0x533e26(win32::WinApplication* app, x86::CPU& cpu); }  // 0x533e26
+namespace imports { void thunk_0x533e2c(win32::WinApplication* app, x86::CPU& cpu); }  // 0x533e2c
+namespace imports { void thunk_0x533e32(win32::WinApplication* app, x86::CPU& cpu); }  // 0x533e32
+namespace imports { void thunk_0x533e38(win32::WinApplication* app, x86::CPU& cpu); }  // 0x533e38
+namespace imports { void thunk_0x533e3e(win32::WinApplication* app, x86::CPU& cpu); }  // 0x533e3e
+namespace imports { void thunk_0x533e44(win32::WinApplication* app, x86::CPU& cpu); }  // 0x533e44
+namespace imports { void thunk_0x533e4a(win32::WinApplication* app, x86::CPU& cpu); }  // 0x533e4a
+namespace imports { void thunk_0x533e50(win32::WinApplication* app, x86::CPU& cpu); }  // 0x533e50
+namespace imports { void thunk_0x533e56(win32::WinApplication* app, x86::CPU& cpu); }  // 0x533e56
+namespace imports { void thunk_0x533e5c(win32::WinApplication* app, x86::CPU& cpu); }  // 0x533e5c
 namespace dead { void stub_0x533e62(win32::WinApplication* app, x86::CPU& cpu); }  // 0x533e62
 namespace dead { void stub_0x533e68(win32::WinApplication* app, x86::CPU& cpu); }  // 0x533e68
 namespace dead { void stub_0x533e6e(win32::WinApplication* app, x86::CPU& cpu); }  // 0x533e6e
 namespace dead { void stub_0x533e74(win32::WinApplication* app, x86::CPU& cpu); }  // 0x533e74
 namespace dead { void stub_0x533e7a(win32::WinApplication* app, x86::CPU& cpu); }  // 0x533e7a
 namespace dead { void stub_0x533e80(win32::WinApplication* app, x86::CPU& cpu); }  // 0x533e80
+namespace imports { void thunk_0x533e86(win32::WinApplication* app, x86::CPU& cpu); }  // 0x533e86
+namespace imports { void thunk_0x533e8c(win32::WinApplication* app, x86::CPU& cpu); }  // 0x533e8c
+namespace imports { void thunk_0x533e92(win32::WinApplication* app, x86::CPU& cpu); }  // 0x533e92
+namespace imports { void thunk_0x533e98(win32::WinApplication* app, x86::CPU& cpu); }  // 0x533e98
+namespace imports { void thunk_0x533e9e(win32::WinApplication* app, x86::CPU& cpu); }  // 0x533e9e
+namespace imports { void thunk_0x533ea4(win32::WinApplication* app, x86::CPU& cpu); }  // 0x533ea4
+namespace imports { void thunk_0x533eaa(win32::WinApplication* app, x86::CPU& cpu); }  // 0x533eaa
+namespace imports { void thunk_0x533eb0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x533eb0
 namespace dead { void stub_0x533eb6(win32::WinApplication* app, x86::CPU& cpu); }  // 0x533eb6
 namespace dead { void stub_0x533ebc(win32::WinApplication* app, x86::CPU& cpu); }  // 0x533ebc
 namespace dead { void stub_0x533ec2(win32::WinApplication* app, x86::CPU& cpu); }  // 0x533ec2
@@ -4202,6 +5792,7 @@ namespace dead { void stub_0x533ec8(win32::WinApplication* app, x86::CPU& cpu); 
 namespace dead { void stub_0x533ece(win32::WinApplication* app, x86::CPU& cpu); }  // 0x533ece
 namespace dead { void stub_0x533ed4(win32::WinApplication* app, x86::CPU& cpu); }  // 0x533ed4
 namespace dead { void stub_0x533eda(win32::WinApplication* app, x86::CPU& cpu); }  // 0x533eda
+namespace dead { void stub_0x533ee0(win32::WinApplication* app, x86::CPU& cpu); }  // 0x533ee0
 
 class Application : public win32::WinApplication
 {
@@ -4213,1597 +5804,6 @@ private:
     static const x86::reg8 s__idataSegment[];
     static const x86::reg8 s_DGROUPSegment[];
     static const x86::reg8 s__rsrcSegment[];
-    static void sub_401000(WinApplication* app, x86::CPU& cpu);
-    static void sub_405fc0(WinApplication* app, x86::CPU& cpu);
-    static void sub_40ff20(WinApplication* app, x86::CPU& cpu);
-    static void sub_419c20(WinApplication* app, x86::CPU& cpu);
-    static void sub_422c00(WinApplication* app, x86::CPU& cpu);
-    static void sub_4243a0(WinApplication* app, x86::CPU& cpu);
-    static void sub_424690(WinApplication* app, x86::CPU& cpu);
-    static void sub_424740(WinApplication* app, x86::CPU& cpu);
-    static void sub_424b50(WinApplication* app, x86::CPU& cpu);
-    static void sub_424ce0(WinApplication* app, x86::CPU& cpu);
-    static void sub_424e30(WinApplication* app, x86::CPU& cpu);
-    static void sub_424f30(WinApplication* app, x86::CPU& cpu);
-    static void sub_424fd0(WinApplication* app, x86::CPU& cpu);
-    static void sub_425990(WinApplication* app, x86::CPU& cpu);
-    static void sub_425ab0(WinApplication* app, x86::CPU& cpu);
-    static void sub_425b40(WinApplication* app, x86::CPU& cpu);
-    static void sub_426370(WinApplication* app, x86::CPU& cpu);
-    static void sub_4283d0(WinApplication* app, x86::CPU& cpu);
-    static void sub_428460(WinApplication* app, x86::CPU& cpu);
-    static void sub_4284e0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4285f0(WinApplication* app, x86::CPU& cpu);
-    static void sub_428700(WinApplication* app, x86::CPU& cpu);
-    static void sub_428970(WinApplication* app, x86::CPU& cpu);
-    static void sub_428ad0(WinApplication* app, x86::CPU& cpu);
-    static void sub_428d60(WinApplication* app, x86::CPU& cpu);
-    static void sub_436fc0(WinApplication* app, x86::CPU& cpu);
-    static void sub_438b70(WinApplication* app, x86::CPU& cpu);
-    static void sub_438f60(WinApplication* app, x86::CPU& cpu);
-    static void sub_439510(WinApplication* app, x86::CPU& cpu);
-    static void sub_439530(WinApplication* app, x86::CPU& cpu);
-    static void sub_4395a0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4395e0(WinApplication* app, x86::CPU& cpu);
-    static void sub_439600(WinApplication* app, x86::CPU& cpu);
-    static void sub_439710(WinApplication* app, x86::CPU& cpu);
-    static void sub_439a10(WinApplication* app, x86::CPU& cpu);
-    static void sub_439b70(WinApplication* app, x86::CPU& cpu);
-    static void sub_439bb0(WinApplication* app, x86::CPU& cpu);
-    static void sub_439bf0(WinApplication* app, x86::CPU& cpu);
-    static void sub_439cc0(WinApplication* app, x86::CPU& cpu);
-    static void sub_43a4d0(WinApplication* app, x86::CPU& cpu);
-    static void sub_43a6b0(WinApplication* app, x86::CPU& cpu);
-    static void sub_43a6e0(WinApplication* app, x86::CPU& cpu);
-    static void sub_43ace0(WinApplication* app, x86::CPU& cpu);
-    static void sub_43b2a0(WinApplication* app, x86::CPU& cpu);
-    static void sub_43b390(WinApplication* app, x86::CPU& cpu);
-    static void sub_43bcb0(WinApplication* app, x86::CPU& cpu);
-    static void sub_43bcf0(WinApplication* app, x86::CPU& cpu);
-    static void sub_43da60(WinApplication* app, x86::CPU& cpu);
-    static void sub_4516a0(WinApplication* app, x86::CPU& cpu);
-    static void sub_452a00(WinApplication* app, x86::CPU& cpu);
-    static void sub_459410(WinApplication* app, x86::CPU& cpu);
-    static void sub_459670(WinApplication* app, x86::CPU& cpu);
-    static void sub_459db0(WinApplication* app, x86::CPU& cpu);
-    static void sub_459fe0(WinApplication* app, x86::CPU& cpu);
-    static void sub_45a120(WinApplication* app, x86::CPU& cpu);
-    static void sub_46ca10(WinApplication* app, x86::CPU& cpu);
-    static void sub_470a60(WinApplication* app, x86::CPU& cpu);
-    static void sub_470aa0(WinApplication* app, x86::CPU& cpu);
-    static void sub_470ad0(WinApplication* app, x86::CPU& cpu);
-    static void sub_470b20(WinApplication* app, x86::CPU& cpu);
-    static void sub_470b70(WinApplication* app, x86::CPU& cpu);
-    static void sub_470b90(WinApplication* app, x86::CPU& cpu);
-    static void sub_473340(WinApplication* app, x86::CPU& cpu);
-    static void sub_473360(WinApplication* app, x86::CPU& cpu);
-    static void sub_4733b0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4734d0(WinApplication* app, x86::CPU& cpu);
-    static void sub_473550(WinApplication* app, x86::CPU& cpu);
-    static void sub_473570(WinApplication* app, x86::CPU& cpu);
-    static void sub_4735c0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4736c0(WinApplication* app, x86::CPU& cpu);
-    static void sub_473710(WinApplication* app, x86::CPU& cpu);
-    static void sub_473890(WinApplication* app, x86::CPU& cpu);
-    static void sub_473960(WinApplication* app, x86::CPU& cpu);
-    static void sub_473a70(WinApplication* app, x86::CPU& cpu);
-    static void sub_473ac0(WinApplication* app, x86::CPU& cpu);
-    static void sub_473b70(WinApplication* app, x86::CPU& cpu);
-    static void sub_473bf0(WinApplication* app, x86::CPU& cpu);
-    static void sub_473ee0(WinApplication* app, x86::CPU& cpu);
-    static void sub_474310(WinApplication* app, x86::CPU& cpu);
-    static void sub_474640(WinApplication* app, x86::CPU& cpu);
-    static void sub_474c60(WinApplication* app, x86::CPU& cpu);
-    static void sub_474ca0(WinApplication* app, x86::CPU& cpu);
-    static void sub_474d20(WinApplication* app, x86::CPU& cpu);
-    static void sub_475b10(WinApplication* app, x86::CPU& cpu);
-    static void sub_476fb0(WinApplication* app, x86::CPU& cpu);
-    static void sub_477290(WinApplication* app, x86::CPU& cpu);
-    static void sub_4774b0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4777d0(WinApplication* app, x86::CPU& cpu);
-    static void sub_477830(WinApplication* app, x86::CPU& cpu);
-    static void sub_477850(WinApplication* app, x86::CPU& cpu);
-    static void sub_4778c0(WinApplication* app, x86::CPU& cpu);
-    static void sub_477990(WinApplication* app, x86::CPU& cpu);
-    static void sub_4779e0(WinApplication* app, x86::CPU& cpu);
-    static void sub_477a10(WinApplication* app, x86::CPU& cpu);
-    static void sub_477a50(WinApplication* app, x86::CPU& cpu);
-    static void sub_477b50(WinApplication* app, x86::CPU& cpu);
-    static void sub_477c20(WinApplication* app, x86::CPU& cpu);
-    static void sub_477d90(WinApplication* app, x86::CPU& cpu);
-    static void sub_477f60(WinApplication* app, x86::CPU& cpu);
-    static void sub_477fd0(WinApplication* app, x86::CPU& cpu);
-    static void sub_478090(WinApplication* app, x86::CPU& cpu);
-    static void sub_478100(WinApplication* app, x86::CPU& cpu);
-    static void sub_4781b0(WinApplication* app, x86::CPU& cpu);
-    static void sub_478280(WinApplication* app, x86::CPU& cpu);
-    static void sub_478290(WinApplication* app, x86::CPU& cpu);
-    static void sub_4782b0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4782c0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4782d0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4782e0(WinApplication* app, x86::CPU& cpu);
-    static void sub_478320(WinApplication* app, x86::CPU& cpu);
-    static void sub_478b70(WinApplication* app, x86::CPU& cpu);
-    static void sub_478bb0(WinApplication* app, x86::CPU& cpu);
-    static void sub_478c70(WinApplication* app, x86::CPU& cpu);
-    static void sub_478c80(WinApplication* app, x86::CPU& cpu);
-    static void sub_478cb0(WinApplication* app, x86::CPU& cpu);
-    static void sub_478dc0(WinApplication* app, x86::CPU& cpu);
-    static void sub_478e10(WinApplication* app, x86::CPU& cpu);
-    static void sub_479080(WinApplication* app, x86::CPU& cpu);
-    static void sub_4790d0(WinApplication* app, x86::CPU& cpu);
-    static void sub_479100(WinApplication* app, x86::CPU& cpu);
-    static void sub_479160(WinApplication* app, x86::CPU& cpu);
-    static void sub_4792e0(WinApplication* app, x86::CPU& cpu);
-    static void sub_479370(WinApplication* app, x86::CPU& cpu);
-    static void sub_479500(WinApplication* app, x86::CPU& cpu);
-    static void sub_479680(WinApplication* app, x86::CPU& cpu);
-    static void sub_479860(WinApplication* app, x86::CPU& cpu);
-    static void sub_4799d0(WinApplication* app, x86::CPU& cpu);
-    static void sub_479b90(WinApplication* app, x86::CPU& cpu);
-    static void sub_479ed0(WinApplication* app, x86::CPU& cpu);
-    static void sub_47a4c0(WinApplication* app, x86::CPU& cpu);
-    static void sub_47a970(WinApplication* app, x86::CPU& cpu);
-    static void sub_47adc0(WinApplication* app, x86::CPU& cpu);
-    static void sub_47ae10(WinApplication* app, x86::CPU& cpu);
-    static void sub_47b350(WinApplication* app, x86::CPU& cpu);
-    static void sub_47b390(WinApplication* app, x86::CPU& cpu);
-    static void sub_47b3a0(WinApplication* app, x86::CPU& cpu);
-    static void sub_47b4f0(WinApplication* app, x86::CPU& cpu);
-    static void sub_47b5c0(WinApplication* app, x86::CPU& cpu);
-    static void sub_47bbb8(WinApplication* app, x86::CPU& cpu);
-    static void sub_47bc20(WinApplication* app, x86::CPU& cpu);
-    static void sub_47bc40(WinApplication* app, x86::CPU& cpu);
-    static void sub_47d1d0(WinApplication* app, x86::CPU& cpu);
-    static void sub_47d480(WinApplication* app, x86::CPU& cpu);
-    static void sub_47d580(WinApplication* app, x86::CPU& cpu);
-    static void sub_47ee80(WinApplication* app, x86::CPU& cpu);
-    static void sub_47f090(WinApplication* app, x86::CPU& cpu);
-    static void sub_47f2e0(WinApplication* app, x86::CPU& cpu);
-    static void sub_47f340(WinApplication* app, x86::CPU& cpu);
-    static void sub_47f590(WinApplication* app, x86::CPU& cpu);
-    static void sub_47fbe0(WinApplication* app, x86::CPU& cpu);
-    static void sub_47fcb0(WinApplication* app, x86::CPU& cpu);
-    static void sub_47fd80(WinApplication* app, x86::CPU& cpu);
-    static void sub_4808b0(WinApplication* app, x86::CPU& cpu);
-    static void sub_480a00(WinApplication* app, x86::CPU& cpu);
-    static void sub_481170(WinApplication* app, x86::CPU& cpu);
-    static void sub_481290(WinApplication* app, x86::CPU& cpu);
-    static void sub_481510(WinApplication* app, x86::CPU& cpu);
-    static void sub_481570(WinApplication* app, x86::CPU& cpu);
-    static void sub_4815d0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4818b0(WinApplication* app, x86::CPU& cpu);
-    static void sub_481f90(WinApplication* app, x86::CPU& cpu);
-    static void sub_482030(WinApplication* app, x86::CPU& cpu);
-    static void sub_482190(WinApplication* app, x86::CPU& cpu);
-    static void sub_482880(WinApplication* app, x86::CPU& cpu);
-    static void sub_484030(WinApplication* app, x86::CPU& cpu);
-    static void sub_484330(WinApplication* app, x86::CPU& cpu);
-    static void sub_485880(WinApplication* app, x86::CPU& cpu);
-    static void sub_48fb40(WinApplication* app, x86::CPU& cpu);
-    static void sub_490430(WinApplication* app, x86::CPU& cpu);
-    static void sub_491120(WinApplication* app, x86::CPU& cpu);
-    static void sub_493380(WinApplication* app, x86::CPU& cpu);
-    static void sub_4934c0(WinApplication* app, x86::CPU& cpu);
-    static void sub_493640(WinApplication* app, x86::CPU& cpu);
-    static void sub_493a30(WinApplication* app, x86::CPU& cpu);
-    static void sub_493ad0(WinApplication* app, x86::CPU& cpu);
-    static void sub_493e50(WinApplication* app, x86::CPU& cpu);
-    static void sub_493ef0(WinApplication* app, x86::CPU& cpu);
-    static void sub_493fb0(WinApplication* app, x86::CPU& cpu);
-    static void sub_494010(WinApplication* app, x86::CPU& cpu);
-    static void sub_494170(WinApplication* app, x86::CPU& cpu);
-    static void sub_494360(WinApplication* app, x86::CPU& cpu);
-    static void sub_494390(WinApplication* app, x86::CPU& cpu);
-    static void sub_4943e0(WinApplication* app, x86::CPU& cpu);
-    static void sub_494420(WinApplication* app, x86::CPU& cpu);
-    static void sub_4945a0(WinApplication* app, x86::CPU& cpu);
-    static void sub_494630(WinApplication* app, x86::CPU& cpu);
-    static void sub_495190(WinApplication* app, x86::CPU& cpu);
-    static void sub_495600(WinApplication* app, x86::CPU& cpu);
-    static void sub_4957a0(WinApplication* app, x86::CPU& cpu);
-    static void sub_495860(WinApplication* app, x86::CPU& cpu);
-    static void sub_495890(WinApplication* app, x86::CPU& cpu);
-    static void sub_4958c0(WinApplication* app, x86::CPU& cpu);
-    static void sub_495920(WinApplication* app, x86::CPU& cpu);
-    static void sub_495a10(WinApplication* app, x86::CPU& cpu);
-    static void sub_495a50(WinApplication* app, x86::CPU& cpu);
-    static void sub_495b10(WinApplication* app, x86::CPU& cpu);
-    static void sub_495b30(WinApplication* app, x86::CPU& cpu);
-    static void sub_495b60(WinApplication* app, x86::CPU& cpu);
-    static void sub_495bc0(WinApplication* app, x86::CPU& cpu);
-    static void sub_496300(WinApplication* app, x86::CPU& cpu);
-    static void sub_496310(WinApplication* app, x86::CPU& cpu);
-    static void sub_4964d0(WinApplication* app, x86::CPU& cpu);
-    static void sub_496550(WinApplication* app, x86::CPU& cpu);
-    static void sub_4969c0(WinApplication* app, x86::CPU& cpu);
-    static void sub_496a50(WinApplication* app, x86::CPU& cpu);
-    static void sub_496bf0(WinApplication* app, x86::CPU& cpu);
-    static void sub_496f20(WinApplication* app, x86::CPU& cpu);
-    static void sub_4970c0(WinApplication* app, x86::CPU& cpu);
-    static void sub_497430(WinApplication* app, x86::CPU& cpu);
-    static void sub_497500(WinApplication* app, x86::CPU& cpu);
-    static void sub_497620(WinApplication* app, x86::CPU& cpu);
-    static void sub_497ba0(WinApplication* app, x86::CPU& cpu);
-    static void sub_497cb0(WinApplication* app, x86::CPU& cpu);
-    static void sub_497cc0(WinApplication* app, x86::CPU& cpu);
-    static void sub_497d20(WinApplication* app, x86::CPU& cpu);
-    static void sub_497fe0(WinApplication* app, x86::CPU& cpu);
-    static void sub_498090(WinApplication* app, x86::CPU& cpu);
-    static void sub_498370(WinApplication* app, x86::CPU& cpu);
-    static void sub_4989a0(WinApplication* app, x86::CPU& cpu);
-    static void sub_498a40(WinApplication* app, x86::CPU& cpu);
-    static void sub_498b70(WinApplication* app, x86::CPU& cpu);
-    static void sub_498bf0(WinApplication* app, x86::CPU& cpu);
-    static void sub_498e10(WinApplication* app, x86::CPU& cpu);
-    static void sub_498e40(WinApplication* app, x86::CPU& cpu);
-    static void sub_498f00(WinApplication* app, x86::CPU& cpu);
-    static void sub_499150(WinApplication* app, x86::CPU& cpu);
-    static void sub_499330(WinApplication* app, x86::CPU& cpu);
-    static void sub_4993b0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4993d0(WinApplication* app, x86::CPU& cpu);
-    static void sub_499400(WinApplication* app, x86::CPU& cpu);
-    static void sub_499460(WinApplication* app, x86::CPU& cpu);
-    static void sub_499480(WinApplication* app, x86::CPU& cpu);
-    static void sub_499490(WinApplication* app, x86::CPU& cpu);
-    static void sub_4994a0(WinApplication* app, x86::CPU& cpu);
-    static void sub_499580(WinApplication* app, x86::CPU& cpu);
-    static void sub_4995b0(WinApplication* app, x86::CPU& cpu);
-    static void sub_499b30(WinApplication* app, x86::CPU& cpu);
-    static void sub_499d30(WinApplication* app, x86::CPU& cpu);
-    static void sub_499e90(WinApplication* app, x86::CPU& cpu);
-    static void sub_499ea0(WinApplication* app, x86::CPU& cpu);
-    static void sub_499f70(WinApplication* app, x86::CPU& cpu);
-    static void sub_49a120(WinApplication* app, x86::CPU& cpu);
-    static void sub_49a400(WinApplication* app, x86::CPU& cpu);
-    static void sub_49a490(WinApplication* app, x86::CPU& cpu);
-    static void sub_49a520(WinApplication* app, x86::CPU& cpu);
-    static void sub_49a8e0(WinApplication* app, x86::CPU& cpu);
-    static void sub_49aa80(WinApplication* app, x86::CPU& cpu);
-    static void sub_49abd0(WinApplication* app, x86::CPU& cpu);
-    static void sub_49acd0(WinApplication* app, x86::CPU& cpu);
-    static void sub_49b2b0(WinApplication* app, x86::CPU& cpu);
-    static void sub_49b310(WinApplication* app, x86::CPU& cpu);
-    static void sub_49b3e0(WinApplication* app, x86::CPU& cpu);
-    static void sub_49b470(WinApplication* app, x86::CPU& cpu);
-    static void sub_49b500(WinApplication* app, x86::CPU& cpu);
-    static void sub_49b520(WinApplication* app, x86::CPU& cpu);
-    static void sub_49b9b0(WinApplication* app, x86::CPU& cpu);
-    static void sub_49bab0(WinApplication* app, x86::CPU& cpu);
-    static void sub_49bc80(WinApplication* app, x86::CPU& cpu);
-    static void sub_49bd10(WinApplication* app, x86::CPU& cpu);
-    static void sub_49bfb0(WinApplication* app, x86::CPU& cpu);
-    static void sub_49c410(WinApplication* app, x86::CPU& cpu);
-    static void sub_49c420(WinApplication* app, x86::CPU& cpu);
-    static void sub_49c470(WinApplication* app, x86::CPU& cpu);
-    static void sub_49c4a0(WinApplication* app, x86::CPU& cpu);
-    static void sub_49cfa0(WinApplication* app, x86::CPU& cpu);
-    static void sub_49d5a0(WinApplication* app, x86::CPU& cpu);
-    static void sub_49d5c0(WinApplication* app, x86::CPU& cpu);
-    static void sub_49d720(WinApplication* app, x86::CPU& cpu);
-    static void sub_49d750(WinApplication* app, x86::CPU& cpu);
-    static void sub_49d760(WinApplication* app, x86::CPU& cpu);
-    static void sub_49d780(WinApplication* app, x86::CPU& cpu);
-    static void sub_49d8f0(WinApplication* app, x86::CPU& cpu);
-    static void sub_49de20(WinApplication* app, x86::CPU& cpu);
-    static void sub_49e080(WinApplication* app, x86::CPU& cpu);
-    static void sub_49e220(WinApplication* app, x86::CPU& cpu);
-    static void sub_49e2e0(WinApplication* app, x86::CPU& cpu);
-    static void sub_49e320(WinApplication* app, x86::CPU& cpu);
-    static void sub_49eae0(WinApplication* app, x86::CPU& cpu);
-    static void sub_49ec70(WinApplication* app, x86::CPU& cpu);
-    static void sub_49edb0(WinApplication* app, x86::CPU& cpu);
-    static void sub_49ede0(WinApplication* app, x86::CPU& cpu);
-    static void sub_49ee50(WinApplication* app, x86::CPU& cpu);
-    static void sub_49f680(WinApplication* app, x86::CPU& cpu);
-    static void sub_49f730(WinApplication* app, x86::CPU& cpu);
-    static void sub_49f790(WinApplication* app, x86::CPU& cpu);
-    static void sub_49f810(WinApplication* app, x86::CPU& cpu);
-    static void sub_49f880(WinApplication* app, x86::CPU& cpu);
-    static void sub_49fb10(WinApplication* app, x86::CPU& cpu);
-    static void sub_49fb60(WinApplication* app, x86::CPU& cpu);
-    static void sub_49fc50(WinApplication* app, x86::CPU& cpu);
-    static void sub_4a3050(WinApplication* app, x86::CPU& cpu);
-    static void sub_4a3070(WinApplication* app, x86::CPU& cpu);
-    static void sub_4a31f0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4a32f0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4a3390(WinApplication* app, x86::CPU& cpu);
-    static void sub_4a33a0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4a33b0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4a33d0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4a3400(WinApplication* app, x86::CPU& cpu);
-    static void sub_4a3690(WinApplication* app, x86::CPU& cpu);
-    static void sub_4a38c0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4a38f0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4a4020(WinApplication* app, x86::CPU& cpu);
-    static void sub_4a4060(WinApplication* app, x86::CPU& cpu);
-    static void sub_4a40c0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4a46f0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4a5080(WinApplication* app, x86::CPU& cpu);
-    static void sub_4a54f0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4a5780(WinApplication* app, x86::CPU& cpu);
-    static void sub_4a5880(WinApplication* app, x86::CPU& cpu);
-    static void sub_4a59c0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4a5af0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4a5b00(WinApplication* app, x86::CPU& cpu);
-    static void sub_4a5dd0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4a5e50(WinApplication* app, x86::CPU& cpu);
-    static void sub_4a5ef0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4a5f30(WinApplication* app, x86::CPU& cpu);
-    static void sub_4a6410(WinApplication* app, x86::CPU& cpu);
-    static void sub_4a6440(WinApplication* app, x86::CPU& cpu);
-    static void sub_4a6470(WinApplication* app, x86::CPU& cpu);
-    static void sub_4a64c0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4a6500(WinApplication* app, x86::CPU& cpu);
-    static void sub_4a65b0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4a66c0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4a68d0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4a69c0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4a6a10(WinApplication* app, x86::CPU& cpu);
-    static void sub_4a6c40(WinApplication* app, x86::CPU& cpu);
-    static void sub_4a6ce0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4a6df0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4a6e10(WinApplication* app, x86::CPU& cpu);
-    static void sub_4a6f70(WinApplication* app, x86::CPU& cpu);
-    static void sub_4a7080(WinApplication* app, x86::CPU& cpu);
-    static void sub_4a7310(WinApplication* app, x86::CPU& cpu);
-    static void sub_4a75e0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4b0700(WinApplication* app, x86::CPU& cpu);
-    static void sub_4b0790(WinApplication* app, x86::CPU& cpu);
-    static void sub_4b07b0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4b07c0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4b07d0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4b0880(WinApplication* app, x86::CPU& cpu);
-    static void sub_4b08b0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4b08d0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4b0900(WinApplication* app, x86::CPU& cpu);
-    static void sub_4b0940(WinApplication* app, x86::CPU& cpu);
-    static void sub_4b09d0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4b0bb0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4b1380(WinApplication* app, x86::CPU& cpu);
-    static void sub_4b22d0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4b48d0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4b56d0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4b5700(WinApplication* app, x86::CPU& cpu);
-    static void sub_4b5720(WinApplication* app, x86::CPU& cpu);
-    static void sub_4b5860(WinApplication* app, x86::CPU& cpu);
-    static void sub_4b5940(WinApplication* app, x86::CPU& cpu);
-    static void sub_4b5e50(WinApplication* app, x86::CPU& cpu);
-    static void sub_4b5f10(WinApplication* app, x86::CPU& cpu);
-    static void sub_4b5ff0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4b6020(WinApplication* app, x86::CPU& cpu);
-    static void sub_4b62a0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4b6320(WinApplication* app, x86::CPU& cpu);
-    static void sub_4b6400(WinApplication* app, x86::CPU& cpu);
-    static void sub_4b64c0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4b6520(WinApplication* app, x86::CPU& cpu);
-    static void sub_4b6590(WinApplication* app, x86::CPU& cpu);
-    static void sub_4b6a30(WinApplication* app, x86::CPU& cpu);
-    static void sub_4b6ca0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4b6d90(WinApplication* app, x86::CPU& cpu);
-    static void sub_4b6e80(WinApplication* app, x86::CPU& cpu);
-    static void sub_4b7c20(WinApplication* app, x86::CPU& cpu);
-    static void sub_4b7c60(WinApplication* app, x86::CPU& cpu);
-    static void sub_4b7d00(WinApplication* app, x86::CPU& cpu);
-    static void sub_4b7eb0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4b7f80(WinApplication* app, x86::CPU& cpu);
-    static void sub_4b81a0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4b8740(WinApplication* app, x86::CPU& cpu);
-    static void sub_4b90e0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4b9140(WinApplication* app, x86::CPU& cpu);
-    static void sub_4b9280(WinApplication* app, x86::CPU& cpu);
-    static void sub_4b93c0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4b9550(WinApplication* app, x86::CPU& cpu);
-    static void sub_4b9df0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4ba320(WinApplication* app, x86::CPU& cpu);
-    static void sub_4ba350(WinApplication* app, x86::CPU& cpu);
-    static void sub_4ba810(WinApplication* app, x86::CPU& cpu);
-    static void sub_4ba960(WinApplication* app, x86::CPU& cpu);
-    static void sub_4baa50(WinApplication* app, x86::CPU& cpu);
-    static void sub_4bab70(WinApplication* app, x86::CPU& cpu);
-    static void sub_4bb110(WinApplication* app, x86::CPU& cpu);
-    static void sub_4bb4c0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4bba10(WinApplication* app, x86::CPU& cpu);
-    static void sub_4bba50(WinApplication* app, x86::CPU& cpu);
-    static void sub_4bbad0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4bbba0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4bbd70(WinApplication* app, x86::CPU& cpu);
-    static void sub_4bbd80(WinApplication* app, x86::CPU& cpu);
-    static void sub_4bbdc0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4bbde0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4bbe40(WinApplication* app, x86::CPU& cpu);
-    static void sub_4bbe70(WinApplication* app, x86::CPU& cpu);
-    static void sub_4bbe90(WinApplication* app, x86::CPU& cpu);
-    static void sub_4bbec0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4bbf20(WinApplication* app, x86::CPU& cpu);
-    static void sub_4bbf40(WinApplication* app, x86::CPU& cpu);
-    static void sub_4bbf80(WinApplication* app, x86::CPU& cpu);
-    static void sub_4bbfc0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4bc000(WinApplication* app, x86::CPU& cpu);
-    static void sub_4bc030(WinApplication* app, x86::CPU& cpu);
-    static void sub_4bc060(WinApplication* app, x86::CPU& cpu);
-    static void sub_4bc0b0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4bc100(WinApplication* app, x86::CPU& cpu);
-    static void sub_4bc130(WinApplication* app, x86::CPU& cpu);
-    static void sub_4bc560(WinApplication* app, x86::CPU& cpu);
-    static void sub_4bc620(WinApplication* app, x86::CPU& cpu);
-    static void sub_4bc650(WinApplication* app, x86::CPU& cpu);
-    static void sub_4bc680(WinApplication* app, x86::CPU& cpu);
-    static void sub_4bc820(WinApplication* app, x86::CPU& cpu);
-    static void sub_4bc830(WinApplication* app, x86::CPU& cpu);
-    static void sub_4bc870(WinApplication* app, x86::CPU& cpu);
-    static void sub_4bc8b0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4bc8e0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4bc910(WinApplication* app, x86::CPU& cpu);
-    static void sub_4bc950(WinApplication* app, x86::CPU& cpu);
-    static void sub_4bc980(WinApplication* app, x86::CPU& cpu);
-    static void sub_4bc990(WinApplication* app, x86::CPU& cpu);
-    static void sub_4bc9a0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4bc9b0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4bca80(WinApplication* app, x86::CPU& cpu);
-    static void sub_4bcb00(WinApplication* app, x86::CPU& cpu);
-    static void sub_4bcb90(WinApplication* app, x86::CPU& cpu);
-    static void sub_4bcd60(WinApplication* app, x86::CPU& cpu);
-    static void sub_4bcda0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4bcee0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4bd000(WinApplication* app, x86::CPU& cpu);
-    static void sub_4bd090(WinApplication* app, x86::CPU& cpu);
-    static void sub_4bd380(WinApplication* app, x86::CPU& cpu);
-    static void sub_4bd3f0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4bd9d0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4bda00(WinApplication* app, x86::CPU& cpu);
-    static void sub_4be020(WinApplication* app, x86::CPU& cpu);
-    static void sub_4be1f0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4be240(WinApplication* app, x86::CPU& cpu);
-    static void sub_4be250(WinApplication* app, x86::CPU& cpu);
-    static void sub_4be2f0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4be3a0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4be5e0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4be970(WinApplication* app, x86::CPU& cpu);
-    static void sub_4bea40(WinApplication* app, x86::CPU& cpu);
-    static void sub_4bebb0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4bed20(WinApplication* app, x86::CPU& cpu);
-    static void sub_4bed50(WinApplication* app, x86::CPU& cpu);
-    static void sub_4bed70(WinApplication* app, x86::CPU& cpu);
-    static void sub_4bf110(WinApplication* app, x86::CPU& cpu);
-    static void sub_4bf1b0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4bf260(WinApplication* app, x86::CPU& cpu);
-    static void sub_4bf370(WinApplication* app, x86::CPU& cpu);
-    static void sub_4c1900(WinApplication* app, x86::CPU& cpu);
-    static void sub_4c19e0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4c4190(WinApplication* app, x86::CPU& cpu);
-    static void sub_4c45d0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4c45f0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4c4740(WinApplication* app, x86::CPU& cpu);
-    static void sub_4c4820(WinApplication* app, x86::CPU& cpu);
-    static void sub_4c4830(WinApplication* app, x86::CPU& cpu);
-    static void sub_4c48d0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4c4ac0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4c4be0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4c4d80(WinApplication* app, x86::CPU& cpu);
-    static void sub_4c4de0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4c4e40(WinApplication* app, x86::CPU& cpu);
-    static void sub_4c5520(WinApplication* app, x86::CPU& cpu);
-    static void sub_4c5540(WinApplication* app, x86::CPU& cpu);
-    static void sub_4c5560(WinApplication* app, x86::CPU& cpu);
-    static void sub_4c55a0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4c5720(WinApplication* app, x86::CPU& cpu);
-    static void sub_4c5b00(WinApplication* app, x86::CPU& cpu);
-    static void sub_4c5e80(WinApplication* app, x86::CPU& cpu);
-    static void sub_4c62a0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4c63c0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4c63f0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4c64e0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4c6c70(WinApplication* app, x86::CPU& cpu);
-    static void sub_4c6cb0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4c6f00(WinApplication* app, x86::CPU& cpu);
-    static void sub_4c70f0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4c7130(WinApplication* app, x86::CPU& cpu);
-    static void sub_4c7150(WinApplication* app, x86::CPU& cpu);
-    static void sub_4c7180(WinApplication* app, x86::CPU& cpu);
-    static void sub_4c7260(WinApplication* app, x86::CPU& cpu);
-    static void sub_4c7380(WinApplication* app, x86::CPU& cpu);
-    static void sub_4c73e0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4c7400(WinApplication* app, x86::CPU& cpu);
-    static void sub_4c7480(WinApplication* app, x86::CPU& cpu);
-    static void sub_4c7580(WinApplication* app, x86::CPU& cpu);
-    static void sub_4c75f0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4c76e0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4c7750(WinApplication* app, x86::CPU& cpu);
-    static void sub_4c7940(WinApplication* app, x86::CPU& cpu);
-    static void sub_4c7b10(WinApplication* app, x86::CPU& cpu);
-    static void sub_4c7b20(WinApplication* app, x86::CPU& cpu);
-    static void sub_4c7b30(WinApplication* app, x86::CPU& cpu);
-    static void sub_4c7b50(WinApplication* app, x86::CPU& cpu);
-    static void sub_4c7bb0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4c7bd0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4c7d30(WinApplication* app, x86::CPU& cpu);
-    static void sub_4c7e50(WinApplication* app, x86::CPU& cpu);
-    static void sub_4c7e80(WinApplication* app, x86::CPU& cpu);
-    static void sub_4c7ea0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4c7f90(WinApplication* app, x86::CPU& cpu);
-    static void sub_4c7fd0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4c8040(WinApplication* app, x86::CPU& cpu);
-    static void sub_4c81c0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4c8250(WinApplication* app, x86::CPU& cpu);
-    static void sub_4c8310(WinApplication* app, x86::CPU& cpu);
-    static void sub_4c8350(WinApplication* app, x86::CPU& cpu);
-    static void sub_4c8470(WinApplication* app, x86::CPU& cpu);
-    static void sub_4c8550(WinApplication* app, x86::CPU& cpu);
-    static void sub_4c9a80(WinApplication* app, x86::CPU& cpu);
-    static void sub_4c9bc0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4c9d70(WinApplication* app, x86::CPU& cpu);
-    static void sub_4c9d90(WinApplication* app, x86::CPU& cpu);
-    static void sub_4c9db0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4c9f70(WinApplication* app, x86::CPU& cpu);
-    static void sub_4ca160(WinApplication* app, x86::CPU& cpu);
-    static void sub_4ca480(WinApplication* app, x86::CPU& cpu);
-    static void sub_4ca4b0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4ca500(WinApplication* app, x86::CPU& cpu);
-    static void sub_4ca850(WinApplication* app, x86::CPU& cpu);
-    static void sub_4cab60(WinApplication* app, x86::CPU& cpu);
-    static void sub_4cac20(WinApplication* app, x86::CPU& cpu);
-    static void sub_4cae00(WinApplication* app, x86::CPU& cpu);
-    static void sub_4caea0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4cb010(WinApplication* app, x86::CPU& cpu);
-    static void sub_4cb220(WinApplication* app, x86::CPU& cpu);
-    static void sub_4cb590(WinApplication* app, x86::CPU& cpu);
-    static void sub_4cb6f0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4cb730(WinApplication* app, x86::CPU& cpu);
-    static void sub_4cc540(WinApplication* app, x86::CPU& cpu);
-    static void sub_4cc5c0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4cc600(WinApplication* app, x86::CPU& cpu);
-    static void sub_4cc650(WinApplication* app, x86::CPU& cpu);
-    static void sub_4cc660(WinApplication* app, x86::CPU& cpu);
-    static void sub_4cc6d0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4cc7c0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4cc860(WinApplication* app, x86::CPU& cpu);
-    static void sub_4cc870(WinApplication* app, x86::CPU& cpu);
-    static void sub_4cc890(WinApplication* app, x86::CPU& cpu);
-    static void sub_4cc8e0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4ccaa0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4ccbb7(WinApplication* app, x86::CPU& cpu);
-    static void sub_4ccbd7(WinApplication* app, x86::CPU& cpu);
-    static void sub_4ccbd0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4ccbc9(WinApplication* app, x86::CPU& cpu);
-    static void sub_4ccbde(WinApplication* app, x86::CPU& cpu);
-    static void sub_4ccbe5(WinApplication* app, x86::CPU& cpu);
-    static void sub_4ccbec(WinApplication* app, x86::CPU& cpu);
-    static void sub_4ccbf3(WinApplication* app, x86::CPU& cpu);
-    static void sub_4ccbfa(WinApplication* app, x86::CPU& cpu);
-    static void sub_4ccc01(WinApplication* app, x86::CPU& cpu);
-    static void sub_4ccc08(WinApplication* app, x86::CPU& cpu);
-    static void sub_4ccc0f(WinApplication* app, x86::CPU& cpu);
-    static void sub_4ccc16(WinApplication* app, x86::CPU& cpu);
-    static void sub_4ccc1d(WinApplication* app, x86::CPU& cpu);
-    static void sub_4ccc24(WinApplication* app, x86::CPU& cpu);
-    static void sub_4ccc2b(WinApplication* app, x86::CPU& cpu);
-    static void sub_4ccc32(WinApplication* app, x86::CPU& cpu);
-    static void sub_4ccc39(WinApplication* app, x86::CPU& cpu);
-    static void sub_4ccc40(WinApplication* app, x86::CPU& cpu);
-    static void sub_4ccc47(WinApplication* app, x86::CPU& cpu);
-    static void sub_4ccc4e(WinApplication* app, x86::CPU& cpu);
-    static void sub_4ccc55(WinApplication* app, x86::CPU& cpu);
-    static void sub_4ccc5c(WinApplication* app, x86::CPU& cpu);
-    static void sub_4ccc63(WinApplication* app, x86::CPU& cpu);
-    static void sub_4ccc70(WinApplication* app, x86::CPU& cpu);
-    static void sub_4ccd60(WinApplication* app, x86::CPU& cpu);
-    static void sub_4ccdd0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4cce40(WinApplication* app, x86::CPU& cpu);
-    static void sub_4cce60(WinApplication* app, x86::CPU& cpu);
-    static void sub_4cce80(WinApplication* app, x86::CPU& cpu);
-    static void sub_4cce90(WinApplication* app, x86::CPU& cpu);
-    static void sub_4cced0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4ccf50(WinApplication* app, x86::CPU& cpu);
-    static void sub_4ccfc0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4cd020(WinApplication* app, x86::CPU& cpu);
-    static void sub_4cd0e0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4cd130(WinApplication* app, x86::CPU& cpu);
-    static void sub_4cd190(WinApplication* app, x86::CPU& cpu);
-    static void sub_4cd1f0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4cd2a0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4cd2d0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4cd350(WinApplication* app, x86::CPU& cpu);
-    static void sub_4cd4e0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4cd6c0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4cdaa0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4cdb10(WinApplication* app, x86::CPU& cpu);
-    static void sub_4cdbd0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4cdc50(WinApplication* app, x86::CPU& cpu);
-    static void sub_4cdc90(WinApplication* app, x86::CPU& cpu);
-    static void sub_4cdd00(WinApplication* app, x86::CPU& cpu);
-    static void sub_4cdd30(WinApplication* app, x86::CPU& cpu);
-    static void sub_4cde00(WinApplication* app, x86::CPU& cpu);
-    static void sub_4cded0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4cdee0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4cdef0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4cdf10(WinApplication* app, x86::CPU& cpu);
-    static void sub_4ce280(WinApplication* app, x86::CPU& cpu);
-    static void sub_4ce5a0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4ce750(WinApplication* app, x86::CPU& cpu);
-    static void sub_4ce800(WinApplication* app, x86::CPU& cpu);
-    static void sub_4ce840(WinApplication* app, x86::CPU& cpu);
-    static void sub_4ce8e0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4ce960(WinApplication* app, x86::CPU& cpu);
-    static void sub_4ceae0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4ceb50(WinApplication* app, x86::CPU& cpu);
-    static void sub_4cf1c0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4cf1f0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4cf220(WinApplication* app, x86::CPU& cpu);
-    static void sub_4cf280(WinApplication* app, x86::CPU& cpu);
-    static void sub_4cf2f0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4cf340(WinApplication* app, x86::CPU& cpu);
-    static void sub_4cf380(WinApplication* app, x86::CPU& cpu);
-    static void sub_4cf3f0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4cf440(WinApplication* app, x86::CPU& cpu);
-    static void sub_4cf570(WinApplication* app, x86::CPU& cpu);
-    static void sub_4cf5a0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4cf5e0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4cf6b0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4cf810(WinApplication* app, x86::CPU& cpu);
-    static void sub_4cfa40(WinApplication* app, x86::CPU& cpu);
-    static void sub_4cfa80(WinApplication* app, x86::CPU& cpu);
-    static void sub_4cfca0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4cfd30(WinApplication* app, x86::CPU& cpu);
-    static void sub_4cfdd0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4cfe30(WinApplication* app, x86::CPU& cpu);
-    static void sub_4cfe70(WinApplication* app, x86::CPU& cpu);
-    static void sub_4cfef0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4cffb0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4d0060(WinApplication* app, x86::CPU& cpu);
-    static void sub_4d0220(WinApplication* app, x86::CPU& cpu);
-    static void sub_4d0300(WinApplication* app, x86::CPU& cpu);
-    static void sub_4d03c0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4d0460(WinApplication* app, x86::CPU& cpu);
-    static void sub_4d0490(WinApplication* app, x86::CPU& cpu);
-    static void sub_4d04c0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4d0500(WinApplication* app, x86::CPU& cpu);
-    static void sub_4d0d50(WinApplication* app, x86::CPU& cpu);
-    static void sub_4d18b0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4d3380(WinApplication* app, x86::CPU& cpu);
-    static void sub_4d4080(WinApplication* app, x86::CPU& cpu);
-    static void sub_4d4120(WinApplication* app, x86::CPU& cpu);
-    static void sub_4d4440(WinApplication* app, x86::CPU& cpu);
-    static void sub_4d5060(WinApplication* app, x86::CPU& cpu);
-    static void sub_4d5220(WinApplication* app, x86::CPU& cpu);
-    static void sub_4d5370(WinApplication* app, x86::CPU& cpu);
-    static void sub_4d56b0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4d56f0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4d5730(WinApplication* app, x86::CPU& cpu);
-    static void sub_4d5d10(WinApplication* app, x86::CPU& cpu);
-    static void sub_4db750(WinApplication* app, x86::CPU& cpu);
-    static void sub_4db860(WinApplication* app, x86::CPU& cpu);
-    static void sub_4db8b0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4db940(WinApplication* app, x86::CPU& cpu);
-    static void sub_4dbba0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4dbbc0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4dbbe0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4dbbf0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4dbcc0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4dbce0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4dbda0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4dc0e0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4dc1b0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4dc1e0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4dc550(WinApplication* app, x86::CPU& cpu);
-    static void sub_4dcbc0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4dcd10(WinApplication* app, x86::CPU& cpu);
-    static void sub_4dcdd0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4dcdf0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4dd230(WinApplication* app, x86::CPU& cpu);
-    static void sub_4dd330(WinApplication* app, x86::CPU& cpu);
-    static void sub_4dd3d0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4dd4c0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4dd510(WinApplication* app, x86::CPU& cpu);
-    static void sub_4dd5e0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4dd930(WinApplication* app, x86::CPU& cpu);
-    static void sub_4dece0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4dedf0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4dee80(WinApplication* app, x86::CPU& cpu);
-    static void sub_4df1f0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4df2b0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4df310(WinApplication* app, x86::CPU& cpu);
-    static void sub_4df340(WinApplication* app, x86::CPU& cpu);
-    static void sub_4e0090(WinApplication* app, x86::CPU& cpu);
-    static void sub_4e0110(WinApplication* app, x86::CPU& cpu);
-    static void sub_4e0160(WinApplication* app, x86::CPU& cpu);
-    static void sub_4e01a0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4e0658(WinApplication* app, x86::CPU& cpu);
-    static void sub_4e0659(WinApplication* app, x86::CPU& cpu);
-    static void sub_4e4230(WinApplication* app, x86::CPU& cpu);
-    static void sub_4e4320(WinApplication* app, x86::CPU& cpu);
-    static void sub_4e4360(WinApplication* app, x86::CPU& cpu);
-    static void sub_4e43a0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4e47a0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4ea440(WinApplication* app, x86::CPU& cpu);
-    static void sub_4ea4a0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4ea665(WinApplication* app, x86::CPU& cpu);
-    static void sub_4ea930(WinApplication* app, x86::CPU& cpu);
-    static void sub_4ea950(WinApplication* app, x86::CPU& cpu);
-    static void sub_4ea970(WinApplication* app, x86::CPU& cpu);
-    static void sub_4ea9c0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4ea9e0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4eaab0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4eab80(WinApplication* app, x86::CPU& cpu);
-    static void sub_4eac60(WinApplication* app, x86::CPU& cpu);
-    static void sub_4ead20(WinApplication* app, x86::CPU& cpu);
-    static void sub_4ead90(WinApplication* app, x86::CPU& cpu);
-    static void sub_4eada0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4eae90(WinApplication* app, x86::CPU& cpu);
-    static void sub_4eaeb0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4eaf60(WinApplication* app, x86::CPU& cpu);
-    static void sub_4eafc0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4eb160(WinApplication* app, x86::CPU& cpu);
-    static void sub_4eb1c0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4eb420(WinApplication* app, x86::CPU& cpu);
-    static void sub_4eb430(WinApplication* app, x86::CPU& cpu);
-    static void sub_4eb490(WinApplication* app, x86::CPU& cpu);
-    static void sub_4eb5e0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4eb880(WinApplication* app, x86::CPU& cpu);
-    static void sub_4eb8a0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4eba80(WinApplication* app, x86::CPU& cpu);
-    static void sub_4eba90(WinApplication* app, x86::CPU& cpu);
-    static void sub_4ebaf0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4ebe50(WinApplication* app, x86::CPU& cpu);
-    static void sub_4ec0d0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4ec1a0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4ec870(WinApplication* app, x86::CPU& cpu);
-    static void sub_4ecd50(WinApplication* app, x86::CPU& cpu);
-    static void sub_4ecef0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4ecf60(WinApplication* app, x86::CPU& cpu);
-    static void sub_4ed0f0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4ed2a0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4ed330(WinApplication* app, x86::CPU& cpu);
-    static void sub_4ed480(WinApplication* app, x86::CPU& cpu);
-    static void sub_4ed730(WinApplication* app, x86::CPU& cpu);
-    static void sub_4ed770(WinApplication* app, x86::CPU& cpu);
-    static void sub_4ed820(WinApplication* app, x86::CPU& cpu);
-    static void sub_4edbc0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4eee30(WinApplication* app, x86::CPU& cpu);
-    static void sub_4ef190(WinApplication* app, x86::CPU& cpu);
-    static void sub_4ef1b0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4ef1e0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4ef2b0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4ef320(WinApplication* app, x86::CPU& cpu);
-    static void sub_4ef340(WinApplication* app, x86::CPU& cpu);
-    static void sub_4ef370(WinApplication* app, x86::CPU& cpu);
-    static void sub_4ef3c0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4ef3f0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4ef4c0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4ef520(WinApplication* app, x86::CPU& cpu);
-    static void sub_4ef6c0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4ef760(WinApplication* app, x86::CPU& cpu);
-    static void sub_4ef830(WinApplication* app, x86::CPU& cpu);
-    static void sub_4efa10(WinApplication* app, x86::CPU& cpu);
-    static void sub_4efa70(WinApplication* app, x86::CPU& cpu);
-    static void sub_4efb10(WinApplication* app, x86::CPU& cpu);
-    static void sub_4efb50(WinApplication* app, x86::CPU& cpu);
-    static void sub_4efe30(WinApplication* app, x86::CPU& cpu);
-    static void sub_4efe50(WinApplication* app, x86::CPU& cpu);
-    static void sub_4efef0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4eff00(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f00d0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f00e0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f00f0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f01f0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f0230(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f0280(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f0330(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f0630(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f0650(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f06e0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f0840(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f0850(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f0860(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f0880(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f0890(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f08a0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f08c0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f08d0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f08e0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f08f0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f0910(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f0920(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f0930(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f0940(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f0960(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f0970(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f0980(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f0990(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f09b0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f09c0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f0a10(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f0a90(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f0af0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f0b60(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f0c90(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f0cb0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f0cc0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f0cd0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f0d20(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f0da0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f0f40(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f1370(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f1500(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f15d0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f1790(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f1820(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f2170(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f22e0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f2460(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f24e0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f2790(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f27a0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f2890(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f2930(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f2a60(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f2a78(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f2a7d(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f2ad0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f2bf0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f2c40(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f2c50(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f2c60(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f2c70(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f2c90(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f2cb0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f30d0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f3350(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f33b0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f33e0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f3420(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f34f0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f3560(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f3600(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f44e0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f4544(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f45d0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f45e1(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f4650(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f46b0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f46d0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f4700(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f4740(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f4760(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f4780(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f47c0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f4920(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f4a80(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f4bb0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f4c10(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f4c70(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f4d10(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f4e60(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f4eb0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f4ed0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f4f10(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f4f30(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f4f70(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f5050(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f50b0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f50c0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f50f0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f5110(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f5130(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f5230(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f5390(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f53f0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f54f0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f55e0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f56c0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f56e0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f5700(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f5710(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f57c0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f5850(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f5880(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f58c0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f5900(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f5950(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f5a30(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f5a80(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f5ac0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f5b10(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f5ba0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f5bf0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f5c10(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f5ea0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f5f50(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f5f70(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f5f90(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f5fa0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f5fc0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f5fd0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f5fe0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f6010(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f6030(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f60b0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f61f0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f6350(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f63d0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f6490(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f6510(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f6570(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f6640(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f67b0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f6860(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f6870(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f68c0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f6c50(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f7030(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f71a0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f7220(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f7280(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f7320(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f7370(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f7380(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f73a0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f7420(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f7450(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f75d0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f7660(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f7670(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f7750(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f77c0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f77f0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f7830(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f7c48(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f80e5(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f80b6(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f87a0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f87e0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f8930(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f9060(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f9088(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f90e0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f9120(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f91d0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f9260(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f9270(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f92b0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f92d0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f9320(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f9360(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f9390(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f93f0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f9410(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f9500(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f97c0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f9920(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f99f0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f9a50(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f9ac0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f9d20(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f9df0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f9ea0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4f9f30(WinApplication* app, x86::CPU& cpu);
-    static void sub_4fa030(WinApplication* app, x86::CPU& cpu);
-    static void sub_4fa0f0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4fa1d0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4fa210(WinApplication* app, x86::CPU& cpu);
-    static void sub_4fa310(WinApplication* app, x86::CPU& cpu);
-    static void sub_4fa450(WinApplication* app, x86::CPU& cpu);
-    static void sub_4fa480(WinApplication* app, x86::CPU& cpu);
-    static void sub_4fa4e0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4fa4f0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4fa500(WinApplication* app, x86::CPU& cpu);
-    static void sub_4fa530(WinApplication* app, x86::CPU& cpu);
-    static void sub_4fa550(WinApplication* app, x86::CPU& cpu);
-    static void sub_4fa5f0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4fa620(WinApplication* app, x86::CPU& cpu);
-    static void sub_4fa6d0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4fa6e0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4fa710(WinApplication* app, x86::CPU& cpu);
-    static void sub_4fa720(WinApplication* app, x86::CPU& cpu);
-    static void sub_4fa730(WinApplication* app, x86::CPU& cpu);
-    static void sub_4fa760(WinApplication* app, x86::CPU& cpu);
-    static void sub_4fa780(WinApplication* app, x86::CPU& cpu);
-    static void sub_4fb060(WinApplication* app, x86::CPU& cpu);
-    static void sub_4fb380(WinApplication* app, x86::CPU& cpu);
-    static void sub_4fb3b0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4fb3c0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4fb3d0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4fb440(WinApplication* app, x86::CPU& cpu);
-    static void sub_4fb536(WinApplication* app, x86::CPU& cpu);
-    static void sub_4fb527(WinApplication* app, x86::CPU& cpu);
-    static void sub_4fb51b(WinApplication* app, x86::CPU& cpu);
-    static void sub_4fb50b(WinApplication* app, x86::CPU& cpu);
-    static void sub_4fb4ea(WinApplication* app, x86::CPU& cpu);
-    static void sub_4fb4d0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4fb4c0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4fb470(WinApplication* app, x86::CPU& cpu);
-    static void sub_4fb6a0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4fb6a7(WinApplication* app, x86::CPU& cpu);
-    static void sub_4fb6ae(WinApplication* app, x86::CPU& cpu);
-    static void sub_4fb6b5(WinApplication* app, x86::CPU& cpu);
-    static void sub_4fb6c2(WinApplication* app, x86::CPU& cpu);
-    static void sub_4fb6d7(WinApplication* app, x86::CPU& cpu);
-    static void sub_4fb700(WinApplication* app, x86::CPU& cpu);
-    static void sub_4fb710(WinApplication* app, x86::CPU& cpu);
-    static void sub_4fb790(WinApplication* app, x86::CPU& cpu);
-    static void sub_4fb820(WinApplication* app, x86::CPU& cpu);
-    static void sub_4fb82b(WinApplication* app, x86::CPU& cpu);
-    static void sub_4fb830(WinApplication* app, x86::CPU& cpu);
-    static void sub_4fb860(WinApplication* app, x86::CPU& cpu);
-    static void sub_4fb990(WinApplication* app, x86::CPU& cpu);
-    static void sub_4fbb60(WinApplication* app, x86::CPU& cpu);
-    static void sub_4fbbe0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4fbc30(WinApplication* app, x86::CPU& cpu);
-    static void sub_4fbd10(WinApplication* app, x86::CPU& cpu);
-    static void sub_4fbda0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4fc170(WinApplication* app, x86::CPU& cpu);
-    static void sub_4fc250(WinApplication* app, x86::CPU& cpu);
-    static void sub_4fc340(WinApplication* app, x86::CPU& cpu);
-    static void sub_4fc600(WinApplication* app, x86::CPU& cpu);
-    static void sub_4fc780(WinApplication* app, x86::CPU& cpu);
-    static void sub_4fc8e0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4fc9b0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4fca60(WinApplication* app, x86::CPU& cpu);
-    static void sub_4fca90(WinApplication* app, x86::CPU& cpu);
-    static void sub_4fcab0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4fce50(WinApplication* app, x86::CPU& cpu);
-    static void sub_4fd060(WinApplication* app, x86::CPU& cpu);
-    static void sub_4fd1c0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4fd280(WinApplication* app, x86::CPU& cpu);
-    static void sub_4fd2b0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4fd3f0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4fd490(WinApplication* app, x86::CPU& cpu);
-    static void sub_4fd4b0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4fd4c0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4fd4e0(WinApplication* app, x86::CPU& cpu);
-    static void sub_4fd500(WinApplication* app, x86::CPU& cpu);
-    static void sub_4fd520(WinApplication* app, x86::CPU& cpu);
-    static void sub_4fd540(WinApplication* app, x86::CPU& cpu);
-    static void sub_4fd61c(WinApplication* app, x86::CPU& cpu);
-    static void sub_4fd6ef(WinApplication* app, x86::CPU& cpu);
-    static void sub_4fd7b6(WinApplication* app, x86::CPU& cpu);
-    static void sub_4fd892(WinApplication* app, x86::CPU& cpu);
-    static void sub_4fd8ee(WinApplication* app, x86::CPU& cpu);
-    static void sub_4fd98c(WinApplication* app, x86::CPU& cpu);
-    static void sub_4fda20(WinApplication* app, x86::CPU& cpu);
-    static void sub_4fdc90(WinApplication* app, x86::CPU& cpu);
-    static void sub_4feffc(WinApplication* app, x86::CPU& cpu);
-    static void sub_4ff0f8(WinApplication* app, x86::CPU& cpu);
-    static void sub_4ff100(WinApplication* app, x86::CPU& cpu);
-    static void sub_4ff4f2(WinApplication* app, x86::CPU& cpu);
-    static void sub_4ff570(WinApplication* app, x86::CPU& cpu);
-    static void sub_4ff590(WinApplication* app, x86::CPU& cpu);
-    static void sub_4ff598(WinApplication* app, x86::CPU& cpu);
-    static void sub_4ff59c(WinApplication* app, x86::CPU& cpu);
-    static void sub_4ff5dc(WinApplication* app, x86::CPU& cpu);
-    static void sub_4ff620(WinApplication* app, x86::CPU& cpu);
-    static void sub_503b00(WinApplication* app, x86::CPU& cpu);
-    static void sub_503bc0(WinApplication* app, x86::CPU& cpu);
-    static void sub_503cd0(WinApplication* app, x86::CPU& cpu);
-    static void sub_503e50(WinApplication* app, x86::CPU& cpu);
-    static void sub_503ec0(WinApplication* app, x86::CPU& cpu);
-    static void sub_5040b8(WinApplication* app, x86::CPU& cpu);
-    static void sub_504133(WinApplication* app, x86::CPU& cpu);
-    static void sub_5041ae(WinApplication* app, x86::CPU& cpu);
-    static void sub_5041d0(WinApplication* app, x86::CPU& cpu);
-    static void sub_50425d(WinApplication* app, x86::CPU& cpu);
-    static void sub_5042c4(WinApplication* app, x86::CPU& cpu);
-    static void sub_504335(WinApplication* app, x86::CPU& cpu);
-    static void sub_5043f0(WinApplication* app, x86::CPU& cpu);
-    static void sub_5049c0(WinApplication* app, x86::CPU& cpu);
-    static void sub_5049f0(WinApplication* app, x86::CPU& cpu);
-    static void sub_504a30(WinApplication* app, x86::CPU& cpu);
-    static void sub_504af0(WinApplication* app, x86::CPU& cpu);
-    static void sub_504b70(WinApplication* app, x86::CPU& cpu);
-    static void sub_504bf0(WinApplication* app, x86::CPU& cpu);
-    static void sub_504c00(WinApplication* app, x86::CPU& cpu);
-    static void sub_504c20(WinApplication* app, x86::CPU& cpu);
-    static void sub_504c40(WinApplication* app, x86::CPU& cpu);
-    static void sub_504c80(WinApplication* app, x86::CPU& cpu);
-    static void sub_504e00(WinApplication* app, x86::CPU& cpu);
-    static void sub_504f90(WinApplication* app, x86::CPU& cpu);
-    static void sub_5050b0(WinApplication* app, x86::CPU& cpu);
-    static void sub_5050e0(WinApplication* app, x86::CPU& cpu);
-    static void sub_5050f0(WinApplication* app, x86::CPU& cpu);
-    static void sub_5051c0(WinApplication* app, x86::CPU& cpu);
-    static void sub_505250(WinApplication* app, x86::CPU& cpu);
-    static void sub_505280(WinApplication* app, x86::CPU& cpu);
-    static void sub_5052a0(WinApplication* app, x86::CPU& cpu);
-    static void sub_505320(WinApplication* app, x86::CPU& cpu);
-    static void sub_505500(WinApplication* app, x86::CPU& cpu);
-    static void sub_505570(WinApplication* app, x86::CPU& cpu);
-    static void sub_505650(WinApplication* app, x86::CPU& cpu);
-    static void sub_5057d0(WinApplication* app, x86::CPU& cpu);
-    static void sub_505830(WinApplication* app, x86::CPU& cpu);
-    static void sub_505870(WinApplication* app, x86::CPU& cpu);
-    static void sub_505920(WinApplication* app, x86::CPU& cpu);
-    static void sub_505950(WinApplication* app, x86::CPU& cpu);
-    static void sub_505970(WinApplication* app, x86::CPU& cpu);
-    static void sub_505980(WinApplication* app, x86::CPU& cpu);
-    static void sub_5059d0(WinApplication* app, x86::CPU& cpu);
-    static void sub_505a50(WinApplication* app, x86::CPU& cpu);
-    static void sub_505a80(WinApplication* app, x86::CPU& cpu);
-    static void sub_505b30(WinApplication* app, x86::CPU& cpu);
-    static void sub_506230(WinApplication* app, x86::CPU& cpu);
-    static void sub_506310(WinApplication* app, x86::CPU& cpu);
-    static void sub_506360(WinApplication* app, x86::CPU& cpu);
-    static void sub_5063d0(WinApplication* app, x86::CPU& cpu);
-    static void sub_506440(WinApplication* app, x86::CPU& cpu);
-    static void sub_506690(WinApplication* app, x86::CPU& cpu);
-    static void sub_506910(WinApplication* app, x86::CPU& cpu);
-    static void sub_506ac0(WinApplication* app, x86::CPU& cpu);
-    static void sub_506ca0(WinApplication* app, x86::CPU& cpu);
-    static void sub_507240(WinApplication* app, x86::CPU& cpu);
-    static void sub_5074b0(WinApplication* app, x86::CPU& cpu);
-    static void sub_5075d0(WinApplication* app, x86::CPU& cpu);
-    static void sub_507720(WinApplication* app, x86::CPU& cpu);
-    static void sub_507900(WinApplication* app, x86::CPU& cpu);
-    static void sub_5079a0(WinApplication* app, x86::CPU& cpu);
-    static void sub_507a60(WinApplication* app, x86::CPU& cpu);
-    static void sub_507b10(WinApplication* app, x86::CPU& cpu);
-    static void sub_507bc0(WinApplication* app, x86::CPU& cpu);
-    static void sub_507d00(WinApplication* app, x86::CPU& cpu);
-    static void sub_507ed0(WinApplication* app, x86::CPU& cpu);
-    static void sub_507f30(WinApplication* app, x86::CPU& cpu);
-    static void sub_508170(WinApplication* app, x86::CPU& cpu);
-    static void sub_5082f0(WinApplication* app, x86::CPU& cpu);
-    static void sub_508390(WinApplication* app, x86::CPU& cpu);
-    static void sub_5084e0(WinApplication* app, x86::CPU& cpu);
-    static void sub_508510(WinApplication* app, x86::CPU& cpu);
-    static void sub_508970(WinApplication* app, x86::CPU& cpu);
-    static void sub_5089d0(WinApplication* app, x86::CPU& cpu);
-    static void sub_508b80(WinApplication* app, x86::CPU& cpu);
-    static void sub_508c70(WinApplication* app, x86::CPU& cpu);
-    static void sub_508da0(WinApplication* app, x86::CPU& cpu);
-    static void sub_508e70(WinApplication* app, x86::CPU& cpu);
-    static void sub_509350(WinApplication* app, x86::CPU& cpu);
-    static void sub_5098d0(WinApplication* app, x86::CPU& cpu);
-    static void sub_509940(WinApplication* app, x86::CPU& cpu);
-    static void sub_509a00(WinApplication* app, x86::CPU& cpu);
-    static void sub_509a30(WinApplication* app, x86::CPU& cpu);
-    static void sub_509b10(WinApplication* app, x86::CPU& cpu);
-    static void sub_509c00(WinApplication* app, x86::CPU& cpu);
-    static void sub_509c50(WinApplication* app, x86::CPU& cpu);
-    static void sub_509c60(WinApplication* app, x86::CPU& cpu);
-    static void sub_509c70(WinApplication* app, x86::CPU& cpu);
-    static void sub_509cd0(WinApplication* app, x86::CPU& cpu);
-    static void sub_509d20(WinApplication* app, x86::CPU& cpu);
-    static void sub_509df0(WinApplication* app, x86::CPU& cpu);
-    static void sub_509e50(WinApplication* app, x86::CPU& cpu);
-    static void sub_509eb0(WinApplication* app, x86::CPU& cpu);
-    static void sub_509ef0(WinApplication* app, x86::CPU& cpu);
-    static void sub_509f50(WinApplication* app, x86::CPU& cpu);
-    static void sub_509fb0(WinApplication* app, x86::CPU& cpu);
-    static void sub_50a020(WinApplication* app, x86::CPU& cpu);
-    static void sub_50a0a0(WinApplication* app, x86::CPU& cpu);
-    static void sub_50a100(WinApplication* app, x86::CPU& cpu);
-    static void sub_50a150(WinApplication* app, x86::CPU& cpu);
-    static void sub_50a1c0(WinApplication* app, x86::CPU& cpu);
-    static void sub_50a1e0(WinApplication* app, x86::CPU& cpu);
-    static void sub_50a240(WinApplication* app, x86::CPU& cpu);
-    static void sub_50a2b0(WinApplication* app, x86::CPU& cpu);
-    static void sub_50a330(WinApplication* app, x86::CPU& cpu);
-    static void sub_50a3c0(WinApplication* app, x86::CPU& cpu);
-    static void sub_50a440(WinApplication* app, x86::CPU& cpu);
-    static void sub_50a4c0(WinApplication* app, x86::CPU& cpu);
-    static void sub_50a510(WinApplication* app, x86::CPU& cpu);
-    static void sub_50a520(WinApplication* app, x86::CPU& cpu);
-    static void sub_50a559(WinApplication* app, x86::CPU& cpu);
-    static void sub_50a550(WinApplication* app, x86::CPU& cpu);
-    static void sub_50a543(WinApplication* app, x86::CPU& cpu);
-    static void sub_50a570(WinApplication* app, x86::CPU& cpu);
-    static void sub_50a5d0(WinApplication* app, x86::CPU& cpu);
-    static void sub_50a830(WinApplication* app, x86::CPU& cpu);
-    static void sub_50a960(WinApplication* app, x86::CPU& cpu);
-    static void sub_50aad0(WinApplication* app, x86::CPU& cpu);
-    static void sub_50afc0(WinApplication* app, x86::CPU& cpu);
-    static void sub_50b080(WinApplication* app, x86::CPU& cpu);
-    static void sub_50b0b0(WinApplication* app, x86::CPU& cpu);
-    static void sub_50b540(WinApplication* app, x86::CPU& cpu);
-    static void sub_50b560(WinApplication* app, x86::CPU& cpu);
-    static void sub_50b580(WinApplication* app, x86::CPU& cpu);
-    static void sub_50b5c0(WinApplication* app, x86::CPU& cpu);
-    static void sub_50ba90(WinApplication* app, x86::CPU& cpu);
-    static void sub_50bb80(WinApplication* app, x86::CPU& cpu);
-    static void sub_50bdf0(WinApplication* app, x86::CPU& cpu);
-    static void sub_50bfd0(WinApplication* app, x86::CPU& cpu);
-    static void sub_50c0d0(WinApplication* app, x86::CPU& cpu);
-    static void sub_50c180(WinApplication* app, x86::CPU& cpu);
-    static void sub_50c1e0(WinApplication* app, x86::CPU& cpu);
-    static void sub_50c220(WinApplication* app, x86::CPU& cpu);
-    static void sub_50c270(WinApplication* app, x86::CPU& cpu);
-    static void sub_50c2c0(WinApplication* app, x86::CPU& cpu);
-    static void sub_50c350(WinApplication* app, x86::CPU& cpu);
-    static void sub_50c3a0(WinApplication* app, x86::CPU& cpu);
-    static void sub_50c584(WinApplication* app, x86::CPU& cpu);
-    static void sub_50c5d4(WinApplication* app, x86::CPU& cpu);
-    static void sub_50d560(WinApplication* app, x86::CPU& cpu);
-    static void sub_50d6d0(WinApplication* app, x86::CPU& cpu);
-    static void sub_50d6e0(WinApplication* app, x86::CPU& cpu);
-    static void sub_50d7e0(WinApplication* app, x86::CPU& cpu);
-    static void sub_50d880(WinApplication* app, x86::CPU& cpu);
-    static void sub_50d910(WinApplication* app, x86::CPU& cpu);
-    static void sub_50d9c0(WinApplication* app, x86::CPU& cpu);
-    static void sub_50daa0(WinApplication* app, x86::CPU& cpu);
-    static void sub_50db30(WinApplication* app, x86::CPU& cpu);
-    static void sub_50dbf0(WinApplication* app, x86::CPU& cpu);
-    static void sub_50dcd0(WinApplication* app, x86::CPU& cpu);
-    static void sub_50dd60(WinApplication* app, x86::CPU& cpu);
-    static void sub_50de50(WinApplication* app, x86::CPU& cpu);
-    static void sub_50ded0(WinApplication* app, x86::CPU& cpu);
-    static void sub_50df60(WinApplication* app, x86::CPU& cpu);
-    static void sub_50dff0(WinApplication* app, x86::CPU& cpu);
-    static void sub_50e0a0(WinApplication* app, x86::CPU& cpu);
-    static void sub_50e2d0(WinApplication* app, x86::CPU& cpu);
-    static void sub_50e3f0(WinApplication* app, x86::CPU& cpu);
-    static void sub_50e500(WinApplication* app, x86::CPU& cpu);
-    static void sub_50e5a0(WinApplication* app, x86::CPU& cpu);
-    static void sub_50e800(WinApplication* app, x86::CPU& cpu);
-    static void sub_50e8e0(WinApplication* app, x86::CPU& cpu);
-    static void sub_50e9b0(WinApplication* app, x86::CPU& cpu);
-    static void sub_50ea20(WinApplication* app, x86::CPU& cpu);
-    static void sub_50ea40(WinApplication* app, x86::CPU& cpu);
-    static void sub_5102a4(WinApplication* app, x86::CPU& cpu);
-    static void sub_5102f0(WinApplication* app, x86::CPU& cpu);
-    static void sub_51039e(WinApplication* app, x86::CPU& cpu);
-    static void sub_510337(WinApplication* app, x86::CPU& cpu);
-    static void sub_510a50(WinApplication* app, x86::CPU& cpu);
-    static void sub_510bb3(WinApplication* app, x86::CPU& cpu);
-    static void sub_510cbd(WinApplication* app, x86::CPU& cpu);
-    static void sub_510e48(WinApplication* app, x86::CPU& cpu);
-    static void sub_510ff8(WinApplication* app, x86::CPU& cpu);
-    static void sub_512180(WinApplication* app, x86::CPU& cpu);
-    static void sub_512470(WinApplication* app, x86::CPU& cpu);
-    static void sub_5125b0(WinApplication* app, x86::CPU& cpu);
-    static void sub_512650(WinApplication* app, x86::CPU& cpu);
-    static void sub_512660(WinApplication* app, x86::CPU& cpu);
-    static void sub_5126f0(WinApplication* app, x86::CPU& cpu);
-    static void sub_5127d0(WinApplication* app, x86::CPU& cpu);
-    static void sub_512890(WinApplication* app, x86::CPU& cpu);
-    static void sub_512940(WinApplication* app, x86::CPU& cpu);
-    static void sub_512980(WinApplication* app, x86::CPU& cpu);
-    static void sub_5129e0(WinApplication* app, x86::CPU& cpu);
-    static void sub_512ad0(WinApplication* app, x86::CPU& cpu);
-    static void sub_512c80(WinApplication* app, x86::CPU& cpu);
-    static void sub_512d70(WinApplication* app, x86::CPU& cpu);
-    static void sub_512dd0(WinApplication* app, x86::CPU& cpu);
-    static void sub_512f60(WinApplication* app, x86::CPU& cpu);
-    static void sub_512fc0(WinApplication* app, x86::CPU& cpu);
-    static void sub_512fd0(WinApplication* app, x86::CPU& cpu);
-    static void sub_512ff0(WinApplication* app, x86::CPU& cpu);
-    static void sub_513000(WinApplication* app, x86::CPU& cpu);
-    static void sub_513030(WinApplication* app, x86::CPU& cpu);
-    static void sub_513190(WinApplication* app, x86::CPU& cpu);
-    static void sub_5132a0(WinApplication* app, x86::CPU& cpu);
-    static void sub_513320(WinApplication* app, x86::CPU& cpu);
-    static void sub_5133a0(WinApplication* app, x86::CPU& cpu);
-    static void sub_5140e0(WinApplication* app, x86::CPU& cpu);
-    static void sub_514260(WinApplication* app, x86::CPU& cpu);
-    static void sub_514280(WinApplication* app, x86::CPU& cpu);
-    static void sub_514320(WinApplication* app, x86::CPU& cpu);
-    static void sub_5143d0(WinApplication* app, x86::CPU& cpu);
-    static void sub_5144b0(WinApplication* app, x86::CPU& cpu);
-    static void sub_5145b0(WinApplication* app, x86::CPU& cpu);
-    static void sub_514650(WinApplication* app, x86::CPU& cpu);
-    static void sub_514820(WinApplication* app, x86::CPU& cpu);
-    static void sub_514850(WinApplication* app, x86::CPU& cpu);
-    static void sub_5148b0(WinApplication* app, x86::CPU& cpu);
-    static void sub_514970(WinApplication* app, x86::CPU& cpu);
-    static void sub_514af0(WinApplication* app, x86::CPU& cpu);
-    static void sub_514dc0(WinApplication* app, x86::CPU& cpu);
-    static void sub_514ec0(WinApplication* app, x86::CPU& cpu);
-    static void sub_514f70(WinApplication* app, x86::CPU& cpu);
-    static void sub_515050(WinApplication* app, x86::CPU& cpu);
-    static void sub_5150f0(WinApplication* app, x86::CPU& cpu);
-    static void sub_515740(WinApplication* app, x86::CPU& cpu);
-    static void sub_5157e0(WinApplication* app, x86::CPU& cpu);
-    static void sub_5157ec(WinApplication* app, x86::CPU& cpu);
-    static void sub_5157f4(WinApplication* app, x86::CPU& cpu);
-    static void sub_515900(WinApplication* app, x86::CPU& cpu);
-    static void sub_5159e4(WinApplication* app, x86::CPU& cpu);
-    static void sub_5167b3(WinApplication* app, x86::CPU& cpu);
-    static void sub_5169ef(WinApplication* app, x86::CPU& cpu);
-    static void sub_516a87(WinApplication* app, x86::CPU& cpu);
-    static void sub_516ab4(WinApplication* app, x86::CPU& cpu);
-    static void sub_516a9d(WinApplication* app, x86::CPU& cpu);
-    static void sub_516acc(WinApplication* app, x86::CPU& cpu);
-    static void sub_516ae2(WinApplication* app, x86::CPU& cpu);
-    static void sub_516be2(WinApplication* app, x86::CPU& cpu);
-    static void sub_516bf5(WinApplication* app, x86::CPU& cpu);
-    static void sub_516dfa(WinApplication* app, x86::CPU& cpu);
-    static void sub_516e13(WinApplication* app, x86::CPU& cpu);
-    static void sub_517580(WinApplication* app, x86::CPU& cpu);
-    static void sub_5175b0(WinApplication* app, x86::CPU& cpu);
-    static void sub_517920(WinApplication* app, x86::CPU& cpu);
-    static void sub_517b30(WinApplication* app, x86::CPU& cpu);
-    static void sub_517b70(WinApplication* app, x86::CPU& cpu);
-    static void sub_517ba0(WinApplication* app, x86::CPU& cpu);
-    static void sub_517bf0(WinApplication* app, x86::CPU& cpu);
-    static void sub_517d60(WinApplication* app, x86::CPU& cpu);
-    static void sub_517d70(WinApplication* app, x86::CPU& cpu);
-    static void sub_517da0(WinApplication* app, x86::CPU& cpu);
-    static void sub_517de0(WinApplication* app, x86::CPU& cpu);
-    static void sub_517e50(WinApplication* app, x86::CPU& cpu);
-    static void sub_517eb0(WinApplication* app, x86::CPU& cpu);
-    static void sub_517f10(WinApplication* app, x86::CPU& cpu);
-    static void sub_518040(WinApplication* app, x86::CPU& cpu);
-    static void sub_518690(WinApplication* app, x86::CPU& cpu);
-    static void sub_518870(WinApplication* app, x86::CPU& cpu);
-    static void sub_518d50(WinApplication* app, x86::CPU& cpu);
-    static void sub_518df0(WinApplication* app, x86::CPU& cpu);
-    static void sub_518e40(WinApplication* app, x86::CPU& cpu);
-    static void sub_518eb0(WinApplication* app, x86::CPU& cpu);
-    static void sub_518ee0(WinApplication* app, x86::CPU& cpu);
-    static void sub_518ef0(WinApplication* app, x86::CPU& cpu);
-    static void sub_518f80(WinApplication* app, x86::CPU& cpu);
-    static void sub_518fc0(WinApplication* app, x86::CPU& cpu);
-    static void sub_518fd0(WinApplication* app, x86::CPU& cpu);
-    static void sub_519140(WinApplication* app, x86::CPU& cpu);
-    static void sub_5199b0(WinApplication* app, x86::CPU& cpu);
-    static void sub_519a50(WinApplication* app, x86::CPU& cpu);
-    static void sub_519ea0(WinApplication* app, x86::CPU& cpu);
-    static void sub_519f10(WinApplication* app, x86::CPU& cpu);
-    static void sub_51a170(WinApplication* app, x86::CPU& cpu);
-    static void sub_51a1b8(WinApplication* app, x86::CPU& cpu);
-    static void sub_51a470(WinApplication* app, x86::CPU& cpu);
-    static void sub_51a7b0(WinApplication* app, x86::CPU& cpu);
-    static void sub_51a930(WinApplication* app, x86::CPU& cpu);
-    static void sub_51ab40(WinApplication* app, x86::CPU& cpu);
-    static void sub_51ab70(WinApplication* app, x86::CPU& cpu);
-    static void sub_51abc0(WinApplication* app, x86::CPU& cpu);
-    static void sub_51ad70(WinApplication* app, x86::CPU& cpu);
-    static void sub_51aeb0(WinApplication* app, x86::CPU& cpu);
-    static void sub_51af10(WinApplication* app, x86::CPU& cpu);
-    static void sub_51b030(WinApplication* app, x86::CPU& cpu);
-    static void sub_51b1c0(WinApplication* app, x86::CPU& cpu);
-    static void sub_51b1e0(WinApplication* app, x86::CPU& cpu);
-    static void sub_51b200(WinApplication* app, x86::CPU& cpu);
-    static void sub_51b2f0(WinApplication* app, x86::CPU& cpu);
-    static void sub_51b480(WinApplication* app, x86::CPU& cpu);
-    static void sub_51b530(WinApplication* app, x86::CPU& cpu);
-    static void sub_51b5f0(WinApplication* app, x86::CPU& cpu);
-    static void sub_51b710(WinApplication* app, x86::CPU& cpu);
-    static void sub_51b8a0(WinApplication* app, x86::CPU& cpu);
-    static void sub_51b900(WinApplication* app, x86::CPU& cpu);
-    static void sub_51b970(WinApplication* app, x86::CPU& cpu);
-    static void sub_51ba50(WinApplication* app, x86::CPU& cpu);
-    static void sub_51bbd0(WinApplication* app, x86::CPU& cpu);
-    static void sub_51bc70(WinApplication* app, x86::CPU& cpu);
-    static void sub_51bca0(WinApplication* app, x86::CPU& cpu);
-    static void sub_51bcd0(WinApplication* app, x86::CPU& cpu);
-    static void sub_51bcf0(WinApplication* app, x86::CPU& cpu);
-    static void sub_51bd50(WinApplication* app, x86::CPU& cpu);
-    static void sub_51bdc0(WinApplication* app, x86::CPU& cpu);
-    static void sub_51be90(WinApplication* app, x86::CPU& cpu);
-    static void sub_51bfd0(WinApplication* app, x86::CPU& cpu);
-    static void sub_51c0a0(WinApplication* app, x86::CPU& cpu);
-    static void sub_51c100(WinApplication* app, x86::CPU& cpu);
-    static void sub_51c510(WinApplication* app, x86::CPU& cpu);
-    static void sub_51c5c0(WinApplication* app, x86::CPU& cpu);
-    static void sub_51c690(WinApplication* app, x86::CPU& cpu);
-    static void sub_51c7a0(WinApplication* app, x86::CPU& cpu);
-    static void sub_51c7c0(WinApplication* app, x86::CPU& cpu);
-    static void sub_51c7f0(WinApplication* app, x86::CPU& cpu);
-    static void sub_51c820(WinApplication* app, x86::CPU& cpu);
-    static void sub_51c890(WinApplication* app, x86::CPU& cpu);
-    static void sub_51c8f0(WinApplication* app, x86::CPU& cpu);
-    static void sub_51ca50(WinApplication* app, x86::CPU& cpu);
-    static void sub_51caf0(WinApplication* app, x86::CPU& cpu);
-    static void sub_51cb50(WinApplication* app, x86::CPU& cpu);
-    static void sub_51cc00(WinApplication* app, x86::CPU& cpu);
-    static void sub_51cc80(WinApplication* app, x86::CPU& cpu);
-    static void sub_51cd50(WinApplication* app, x86::CPU& cpu);
-    static void sub_51cf30(WinApplication* app, x86::CPU& cpu);
-    static void sub_51d000(WinApplication* app, x86::CPU& cpu);
-    static void sub_51d010(WinApplication* app, x86::CPU& cpu);
-    static void sub_51d040(WinApplication* app, x86::CPU& cpu);
-    static void sub_51d050(WinApplication* app, x86::CPU& cpu);
-    static void sub_51d270(WinApplication* app, x86::CPU& cpu);
-    static void sub_51d810(WinApplication* app, x86::CPU& cpu);
-    static void sub_51d8f0(WinApplication* app, x86::CPU& cpu);
-    static void sub_51d9e0(WinApplication* app, x86::CPU& cpu);
-    static void sub_51de60(WinApplication* app, x86::CPU& cpu);
-    static void sub_51df60(WinApplication* app, x86::CPU& cpu);
-    static void sub_51e110(WinApplication* app, x86::CPU& cpu);
-    static void sub_51e2a0(WinApplication* app, x86::CPU& cpu);
-    static void sub_51e388(WinApplication* app, x86::CPU& cpu);
-    static void sub_51e51c(WinApplication* app, x86::CPU& cpu);
-    static void sub_51e540(WinApplication* app, x86::CPU& cpu);
-    static void sub_51e544(WinApplication* app, x86::CPU& cpu);
-    static void sub_51e5e8(WinApplication* app, x86::CPU& cpu);
-    static void sub_51e618(WinApplication* app, x86::CPU& cpu);
-    static void sub_51e670(WinApplication* app, x86::CPU& cpu);
-    static void sub_51e680(WinApplication* app, x86::CPU& cpu);
-    static void sub_51e68c(WinApplication* app, x86::CPU& cpu);
-    static void sub_51e698(WinApplication* app, x86::CPU& cpu);
-    static void sub_51e6a8(WinApplication* app, x86::CPU& cpu);
-    static void sub_51e6b8(WinApplication* app, x86::CPU& cpu);
-    static void sub_51e6c0(WinApplication* app, x86::CPU& cpu);
-    static void sub_51e6dc(WinApplication* app, x86::CPU& cpu);
-    static void sub_51e6e4(WinApplication* app, x86::CPU& cpu);
-    static void sub_51e6f0(WinApplication* app, x86::CPU& cpu);
-    static void sub_51e6f8(WinApplication* app, x86::CPU& cpu);
-    static void sub_51e704(WinApplication* app, x86::CPU& cpu);
-    static void sub_51e70c(WinApplication* app, x86::CPU& cpu);
-    static void sub_51e714(WinApplication* app, x86::CPU& cpu);
-    static void sub_51e71c(WinApplication* app, x86::CPU& cpu);
-    static void sub_51e778(WinApplication* app, x86::CPU& cpu);
-    static void sub_51e780(WinApplication* app, x86::CPU& cpu);
-    static void sub_51e7a8(WinApplication* app, x86::CPU& cpu);
-    static void sub_51e828(WinApplication* app, x86::CPU& cpu);
-    static void sub_51e888(WinApplication* app, x86::CPU& cpu);
-    static void sub_51e8dc(WinApplication* app, x86::CPU& cpu);
-    static void sub_51e934(WinApplication* app, x86::CPU& cpu);
-    static void sub_51e940(WinApplication* app, x86::CPU& cpu);
-    static void sub_51e964(WinApplication* app, x86::CPU& cpu);
-    static void sub_51ea7c(WinApplication* app, x86::CPU& cpu);
-    static void sub_51ec90(WinApplication* app, x86::CPU& cpu);
-    static void sub_51eccc(WinApplication* app, x86::CPU& cpu);
-    static void sub_51ed24(WinApplication* app, x86::CPU& cpu);
-    static void sub_51ef08(WinApplication* app, x86::CPU& cpu);
-    static void sub_51f140(WinApplication* app, x86::CPU& cpu);
-    static void sub_51f254(WinApplication* app, x86::CPU& cpu);
-    static void sub_51f270(WinApplication* app, x86::CPU& cpu);
-    static void sub_51f2a0(WinApplication* app, x86::CPU& cpu);
-    static void sub_523332(WinApplication* app, x86::CPU& cpu);
-    static void sub_523465(WinApplication* app, x86::CPU& cpu);
-    static void sub_5236c0(WinApplication* app, x86::CPU& cpu);
-    static void sub_523760(WinApplication* app, x86::CPU& cpu);
-    static void sub_5239ec(WinApplication* app, x86::CPU& cpu);
-    static void sub_523b00(WinApplication* app, x86::CPU& cpu);
-    static void sub_52448c(WinApplication* app, x86::CPU& cpu);
-    static void sub_5244f0(WinApplication* app, x86::CPU& cpu);
-    static void sub_524500(WinApplication* app, x86::CPU& cpu);
-    static void sub_524550(WinApplication* app, x86::CPU& cpu);
-    static void sub_5245a0(WinApplication* app, x86::CPU& cpu);
-    static void sub_5245f0(WinApplication* app, x86::CPU& cpu);
-    static void sub_524620(WinApplication* app, x86::CPU& cpu);
-    static void sub_52468f(WinApplication* app, x86::CPU& cpu);
-    static void sub_5247ab(WinApplication* app, x86::CPU& cpu);
-    static void sub_5247c0(WinApplication* app, x86::CPU& cpu);
-    static void sub_524930(WinApplication* app, x86::CPU& cpu);
-    static void sub_524950(WinApplication* app, x86::CPU& cpu);
-    static void sub_524970(WinApplication* app, x86::CPU& cpu);
-    static void sub_524bb0(WinApplication* app, x86::CPU& cpu);
-    static void sub_524c30(WinApplication* app, x86::CPU& cpu);
-    static void sub_524d90(WinApplication* app, x86::CPU& cpu);
-    static void sub_524dd0(WinApplication* app, x86::CPU& cpu);
-    static void sub_524de0(WinApplication* app, x86::CPU& cpu);
-    static void sub_524df0(WinApplication* app, x86::CPU& cpu);
-    static void sub_524f88(WinApplication* app, x86::CPU& cpu);
-    static void sub_52506c(WinApplication* app, x86::CPU& cpu);
-    static void sub_5251a0(WinApplication* app, x86::CPU& cpu);
-    static void sub_525600(WinApplication* app, x86::CPU& cpu);
-    static void sub_525630(WinApplication* app, x86::CPU& cpu);
-    static void sub_525650(WinApplication* app, x86::CPU& cpu);
-    static void sub_525670(WinApplication* app, x86::CPU& cpu);
-    static void sub_5257c0(WinApplication* app, x86::CPU& cpu);
-    static void sub_5259d0(WinApplication* app, x86::CPU& cpu);
-    static void sub_525b80(WinApplication* app, x86::CPU& cpu);
-    static void sub_525ba0(WinApplication* app, x86::CPU& cpu);
-    static void sub_525e10(WinApplication* app, x86::CPU& cpu);
-    static void sub_525e4c(WinApplication* app, x86::CPU& cpu);
-    static void sub_525f20(WinApplication* app, x86::CPU& cpu);
-    static void sub_525f84(WinApplication* app, x86::CPU& cpu);
-    static void sub_525ff8(WinApplication* app, x86::CPU& cpu);
-    static void sub_526060(WinApplication* app, x86::CPU& cpu);
-    static void sub_526070(WinApplication* app, x86::CPU& cpu);
-    static void sub_526080(WinApplication* app, x86::CPU& cpu);
-    static void sub_5260c8(WinApplication* app, x86::CPU& cpu);
-    static void sub_5260ec(WinApplication* app, x86::CPU& cpu);
-    static void sub_526110(WinApplication* app, x86::CPU& cpu);
-    static void sub_52612c(WinApplication* app, x86::CPU& cpu);
-    static void sub_526194(WinApplication* app, x86::CPU& cpu);
-    static void sub_5261fc(WinApplication* app, x86::CPU& cpu);
-    static void sub_526244(WinApplication* app, x86::CPU& cpu);
-    static void sub_526338(WinApplication* app, x86::CPU& cpu);
-    static void sub_5263a8(WinApplication* app, x86::CPU& cpu);
-    static void sub_5263f0(WinApplication* app, x86::CPU& cpu);
-    static void sub_526420(WinApplication* app, x86::CPU& cpu);
-    static void sub_52643c(WinApplication* app, x86::CPU& cpu);
-    static void sub_526642(WinApplication* app, x86::CPU& cpu);
-    static void sub_526674(WinApplication* app, x86::CPU& cpu);
-    static void sub_5267ff(WinApplication* app, x86::CPU& cpu);
-    static void sub_52699c(WinApplication* app, x86::CPU& cpu);
-    static void sub_526f87(WinApplication* app, x86::CPU& cpu);
-    static void sub_52700c(WinApplication* app, x86::CPU& cpu);
-    static void sub_52b523(WinApplication* app, x86::CPU& cpu);
-    static void sub_52b6c0(WinApplication* app, x86::CPU& cpu);
-    static void sub_52b720(WinApplication* app, x86::CPU& cpu);
-    static void sub_52b860(WinApplication* app, x86::CPU& cpu);
-    static void sub_52b8b0(WinApplication* app, x86::CPU& cpu);
-    static void sub_52b8d0(WinApplication* app, x86::CPU& cpu);
-    static void sub_52b8e0(WinApplication* app, x86::CPU& cpu);
-    static void sub_52b8f0(WinApplication* app, x86::CPU& cpu);
-    static void sub_52b910(WinApplication* app, x86::CPU& cpu);
-    static void sub_52b970(WinApplication* app, x86::CPU& cpu);
-    static void sub_52b9d0(WinApplication* app, x86::CPU& cpu);
-    static void sub_52b9e0(WinApplication* app, x86::CPU& cpu);
-    static void sub_52ba00(WinApplication* app, x86::CPU& cpu);
-    static void sub_52ba70(WinApplication* app, x86::CPU& cpu);
-    static void sub_52bac0(WinApplication* app, x86::CPU& cpu);
-    static void sub_52baf0(WinApplication* app, x86::CPU& cpu);
-    static void sub_52bb20(WinApplication* app, x86::CPU& cpu);
-    static void sub_52bb50(WinApplication* app, x86::CPU& cpu);
-    static void sub_52bb80(WinApplication* app, x86::CPU& cpu);
-    static void sub_52bb90(WinApplication* app, x86::CPU& cpu);
-    static void sub_52bbf0(WinApplication* app, x86::CPU& cpu);
-    static void sub_52bc00(WinApplication* app, x86::CPU& cpu);
-    static void sub_52bd00(WinApplication* app, x86::CPU& cpu);
-    static void sub_52bd20(WinApplication* app, x86::CPU& cpu);
-    static void sub_52bd50(WinApplication* app, x86::CPU& cpu);
-    static void sub_52bdb0(WinApplication* app, x86::CPU& cpu);
-    static void sub_52bed0(WinApplication* app, x86::CPU& cpu);
-    static void sub_52c810(WinApplication* app, x86::CPU& cpu);
-    static void sub_52c81c(WinApplication* app, x86::CPU& cpu);
-    static void sub_52c824(WinApplication* app, x86::CPU& cpu);
-    static void sub_52c870(WinApplication* app, x86::CPU& cpu);
-    static void sub_52c878(WinApplication* app, x86::CPU& cpu);
-    static void sub_52c88a(WinApplication* app, x86::CPU& cpu);
-    static void sub_52c88f(WinApplication* app, x86::CPU& cpu);
-    static void sub_52c8a7(WinApplication* app, x86::CPU& cpu);
-    static void sub_52c89b(WinApplication* app, x86::CPU& cpu);
-    static void sub_52e3f8(WinApplication* app, x86::CPU& cpu);
-    static void sub_52e420(WinApplication* app, x86::CPU& cpu);
-    static void sub_52e440(WinApplication* app, x86::CPU& cpu);
-    static void sub_52e4e0(WinApplication* app, x86::CPU& cpu);
-    static void sub_52e500(WinApplication* app, x86::CPU& cpu);
-    static void sub_52e660(WinApplication* app, x86::CPU& cpu);
-    static void sub_52e670(WinApplication* app, x86::CPU& cpu);
-    static void sub_52e6d0(WinApplication* app, x86::CPU& cpu);
-    static void sub_52e88c(WinApplication* app, x86::CPU& cpu);
-    static void sub_52ea3c(WinApplication* app, x86::CPU& cpu);
-    static void sub_52eb70(WinApplication* app, x86::CPU& cpu);
-    static void sub_52ec04(WinApplication* app, x86::CPU& cpu);
-    static void sub_52ecf0(WinApplication* app, x86::CPU& cpu);
-    static void sub_52ed20(WinApplication* app, x86::CPU& cpu);
-    static void sub_52edfa(WinApplication* app, x86::CPU& cpu);
-    static void sub_52ee00(WinApplication* app, x86::CPU& cpu);
-    static void sub_52ee60(WinApplication* app, x86::CPU& cpu);
-    static void sub_52f318(WinApplication* app, x86::CPU& cpu);
-    static void sub_52f535(WinApplication* app, x86::CPU& cpu);
-    static void sub_52f661(WinApplication* app, x86::CPU& cpu);
-    static void sub_52f969(WinApplication* app, x86::CPU& cpu);
-    static void sub_52fb2e(WinApplication* app, x86::CPU& cpu);
-    static void sub_52ffc7(WinApplication* app, x86::CPU& cpu);
-    static void sub_530019(WinApplication* app, x86::CPU& cpu);
-    static void sub_53006b(WinApplication* app, x86::CPU& cpu);
-    static void sub_530747(WinApplication* app, x86::CPU& cpu);
-    static void sub_53083d(WinApplication* app, x86::CPU& cpu);
-    static void sub_530a4e(WinApplication* app, x86::CPU& cpu);
-    static void sub_530b4d(WinApplication* app, x86::CPU& cpu);
-    static void sub_5310be(WinApplication* app, x86::CPU& cpu);
-    static void sub_5311c0(WinApplication* app, x86::CPU& cpu);
-    static void sub_53138f(WinApplication* app, x86::CPU& cpu);
-    static void sub_531439(WinApplication* app, x86::CPU& cpu);
-    static void sub_531f31(WinApplication* app, x86::CPU& cpu);
-    static void sub_532162(WinApplication* app, x86::CPU& cpu);
-    static void sub_5324d2(WinApplication* app, x86::CPU& cpu);
-    static void sub_533dde(WinApplication* app, x86::CPU& cpu);
-    static void sub_533dea(WinApplication* app, x86::CPU& cpu);
-    static void sub_533df0(WinApplication* app, x86::CPU& cpu);
-    static void sub_533df6(WinApplication* app, x86::CPU& cpu);
-    static void sub_533dfc(WinApplication* app, x86::CPU& cpu);
-    static void sub_533e02(WinApplication* app, x86::CPU& cpu);
-    static void sub_533e08(WinApplication* app, x86::CPU& cpu);
-    static void sub_533e0e(WinApplication* app, x86::CPU& cpu);
-    static void sub_533e14(WinApplication* app, x86::CPU& cpu);
-    static void sub_533e1a(WinApplication* app, x86::CPU& cpu);
-    static void sub_533e20(WinApplication* app, x86::CPU& cpu);
-    static void sub_533e26(WinApplication* app, x86::CPU& cpu);
-    static void sub_533e2c(WinApplication* app, x86::CPU& cpu);
-    static void sub_533e32(WinApplication* app, x86::CPU& cpu);
-    static void sub_533e38(WinApplication* app, x86::CPU& cpu);
-    static void sub_533e3e(WinApplication* app, x86::CPU& cpu);
-    static void sub_533e44(WinApplication* app, x86::CPU& cpu);
-    static void sub_533e4a(WinApplication* app, x86::CPU& cpu);
-    static void sub_533e50(WinApplication* app, x86::CPU& cpu);
-    static void sub_533e56(WinApplication* app, x86::CPU& cpu);
-    static void sub_533e5c(WinApplication* app, x86::CPU& cpu);
-    static void sub_533e86(WinApplication* app, x86::CPU& cpu);
-    static void sub_533e8c(WinApplication* app, x86::CPU& cpu);
-    static void sub_533e92(WinApplication* app, x86::CPU& cpu);
-    static void sub_533e98(WinApplication* app, x86::CPU& cpu);
-    static void sub_533e9e(WinApplication* app, x86::CPU& cpu);
-    static void sub_533ea4(WinApplication* app, x86::CPU& cpu);
-    static void sub_533eaa(WinApplication* app, x86::CPU& cpu);
-    static void sub_533eb0(WinApplication* app, x86::CPU& cpu);
-    static void sub_533ee0(WinApplication* app, x86::CPU& cpu);
 };
 
 }

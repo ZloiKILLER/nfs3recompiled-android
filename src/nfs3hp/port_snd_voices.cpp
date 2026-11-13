@@ -1,4 +1,5 @@
 #include "port_snd.h"
+#include "port_snd_voices.h"
 
 /* EA's SND library, rewritten (port_snd.h says how): its voices -- taken,
  * freed, grouped -- their volume, pan and pitch on the mixer's channels, the
@@ -405,7 +406,8 @@ Result enterAudio(App* app, CPU& cpu, reg32 esp)
             return {};
         eax = reg32(*r);
     }
-    if (!callGame(app, cpu, esp - 0xc, app->getMemory<reg32>(kEnterCriticalSection), {eax}, {kLock(app)}, eax))
+    if (!callWindows<kEnterCriticalSection, &win32::kernel32::EnterCriticalSection>(app, cpu, esp - 0xc, {eax}, eax,
+                                                                                     kLock(app)))
         return {};
     kEntered.set(app, uint8_t(kEntered(app) + 1));
     return int32_t(eax);
@@ -417,7 +419,8 @@ Result enterAudio(App* app, CPU& cpu, reg32 esp)
 Result leaveAudio(App* app, CPU& cpu, reg32 esp, reg32 eax)
 {
     kEntered.set(app, uint8_t(kEntered(app) - 1));
-    if (!callGame(app, cpu, esp - 8, app->getMemory<reg32>(kLeaveCriticalSection), {eax}, {kLock(app)}, eax))
+    if (!callWindows<kLeaveCriticalSection, &win32::kernel32::LeaveCriticalSection>(app, cpu, esp - 8, {eax}, eax,
+                                                                                     kLock(app)))
         return {};
     return int32_t(eax);
 }

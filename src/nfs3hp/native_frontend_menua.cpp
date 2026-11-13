@@ -1,4 +1,30 @@
+#include "native_frontend_menua.h"
+#include "game_settings.h"
 #include "native_frontend.h"
+#include "native_frontend_menud.h"
+#include "native_frontend_menue.h"
+#include "native_controls_devices.h"
+#include "native_controls_input.h"
+#include "native_ea_memory.h"
+#include "native_frontend_dialogs.h"
+#include "native_frontend_glue.h"
+#include "native_frontend_loop.h"
+#include "native_frontend_neta.h"
+#include "native_frontend_pause.h"
+#include "native_frontend_screen.h"
+#include "native_frontend_text.h"
+#include "native_frontend_wina.h"
+#include "native_graphics.h"
+#include "port_buttons.h"
+#include "port_dialogs.h"
+#include "port_draw2d.h"
+#include "port_fields.h"
+#include "port_loop.h"
+#include "port_menus.h"
+#include "port_shapes.h"
+#include "port_snd_stream_calls.h"
+#include "port_sound_effects.h"
+#include "port_text.h"
 #include <nfs3hp.h>
 #include <iterator>
 
@@ -15,7 +41,13 @@
  *   the screen modes' list    the Graphics menu's Screen Size;
  *   the race's pause menu     its start and its pass of input and transitions.
  *
- * Everything else, these functions among them, is called at its address. */
+ * Everything else is called: the typed cores as C++, the rest at its address.
+ *
+ * Plan step 5: each function a typed core in frontend::menua (native_frontend_menua.h), in a
+ * frame of its own where the game's function has one (fe::Frame: what it calls runs at the stack
+ * addresses it did), and an adapter under the game's name for the calls by address.  A core of
+ * the menu files, the port's or a typed library's is called as C++ (guest::direct, fe::direct);
+ * the rest of the game by address, and so is a call whose registers the code goes on with. */
 namespace nfs3hp
 {
 
@@ -36,45 +68,26 @@ using s32 = std::int32_t;
  * The game's, by address
  * ------------------------------------------------------------------------- */
 
-constexpr reg32 kMenuShownNow = 0x44a660;
-constexpr reg32 kText = 0x4d1850;
 constexpr reg32 kDrawText = 0x452190;
 constexpr reg32 kDrawShape = 0x4d7990;
 constexpr reg32 kDrawArtShape = 0x4d7160;
 constexpr reg32 kDrawTurnedShape = 0x4d6730;
 constexpr reg32 kDrawTexturedQuad = 0x4db000;
-constexpr reg32 kShadedRectangle = 0x4d81b0;
-constexpr reg32 kFilledRectangle = 0x4d8910;
-constexpr reg32 kFrame = 0x4d8930;
-constexpr reg32 kGouraudTriangle = 0x4d88c0;
-constexpr reg32 kShapeByName = 0x4d5db0;
-constexpr reg32 kShapeTexture = 0x4d6070;
 constexpr reg32 kSprintf = 0x4df690;
 constexpr reg32 kPlayEffect = 0x4181d0;
 constexpr reg32 kSetPointer = 0x49bfc0;
-constexpr reg32 kPointerInBox = 0x49c1f0;
-constexpr reg32 kPointerInRect = 0x49c240;
-constexpr reg32 kRowUnderPointer = 0x49c1c0;
-constexpr reg32 kMouseKey = 0x49c080;
-constexpr reg32 kDialogShown = 0x4438b0;
-constexpr reg32 kRunSystemTasks = 0x4e7630;
-constexpr reg32 kControlsFor = 0x4904d0;
-constexpr reg32 kReadJoystick = 0x4358f0;
 constexpr reg32 kHsvToRgb = 0x49ca50;
 constexpr reg32 kSetRenderState = 0x431900;
-constexpr reg32 kFree = 0x4e1890;
 
 /* A float of 1, as the turned shapes' scale goes on the stack. */
 constexpr reg32 kFloatOne = 0x3f800000;
 
 constexpr reg32 kInRace = 0x559234;
-constexpr reg32 kPlayers = 0x6fd3b0;
 constexpr reg32 kPointerX = 0x55e5e4;
 constexpr reg32 kPointerY = 0x55e5e8;
 constexpr reg32 kDisplayFlags = 0x7a3a58;        // byte
 constexpr std::uint8_t kNoTranslucency = 0x02;
 constexpr reg32 kFromMouse = fe::kInputFromMouse;
-constexpr reg32 kLanguage = 0x6fbb4c;
 
 constexpr reg32 kMenuFont = 0x12;
 constexpr reg32 kColourChosen = 0xffe440;
@@ -98,34 +111,133 @@ s32 minus(s32 a, s32 b) { return s32(reg32(a) - reg32(b)); }
 reg32 withLowByte(reg32 value, std::uint8_t low) { return (value & 0xffffff00) | low; }
 reg32 withLowWord(reg32 value, std::uint16_t low) { return (value & 0xffff0000) | low; }
 
-reg32 shownNow(Guest& guest, reg32 item, reg32 widget)
+/* The game's functions the screens here call most, as C++ (guest::direct); a core of the port's
+ * that takes `esp` gets the esp it would have from the game's call: below the arguments pushed and
+ * the return address. */
+
+/* Whether an item is shown.  The game's code has the widget's kind in edx, which the function does
+ * not read and the code after it does: it is left there. */
+reg32 shownNow(Guest& guest, x86::CPU& cpu, reg32 item, reg32 widget)
 {
-    return guest.call(kMenuShownNow, fe::args({ item, widget }));
+    guest.leaveEdx(widget);
+    return fe::direct<0x44a660, frontend::loop::shownNow>(guest.app(), cpu, item);
 }
 
-reg32 drawText(Guest& guest, reg32 text, reg32 x, reg32 y, reg32 colour)
+/* Line `number` of the language's text (edx, which only a name past the lines reads, as it is). */
+reg32 languageText(Guest& guest, x86::CPU& cpu, reg32 number)
+{
+    return u(*fe::direct<0x4d1850, port::text::lineText>(guest.app(), cpu, cpu.esp - 4, s32(number), cpu.edx));
+}
+
+reg32 drawMenuText(Guest& guest, x86::CPU& cpu, reg32 text, reg32 x, reg32 y, reg32 align, reg32 colour)
+{
+    return u(*fe::direct<0x452190, port::text::menuTextDrawn>(guest.app(), cpu, cpu.esp - 4 - 4 * 2, text, s32(x),
+                                                              s32(y), kMenuFont, s32(align), colour));
+}
+
+reg32 drawText(Guest& guest, x86::CPU& cpu, reg32 text, reg32 x, reg32 y, reg32 colour)
+{
+    return drawMenuText(guest, cpu, text, x, y, 0, colour);
+}
+
+reg32 drawShape(Guest& guest, x86::CPU& cpu, s32 shape, reg32 x, reg32 y)
+{
+    return u(*fe::direct<0x4d7990, port::shapes::drawShapeOf>(guest.app(), cpu, cpu.esp - 4, shape, s32(x), s32(y)));
+}
+
+reg32 drawTurnedShape(Guest& guest, x86::CPU& cpu, s32 shape, reg32 x, reg32 y, reg32 angle)
+{
+    return u(*fe::direct<0x4d6730, port::buttons::turnedShape>(guest.app(), cpu, cpu.esp - 4 - 4 * 2, shape, s32(x),
+                                                               s32(y), 0, s32(angle), kFloatOne));
+}
+
+reg32 playEffect(Guest& guest, x86::CPU& cpu, reg32 effect)
+{
+    return u(*fe::direct<0x4181d0, port::playMenuEffectOf>(guest.app(), cpu, cpu.esp - 4, s32(effect),
+                                                           s32(kEffectVolume)));
+}
+
+void setPointer(Guest& guest, x86::CPU& cpu, reg32 x, reg32 y)
+{
+    fe::direct<0x49bfc0, frontend::screen::setPointer>(guest.app(), cpu, x, y);
+}
+
+/* The rectangle from colourA at its top to colourB at its bottom. */
+reg32 shadedRectangle(Guest& guest, x86::CPU& cpu, reg32 left, reg32 top, reg32 right, reg32 bottom, reg32 colourA,
+                      reg32 colourB)
+{
+    const std::uint32_t colours[4] = { colourA, colourA, colourB, colourB };
+    return u(*fe::direct<0x4d81b0, port::draw2d::shadedRectangle>(guest.app(), cpu, cpu.esp - 4 - 4 * 4, s32(left),
+                                                                  s32(top), s32(right), s32(bottom), colours));
+}
+
+reg32 shadedRectangle(Guest& guest, x86::CPU& cpu, reg32 left, reg32 top, reg32 right, reg32 bottom, reg32 colour)
+{
+    return shadedRectangle(guest, cpu, left, top, right, bottom, colour, colour);
+}
+
+reg32 filledRectangle(Guest& guest, x86::CPU& cpu, reg32 x, reg32 y, reg32 width, reg32 height, reg32 colour)
+{
+    return u(*fe::direct<0x4d8910, port::draw2d::filled>(guest.app(), cpu, cpu.esp - 4 - 4, s32(x), s32(y), s32(width),
+                                                         s32(height), colour));
+}
+
+reg32 frameRectangle(Guest& guest, x86::CPU& cpu, reg32 x, reg32 y, reg32 width, reg32 height, reg32 colour)
+{
+    return u(*fe::direct<0x4d8930, port::draw2d::outline>(guest.app(), cpu, cpu.esp - 4 - 4, s32(x), s32(y),
+                                                          s32(width), s32(height), colour));
+}
+
+reg32 shapeNamed(Guest& guest, x86::CPU& cpu, reg32 name)
+{
+    return u(*fe::direct<0x4d5db0, port::shapes::shapeNamed>(guest.app(), cpu, cpu.esp - 4, name));
+}
+
+void renderState(Guest& guest, x86::CPU& cpu, reg32 state, reg32 value)
+{
+    fe::direct<0x431900, graphics::sendState>(guest.app(), cpu, state, value);
+}
+
+bool dialogShown(Guest& guest, x86::CPU& cpu)
+{
+    return fe::direct<0x4438b0, port::dialogs::dialogShownOf>(guest.app(), cpu) != 0;
+}
+
+reg32 readJoystick(Guest& guest, x86::CPU& cpu, reg32 device, reg32 state)
+{
+    return *fe::direct<0x4358f0, controls::readState>(guest.app(), cpu, device, state);
+}
+
+reg32 runSystemTasks(Guest& guest, x86::CPU& cpu)
+{
+    return u(*fe::direct<0x4e7630, port::stream::runDueTasks>(guest.app(), cpu, cpu.esp - 4, 0u));
+}
+
+reg32 controlsFor(Guest& guest, x86::CPU& cpu)
+{
+    return fe::direct<0x4904d0, controls::controlSets>(guest.app(), cpu, gameSettings(guest).playMode);
+}
+
+/* The same by address, for the last call of a function that leaves the registers as the call
+ * leaves them: its arguments' registers, and what the callee changes in them. */
+reg32 drawTextByAddress(Guest& guest, reg32 text, reg32 x, reg32 y, reg32 colour)
 {
     return guest.call(kDrawText, fe::args({ text, x, y, kMenuFont }, { 0, colour }));
 }
 
-reg32 drawShape(Guest& guest, s32 shape, reg32 x, reg32 y)
+reg32 drawShapeByAddress(Guest& guest, s32 shape, reg32 x, reg32 y)
 {
     return guest.call(kDrawShape, fe::args({ u(shape), x, y }));
 }
 
-reg32 playEffect(Guest& guest, reg32 effect)
+reg32 playEffectByAddress(Guest& guest, reg32 effect)
 {
     return guest.call(kPlayEffect, fe::args({ effect, kEffectVolume }));
 }
 
-reg32 setPointer(Guest& guest, reg32 x, reg32 y)
+reg32 setPointerByAddress(Guest& guest, reg32 x, reg32 y)
 {
     return guest.call(kSetPointer, fe::args({ x, y }));
-}
-
-reg32 shadedRectangle(Guest& guest, reg32 left, reg32 top, reg32 right, reg32 bottom, reg32 colour)
-{
-    return guest.call(kShadedRectangle, fe::args({ left, top, right, bottom }, { colour, colour, colour, colour }));
 }
 
 /* ---------------------------------------------------------------------------
@@ -143,10 +255,6 @@ constexpr reg32 kHats = 0x74;      // int32 each, 4
 
 // The devices: a record of 0x88 for each, its first word nonzero when it is on,
 // which of its axes count at +0x40.
-constexpr reg32 kDeviceCount = 0x6fd204;
-constexpr reg32 kDevices = 0x6fc970;
-constexpr reg32 kDeviceSize = 0x88;
-constexpr reg32 kDeviceAxes = 0x40;
 constexpr reg32 kAxisRest = 0x5f3d50;            // int32[8] for each device
 
 // The list's layout, from sub_43d310.
@@ -200,18 +308,21 @@ constexpr s32 kBindButton = 2;
 constexpr s32 kBindHat = 3;
 constexpr s32 kBindKey = 4;
 
-reg32 deviceRecord(reg32 device) { return kDevices + kDeviceSize * device; }
+
+}  // namespace
 
 /* sub_43be40: what a joystick is doing, as a binding, for the list waiting for
  * one: a button pressed (waited for to come up), a hat pushed, an axis moved
  * far from where it rested; 0 for nothing.  The first device with something. */
-reg32 pollJoystickBinding(Guest& guest)
+x86::reg32 frontend::menua::pollJoystickBinding(App* app, CPU& cpu)
 {
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 24 + 0x98);
     const reg32 state = guest.frame();
     reg32 binding = 0;
-    for (reg32 device = 0; s32(device) < s32At(guest, kDeviceCount) && lowByte(binding) == 0; ++device)
+    for (reg32 device = 0; s32(device) < s32(gameSettings(guest).deviceCount) && lowByte(binding) == 0; ++device)
     {
-        if (guest.call(kReadJoystick, fe::args({ device, state })) == 0 || guest.dword(deviceRecord(device)) == 0)
+        if (readJoystick(guest, cpu, device, state) == 0 || gameSettings(guest).devices[device].kind == 0)
             continue;
         if (guest.dword(state + joystick::kAnyHeld) != 0)
         {
@@ -223,9 +334,11 @@ reg32 pollJoystickBinding(Guest& guest)
                     break;
                 }
             }
+            // (The game's code has the state in edx for the tasks too, which they do not read; it is still there
+            // for the joystick.)
             do
-                guest.call(kRunSystemTasks, fe::args({ 0, state }));
-            while (guest.call(kReadJoystick, fe::args({ device })) != 0 && guest.dword(state + joystick::kAnyHeld) != 0);
+                runSystemTasks(guest, cpu);
+            while (readJoystick(guest, cpu, device, state) != 0 && guest.dword(state + joystick::kAnyHeld) != 0);
         }
         for (reg32 hat = 0; hat < 4 && lowByte(binding) == 0; ++hat)
         {
@@ -235,7 +348,7 @@ reg32 pollJoystickBinding(Guest& guest)
         }
         for (reg32 axis = 0; axis < 8 && lowByte(binding) == 0; ++axis)
         {
-            if ((guest.dword(deviceRecord(device) + kDeviceAxes) & (reg32(1) << axis)) == 0)
+            if ((gameSettings(guest).devices[device].axisMask & (reg32(1) << axis)) == 0)
                 continue;
             s32 position = s32At(guest, state + joystick::kAxes + 4 * axis) >> 8;
             if (position < 0)
@@ -252,6 +365,9 @@ reg32 pollJoystickBinding(Guest& guest)
     }
     return binding;
 }
+
+namespace
+{
 
 /* An icon of the race's buttons' texture, for what an axis is bound to: its
  * size on the screen and where it is, as floats' bits. */
@@ -311,20 +427,24 @@ std::uint32_t axisIcon(reg32 binding, reg32 axis)
     return icon;
 }
 
+}  // namespace
+
 /* sub_43c110: a binding's two lines at a place of the list: which device, and
  * what of it.  An axis has its picture: from the race's texture in a race, a
  * shape in the menus; a hat's direction is an arrow in the menus, words in a
  * race. */
-reg32 drawBinding(Guest& guest, reg32 binding, reg32 left, reg32 y, reg32 chosen)
+x86::reg32 frontend::menua::drawBinding(App* app, CPU& cpu, reg32, reg32 binding, reg32 left, reg32 y, reg32 chosen)
 {
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 12 + 0x64);
     const reg32 line = guest.frame();   // char[0x64]
     const reg32 colour = chosen != 0 ? kColourChosen : kColourPlain;
     reg32 x = left + guest.dword(kColumnLeft);
     const auto deviceLine = [&] {
         const reg32 device = (binding >> 28) + 1;
-        const reg32 name = guest.call(kText, fe::args({ 0x54 }));
+        const reg32 name = languageText(guest, cpu, 0x54);
         guest.call(kSprintf, fe::args({}, { line, kFormatDevice.address, name, device }));
-        drawText(guest, line, x, y, colour);
+        drawText(guest, cpu, line, x, y, colour);
     };
     switch (lowByte(binding))
     {
@@ -339,25 +459,26 @@ reg32 drawBinding(Guest& guest, reg32 binding, reg32 left, reg32 y, reg32 chosen
         {
             const AxisIcon& picture = kAxisIcons[icon];
             const reg32 right = x + picture.width, bottom = y + picture.height;
+            // By address, as the function's other last calls: what they leave in ebx, ecx and edx, it leaves.
             return guest.call(kDrawTexturedQuad,
                               fe::args({ x, y, right, y },
                                        { right, bottom, x, bottom, picture.left, picture.top, picture.right,
                                          picture.top, picture.right, picture.bottom, picture.left, picture.bottom,
                                          guest.dword(kButtonsTexture), 0xffffffff }));
         }
-        const reg32 name = guest.call(kText, fe::args({ 0x57 }));
+        const reg32 name = languageText(guest, cpu, 0x57);
         guest.call(kSprintf, fe::args({}, { line, kFormatCharacter.address, name, letter }));
-        drawText(guest, line, x, y, colour);
-        return drawShape(guest, s16At(guest, kBindingIcons + 2 * icon), x + guest.dword(kBindingWidth), y);
+        drawTextByAddress(guest, line, x, y, colour);  // by address too: the last call leaves its ecx
+        return drawShapeByAddress(guest, s16At(guest, kBindingIcons + 2 * icon), x + guest.dword(kBindingWidth), y);
     }
     case kBindButton:
     {
         deviceLine();
         const reg32 button = ((binding << 4) >> 12) + 0x41;
         const reg32 width = guest.dword(kBindingWidth);
-        const reg32 name = guest.call(kText, fe::args({ 0x55 }));
+        const reg32 name = languageText(guest, cpu, 0x55);
         guest.call(kSprintf, fe::args({}, { line, kFormatCharacter.address, name, button }));
-        return drawText(guest, line, x + width, y, colour);
+        return drawTextByAddress(guest, line, x + width, y, colour);
     }
     case kBindHat:
     {
@@ -366,53 +487,62 @@ reg32 drawBinding(Guest& guest, reg32 binding, reg32 left, reg32 y, reg32 chosen
         x += guest.dword(kBindingWidth);
         const reg32 degrees = eighth * 45 != 0 ? eighth * 45 : 360;
         const reg32 hat = ((binding << 4) >> 24) + 0x31;
-        const reg32 name = guest.call(kText, fe::args({ 0x56 }));
+        const reg32 name = languageText(guest, cpu, 0x56);
         if (guest.dword(kInRace) != 0)
         {
             guest.call(kSprintf, fe::args({}, { line, kFormatHat.address, name, hat, degrees, kDegrees.address }));
-            return drawText(guest, line, x, y, colour);
+            return drawTextByAddress(guest, line, x, y, colour);
         }
         guest.call(kSprintf, fe::args({}, { line, kFormatCharacter.address, name, hat }));
-        drawText(guest, line, x, y, colour);
+        drawText(guest, cpu, line, x, y, colour);
         x += guest.dword(kBindingWidth);
         return guest.call(kDrawTurnedShape, fe::args({ u(s16At(guest, kHatArrow)), x + 0xc, y + 0xc, 0 },
                                                      { degrees, kFloatOne }));
     }
     case kBindKey:
     {
-        drawText(guest, guest.call(kText, fe::args({ 0x53 })), x, y, colour);
+        drawText(guest, cpu, languageText(guest, cpu, 0x53), x, y, colour);
         const reg32 width = guest.dword(kBindingWidth);
-        guest.call(0x43d7f0, fe::args({ binding, line }));
-        return drawText(guest, line, x + width, y, colour);
+        guest::direct<0x43d7f0, bindingKeyName>(app, cpu, binding, line);
+        return drawTextByAddress(guest, line, x + width, y, colour);
     }
     default:
-        return drawText(guest, guest.call(kText, fe::args({ 0x52 })), x, y, colour);
+        return drawTextByAddress(guest, languageText(guest, cpu, 0x52), x, y, colour);
     }
 }
+
+namespace
+{
 
 // The rows' labels, top to bottom.
 constexpr std::uint32_t kRowLabels[kRowsEachPlayer] = { 0x47, 0x46, 0x48, 0x49, 0x4a, 0x4b, 0x4c,
                                                         0x4d, 0x4f, 0x4e, 0x51, 0x1bc, 0x50 };
 
-/* The pointer at the list's second column with one player, or, with two, where
- * the item has it: for the keys that move it there. */
-reg32 pointerAtColumn(Guest& guest, reg32 item, reg32 first, bool toSecond)
+/* Where the pointer goes across for the list's second column with one player,
+ * or, with two, where the item has it: for the keys that move it there. */
+reg32 columnX(Guest& guest, reg32 item, bool toSecond)
 {
-    if (guest.dword(kPlayers) == 1)
+    if (gameSettings(guest).playMode == 1)
     {
         reg32 x = u(s16At(guest, item + kItemX)) + guest.dword(kColumnLeft) + guest.dword(kBindingWidth);
         if (toSecond)
             x += guest.dword(kPaneGap);
-        return setPointer(guest, x - 0xa, first);
+        return x - 0xa;
     }
-    return setPointer(guest, u(s16At(guest, item + kItemX) + s16At(guest, item + kItemBoxHeight)) - 0xa, first);
+    return u(s16At(guest, item + kItemX) + s16At(guest, item + kItemBoxHeight)) - 0xa;
+}
+
+/* The pointer put there, `first` down. */
+void pointerAtColumn(Guest& guest, x86::CPU& cpu, reg32 item, reg32 first, bool toSecond)
+{
+    setPointer(guest, cpu, columnX(guest, item, toSecond), first);
 }
 
 /* sub_43c900: the list on every pass.  Its first pass after the arrow keys it
  * puts the pointer on the row they should reach; while a binding is being
  * changed, it asks the joystick and says so at the top; each row with its
  * bindings -- two columns with one player, for players 1 and 2 -- and its label. */
-void drawControlsList(Guest& guest, reg32 item, reg32 pointerWanted)
+void drawControlsList(Guest& guest, x86::CPU& cpu, reg32 item, reg32 pointerWanted)
 {
     const reg32 line = guest.frame();   // char[0x4c]
     s32 y = s16At(guest, item + kItemY);
@@ -424,11 +554,11 @@ void drawControlsList(Guest& guest, reg32 item, reg32 pointerWanted)
             if (key == kKeyUp || key == kKeyLeft)
             {
                 const s32 height = s32At(guest, kRowHeight);
-                pointerAtColumn(guest, item, u(times(height, 12) + s16At(guest, item + kItemY) + halved(height)), true);
+                pointerAtColumn(guest, cpu, item, u(times(height, 12) + s16At(guest, item + kItemY) + halved(height)), true);
             }
             const reg32 again = guest.dword(0x66464c);
             if (again == kKeyDown || again == kKeyRight)
-                pointerAtColumn(guest, item, u(s16At(guest, item + kItemY) + halved(s32At(guest, kRowHeight))), false);
+                pointerAtColumn(guest, cpu, item, u(s16At(guest, item + kItemY) + halved(s32At(guest, kRowHeight))), false);
         }
         guest.setDword(kPointerPlaced, 1);
     }
@@ -442,20 +572,21 @@ void drawControlsList(Guest& guest, reg32 item, reg32 pointerWanted)
     {
         if (lowByte(guest.dword(kHeardBinding)) == 0)
         {
-            const reg32 heard = guest.call(0x43be40);
+            const reg32 heard = guest::direct<0x43be40, frontend::menua::pollJoystickBinding>(guest.app(), cpu);
             guest.setDword(kHeardBinding, heard);
             if (lowByte(heard) != 0)
-                guest.call(0x4cc8e0, fe::args({ 0xd, 0x1c, 0 }));
+                fe::direct<0x4cc8e0, frontend::wina::pushKey>(guest.app(), cpu, 0xd, 0x1c, 0);
         }
         const reg32 promptY = guest.dword(kInRace) != 0 ? 0x41 : 0x55;
-        const reg32 prompt = guest.call(kText, fe::args({ 0x45 }));
-        guest.call(kDrawText, fe::args({ prompt, 0x140, promptY, kMenuFont }, { 2, kColourChosen }));
+        const reg32 prompt = languageText(guest, cpu, 0x45);
+        drawMenuText(guest, cpu, prompt, 0x140, promptY, 2, kColourChosen);
         chosenRow = s16At(guest, item + kItemChanging);
     }
     else if (pointerWanted != 0)
     {
-        chosenRow = s32(guest.call(kRowUnderPointer, fe::args({ u(s16At(guest, item + kItemBoxY)), guest.dword(kRowHeight) })));
-        if (guest.dword(kPlayers) == 1)
+        chosenRow = s32(guest::direct<0x49c1c0, frontend::menud::pointerListLine>(guest.app(), cpu, s16At(guest, item + kItemBoxY),
+                                                                                  s32At(guest, kRowHeight)));
+        if (gameSettings(guest).playMode == 1)
         {
             const s32 edge = s32(u(s16At(guest, item + kItemX)) + guest.dword(kColumnLeft) + guest.dword(kBindingWidth) + 0x28);
             if (edge < s32At(guest, kPointerX))
@@ -467,19 +598,17 @@ void drawControlsList(Guest& guest, reg32 item, reg32 pointerWanted)
         chosenRow = -1;
     }
 
-    const reg32 controls = guest.call(kControlsFor, fe::args({ guest.dword(kPlayers) }));
-    const reg32 title = guest.call(kText, fe::args({ 0xc8 }));
+    const reg32 controls = controlsFor(guest, cpu);
+    const reg32 title = languageText(guest, cpu, 0xc8);
     guest.call(kSprintf, fe::args({}, { line, kFormatPlayer1.address, title }));
-    guest.call(kDrawText, fe::args({ line, u(s16At(guest, item + kItemX)) + guest.dword(kColumnLeft),
-                                     u(s16At(guest, item + kItemY)) - 0x1e, kMenuFont },
-                                   { 0, kColourPlain }));
-    if (guest.dword(kPlayers) == 1)
+    drawText(guest, cpu, line, u(s16At(guest, item + kItemX)) + guest.dword(kColumnLeft),
+             u(s16At(guest, item + kItemY)) - 0x1e, kColourPlain);
+    if (gameSettings(guest).playMode == 1)
     {
-        const reg32 second = guest.call(kText, fe::args({ 0xc8 }));
+        const reg32 second = languageText(guest, cpu, 0xc8);
         guest.call(kSprintf, fe::args({}, { line, kFormatPlayer2.address, second }));
-        guest.call(kDrawText, fe::args({ line, guest.dword(kColumnLeft) + u(s16At(guest, item + kItemX)) + guest.dword(kPaneGap),
-                                         u(s16At(guest, item + kItemY)) - 0x1e, kMenuFont },
-                                       { 0, kColourPlain }));
+        drawText(guest, cpu, line, guest.dword(kColumnLeft) + u(s16At(guest, item + kItemX)) + guest.dword(kPaneGap),
+                 u(s16At(guest, item + kItemY)) - 0x1e, kColourPlain);
     }
 
     for (s32 row = 0; row < kRowsEachPlayer; ++row)
@@ -488,7 +617,7 @@ void drawControlsList(Guest& guest, reg32 item, reg32 pointerWanted)
         if (guest.dword(kInRace) == 0)
         {
             const reg32 shapeX = guest.dword(kLabelGaps + 4 * u(row)) + u(s16At(guest, item + kItemX));
-            drawShape(guest, s16At(guest, kRowShape), shapeX, u(y));
+            drawShape(guest, cpu, s16At(guest, kRowShape), shapeX, u(y));
             if (s16At(guest, item + kItemChanging) == row)
             {
                 const s32 blink = s32(guest.dword(kBlink) + 1);
@@ -496,31 +625,46 @@ void drawControlsList(Guest& guest, reg32 item, reg32 pointerWanted)
                 if (blink > 0x1e)
                     guest.setDword(kBlink, 0);
                 else if (blink > 0xf)
-                    drawShape(guest, s16At(guest, kRowLitShape), shapeX, u(y));
+                    drawShape(guest, cpu, s16At(guest, kRowLitShape), shapeX, u(y));
             }
         }
         reg32 labelX = u(s16At(guest, item + kItemX));
-        guest.call(0x43c110, fe::args({ label, guest.dword(controls + 4 * u(row)), labelX, u(y) },
-                                      { row == chosenRow ? 1u : 0u }));
-        if (guest.dword(kPlayers) == 1)
+        guest::direct<0x43c110, frontend::menua::drawBinding>(guest.app(), cpu, label, guest.dword(controls + 4 * u(row)), labelX,
+                                                              u(y), row == chosenRow ? 1u : 0u);
+        if (gameSettings(guest).playMode == 1)
         {
-            guest.call(0x43c110, fe::args({ label, guest.dword(controls + 4 * u(row) + 0x34),
-                                            labelX + guest.dword(kPaneGap), u(y) },
-                                          { row + kRowsEachPlayer == chosenRow ? 1u : 0u }));
+            guest::direct<0x43c110, frontend::menua::drawBinding>(guest.app(), cpu, label, guest.dword(controls + 4 * u(row) + 0x34),
+                                                                  labelX + guest.dword(kPaneGap), u(y),
+                                                                  row + kRowsEachPlayer == chosenRow ? 1u : 0u);
         }
         if (guest.dword(kInRace) == 0)
             labelX += guest.dword(kLabelGaps + 4 * u(row)) + 0xe;
-        const reg32 name = guest.call(kText, fe::args({ label }));
-        guest.call(kDrawText, fe::args({ name, labelX, u(y), kMenuFont }, { 0, kColourPlain }));
+        const reg32 name = languageText(guest, cpu, label);
+        drawText(guest, cpu, name, labelX, u(y), kColourPlain);
         y = s32(u(y) + guest.dword(kRowHeight));
     }
+}
+
+}  // namespace
+
+/* sub_43c900: the list, while it is shown, its edx left 0. */
+x86::reg32 frontend::menua::controlsList(App* app, CPU& cpu, reg32 item, reg32 pointerWanted)
+{
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 20 + 0x4c);
+    if (shownNow(guest, cpu, item, kListWidget) != 0)
+        drawControlsList(guest, cpu, item, pointerWanted);
+    guest.leaveEdx(0);
+    return 0;
 }
 
 /* sub_43cda0: the key just pressed as a binding, or what the joystick gave; 0
  * for none, and the keys that are the menus' own or the game's are none.  One
  * that is taken has a sound and others bound to it cleared. */
-reg32 keyAsBinding(Guest& guest, reg32 character)
+x86::reg32 frontend::menua::keyAsBinding(App* app, CPU& cpu, reg32 character)
 {
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 16);
     constexpr reg32 kScanCode = 0x66465c;
     constexpr reg32 kCharacterFlags = 0x564ef0;
     const s32 scan = s32At(guest, kScanCode);
@@ -540,8 +684,8 @@ reg32 keyAsBinding(Guest& guest, reg32 character)
     }
     if (lowByte(binding) != 0)
     {
-        playEffect(guest, 1);
-        guest.call(0x43d6a0, fe::args({ binding }));
+        playEffect(guest, cpu, 1);
+        guest::direct<0x43d6a0, clearConflictingBindings>(app, cpu, binding);
     }
     return binding;
 }
@@ -549,9 +693,10 @@ reg32 keyAsBinding(Guest& guest, reg32 character)
 /* sub_43ce80: in a race, one kind of binding (digital or not) for the steering
  * and the two pedals; a binding of the other kind has a message, as the race
  * has read the kind already. */
-reg32 warnDigitalBinding(Guest& guest, reg32 slot, reg32 binding)
+x86::reg32 frontend::menua::warnDigitalBinding(App* app, CPU& cpu, reg32 slot, reg32 binding)
 {
-    constexpr reg32 kBindingIsDigital = 0x43c000;
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 12);
     constexpr reg32 kMessageLines = 0x5f3dac;
     if (guest.dword(kInRace) == 0)
         return binding;
@@ -559,21 +704,23 @@ reg32 warnDigitalBinding(Guest& guest, reg32 slot, reg32 binding)
     guest.leaveEdx(u(row));
     if (reg32(row) > 3)
         return binding;
-    static const reg32 kDigitalFlags[4][2] = { { 0x6fd2dc, 0x6fd348 }, { 0x6fd2dc, 0x6fd348 },
-                                               { 0x6fd2e0, 0x6fd34c }, { 0x6fd2e4, 0x6fd350 } };
-    const reg32 flag = kDigitalFlags[row][s32(slot) < kRowsEachPlayer ? 0 : 1];
-    const reg32 digital = guest.call(kBindingIsDigital, fe::args({ binding }));
-    if (digital == guest.dword(flag))
+    static const std::uint8_t kDigitalFlags[4] = { 0, 0, 1, 2 };
+    const reg32& flag = gameSettings(guest).players[s32(slot) < kRowsEachPlayer ? 0 : 1].digital[kDigitalFlags[row]];
+    const reg32 digital = fe::direct<0x43c000, glue::bindingIsDigital>(app, cpu, binding);
+    if (digital == flag)
         return digital;
     guest.setDword(kMessageLines, fe::text(guest, 0x1f0));
     guest.setDword(kMessageLines + 4, fe::text(guest, 0x1f1));
     guest.setDword(kMessageLines + 8, fe::text(guest, 0x1f2));
-    return guest.call(0x444a80, fe::args({ 3, kMessageLines, 0x3e8, 1 }, { 0 }));
+    return fe::direct<0x444a80, dialogs::openMessage>(app, cpu, 3u, kMessageLines, 0x3e8u, 1u, 0u);
 }
+
+namespace
+{
 
 /* A binding being changed: Escape puts it back, any other key is the new one.
  * What the generated code leaves in edx's second byte and in ebx goes with it. */
-void listKeyChanging(Guest& guest, reg32 item, reg32 controls, std::uint16_t key)
+void listKeyChanging(Guest& guest, x86::CPU& cpu, reg32 item, reg32 controls, std::uint16_t key)
 {
     const std::uint8_t flags = std::uint8_t(guest.byte(item + kItemFlags) | kCapturingKeys);
     const reg32 slot = controls + 4 * u(s16At(guest, item + kItemChanging));
@@ -587,11 +734,12 @@ void listKeyChanging(Guest& guest, reg32 item, reg32 controls, std::uint16_t key
     }
     else
     {
-        const reg32 binding = guest.call(0x43cda0, fe::args({ u(std::int16_t(key)) }));
+        const reg32 binding = guest::direct<0x43cda0, frontend::menua::keyAsBinding>(guest.app(), cpu, u(std::int16_t(key)));
         guest.leaveEbx(binding);
         if (binding == 0)
             return;
-        guest.call(0x43ce80, fe::args({ u(s16At(guest, item + kItemChanging)), binding }));
+        guest::direct<0x43ce80, frontend::menua::warnDigitalBinding>(guest.app(), cpu, u(s16At(guest, item + kItemChanging)),
+                                                                     binding);
         guest.setByte(item + kItemFlags, std::uint8_t(guest.byte(item + kItemFlags) & ~kCapturingKeys));
         guest.setDword(slot, binding);
     }
@@ -599,11 +747,12 @@ void listKeyChanging(Guest& guest, reg32 item, reg32 controls, std::uint16_t key
 }
 
 /* The arrows over the rows: the pointer put on the row they reach; whether they
- * moved it.  With one player, two columns of rows. */
+ * moved it.  With one player, two columns of rows.  Its calls by address: what
+ * the last leaves in edx, sub_43cf80 leaves. */
 bool listKeyArrows(Guest& guest, reg32 item, std::uint16_t key, s32& row)
 {
     bool moved = false;
-    if (guest.dword(kPlayers) == 1)
+    if (gameSettings(guest).playMode == 1)
     {
         const s32 secondColumn = s32(u(s16At(guest, item + kItemX)) + guest.dword(kPaneGap) + guest.dword(kColumnLeft));
         const reg32 pointerX = guest.dword(kPointerX);
@@ -612,26 +761,26 @@ bool listKeyArrows(Guest& guest, reg32 item, std::uint16_t key, s32& row)
             row += kRowsEachPlayer;
         if (key == kKeyLeft && row >= kRowsEachPlayer)
         {
-            playEffect(guest, 0);
+            playEffectByAddress(guest, 0);
             row -= kRowsEachPlayer;
             moved = true;
         }
         if (key == kKeyRight && row < kRowsEachPlayer)
         {
-            playEffect(guest, 0);
+            playEffectByAddress(guest, 0);
             row += kRowsEachPlayer;
             moved = true;
         }
         if (key == kKeyDown)
         {
             ++row;
-            playEffect(guest, 0);
+            playEffectByAddress(guest, 0);
             if (row < kRowsEachPlayer * 2)
                 moved = true;
         }
         if (key == kKeyUp)
         {
-            playEffect(guest, 0);
+            playEffectByAddress(guest, 0);
             if (row != 0)
             {
                 --row;
@@ -643,18 +792,20 @@ bool listKeyArrows(Guest& guest, reg32 item, std::uint16_t key, s32& row)
             const s32 height = s32At(guest, kRowHeight);
             const bool second = row >= kRowsEachPlayer;
             const reg32 columnRow = u(second ? row - kRowsEachPlayer : row);
-            pointerAtColumn(guest, item, columnRow * u(height) + u(s16At(guest, item + kItemY)) + u(halved(height)), second);
+            setPointerByAddress(guest, columnX(guest, item, second),
+                                columnRow * u(height) + u(s16At(guest, item + kItemY)) + u(halved(height)));
         }
         return moved;
     }
     const auto pointAtRow = [&] {
         const s32 height = s32At(guest, kRowHeight);
-        pointerAtColumn(guest, item, u(height) * u(row) + u(s16At(guest, item + kItemY)) + u(halved(height)), false);
+        setPointerByAddress(guest, columnX(guest, item, false),
+                            u(height) * u(row) + u(s16At(guest, item + kItemY)) + u(halved(height)));
     };
     if (key == kKeyDown)
     {
         ++row;
-        playEffect(guest, 0);
+        playEffectByAddress(guest, 0);
         if (row < kRowsEachPlayer)
         {
             moved = true;
@@ -663,7 +814,7 @@ bool listKeyArrows(Guest& guest, reg32 item, std::uint16_t key, s32& row)
     }
     if (key == kKeyUp)
     {
-        playEffect(guest, 0);
+        playEffectByAddress(guest, 0);
         if (row != 0)
         {
             --row;
@@ -674,32 +825,37 @@ bool listKeyArrows(Guest& guest, reg32 item, std::uint16_t key, s32& row)
     return moved;
 }
 
+}  // namespace
+
 /* sub_43cf80: the list's keys.  Nothing being changed: the arrows move the
  * pointer over the rows and Enter starts changing a binding. */
-reg32 listKey(Guest& guest, reg32 item, std::uint16_t key)
+x86::reg32 frontend::menua::listKey(App* app, CPU& cpu, reg32 item, reg32, std::uint16_t key)
 {
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 16 + 0xc);
     guest.leaveEdx(0);
-    const reg32 controls = guest.call(kControlsFor, fe::args({ guest.dword(kPlayers) }));
+    const reg32 controls = controlsFor(guest, cpu);
     guest.leaveEbx(controls);
-    if (shownNow(guest, item, kListWidget) == 0)
+    if (shownNow(guest, cpu, item, kListWidget) == 0)
         return 0;
     if (std::int16_t(guest.word(item + kItemChanging)) != -1)
     {
-        listKeyChanging(guest, item, controls, key);
+        listKeyChanging(guest, cpu, item, controls, key);
         return 2;
     }
 
     guest.setByte(item + kItemFlags, std::uint8_t(guest.byte(item + kItemFlags) & ~kCapturingKeys));
-    s32 row = s32(guest.call(kRowUnderPointer, fe::args({ u(s16At(guest, item + kItemBoxY)), guest.dword(kRowHeight) })));
+    s32 row = s32(guest::direct<0x49c1c0, menud::pointerListLine>(app, cpu, s16At(guest, item + kItemBoxY),
+                                                              s32At(guest, kRowHeight)));
     reg32 result = listKeyArrows(guest, item, key, row) ? 2 : 0;
     if (key == kKeyEnter)
     {
         result = 2;
         const reg32 slot = controls + 4 * u(row);
         guest.leaveEdx(slot);
-        if (row < kRowsEachPlayer || (guest.dword(kPlayers) == 1 && row < kRowsEachPlayer * 2))
+        if (row < kRowsEachPlayer || (gameSettings(guest).playMode == 1 && row < kRowsEachPlayer * 2))
         {
-            guest.call(0x43d920);
+            guest::direct<0x43d920, sampleAxesAtRest>(app, cpu);
             const reg32 before = guest.dword(slot);
             guest.setDword(slot, 0);
             guest.setDword(kBindingBefore, before);
@@ -715,9 +871,11 @@ reg32 listKey(Guest& guest, reg32 item, std::uint16_t key)
 }
 
 /* sub_43d2b0: the box the list takes the pointer in, for the screen's layout. */
-reg32 listFitBox(Guest& guest, reg32 item)
+x86::reg32 frontend::menua::listFitBox(App* app, CPU& cpu, reg32 item)
 {
-    const reg32 shown = shownNow(guest, item, kListWidget);
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 12);
+    const reg32 shown = shownNow(guest, cpu, item, kListWidget);
     if (shown == 0)
         return shown;
     guest.setWord(item + kItemBoxX, guest.word(item + kItemX));
@@ -726,21 +884,24 @@ reg32 listFitBox(Guest& guest, reg32 item)
     const reg32 tall = withLowWord(shown, guest.word(kRowHeight)) * 0xd;
     guest.setWord(item + kItemBoxWidth, std::uint16_t(tall));
     const reg32 across = withLowWord(tall, guest.word(kColumnLeft)) + withLowWord(guest.edx(), guest.word(kBindingWidth))
-        + (guest.dword(kPlayers) == 1 ? 0xfa : 0x28);
+        + (gameSettings(guest).playMode == 1 ? 0xfa : 0x28);
     guest.setWord(item + kItemBoxHeight, std::uint16_t(across));
     return across;
 }
 
 /* sub_43d310: the list as its screen opens: its layout, in a race or in the
  * menus, and the joysticks waited for to let go. */
-reg32 listPrepare(Guest& guest, reg32 item)
+x86::reg32 frontend::menua::listPrepare(App* app, CPU& cpu, reg32 item)
 {
-    if (shownNow(guest, item, kListWidget) == 0)
-        return guest.eax();
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 24);
+    const reg32 shown = shownNow(guest, cpu, item, kListWidget);
+    if (shown == 0)
+        return shown;
     if (guest.dword(kInRace) != 0)
     {
         guest.setDword(kPaneGap, 0xc8);
-        if (guest.dword(kPlayers) == 1)
+        if (gameSettings(guest).playMode == 1)
         {
             guest.setWord(item + kItemX, 0x3c);
             guest.setDword(kColumnLeft, 0x6e);
@@ -759,42 +920,45 @@ reg32 listPrepare(Guest& guest, reg32 item)
         guest.setDword(kColumnLeft, 0x6e);
         guest.setDword(kBindingWidth, 0x46);
         guest.setDword(kRowHeight, 0x19);
-        guest.setWord(kRowShape, std::uint16_t(guest.call(kShapeByName, fe::args({ kRowShapeName.address }))));
-        guest.setWord(kRowLitShape, std::uint16_t(guest.call(kShapeByName, fe::args({ kRowLitShapeName.address }))));
+        guest.setWord(kRowShape, std::uint16_t(shapeNamed(guest, cpu, kRowShapeName.address)));
+        guest.setWord(kRowLitShape, std::uint16_t(shapeNamed(guest, cpu, kRowLitShapeName.address)));
     }
     guest.setWord(item + kItemChanging, 0xffff);
-    guest.call(0x43d650);
-    return guest.eax();
+    return guest::direct<0x43d650, waitJoystickRelease>(app, cpu);
 }
 
 /* sub_43d650: waiting until the joysticks are let go.  (The game's code asks of
  * them with its "any held" flag for the device number: of the first two only.) */
-reg32 waitJoystickRelease(Guest& guest)
+x86::reg32 frontend::menua::waitJoystickRelease(App* app, CPU& cpu)
 {
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 16 + 0x84);
     const reg32 state = guest.frame();
     bool held;
+    reg32 left;
     do
     {
         held = false;
-        for (s32 i = 0; i < s32At(guest, kDeviceCount); ++i)
+        for (s32 i = 0; i < s32(gameSettings(guest).deviceCount); ++i)
         {
-            if (guest.call(kReadJoystick, fe::args({ held ? 1u : 0u, state })) != 0
-                && guest.dword(state + joystick::kAnyHeld) != 0)
+            if (readJoystick(guest, cpu, held ? 1u : 0u, state) != 0 && guest.dword(state + joystick::kAnyHeld) != 0)
                 held = true;
         }
-        guest.call(kRunSystemTasks, fe::args({ 0 }));
+        left = runSystemTasks(guest, cpu);
     } while (held);
-    return guest.eax();
+    return left;
 }
 
 /* sub_43d6a0: a binding taken away from the rows that had it: a key by its code,
  * an axis also where the two would share an end of its travel. */
-reg32 clearConflictingBindings(Guest& guest, reg32 binding)
+x86::reg32 frontend::menua::clearConflictingBindings(App* app, CPU& cpu, reg32 binding)
 {
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 24 + 0x14);
     if (binding == 0)
         return 0;
-    const s32 count = guest.dword(kPlayers) == 1 ? kRowsEachPlayer * 2 : kRowsEachPlayer;
-    const reg32 controls = guest.call(kControlsFor, fe::args({ guest.dword(kPlayers) }));
+    const s32 count = gameSettings(guest).playMode == 1 ? kRowsEachPlayer * 2 : kRowsEachPlayer;
+    const reg32 controls = controlsFor(guest, cpu);
     if (lowByte(binding) == kBindKey)
     {
         for (s32 row = 0; row < count; ++row)
@@ -826,8 +990,10 @@ reg32 clearConflictingBindings(Guest& guest, reg32 binding)
 
 /* sub_43d7f0: a key binding's name: a line of the language's for the keys with
  * one, the character for the rest. */
-reg32 bindingKeyName(Guest& guest, reg32 binding, reg32 buffer)
+x86::reg32 frontend::menua::bindingKeyName(App* app, CPU& cpu, reg32 binding, reg32 buffer)
 {
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 12);
     struct NamedKey
     {
         reg32 scan;
@@ -843,7 +1009,7 @@ reg32 bindingKeyName(Guest& guest, reg32 binding, reg32 buffer)
     {
         if (key.scan == scan)
         {
-            const reg32 name = guest.call(kText, fe::args({ key.text }));
+            const reg32 name = languageText(guest, cpu, key.text);
             guest.copyString(buffer, name);
             return name & 0xffffff00;
         }
@@ -854,27 +1020,32 @@ reg32 bindingKeyName(Guest& guest, reg32 binding, reg32 buffer)
 
 /* sub_43d920: where each axis of the devices that are on rests now, for
  * sub_43be40 to tell them moved. */
-reg32 sampleAxesAtRest(Guest& guest)
+x86::reg32 frontend::menua::sampleAxesAtRest(App* app, CPU& cpu)
 {
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 20 + 0x84);
     const reg32 state = guest.frame();
     reg32 left = guest.eax();
-    for (reg32 device = 0; s32(device) < s32At(guest, kDeviceCount); ++device)
+    for (reg32 device = 0; s32(device) < s32(gameSettings(guest).deviceCount); ++device)
     {
         left = device * 17;
-        if (guest.dword(deviceRecord(device)) == 0)
+        if (gameSettings(guest).devices[device].kind == 0)
             continue;
-        left = guest.call(kReadJoystick, fe::args({ device, state }));
+        left = readJoystick(guest, cpu, device, state);
         if (left == 0)
             continue;
         for (reg32 axis = 0; axis < 8; ++axis)
         {
             left = reg32(1) << axis;
-            if (guest.dword(deviceRecord(device) + kDeviceAxes) & left)
+            if (gameSettings(guest).devices[device].axisMask & left)
                 guest.setDword(kAxisRest + (device << 5) + 4 * axis, u(s32At(guest, state + joystick::kAxes + 4 * axis) >> 8));
         }
     }
     return left;
 }
+
+namespace
+{
 
 /* ---------------------------------------------------------------------------
  * The colour picker
@@ -948,17 +1119,17 @@ constexpr GuestString kPickerShapes[] = { { 0x537808, "yar1" }, { 0x537810, "bdd
                                           { 0x537820, "ccht" }, { 0x537828, "ccbt" } };
 constexpr std::uint32_t kColourMarked = 0xb3;        // byte of the car's item: to be drawn again
 
-// The players' cars.
-constexpr reg32 kPlayer1Car = 0x6fd2bc;
-constexpr reg32 kPlayer2Car = 0x6fd328;
+}  // namespace
 
 /* sub_43db20: the bar's texture, the hues from top to bottom. */
-reg32 makeHueRamp(Guest& guest)
+x86::reg32 frontend::menua::makeHueRamp(App* app, CPU& cpu)
 {
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 24 + 0x14);
     constexpr reg32 kSide = 0x100;
     const reg32 hsv = guest.frame();
     const reg32 argb = guest.frame() + 0x10;
-    const reg32 shape = guest.call(0x4e1620, fe::args({ kNoName.address, 0x40014, 0x10 }));
+    const reg32 shape = *fe::direct<0x4e1620, ea::reserved>(app, cpu, kNoName.address, 0x40014u, 0x10u);
     guest.setByte(shape, 0);
     guest.setWord(shape + 4, kSide);
     guest.setWord(shape + 6, kSide);
@@ -970,70 +1141,86 @@ reg32 makeHueRamp(Guest& guest)
         guest.setDword(hsv + 8, 0xff);
         guest.setDword(hsv + 0xc, 0xff);
         guest.setDword(hsv, hue);
-        guest.call(0x43de20, fe::args({ hsv, argb }));
+        guest::direct<0x43de20, hsvToArgb>(app, cpu, hsv, argb);
         const reg32 colour = guest.dword(argb) | 0xff000000;
         for (reg32 x = 0; x < kSide; ++x, pixel += 4)
             guest.setDword(pixel, colour);
     }
-    guest.call(kShapeTexture, fe::args({ kHueRampTexture, shape, 0x40, 0 }));
-    return guest.call(kFree, fe::args({ shape }));
+    fe::direct<0x4d6070, port::shapes::textureOf>(app, cpu, cpu.esp - 4, kHueRampTexture, shape, 0x40, 0u);
+    return *fe::direct<0x4e1890, ea::purgeBlock>(app, cpu, shape);
 }
 
 /* sub_43dc90: the colour on the player's car, and the car's picture marked to be
  * drawn again. */
-reg32 applyColourToCar(Guest& guest, reg32 item)
+x86::reg32 frontend::menua::applyColourToCar(App* app, CPU& cpu, reg32 item)
 {
-    if (shownNow(guest, item, picker::kWidget) == 0)
-        return guest.eax();
-    const reg32 car = guest.dword(guest.dword(item + picker::kPlayer) == 0 ? kPlayer1Car : kPlayer2Car);
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 24 + 0x20);
+    const reg32 shown = shownNow(guest, cpu, item, picker::kWidget);
+    if (shown == 0)
+        return shown;
+    const reg32 car = gameSettings(guest).players[guest.dword(item + picker::kPlayer) == 0 ? 0 : 1].car;
     const reg32 hsv = guest.frame();
     const reg32 rgb = guest.frame() + 0x10;
     for (reg32 i = 0; i < 4; ++i)
         guest.setDword(hsv + 4 * i, guest.dword(item + picker::kHue + 4 * i));
     guest.call(kHsvToRgb, fe::args({ hsv, rgb }));
-    guest.call(0x4398c0, fe::args({ car, guest.dword(item + picker::kPlayer), guest.byte(rgb), guest.byte(rgb + 4) },
-                                  { guest.byte(rgb + 8), 0x80 }));
+    reg32 left = u(*fe::direct<0x4398c0, port::fields::customColourSet>(
+        app, cpu, cpu.esp - 4 - 4 * 2, car, s32(guest.dword(item + picker::kPlayer)), guest.byte(rgb),
+        guest.byte(rgb + 4), guest.byte(rgb + 8), std::uint8_t(0x80)));
     if (guest.dword(item + picker::kPlayer) == 0)
     {
-        const reg32 menu = guest.call(0x44aeb0);
-        if (fe::Item found = fe::findItem(guest, menu, kCarSelect1))
+        const reg32 menu = fe::direct<0x44aeb0, port::loop::currentMenuOf>(app, cpu);
+        fe::Item found = fe::findItem(guest, menu, kCarSelect1);
+        left = found.address();
+        if (found)
             guest.setByte(found.address() + kColourMarked, 1);
     }
     if (guest.dword(item + picker::kPlayer) == 1)
     {
-        const reg32 menu = guest.call(0x44aeb0);
-        if (fe::Item found = fe::findItem(guest, menu, kCarSelect2))
+        const reg32 menu = fe::direct<0x44aeb0, port::loop::currentMenuOf>(app, cpu);
+        fe::Item found = fe::findItem(guest, menu, kCarSelect2);
+        left = found.address();
+        if (found)
             guest.setByte(found.address() + kColourMarked, 1);
     }
-    return guest.eax();
+    return left;
 }
 
 /* sub_43dd90: the colour taken, the picker gone. */
-reg32 acceptColour(Guest& guest, reg32 item)
+x86::reg32 frontend::menua::acceptColour(App* app, CPU& cpu, reg32 item)
 {
-    if (shownNow(guest, item, picker::kWidget) == 0)
-        return guest.eax();
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 12);
+    const reg32 shown = shownNow(guest, cpu, item, picker::kWidget);
+    if (shown == 0)
+        return shown;
     const std::uint8_t flags = std::uint8_t(guest.byte(item + kItemFlags) | kChanged);
     guest.setByte(item + kItemFlags, flags);
     guest.setByte(item + kItemFlags, std::uint8_t(flags & ~kCapturingKeys));
-    return guest.call(0x43dc90, fe::args({ item }));
+    return guest::direct<0x43dc90, applyColourToCar>(app, cpu, item);
 }
 
 /* sub_43ddd0: the colour as it was, the picker gone. */
-reg32 revertColour(Guest& guest, reg32 item)
+x86::reg32 frontend::menua::revertColour(App* app, CPU& cpu, reg32 item)
 {
-    if (shownNow(guest, item, picker::kWidget) == 0)
-        return guest.eax();
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 12);
+    const reg32 shown = shownNow(guest, cpu, item, picker::kWidget);
+    if (shown == 0)
+        return shown;
     guest.setByte(item + kItemFlags, std::uint8_t(guest.byte(item + kItemFlags) | kChanged));
     for (reg32 i = 0; i < 4; ++i)
         guest.setDword(item + picker::kHue + 4 * i, guest.dword(item + picker::kSavedColour + 4 * i));
     guest.setByte(item + kItemFlags, std::uint8_t(guest.byte(item + kItemFlags) & ~kCapturingKeys));
-    return guest.call(0x43dc90, fe::args({ item }));
+    return guest::direct<0x43dc90, applyColourToCar>(app, cpu, item);
 }
 
 /* sub_43de20: a colour of hue, saturation and value as opaque ARGB. */
-reg32 hsvToArgb(Guest& guest, reg32 hsv, reg32 out)
+x86::reg32 frontend::menua::hsvToArgb(App* app, CPU& cpu, reg32 hsv, reg32 out)
 {
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 8 + 0x10);
     const reg32 rgb = guest.frame();
     guest.call(kHsvToRgb, fe::args({ hsv, rgb }));
     const reg32 blue = guest.dword(rgb + 8) & 0xff;
@@ -1046,8 +1233,9 @@ reg32 hsvToArgb(Guest& guest, reg32 hsv, reg32 out)
 /* sub_43de60: where a colour puts its marker in the triangle of that width and
  * height: the row by one of its numbers, from the tip, the place in the row by
  * the other, inside the row's ends. */
-reg32 triangleFromColour(Guest& guest, s32 width, s32 height, s32 across, s32 down, reg32 outX, reg32 outY)
+x86::reg32 frontend::menua::triangleFromColour(App* app, CPU& cpu, s32 width, s32 height, s32 across, s32 down, reg32 outX, reg32 outY)
 {
+    Guest guest(app, cpu);
     const s32 half = halved(width);
     guest.setDword(outY, u(times(minus(0xff, down), height) / 0xff));
     const s32 reach = times(down, half) / 0xff;
@@ -1064,8 +1252,9 @@ reg32 triangleFromColour(Guest& guest, s32 width, s32 height, s32 across, s32 do
 
 /* sub_43def0: back from a place in the triangle to the two numbers (the middle's,
  * at the tip where the row has no width). */
-reg32 colourAtPlace(Guest& guest, s32 width, s32 height, reg32 outAcross, reg32 outDown, s32 x, s32 y)
+x86::reg32 frontend::menua::colourAtPlace(App* app, CPU& cpu, s32 width, s32 height, reg32 outAcross, reg32 outDown, s32 x, s32 y)
 {
+    Guest guest(app, cpu);
     const s32 half = halved(width);
     const s32 row = y < 0 ? 0 : height < y ? height : y;
     const s32 down = 0xff - times(row, 0xff) / height;
@@ -1088,39 +1277,45 @@ reg32 colourAtPlace(Guest& guest, s32 width, s32 height, reg32 outAcross, reg32 
 }
 
 /* sub_43dfb0: the picker's back, frame and title. */
-reg32 drawPickerFrame(Guest& guest, reg32 item)
+x86::reg32 frontend::menua::drawPickerFrame(App* app, CPU& cpu, reg32 item)
 {
-    drawShape(guest, s16At(guest, item + picker::kPanelShape), u(s16At(guest, item + kItemX)), u(s16At(guest, item + kItemY)));
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 24);
+    drawShape(guest, cpu, s16At(guest, item + picker::kPanelShape), u(s16At(guest, item + kItemX)), u(s16At(guest, item + kItemY)));
     const s32 y = s16At(guest, item + kItemY);
     const s32 x = s16At(guest, item + kItemX);
-    drawShape(guest, s16At(guest, item + picker::kBackShape), u(x - 0x23), u(y + 0xc));
-    drawShape(guest, s16At(guest, item + picker::kFrameShape), u(x - 0x17), u(y - 1));
-    return drawText(guest, guest.dword(item + picker::kTitle), u(s16At(guest, item + kItemX) + 0xc), u(y - 1), kColourChosen);
+    drawShape(guest, cpu, s16At(guest, item + picker::kBackShape), u(x - 0x23), u(y + 0xc));
+    drawShape(guest, cpu, s16At(guest, item + picker::kFrameShape), u(x - 0x17), u(y - 1));
+    return drawText(guest, cpu, guest.dword(item + picker::kTitle), u(s16At(guest, item + kItemX) + 0xc), u(y - 1), kColourChosen);
 }
 
 /* sub_43e040: the swatch of the colour, with its shadow. */
-reg32 drawColourSwatch(Guest& guest, reg32 item)
+x86::reg32 frontend::menua::drawColourSwatch(App* app, CPU& cpu, reg32 item)
 {
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 24 + 8);
     const reg32 argb = guest.frame();
-    guest.call(0x43de20, fe::args({ item + picker::kHue, argb }));
+    guest::direct<0x43de20, hsvToArgb>(app, cpu, item + picker::kHue, argb);
     const s32 left = s16At(guest, item + kItemX) + s16At(guest, item + picker::kSwatchLeft);
     const s32 top = s16At(guest, item + kItemY) + s16At(guest, item + picker::kSwatchTop);
     const reg32 width = u(s16At(guest, item + picker::kSwatchWidth));
     const reg32 height = u(s16At(guest, item + picker::kSwatchHeight));
-    guest.call(kFilledRectangle, fe::args({ u(left + 3), u(top + 3), width, height }, { 0xff000000 }));
-    return guest.call(kFilledRectangle, fe::args({ u(left), u(top), width, height }, { guest.dword(argb) }));
+    filledRectangle(guest, cpu, u(left + 3), u(top + 3), width, height, 0xff000000);
+    return filledRectangle(guest, cpu, u(left), u(top), width, height, guest.dword(argb));
 }
 
 /* sub_43e0d0: the two buttons, the one under the pointer lit. */
-reg32 drawPickerButtons(Guest& guest, reg32 item)
+x86::reg32 frontend::menua::drawPickerButtons(App* app, CPU& cpu, reg32 item)
 {
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 20);
     const auto button = [&](std::uint16_t which, reg32 litShape, reg32 left, reg32 top, reg32 text) {
         const s32 x = s16At(guest, item + kItemX) + s16At(guest, item + left);
         const s32 y = s16At(guest, item + kItemY) + s16At(guest, item + top);
         if (guest.word(item + picker::kUnderPointer) == which)
-            drawShape(guest, s16At(guest, item + litShape), u(x), u(y));
+            drawShape(guest, cpu, s16At(guest, item + litShape), u(x), u(y));
         const reg32 colour = guest.word(item + picker::kUnderPointer) == which ? kColourChosen : kColourPlain;
-        return drawText(guest, guest.dword(item + text), u(x + 0xf), u(y), colour);
+        return drawText(guest, cpu, guest.dword(item + text), u(x + 0xf), u(y), colour);
     };
     button(picker::kHitCancel, picker::kCancelLitShape, picker::kCancelLeft, picker::kCancelTop, picker::kCancelText);
     return button(picker::kHitOk, picker::kOkLitShape, picker::kOkLeft, picker::kOkTop, picker::kOkText);
@@ -1128,8 +1323,10 @@ reg32 drawPickerButtons(Guest& guest, reg32 item)
 
 /* sub_43e1f0: the markers of the hue on the bar and of the colour in the
  * triangle, each with its shadow. */
-reg32 drawColourMarkers(Guest& guest, reg32 item)
+x86::reg32 frontend::menua::drawColourMarkers(App* app, CPU& cpu, reg32 item)
 {
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 24 + 0xc);
     constexpr reg32 kShadow = 0x7f000000;
     constexpr reg32 kMarker = 0xff7f7fff;
     const reg32 markerX = guest.frame(), markerY = guest.frame() + 4;
@@ -1139,21 +1336,23 @@ reg32 drawColourMarkers(Guest& guest, reg32 item)
     const reg32 y = u(hueRow + s16At(guest, item + picker::kBarTop) + s16At(guest, item + kItemY) - 3);
     const reg32 x = u(s16At(guest, item + picker::kBarLeft) + s16At(guest, item + kItemX) - 3);
     const reg32 barWidth = u(s16At(guest, item + picker::kBarWidth) + 6);
-    guest.call(kFrame, fe::args({ x + 1, y + 1, barWidth, 6 }, { kShadow }));
-    guest.call(kFrame, fe::args({ x, y, u(s16At(guest, item + picker::kBarWidth) + 6), 6 }, { kMarker }));
-    guest.call(0x43de60, fe::args({ u(s16At(guest, item + picker::kTriangleWidth)), u(s16At(guest, item + picker::kTriangleHeight)),
-                                    across, down },
-                                  { markerX, markerY }));
+    frameRectangle(guest, cpu, x + 1, y + 1, barWidth, 6, kShadow);
+    frameRectangle(guest, cpu, x, y, u(s16At(guest, item + picker::kBarWidth) + 6), 6, kMarker);
+    guest::direct<0x43de60, triangleFromColour>(app, cpu, s16At(guest, item + picker::kTriangleWidth),
+                                                s16At(guest, item + picker::kTriangleHeight), s32(across), s32(down), markerX,
+                                                markerY);
     const reg32 colourX = guest.dword(markerX) + u(s16At(guest, item + kItemX) + s16At(guest, item + picker::kTriangleLeft) - 3);
     const reg32 colourY = guest.dword(markerY) + u(s16At(guest, item + kItemY) + s16At(guest, item + picker::kTriangleTop) - 3);
-    guest.call(kFrame, fe::args({ colourX + 1, colourY + 1, 6, 6 }, { kShadow }));
-    return guest.call(kFrame, fe::args({ colourX, colourY, 6, 6 }, { kMarker }));
+    frameRectangle(guest, cpu, colourX + 1, colourY + 1, 6, 6, kShadow);
+    return frameRectangle(guest, cpu, colourX, colourY, 6, 6, kMarker);
 }
 
 /* sub_43e310: the triangle of the colour's hue, over its shadow and a translucent
  * edge. */
-reg32 drawColourTriangle(Guest& guest, reg32 item)
+x86::reg32 frontend::menua::drawColourTriangle(App* app, CPU& cpu, reg32 item)
 {
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 24 + 0x28);
     const reg32 hsv = guest.frame();
     const reg32 rgb = guest.frame() + 0x10;
     guest.setDword(hsv, guest.dword(item + picker::kHue));
@@ -1167,13 +1366,16 @@ reg32 drawColourTriangle(Guest& guest, reg32 item)
     const s32 width = s16At(guest, item + picker::kTriangleWidth);
     const s32 bottom = top + s16At(guest, item + picker::kTriangleHeight);
     const s32 tip = left + halved(width);
-    guest.call(kGouraudTriangle, fe::args({ u(left + 3), u(top + 3), u(left + width + 3), u(top + 3) },
-                                          { u(tip + 3), u(bottom + 3), 0xff000000, 0xff000000, 0xff000000 }));
-    guest.call(kGouraudTriangle, fe::args({ u(left - 1), u(top - 1), u(left + width + 1), u(top - 1) },
-                                          { u(tip), u(bottom + 1), colour | 0xaf000000, 0xafffffff, 0xaf000000 }));
-    return guest.call(kGouraudTriangle, fe::args({ u(left), u(top), u(left + width), u(top) },
-                                                 { u(tip), u(bottom), colour | 0xff000000, 0xffffffff, 0xff000000 }));
+    guest::direct<0x4d88c0, menue::shadedTriangle>(app, cpu, u(left + 3), u(top + 3), u(left + width + 3), u(top + 3),
+                                                   u(tip + 3), u(bottom + 3), 0xff000000u, 0xff000000u, 0xff000000u);
+    guest::direct<0x4d88c0, menue::shadedTriangle>(app, cpu, u(left - 1), u(top - 1), u(left + width + 1), u(top - 1),
+                                                   u(tip), u(bottom + 1), colour | 0xaf000000, 0xafffffffu, 0xaf000000u);
+    return guest::direct<0x4d88c0, menue::shadedTriangle>(app, cpu, u(left), u(top), u(left + width), u(top), u(tip),
+                                                          u(bottom), colour | 0xff000000, 0xffffffffu, 0xff000000u);
 }
+
+namespace
+{
 
 /* A vertex of the bar's quad, as sub_4c12e0 clips it: x and y as floats, depth
  * and w, its colour, where it falls as flags, its place in the texture. */
@@ -1217,9 +1419,13 @@ std::uint8_t vertexOutcode(const Guest& guest, reg32 corner)
     return code;
 }
 
+}  // namespace
+
 /* sub_43e490: the bar: its shadow, and a quad with the hues' texture. */
-reg32 drawValueBar(Guest& guest, reg32 item)
+x86::reg32 frontend::menua::drawValueBar(App* app, CPU& cpu, reg32 item)
 {
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 24 + 0x90);
     const s32 x = s16At(guest, item + kItemX);
     const s32 y = s16At(guest, item + kItemY);
     const s32 left = s16At(guest, item + picker::kBarLeft) + x;
@@ -1228,7 +1434,7 @@ reg32 drawValueBar(Guest& guest, reg32 item)
     const s32 height = s16At(guest, item + picker::kBarHeight);
     const s32 top = s16At(guest, item + picker::kBarTop) + y;
     const s32 bottom = s16At(guest, item + picker::kBarTop) + height + y;
-    guest.call(kFilledRectangle, fe::args({ u(left + 3), u(top + 3), u(width), u(height) }, { 0xff000000 }));
+    filledRectangle(guest, cpu, u(left + 3), u(top + 3), u(width), u(height), 0xff000000);
 
     // The four corners, clockwise from the top left, each at a depth of the
     // game's and in white.
@@ -1255,7 +1461,7 @@ reg32 drawValueBar(Guest& guest, reg32 item)
         guest.setFloat(corner + vertex::kU, kCorners[i].across);
         guest.setFloat(corner + vertex::kV, kCorners[i].down);
     }
-    guest.call(kSetRenderState, fe::args({ 1, guest.dword(kHueRampTexture) }));
+    renderState(guest, cpu, 1, guest.dword(kHueRampTexture));
     for (reg32 i = 0; i < 4; ++i)
     {
         const reg32 corner = corners + vertex::kSize * i;
@@ -1264,15 +1470,22 @@ reg32 drawValueBar(Guest& guest, reg32 item)
     return guest.call(0x4c12e0, fe::args({ corners, corners + vertex::kSize, corners + vertex::kSize * 2, corners + vertex::kSize * 3 }));
 }
 
+namespace
+{
+
 s32 clampByte(s32 value)
 {
     return value < 0 ? 0 : value > 0xff ? 0xff : value;
 }
 
+}  // namespace
+
 /* sub_43e7a0: the area pressed followed by the pointer: the triangle's place,
  * the bar's hue. */
-reg32 pickerDragMoved(Guest& guest, reg32 item)
+x86::reg32 frontend::menua::pickerDragMoved(App* app, CPU& cpu, reg32 item)
 {
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 24 + 0x10);
     const reg32 acrossAt = guest.frame() + 4, downAt = guest.frame() + 8;
     s32 hue = s32At(guest, item + picker::kHue);
     guest.setDword(acrossAt, guest.dword(item + picker::kSaturation));
@@ -1282,9 +1495,8 @@ reg32 pickerDragMoved(Guest& guest, reg32 item)
     {
         const reg32 x = guest.dword(kPointerX) - u(s16At(guest, item + kItemX)) - u(s16At(guest, item + picker::kTriangleLeft));
         const reg32 y = guest.dword(kPointerY) - u(s16At(guest, item + kItemY)) - u(s16At(guest, item + picker::kTriangleTop));
-        guest.call(0x43def0, fe::args({ u(s16At(guest, item + picker::kTriangleWidth)), u(s16At(guest, item + picker::kTriangleHeight)),
-                                        acrossAt, downAt },
-                                      { x, y }));
+        guest::direct<0x43def0, colourAtPlace>(app, cpu, s16At(guest, item + picker::kTriangleWidth),
+                                               s16At(guest, item + picker::kTriangleHeight), acrossAt, downAt, s32(x), s32(y));
     }
     else if (pressed == picker::kHitBar)
     {
@@ -1304,11 +1516,13 @@ reg32 pickerDragMoved(Guest& guest, reg32 item)
 
 /* sub_43e8e0: which of the picker's areas the pointer is on; the triangle only
  * between its sides. */
-reg32 pickerHitRegion(Guest& guest, reg32 item)
+x86::reg32 frontend::menua::pickerHitRegion(App* app, CPU& cpu, reg32 item)
 {
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 24 + 0x14);
     const s32 x = s32(guest.dword(kPointerX) - u(s16At(guest, item + kItemX)));
     const s32 y = s32(guest.dword(kPointerY) - u(s16At(guest, item + kItemY)));
-    if (guest.call(kPointerInBox, fe::args({ item + picker::kBoxTop })) == 0)
+    if (fe::direct<0x49c1f0, glue::pointerInBox>(app, cpu, item + picker::kBoxTop) == 0)
         return picker::kHitOutside;
     const auto inArea = [&](reg32 left, reg32 width, reg32 top, reg32 height) {
         const s32 l = s16At(guest, item + left), t = s16At(guest, item + top);
@@ -1335,40 +1549,40 @@ reg32 pickerHitRegion(Guest& guest, reg32 item)
 
 /* sub_43ead0: the mouse on the picker: an area pressed, followed, and let go of
  * on the same area. */
-reg32 pickerMouse(Guest& guest, reg32 item)
+x86::reg32 frontend::menua::pickerMouse(App* app, CPU& cpu, reg32 item)
 {
-    reg32 left = guest.eax();
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 16);
+    reg32 left = item;  // eax as it came
     if (guest.word(item + picker::kPressed) == 0)
     {
-        left = guest.call(0x43e8e0, fe::args({ item }));
+        left = guest::direct<0x43e8e0, pickerHitRegion>(app, cpu, item);
         guest.setWord(item + picker::kUnderPointer, std::uint16_t(left));
     }
     if (guest.word(item + picker::kUnderPointer) != 0)
     {
-        left = guest.call(kMouseKey);
+        left = fe::direct<0x49c080, glue::mouseKey>(app, cpu);
         if (left == kKeyEnter)
             guest.setWord(item + picker::kPressed, guest.word(item + picker::kUnderPointer));
     }
     if (guest.word(item + picker::kPressed) == 0)
         return left;
-    if (guest.call(kMouseKey) == kKeyEnter)
-        return guest.call(0x43e7a0, fe::args({ item }));
-    const reg32 at = guest.call(0x43e8e0, fe::args({ item }));
+    if (fe::direct<0x49c080, glue::mouseKey>(app, cpu) == kKeyEnter)
+        return guest::direct<0x43e7a0, pickerDragMoved>(app, cpu, item);
+    const reg32 at = guest::direct<0x43e8e0, pickerHitRegion>(app, cpu, item);
     left = at;
     if (at == u(s16At(guest, item + picker::kPressed)))
     {
         const std::uint16_t pressed = guest.word(item + picker::kPressed);
-        reg32 then = 0;
-        if (pressed == picker::kHitOk)
-            then = 0x43dd90;
-        else if (pressed == picker::kHitCancel)
-            then = 0x43dc90;
-        else if (pressed == picker::kHitOutside)
-            then = 0x43ddd0;
-        if (then != 0)
+        if (pressed == picker::kHitOk || pressed == picker::kHitCancel || pressed == picker::kHitOutside)
         {
-            playEffect(guest, 0);
-            left = guest.call(then, fe::args({ item }));
+            playEffect(guest, cpu, 0);
+            if (pressed == picker::kHitOk)
+                left = guest::direct<0x43dd90, acceptColour>(app, cpu, item);
+            else if (pressed == picker::kHitCancel)
+                left = guest::direct<0x43dc90, applyColourToCar>(app, cpu, item);
+            else
+                left = guest::direct<0x43ddd0, revertColour>(app, cpu, item);
         }
         else
         {
@@ -1380,23 +1594,28 @@ reg32 pickerMouse(Guest& guest, reg32 item)
 }
 
 /* sub_43ebc0: the picker on every pass, while it is up. */
-reg32 drawColourPicker(Guest& guest, reg32 item)
+x86::reg32 frontend::menua::drawColourPicker(App* app, CPU& cpu, reg32 item)
 {
-    if (shownNow(guest, item, picker::kWidget) == 0)
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 12);
+    if (shownNow(guest, cpu, item, picker::kWidget) == 0)
         return 0;
-    guest.call(0x43ead0, fe::args({ item }));
-    guest.call(0x43dfb0, fe::args({ item }));
-    guest.call(0x43e040, fe::args({ item }));
+    guest::direct<0x43ead0, pickerMouse>(app, cpu, item);
+    guest::direct<0x43dfb0, drawPickerFrame>(app, cpu, item);
+    guest::direct<0x43e040, drawColourSwatch>(app, cpu, item);
     if (guest.byte(kDisplayFlags) & kNoTranslucency)
-        guest.call(kSetRenderState, fe::args({ 6, 1 }));
-    guest.call(0x43e310, fe::args({ item }));
+        renderState(guest, cpu, 6, 1);
+    guest::direct<0x43e310, drawColourTriangle>(app, cpu, item);
     if (guest.byte(kDisplayFlags) & kNoTranslucency)
-        guest.call(kSetRenderState, fe::args({ 6, 0 }));
-    guest.call(0x43e490, fe::args({ item }));
-    guest.call(0x43e1f0, fe::args({ item }));
-    guest.call(0x43e0d0, fe::args({ item }));
+        guest.call(kSetRenderState, fe::args({ 6, 0 }));  // by address: the 0 in edx, the function leaves there
+    guest::direct<0x43e490, drawValueBar>(app, cpu, item);
+    guest::direct<0x43e1f0, drawColourMarkers>(app, cpu, item);
+    guest::direct<0x43e0d0, drawPickerButtons>(app, cpu, item);
     return 0;
 }
+
+namespace
+{
 
 /* A step of a colour's number by the keys. */
 void stepColour(Guest& guest, reg32 at, s32 step)
@@ -1404,18 +1623,23 @@ void stepColour(Guest& guest, reg32 at, s32 step)
     guest.setDword(at, u(clampByte(s32(guest.dword(at) + u(step)))));
 }
 
+}  // namespace
+
 /* sub_43ec40: the picker's keys: the arrows move the colour, Tab goes from
  * button to button, Enter is the button's, Escape takes back. */
-reg32 pickerKey(Guest& guest, reg32 item, std::uint16_t key)
+x86::reg32 frontend::menua::pickerKey(App* app, CPU& cpu, reg32 item, reg32, std::uint16_t key)
 {
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 16);
     guest.leaveEbx(item);
-    if (shownNow(guest, item, picker::kWidget) == 0)
+    if (shownNow(guest, cpu, item, picker::kWidget) == 0)
         return 0;
     switch (key)
     {
     case kKeyEscape:
-        playEffect(guest, 0);
-        guest.call(0x43ddd0, fe::args({ item }));
+        // By address, as at Enter and the pointer's move at Tab: what they leave in edx, the function leaves.
+        playEffectByAddress(guest, 0);
+        guest::direct<0x43ddd0, revertColour>(app, cpu, item);
         return 2;
     case kKeyUp:
         stepColour(guest, item + picker::kValue, 10);
@@ -1446,8 +1670,8 @@ reg32 pickerKey(Guest& guest, reg32 item, std::uint16_t key)
         const reg32 height = ok ? picker::kOkHeight : picker::kCancelHeight;
         guest.setDword(kPointerX, u(s16At(guest, item + kItemX) + s16At(guest, item + left) + halved(s16At(guest, item + width))));
         guest.setDword(kPointerY, u(s16At(guest, item + kItemY) + s16At(guest, item + top) + halved(s16At(guest, item + height))));
-        playEffect(guest, 1);
-        setPointer(guest, guest.dword(kPointerX), guest.dword(kPointerY));
+        playEffect(guest, cpu, 1);
+        setPointerByAddress(guest, guest.dword(kPointerX), guest.dword(kPointerY));
         return 2;
     }
     case kKeyEnter:
@@ -1455,8 +1679,11 @@ reg32 pickerKey(Guest& guest, reg32 item, std::uint16_t key)
         const std::uint16_t under = guest.word(item + picker::kUnderPointer);
         if (under != picker::kHitOk && under != picker::kHitCancel)
             return 0;
-        playEffect(guest, 0);
-        guest.call(under == picker::kHitOk ? 0x43dd90 : 0x43dc90, fe::args({ item }));
+        playEffectByAddress(guest, 0);
+        if (under == picker::kHitOk)
+            guest::direct<0x43dd90, acceptColour>(app, cpu, item);
+        else
+            guest::direct<0x43dc90, applyColourToCar>(app, cpu, item);
         return 2;
     }
     default:
@@ -1466,9 +1693,11 @@ reg32 pickerKey(Guest& guest, reg32 item, std::uint16_t key)
 
 /* sub_43ef80: what the picker has the pointer show over it: 2 while the bar is
  * being dragged, 5 the triangle, 1 and 5 over them, 0 otherwise. */
-reg32 pickerPointerKind(Guest& guest, reg32 item)
+x86::reg32 frontend::menua::pickerPointerKind(App* app, CPU& cpu, reg32 item)
 {
-    if (shownNow(guest, item, picker::kWidget) == 0)
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 16);
+    if (shownNow(guest, cpu, item, picker::kWidget) == 0)
         return 0;
     const std::uint16_t pressed = guest.word(item + picker::kPressed);
     if (pressed == picker::kHitBar)
@@ -1484,9 +1713,11 @@ reg32 pickerPointerKind(Guest& guest, reg32 item)
 }
 
 /* sub_43eff0: the box the picker takes the pointer in. */
-reg32 pickerFitBox(Guest& guest, reg32 item)
+x86::reg32 frontend::menua::pickerFitBox(App* app, CPU& cpu, reg32 item)
 {
-    const reg32 shown = shownNow(guest, item, picker::kWidget);
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 12);
+    const reg32 shown = shownNow(guest, cpu, item, picker::kWidget);
     if (shown == 0)
         return shown;
     guest.setWord(item + picker::kBoxX, guest.word(item + kItemX));
@@ -1499,10 +1730,13 @@ reg32 pickerFitBox(Guest& guest, reg32 item)
 /* sub_43f030: the picker as the screen comes up, its colour a default, its
  * shapes found, its buttons as wide as their text, hidden until a colour is
  * asked for. */
-reg32 pickerPrepare(Guest& guest, reg32 item)
+x86::reg32 frontend::menua::pickerPrepare(App* app, CPU& cpu, reg32 item)
 {
-    if (shownNow(guest, item, picker::kWidget) == 0)
-        return guest.eax();
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 16);
+    const reg32 shown = shownNow(guest, cpu, item, picker::kWidget);
+    if (shown == 0)
+        return shown;
     if (guest.word(item + picker::kWidth) == 0)
         guest.setWord(item + picker::kWidth, 0x50);
     if (guest.word(item + picker::kHeight) == 0)
@@ -1512,11 +1746,11 @@ reg32 pickerPrepare(Guest& guest, reg32 item)
     guest.setDword(item + picker::kValue, 0x4f);
     guest.setDword(item + picker::kFourth, 0x7f);
     guest.setDword(item + picker::kPlayer, 0);
-    guest.setWord(item + picker::kBackShape, std::uint16_t(guest.call(kShapeByName, fe::args({ kPickerShapes[0].address }))));
-    guest.setWord(item + picker::kFrameShape, std::uint16_t(guest.call(kShapeByName, fe::args({ kPickerShapes[1].address }))));
-    guest.setWord(item + picker::kPanelShape, std::uint16_t(guest.call(kShapeByName, fe::args({ kPickerShapes[2].address }))));
-    guest.setWord(item + picker::kCancelLitShape, std::uint16_t(guest.call(kShapeByName, fe::args({ kPickerShapes[3].address }))));
-    const reg32 lit = guest.call(kShapeByName, fe::args({ kPickerShapes[4].address }));
+    guest.setWord(item + picker::kBackShape, std::uint16_t(shapeNamed(guest, cpu, kPickerShapes[0].address)));
+    guest.setWord(item + picker::kFrameShape, std::uint16_t(shapeNamed(guest, cpu, kPickerShapes[1].address)));
+    guest.setWord(item + picker::kPanelShape, std::uint16_t(shapeNamed(guest, cpu, kPickerShapes[2].address)));
+    guest.setWord(item + picker::kCancelLitShape, std::uint16_t(shapeNamed(guest, cpu, kPickerShapes[3].address)));
+    const reg32 lit = shapeNamed(guest, cpu, kPickerShapes[4].address);
     guest.setWord(item + picker::kUnderPointer, 0);
     guest.setWord(item + picker::kOkLitShape, std::uint16_t(lit));
     guest.setWord(item + picker::kPressed, 0);
@@ -1527,9 +1761,19 @@ reg32 pickerPrepare(Guest& guest, reg32 item)
     guest.setWord(item + picker::kCancelHeight, 0x12);
     guest.setByte(item + kItemFlags, flags);
     guest.setByte(item + kItemFlags, std::uint8_t(flags & ~kCapturingKeys));
-    guest.call(0x43db20);
-    return guest.eax();
+    return guest::direct<0x43db20, makeHueRamp>(app, cpu);
 }
+
+/* sub_43f160: whether the picker is shown now. */
+x86::reg32 frontend::menua::pickerShown(App* app, CPU& cpu, reg32 item)
+{
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 8);
+    return shownNow(guest, cpu, item, picker::kWidget);
+}
+
+namespace
+{
 
 /* ---------------------------------------------------------------------------
  * The network lobby's panel
@@ -1552,7 +1796,6 @@ constexpr reg32 kBoxBottom = 0x5f3fc0;
 constexpr reg32 kTyping = 0x5f3fdc;
 constexpr reg32 kMessageBuffer = 0x5f3fd0;
 constexpr reg32 kCursorBlink = 0x5f40bc;
-constexpr reg32 kPlayerName = 0x6fd2fc;
 constexpr reg32 kKeyPressed = 0x664654;
 
 // The network's state.
@@ -1586,16 +1829,22 @@ void closePanel(Guest& guest)
     guest.setDword(kPanelActive, 0);
 }
 
+}  // namespace
+
 /* sub_440b30: the icon of a player taking part. */
-reg32 drawPlayerIcon(Guest& guest, reg32 x, reg32 y)
+x86::reg32 frontend::menua::drawPlayerIcon(App* app, CPU& cpu, reg32 x, reg32 y)
 {
-    return drawShape(guest, s16At(guest, kIconPlain), x, y);
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 12);
+    return drawShapeByAddress(guest, s16At(guest, kIconPlain), x, y);
 }
 
 /* sub_440b50: the icon of a player of the list, chosen or not, in a glow that
  * pulses and goes along the list with the time. */
-reg32 drawPulsingIcon(Guest& guest, reg32 chosen, reg32 index, reg32 x, reg32 y)
+x86::reg32 frontend::menua::drawPulsingIcon(App* app, CPU& cpu, reg32 chosen, reg32 index, reg32 x, reg32 y)
 {
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 12 + 0xc);
     constexpr s32 kPulse = 0x200;
     const s32 phase = s32(guest.dword(0x79c1a4) * 2) % kPulse;
     const s32 at = s32(u(phase) + ((7 - index) << 7)) % kPulse;
@@ -1606,45 +1855,56 @@ reg32 drawPulsingIcon(Guest& guest, reg32 chosen, reg32 index, reg32 x, reg32 y)
     guest.leaveEdx(x - 6);
     guest.leaveEcx(chosen);
     const reg32 glowShape = chosen != 0 ? kGlowChosen : kGlowPlain;
+    // Each call may be the last, by address: what it leaves in ebx, ecx and edx, the function leaves.
     if (guest.word(glowShape) != 0)
         result = guest.call(kDrawArtShape, fe::args({ u(s16At(guest, glowShape)), x - 6, y - 5, colour }));
     if (chosen != 0)
     {
         if (guest.word(kIconChosen) != 0)
-            result = drawShape(guest, s16At(guest, kIconChosen), x - 1, y + 1);
+            result = drawShapeByAddress(guest, s16At(guest, kIconChosen), x - 1, y + 1);
     }
     else if (guest.word(kIconLit) != 0)
     {
-        result = drawShape(guest, s16At(guest, kIconLit), x, y);
+        result = drawShapeByAddress(guest, s16At(guest, kIconLit), x, y);
     }
     return result;
 }
 
 /* sub_440d60: the pointer put on the panel's messages. */
-reg32 pointAtPanel(Guest& guest)
+x86::reg32 frontend::menua::pointAtPanel(App* app, CPU& cpu)
 {
-    return setPointer(guest, guest.dword(kBoxLeft) + 0xa, guest.dword(kBoxTop) + 0xa);
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 8);
+    // By address: what the function leaves in eax is this one's.
+    return setPointerByAddress(guest, guest.dword(kBoxLeft) + 0xa, guest.dword(kBoxTop) + 0xa);
 }
 
-/* The lines round the box of messages, of a colour for the pointer on it. */
-void drawRacePanelLines(Guest& guest, reg32 left, reg32 top, reg32 right, reg32 bottom, reg32 colour)
+namespace
 {
-    shadedRectangle(guest, left - 1, top + 2, right - 2, top + 4, colour);
-    shadedRectangle(guest, left - 2, top + 2, left, bottom, colour);
-    shadedRectangle(guest, right - 4, top + 2, right - 2, bottom, colour);
-    shadedRectangle(guest, left - 1, bottom - 0x12, right - 2, bottom - 0x10, colour);
-    shadedRectangle(guest, left - 2, bottom, right - 2, bottom + 2, colour);
+
+/* The lines round the box of messages, of a colour for the pointer on it. */
+void drawRacePanelLines(Guest& guest, x86::CPU& cpu, reg32 left, reg32 top, reg32 right, reg32 bottom, reg32 colour)
+{
+    shadedRectangle(guest, cpu, left - 1, top + 2, right - 2, top + 4, colour);
+    shadedRectangle(guest, cpu, left - 2, top + 2, left, bottom, colour);
+    shadedRectangle(guest, cpu, right - 4, top + 2, right - 2, bottom, colour);
+    shadedRectangle(guest, cpu, left - 1, bottom - 0x12, right - 2, bottom - 0x10, colour);
+    shadedRectangle(guest, cpu, left - 2, bottom, right - 2, bottom + 2, colour);
 }
+
+}  // namespace
 
 /* sub_440d80: the panel over a network race's pause: at the view's side, if it
  * is open; 4 when the network has gone. */
-reg32 drawRacePanel(Guest& guest)
+x86::reg32 frontend::menua::drawRacePanel(App* app, CPU& cpu)
 {
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 24 + 0x2c);
     constexpr reg32 kBack = 0x80222240;
     const reg32 rectTop = guest.frame(), rectRight = guest.frame() + 4;
     guest.setDword(rectTop, 0);
     guest.setDword(rectRight, 0);
-    guest.call(0x4beb20, fe::args({ 0x7cdac0, rectTop, rectTop, rectRight }, { rectTop }));
+    fe::direct<0x4beb20, pause::readRect>(app, cpu, 0x7cdac0u, rectTop, rectTop, rectRight, rectTop);
     const bool wideView = s32At(guest, rectRight) >= 0x280;
     guest.setDword(kBoxTop, 0x118);
     guest.setDword(kBoxRight, wideView ? 0x201 : 0x240);
@@ -1654,25 +1914,29 @@ reg32 drawRacePanel(Guest& guest)
     const reg32 right = guest.dword(kBoxRight), bottom = guest.dword(kBoxBottom);
     if (guest.dword(kPanelOpen) != 0)
     {
-        shadedRectangle(guest, left - 1, top + 2, right - 2, bottom + 2, kBack);
-        const reg32 over = guest.call(kPointerInRect, fe::args({ left, top, right - left - 4, bottom - top - 3 }));
-        if (over != 0 && (guest.call(kDialogShown) & 0xff) == 0)
+        shadedRectangle(guest, cpu, left - 1, top + 2, right - 2, bottom + 2, kBack);
+        const reg32 over = guest::direct<0x49c240, menud::pointerOverRect>(app, cpu, left, top, right - left - 4, bottom - top - 3);
+        if (over != 0 && !dialogShown(guest, cpu))
         {
             if (networkGone(guest))
                 closePanel(guest);
             else
                 guest.setDword(kPanelActive, 1);
-            drawRacePanelLines(guest, left, top, right, bottom, 0xff807020);
+            drawRacePanelLines(guest, cpu, left, top, right, bottom, 0xff807020);
         }
         else
         {
             guest.setDword(kPanelActive, 0);
-            drawRacePanelLines(guest, left, top, right, bottom, 0xff000040);
+            drawRacePanelLines(guest, cpu, left, top, right, bottom, 0xff000040);
         }
-        guest.call(0x4d1400);
-        guest.call(0x451530, fe::args({}, { 0x3f19999a }));
-        guest.call(0x441950, fe::args({ left + 1, top + 3 }));
-        guest.call(0x4d1410);
+        const reg32 scale = fe::direct<0x4d1400, port::text::keepTextScaleOf>(app, cpu);
+        // The shade where the game's code pushes it, for the function to rewrite on a race's pause screens; the
+        // scale kept in eax, as the call before leaves it.
+        const reg32 shadeAt = guest.frame() - 4;
+        guest.setDword(shadeAt, 0x3f19999a);
+        fe::direct<0x451530, port::text::dimmed>(app, cpu, shadeAt, scale);
+        guest::direct<0x441950, drawPanelMessages>(app, cpu, left + 1, top + 3);
+        fe::direct<0x4d1410, port::text::restoreTextScaleOf>(app, cpu);
     }
     else
     {
@@ -1686,17 +1950,14 @@ reg32 drawRacePanel(Guest& guest)
     return 0;
 }
 
-reg32 twoColourRectangle(Guest& guest, reg32 left, reg32 top, reg32 right, reg32 bottom, reg32 colourA, reg32 colourB)
-{
-    return guest.call(kShadedRectangle, fe::args({ left, top, right, bottom }, { colourA, colourA, colourB, colourB }));
-}
-
 /* sub_441040: the panel beside a network screen on every pass: sliding in and
  * out, its parts, the button that opens it (turning, without translucency a
  * plain shape), its messages.  It returns what ends the screen: the lobby's
  * race started (0xb), the screen's network done with (6), the network gone (4). */
-reg32 panelFrame(Guest& guest)
+x86::reg32 frontend::menua::panelFrame(App* app, CPU& cpu)
 {
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 24 + 0x24);
     constexpr reg32 kEdge = 0xff1c1a73, kInner = 0xff0f0f4a;
     constexpr reg32 kPaneDark = 0xff05053a, kPaneLight = 0xff141358;
     constexpr s32 kOpenLeft = 0x110, kClosedLeft = 0x251, kSlide = 0x28;
@@ -1704,7 +1965,7 @@ reg32 panelFrame(Guest& guest)
     if (networkGone(guest))
         closePanel(guest);
     if (guest.dword(kInRace) != 0)
-        return guest.call(0x440d80);
+        return guest::direct<0x440d80, drawRacePanel>(app, cpu);
     if (guest.word(kPanelShapeId) == 0)
         return 0;
 
@@ -1731,98 +1992,100 @@ reg32 panelFrame(Guest& guest)
             guest.setDword(kPanelLeft, kClosedLeft);
     }
 
-    drawShape(guest, s16At(guest, kPanelShapeId), guest.dword(kPanelLeft), guest.dword(kPanelTop));
+    drawShape(guest, cpu, s16At(guest, kPanelShapeId), guest.dword(kPanelLeft), guest.dword(kPanelTop));
     const reg32 panelLeft = guest.dword(kPanelLeft);
     const reg32 left = panelLeft + 0x2f;
     const reg32 right = panelLeft + 0x170;
     const reg32 inner = right - 4;
-    shadedRectangle(guest, left, 0x87, panelLeft + 0x31, kPanelMost, kInner);
-    shadedRectangle(guest, inner, 0x87, right, kPanelMost, kEdge);
-    shadedRectangle(guest, left, 0x87, right, 0x8b, kEdge);
-    shadedRectangle(guest, left, 0x11d, right, 0x121, kEdge);
-    shadedRectangle(guest, left, 0x199, right, 0x19d, kEdge);
-    shadedRectangle(guest, left, 0x1ac, right, kPanelMost, kEdge);
-    shadedRectangle(guest, left, 0x8b, inner, 0x8d, kInner);
-    shadedRectangle(guest, left, 0x121, inner, 0x123, kInner);
-    shadedRectangle(guest, left, 0x19d, inner, 0x19f, kInner);
-    twoColourRectangle(guest, left + 2, 0x8d, inner, 0x11d, kPaneLight, kPaneDark);
-    twoColourRectangle(guest, left + 2, 0x123, inner, 0x199, kPaneDark, kPaneLight);
-    twoColourRectangle(guest, left + 2, 0x19f, inner, 0x1ac, kPaneLight, kPaneDark);
+    shadedRectangle(guest, cpu, left, 0x87, panelLeft + 0x31, kPanelMost, kInner);
+    shadedRectangle(guest, cpu, inner, 0x87, right, kPanelMost, kEdge);
+    shadedRectangle(guest, cpu, left, 0x87, right, 0x8b, kEdge);
+    shadedRectangle(guest, cpu, left, 0x11d, right, 0x121, kEdge);
+    shadedRectangle(guest, cpu, left, 0x199, right, 0x19d, kEdge);
+    shadedRectangle(guest, cpu, left, 0x1ac, right, kPanelMost, kEdge);
+    shadedRectangle(guest, cpu, left, 0x8b, inner, 0x8d, kInner);
+    shadedRectangle(guest, cpu, left, 0x121, inner, 0x123, kInner);
+    shadedRectangle(guest, cpu, left, 0x19d, inner, 0x19f, kInner);
+    shadedRectangle(guest, cpu, left + 2, 0x8d, inner, 0x11d, kPaneLight, kPaneDark);
+    shadedRectangle(guest, cpu, left + 2, 0x123, inner, 0x199, kPaneDark, kPaneLight);
+    shadedRectangle(guest, cpu, left + 2, 0x19f, inner, 0x1ac, kPaneLight, kPaneDark);
 
     const reg32 buttonX = guest.dword(kPanelLeft) + 0xd;
-    const bool overButton = guest.call(kPointerInRect, fe::args({ buttonX, 0x18b, 0x20, 0x20 })) != 0;
+    const bool overButton = guest::direct<0x49c240, menud::pointerOverRect>(app, cpu, buttonX, 0x18bu, 0x20u, 0x20u) != 0;
     const reg32 turnedX = buttonX + 0x10;
     const bool plainShapes = (guest.byte(kDisplayFlags) & kNoTranslucency) != 0;
     if (overButton)
     {
         if (plainShapes)
         {
-            drawShape(guest, s16At(guest, kButtonOpenPlain), buttonX, 0x18b);
+            drawShape(guest, cpu, s16At(guest, kButtonOpenPlain), buttonX, 0x18b);
         }
         else
         {
-            guest.call(kDrawTurnedShape, fe::args({ u(s16At(guest, kButtonOpenBack)), turnedX, 0x19b, 0 }, { buttonTurn, kFloatOne }));
+            drawTurnedShape(guest, cpu, s16At(guest, kButtonOpenBack), turnedX, 0x19b, buttonTurn);
             const reg32 spin = guest.dword(kPanelSpin) + 0xa;
             guest.setDword(kPanelSpin, spin);
-            guest.call(kDrawTurnedShape, fe::args({ u(s16At(guest, kButtonOpenPlain)), turnedX, 0x19b, 0 }, { spin, kFloatOne }));
+            drawTurnedShape(guest, cpu, s16At(guest, kButtonOpenPlain), turnedX, 0x19b, spin);
         }
     }
     else if (plainShapes)
     {
-        drawShape(guest, s16At(guest, kButtonClosedBack), buttonX, 0x18b);
+        drawShape(guest, cpu, s16At(guest, kButtonClosedBack), buttonX, 0x18b);
     }
     else
     {
-        guest.call(kDrawTurnedShape, fe::args({ u(s16At(guest, kButtonClosedPlain)), turnedX, 0x19b, 0 }, { buttonTurn, kFloatOne }));
+        drawTurnedShape(guest, cpu, s16At(guest, kButtonClosedPlain), turnedX, 0x19b, buttonTurn);
         const reg32 spin = guest.dword(kPanelSpin) + 5;
         guest.setDword(kPanelSpin, spin);
-        guest.call(kDrawTurnedShape, fe::args({ u(s16At(guest, kButtonClosedBack)), turnedX, 0x19b, 0 }, { spin, kFloatOne }));
+        drawTurnedShape(guest, cpu, s16At(guest, kButtonClosedBack), turnedX, 0x19b, spin);
     }
 
-    guest.call(0x49ae30, fe::args({ guest.dword(kPanelLeft) + 0x2f, guest.dword(kPanelTop) }));
+    guest::direct<0x49ae30, menud::drawLobbyPlayers>(app, cpu, guest.dword(kPanelLeft) + 0x2f, guest.dword(kPanelTop));
     const reg32 width = right - left - 4;
     guest.setDword(kBoxLeft, left);
     guest.setDword(kBoxTop, 0x120);
     guest.setDword(kBoxRight, left + width);
     guest.setDword(kBoxBottom, 0x1ac);
-    if (guest.call(kPointerInRect, fe::args({ left, 0x120, width, 0x8c })) != 0 && (guest.call(kDialogShown) & 0xff) == 0)
+    if (guest::direct<0x49c240, menud::pointerOverRect>(app, cpu, left, 0x120u, width, 0x8cu) != 0
+        && !dialogShown(guest, cpu))
     {
         if (networkGone(guest))
             closePanel(guest);
         else
             guest.setDword(kPanelActive, 1);
         constexpr reg32 kLit = 0xff807020;
-        shadedRectangle(guest, left - 1, 0x11f, right - 2, 0x121, kLit);
-        shadedRectangle(guest, left - 2, 0x11f, left, 0x1ac, kLit);
-        shadedRectangle(guest, right - 4, 0x11f, right - 2, 0x1ac, kLit);
-        shadedRectangle(guest, left - 1, 0x19a, right - 2, 0x19c, kLit);
-        shadedRectangle(guest, left - 2, 0x1ac, right - 2, 0x1ae, kLit);
+        shadedRectangle(guest, cpu, left - 1, 0x11f, right - 2, 0x121, kLit);
+        shadedRectangle(guest, cpu, left - 2, 0x11f, left, 0x1ac, kLit);
+        shadedRectangle(guest, cpu, right - 4, 0x11f, right - 2, 0x1ac, kLit);
+        shadedRectangle(guest, cpu, left - 1, 0x19a, right - 2, 0x19c, kLit);
+        shadedRectangle(guest, cpu, left - 2, 0x1ac, right - 2, 0x1ae, kLit);
     }
     else
     {
         guest.setDword(kPanelActive, 0);
     }
-    guest.call(0x441950, fe::args({ guest.dword(kPanelLeft) + 0x30, 0x11f }));
+    guest::direct<0x441950, drawPanelMessages>(app, cpu, guest.dword(kPanelLeft) + 0x30, 0x11fu);
 
     if (guest.word(kNetClosing) == 0 && guest.word(kNetLeft) == 0 && guest.word(kNetState) == 0x21)
     {
-        guest.call(0x4a6a10, fe::args({ 0x28, 0x21 }));
-        guest.call(0x445f10);
+        const reg32 met = fe::direct<0x4a6a10, frontend::neta::barrier>(app, cpu, 0x28, 0x21);
+        fe::direct<0x445f10, port::dialogs::closeDialogOf>(app, cpu, met);  // eax as the call before left it
         return 0xb;
     }
-    if (guest.dword(kTyping) != 0 && guest.call(0x49a520) == 0 && guest.call(0x49abd0) != 0)
+    if (guest.dword(kTyping) != 0 && fe::direct<0x49a520, frontend::neta::lobbyChanged>(app, cpu) == 0
+        && fe::direct<0x49abd0, frontend::neta::allReady>(app, cpu) != 0)
     {
         if (const reg32 typing = guest.dword(kTyping))
         {
-            guest.call(kFree, fe::args({ typing }));
+            fe::direct<0x4e1890, ea::purgeBlock>(app, cpu, typing);
             guest.setDword(kTyping, 0);
         }
         if (const reg32 messages = guest.dword(kMessageBuffer))
         {
-            guest.call(kFree, fe::args({ messages }));
+            fe::direct<0x4e1890, ea::purgeBlock>(app, cpu, messages);
             guest.setDword(kMessageBuffer, 0);
         }
-        guest.call(0x49acd0);
+        fe::direct<0x49acd0, frontend::neta::playersToRace>(app, cpu);
         return 6;
     }
     if (guest.word(kNetLeft) != 0)
@@ -1834,15 +2097,23 @@ reg32 panelFrame(Guest& guest)
     return 0;
 }
 
-reg32 overPanelButton(Guest& guest)
+namespace
 {
-    return guest.call(kPointerInRect, fe::args({ guest.dword(kPanelLeft) + 0xd, 0x18b, 0x20, 0x20 }));
+
+reg32 overPanelButton(Guest& guest, x86::CPU& cpu)
+{
+    return guest::direct<0x49c240, frontend::menud::pointerOverRect>(guest.app(), cpu, guest.dword(kPanelLeft) + 0xd, 0x18bu,
+                                                                      0x20u, 0x20u);
 }
+
+}  // namespace
 
 /* sub_441680: whether the panel is to have the keys and the pointer: over its
  * button, or active. */
-reg32 panelBusy(Guest& guest)
+x86::reg32 frontend::menua::panelBusy(App* app, CPU& cpu)
 {
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 16);
     if (networkGone(guest))
     {
         closePanel(guest);
@@ -1850,7 +2121,7 @@ reg32 panelBusy(Guest& guest)
     }
     if (guest.dword(kInRace) != 0)
         return 0;
-    if (overPanelButton(guest) != 0)
+    if (overPanelButton(guest, cpu) != 0)
         return 1;
     return guest.dword(kPanelActive) != 0 ? 1 : 0;
 }
@@ -1858,14 +2129,16 @@ reg32 panelBusy(Guest& guest)
 /* sub_441700: a key for the panel: Enter over its button opens and closes it;
  * while it is active or open the rest are the typed line's, an arrow or so
  * leaving it open.  2 when the key is spent. */
-reg32 panelKey(Guest& guest, std::uint16_t key)
+x86::reg32 frontend::menua::panelKey(App* app, CPU& cpu, std::uint16_t key)
 {
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 20);
     reg32 result = 0;
     if (networkGone(guest))
         closePanel(guest);
     if (guest.word(kPanelShapeId) == 0)
         return 0;
-    if (key == kKeyEnter && guest.dword(kFromMouse) != 0 && guest.dword(kInRace) == 0 && overPanelButton(guest) != 0)
+    if (key == kKeyEnter && guest.dword(kFromMouse) != 0 && guest.dword(kInRace) == 0 && overPanelButton(guest, cpu) != 0)
     {
         result = 2;
         guest.setDword(kPanelOpen, guest.dword(kPanelOpen) == 0 ? 1 : 0);
@@ -1878,34 +2151,39 @@ reg32 panelKey(Guest& guest, std::uint16_t key)
         if (pressed == kKeyUp || pressed == kKeyRight || pressed == kKeyDown || pressed == kKeyLeft
             || pressed == kKeyEnter || pressed == kKeyEscape)
             return result;
-        guest.call(0x440d60);
+        guest::direct<0x440d60, pointAtPanel>(app, cpu);
     }
-    guest.call(0x441b20, fe::args({ guest.dword(kKeyPressed) }));
+    guest::direct<0x441b20, typeInPanel>(app, cpu, guest.dword(kKeyPressed));
     return 2;
 }
 
 /* sub_4418e0: how wide a message may be, in the box's width. */
-reg32 panelLineWidth(Guest& guest)
+x86::reg32 frontend::menua::panelLineWidth(App* app, CPU& cpu)
 {
+    Guest guest(app, cpu);
     const s32 across = s32(guest.dword(kBoxRight) - guest.dword(kBoxLeft));
     const reg32 width = across > 0 ? u(across) : reg32(0) - u(across);
     return width - 0x14;
 }
 
 /* sub_441900: whether a message fits a line, in the panel's font. */
-reg32 panelLineFits(Guest& guest, reg32 text)
+x86::reg32 frontend::menua::panelLineFits(App* app, CPU& cpu, reg32 text)
 {
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 16);
     if (text == 0 || guest.byte(text) == 0)
         return 1;
-    guest.call(0x452100, fe::args({ kMenuFont, kMenuFont }));
-    const s32 width = s32(guest.call(0x4418e0));
+    fe::direct<0x452100, port::text::selectFontOf>(app, cpu, kMenuFont);
+    const s32 width = s32(guest::direct<0x4418e0, panelLineWidth>(app, cpu));
     return fe::textWidth(guest, text, kMenuFont) <= width ? 1 : 0;
 }
 
 /* sub_441950: the panel's messages, each cut until it fits its line, and under
  * them the line being typed, as much of its end as fits, and the cursor. */
-reg32 drawPanelMessages(Guest& guest, reg32 x, reg32 y)
+x86::reg32 frontend::menua::drawPanelMessages(App* app, CPU& cpu, reg32 x, reg32 y)
 {
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 20 + 0x7c);
     constexpr reg32 kNothing = 0x43f180;
     constexpr reg32 kPrompt = 0x23;
     constexpr reg32 kLineLength = 0x64;
@@ -1925,16 +2203,16 @@ reg32 drawPanelMessages(Guest& guest, reg32 x, reg32 y)
         if (i >= s32At(guest, messages))
             break;
         guest.call(0x4e0e30, fe::args({ line, messages + 4 + u(i) * kMessageSize, kLineLength }));
-        while (guest.call(0x441900, fe::args({ line })) == 0 && guest.byte(line) != 0)
+        while (guest::direct<0x441900, panelLineFits>(app, cpu, line) == 0 && guest.byte(line) != 0)
             guest.setByte(line + guest.length(line) - 1, 0);
-        drawText(guest, line, x, lineY, kColourChosen);
+        drawText(guest, cpu, line, x, lineY, kColourChosen);
         lineY += 0xd;
     }
-    const reg32 afterFont = guest.call(0x452100, fe::args({ kMenuFont }));
+    fe::direct<0x452100, port::text::selectFontOf>(app, cpu, kMenuFont);
     if (guest.dword(kTyping) == 0)
-        return afterFont;
+        return kMenuFont;  // eax as sub_452100 leaves it: the font
     const reg32 typedY = y + 0x7c;
-    const s32 room = s32(guest.call(0x4418e0));
+    const s32 room = s32(guest::direct<0x4418e0, panelLineWidth>(app, cpu));
     const s32 promptWidth = fe::textWidth(guest, fe::text(guest, kPrompt), kMenuFont);
     s32 fit = minus(room, promptWidth);
     if (fit <= 0)
@@ -1942,9 +2220,9 @@ reg32 drawPanelMessages(Guest& guest, reg32 x, reg32 y)
     reg32 skipped = 0;
     while (fe::textWidth(guest, guest.dword(kTyping) + skipped, kMenuFont) > fit)
         ++skipped;
-    drawText(guest, fe::text(guest, kPrompt), x, typedY, kColourPlain);
+    drawText(guest, cpu, fe::text(guest, kPrompt), x, typedY, kColourPlain);
     const reg32 typedX = x + u(promptWidth);
-    drawText(guest, guest.dword(kTyping) + skipped, typedX, typedY, kColourChosen);
+    drawText(guest, cpu, guest.dword(kTyping) + skipped, typedX, typedY, kColourChosen);
     const s32 blink = s32(guest.dword(kCursorBlink) + 1);
     const s32 phase = blink % 0x1e;
     guest.setDword(kCursorBlink, u(phase));
@@ -1954,15 +2232,19 @@ reg32 drawPanelMessages(Guest& guest, reg32 x, reg32 y)
         return u(blink / 0x1e);
     }
     const reg32 typedWidth = u(fe::textWidth(guest, guest.dword(kTyping) + skipped, kMenuFont));
-    return drawText(guest, kCursor.address, typedX + typedWidth, typedY, kColourChosen);
+    // By address, the last call: what it leaves in edx, the function leaves.
+    return drawTextByAddress(guest, kCursor.address, typedX + typedWidth, typedY, kColourChosen);
 }
 
 /* sub_441b20: a key for the line being typed: Enter sends it with the player's
  * name before it, Backspace and Delete take the last character off, Escape
  * nothing, what may be typed goes on its end, up to 0x56 of them.  2 when the key
  * is spent. */
-reg32 typeInPanel(Guest& guest, std::uint16_t key)
+x86::reg32 frontend::menua::typeInPanel(App* app, CPU& cpu, reg32 pressed)
 {
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 24 + 0x64);
+    const std::uint16_t key = std::uint16_t(pressed);
     constexpr reg32 kTypedMost = 0x56;
     const reg32 typing = guest.dword(kTyping);
     if (typing == 0 || guest.dword(kPanelOpen) == 0 || guest.dword(kFromMouse) != 0)
@@ -1970,7 +2252,7 @@ reg32 typeInPanel(Guest& guest, std::uint16_t key)
     if (key == kKeyEnter)
     {
         const reg32 message = guest.frame();   // char[0x64]
-        guest.copyString(message, kPlayerName);
+        guest.copyString(message, SETTINGS_ADDRESS(players[0].name));
         guest.copyString(message + guest.length(message), kNameSeparator.address);
         guest.call(0x4eedf0, fe::args({ message, guest.dword(kTyping), 0x57 }));
         guest.call(0x42d810, fe::args({ 0x100, message, 0x64 }));
@@ -1984,7 +2266,7 @@ reg32 typeInPanel(Guest& guest, std::uint16_t key)
     }
     else if (key != kKeyEscape)
     {
-        if ((guest.call(0x443810, fe::args({ key & 0xffu, 3 })) & 0xff) != 0)
+        if ((guest::direct<0x443810, characterAllowed>(app, cpu, key & 0xffu, 3u) & 0xff) != 0)
         {
             const reg32 text = guest.dword(kTyping);
             const std::uint32_t length = guest.length(text);
@@ -1998,25 +2280,40 @@ reg32 typeInPanel(Guest& guest, std::uint16_t key)
     return 2;
 }
 
+namespace
+{
+
 /* ---------------------------------------------------------------------------
  * What may be typed
  * ------------------------------------------------------------------------- */
 
+}  // namespace
+
 /* sub_4434f0: whether a character may be typed at all. */
-reg32 characterInRange(reg32 character)
+x86::reg32 frontend::menua::characterInRange(App*, CPU&, reg32 character)
 {
     const bool typable = s32(character) >= 0x20 && s32(character) <= 0xff;
     return withLowByte(character, typable ? 1 : 0);
 }
 
 /* sub_443510 and sub_443620: the same for a byte. */
-reg32 byteInRange(Guest& guest, reg32 character)
+x86::reg32 frontend::menua::byteInRange(App* app, CPU& cpu, reg32 character)
 {
-    return guest.call(0x4434f0, fe::args({ character & 0xff }));
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 4);
+    return guest::direct<0x4434f0, characterInRange>(app, cpu, character & 0xff);
+}
+
+/* sub_443620: the same. */
+x86::reg32 frontend::menua::byteInRangeAgain(App* app, CPU& cpu, reg32 character)
+{
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 4);
+    return guest::direct<0x4434f0, characterInRange>(app, cpu, character & 0xff);
 }
 
 /* sub_4435c0: the characters of a number or a network address. */
-reg32 characterOfAddress(reg32 character)
+x86::reg32 frontend::menua::characterOfAddress(App*, CPU&, reg32 character)
 {
     static const std::uint8_t kAllowed[26] = { 1, 0, 0, 1, 0, 0, 0, 0, 1, 1, 1, 0, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1 };
     const std::uint8_t index = std::uint8_t((character & 0xff) - 0x20);
@@ -2024,9 +2321,13 @@ reg32 characterOfAddress(reg32 character)
     return (character & 0xffff0000) | (reg32(index) << 8) | allowed;
 }
 
+namespace
+{
+
 /* sub_443520 and sub_4435e0: whether a whole text passes a character's test;
  * none does that is empty. */
-reg32 wholeTextPasses(Guest& guest, reg32 text, reg32 test)
+template <typename Test>
+reg32 wholeTextPasses(Guest& guest, reg32 text, Test test)
 {
     if (text == 0 || guest.byte(text) == 0)
         return text & 0xffffff00;
@@ -2036,32 +2337,93 @@ reg32 wholeTextPasses(Guest& guest, reg32 text, reg32 test)
         const std::uint8_t c = guest.byte(at);
         if (c == 0)
             return withLowByte(left, 1);
-        left = guest.call(test, fe::args({ c }));
+        left = test(c);
         if ((left & 0xff) == 0)
             return withLowByte(left, 0);
     }
 }
 
+}  // namespace
+
+/* sub_443520: whether every byte of a text may be typed (sub_443510). */
+x86::reg32 frontend::menua::textInRange(App* app, CPU& cpu, reg32 text)
+{
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 12);
+    return wholeTextPasses(guest, text, [&](std::uint8_t c) { return guest::direct<0x443510, byteInRange>(app, cpu, c); });
+}
+
+/* sub_4435e0: whether a whole text is a number or a network address (sub_4435c0). */
+x86::reg32 frontend::menua::textOfAddress(App* app, CPU& cpu, reg32 text)
+{
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 12);
+    return wholeTextPasses(guest, text,
+                           [&](std::uint8_t c) { return guest::direct<0x4435c0, characterOfAddress>(app, cpu, c); });
+}
+
+namespace
+{
+
 /* sub_4436c0, sub_443740, sub_4437c0: a character by the test of the language's,
  * of a table of three; any without one. */
 reg32 languageCharacterTest(Guest& guest, reg32 character, reg32 table)
 {
-    const reg32 row = guest.dword(kLanguage) * 20;
+    const reg32 row = gameSettings(guest).language * 20;
     const reg32 test = guest.dword(table + row);
     if (test != 0)
         return guest.call(test, fe::args({ character & 0xff }));
     return withLowByte(row, 1);
 }
 
+}  // namespace
+
+/* sub_4436c0, sub_443740, sub_4437c0: by the first, second and third tests of the table. */
+x86::reg32 frontend::menua::languageTestFirst(App* app, CPU& cpu, reg32 character)
+{
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 12);
+    return languageCharacterTest(guest, character, 0x558c7c);
+}
+
+x86::reg32 frontend::menua::languageTestSecond(App* app, CPU& cpu, reg32 character)
+{
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 12);
+    return languageCharacterTest(guest, character, 0x558c84);
+}
+
+x86::reg32 frontend::menua::languageTestThird(App* app, CPU& cpu, reg32 character)
+{
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 12);
+    return languageCharacterTest(guest, character, 0x558c8c);
+}
+
 /* sub_443810: whether a character may be typed in a line of a kind (a name,
  * then the language's three). */
-reg32 characterAllowed(Guest& guest, reg32 character, reg32 kind)
+x86::reg32 frontend::menua::characterAllowed(App* app, CPU& cpu, reg32 character, reg32 kind)
 {
-    static const reg32 kTests[4] = { 0x443630, 0x4436c0, 0x443740, 0x4437c0 };
-    if (kind <= 3)
-        return guest.call(kTests[kind], fe::args({ character & 0xff }));
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 4);
+    switch (kind)
+    {
+    case 0:
+        return fe::direct<0x443630, text::shortNameCharacter>(app, cpu, character & 0xff);
+    case 1:
+        return guest::direct<0x4436c0, languageTestFirst>(app, cpu, character & 0xff);
+    case 2:
+        return guest::direct<0x443740, languageTestSecond>(app, cpu, character & 0xff);
+    case 3:
+        return guest::direct<0x4437c0, languageTestThird>(app, cpu, character & 0xff);
+    default:
+        break;
+    }
     return (character & 0xffff0000) | ((character & 0xff) << 8);
 }
+
+namespace
+{
 
 /* ---------------------------------------------------------------------------
  * The screen modes' list
@@ -2072,34 +2434,40 @@ constexpr reg32 kModeLines = 0x5591ec;           // int16 for each: its line of 
 constexpr reg32 kModes = 0x661220;
 constexpr reg32 kModeSize = 0x114;
 constexpr reg32 kModeHeight = 4;
-constexpr reg32 kChosenMode = 0x6fbc14;
-constexpr reg32 kChosenHeight = 0x6fbc18;
+
+}  // namespace
 
 /* sub_4482c0: the list made afresh from the driver, by way of sub_448210. */
-reg32 listModes(Guest& guest)
+x86::reg32 frontend::menua::listModes(App* app, CPU& cpu)
 {
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 8);
     guest.setDword(kModeCount, 0);
     guest.call(0x4e070c, fe::args({ kModeLines, 0x2a }));
     return guest.call(0x4bed90, fe::args({ 0x448210 }));
 }
 
 /* sub_4482f0: the list made, the mode chosen still in it, its width. */
-reg32 chosenModeWidth(Guest& guest)
+x86::reg32 frontend::menua::chosenModeWidth(App* app, CPU& cpu)
 {
-    guest.call(0x4482c0);
-    if (s32At(guest, kChosenMode) >= s32At(guest, kModeCount))
-        guest.setDword(kChosenMode, 0);
-    return guest.dword(kModes + kModeSize * guest.dword(kChosenMode));
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 12);
+    guest::direct<0x4482c0, listModes>(app, cpu);
+    if (s32(gameSettings(guest).screenMode) >= s32At(guest, kModeCount))
+        gameSettings(guest).screenMode = 0;
+    return guest.dword(kModes + kModeSize * gameSettings(guest).screenMode);
 }
 
 /* sub_448330: the mode chosen, copied by way of the stack as the game's code
  * has it. */
-reg32 copyChosenMode(Guest& guest, reg32 out)
+x86::reg32 frontend::menua::copyChosenMode(App* app, CPU& cpu, reg32 out)
 {
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 20 + 0x114);
     const reg32 copy = guest.frame();
-    if (s32At(guest, kModeCount) <= s32At(guest, kChosenMode))
-        guest.setDword(kChosenMode, 0);
-    const reg32 mode = kModes + kModeSize * guest.dword(kChosenMode);
+    if (s32At(guest, kModeCount) <= s32(gameSettings(guest).screenMode))
+        gameSettings(guest).screenMode = 0;
+    const reg32 mode = kModes + kModeSize * gameSettings(guest).screenMode;
     for (reg32 i = 0; i < kModeSize; i += 4)
         guest.setDword(copy + i, guest.dword(mode + i));
     for (reg32 i = 0; i < kModeSize; i += 4)
@@ -2109,25 +2477,30 @@ reg32 copyChosenMode(Guest& guest, reg32 out)
 }
 
 /* sub_4483a0: the list made, the mode of a width chosen; the first if none is. */
-reg32 chooseModeOfWidth(Guest& guest, reg32 width)
+x86::reg32 frontend::menua::chooseModeOfWidth(App* app, CPU& cpu, reg32 width)
 {
-    guest.call(0x4482c0);
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 16);
+    guest::direct<0x4482c0, listModes>(app, cpu);
     for (s32 i = 0; i < s32At(guest, kModeCount); ++i)
     {
         const reg32 mode = kModes + kModeSize * u(i);
         if (width == guest.dword(mode))
         {
             const reg32 height = guest.dword(mode + kModeHeight);
-            guest.setDword(kChosenMode, u(i));
-            guest.setDword(kChosenHeight, height);
+            gameSettings(guest).screenMode = u(i);
+            gameSettings(guest).screenWidth = height;
             return height;
         }
     }
     const reg32 height = guest.dword(kModes + kModeHeight);
-    guest.setDword(kChosenHeight, height);
-    guest.setDword(kChosenMode, 0);
+    gameSettings(guest).screenWidth = height;
+    gameSettings(guest).screenMode = 0;
     return height;
 }
+
+namespace
+{
 
 /* ---------------------------------------------------------------------------
  * The race's pause menu
@@ -2141,8 +2514,6 @@ constexpr reg32 kLastAnswer = 0x66296c;
 constexpr reg32 kPauseActive = 0x8b7630;
 constexpr reg32 kScreenStack = 0x6627fc;         // [1] to [20]
 constexpr reg32 kMenuCount = 0x660bb0;
-constexpr reg32 kEnterScreen = 0x44ab40;
-constexpr reg32 kLeaveScreen = 0x44aa30;
 constexpr reg32 kItemShownBefore = 0x1c;         // of the screen: int16, the item selected before
 
 constexpr GuestString kPauseFile{ 0x53905c, "pause" };
@@ -2157,17 +2528,31 @@ void clearScreenStack(Guest& guest)
         guest.setDword(kScreenStack + 4 * i, 0);
 }
 
+reg32 enterScreen(Guest& guest, x86::CPU& cpu, reg32 menu)
+{
+    return u(*fe::direct<0x44ab40, port::loop::enterScreenOf>(guest.app(), cpu, cpu.esp - 4, menu));
+}
+
+reg32 leaveScreen(Guest& guest, x86::CPU& cpu, reg32 menu, reg32 action)
+{
+    return u(*fe::direct<0x44aa30, port::loop::leaveScreenOf>(guest.app(), cpu, cpu.esp - 4, menu, action));
+}
+
+}  // namespace
+
 /* sub_44b950: the pause menu as a race pauses for the first time: its text and
  * its screens loaded, its first screen open. */
-reg32 racePauseMenuBegin(Guest& guest)
+x86::reg32 frontend::menua::racePauseMenuBegin(App* app, CPU& cpu)
 {
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 24);
     constexpr reg32 kCommandLine = 0x55eb2e;     // byte
     constexpr std::uint8_t kAdditions = 0x20;
     constexpr reg32 kPlayerState = 0x5efac8;
     guest.setDword(kInRace, 1);
     guest.setDword(kPauseNextAnswer, 0);
     guest.setDword(kPauseDone, 0);
-    guest.call(0x4d1750, fe::args({ guest.dword(kLanguage) }));
+    fe::direct<0x4d1750, port::text::loadedLanguageText>(app, cpu, cpu.esp - 4, s32(gameSettings(guest).language));
     clearScreenStack(guest);
     guest.setDword(kLastAnswer, 5);
     bool multi = false;
@@ -2176,34 +2561,44 @@ reg32 racePauseMenuBegin(Guest& guest)
         const reg32 player = guest.dword(kPlayerState);
         multi = (guest.byte(player + 0x200) & 1) != 0 && (guest.dword(player + 0x2c4) == 3 || guest.dword(player + 0x2c4) == 4);
     }
+    // ebx and ecx as they are handed on.
+    const auto load = [&](reg32 name, reg32 reset) {
+        fe::direct<0x449510, port::menus::menusLoaded>(app, cpu, cpu.esp - 4, name, reset,
+                                                       port::Args{ 0, 0, cpu.ebx, cpu.ecx });
+    };
     if (multi)
     {
-        guest.call(0x449510, fe::args({ kPauseMultiFile.address, 1 }));
+        load(kPauseMultiFile.address, 1);
     }
     else
     {
-        guest.call(0x449510, fe::args({ kPauseFile.address, 1 }));
+        load(kPauseFile.address, 1);
         if (guest.byte(kCommandLine) & kAdditions)
-            guest.call(0x449510, fe::args({ kPauseAdditionsFile.address, 0 }));
+            load(kPauseAdditionsFile.address, 0);
     }
     guest.setDword(kCurrentMenu, kFirstMenu);
-    guest.call(kEnterScreen, fe::args({ kFirstMenu }));
+    const reg32 entered = enterScreen(guest, cpu, kFirstMenu);
     guest.setDword(kPauseActive, 1);
-    return guest.eax();
+    return entered;
 }
 
 /* sub_44ba30: the pause menu as a race pauses again, its screens loaded. */
-reg32 racePauseMenuAgain(Guest& guest)
+x86::reg32 frontend::menua::racePauseMenuAgain(App* app, CPU& cpu)
 {
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 24);
     guest.setDword(kPauseNextAnswer, 0);
     guest.setDword(kInRace, 1);
     clearScreenStack(guest);
     guest.setDword(kLastAnswer, 5);
     guest.setDword(kCurrentMenu, kFirstMenu);
-    guest.call(kEnterScreen, fe::args({ kFirstMenu }));
+    const reg32 entered = enterScreen(guest, cpu, kFirstMenu);
     guest.setDword(kPauseActive, 1);
-    return guest.eax();
+    return entered;
 }
+
+namespace
+{
 
 reg32 selectedItemOf(const Guest& guest, reg32 menu)
 {
@@ -2213,36 +2608,39 @@ reg32 selectedItemOf(const Guest& guest, reg32 menu)
 
 /* What the pointer is on and the key, for sub_44bac0: the answer of the dialog
  * or of the screen, 0 for none. */
-reg32 racePauseMenuInput(Guest& guest)
+reg32 racePauseMenuInput(Guest& guest, x86::CPU& cpu)
 {
-    const reg32 under = guest.call(0x44a6b0, fe::args({ guest.dword(kCurrentMenu) }));
+    win32::WinApplication* const app = guest.app();
+    const reg32 under = u(*fe::direct<0x44a6b0, port::loop::itemUnderMouseOf>(app, cpu, cpu.esp - 4,
+                                                                              guest.dword(kCurrentMenu)));
     const reg32 menu = guest.dword(kCurrentMenu);
     const s32 selected = s16At(guest, menu + fe::menu::kSelected);
-    guest.leaveEdx(menu);   // sub_449e50 takes the screen in edx, as it is left here
-    if (u(selected) != under && guest.call(0x449e50, fe::args({ u(selected) })) != 0)
+    guest.leaveEdx(menu);   // the screen in edx, as the game's code has it (sub_449e50 takes it there)
+    if (u(selected) != under
+        && *fe::direct<0x449e50, port::loop::selectableOf>(app, cpu, cpu.esp - 4, selected, menu) != 0)
     {
         const reg32 current = guest.dword(kCurrentMenu);
         guest.setWord(current + kItemShownBefore, guest.word(current + fe::menu::kSelected));
     }
     guest.setWord(guest.dword(kCurrentMenu) + fe::menu::kSelected, under == 0xffffffff ? 0x64 : std::uint16_t(under));
-    const reg32 key = guest.call(0x451960, fe::args({ 1 }));
+    const reg32 key = u(*fe::direct<0x451960, port::text::menuKeyOf>(app, cpu, cpu.esp - 4, 1u));
     if ((key & 0xffff) == 0)
         return 0;
     const reg32 asWord = u(std::int16_t(key));
-    if ((guest.call(kDialogShown) & 0xff) != 0)
-        return guest.call(0x445e60, fe::args({ asWord }));
-    return guest.call(0x44a2d0, fe::args({ guest.dword(kCurrentMenu), asWord }));
+    if (dialogShown(guest, cpu))
+        return u(*fe::direct<0x445e60, port::dialogs::dialogKeyOf>(app, cpu, cpu.esp - 4, asWord));
+    return u(*fe::direct<0x44a2d0, port::loop::handleKeyOf>(app, cpu, cpu.esp - 4, guest.dword(kCurrentMenu), asWord));
 }
 
 /* The selected button followed to its next screen, for the answer 5 of sub_44bac0:
  * 5 when it is opened, 3 to go back when there is none, or the button is the
  * screen's Escape. */
-reg32 racePauseFollowButton(Guest& guest)
+reg32 racePauseFollowButton(Guest& guest, x86::CPU& cpu)
 {
     const reg32 menu = guest.dword(kCurrentMenu);
     const reg32 selected = selectedItemOf(guest, menu);
     guest.setDword(guest.frame(), 0);
-    if (guest.call(0x44a240, fe::args({ menu, guest.frame() })) == selected)
+    if (u(*fe::direct<0x44a240, port::loop::escapeButtonOf>(guest.app(), cpu, cpu.esp - 4, menu, guest.frame())) == selected)
         return 3;
     const reg32 next = guest.dword(selected) == 5 ? guest.dword(selected + fe::item::kNextMenu) : 0;
     if (next == 0)
@@ -2253,45 +2651,49 @@ reg32 racePauseFollowButton(Guest& guest)
         ++index;
     if (s32(index) >= s32At(guest, kMenuCount))
         return 3;
-    guest.call(0x44af10);
-    guest.call(kLeaveScreen, fe::args({ guest.dword(kCurrentMenu), 5 }));
+    fe::direct<0x44af10, port::loop::pushMenuOf>(guest.app(), cpu, guest.eax());  // eax as strcmp left it
+    leaveScreen(guest, cpu, guest.dword(kCurrentMenu), 5);
     const reg32 to = kFirstMenu + index * fe::menu::kSize;
     guest.setDword(kCurrentMenu, to);
-    guest.call(kEnterScreen, fe::args({ to }));
+    enterScreen(guest, cpu, to);
     return 5;
 }
+
+}  // namespace
 
 /* sub_44bac0: a pass of the pause menu: what the pointer is on, the key, the
  * answer it gives (6, 10, 11, 12 close the screen, 9 reopens it, 5 follows the
  * selected button to its next screen, 3 and 1 go back, the first screen
  * closing).  The screen open then has its pass; otherwise the answer says what
  * the race is to do: 3, 4, 5 by the answer, 1 and 2 by the selected item. */
-reg32 racePauseMenuFrame(Guest& guest)
+x86::reg32 frontend::menua::racePauseMenuFrame(App* app, CPU& cpu)
 {
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 24 + 0xc);
     bool screenStaysOpen = true;
     reg32 answer = guest.dword(kPauseNextAnswer);
     if (answer != 0)
         guest.setDword(kPauseNextAnswer, 0);
     else
-        answer = racePauseMenuInput(guest);
+        answer = racePauseMenuInput(guest, cpu);
     if (answer != 0)
     {
         guest.setDword(kLastAnswer, answer);
         switch (answer)
         {
         case 5:
-            answer = racePauseFollowButton(guest);
+            answer = racePauseFollowButton(guest, cpu);
             break;
         case 6:
         case 10:
         case 11:
         case 12:
-            guest.call(kLeaveScreen, fe::args({ guest.dword(kCurrentMenu), answer }));
+            leaveScreen(guest, cpu, guest.dword(kCurrentMenu), answer);
             screenStaysOpen = false;
             break;
         case 9:
-            guest.call(kLeaveScreen, fe::args({ guest.dword(kCurrentMenu), answer }));
-            guest.call(kEnterScreen, fe::args({ guest.dword(kCurrentMenu) }));
+            leaveScreen(guest, cpu, guest.dword(kCurrentMenu), answer);
+            enterScreen(guest, cpu, guest.dword(kCurrentMenu));
             break;
         default:
             break;
@@ -2305,9 +2707,9 @@ reg32 racePauseMenuFrame(Guest& guest)
             }
             else
             {
-                guest.call(kLeaveScreen, fe::args({ menu, answer }));
-                guest.call(0x44aec0);
-                guest.call(kEnterScreen, fe::args({ guest.dword(kCurrentMenu) }));
+                const reg32 left = leaveScreen(guest, cpu, menu, answer);
+                fe::direct<0x44aec0, port::loop::popMenuOf>(app, cpu, left);  // eax as the call before left it
+                enterScreen(guest, cpu, guest.dword(kCurrentMenu));
             }
         }
     }
@@ -2328,12 +2730,21 @@ reg32 racePauseMenuFrame(Guest& guest)
     const reg32 selected = selectedItemOf(guest, guest.dword(kCurrentMenu));
     if (selected == 0 || guest.dword(selected + fe::item::kCodelink) == 0)
         return 0;
-    if (guest.call(0x4429c0, fe::args({ guest.dword(selected + fe::item::kCodelink), kContinueItem.address })) != 0)
+    // ebx as it is, handed on.
+    const auto names = [&](const GuestString& name) {
+        return *fe::direct<0x4429c0, port::menus::codelinkMatched>(app, cpu, cpu.esp - 4,
+                                                                   guest.dword(selected + fe::item::kCodelink),
+                                                                   name.address, cpu.ebx) != 0;
+    };
+    if (names(kContinueItem))
         return 1;
-    if (guest.call(0x4429c0, fe::args({ guest.dword(selected + fe::item::kCodelink), kRestartItem.address })) != 0)
+    if (names(kRestartItem))
         return 2;
     return 0;
 }
+
+namespace
+{
 
 const GuestString kBindingStrings[] = { kFormatDevice, kFormatCharacter, kDegrees, kFormatHat };
 const GuestString kListStrings[] = { kFormatPlayer1, kFormatPlayer2 };
@@ -2365,9 +2776,11 @@ static constexpr GuestString kModeFormat{ 0x538d48, "%d x %d x %d" };
 static constexpr GuestString kModeHasDepthBuffer{ 0x538d58, " (z)" };
 static const GuestString kModeStrings[] = { kModeFormat, kModeHasDepthBuffer };
 
-static reg32 addScreenMode(win32::WinApplication* app, Guest& guest, reg32 width, reg32 height, reg32 bits, reg32 depth,
-                    reg32 depthBuffer)
+x86::reg32 frontend::menua::addScreenMode(App* app, CPU& cpu, reg32 width, reg32 height, reg32 bits, reg32 depth,
+                                          reg32 depthBuffer)
 {
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 12);
     constexpr reg32 kModeCount = 0x559218, kModes = 0x661220, kModeSize = 0x114;
     constexpr reg32 kModeLineIds = 0x5591ec, kFirstLineId = 0x7a8;
     constexpr std::int32_t kMostModes = 20;
@@ -2407,442 +2820,437 @@ static reg32 addScreenMode(win32::WinApplication* app, Guest& guest, reg32 width
 
 void frontend::controlsPollJoystickBinding(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_43be40", 0, 24 + 0x98, nullptr, 0 };
-    fe::runWhole(app, cpu, site, [](Guest& guest) { return pollJoystickBinding(guest); });
+    static fe::Site site{ "sub_43be40", 0, 0, nullptr, 0 };
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menua::pollJoystickBinding(app, cpu); });
 }
 
 void frontend::screenModeListAdd(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_448210", 4, 12, kModeStrings, std::size(kModeStrings), kEsiEdi };
+    static fe::Site site{ "sub_448210", 4, 0, kModeStrings, std::size(kModeStrings), kEsiEdi };
     const reg32 width = cpu.eax, height = cpu.edx, bits = cpu.ebx, depth = cpu.ecx;
     const reg32 depthBuffer = app->getMemory<reg32>(cpu.esp + 4);
-    fe::runWhole(app, cpu, site, [&](Guest& guest) { return addScreenMode(app, guest, width, height, bits, depth, depthBuffer); });
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menua::addScreenMode(app, cpu, width, height, bits, depth, depthBuffer); });
 }
 
 void frontend::controlsDrawBinding(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_43c110", 4, 12 + 0x64, kBindingStrings, std::size(kBindingStrings), kEsiEdi };
-    const reg32 binding = cpu.edx, x = cpu.ebx, y = cpu.ecx;
+    static fe::Site site{ "sub_43c110", 4, 0, kBindingStrings, std::size(kBindingStrings), kEsiEdi };
+    const reg32 label = cpu.eax, binding = cpu.edx, x = cpu.ebx, y = cpu.ecx;
     const reg32 chosen = app->getMemory<reg32>(cpu.esp + 4);
-    fe::runWhole(app, cpu, site, [&](Guest& guest) { return drawBinding(guest, binding, x, y, chosen); });
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menua::drawBinding(app, cpu, label, binding, x, y, chosen); });
 }
 
 void frontend::controlsDrawList(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_43c900", 0, 20 + 0x4c, kListStrings, std::size(kListStrings), kEbxEcx | kEsiEdi };
+    static fe::Site site{ "sub_43c900", 0, 0, kListStrings, std::size(kListStrings), kEbxEcx | kEsiEdi };
     const reg32 item = cpu.eax, wanted = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest& guest) {
-        if (shownNow(guest, item, kListWidget) != 0)
-            drawControlsList(guest, item, wanted);
-        guest.leaveEdx(0);
-        return reg32(0);
-    });
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menua::controlsList(app, cpu, item, wanted); });
 }
 
 void frontend::controlsKeyAsBinding(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_43cda0", 0, 16, nullptr, 0, kEbxEcxEdx };
+    static fe::Site site{ "sub_43cda0", 0, 0, nullptr, 0, kEbxEcxEdx };
     const reg32 character = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest& guest) { return keyAsBinding(guest, character); });
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menua::keyAsBinding(app, cpu, character); });
 }
 
 void frontend::controlsWarnDigitalBinding(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_43ce80", 0, 12, nullptr, 0, kEbxEcx };
+    static fe::Site site{ "sub_43ce80", 0, 0, nullptr, 0, kEbxEcx };
     const reg32 slot = cpu.eax, binding = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest& guest) { return warnDigitalBinding(guest, slot, binding); });
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menua::warnDigitalBinding(app, cpu, slot, binding); });
 }
 
 void frontend::controlsListKey(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_43cf80", 0, 16 + 0xc, nullptr, 0, fe::kRestoreEcx | kEsiEdi };
-    const reg32 item = cpu.eax;
+    static fe::Site site{ "sub_43cf80", 0, 0, nullptr, 0, fe::kRestoreEcx | kEsiEdi };
+    const reg32 item = cpu.eax, menu = cpu.edx;
     const std::uint16_t key = std::uint16_t(cpu.ebx);
-    fe::runWhole(app, cpu, site, [&](Guest& guest) { return listKey(guest, item, key); });
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menua::listKey(app, cpu, item, menu, key); });
 }
 
 void frontend::controlsListFitBox(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_43d2b0", 0, 12, nullptr, 0, kEcxEdx };
+    static fe::Site site{ "sub_43d2b0", 0, 0, nullptr, 0, kEcxEdx };
     const reg32 item = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest& guest) { return listFitBox(guest, item); });
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menua::listFitBox(app, cpu, item); });
 }
 
 void frontend::controlsListPrepare(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_43d310", 0, 24, kPrepareStrings, std::size(kPrepareStrings) };
+    static fe::Site site{ "sub_43d310", 0, 0, kPrepareStrings, std::size(kPrepareStrings) };
     const reg32 item = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest& guest) { return listPrepare(guest, item); });
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menua::listPrepare(app, cpu, item); });
 }
 
 void frontend::controlsWaitJoystickRelease(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_43d650", 0, 16 + 0x84, nullptr, 0, kEbxEcxEdx };
-    fe::runWhole(app, cpu, site, [](Guest& guest) { return waitJoystickRelease(guest); });
+    static fe::Site site{ "sub_43d650", 0, 0, nullptr, 0, kEbxEcxEdx };
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menua::waitJoystickRelease(app, cpu); });
 }
 
 void frontend::controlsClearConflicts(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_43d6a0", 0, 24 + 0x14, nullptr, 0 };
+    static fe::Site site{ "sub_43d6a0", 0, 0, nullptr, 0 };
     const reg32 binding = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest& guest) { return clearConflictingBindings(guest, binding); });
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menua::clearConflictingBindings(app, cpu, binding); });
 }
 
 void frontend::controlsBindingKeyName(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_43d7f0", 0, 12, kKeyNameStrings, std::size(kKeyNameStrings), kEsiEdi };
+    static fe::Site site{ "sub_43d7f0", 0, 0, kKeyNameStrings, std::size(kKeyNameStrings), kEsiEdi };
     const reg32 binding = cpu.eax, buffer = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest& guest) { return bindingKeyName(guest, binding, buffer); });
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menua::bindingKeyName(app, cpu, binding, buffer); });
 }
 
 void frontend::controlsSampleAxes(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_43d920", 0, 20 + 0x84, nullptr, 0, kEbxEcxEdx | fe::kRestoreEsi };
-    fe::runWhole(app, cpu, site, [](Guest& guest) { return sampleAxesAtRest(guest); });
+    static fe::Site site{ "sub_43d920", 0, 0, nullptr, 0, kEbxEcxEdx | fe::kRestoreEsi };
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menua::sampleAxesAtRest(app, cpu); });
 }
 
 void frontend::colourMakeHueRamp(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_43db20", 0, 24 + 0x14, nullptr, 0 };
-    fe::runWhole(app, cpu, site, [](Guest& guest) { return makeHueRamp(guest); });
+    static fe::Site site{ "sub_43db20", 0, 0, nullptr, 0 };
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menua::makeHueRamp(app, cpu); });
 }
 
 void frontend::colourApplyToCar(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_43dc90", 0, 24 + 0x20, kApplyStrings, std::size(kApplyStrings) };
+    static fe::Site site{ "sub_43dc90", 0, 0, kApplyStrings, std::size(kApplyStrings) };
     const reg32 item = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest& guest) { return applyColourToCar(guest, item); });
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menua::applyColourToCar(app, cpu, item); });
 }
 
 void frontend::colourAccept(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_43dd90", 0, 12, nullptr, 0, kEcxEdx };
+    static fe::Site site{ "sub_43dd90", 0, 0, nullptr, 0, kEcxEdx };
     const reg32 item = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest& guest) { return acceptColour(guest, item); });
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menua::acceptColour(app, cpu, item); });
 }
 
 void frontend::colourRevert(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_43ddd0", 0, 12, nullptr, 0, kEcxEdx };
+    static fe::Site site{ "sub_43ddd0", 0, 0, nullptr, 0, kEcxEdx };
     const reg32 item = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest& guest) { return revertColour(guest, item); });
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menua::revertColour(app, cpu, item); });
 }
 
 void frontend::colourHsvToArgb(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_43de20", 0, 8 + 0x10, nullptr, 0, fe::kRestoreEcx };
+    static fe::Site site{ "sub_43de20", 0, 0, nullptr, 0, fe::kRestoreEcx };
     const reg32 hsv = cpu.eax, out = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest& guest) { return hsvToArgb(guest, hsv, out); });
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menua::hsvToArgb(app, cpu, hsv, out); });
 }
 
 void frontend::colourTriangleFromColour(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_43de60", 8, 12 + 8, nullptr, 0, kEsiEdi };
+    static fe::Site site{ "sub_43de60", 8, 0, nullptr, 0, kEsiEdi };
     const s32 width = s32(cpu.eax), height = s32(cpu.edx), across = s32(cpu.ebx), down = s32(cpu.ecx);
     const reg32 outX = app->getMemory<reg32>(cpu.esp + 4), outY = app->getMemory<reg32>(cpu.esp + 8);
-    fe::runWhole(app, cpu, site, [&](Guest& guest) { return triangleFromColour(guest, width, height, across, down, outX, outY); });
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menua::triangleFromColour(app, cpu, width, height, across, down, outX, outY); });
 }
 
 void frontend::colourFromTriangle(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_43def0", 8, 12 + 4, nullptr, 0, kEsiEdi };
+    static fe::Site site{ "sub_43def0", 8, 0, nullptr, 0, kEsiEdi };
     const s32 width = s32(cpu.eax), height = s32(cpu.edx);
     const reg32 outAcross = cpu.ebx, outDown = cpu.ecx;
     const s32 x = s32(app->getMemory<reg32>(cpu.esp + 4)), y = s32(app->getMemory<reg32>(cpu.esp + 8));
-    fe::runWhole(app, cpu, site, [&](Guest& guest) { return colourAtPlace(guest, width, height, outAcross, outDown, x, y); });
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menua::colourAtPlace(app, cpu, width, height, outAcross, outDown, x, y); });
 }
 
 void frontend::colourDrawFrame(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_43dfb0", 0, 24, nullptr, 0 };
+    static fe::Site site{ "sub_43dfb0", 0, 0, nullptr, 0 };
     const reg32 item = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest& guest) { return drawPickerFrame(guest, item); });
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menua::drawPickerFrame(app, cpu, item); });
 }
 
 void frontend::colourDrawSwatch(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_43e040", 0, 24 + 8, nullptr, 0 };
+    static fe::Site site{ "sub_43e040", 0, 0, nullptr, 0 };
     const reg32 item = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest& guest) { return drawColourSwatch(guest, item); });
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menua::drawColourSwatch(app, cpu, item); });
 }
 
 void frontend::colourDrawButtons(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_43e0d0", 0, 20, nullptr, 0, kEbxEcxEdx | fe::kRestoreEsi };
+    static fe::Site site{ "sub_43e0d0", 0, 0, nullptr, 0, kEbxEcxEdx | fe::kRestoreEsi };
     const reg32 item = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest& guest) { return drawPickerButtons(guest, item); });
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menua::drawPickerButtons(app, cpu, item); });
 }
 
 void frontend::colourDrawMarkers(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_43e1f0", 0, 24 + 0xc, nullptr, 0 };
+    static fe::Site site{ "sub_43e1f0", 0, 0, nullptr, 0 };
     const reg32 item = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest& guest) { return drawColourMarkers(guest, item); });
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menua::drawColourMarkers(app, cpu, item); });
 }
 
 void frontend::colourDrawTriangle(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_43e310", 0, 24 + 0x28, nullptr, 0 };
+    static fe::Site site{ "sub_43e310", 0, 0, nullptr, 0 };
     const reg32 item = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest& guest) { return drawColourTriangle(guest, item); });
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menua::drawColourTriangle(app, cpu, item); });
 }
 
 void frontend::colourDrawValueBar(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_43e490", 0, 24 + 0x90, nullptr, 0 };
+    static fe::Site site{ "sub_43e490", 0, 0, nullptr, 0 };
     const reg32 item = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest& guest) { return drawValueBar(guest, item); });
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menua::drawValueBar(app, cpu, item); });
 }
 
 void frontend::colourDragMoved(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_43e7a0", 0, 24 + 0x10, nullptr, 0 };
+    static fe::Site site{ "sub_43e7a0", 0, 0, nullptr, 0 };
     const reg32 item = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest& guest) { return pickerDragMoved(guest, item); });
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menua::pickerDragMoved(app, cpu, item); });
 }
 
 void frontend::colourHitRegion(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_43e8e0", 0, 24 + 0x14, nullptr, 0 };
+    static fe::Site site{ "sub_43e8e0", 0, 0, nullptr, 0 };
     const reg32 item = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest& guest) { return pickerHitRegion(guest, item); });
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menua::pickerHitRegion(app, cpu, item); });
 }
 
 void frontend::colourMouse(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_43ead0", 0, 16, nullptr, 0, kEbxEcxEdx };
+    static fe::Site site{ "sub_43ead0", 0, 0, nullptr, 0, kEbxEcxEdx };
     const reg32 item = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest& guest) { return pickerMouse(guest, item); });
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menua::pickerMouse(app, cpu, item); });
 }
 
 void frontend::colourDraw(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_43ebc0", 0, 12, nullptr, 0, kEbxEcx };
+    static fe::Site site{ "sub_43ebc0", 0, 0, nullptr, 0, kEbxEcx };
     const reg32 item = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest& guest) { return drawColourPicker(guest, item); });
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menua::drawColourPicker(app, cpu, item); });
 }
 
 void frontend::colourKey(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_43ec40", 0, 16, nullptr, 0, fe::kRestoreEcx | kEsiEdi };
-    const reg32 item = cpu.eax;
+    static fe::Site site{ "sub_43ec40", 0, 0, nullptr, 0, fe::kRestoreEcx | kEsiEdi };
+    const reg32 item = cpu.eax, menu = cpu.edx;
     const std::uint16_t key = std::uint16_t(cpu.ebx);
-    fe::runWhole(app, cpu, site, [&](Guest& guest) { return pickerKey(guest, item, key); });
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menua::pickerKey(app, cpu, item, menu, key); });
 }
 
 void frontend::colourPointerKind(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_43ef80", 0, 16, nullptr, 0, kEcxEdx | fe::kRestoreEsi };
+    static fe::Site site{ "sub_43ef80", 0, 0, nullptr, 0, kEcxEdx | fe::kRestoreEsi };
     const reg32 item = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest& guest) { return pickerPointerKind(guest, item); });
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menua::pickerPointerKind(app, cpu, item); });
 }
 
 void frontend::colourFitBox(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_43eff0", 0, 12, nullptr, 0, kEcxEdx };
+    static fe::Site site{ "sub_43eff0", 0, 0, nullptr, 0, kEcxEdx };
     const reg32 item = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest& guest) { return pickerFitBox(guest, item); });
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menua::pickerFitBox(app, cpu, item); });
 }
 
 void frontend::colourPrepare(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_43f030", 0, 16, kPickerStrings, std::size(kPickerStrings), kEbxEcxEdx };
+    static fe::Site site{ "sub_43f030", 0, 0, kPickerStrings, std::size(kPickerStrings), kEbxEcxEdx };
     const reg32 item = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest& guest) { return pickerPrepare(guest, item); });
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menua::pickerPrepare(app, cpu, item); });
 }
 
 void frontend::colourShown(win32::WinApplication* app, x86::CPU& cpu)
 {
     // sub_43f160: whether the picker is shown now.
-    static fe::Site site{ "sub_43f160", 0, 8, nullptr, 0, fe::kRestoreEdx };
+    static fe::Site site{ "sub_43f160", 0, 0, nullptr, 0, fe::kRestoreEdx };
     const reg32 item = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest& guest) { return shownNow(guest, item, picker::kWidget); });
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menua::pickerShown(app, cpu, item); });
 }
 
 void frontend::lobbyDrawPlayerIcon(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_440b30", 0, 12, nullptr, 0, kEbxEcx };
+    static fe::Site site{ "sub_440b30", 0, 0, nullptr, 0, kEbxEcx };
     const reg32 x = cpu.eax, y = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest& guest) { return drawPlayerIcon(guest, x, y); });
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menua::drawPlayerIcon(app, cpu, x, y); });
 }
 
 void frontend::lobbyDrawPulsingIcon(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_440b50", 0, 12 + 0xc, nullptr, 0, kEsiEdi };
+    static fe::Site site{ "sub_440b50", 0, 0, nullptr, 0, kEsiEdi };
     const reg32 chosen = cpu.eax, index = cpu.edx, x = cpu.ebx, y = cpu.ecx;
-    fe::runWhole(app, cpu, site, [&](Guest& guest) { return drawPulsingIcon(guest, chosen, index, x, y); });
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menua::drawPulsingIcon(app, cpu, chosen, index, x, y); });
 }
 
 void frontend::lobbyPointAtPanel(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_440d60", 0, 8, nullptr, 0, fe::kRestoreEdx };
-    fe::runWhole(app, cpu, site, [](Guest& guest) { return pointAtPanel(guest); });
+    static fe::Site site{ "sub_440d60", 0, 0, nullptr, 0, fe::kRestoreEdx };
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menua::pointAtPanel(app, cpu); });
 }
 
 void frontend::lobbyDrawRacePanel(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_440d80", 0, 24 + 0x2c, nullptr, 0 };
-    fe::runWhole(app, cpu, site, [](Guest& guest) { return drawRacePanel(guest); });
+    static fe::Site site{ "sub_440d80", 0, 0, nullptr, 0 };
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menua::drawRacePanel(app, cpu); });
 }
 
 void frontend::lobbyPanelFrame(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_441040", 0, 24 + 0x24, nullptr, 0 };
-    fe::runWhole(app, cpu, site, [](Guest& guest) { return panelFrame(guest); });
+    static fe::Site site{ "sub_441040", 0, 0, nullptr, 0 };
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menua::panelFrame(app, cpu); });
 }
 
 void frontend::lobbyPanelBusy(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_441680", 0, 16, nullptr, 0, kEbxEcxEdx };
-    fe::runWhole(app, cpu, site, [](Guest& guest) { return panelBusy(guest); });
+    static fe::Site site{ "sub_441680", 0, 0, nullptr, 0, kEbxEcxEdx };
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menua::panelBusy(app, cpu); });
 }
 
 void frontend::lobbyPanelKey(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_441700", 0, 20, nullptr, 0, kEbxEcxEdx | fe::kRestoreEsi };
+    static fe::Site site{ "sub_441700", 0, 0, nullptr, 0, kEbxEcxEdx | fe::kRestoreEsi };
     const std::uint16_t key = std::uint16_t(cpu.eax);
-    fe::runWhole(app, cpu, site, [&](Guest& guest) { return panelKey(guest, key); });
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menua::panelKey(app, cpu, key); });
 }
 
 void frontend::lobbyPanelLineWidth(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_4418e0", 0, 8, nullptr, 0, fe::kRestoreEdx };
-    fe::runWhole(app, cpu, site, [](Guest& guest) { return panelLineWidth(guest); });
+    static fe::Site site{ "sub_4418e0", 0, 0, nullptr, 0, fe::kRestoreEdx };
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menua::panelLineWidth(app, cpu); });
 }
 
 void frontend::lobbyPanelLineFits(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_441900", 0, 16, nullptr, 0, kEbxEcxEdx };
+    static fe::Site site{ "sub_441900", 0, 0, nullptr, 0, kEbxEcxEdx };
     const reg32 text = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest& guest) { return panelLineFits(guest, text); });
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menua::panelLineFits(app, cpu, text); });
 }
 
 void frontend::lobbyDrawMessages(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_441950", 0, 20 + 0x7c, kMessagesStrings, std::size(kMessagesStrings), kEbxEcx | kEsiEdi };
+    static fe::Site site{ "sub_441950", 0, 0, kMessagesStrings, std::size(kMessagesStrings), kEbxEcx | kEsiEdi };
     const reg32 x = cpu.eax, y = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest& guest) { return drawPanelMessages(guest, x, y); });
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menua::drawPanelMessages(app, cpu, x, y); });
 }
 
 void frontend::lobbyTypeInPanel(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_441b20", 0, 24 + 0x64, kTypeStrings, std::size(kTypeStrings) };
-    const std::uint16_t key = std::uint16_t(cpu.eax);
-    fe::runWhole(app, cpu, site, [&](Guest& guest) { return typeInPanel(guest, key); });
+    static fe::Site site{ "sub_441b20", 0, 0, kTypeStrings, std::size(kTypeStrings) };
+    const reg32 pressed = cpu.eax;
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menua::typeInPanel(app, cpu, pressed); });
 }
 
 void frontend::typedCharacterInRange(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_4434f0", 0, 4, nullptr, 0, kNoRestore };
+    static fe::Site site{ "sub_4434f0", 0, 0, nullptr, 0, kNoRestore };
     const reg32 character = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return characterInRange(character); });
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menua::characterInRange(app, cpu, character); });
 }
 
 void frontend::typedByteInRange(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_443510", 0, 4, nullptr, 0, kNoRestore };
+    static fe::Site site{ "sub_443510", 0, 0, nullptr, 0, kNoRestore };
     const reg32 character = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest& guest) { return byteInRange(guest, character); });
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menua::byteInRange(app, cpu, character); });
 }
 
 void frontend::typedTextInRange(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_443520", 0, 12, nullptr, 0, kEbxEdx };
+    static fe::Site site{ "sub_443520", 0, 0, nullptr, 0, kEbxEdx };
     const reg32 text = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest& guest) { return wholeTextPasses(guest, text, 0x443510); });
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menua::textInRange(app, cpu, text); });
 }
 
 void frontend::typedCharacterOfAddress(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_4435c0", 0, 8, nullptr, 0, fe::kRestoreEdx };
+    static fe::Site site{ "sub_4435c0", 0, 0, nullptr, 0, fe::kRestoreEdx };
     const reg32 character = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return characterOfAddress(character); });
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menua::characterOfAddress(app, cpu, character); });
 }
 
 void frontend::typedTextOfAddress(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_4435e0", 0, 12, nullptr, 0, kEbxEdx };
+    static fe::Site site{ "sub_4435e0", 0, 0, nullptr, 0, kEbxEdx };
     const reg32 text = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest& guest) { return wholeTextPasses(guest, text, 0x4435c0); });
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menua::textOfAddress(app, cpu, text); });
 }
 
 void frontend::typedByteInRangeAgain(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_443620", 0, 4, nullptr, 0, kNoRestore };
+    static fe::Site site{ "sub_443620", 0, 0, nullptr, 0, kNoRestore };
     const reg32 character = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest& guest) { return byteInRange(guest, character); });
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menua::byteInRangeAgain(app, cpu, character); });
 }
 
 void frontend::typedLanguageTestFirst(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_4436c0", 0, 12, nullptr, 0, kEcxEdx };
+    static fe::Site site{ "sub_4436c0", 0, 0, nullptr, 0, kEcxEdx };
     const reg32 character = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest& guest) { return languageCharacterTest(guest, character, 0x558c7c); });
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menua::languageTestFirst(app, cpu, character); });
 }
 
 void frontend::typedLanguageTestSecond(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_443740", 0, 12, nullptr, 0, kEcxEdx };
+    static fe::Site site{ "sub_443740", 0, 0, nullptr, 0, kEcxEdx };
     const reg32 character = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest& guest) { return languageCharacterTest(guest, character, 0x558c84); });
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menua::languageTestSecond(app, cpu, character); });
 }
 
 void frontend::typedLanguageTestThird(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_4437c0", 0, 12, nullptr, 0, kEcxEdx };
+    static fe::Site site{ "sub_4437c0", 0, 0, nullptr, 0, kEcxEdx };
     const reg32 character = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest& guest) { return languageCharacterTest(guest, character, 0x558c8c); });
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menua::languageTestThird(app, cpu, character); });
 }
 
 void frontend::typedCharacterAllowed(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_443810", 0, 4, nullptr, 0, kNoRestore };
+    static fe::Site site{ "sub_443810", 0, 0, nullptr, 0, kNoRestore };
     const reg32 character = cpu.eax, kind = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest& guest) { return characterAllowed(guest, character, kind); });
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menua::characterAllowed(app, cpu, character, kind); });
 }
 
 void frontend::modesList(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_4482c0", 0, 8, nullptr, 0, fe::kRestoreEdx };
-    fe::runWhole(app, cpu, site, [](Guest& guest) { return listModes(guest); });
+    static fe::Site site{ "sub_4482c0", 0, 0, nullptr, 0, fe::kRestoreEdx };
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menua::listModes(app, cpu); });
 }
 
 void frontend::modesChosenWidth(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_4482f0", 0, 12, nullptr, 0, kEcxEdx };
-    fe::runWhole(app, cpu, site, [](Guest& guest) { return chosenModeWidth(guest); });
+    static fe::Site site{ "sub_4482f0", 0, 0, nullptr, 0, kEcxEdx };
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menua::chosenModeWidth(app, cpu); });
 }
 
 void frontend::modesCopyChosen(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_448330", 0, 20 + 0x114, nullptr, 0, kEbxEcxEdx | fe::kRestoreEdi };
+    static fe::Site site{ "sub_448330", 0, 0, nullptr, 0, kEbxEcxEdx | fe::kRestoreEdi };
     const reg32 out = cpu.esi;
-    fe::runWhole(app, cpu, site, [&](Guest& guest) { return copyChosenMode(guest, out); });
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menua::copyChosenMode(app, cpu, out); });
 }
 
 void frontend::modesChooseByWidth(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_4483a0", 0, 16, nullptr, 0, kEbxEdx | fe::kRestoreEdi };
+    static fe::Site site{ "sub_4483a0", 0, 0, nullptr, 0, kEbxEdx | fe::kRestoreEdi };
     const reg32 width = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest& guest) { return chooseModeOfWidth(guest, width); });
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menua::chooseModeOfWidth(app, cpu, width); });
 }
 
 void frontend::racePauseBegin(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_44b950", 0, 24, kBeginStrings, std::size(kBeginStrings) };
-    fe::runWhole(app, cpu, site, [](Guest& guest) { return racePauseMenuBegin(guest); });
+    static fe::Site site{ "sub_44b950", 0, 0, kBeginStrings, std::size(kBeginStrings) };
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menua::racePauseMenuBegin(app, cpu); });
 }
 
 void frontend::racePauseAgain(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_44ba30", 0, 24, nullptr, 0 };
-    fe::runWhole(app, cpu, site, [](Guest& guest) { return racePauseMenuAgain(guest); });
+    static fe::Site site{ "sub_44ba30", 0, 0, nullptr, 0 };
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menua::racePauseMenuAgain(app, cpu); });
 }
 
 void frontend::racePauseFrame(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_44bac0", 0, 24 + 0xc, kFrameStrings, std::size(kFrameStrings) };
-    fe::runWhole(app, cpu, site, [](Guest& guest) { return racePauseMenuFrame(guest); });
+    static fe::Site site{ "sub_44bac0", 0, 0, kFrameStrings, std::size(kFrameStrings) };
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menua::racePauseMenuFrame(app, cpu); });
 }
 
 }

@@ -1,8 +1,27 @@
+#include "native_frontend_menud.h"
 #include "native_frontend.h"
+#include "native_frontend_menua.h"
+#include "native_frontend_menue.h"
+#include "native_frontend_menuf.h"
+#include "native_ea_memory.h"
+#include "native_ea_support.h"
+#include "native_frontend_draw.h"
+#include "native_frontend_eaa.h"
+#include "native_frontend_eab.h"
+#include "native_frontend_loop.h"
+#include "native_frontend_menub.h"
+#include "native_graphics.h"
+#include "native_windows.h"
+#include "port_buttons.h"
+#include "port_draw2d.h"
+#include "port_shapes.h"
+#include "port_text.h"
 #include <nfs3hp.h>
+#include <winapi/kernel32.h>
 #include <cstdint>
 #include <cstring>
 #include <iterator>
+#include <optional>
 
 /* What the menus lean on, past their screens' handlers, decompiled:
  *
@@ -15,7 +34,13 @@
  *   a pause's end   the menu's state put away as a race goes on.
  *
  * The rest of the address range around them is the movie player's, the network
- * protocol's, the window library's and the race's. */
+ * protocol's, the window library's and the race's.
+ *
+ * Plan step 5: each function a typed core in frontend::menud (native_frontend_menud.h), in a
+ * frame of its own where the game's function has one (fe::Frame: what it calls runs at the stack
+ * addresses it did), and an adapter under the game's name for the calls by address.  A core of
+ * the menu files, the port's or a typed library's is called as C++ (guest::direct, fe::direct);
+ * the rest of the game by address, and so is a call whose registers the code goes on with. */
 namespace nfs3hp
 {
 
@@ -29,9 +54,7 @@ using x86::reg32;
 
 // The game's, shared.
 constexpr reg32 kSprintf = 0x4df690;
-constexpr reg32 kFree = 0x4e1890;
 constexpr reg32 kStrcmp = 0x4ee310;
-constexpr reg32 kMenuCurrentName = 0x44ae00;
 constexpr reg32 kArtFolder = 0x7a2db4;
 
 std::int32_t int16At(const Guest& guest, reg32 address)
@@ -49,45 +72,51 @@ constexpr reg32 kPointerX = 0x55e5e4;
 constexpr reg32 kPointerY = 0x55e5e8;
 constexpr reg32 kPointerHotX = 0x563d3c;
 constexpr reg32 kPointerHotY = 0x563d40;
-constexpr reg32 kLoadFile = 0x4e0ec0;
-constexpr reg32 kPointerTextures = 0x4daa10;      // the shapes of the file at eax made textures
 constexpr std::uint32_t kLoadHigh = 0x10;
 constexpr GuestString kPointerStrings[] = { { 0x53c5e4, "%smouse.fsh" } };
 
+}  // namespace
+
 /* sub_49c140, as the menus start: mouse.fsh made the pointer's textures, loaded
  * unless it already is, then the file let go. */
-reg32 loadPointerArt(Guest& guest)
+x86::reg32 frontend::menud::loadPointerArt(App* app, CPU& cpu)
 {
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 12);
     if (guest.dword(kPointerArt) == 0)
     {
         guest.call(kSprintf, args({}, { kPointerPath, kPointerStrings[0].address, kArtFolder }));
-        guest.setDword(kPointerArt, guest.call(kLoadFile, args({ kPointerPath, kLoadHigh })));
+        guest.setDword(kPointerArt, *fe::direct<0x4e0ec0, ea::loadWhole>(app, cpu, kPointerPath, kLoadHigh));
     }
-    guest.call(kPointerTextures, args({ guest.dword(kPointerArt) }));
-    guest.call(kFree, args({ guest.dword(kPointerArt) }));
+    guest::direct<0x4daa10, menue::loadPointer>(app, cpu, guest.dword(kPointerArt));
+    const reg32 freed = *fe::direct<0x4e1890, ea::purgeBlock>(app, cpu, guest.dword(kPointerArt));
     guest.setDword(kPointerArt, 0);
     guest.setDword(kPointerHotX, 0);
     guest.setDword(kPointerHotY, 0);
-    return guest.eax();
+    return freed;
 }
 
 /* sub_49c2a0, as the menus end: the file let go, if it is still loaded. */
-reg32 freePointerArt(Guest& guest)
+x86::reg32 frontend::menud::freePointerArt(App* app, CPU& cpu)
 {
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 12);
     const reg32 art = guest.dword(kPointerArt);
+    reg32 result = guest.eax();
     if (art != 0)
     {
-        guest.call(kFree, args({ art }));
+        result = *fe::direct<0x4e1890, ea::purgeBlock>(app, cpu, art);
         guest.setDword(kPointerArt, 0);
     }
-    return guest.eax();
+    return result;
 }
 
 /* sub_49c1c0: the line of a list under the pointer, the list's top at eax, lines
  * of edx each; -1 when it stands above the top.  edx left as the division leaves
  * it, the pointer's y with no division. */
-reg32 pointerListLine(Guest& guest, std::int32_t top, std::int32_t lineHeight)
+x86::reg32 frontend::menud::pointerListLine(App* app, CPU& cpu, std::int32_t top, std::int32_t lineHeight)
 {
+    Guest guest(app, cpu);
     const std::int32_t pointerY = std::int32_t(guest.dword(kPointerY));
     if (top > pointerY)
     {
@@ -101,8 +130,9 @@ reg32 pointerListLine(Guest& guest, std::int32_t top, std::int32_t lineHeight)
 
 /* sub_49c240: whether the pointer is inside the rectangle at eax, edx, ebx wide
  * and ecx high, none of its edges counted.  edx left at what it last looked at. */
-reg32 pointerOverRect(Guest& guest, reg32 x, reg32 y, reg32 width, reg32 height)
+x86::reg32 frontend::menud::pointerOverRect(App* app, CPU& cpu, reg32 x, reg32 y, reg32 width, reg32 height)
 {
+    Guest guest(app, cpu);
     const std::int32_t pointerY = std::int32_t(guest.dword(kPointerY));
     guest.leaveEdx(y);
     if (std::int32_t(y) >= pointerY)
@@ -118,12 +148,12 @@ reg32 pointerOverRect(Guest& guest, reg32 x, reg32 y, reg32 width, reg32 height)
     return std::int32_t(x + width) > pointerX ? 1 : 0;
 }
 
+namespace
+{
+
 /* ---------------------------------------------------------------------------
  * The effects
  * ------------------------------------------------------------------------- */
-
-constexpr reg32 kDrawColouredRectangle = 0x4d88f0;  // left, top, right, bottom; the corners' colours
-constexpr reg32 kScaleColour = 0x4d9180;            // colour eax scaled by edx/256, its alpha kept
 
 /* The band of moving lines behind a list (sub_4a47c0). */
 constexpr reg32 kBandClosing = 0x55eb10;            // nonzero: the band shrinks
@@ -153,14 +183,22 @@ constexpr reg32 kTopUpperRight = 0x55ea30, kTopLowerRight = 0x55ea32;
 constexpr std::int32_t kTopLightStart = 0xc8;
 constexpr reg32 kTopFade = 0x20;
 
-void drawLine(Guest& guest, std::int32_t left, std::int32_t top, std::int32_t right, reg32 endColour, reg32 midColour)
+/* A line of the band, two pixels high: its ends `endColour`, its middle `midColour`; the drawing's eax. */
+reg32 drawLine(Guest& guest, x86::CPU& cpu, std::int32_t left, std::int32_t top, std::int32_t right, reg32 endColour,
+               reg32 midColour)
 {
-    guest.call(kDrawColouredRectangle, args({ reg32(left), reg32(top), reg32(right), reg32(top + 2) },
-                                            { endColour, midColour, midColour, endColour }));
+    const reg32 colours[4] = { endColour, midColour, midColour, endColour };
+    return reg32(*fe::direct<0x4d88f0, port::buttons::colouredRectangle>(
+        guest.app(), cpu, cpu.esp - 4 - 4 * 4, port::Args{ reg32(left), reg32(top), reg32(right), reg32(top + 2) },
+        colours));
 }
 
-reg32 drawBand(Guest& guest)
+}  // namespace
+
+x86::reg32 frontend::menud::drawBand(App* app, CPU& cpu)
 {
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 24 + 0x14);
     // The band grows or shrinks to where it is going.
     const std::int32_t bandBottom = std::int32_t(guest.dword(kBandBottom));
     if (guest.dword(kBandClosing) != 0)
@@ -185,29 +223,33 @@ reg32 drawBand(Guest& guest)
         const std::int32_t fromEnd = row <= kBandMiddleRow ? row : kBandRows - row;
         const std::int32_t brightness = fromEnd * 224 / kBandMiddleRow + 0x1f;
         const reg32 tint = reg32(row) == guest.dword(kBandLight) ? kLitColour : kDimColour;
-        const reg32 colour = guest.call(kScaleColour, args({ tint, reg32(brightness) }));
+        const reg32 colour = guest::direct<0x4d9180, menue::scaleColour>(app, cpu, tint, brightness);
         if (row * kRowGap + kBandRowFits <= std::int32_t(guest.dword(kBandBottom)))
             continue;
         const std::int32_t y = row * kRowGap + kBandFirstY;
         const reg32 slot = 4 * reg32(row);
         const bool toEdge = row > kLastRowWithEnds;
-        drawLine(guest, int16At(guest, kUpperLineLeft + slot), y,
+        drawLine(guest, cpu, int16At(guest, kUpperLineLeft + slot), y,
                  toEdge ? kScreenRight : int16At(guest, kUpperLineRight + slot), colour, colour);
-        drawLine(guest, int16At(guest, kLowerLineLeft + slot), y + 3,
+        drawLine(guest, cpu, int16At(guest, kLowerLineLeft + slot), y + 3,
                  toEdge ? kScreenRight : int16At(guest, kLowerLineRight + slot), colour, colour);
     }
 
+    reg32 drawn = 0;
     for (std::int32_t row = 0; row < kTopRows; ++row)
     {
         const reg32 tint = std::int32_t(guest.dword(kBandLight)) - kTopLightStart == row ? kLitColour : kDimColour;
-        const reg32 faded = guest.call(kScaleColour, args({ tint, kTopFade }));
+        const reg32 faded = guest::direct<0x4d9180, menue::scaleColour>(app, cpu, tint, std::int32_t(kTopFade));
         const std::int32_t y = row * kRowGap + kTopFirstY;
         const reg32 slot = 4 * reg32(row);
-        drawLine(guest, 0, y, int16At(guest, kTopUpperRight + slot), tint, faded);
-        drawLine(guest, 0, y + 3, int16At(guest, kTopLowerRight + slot), tint, faded);
+        drawLine(guest, cpu, 0, y, int16At(guest, kTopUpperRight + slot), tint, faded);
+        drawn = drawLine(guest, cpu, 0, y + 3, int16At(guest, kTopLowerRight + slot), tint, faded);
     }
-    return guest.eax();
+    return drawn;
 }
+
+namespace
+{
 
 /* A screen's own animation, every pass, by the screen's name (sub_4a49c0). */
 constexpr GuestString kEffectScreens[] = {
@@ -215,21 +257,26 @@ constexpr GuestString kEffectScreens[] = {
     { 0x53cf84, "compare2" },
     { 0x53cf90, "history" },
 };
-constexpr reg32 kShowcaseEffect = 0x453940;
-constexpr reg32 kCompareEffect = 0x454780;
-constexpr reg32 kHistoryEffect = 0x453f60;
 
-reg32 drawScreenEffect(Guest& guest)
+}  // namespace
+
+x86::reg32 frontend::menud::drawScreenEffect(App* app, CPU& cpu)
 {
-    const reg32 name = guest.call(kMenuCurrentName);
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 12);
+    const reg32 name = fe::direct<0x44ae00, loop::currentMenuName>(app, cpu);
     if (guest.call(kStrcmp, args({ name, kEffectScreens[0].address })) == 0)
-        guest.call(kShowcaseEffect);
+        fe::direct<0x453940, menub::carStatsDraw>(app, cpu);
     if (guest.call(kStrcmp, args({ name, kEffectScreens[1].address })) == 0)
-        guest.call(kCompareEffect);
-    if (guest.call(kStrcmp, args({ name, kEffectScreens[2].address })) == 0)
-        guest.call(kHistoryEffect);
-    return guest.eax();
+        fe::direct<0x454780, menub::carListDraw>(app, cpu);
+    reg32 result = guest.call(kStrcmp, args({ name, kEffectScreens[2].address }));
+    if (result == 0)
+        result = fe::direct<0x453f60, menub::carSpecsDraw>(app, cpu);
+    return result;
 }
+
+namespace
+{
 
 /* The logo: logo.qfs made a texture (sub_4a4390), its four pictures and its
  * glint for the screen shown (sub_4a4ba0), all of it drawn (sub_4a4c20). */
@@ -244,29 +291,32 @@ constexpr GuestString kArtStrings[] = {
 };
 constexpr GuestString kGlintName = kArtStrings[0];
 constexpr GuestString kTrackInfoScreen = kArtStrings[1];
-constexpr reg32 kLoadQfs = 0x4956f0;
-constexpr reg32 kFindShape = 0x4ef1e0;
 constexpr reg32 kFindShapeInFile = 0x4ef270;
-constexpr reg32 kShapeTexture = 0x4d6070;
-constexpr reg32 kArtShapeTextures = 0x4d6390;
-constexpr reg32 kShapeByName = 0x4d5db0;
 constexpr reg32 kDisplayFlags = 0x7a3a58;           // byte
 constexpr std::uint8_t kNoTranslucency = 0x02;
 constexpr reg32 kLogoTexture = 0x7a1b94;
 constexpr reg32 kLogoTextureSize = 0x100;
 constexpr reg32 kLogoTextureModeNoTranslucency = 3;
 
-reg32 startLogoTexture(Guest& guest)
+}  // namespace
+
+x86::reg32 frontend::menud::startLogoTexture(App* app, CPU& cpu)
 {
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 20 + 0x100);
     const reg32 path = guest.frame();
     guest.call(kSprintf, args({}, { path, kLogoStrings[0].address, kArtFolder, kLogoStrings[1].address }));
-    const reg32 file = guest.call(kLoadQfs, args({ path, 0 }));
-    const reg32 shape = guest.call(kFindShape, args({ file, kLogoStrings[2].address }));
+    guest.leaveEdx(0);  // what loadQfs hands on in edx to the file's loader: its flags
+    const reg32 file = fe::direct<0x4956f0, draw::loadQfs>(app, cpu, path);
+    const reg32 shape = fe::direct<0x4ef1e0, frontend::eab::shapeFileFind>(app, cpu, file, kLogoStrings[2].address);
     const reg32 mode = (guest.byte(kDisplayFlags) & kNoTranslucency) != 0 ? kLogoTextureModeNoTranslucency : 0;
-    guest.call(kShapeTexture, args({ kLogoTexture, shape, kLogoTextureSize, mode }));
-    guest.call(kFree, args({ file }));
-    return guest.eax();
+    fe::direct<0x4d6070, port::shapes::textureOf>(app, cpu, cpu.esp - 4, kLogoTexture, shape,
+                                                  std::int32_t(kLogoTextureSize), mode);
+    return *fe::direct<0x4e1890, ea::purgeBlock>(app, cpu, file);
 }
+
+namespace
+{
 
 constexpr reg32 kLogoPictureNames = 0x4a4050;       // the four shapes' names, kept in the code's segment
 constexpr reg32 kGlintShape = 0x8b7634;
@@ -274,23 +324,34 @@ constexpr reg32 kLogoPictures = 0x55eb18;
 constexpr std::int32_t kLogoPictureCount = 4;
 constexpr reg32 kMenuShapeFile = 0x559228;
 
-reg32 loadLogoPictures(Guest& guest)
+}  // namespace
+
+x86::reg32 frontend::menud::loadLogoPictures(App* app, CPU& cpu)
 {
-    const reg32 name = guest.call(kMenuCurrentName);
-    guest.setDword(kGlintShape, guest.call(kShapeByName, args({ kGlintName.address })));
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 20 + 0x10);
+    const reg32 name = fe::direct<0x44ae00, loop::currentMenuName>(app, cpu);
+    guest.setDword(kGlintShape, reg32(*fe::direct<0x4d5db0, port::shapes::shapeNamed>(app, cpu, cpu.esp - 4,
+                                                                                       kGlintName.address)));
     // Track info shows the first picture only.
     std::int32_t pictures = kLogoPictureCount;
     if (name != 0 && guest.call(kStrcmp, args({ name, kTrackInfoScreen.address })) == 0)
         pictures = 1;
+    reg32 record = 0;
     for (std::int32_t i = 0; i < pictures; ++i)
     {
         const reg32 slot = 4 * reg32(i);
         const reg32 shape = guest.call(kFindShapeInFile,
                                        args({ guest.dword(kMenuShapeFile), guest.dword(kLogoPictureNames + slot) }));
-        guest.setDword(kLogoPictures + slot, guest.call(kArtShapeTextures, args({ shape, 0 })));
+        // ecx as the call before left it, handed on.
+        record = reg32(*fe::direct<0x4d6390, port::shapes::artTexturesOf>(app, cpu, cpu.esp - 4, shape, 0, cpu.ecx));
+        guest.setDword(kLogoPictures + slot, record);
     }
-    return guest.eax();
+    return record;
 }
+
+namespace
+{
 
 /* sub_4a4c20: a logo item at x, y.  The item's clock crosses over the four
  * pictures, a whole turn in 0x400 steps.  Every 300 passes a glint comes: it
@@ -308,7 +369,6 @@ constexpr std::int32_t kGrowEnd = 0x52;
 constexpr std::int32_t kChangeLength = 0x1e;
 constexpr std::int32_t kFlashAt = 0xf;
 constexpr reg32 kGlintComingY = 0x55ea78;           // int16 for each time, as it comes in
-constexpr reg32 kKeyDown = 0x4eb1c0;                // whether the key eax is held
 constexpr reg32 kBigGlintKey = 0x2d;
 constexpr float kBigGlint = 75.0f, kSmallGlint = 8.0f;
 constexpr reg32 kSetRenderState = 0x431900;         // eax the state, edx its value
@@ -342,16 +402,23 @@ reg32 floatBits(float value)
 struct Logo
 {
     Guest& guest;
+    x86::CPU& cpu;
     reg32 x, y;
     reg32 picture, nextPicture;
     reg32 pictureColour, nextPictureColour;
 
-    void blend(bool additive) { guest.call(kSetRenderState, args({ kAdditiveBlend, additive ? 1u : 0u })); }
+    void blend(bool additive)
+    {
+        fe::direct<0x431900, graphics::sendState>(guest.app(), cpu, kAdditiveBlend, additive ? 1u : 0u);
+    }
     void glint(reg32 atX, reg32 atY, reg32 nudge, std::int32_t angle, float scale)
     {
-        guest.call(kDrawTurnedShape, args({ guest.dword(kGlintShape), atX, atY, nudge },
-                                          { reg32(angle), floatBits(scale) }));
+        fe::direct<0x4d6730, port::buttons::turnedShape>(
+            guest.app(), cpu, cpu.esp - 4 - 4 * 2, std::int32_t(guest.dword(kGlintShape)), std::int32_t(atX),
+            std::int32_t(atY), std::int32_t(nudge), angle, floatBits(scale));
     }
+
+    /* The function's last calls, by address: what they leave in ebx and edx, the function leaves. */
     void drawPictures()
     {
         guest.call(kDrawArtShape, args({ picture, x, y, pictureColour }));
@@ -360,16 +427,24 @@ struct Logo
     }
     void flash(std::int32_t angle, float scale)
     {
+        const auto glintByAddress = [&](std::int32_t turn) {
+            guest.call(kDrawTurnedShape, args({ guest.dword(kGlintShape), kFlashX, kFlashY, kFlashNudge },
+                                              { reg32(turn), floatBits(scale) }));
+        };
         blend(true);
-        glint(kFlashX, kFlashY, kFlashNudge, angle, scale);
-        glint(kFlashX, kFlashY, kFlashNudge, angle + kOtherFlashAngle, scale);
-        blend(false);
+        glintByAddress(angle);
+        glintByAddress(angle + kOtherFlashAngle);
+        guest.call(kSetRenderState, args({ kAdditiveBlend, 0 }));
     }
 };
 
-reg32 drawLogo(Guest& guest, reg32 item, reg32 x, reg32 y)
+}  // namespace
+
+x86::reg32 frontend::menud::drawLogo(App* app, CPU& cpu, reg32 item, reg32 x, reg32 y)
 {
-    const reg32 name = guest.call(kMenuCurrentName);
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 16 + 0x2c);
+    const reg32 name = fe::direct<0x44ae00, loop::currentMenuName>(app, cpu);
 
     // The clock goes round.
     const std::uint16_t advanced = std::uint16_t(guest.word(item + kItemClock) + kClockStep);
@@ -379,7 +454,7 @@ reg32 drawLogo(Guest& guest, reg32 item, reg32 x, reg32 y)
     // The two pictures it is between, and how far: each as opaque as the other is not.
     const std::int32_t pictureNumber = clock / 256;
     const std::int32_t between = clock % 256;
-    Logo logo{ guest, x, y, 0, 0, 0, 0 };
+    Logo logo{ guest, cpu, x, y, 0, 0, 0, 0 };
     logo.picture = guest.dword(kLogoPictures + 4 * reg32(pictureNumber));
     guest.setWord(item + kItemShape, std::uint16_t(logo.picture));
     logo.nextPicture = guest.dword(kLogoPictures + 4 * reg32((pictureNumber + 1) % kLogoPictureCount));
@@ -395,7 +470,8 @@ reg32 drawLogo(Guest& guest, reg32 item, reg32 x, reg32 y)
         guest.setWord(item + kItemShape, std::uint16_t(logo.picture));
     }
 
-    const double glintSize = guest.call(kKeyDown, args({ kBigGlintKey })) != 0 ? kBigGlint : kSmallGlint;
+    const double glintSize =
+        fe::direct<0x4eb1c0, frontend::eaa::keyStateByte>(app, cpu, kBigGlintKey) != 0 ? kBigGlint : kSmallGlint;
 
     // The glint's own clock.
     const reg32 countdown = guest.dword(kGlintCountdown);
@@ -456,6 +532,9 @@ reg32 drawLogo(Guest& guest, reg32 item, reg32 x, reg32 y)
     return guest.eax();
 }
 
+namespace
+{
+
 /* ---------------------------------------------------------------------------
  * The network screen's table of players (sub_49ae30)
  * ------------------------------------------------------------------------- */
@@ -467,13 +546,6 @@ constexpr reg32 kMachinePlayers = 0x7a227a;         // int16 each: a slot's play
 constexpr reg32 kLobbyLock = 0x55ecb4;
 constexpr reg32 kEnterLock = 0x5344b8, kLeaveLock = 0x534588;   // the import table's
 constexpr reg32 kPlayerMachine = 0x4a6690;
-constexpr reg32 kLanguageText = 0x4d1850;
-constexpr reg32 kDrawMenuText = 0x452190;           // text, x, y, the font; its alignment, its colour
-constexpr reg32 kDrawCutText = 0x452120;            // likewise, cut to the width after them
-constexpr reg32 kDrawPlayerIcon = 0x440b30;
-constexpr reg32 kDrawReadyLight = 0x440b50;
-constexpr reg32 kGradientRectangle = 0x4d8550;
-constexpr reg32 kFrame = 0x4d8930;
 // A player's record, as they all see it.
 constexpr reg32 kPlayerRecords = 0x79f5f0;
 constexpr reg32 kPlayerRecordSize = 0x60;
@@ -506,40 +578,56 @@ constexpr GuestString kLobbyStrings[] = {
     { 0x53c580, " " },
 };
 
-void lobbyLock(Guest& guest, reg32 import)
+/* The lobby's lock entered or left: Windows' function the port's own, called as C++
+ * (native_windows.h); in the check through its import's slot.  Terminated when the game stopped
+ * in it, as Guest::call. */
+template <reg32 Slot, auto Function>
+void lobbyLock(Guest& guest, x86::CPU& cpu)
 {
-    guest.call(guest.dword(import), args({}, { guest.dword(kLobbyLock) }));
+    if (!guest::windows<Slot, Function>(guest.app(), cpu, guest.dword(kLobbyLock)))
+        throw fe::Terminated();
 }
 
-void lobbyText(Guest& guest, reg32 text, reg32 x, std::int32_t y, reg32 align, reg32 colour)
+void lobbyText(Guest& guest, x86::CPU& cpu, reg32 text, reg32 x, std::int32_t y, reg32 align, reg32 colour)
 {
-    guest.call(kDrawMenuText, args({ text, x, reg32(y), kFont }, { align, colour }));
+    fe::direct<0x452190, port::text::menuTextDrawn>(guest.app(), cpu, cpu.esp - 4 - 4 * 2, text, std::int32_t(x), y,
+                                                    kFont, std::int32_t(align), colour);
+}
+
+/* Line `number` of the language's text (edx, which only a name past the lines reads, as it is). */
+reg32 languageText(Guest& guest, x86::CPU& cpu, reg32 number)
+{
+    return reg32(*fe::direct<0x4d1850, port::text::lineText>(guest.app(), cpu, cpu.esp - 4, std::int32_t(number),
+                                                             cpu.edx));
 }
 
 /* A row whose player's details have come. */
-void drawPlayerRow(Guest& guest, reg32 x, std::int32_t slot, std::int32_t rowY)
+void drawPlayerRow(Guest& guest, x86::CPU& cpu, reg32 x, std::int32_t slot, std::int32_t rowY)
 {
     const reg32 record = kPlayerRecords + kPlayerRecordSize * reg32(slot);
-    lobbyLock(guest, kEnterLock);
+    lobbyLock<kEnterLock, &win32::kernel32::EnterCriticalSection>(guest, cpu);
     const reg32 swatchX = x + kColumnSwatch;
     const reg32 swatchY = reg32(rowY + 2);
     if ((guest.byte(record + kRecordFlags) & kFlagIcon) != 0)
     {
-        guest.call(kDrawPlayerIcon, args({ swatchX, swatchY }));
+        guest::direct<0x440b30, frontend::menua::drawPlayerIcon>(guest.app(), cpu, swatchX, swatchY);
         guest.setDword(kIconsDrawn, guest.dword(kIconsDrawn) + 1);
     }
     else
     {
         const reg32 colour = 0xff000000u | (reg32(guest.byte(record + kRecordRed)) << 16)
             | (reg32(guest.byte(record + kRecordGreen)) << 8) | guest.byte(record + kRecordBlue);
-        guest.call(kGradientRectangle, args({ swatchX, swatchY, x + kColumnSwatchEnd, reg32(rowY + kSwatchBottom) },
-                                            { colour, colour }));
-        guest.call(kFrame, args({ swatchX, swatchY, kSwatchWidth, kSwatchHeight }, { kSwatchFrame }));
+        fe::direct<0x4d8550, port::draw2d::gradient>(guest.app(), cpu, cpu.esp - 4 - 4 * 2, std::int32_t(swatchX),
+                                                     std::int32_t(swatchY), std::int32_t(x + kColumnSwatchEnd),
+                                                     rowY + kSwatchBottom, colour, colour);
+        fe::direct<0x4d8930, port::draw2d::outline>(guest.app(), cpu, cpu.esp - 4 - 4, std::int32_t(swatchX),
+                                                    std::int32_t(swatchY), std::int32_t(kSwatchWidth),
+                                                    std::int32_t(kSwatchHeight), kSwatchFrame);
     }
-    guest.call(kDrawCutText, args({ record + kRecordName, x + kColumnName, reg32(rowY), kFont },
-                                  { kAlignLeft, kRowColour, kNameWidth }));
+    fe::direct<0x452120, frontend::menub::textDrawFitted>(guest.app(), cpu, record + kRecordName, x + kColumnName,
+                                                          reg32(rowY), kFont, kAlignLeft, kRowColour, kNameWidth);
     const reg32 gears = kTextGears + (guest.byte(record + kRecordGears) == 0 ? 1 : 0);
-    lobbyText(guest, guest.call(kLanguageText, args({ gears })), x + kColumnGears, rowY, kAlignLeft, kRowColour);
+    lobbyText(guest, cpu, languageText(guest, cpu, gears), x + kColumnGears, rowY, kAlignLeft, kRowColour);
 
     // Its car, make and model, in the frame's buffer.
     const reg32 car = guest.frame();
@@ -547,20 +635,24 @@ void drawPlayerRow(Guest& guest, reg32 x, std::int32_t slot, std::int32_t rowY)
     if (guest.byte(car) != 0)
         guest.copyString(car + guest.length(car), kLobbyStrings[1].address);
     guest.copyString(car + guest.length(car), record + kRecordCarModel);
-    lobbyText(guest, car, x + kColumnCar, rowY, kAlignLeft, kRowColour);
-    lobbyLock(guest, kLeaveLock);
+    lobbyText(guest, cpu, car, x + kColumnCar, rowY, kAlignLeft, kRowColour);
+    lobbyLock<kLeaveLock, &win32::kernel32::LeaveCriticalSection>(guest, cpu);
 
     // The host, at the top, has no light to show.
     if (slot != 0)
     {
         const std::int32_t lightOffset = int16At(guest, kLightOffsets + 2 * reg32(slot));
-        guest.call(kDrawReadyLight, args({ reg32(guest.byte(record + kRecordReady)), reg32(slot),
-                                           x + reg32(lightOffset), swatchY }));
+        guest::direct<0x440b50, frontend::menua::drawPulsingIcon>(guest.app(), cpu, reg32(guest.byte(record + kRecordReady)),
+                                                                  reg32(slot), x + reg32(lightOffset), swatchY);
     }
 }
 
-reg32 drawLobbyPlayers(Guest& guest, reg32 x, reg32 y)
+}  // namespace
+
+x86::reg32 frontend::menud::drawLobbyPlayers(App* app, CPU& cpu, reg32 x, reg32 y)
 {
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 20 + 0x128);
     /* sub_4a6690 keeps edx, 0 here, and that is what the game goes on to ask
      * about, so the message at the end never shows. */
     guest.call(kPlayerMachine, args({ reg32(int16At(guest, kMyPlayer)), 0 }));
@@ -568,11 +660,11 @@ reg32 drawLobbyPlayers(Guest& guest, reg32 x, reg32 y)
     const std::int32_t slots = guest.dword(kNetworkKind) == 0 ? 2 : 8;
 
     const std::int32_t headY = std::int32_t(y + 2);
-    lobbyText(guest, guest.call(kLanguageText, args({ kHeadName })), x + kColumnName, headY, kAlignLeft, kHeadColour);
-    lobbyText(guest, guest.call(kLanguageText, args({ kHeadCar })), x + kColumnCar, headY, kAlignLeft, kHeadColour);
-    lobbyText(guest, guest.call(kLanguageText, args({ kHeadColour2 })), x + kColumnColourHead, headY, kAlignCentre,
+    lobbyText(guest, cpu, languageText(guest, cpu, kHeadName), x + kColumnName, headY, kAlignLeft, kHeadColour);
+    lobbyText(guest, cpu, languageText(guest, cpu, kHeadCar), x + kColumnCar, headY, kAlignLeft, kHeadColour);
+    lobbyText(guest, cpu, languageText(guest, cpu, kHeadColour2), x + kColumnColourHead, headY, kAlignCentre,
               kHeadColour);
-    lobbyText(guest, guest.call(kLanguageText, args({ kHeadGears })), x + kColumnGearsHead, headY, kAlignLeft,
+    lobbyText(guest, cpu, languageText(guest, cpu, kHeadGears), x + kColumnGearsHead, headY, kAlignLeft,
               kHeadColour);
     guest.setDword(kIconsDrawn, 0);
 
@@ -586,22 +678,22 @@ reg32 drawLobbyPlayers(Guest& guest, reg32 x, reg32 y)
             // Open: a player who has gone is forgotten, under the lock.
             if (reg32(slot) == guest.dword(recordSlot))
             {
-                lobbyLock(guest, kEnterLock);
+                lobbyLock<kEnterLock, &win32::kernel32::EnterCriticalSection>(guest, cpu);
                 if (std::int16_t(guest.word(machinePlayer)) == -1)
                     guest.setDword(recordSlot, 0);
-                lobbyLock(guest, kLeaveLock);
+                lobbyLock<kLeaveLock, &win32::kernel32::LeaveCriticalSection>(guest, cpu);
             }
-            lobbyText(guest, guest.call(kLanguageText, args({ kTextOpenSlot })), x + kColumnName, rowY + 1, kAlignLeft,
+            lobbyText(guest, cpu, languageText(guest, cpu, kTextOpenSlot), x + kColumnName, rowY + 1, kAlignLeft,
                       kRowColour);
         }
         else if (reg32(slot) != guest.dword(recordSlot))
         {
             // Joined, its details still on their way.
-            lobbyText(guest, kLobbyStrings[0].address, x + kColumnName, rowY, kAlignLeft, kRowColour);
+            lobbyText(guest, cpu, kLobbyStrings[0].address, x + kColumnName, rowY, kAlignLeft, kRowColour);
         }
         else
         {
-            drawPlayerRow(guest, x, slot, rowY);
+            drawPlayerRow(guest, cpu, x, slot, rowY);
         }
     }
 
@@ -629,93 +721,89 @@ reg32 drawLobbyPlayers(Guest& guest, reg32 x, reg32 y)
  * A pause's end
  * ------------------------------------------------------------------------- */
 
-constexpr reg32 kLeaveRaceMenu = 0x44be20;          // the menu no longer up, its dialog closed
-constexpr reg32 kResetRaceMouse = 0x4bc530;
-
 /* sub_4bc670: what the race's view pass does as a pause ends. */
-reg32 endPause(Guest& guest)
+x86::reg32 frontend::menud::endPause(App* app, CPU& cpu)
 {
-    guest.call(kLeaveRaceMenu);
-    guest.call(kResetRaceMouse);
-    return guest.eax();
-}
-
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 4);
+    fe::direct<0x44be20, menub::menuLeave>(app, cpu);  // the menu no longer up, its dialog closed
+    return guest::direct<0x4bc530, menuf::resetRaceMouse>(app, cpu);
 }
 
 void frontend::menuPointerLoadArt(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_49c140", 0, 12, kPointerStrings, std::size(kPointerStrings),
+    static fe::Site site{ "sub_49c140", 0, 0, kPointerStrings, std::size(kPointerStrings),
                           fe::kRestoreEcx | fe::kRestoreEdx };
-    fe::runWhole(app, cpu, site, [](Guest& guest) { return loadPointerArt(guest); });
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menud::loadPointerArt(app, cpu); });
 }
 
 void frontend::menuPointerFreeArt(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_49c2a0", 0, 12, nullptr, 0, fe::kRestoreEcx | fe::kRestoreEdx };
-    fe::runWhole(app, cpu, site, [](Guest& guest) { return freePointerArt(guest); });
+    static fe::Site site{ "sub_49c2a0", 0, 0, nullptr, 0, fe::kRestoreEcx | fe::kRestoreEdx };
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menud::freePointerArt(app, cpu); });
 }
 
 void frontend::menuPointerListLine(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_49c1c0", 0, 8, nullptr, 0, fe::kRestoreEcx };
+    static fe::Site site{ "sub_49c1c0", 0, 0, nullptr, 0, fe::kRestoreEcx };
     const std::int32_t top = std::int32_t(cpu.eax), lineHeight = std::int32_t(cpu.edx);
-    fe::runWhole(app, cpu, site, [&](Guest& guest) { return pointerListLine(guest, top, lineHeight); });
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menud::pointerListLine(app, cpu, top, lineHeight); });
 }
 
 void frontend::menuPointerOverRect(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_49c240", 0, 8, nullptr, 0, fe::kRestoreEsi };
+    static fe::Site site{ "sub_49c240", 0, 0, nullptr, 0, fe::kRestoreEsi };
     const reg32 x = cpu.eax, y = cpu.edx, width = cpu.ebx, height = cpu.ecx;
-    fe::runWhole(app, cpu, site, [&](Guest& guest) { return pointerOverRect(guest, x, y, width, height); });
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menud::pointerOverRect(app, cpu, x, y, width, height); });
 }
 
 void frontend::effectsBandDraw(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_4a47c0", 0, 24 + 0x14, nullptr, 0, fe::kRestoreAll };
-    fe::runWhole(app, cpu, site, [](Guest& guest) { return drawBand(guest); });
+    static fe::Site site{ "sub_4a47c0", 0, 0, nullptr, 0, fe::kRestoreAll };
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menud::drawBand(app, cpu); });
 }
 
 void frontend::effectsScreenDraw(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_4a49c0", 0, 12, kEffectScreens, std::size(kEffectScreens),
+    static fe::Site site{ "sub_4a49c0", 0, 0, kEffectScreens, std::size(kEffectScreens),
                           fe::kRestoreEcx | fe::kRestoreEdx };
-    fe::runWhole(app, cpu, site, [](Guest& guest) { return drawScreenEffect(guest); });
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menud::drawScreenEffect(app, cpu); });
 }
 
 void frontend::effectsLogoTextureStart(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_4a4390", 0, 20 + 0x100, kLogoStrings, std::size(kLogoStrings),
+    static fe::Site site{ "sub_4a4390", 0, 0, kLogoStrings, std::size(kLogoStrings),
                           fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEdx | fe::kRestoreEsi };
-    fe::runWhole(app, cpu, site, [](Guest& guest) { return startLogoTexture(guest); });
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menud::startLogoTexture(app, cpu); });
 }
 
 void frontend::effectsLoadScreenArt(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_4a4ba0", 0, 20 + 0x10, kArtStrings, std::size(kArtStrings),
+    static fe::Site site{ "sub_4a4ba0", 0, 0, kArtStrings, std::size(kArtStrings),
                           fe::kRestoreEcx | fe::kRestoreEdx | fe::kRestoreEsi | fe::kRestoreEdi };
-    fe::runWhole(app, cpu, site, [](Guest& guest) { return loadLogoPictures(guest); });
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menud::loadLogoPictures(app, cpu); });
 }
 
 void frontend::effectsLogoDraw(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_4a4c20", 0, 16 + 0x2c, &kArtStrings[1], 1,
+    static fe::Site site{ "sub_4a4c20", 0, 0, &kArtStrings[1], 1,
                           fe::kRestoreEcx | fe::kRestoreEsi | fe::kRestoreEdi };
     const reg32 item = cpu.eax, x = cpu.edx, y = cpu.ebx;
-    fe::runWhole(app, cpu, site, [&](Guest& guest) { return drawLogo(guest, item, x, y); });
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menud::drawLogo(app, cpu, item, x, y); });
 }
 
 void frontend::lobbyDrawPlayers(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_49ae30", 0, 20 + 0x128, kLobbyStrings, std::size(kLobbyStrings),
+    static fe::Site site{ "sub_49ae30", 0, 0, kLobbyStrings, std::size(kLobbyStrings),
                           fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEsi | fe::kRestoreEdi };
     const reg32 x = cpu.eax, y = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest& guest) { return drawLobbyPlayers(guest, x, y); });
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menud::drawLobbyPlayers(app, cpu, x, y); });
 }
 
 void frontend::pauseEndRestorePointer(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_4bc670", 0, 4, nullptr, 0, 0 };
-    fe::runWhole(app, cpu, site, [](Guest& guest) { return endPause(guest); });
+    static fe::Site site{ "sub_4bc670", 0, 0, nullptr, 0, 0 };
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menud::endPause(app, cpu); });
 }
 
 }

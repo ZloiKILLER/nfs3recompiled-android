@@ -168,6 +168,8 @@ public:
     }
 
     void registerMethod(x86::reg32 pointer, Method method);
+    /* A method registered already, put another in its place. */
+    void replaceMethod(x86::reg32 pointer, Method method);
 
     int runThread(x86::CPU& cpu, x86::reg32 entryPoint, x86::reg32 parameter = 0, bool threadLock = true);
     /* runThread for callbacks a host thread makes over and over (the timer):
@@ -252,6 +254,22 @@ public:
             }
         }
         dynamicCallElsewhere(address, cpu);
+    }
+
+    /* The function dynamic_call would call at `address` from its table, or null: for a caller
+     * that calls a method as C++ to see that a COM object's table has that method there
+     * (src/nfs3hp/native_windows.h, guest::method). */
+    inline MethodPtr methodAt(uint32_t address) const
+    {
+        const x86::reg32 offset = address - kMethodBase;
+        if (offset < kMethodSpan)
+        {
+            const std::uint16_t* page = m_methodPages[offset >> kMethodPageBits];
+            const std::uint16_t index = page ? page[offset & kMethodPageMask] : 0;
+            if (index)
+                return m_methodList[index].method;
+        }
+        return nullptr;
     }
 
 protected:

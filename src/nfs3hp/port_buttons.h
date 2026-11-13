@@ -1,6 +1,7 @@
 #ifndef NFS3HP_PORT_BUTTONS_H
 #define NFS3HP_PORT_BUTTONS_H
 
+#include "native_guest.h"
 #include "port.h"
 
 /* The menus' widgets, rewritten (port.h says how; port_buttons.cpp): what a
@@ -100,8 +101,131 @@ void layoutList(App* app, CPU& cpu);           // 0x464560
 void drawTurnedShape(App* app, CPU& cpu);      // 0x4d6730
 void drawColouredRectangle(App* app, CPU& cpu);  // 0x4d88f0
 
+/* The typed cores the menus call as C++ (guest::direct), and how the game's code calls each by address
+ * (ByAddress below, for the checks' stand-ins).  A Result is nullopt when the game stopped in a call.  A core's
+ * `esp` is the frame base its adapter hands it: the game's esp on entry, at the return address.  A caller
+ * through guest::direct passes cpu.esp - 4 - 4 * N, N the stack words the game's call pushes: the esp the
+ * adapter hands it, so the core's frame lies where the game's does; by address the call makes it. */
+
+// The game's 0x44ac90: the HUD's shapes of the .fsh named at `name` loaded and kept (`ebx` handed on); esp the frame base.
+Result shapesLoaded(App* app, CPU& cpu, reg32 esp, reg32 name, reg32 ebx);
+// The game's 0x44b170: the screen drawn again and shown, `in` the caller's registers handed on; esp the frame base.
+Result redrawn(App* app, CPU& cpu, reg32 esp, const Args& in);
+// The game's 0x456800: the track map's tile `index` made shape `shape`'s textures: their record; esp the frame base.
+Result mapShape(App* app, CPU& cpu, reg32 esp, reg32 shape, int32_t index);
+// The game's 0x461270: key `key` for the button item at `at`: its answer; esp the frame base.
+Result buttonKeyed(App* app, CPU& cpu, reg32 esp, reg32 at, reg32 key);
+// The game's 0x4633d0: the select list item at `at` laid out.
+void selectLaidOut(App* app, reg32 at);
+// The game's 0x4d6730: menu shape `shape` drawn turned by `angle`, scaled by `scaleBits` (a float's bits) about x, y,
+// `nudge` to the left; esp the frame base.
+Result turnedShape(App* app, CPU& cpu, reg32 esp, int32_t shape, int32_t x, int32_t y, int32_t nudge, int32_t angle,
+                   reg32 scaleBits);
+// The game's 0x4d88f0: the rectangle a.eax, a.edx to a.ebx, a.ecx, `colours` at its corners; esp the frame base.
+Result colouredRectangle(App* app, CPU& cpu, reg32 esp, const Args& a, const reg32 colours[4]);
+
 }  // namespace buttons
 }  // namespace port
+
+namespace guest
+{
+
+// The name in eax, `ebx` in ebx (edx left as it is); the shapes in eax.
+template <>
+struct ByAddress<port::buttons::shapesLoaded>
+{
+    template <x86::reg32 Address>
+    static port::Result call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32, x86::reg32 name, x86::reg32 ebx)
+    {
+        return watcomEax(app, cpu, Address, {name, cpu.edx, ebx});
+    }
+};
+
+// `in` in eax, edx, ebx and ecx; eax back.
+template <>
+struct ByAddress<port::buttons::redrawn>
+{
+    template <x86::reg32 Address>
+    static port::Result call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32, const port::Args& in)
+    {
+        return watcomEax(app, cpu, Address, {in.eax, in.edx, in.ebx, in.ecx});
+    }
+};
+
+// The shape in eax, the index in edx; the record in eax.
+template <>
+struct ByAddress<port::buttons::mapShape>
+{
+    template <x86::reg32 Address>
+    static port::Result call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32, x86::reg32 shape,
+                             std::int32_t index)
+    {
+        return watcomEax(app, cpu, Address, {shape, x86::reg32(index)});
+    }
+};
+
+// The item in eax, the key in ebx (edx left as it is); the answer in eax.
+template <>
+struct ByAddress<port::buttons::buttonKeyed>
+{
+    template <x86::reg32 Address>
+    static port::Result call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32, x86::reg32 at, x86::reg32 key)
+    {
+        return watcomEax(app, cpu, Address, {at, cpu.edx, key});
+    }
+};
+
+// The item in eax (eax left as it came).
+template <>
+struct ByAddress<port::buttons::selectLaidOut>
+{
+    template <x86::reg32 Address>
+    static void call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 at)
+    {
+        watcom(app, cpu, Address, {at});
+    }
+};
+
+// Stdcall: the shape in eax, x in edx, y in ebx, the nudge in ecx; the angle and the scale pushed (ret 8).
+template <>
+struct ByAddress<port::buttons::turnedShape>
+{
+    template <x86::reg32 Address>
+    static port::Result call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32, std::int32_t shape,
+                             std::int32_t x, std::int32_t y, std::int32_t nudge, std::int32_t angle,
+                             x86::reg32 scaleBits)
+    {
+        const KeptRegisters kept(cpu);
+        cpu.eax = x86::reg32(shape);
+        cpu.edx = x86::reg32(x);
+        cpu.ebx = x86::reg32(y);
+        cpu.ecx = x86::reg32(nudge);
+        if (!guest::call(app, cpu, Address, {x86::reg32(angle), scaleBits}))
+            return std::nullopt;
+        return std::int32_t(cpu.eax);
+    }
+};
+
+// Stdcall: `a` in eax, edx, ebx and ecx; the four colours pushed (ret 0x10).
+template <>
+struct ByAddress<port::buttons::colouredRectangle>
+{
+    template <x86::reg32 Address>
+    static port::Result call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32, const port::Args& a,
+                             const x86::reg32 colours[4])
+    {
+        const KeptRegisters kept(cpu);
+        cpu.eax = a.eax;
+        cpu.edx = a.edx;
+        cpu.ebx = a.ebx;
+        cpu.ecx = a.ecx;
+        if (!guest::call(app, cpu, Address, {colours[0], colours[1], colours[2], colours[3]}))
+            return std::nullopt;
+        return std::int32_t(cpu.eax);
+    }
+};
+
+}  // namespace guest
 }  // namespace nfs3hp
 
 #endif

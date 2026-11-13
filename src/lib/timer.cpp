@@ -50,10 +50,23 @@ void suspendTime(bool suspended)
     }
 }
 
+/* NFS_TIME_SCALE (debug mode, Traces: replay_fast): the game's time runs this many
+ * times as fast, for a replay to be checked sooner.  A replay's steps come from the
+ * recording, not from the clock, so what it comes to is the same. */
+static Uint32 timeScale()
+{
+    static const Uint32 scale = [] {
+        const char* value = SDL_getenv("NFS_TIME_SCALE");
+        const int asked = value ? SDL_atoi(value) : 1;
+        return Uint32(asked > 1 ? asked : 1);
+    }();
+    return scale;
+}
+
 x86::reg32 timeGetTickCount()
 {
     const Uint64 now = s_suspended.load() ? s_suspendedAt.load() : SDL_GetTicks();
-    x86::reg32 result = (x86::reg32)(now - s_suspendedFor.load());
+    x86::reg32 result = (x86::reg32)((now - s_suspendedFor.load()) * timeScale());
     return result;
 }
 
@@ -61,7 +74,7 @@ Timer::Timer(x86::reg32 delay, WinApplication* app, x86::reg32 proc, x86::reg32 
     :   m_app(app)
     ,   m_callback(proc)
     ,   m_parameter(param)
-    ,   m_id(SDL_AddTimer(delay, &timerCallback, this))
+    ,   m_id(SDL_AddTimer(delay / timeScale() > 0 ? delay / timeScale() : 1, &timerCallback, this))
 {
     //SDL_Log("Started timer %d (%d ms)", m_id, delay);
 }

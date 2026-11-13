@@ -31,13 +31,6 @@
  <string name="touch_settings">Upravljanje dodirom</string>
  <string name="screen_settings">Zaslon</string>
  <string name="display_settings">Zaslon</string>
- <string name="screen_adjustment">Podešavanje slike</string>
- <string name="brightness_label">Svjetlina</string>
- <string name="contrast_label">Kontrast</string>
- <string name="adjust_hint">Uzorci pokazuju rezultat. Primjenjuje se pri sljedećem pokretanju igre.</string>
- <string name="adjust_reset">Vrati</string>
- <string name="sample_dark">Noć</string>
- <string name="sample_bright">Dan</string>
  <string name="back_to_launcher">Natrag</string>
  <string name="switch_data">Aktiviraj</string>
  <string name="data_change">Promijeni…</string>
@@ -71,7 +64,6 @@
  <string name="orientation_landscape_reverse">Fiksno — vodoravno, obrnuto</string>
  <string name="fps_30">30 FPS</string>
  <string name="fps_60">60 FPS</string>
- <string name="gamma_label">Gama</string>
  <string name="fps_cap_label">Broj sličica</string>
  <string name="fps_error">Unesi cijeli broj od 1 do 240</string>
  <string name="save">Spremi</string>
@@ -156,6 +148,8 @@
  <string name="faq_mapping"><b>Kontroleri</b>\nIgra uvijek vidi dva kontrolera: kontroler 1 je igrač 1 zajedno s upravljanjem dodirom, kontroler 2 je igrač 2. U Upravljanje → Kontroleri pritiskom tipke odaberi koji je kontroler čiji i podesi što radi svaka tipka, zatim jednom pritisni Kontroler UKLJUČEN. To u postavke igre zapisuje odgovarajuće upravljanje i sigurnosno kopira staru datoteku. Lijeva palica skreće, okidači ubrzavaju i koče. Kontroler ima dva skupa tipki, kao što upravljanje dodirom ima dva rasporeda: utrkivački, koji ovdje podesiš, i nepromjenjiv za izbornike i snimke, gdje Cross / A potvrđuje, Circle / B vraća natrag, a križ pomiče odabir. Za igranje tipkovnicom umjesto toga zapiši Zadano u igri.</string>
  <string name="faq_lights"><b>Svjetla i povratak na stazu</b>\n☼ šalje L. ↻ šalje R za povratak na stazu. Tipke se mogu promijeniti u Upravljanje → Dodir → Tipke.</string>
  <string name="faq_screen_data"><b>Zaslon i podaci igre</b>\nVodoravno zaključava igru vodoravno; Automatski dopušta rotaciju. Ograničenje FPS-a smanjuje broj sličica; niža vrijednost smanjuje opterećenje. «Podaci igre» upravljaju uvozima i pokazuju koji je skup aktivan. «Igraj» se omogućuje kad je skup spreman.</string>
+ <string name="faq_picture"><b>Svjetlina, kontrast i gama</b>\nPodešavaju se u samoj igri: Options → Graphics → Advanced Settings ili Graphics u izborniku pauze tijekom utrke. Slika se mijenja odmah dok pomičete klizač. Done sprema vrijednosti, Cancel vraća prethodne. Postavke vrijede za utrke, izbornike i videozapise.</string>
+ <string name="faq_network"><b>Mrežne utrke</b>\nOtvorite Connect Players na prvom zaslonu igre. Local WiFi sam pronalazi utrke između telefona na istoj Wi-Fi mreži. Network (TCP) povezuje sa svima koji znaju adresu domaćina, uključujući računalo s originalnom igrom ili Modern Patchom. Ispod su adresa ovog telefona (Your IP) i TCP Port: dodir prebacuje između 9803 (Modern Patch) i 1030 (originalna igra). Svi igrači TCP utrke moraju koristiti isti priključak.</string>
  <string name="gamepad_buttons">Tipke</string>
  <string name="gamepad_buttons_title">Tipke kontrolera %1$d</string>
  <string name="gamepad_buttons_hint">Što svaka tipka ovog kontrolera radi dok voziš. Lijeva palica skreće, desni okidač ubrzava, a lijevi koči. U izbornicima i snimkama tipke su nepromjenjive i ne treba ih podešavati: Cross / A i Options / Menu potvrđuju, Circle / B i Create / View vraćaju natrag, križ pomiče odabir. Radnje tipki dolaze do igre kad se u nju zapiše upravljanje kontrolerima.</string>
@@ -191,12 +185,5 @@
  <string name="force_feedback_phone_note">Telefon reproducira sudare, doskoke i promjene brzina, motor na visokim okretajima i oštra skretanja.</string>
  <string name="force_feedback_gamepad_note">Kontroler 1 reproducira efekte igre kakvi jesu. Njihova se jačina podešava u igri: Options → Controllers → Force Feedback.</string>
  <string name="editor_snap_grid">Poravnaj s mrežom</string>
- <string name="network_title">Mreža</string>
- <string name="network_address">Adresa ovog uređaja u mreži: %1$s</string>
- <string name="network_no_address">Nema mrežne veze</string>
- <string name="network_port_label">TCP/IP port</string>
- <string name="network_port_modern">9803 · Modern Patch</string>
- <string name="network_port_original">1030 · izvorna igra</string>
- <string name="network_hint">IPX sam pronalazi utrke u ovoj Wi-Fi mreži. TCP/IP povezuje sa svakim tko zna adresu domaćina, i s PC-jem s izvornom igrom ili Modern Patchom. Svi igrači koriste isti port.</string>
  <string name="fps_unlimited">Bez ograničenja</string>
 </resources>

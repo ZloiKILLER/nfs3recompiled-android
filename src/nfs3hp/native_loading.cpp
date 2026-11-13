@@ -30,35 +30,12 @@
  * below the returned esp is not written.  The calls the generated code makes
  * to the rest of the game (the file opened, the game's heap) are made the same
  * way, through dynamic_call.
- *
- * NFS_NATIVE_CHECK=load (or =1) runs each call both ways and logs any
- * difference ([NATIVE]). */
+ */
 namespace nfs3hp
 {
 
 namespace
 {
-
-bool loadChecking()
-{
-    static const bool check = []() {
-        const char* value = SDL_getenv("NFS_NATIVE_CHECK");
-        return value && (SDL_strcmp(value, "load") == 0 || SDL_strcmp(value, "1") == 0);
-    }();
-    return check;
-}
-
-/* Set while a check runs the generated code, which must not come back here. */
-thread_local bool t_loadOriginal = false;
-
-/* Whether the generated code is to run: a check (here or in
- * native_vertices.cpp) running it. */
-bool stepAside()
-{
-    if (loadChecking() && t_loadOriginal)
-        return true;
-    return nativeOriginalRunning();
-}
 
 inline x86::reg8* guest(win32::WinApplication* app)
 {
@@ -614,166 +591,23 @@ void frdNative(win32::WinApplication* app, x86::CPU& cpu)
     ret(cpu);
 }
 
-/* ------------------------------------------------------------------------
- * NFS_NATIVE_CHECK=load
- * ------------------------------------------------------------------------ */
-
-struct LoadCheckCounts
-{
-    unsigned calls = 0;
-    unsigned mismatches = 0;
-};
-
-void describeLoadState(const x86::CPU& mine, const x86::CPU& cpu, char* what, std::size_t size)
-{
-    if (mine.eax != cpu.eax || mine.ebx != cpu.ebx || mine.ecx != cpu.ecx || mine.edx != cpu.edx
-        || mine.esi != cpu.esi || mine.edi != cpu.edi || mine.ebp != cpu.ebp || mine.esp != cpu.esp)
-    {
-        SDL_snprintf(what, size,
-                     "registers: eax %08x/%08x ebx %08x/%08x ecx %08x/%08x edx %08x/%08x esi %08x/%08x "
-                     "edi %08x/%08x esp %08x/%08x",
-                     unsigned(mine.eax), unsigned(cpu.eax), unsigned(mine.ebx), unsigned(cpu.ebx),
-                     unsigned(mine.ecx), unsigned(cpu.ecx), unsigned(mine.edx), unsigned(cpu.edx),
-                     unsigned(mine.esi), unsigned(cpu.esi), unsigned(mine.edi), unsigned(cpu.edi),
-                     unsigned(mine.esp), unsigned(cpu.esp));
-    }
-    else if ((mine.flags.lo & 0xd5) != (cpu.flags.lo & 0xd5) || mine.flags.of != cpu.flags.of)
-    {
-        SDL_snprintf(what, size, "flags %02x/%02x of %u/%u", unsigned(mine.flags.lo), unsigned(cpu.flags.lo),
-                     unsigned(mine.flags.of), unsigned(cpu.flags.of));
-    }
-    else if (mine.fpu.status.word != cpu.fpu.status.word || mine.fpu.count != cpu.fpu.count)
-    {
-        SDL_snprintf(what, size, "fpu status %04x/%04x depth %u/%u", unsigned(mine.fpu.status.word),
-                     unsigned(cpu.fpu.status.word), unsigned(mine.fpu.count), unsigned(cpu.fpu.count));
-    }
 }
 
-void reportLoad(const char* name, LoadCheckCounts& counts, const char* what)
+namespace loader
 {
-    ++counts.calls;
-    if (what[0])
-    {
-        ++counts.mismatches;
-        if (counts.mismatches <= 20)
-            SDL_Log("[NATIVE] %s differs (call %u): %s", name, counts.calls, what);
-    }
-    if (counts.calls <= 3 || counts.calls % 1000 == 0)
-        SDL_Log("[NATIVE] %s checked: %u calls, %u differ", name, counts.calls, counts.mismatches);
-}
 
-/* The native into `ranges` of memory, everything put back, the generated code
- * for real; then the ranges and the state the caller sees compared.  With no
- * ranges, all of guest memory but the stack below the returned esp. */
-void checkLoad(win32::WinApplication* app, x86::CPU& cpu, const char* name, x86::reg32 address,
-               std::vector<std::pair<x86::reg32, x86::reg32>> ranges,
-               void (*native)(win32::WinApplication*, x86::CPU&), LoadCheckCounts& counts)
+/* sub_5102a4: EA's RefPack decoder. */
+void refpack(win32::WinApplication* app, x86::CPU& cpu)
 {
-    if (nativeWholeChecking())
-    {
-        native(app, cpu);
-        return;
-    }
-    const win32::WinApplication::KeepContext keep;
-    const bool whole = ranges.empty();
-    if (whole)
-        win32::MemMap::usedRanges(ranges);
-    std::size_t total = 0;
-    for (const auto& range : ranges)
-        total += range.second;
-    std::vector<x86::reg8> before(total);
-    std::vector<x86::reg8> written(total);
-    auto copyOut = [&](std::vector<x86::reg8>& to) {
-        std::size_t at = 0;
-        for (const auto& range : ranges)
-        {
-            std::memcpy(&to[at], &app->getMemory<x86::reg8>(range.first), range.second);
-            at += range.second;
-        }
-    };
-    copyOut(before);
-    const x86::CPU entry = cpu;
-    native(app, cpu);
-    const x86::CPU mine = cpu;
-    copyOut(written);
-    std::size_t at = 0;
-    for (const auto& range : ranges)
-    {
-        std::memcpy(&app->getMemory<x86::reg8>(range.first), &before[at], range.second);
-        at += range.second;
-    }
-    cpu = entry;
-    t_loadOriginal = true;
-    app->dynamic_call(address, cpu);
-    t_loadOriginal = false;
-
-    const x86::reg32 stackEnd = cpu.esp;
-    const x86::reg32 stackStart = cpu.esp - 0x10000;
-    char what[200] = "";
-    unsigned differing = 0;
-    at = 0;
-    for (const auto& range : ranges)
-    {
-        const x86::reg8* original = &app->getMemory<x86::reg8>(range.first);
-        for (x86::reg32 i = 0; i < range.second; ++i)
-        {
-            const x86::reg32 address = range.first + i;
-            if (original[i] == written[at + i] || (whole && address >= stackStart && address < stackEnd))
-                continue;
-            if (differing++ == 0)
-                SDL_snprintf(what, sizeof what, "memory at %08x: %02x native, %02x original", unsigned(address),
-                             unsigned(written[at + i]), unsigned(original[i]));
-        }
-        at += range.second;
-    }
-    if (differing > 1)
-    {
-        const std::size_t length = SDL_strlen(what);
-        SDL_snprintf(what + length, sizeof what - length, " (%u bytes differ)", differing);
-    }
-    if (!what[0])
-        describeLoadState(mine, cpu, what, sizeof what);
-    reportLoad(name, counts, what);
-}
-
-/* The size sub_5102a4 will unpack, for its check: what the header says. */
-x86::reg32 refpackSize(win32::WinApplication* app, const x86::CPU& cpu)
-{
-    const x86::reg8* m = guest(app);
-    if (cpu.eax == 0 || cpu.ebx == 0)
-        return 0;
-    const x86::reg32 at = cpu.eax + 2 + ((m[cpu.eax] & 1) ? 3 : 0);
-    return x86::reg32(m[at]) << 16 | x86::reg32(m[at + 1]) << 8 | m[at + 2];
-}
-
-}
-
-bool refpack(win32::WinApplication* app, x86::CPU& cpu)
-{
-    if (stepAside() || cpu.flags.df)
-        return false;
-    if (loadChecking())
-    {
-        static LoadCheckCounts counts;
-        checkLoad(app, cpu, "sub_5102a4", 0x5102a4, {{cpu.edx, refpackSize(app, cpu)}}, refpackNative, counts);
-        return true;
-    }
     refpackNative(app, cpu);
-    return true;
 }
 
-bool fceRecords(win32::WinApplication* app, x86::CPU& cpu)
+/* sub_49cfa0: an FCE model turned into the game's polygon records. */
+void fceRecords(win32::WinApplication* app, x86::CPU& cpu)
 {
-    if (stepAside())
-        return false;
-    if (loadChecking())
-    {
-        static LoadCheckCounts counts;
-        checkLoad(app, cpu, "sub_49cfa0", 0x49cfa0, {}, fceRecordsNative, counts);
-        return true;
-    }
     fceRecordsNative(app, cpu);
-    return true;
+}
+
 }
 
 /* Port: each block's list of the blocks seen from it made longer.  The track
@@ -860,21 +694,17 @@ void extendNeighbours(win32::WinApplication* app)
             double(total) / count, unsigned(full), unsigned(kEntries));
 }
 
-bool frd(win32::WinApplication* app, x86::CPU& cpu)
+namespace loader
 {
-    if (stepAside())
-        return false;
-    if (loadChecking())
-    {
-        // The file is opened and read twice.
-        static LoadCheckCounts counts;
-        checkLoad(app, cpu, "sub_419c20", 0x419c20, {}, frdNative, counts);
-        return true;
-    }
+
+/* sub_419c20: a track's FRD read into its blocks, the lists of what each block sees made longer. */
+void frd(win32::WinApplication* app, x86::CPU& cpu)
+{
     frdNative(app, cpu);
     if (!cpu.terminate)
         extendNeighbours(app);
-    return true;
+}
+
 }
 
 }

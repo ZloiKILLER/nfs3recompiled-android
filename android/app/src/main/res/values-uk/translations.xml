@@ -30,13 +30,6 @@
  <string name="touch_settings">Сенсорне керування</string>
  <string name="screen_settings">Налаштування екрана</string>
  <string name="display_settings">Дисплей</string>
- <string name="screen_adjustment">Налаштування зображення</string>
- <string name="brightness_label">Яскравість</string>
- <string name="contrast_label">Контраст</string>
- <string name="adjust_hint">Зразки показують результат. Застосується під час наступного запуску гри.</string>
- <string name="adjust_reset">Скинути</string>
- <string name="sample_dark">Ніч</string>
- <string name="sample_bright">День</string>
  <string name="back_to_launcher">Назад</string>
  <string name="switch_data">Зробити активним</string>
  <string name="data_change">Змінити…</string>
@@ -70,7 +63,6 @@
  <string name="orientation_landscape_reverse">Фіксовано — ландшафт навпаки</string>
  <string name="fps_30">30 FPS</string>
  <string name="fps_60">60 FPS</string>
- <string name="gamma_label">Гама</string>
  <string name="fps_cap_label">Частота кадрів</string>
  <string name="fps_error">Введіть ціле число від 1 до 240</string>
  <string name="save">Зберегти</string>
@@ -155,6 +147,8 @@
  <string name="faq_mapping"><b>Геймпади</b>\nГра завжди бачить два геймпади: «Геймпад 1» — перший гравець разом із сенсорним керуванням, «Геймпад 2» — другий гравець. У «Керування → Геймпади» виберіть натисканням кнопки, який пед чий, налаштуйте, що робить кожна кнопка, потім один раз натисніть «Геймпад УВІМК». Воно запише відповідне керування в налаштування гри та збереже копію старого файла. Лівий стік кермує, курки — газ і гальмо. У педа два набори кнопок, як у сенсорного керування дві розкладки: гоночний, який налаштовується тут, і постійний для меню та повторів, де Cross / A підтверджує, Circle / B повертає назад, а хрестовина рухає вибір. Щоб грати на клавіатурі, запишіть натомість «Стандартне в грі».</string>
  <string name="faq_lights"><b>Фари та повернення на трасу</b>\n☼ надсилає L. ↻ надсилає R для повернення на трасу. Клавіші можна змінити в «Керування → Сенсор → Клавіші».</string>
  <string name="faq_screen_data"><b>Екран та ігрові дані</b>\nЛандшафт фіксує гру горизонтально; «Авто» дозволяє поворот. Обмеження FPS задає частоту кадрів; менше значення знижує навантаження. «Ігрові дані» керують імпортом і показують активний набір. Кнопка «Грати» вмикається, коли набір даних готовий.</string>
+ <string name="faq_picture"><b>Яскравість, контраст і гамма</b>\nВони налаштовуються в самій грі: Options → Graphics → Advanced Settings або Graphics у меню паузи під час гонки. Зображення змінюється одразу, поки рухається повзунок. Done зберігає значення, Cancel повертає попередні. Налаштування діють на гонки, меню та відеоролики.</string>
+ <string name="faq_network"><b>Мережеві гонки</b>\nВідкрийте Connect Players на першому екрані гри. Local WiFi сам знаходить гонки між телефонами в одній мережі Wi-Fi. Network (TCP) з’єднує з будь-ким, хто знає адресу хоста, зокрема з ПК з оригінальною грою або Modern Patch. Нижче показано адресу цього телефона (Your IP) і TCP Port: натискання перемикає між 9803 (Modern Patch) і 1030 (оригінальна гра). Усі гравці гонки через TCP мають використовувати той самий порт.</string>
  <string name="gamepad_buttons">Кнопки</string>
  <string name="gamepad_buttons_title">Кнопки геймпада %1$d</string>
  <string name="gamepad_buttons_hint">Що робить кожна кнопка цього педа під час їзди. Лівий стік кермує, правий курок — газ, лівий — гальмо. У меню та в повторах кнопки постійні й не налаштовуються: Cross / A та Options / Menu підтверджують, Circle / B та Create / View повертають назад, хрестовина рухає вибір. Дії кнопок доходять до гри після того, як керування геймпадами записане в гру.</string>
@@ -190,12 +184,5 @@
  <string name="force_feedback_phone_note">Телефон передає удари, приземлення й перемикання передач, двигун на високих обертах і різкі повороти.</string>
  <string name="force_feedback_gamepad_note">«Геймпад 1» передає ефекти гри як є. Їхню силу задає сама гра: Options → Controllers → Force Feedback.</string>
  <string name="editor_snap_grid">Прив\'язка до сітки</string>
- <string name="network_title">Мережа</string>
- <string name="network_address">Адреса пристрою в мережі: %1$s</string>
- <string name="network_no_address">Немає підключення до мережі</string>
- <string name="network_port_label">Порт TCP/IP</string>
- <string name="network_port_modern">9803 · Modern Patch</string>
- <string name="network_port_original">1030 · оригінальна гра</string>
- <string name="network_hint">IPX сам знаходить перегони в цій мережі Wi-Fi. TCP/IP з\'єднує з будь-ким, хто знає адресу хоста, зокрема з ПК з оригінальною грою або Modern Patch. Усі гравці мають використовувати той самий порт.</string>
  <string name="fps_unlimited">Без обмеження</string>
 </resources>

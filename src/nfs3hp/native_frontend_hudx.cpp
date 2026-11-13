@@ -1,6 +1,13 @@
+#include "native_frontend_hudx.h"
+#include "game_settings.h"
+#include "native_carstate.h"
 #include "native_frontend.h"
+#include "native_frontend_hudr.h"
+#include "native_frontend_hudz.h"
+#include "port_hud.h"
 #include <nfs3hp.h>
 #include <fpu.h>
+#include <cstring>
 
 /* The race HUD's small functions, decompiled: what src/nfs3hp/port_hud.cpp and
  * the race's generated code call by address.
@@ -17,7 +24,13 @@
  *
  * All of the game's state stays in guest memory.  What each function leaves in
  * eax and in the registers it does not save is kept: Watcom's callers may go on
- * with them. */
+ * with them.
+ *
+ * Plan step 5: each function a typed core in frontend::hudx (native_frontend_hudx.h), in a frame of
+ * its own where the game's function has one, and an adapter under the game's name for the calls by
+ * address.  A core of this file calls another, and those of the HUD's other files done so
+ * (native_frontend_hudr.cpp, _hudz.cpp), as C++ (guest::direct), and the typed cores of other files
+ * too (fe::direct); the rest of the game still by address. */
 namespace nfs3hp
 {
 
@@ -63,8 +76,6 @@ constexpr reg32 kLightPosition = 0x28;             // three words
 constexpr reg32 kNoLookForLight = 0xfffffffe;      // sub_4771c0's answers past a light's number
 constexpr reg32 kLightsFull = 0xffffffff;
 
-constexpr reg32 kClearLights = 0x474d50;
-
 /* The selected look's address, -1's too: the setters work it out before they
  * look at the number. */
 reg32 lookAt(reg32 number)
@@ -85,11 +96,14 @@ void copyTriple(Guest& guest, reg32 to, reg32 from)
         guest.setDword(to + 4 * i, guest.dword(from + 4 * i));
 }
 
+}  // namespace
+
 /* sub_474d50: the selected look's lights off, if it has any.  It does not look
  * at the number: its callers have.  It leaves eax the look's offset when there
  * was nothing to do, and the lights' count when there was. */
-reg32 clearLights(Guest& guest)
+x86::reg32 frontend::hudx::clearLights(App* app, CPU& cpu)
 {
+    Guest guest(app, cpu);
     const reg32 number = guest.dword(kSelectedLook);
     const reg32 look = lookAt(number);
     if (guest.dword(look + kLookLightCount) == 0)
@@ -102,8 +116,10 @@ reg32 clearLights(Guest& guest)
 }
 
 /* sub_477070: the selected look flat, in three colours; its lights go. */
-reg32 setFlat(Guest& guest, reg32 first, reg32 second, reg32 third)
+x86::reg32 frontend::hudx::setFlat(App* app, CPU& cpu, reg32 first, reg32 second, reg32 third)
 {
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 12);
     const reg32 number = guest.dword(kSelectedLook);
     const reg32 look = lookAt(number);
     guest.leaveEdx(number);
@@ -113,13 +129,16 @@ reg32 setFlat(Guest& guest, reg32 first, reg32 second, reg32 third)
     guest.setDword(look + kLookColours, first);
     guest.setDword(look + kLookColours + 4, second);
     guest.setDword(look + kLookColours + 8, third);
-    return guest.call(kClearLights, args({ look }));
+    // The game's code hands it the look in eax, which it does not read.
+    return guest::direct<0x474d50, clearLights>(app, cpu);
 }
 
 /* sub_477170: the selected look lit from one direction, as the countdown has
  * it; its lights go. */
-reg32 setDirectional(Guest& guest, reg32 colour, reg32 direction)
+x86::reg32 frontend::hudx::setDirectional(App* app, CPU& cpu, reg32 colour, reg32 direction)
 {
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 8);
     const reg32 number = guest.dword(kSelectedLook);
     const reg32 look = lookAt(number);
     guest.leaveEbx(number);
@@ -128,13 +147,15 @@ reg32 setDirectional(Guest& guest, reg32 colour, reg32 direction)
     guest.setDword(look + kLookKind, kDirectional);
     guest.setDword(look + kLookDirectionalColour, colour);
     copyTriple(guest, look + kLookDirection, direction);
-    return guest.call(kClearLights, args({ look }));
+    // The game's code hands it the look in eax, which it does not read.
+    return guest::direct<0x474d50, clearLights>(app, cpu);
 }
 
 /* sub_4771c0: a light added to the selected look, into the first free of its
  * eight: its number, or kNoLookForLight, or kLightsFull. */
-reg32 addLight(Guest& guest, reg32 first, reg32 position, reg32 second, reg32 third)
+x86::reg32 frontend::hudx::addLight(App* app, CPU& cpu, reg32 first, reg32 position, reg32 third, reg32 second)
 {
+    Guest guest(app, cpu);
     const reg32 number = guest.dword(kSelectedLook);
     const reg32 look = lookAt(number);
     if (!lookUsable(guest, number, look))
@@ -171,8 +192,9 @@ reg32 addLight(Guest& guest, reg32 first, reg32 position, reg32 second, reg32 th
 }
 
 /* sub_477470: the selected look's texture. */
-reg32 setTexture(Guest& guest, reg32 texture)
+x86::reg32 frontend::hudx::setTexture(App* app, CPU& cpu, reg32 texture)
 {
+    Guest guest(app, cpu);
     const reg32 number = guest.dword(kSelectedLook);
     const reg32 look = lookAt(number);
     if (lookUsable(guest, number, look))
@@ -180,112 +202,111 @@ reg32 setTexture(Guest& guest, reg32 texture)
     return look;
 }
 
+namespace
+{
+
 /* ---------------------------------------------------------------------------
  * The HUD's records and panes
  * ------------------------------------------------------------------------- */
 
-constexpr reg32 kSplitScreen = 0x6fd3b0;           // 1 in split screen
-constexpr reg32 kNetPlayers = 0x6fd3a0;            // native_frontend_pause.cpp's name; see toggleShown
 constexpr reg32 kPaneUp = 0x791b1c;
 constexpr reg32 kRebuildAfterDefaults = 0x55d440;  // native_frontend_hudedit.cpp reads it
 
-constexpr reg32 kRecords = 0x6fbc50;
-constexpr reg32 kPlayerRecord = 0x348;
-constexpr reg32 kCopRecord = 0x1a4;
-constexpr reg32 kShown = 0x00;
-constexpr reg32 kRearView = 0x0c;
-constexpr reg32 kMapScale = 0x10;                  // a float
 constexpr reg32 kMapScaleOne = 0x3f800000;         // 1.0f, its bits: compared as a word
 
-constexpr reg32 kCameraTarget = 0x422bd0;          // eax a view: the car it follows
 constexpr reg32 kCarFlags = 0x200;                 // byte
 constexpr std::uint8_t kCarIsCop = 0x20;
 constexpr reg32 kSetPane = 0x4844c0;               // eax a view
-constexpr reg32 kRebuildElement = 0x4853c0;        // eax a view, edx an element
 constexpr reg32 kElements = 23;
 constexpr reg32 kRebuildBand = 0x4800a0;           // eax a view
-constexpr reg32 kPanePlace = 0x481f90;             // eax a view
 constexpr reg32 kZoomStepped = 0x48ea20;           // eax a view, edx the step
 
-constexpr reg32 kPaneResults = 0x7925d0;           // by view: what kPanePlace gave
+constexpr reg32 kPaneResults = 0x7925d0;           // by view: what sub_481f90 gave
 constexpr reg32 kPaneColours = 0x792880;           // by view: which of the box's colours
-
-/* The record of a player, racer or cop. */
-reg32 record(reg32 player, reg32 cop)
-{
-    return kRecords + player * kPlayerRecord + cop * kCopRecord;
-}
 
 /* In split screen view 0 has player 1's record and view 1 player 2's. */
 reg32 playerOfView(const Guest& guest, reg32 view)
 {
-    return view + (guest.dword(kSplitScreen) == 1 ? 1 : 0);
+    return view + (gameSettings(guest).playMode == 1 ? 1 : 0);
 }
 
 /* Whether the car a view follows is a cop's: which of the player's records. */
-reg32 copOfView(Guest& guest, reg32 view)
+reg32 copOfView(Guest& guest, x86::CPU& cpu, reg32 view)
 {
-    const reg32 car = guest.call(kCameraTarget, args({ view }));
+    const reg32 car = fe::direct<0x422bd0, carstate::targetOfCamera>(guest.app(), cpu, view);
     return (guest.byte(car + kCarFlags) & kCarIsCop) != 0 ? 1 : 0;
 }
 
-void toggle(Guest& guest, reg32 address)
+void toggle(reg32& field)
 {
-    guest.setDword(address, guest.dword(address) == 0 ? 1 : 0);
+    field = field == 0 ? 1 : 0;
 }
+
+}  // namespace
 
 /* sub_484260: a view's HUD on or off, its pane set afresh.  Only view 0 has one
  * outside split screen.  With no pane up yet and kNetPlayers at 2 it is on, not
  * toggled, and in split screen the other view's pane is set too. */
-reg32 toggleShown(Guest& guest, reg32 view)
+x86::reg32 frontend::hudx::toggleShown(App* app, CPU& cpu, reg32 view)
 {
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 24);
     const reg32 player = playerOfView(guest, view);
-    const reg32 cop = copOfView(guest, view);
-    if (view != 0 && guest.dword(kSplitScreen) != 1)
+    const reg32 cop = copOfView(guest, cpu, view);
+    if (view != 0 && gameSettings(guest).playMode != 1)
         return cop;
-    const reg32 shown = record(player, cop) + kShown;
-    if (guest.dword(kPaneUp) == 0 && guest.dword(kNetPlayers) == 2)
+    reg32& shown = gameSettings(guest).hudOf(player, cop).shown;
+    if (guest.dword(kPaneUp) == 0 && gameSettings(guest).replayMode == 2)
     {
-        guest.setDword(shown, 1);
-        const bool split = guest.dword(kSplitScreen) == 1;
+        shown = 1;
+        const bool split = gameSettings(guest).playMode == 1;
         guest.setDword(kPaneUp, 1);
         if (split)
-            guest.call(kSetPane, args({ 1 - view }));
+            fe::direct<0x4844c0, port::hud::hudPaneSetOf>(app, cpu, cpu.esp - 4,
+                                                          port::Args{ 1 - view, cpu.edx, cpu.ebx, cpu.ecx });
     }
     else
     {
-        toggle(guest, shown);
+        toggle(shown);
     }
-    return guest.call(kSetPane, args({ view }));
+    return reg32(*fe::direct<0x4844c0, port::hud::hudPaneSetOf>(app, cpu, cpu.esp - 4,
+                                                                 port::Args{ view, cpu.edx, cpu.ebx, cpu.ecx }));
 }
 
 /* sub_484450: the rear-view mirror on or off, in a race of one view only. */
-reg32 toggleRearView(Guest& guest)
+x86::reg32 frontend::hudx::toggleRearView(App* app, CPU& cpu)
 {
-    if (guest.dword(kSplitScreen) == 1 || guest.dword(kNetPlayers) != 0)
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 8);
+    if (gameSettings(guest).playMode == 1 || gameSettings(guest).replayMode != 0)
         return guest.eax();
-    const reg32 cop = copOfView(guest, 0);
-    toggle(guest, record(0, cop) + kRearView);
+    const reg32 cop = copOfView(guest, cpu, 0);
+    toggle(gameSettings(guest).hudOf(0, cop).rearView);
+    // By address: the function goes out with ebx, ecx, esi and edi as sub_4844c0 leaves them.
     return guest.call(kSetPane, args({ 0 }));
 }
 
 /* sub_485640: a view's pane, its elements and its band made afresh. */
-reg32 rebuildView(Guest& guest, reg32 view)
+x86::reg32 frontend::hudx::rebuildView(App* app, CPU& cpu, reg32 view)
 {
-    guest.call(kSetPane, args({ view }));
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 16);
+    fe::direct<0x4844c0, port::hud::hudPaneSetOf>(app, cpu, cpu.esp - 4, port::Args{ view, cpu.edx, cpu.ebx, cpu.ecx });
     for (reg32 element = 0; element < kElements; ++element)
-        guest.call(kRebuildElement, args({ view, element }));
+        guest::direct<0x4853c0, hudr::rebuildElement>(app, cpu, view, element);
     return guest.call(kRebuildBand, args({ view }));
 }
 
 /* sub_48ccf0: where a view's map pane is now, and from that which colour its
  * box takes: 0 at scale 1, 1 at any other, 2 with no place at all. */
-reg32 refreshPane(Guest& guest, reg32 view)
+x86::reg32 frontend::hudx::refreshPane(App* app, CPU& cpu, reg32 view)
 {
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 24);
     const reg32 player = playerOfView(guest, view);
-    const reg32 cop = copOfView(guest, view);
-    const reg32 scale = guest.dword(record(player, cop) + kMapScale);
-    const reg32 place = guest.call(kPanePlace, args({ view }));
+    const reg32 cop = copOfView(guest, cpu, view);
+    const reg32 scale = gameSettings(guest).hudOf(player, cop).mapScaleBits;
+    const reg32 place = guest::direct<0x481f90, hudz::mapPaneIsSmall>(app, cpu, view);
     guest.setDword(kPaneResults + 4 * view, place);
     const reg32 colour = place == 0 ? 2 : scale == kMapScaleOne ? 0 : 1;
     guest.setDword(kPaneColours + 4 * view, colour);
@@ -293,13 +314,18 @@ reg32 refreshPane(Guest& guest, reg32 view)
 }
 
 /* sub_48eb60: the zoom stepped in view 0 and, in split screen, in view 1. */
-reg32 stepZoom(Guest& guest, reg32 step)
+x86::reg32 frontend::hudx::stepZoom(App* app, CPU& cpu, reg32 step)
 {
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 12);
     reg32 result = guest.call(kZoomStepped, args({ 0, step }));
-    if (guest.dword(kSplitScreen) == 1)
+    if (gameSettings(guest).playMode == 1)
         result = guest.call(kZoomStepped, args({ 1, step }));
     return result;
 }
+
+namespace
+{
 
 /* ---------------------------------------------------------------------------
  * The HUD's rectangle groups
@@ -322,10 +348,13 @@ constexpr reg32 kVertexFlags = 0x14;
 constexpr reg32 kInsideTexelLow = 0x37800080;      // a float just above 1/65536
 constexpr reg32 kInsideTexelHigh = 0x3f7fff00;     // a float just below 1
 
+}  // namespace
+
 /* sub_49bef0: a surface empty, its indices in order, its vertices at the same
  * texture coordinates.  It leaves eax the size. */
-reg32 resetSurface(Guest& guest, reg32 surface)
+x86::reg32 frontend::hudx::resetSurface(App* app, CPU& cpu, reg32 surface)
 {
+    Guest guest(app, cpu);
     guest.setDword(surface + kSurfaceVertexCount, 0);
     for (reg32 i = 0; i < kSurfaceSize; ++i)
     {
@@ -340,13 +369,17 @@ reg32 resetSurface(Guest& guest, reg32 surface)
 
 /* sub_49bf40: `pairs` pairs of vertices taken from a surface, the first one's
  * address put at `first`. */
-reg32 takeVertices(Guest& guest, reg32 surface, reg32 pairs, reg32 first)
+x86::reg32 frontend::hudx::takeVertices(App* app, CPU& cpu, reg32 surface, reg32 pairs, reg32 first)
 {
+    Guest guest(app, cpu);
     guest.setDword(first, surface + kSurfaceVertices + guest.dword(surface + kSurfaceVertexCount) * kVertexBytes);
     guest.leaveEdx(pairs * 2);
     guest.setDword(surface + kSurfaceVertexCount, guest.dword(surface + kSurfaceVertexCount) + pairs * 2);
     return surface;
 }
+
+namespace
+{
 
 /* ---------------------------------------------------------------------------
  * The HUD's text
@@ -354,7 +387,6 @@ reg32 takeVertices(Guest& guest, reg32 surface, reg32 pairs, reg32 first)
 
 constexpr reg32 kTextWidthOverhang = 0x4d1480;     // eax the text: its width onto the x87's stack
 constexpr reg32 kDrawText = 0x4d1000;              // eax the text, edx x, ebx y: its width onto the x87's stack
-constexpr reg32 kSurfaceBegin = 0x49bc80;          // eax a font's surface, edx its texture
 constexpr reg32 kFontSurface = 0x7f74c0, kFontTexture = 0x83f6ac;
 constexpr reg32 kFont2Surface = 0x81b4d0, kFont2Texture = 0x83f6d8;
 constexpr reg32 kFont = 0x840184;
@@ -362,10 +394,15 @@ constexpr reg32 kCharacterSize = 0x84018c;         // a float
 constexpr reg32 kCharacterDrops = 0x83fa60;        // int8, by font and character
 constexpr reg32 kFontCharacters = 0xe0;
 
+}  // namespace
+
 /* sub_4d10e0: a text ending at x, at the y in ebx.  The width comes off the
  * x87's stack into the sum; what kDrawText leaves there is dropped. */
-reg32 drawTextToRightEdge(Guest& guest, reg32 text, reg32 right)
+x86::reg32 frontend::hudx::drawTextToRightEdge(App* app, CPU& cpu, reg32 text, reg32 right, reg32 y)
 {
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 16);
+    guest.leaveEbx(y);  // kDrawText's y, as the caller hands it
     guest.call(kTextWidthOverhang, args({ text }));
     const Float width = guest.fpu().pop();
     fe::X87 x87(guest);
@@ -376,174 +413,204 @@ reg32 drawTextToRightEdge(Guest& guest, reg32 text, reg32 right)
 }
 
 /* sub_4d1310: the two fonts' surfaces begun, each with its own texture. */
-reg32 beginFontSurfaces(Guest& guest)
+x86::reg32 frontend::hudx::beginFontSurfaces(App* app, CPU& cpu)
 {
-    guest.call(kSurfaceBegin, args({ kFontSurface, guest.dword(kFontTexture) }));
-    return guest.call(kSurfaceBegin, args({ kFont2Surface, guest.dword(kFont2Texture) }));
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 8);
+    guest::direct<0x49bc80, hudz::queueStart>(app, cpu, kFontSurface, guest.dword(kFontTexture));
+    return guest::direct<0x49bc80, hudz::queueStart>(app, cpu, kFont2Surface, guest.dword(kFont2Texture));
 }
 
 /* sub_4d14f0: how far a character of the font drops, at the character size. */
-reg32 characterDrop(Guest& guest, std::uint8_t character)
+x86::reg32 frontend::hudx::characterDrop(App* app, CPU& cpu, reg32 code)
 {
+    Guest guest(app, cpu);
+    const std::uint8_t character = std::uint8_t(code);
     const reg32 at = kCharacterDrops + character + guest.dword(kFont) * kFontCharacters;
     const Float drop = Float(sreg32(std::int8_t(guest.byte(at))));
     fe::X87 x87(guest);
     return reg32(x87.truncated(fp::mul(drop, Float(guest.floatAt(kCharacterSize)))));
 }
 
+/* sub_484220: as a race ends, the flag that has the HUD's defaults rebuild it taken down. */
+void frontend::hudx::clearRebuildFlag(App* app, CPU& cpu)
+{
+    Guest guest(app, cpu);
+    guest.setDword(kRebuildAfterDefaults, 0);
 }
+
+/* sub_487340: a group of the HUD's rectangles empty. */
+x86::reg32 frontend::hudx::groupClearCount(App* app, CPU& cpu, reg32 group)
+{
+    Guest guest(app, cpu);
+    guest.setDword(kGroupCounts + group * 4, 0);
+    return group;
+}
+
+/* sub_4873c0: a group's last rectangle gone, if it has one.  It leaves eax the count's offset. */
+x86::reg32 frontend::hudx::groupDropLast(App* app, CPU& cpu, reg32 group)
+{
+    Guest guest(app, cpu);
+    const reg32 offset = group * 4;
+    const reg32 count = guest.dword(kGroupCounts + offset);
+    if (count != 0)
+        guest.setDword(kGroupCounts + offset, count - 1);
+    return offset;
+}
+
+/* sub_497590 (stdcall 8): the length of the vector x, y on the stack, on the x87's stack.
+ * eax comes back as it went: the function saves it. */
+void frontend::hudx::vectorLength(App* app, CPU& cpu, reg32 xBits, reg32 yBits)
+{
+    Guest guest(app, cpu);
+    float xValue, yValue;
+    std::memcpy(&xValue, &xBits, sizeof xValue);
+    std::memcpy(&yValue, &yBits, sizeof yValue);
+    const Float x(xValue);
+    const Float y(yValue);
+    const Float xSquared = fp::mul(x, x);
+    const Float ySquared = fp::mul(y, y);
+    guest.fpu().push(fp::sqrt(fp::add(xSquared, ySquared)));
+}
+
+/* ---------------------------------------------------------------------------
+ * Under the game's addresses
+ * ------------------------------------------------------------------------- */
 
 void frontend::textLookClearLights(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_474d50", 0, 12, nullptr, 0, fe::kRestoreEcx | fe::kRestoreEdx };
-    fe::runWhole(app, cpu, site, [](Guest& guest) { return clearLights(guest); });
+    static fe::Site site{ "sub_474d50", 0, 0, nullptr, 0, fe::kRestoreEcx | fe::kRestoreEdx };
+    fe::runWhole(app, cpu, site, [&](Guest&) { return hudx::clearLights(app, cpu); });
 }
 
 void frontend::textLookSetFlat(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_477070", 0, 12, nullptr, 0, fe::kRestoreEcx | fe::kRestoreEsi };
+    static fe::Site site{ "sub_477070", 0, 0, nullptr, 0, fe::kRestoreEcx | fe::kRestoreEsi };
     const reg32 first = cpu.eax, second = cpu.edx, third = cpu.ebx;
-    fe::runWhole(app, cpu, site, [&](Guest& guest) { return setFlat(guest, first, second, third); });
+    fe::runWhole(app, cpu, site, [&](Guest&) { return hudx::setFlat(app, cpu, first, second, third); });
 }
 
 void frontend::textLookSetDirectional(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_477170", 0, 8, nullptr, 0, fe::kRestoreEcx };
+    static fe::Site site{ "sub_477170", 0, 0, nullptr, 0, fe::kRestoreEcx };
     const reg32 colour = cpu.eax, direction = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest& guest) { return setDirectional(guest, colour, direction); });
+    fe::runWhole(app, cpu, site, [&](Guest&) { return hudx::setDirectional(app, cpu, colour, direction); });
 }
 
 void frontend::textLookAddLight(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_4771c0", 0, 16, nullptr, 0, fe::kRestoreEsi | fe::kRestoreEdi };
+    static fe::Site site{ "sub_4771c0", 0, 0, nullptr, 0, fe::kRestoreEsi | fe::kRestoreEdi };
     const reg32 first = cpu.eax, position = cpu.edx, third = cpu.ebx, second = cpu.ecx;
-    fe::runWhole(app, cpu, site, [&](Guest& guest) { return addLight(guest, first, position, second, third); });
+    fe::runWhole(app, cpu, site, [&](Guest&) { return hudx::addLight(app, cpu, first, position, third, second); });
 }
 
 void frontend::textLookSetTexture(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_477470", 0, 12, nullptr, 0, fe::kRestoreEcx | fe::kRestoreEdx };
+    static fe::Site site{ "sub_477470", 0, 0, nullptr, 0, fe::kRestoreEcx | fe::kRestoreEdx };
     const reg32 texture = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest& guest) { return setTexture(guest, texture); });
+    fe::runWhole(app, cpu, site, [&](Guest&) { return hudx::setTexture(app, cpu, texture); });
 }
 
 void frontend::hudClearRebuildFlag(win32::WinApplication* app, x86::CPU& cpu)
 {
-    // sub_484220: as a race ends, the flag that has the HUD's defaults rebuild it taken down.
-    static fe::Site site{ "sub_484220", 0, 8, nullptr, 0, fe::kRestoreEdx };
-    fe::runWhole(app, cpu, site, [](Guest& guest) {
-        guest.setDword(kRebuildAfterDefaults, 0);
-        return guest.eax();
+    static fe::Site site{ "sub_484220", 0, 0, nullptr, 0, fe::kRestoreEdx };
+    fe::runWhole(app, cpu, site, [&](Guest&) {
+        hudx::clearRebuildFlag(app, cpu);
+        return cpu.eax;
     });
 }
 
 void frontend::hudToggleShown(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_484260", 0, 24, nullptr, 0 };
+    static fe::Site site{ "sub_484260", 0, 0, nullptr, 0 };
     const reg32 view = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest& guest) { return toggleShown(guest, view); });
+    fe::runWhole(app, cpu, site, [&](Guest&) { return hudx::toggleShown(app, cpu, view); });
 }
 
 void frontend::hudToggleRearView(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_484450", 0, 8, nullptr, 0, fe::kRestoreEdx };
-    fe::runWhole(app, cpu, site, [](Guest& guest) { return toggleRearView(guest); });
+    static fe::Site site{ "sub_484450", 0, 0, nullptr, 0, fe::kRestoreEdx };
+    fe::runWhole(app, cpu, site, [&](Guest&) { return hudx::toggleRearView(app, cpu); });
 }
 
 void frontend::hudRebuildView(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_485640", 0, 16, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEdx };
+    static fe::Site site{ "sub_485640", 0, 0, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEdx };
     const reg32 view = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest& guest) { return rebuildView(guest, view); });
+    fe::runWhole(app, cpu, site, [&](Guest&) { return hudx::rebuildView(app, cpu, view); });
 }
 
 void frontend::hudGroupClearCount(win32::WinApplication* app, x86::CPU& cpu)
 {
-    // sub_487340: a group of the HUD's rectangles empty.
-    static fe::Site site{ "sub_487340", 0, 8, nullptr, 0, fe::kRestoreEdx };
+    static fe::Site site{ "sub_487340", 0, 0, nullptr, 0, fe::kRestoreEdx };
     const reg32 group = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest& guest) {
-        guest.setDword(kGroupCounts + group * 4, 0);
-        return group;
-    });
+    fe::runWhole(app, cpu, site, [&](Guest&) { return hudx::groupClearCount(app, cpu, group); });
 }
 
 void frontend::hudGroupDropLast(win32::WinApplication* app, x86::CPU& cpu)
 {
-    // sub_4873c0: a group's last rectangle gone, if it has one.  It leaves eax the count's offset.
-    static fe::Site site{ "sub_4873c0", 0, 12, nullptr, 0, fe::kRestoreEcx | fe::kRestoreEdx };
-    const reg32 offset = cpu.eax * 4;
-    fe::runWhole(app, cpu, site, [&](Guest& guest) {
-        const reg32 count = guest.dword(kGroupCounts + offset);
-        if (count != 0)
-            guest.setDword(kGroupCounts + offset, count - 1);
-        return offset;
-    });
+    static fe::Site site{ "sub_4873c0", 0, 0, nullptr, 0, fe::kRestoreEcx | fe::kRestoreEdx };
+    const reg32 group = cpu.eax;
+    fe::runWhole(app, cpu, site, [&](Guest&) { return hudx::groupDropLast(app, cpu, group); });
 }
 
 void frontend::hudRefreshPane(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_48ccf0", 0, 24, nullptr, 0,
+    static fe::Site site{ "sub_48ccf0", 0, 0, nullptr, 0,
                           fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEdx | fe::kRestoreEdi };
     const reg32 view = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest& guest) { return refreshPane(guest, view); });
+    fe::runWhole(app, cpu, site, [&](Guest&) { return hudx::refreshPane(app, cpu, view); });
 }
 
 void frontend::hudStepZoom(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_48eb60", 0, 12, nullptr, 0, fe::kRestoreEcx | fe::kRestoreEdx };
+    static fe::Site site{ "sub_48eb60", 0, 0, nullptr, 0, fe::kRestoreEcx | fe::kRestoreEdx };
     const reg32 step = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest& guest) { return stepZoom(guest, step); });
+    fe::runWhole(app, cpu, site, [&](Guest&) { return hudx::stepZoom(app, cpu, step); });
 }
 
 void frontend::hudVectorLength(win32::WinApplication* app, x86::CPU& cpu)
 {
-    // sub_497590 (stdcall 8): the length of the vector x, y on the stack, on the x87's stack.
-    // eax comes back as it went: the function saves it.
-    static constexpr reg32 kFrameBytes = 8;
-    static fe::Site site{ "sub_497590", 8, kFrameBytes, nullptr, 0, 0 };
-    fe::runWhole(app, cpu, site, [](Guest& guest) {
-        const Float x(guest.floatAt(guest.frame() + kFrameBytes + 4));
-        const Float y(guest.floatAt(guest.frame() + kFrameBytes + 8));
-        const Float xSquared = fp::mul(x, x);
-        const Float ySquared = fp::mul(y, y);
-        guest.fpu().push(fp::sqrt(fp::add(xSquared, ySquared)));
-        return guest.eax();
+    static fe::Site site{ "sub_497590", 8, 0, nullptr, 0, 0 };
+    const reg32 x = app->getMemory<reg32>(cpu.esp + 4), y = app->getMemory<reg32>(cpu.esp + 8);
+    fe::runWhole(app, cpu, site, [&](Guest&) {
+        hudx::vectorLength(app, cpu, x, y);
+        return cpu.eax;
     });
 }
 
 void frontend::hudSurfaceReset(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_49bef0", 0, 12, nullptr, 0, fe::kRestoreEcx | fe::kRestoreEdx };
+    static fe::Site site{ "sub_49bef0", 0, 0, nullptr, 0, fe::kRestoreEcx | fe::kRestoreEdx };
     const reg32 surface = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest& guest) { return resetSurface(guest, surface); });
+    fe::runWhole(app, cpu, site, [&](Guest&) { return hudx::resetSurface(app, cpu, surface); });
 }
 
 void frontend::hudSurfaceTakeVertices(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_49bf40", 0, 12, nullptr, 0, fe::kRestoreEcx | fe::kRestoreEsi };
+    static fe::Site site{ "sub_49bf40", 0, 0, nullptr, 0, fe::kRestoreEcx | fe::kRestoreEsi };
     const reg32 surface = cpu.eax, pairs = cpu.edx, first = cpu.ebx;
-    fe::runWhole(app, cpu, site, [&](Guest& guest) { return takeVertices(guest, surface, pairs, first); });
+    fe::runWhole(app, cpu, site, [&](Guest&) { return hudx::takeVertices(app, cpu, surface, pairs, first); });
 }
 
 void frontend::hudTextToRightEdge(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_4d10e0", 0, 16, nullptr, 0, fe::kRestoreEcx };
-    const reg32 text = cpu.eax, right = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest& guest) { return drawTextToRightEdge(guest, text, right); });
+    static fe::Site site{ "sub_4d10e0", 0, 0, nullptr, 0, fe::kRestoreEcx };
+    const reg32 text = cpu.eax, right = cpu.edx, y = cpu.ebx;
+    fe::runWhole(app, cpu, site, [&](Guest&) { return hudx::drawTextToRightEdge(app, cpu, text, right, y); });
 }
 
 void frontend::hudFontSurfacesBegin(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_4d1310", 0, 8, nullptr, 0, fe::kRestoreEdx };
-    fe::runWhole(app, cpu, site, [](Guest& guest) { return beginFontSurfaces(guest); });
+    static fe::Site site{ "sub_4d1310", 0, 0, nullptr, 0, fe::kRestoreEdx };
+    fe::runWhole(app, cpu, site, [&](Guest&) { return hudx::beginFontSurfaces(app, cpu); });
 }
 
 void frontend::hudCharacterDrop(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_4d14f0", 0, 20, nullptr, 0, fe::kRestoreEcx | fe::kRestoreEdx };
-    const std::uint8_t character = std::uint8_t(cpu.eax);
-    fe::runWhole(app, cpu, site, [&](Guest& guest) { return characterDrop(guest, character); });
+    static fe::Site site{ "sub_4d14f0", 0, 0, nullptr, 0, fe::kRestoreEcx | fe::kRestoreEdx };
+    const reg32 character = cpu.eax;
+    fe::runWhole(app, cpu, site, [&](Guest&) { return hudx::characterDrop(app, cpu, character); });
 }
 
 }

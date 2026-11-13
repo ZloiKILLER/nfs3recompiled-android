@@ -134,7 +134,7 @@ namespace nfs3hp
 
 /* sub_457250: native, nfs3hp::port::fields::colourListHidden */
 
-/* sub_457260: native, nfs3hp::dead::stub_0x457260 */
+/* sub_457260: native, nfs3hp::pieces::stub_0x457260 */
 
 /* sub_457270: native, nfs3hp::frontend::dirPadUnderPointer */
 
@@ -156,7 +156,7 @@ namespace nfs3hp
 
 /* sub_457680: native, nfs3hp::frontend::dirPadLoadShapes */
 
-/* sub_4576e0: native, nfs3hp::dead::stub_0x4576e0 */
+/* sub_4576e0: native, nfs3hp::pieces::stub_0x4576e0 */
 
 /* sub_457ae0: native, nfs3hp::port::fields::editKey */
 

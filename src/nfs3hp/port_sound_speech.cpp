@@ -1,4 +1,6 @@
+#include "game_settings.h"
 #include "port_snd_speech.h"
+#include "port_sound_speech.h"
 
 #include <cstdint>
 #include <cstring>
@@ -43,11 +45,8 @@ constexpr Table<int32_t> kSaid{0x7dd334, 8}, kToTell{0x7dd340}, kPlaying{0x7dd34
 constexpr reg32 kQueueFirst = 0x7dd398, kQueueSecond = 0x7dd5d8;   // the two queues of lines
 
 constexpr Var<int32_t> kLineLock{0x560118}, kLastChatter{0x560ac4}, kLastCopLine{0x560ac8};
-constexpr Var<int32_t> kSpeechVolume{0x6fbbfc}, kSurround{0x5525a4}, kStereo{0x55292c}, kReplay{0x6fd3a0};
-constexpr Var<int32_t> kCoDriverOn{0x6fd49c}, kLaps{0x6fd4b4}, kPlayerIndex{0x6fd4f4};
-constexpr Var<int32_t> kTrackReversed{0x6fd4c0}, kCallsMirrored{0x6fd4c4}, kTrack{0x6fd4ac};
-constexpr Var<int32_t> kRaceTime{0x7d3684}, kMusicVolume{0x6fbbe8};
-constexpr Var<int32_t> kLanguage{0x6fbc68};
+constexpr Var<int32_t> kSurround{0x5525a4}, kStereo{0x55292c};
+constexpr Var<int32_t> kRaceTime{0x7d3684};
 constexpr Table<reg32> kCars{0x5efa48};
 constexpr Table<reg32> kRaceCars{0x5efc48};
 constexpr Var<int32_t> kRaceCarCount{0x5efda0};
@@ -96,7 +95,7 @@ int32_t distanceVolume(int32_t distance)
 /* A level of the speech: the setting times 127, times `level`, over 2^14. */
 int32_t speechLevel(App* app, int32_t level)
 {
-    const int32_t setting = kSpeechVolume(app);
+    const int32_t setting = gameSettings(app).speechVolume;
     return imul(level, int32_t((uint32_t(setting) << 7) - uint32_t(setting))) >> 14;
 }
 
@@ -262,14 +261,14 @@ static Result radioSoundTicked(App* app, CPU& cpu, reg32 esp, reg32 speaker, reg
         if (kPlaying(app, player) == 0)
             return player * 8;
         // The setting times 127 times 127 over 2^14.
-        const uint32_t setting = uint32_t(kSpeechVolume(app));
+        const uint32_t setting = uint32_t(gameSettings(app).speechVolume);
         const int32_t volume = int32_t(setting + (((setting << 6) - setting) << 8)) >> 14;
         return setVolume(app, cpu, sp - 4, reg32(kLineSound(app, player)), volume);
     }
     if (kRadioOn(app, player) == 0 || speaker != reg32(kRadioSpeaker(app, player)))
         return player * 8;
     const int32_t level = distance < 0x15f9 ? distanceVolume(distance) : 0;
-    const int32_t volume = imul(level, int32_t((uint32_t(kSpeechVolume(app)) << 7) - uint32_t(kSpeechVolume(app)))) >> 14;
+    const int32_t volume = imul(level, int32_t((uint32_t(gameSettings(app).speechVolume) << 7) - uint32_t(gameSettings(app).speechVolume))) >> 14;
     if (!setVolume(app, cpu, sp - 4, sound, volume))
         return {};
     const int32_t bend = int32_t(uint32_t(pitch) << 6) / 0x10000;
@@ -332,7 +331,7 @@ Result copRadioStarted(App* app, CPU& cpu, reg32 esp, int32_t player, int32_t ki
     const reg32 frame = esp - 4 * 4;
     const HeldEbp ebp(cpu, frame);
     const reg32 sp = frame - 8;
-    if (kReplay(app) != 0)
+    if (gameSettings(app).replayMode != 0)
         return distance;
     int32_t choices, first;
     switch (kind)
@@ -348,7 +347,7 @@ Result copRadioStarted(App* app, CPU& cpu, reg32 esp, int32_t player, int32_t ki
     if (choices != 1)
         while (line == kLastCopLine(app))
             line = first + int32_t(nextRandom(app) % reg32(choices));
-    const reg32 pan = kSplitScreenMode(app) == 1 ? (player != 0 ? kSideRight : kSideLeft) : 0;
+    const reg32 pan = gameSettings(app).playMode == 1 ? (player != 0 ? kSideRight : kSideLeft) : 0;
     const reg32 esi = reg32(player), edi = reg32(first);
     const int32_t playing = kPlaying(app, 0);
     kSaid.set(app, player, 1);
@@ -381,14 +380,14 @@ static Result speechLineQueued(App* app, CPU& cpu, reg32 esp, reg32 effect, reg3
     SpeechLine& l = record<SpeechLine>(app, line);
     l.pitch = 0x40;
     l.volume = 0x7f;
-    l.pan = kSplitScreenMode(app) == 1 ? (player != 0 ? kSideRight : kSideLeft) : 0;
+    l.pan = gameSettings(app).playMode == 1 ? (player != 0 ? kSideRight : kSideLeft) : 0;
     l.effect = int32_t(effect);
     l.player = int32_t(player);
     l.delay = int32_t(delay);
     l.bank = bankHandle(app, kSpeechBankSpeech);
     l.kind = 2;
     cpu.esi = 0x40;
-    cpu.edi = reg32(kSplitScreenMode(app));
+    cpu.edi = reg32(gameSettings(app).playMode);
     return speechLineSaid(app, cpu, sp - 4, line);
 }
 
@@ -407,7 +406,7 @@ static Result speechSetUp(App* app, CPU& cpu, reg32 esp)
         kQueued.set(app, p, 0);
         kToClear.set(app, p, 0);
     }
-    const reg32 track = reg32(kTrack(app));
+    const reg32 track = reg32(gameSettings(app).track);
     kLineLock.set(app, 0);
     kDescriptionLoaded.set(app, 0);
     kDescriptionOn.set(app, 0);
@@ -415,7 +414,7 @@ static Result speechSetUp(App* app, CPU& cpu, reg32 esp)
     if (!callWith(app, cpu, sp, kSprintf, Args{name, 0, 0, 0},
                   {name, kDescriptionFormat, kScriptFolder, track, track}, cpu.esi, 0, r))
         return {};
-    appendText(app, name, kTrackReversed(app) != 0 ? 0x540320 : 0x540328);
+    appendText(app, name, gameSettings(app).backwards != 0 ? 0x540320 : 0x540328);
     Result script = callResult(app, cpu, sp, kLoadQuietly, Args{name, 0, 0, 0}, {}, cpu.esi, name);
     if (!script)
         return {};
@@ -458,14 +457,14 @@ Result raceLineQueued(App* app, CPU& cpu, reg32 esp, reg32 effect, reg32 kind, r
     SpeechLine& l = record<SpeechLine>(app, line);
     l.pitch = 0x40;
     l.volume = 0x7f;
-    l.pan = kSplitScreenMode(app) == 1 ? (player != 0 ? kSideRight : kSideLeft) : 0;
+    l.pan = gameSettings(app).playMode == 1 ? (player != 0 ? kSideRight : kSideLeft) : 0;
     l.effect = int32_t(effect);
     l.player = int32_t(player);
     l.kind = int32_t(kind);
     l.bank = bankHandle(app, kSpeechBankLines);
     kLineKind.set(app, int32_t(player), int32_t(kind));
     cpu.esi = 0x7f;
-    cpu.edi = reg32(kSplitScreenMode(app));
+    cpu.edi = reg32(gameSettings(app).playMode);
     return speechLineSaid(app, cpu, line - 4, line);
 }
 
@@ -555,8 +554,8 @@ Result lapTimeLineQueued(App* app, CPU& cpu, reg32 esp, reg32 player, int32_t se
     seconds = int32_t(uint32_t(seconds) + 3);
     if (kLineKind(app, int32_t(player)) != 0 || seconds < 0x32)
         return int32_t(player);
-    const int32_t language = kLanguage(app);
-    const bool metric = kSpeechUnits(app) == 0;
+    const int32_t language = gameSettings(app).hud[0].speedometerForm;
+    const bool metric = gameSettings(app).language == 0;
     // By tens of seconds: as the code's two tests of the voice's language
     // and of the units go.
     bool tens;
@@ -585,11 +584,11 @@ static Result coDriverTicked(App* app, CPU& cpu, reg32 esp, int32_t player, uint
     const HeldEbp ebp(cpu, frame);
     const reg32 sp = frame - 0x14;
     const reg32 slot = reg32(player) * 4;
-    if (kScript(app, player) == 0 || kCoDriverOn(app) == 0)
+    if (kScript(app, player) == 0 || gameSettings(app).raceOptionCopRadio == 0)
         return int32_t(slot);
-    if (player == 0 && kLaps(app) <= kScriptLap(app, 0))
+    if (player == 0 && std::int32_t(gameSettings(app).laps) <= kScriptLap(app, 0))
         return int32_t(slot);
-    const reg32 car = player == 0 && kSplitScreenMode(app) != 1 ? kCars(app, kPlayerIndex(app)) : kCars(app, player);
+    const reg32 car = player == 0 && gameSettings(app).playMode != 1 ? kCars(app, std::int32_t(gameSettings(app).localPlayer)) : kCars(app, player);
     uint32_t speedBits = load<uint32_t>(app, car + 0x7c0);
     const int32_t ahead = load<int32_t>(app, car + 0x224);
     const reg32 script = kScript(app, player);
@@ -603,7 +602,7 @@ static Result coDriverTicked(App* app, CPU& cpu, reg32 esp, int32_t player, uint
     const int32_t revsScaled = truncatedInteger(double(unsignedRevs) * double(kRevsScale(app)));
     if (reach < 2)
         reach = 2;
-    if (kTrackReversed(app) != 0)
+    if (gameSettings(app).backwards != 0)
     {
         speedBits ^= 0x80000000u;
         position = int32_t(length) - position;
@@ -656,13 +655,13 @@ static Result coDriverTicked(App* app, CPU& cpu, reg32 esp, int32_t player, uint
             if (word <= -1)
                 break;
             reg32 code = reg32(word);
-            if (kCallsMirrored(app) != 0)
+            if (gameSettings(app).mirrored != 0)
                 code = load<uint8_t>(app, reg32(word) + kCallCodes);
             reg32 delay;
             if (code == 0xf)
             {
                 reg32 mine = load<int32_t>(app, kScript(app, player) + 4) == 0x11 ? 0xb : 3;
-                delay = kCallsMirrored(app) != 0 ? (mine == 3 ? 0xb : 3) : mine;
+                delay = gameSettings(app).mirrored != 0 ? (mine == 3 ? 0xb : 3) : mine;
             }
             else
                 delay = reg32(int32_t(int8_t(load<uint8_t>(app, code + kCallEffects + 3))));
@@ -704,7 +703,7 @@ static Result descriptionSpoken(App* app, CPU& cpu, reg32 esp, reg32 part)
 static Result musicBackUp(App* app, CPU& cpu, reg32 sp)
 {
     kDescriptionStopped.set(app, 0);
-    return callResult(app, cpu, sp, kStreamVolume, Args{0x64, reg32(kMusicVolume(app)), 0, 0}, {}, cpu.esi, cpu.edi);
+    return callResult(app, cpu, sp, kStreamVolume, Args{0x64, reg32(gameSettings(app).menuMusicVolume), 0, 0}, {}, cpu.esi, cpu.edi);
 }
 
 /* 0x4c9380's: the description's tick: the next part spoken when one is done;
@@ -765,7 +764,7 @@ static Result descriptionTicked(App* app, CPU& cpu, reg32 esp, reg32 eax)
 
 /* 0x4c9490's: the description, if it is spoken, stopped: its tick once more,
  * the music back up.  `eax` as the code has it with nothing to stop. */
-static Result descriptionStopped(App* app, CPU& cpu, reg32 esp, reg32 eax)
+Result descriptionStopped(App* app, CPU& cpu, reg32 esp, reg32 eax)
 {
     const reg32 frame = esp - 2 * 4;
     const HeldEbp ebp(cpu, frame);
@@ -774,13 +773,13 @@ static Result descriptionStopped(App* app, CPU& cpu, reg32 esp, reg32 eax)
     kDescriptionStopped.set(app, 1);
     if (!descriptionTicked(app, cpu, frame - 4, eax))
         return {};
-    return callResult(app, cpu, frame, kStreamVolume, Args{0x64, reg32(kMusicVolume(app)), 0, 0}, {}, cpu.esi, cpu.edi);
+    return callResult(app, cpu, frame, kStreamVolume, Args{0x64, reg32(gameSettings(app).menuMusicVolume), 0, 0}, {}, cpu.esi, cpu.edi);
 }
 
 /* 0x4c95f0's: a description spoken -- track `track` of the menus' (kind 0x32)
  * or of the cars' (0x34) in language `language`, or (0x33) part `track` of
  * the one loaded -- the music lowered to half for it. */
-static Result descriptionStarted(App* app, CPU& cpu, reg32 esp, reg32 track, reg32 kind, reg32 language)
+Result descriptionStarted(App* app, CPU& cpu, reg32 esp, reg32 track, reg32 kind, reg32 language)
 {
     const reg32 frame = esp - 4 * 4;
     // The code keeps ebp at a base in its frame, its locals at offsets from it.
@@ -795,7 +794,7 @@ static Result descriptionStarted(App* app, CPU& cpu, reg32 esp, reg32 track, reg
         eax = reg32(*stopped);
     }
     const auto musicDown = [&]() {
-        const int32_t volume = kMusicVolume(app);
+        const int32_t volume = gameSettings(app).menuMusicVolume;
         const Result r = callResult(app, cpu, sp, kStreamVolume, Args{0x64, reg32(volume / 2), 0, 0}, {}, cpu.esi, cpu.edi);
         if (r)
             kDescriptionKind.set(app, int32_t(kind));
@@ -836,7 +835,7 @@ static Result descriptionStarted(App* app, CPU& cpu, reg32 esp, reg32 track, reg
 }
 
 /* 0x4c9860's: the system tasks run, then the description's tick. */
-static Result descriptionServed(App* app, CPU& cpu, reg32 esp)
+Result descriptionServed(App* app, CPU& cpu, reg32 esp)
 {
     const reg32 frame = esp - 4;
     const HeldEbp ebp(cpu, frame);
@@ -849,16 +848,16 @@ static Result descriptionServed(App* app, CPU& cpu, reg32 esp)
 /* 0x4c9890's: the race voice bank `index` loaded -- from the units' folder
  * (one of five), "2" more in the split screen -- as bank 2 (the description's
  * loaded mark set) or 1. */
-static Result raceVoiceBankLoaded(App* app, CPU& cpu, reg32 esp, reg32 index)
+Result raceVoiceBankLoaded(App* app, CPU& cpu, reg32 esp, reg32 index)
 {
     const reg32 frame = esp - 6 * 4;
     const HeldEbp ebp(cpu, frame - 0x17e);
     const reg32 name = frame - 0x100, sp = name;
-    const reg32 units = reg32(kSpeechUnits(app));
+    const reg32 units = reg32(gameSettings(app).language);
     if (units <= 5)
         copyText(app, name, kSpeechUnitFolders[units]);
     appendText(app, name, load<reg32>(app, kCarNames.address(int32_t(index))));
-    if (kSplitScreenMode(app) == 1)
+    if (gameSettings(app).playMode == 1)
         appendText(app, name, kSecondPlayerSuffix);
     const bool second = index != 0;
     const Result r = callResult(app, cpu, sp, kLoadBank, Args{name, second ? 2u : 1u, 0, 0}, {}, cpu.esi, name);
@@ -871,7 +870,7 @@ static Result raceVoiceBankLoaded(App* app, CPU& cpu, reg32 esp, reg32 index)
 
 /* 0x4c9990's: effect `group` * 16 + `index` of the car bank (index above 4) or the
  * scenery bank, spoken at full volume.  The sound's handle. */
-static Result carLineSpoken(App* app, CPU& cpu, reg32 esp, reg32 index, reg32 group)
+Result carLineSpoken(App* app, CPU& cpu, reg32 esp, reg32 index, reg32 group)
 {
     const reg32 frame = esp - 3 * 4;
     const HeldEbp ebp(cpu, frame);
@@ -885,7 +884,7 @@ static Result carLineSpoken(App* app, CPU& cpu, reg32 esp, reg32 index, reg32 gr
 }
 
 /* 0x4c9a00's: the race voice banks removed and their header copies freed. */
-static Result raceVoiceBanksFreed(App* app, CPU& cpu, reg32 esp)
+Result raceVoiceBanksFreed(App* app, CPU& cpu, reg32 esp)
 {
     const reg32 frame = esp - 5 * 4;
     const HeldEbp ebp(cpu, frame);
@@ -961,12 +960,19 @@ void descriptionStop(App* app, CPU& cpu)
     e.finish(cpu, descriptionStopped(app, cpu, e.esp, e.eax));
 }
 
+/* 0x4c95e0's, 0x4c99f0's: the spoken line's status, the game's code's frame
+ * (a word pushed) below `esp`. */
+Result spokenStatusOf(App* app, CPU& cpu, reg32 esp)
+{
+    const HeldEbp ebp(cpu, esp - 4);
+    return soundStatus(app, cpu, esp - 4 - 4, reg32(kSpokenSound(app)));
+}
+
 /* 0x4c95e0, 0x4c99f0: the spoken line's status. */
 void spokenStatus(App* app, CPU& cpu)
 {
     const Entry e(cpu);
-    const HeldEbp ebp(cpu, e.frame(1));
-    e.finish(cpu, soundStatus(app, cpu, e.frame(1) - 4, reg32(kSpokenSound(app))));
+    e.finish(cpu, spokenStatusOf(app, cpu, e.esp));
 }
 
 void descriptionStart(App* app, CPU& cpu)
@@ -993,12 +999,19 @@ void carLineSpeak(App* app, CPU& cpu)
     e.finish(cpu, carLineSpoken(app, cpu, e.esp, e.eax, e.edx));
 }
 
+/* 0x4c99d0's: the spoken line faded out, the game's code's frame (3 words
+ * pushed) below `esp`. */
+Result spokenStopOf(App* app, CPU& cpu, reg32 esp)
+{
+    const HeldEbp ebp(cpu, esp - 3 * 4);
+    return fadeSound(app, cpu, esp - 3 * 4 - 4, reg32(kSpokenSound(app)), 0, -1);
+}
+
 /* 0x4c99d0: the spoken line faded out. */
 void spokenStop(App* app, CPU& cpu)
 {
     const Entry e(cpu);
-    const HeldEbp ebp(cpu, e.frame(3));
-    e.finish(cpu, fadeSound(app, cpu, e.frame(3) - 4, reg32(kSpokenSound(app)), 0, -1));
+    e.finish(cpu, spokenStopOf(app, cpu, e.esp));
 }
 
 void raceVoiceFree(App* app, CPU& cpu)

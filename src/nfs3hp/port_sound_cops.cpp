@@ -1,3 +1,4 @@
+#include "game_settings.h"
 #include "port_snd_sources.h"
 
 #include <algorithm>
@@ -82,8 +83,7 @@ constexpr Records<CopSource> kCops{0x570b78};
 constexpr Table<int32_t> kCarEngineBanks{0x552744};
 constexpr Var<int32_t> kListenerEngineBank{0x570dd0}, kListenerChase{0x570dcc};
 constexpr Table<reg32> kCars{0x5efa48};
-constexpr Var<int32_t> kCarCount{0x5efda4}, kSplitScreen{0x6fd3b0}, kPlayerCar{0x6fd4ac}, kPlayerIndex{0x6fd4f4};
-constexpr Var<int32_t> kView{0x6fd4f8}, kMirrored{0x6fd4c4};
+constexpr Var<int32_t> kCarCount{0x5efda4};
 constexpr Table<uint8_t> kModelPitch{0x55276c};  // each model's engine pitch, the models from 0x32
 
 // The listener's place, and what is not rewritten here: the distance from it,
@@ -221,8 +221,8 @@ Result zoneSoundPlayed(App* app, CPU& cpu, reg32 esp, int32_t slot, reg32 car, r
     held.setEsi(si);
     if (zones == 0)
         return 0;
-    const int32_t view = kView(app);
-    if (view != kPlayerIndex(app))
+    const int32_t view = gameSettings(app).viewedPlayer;
+    if (view != gameSettings(app).localPlayer)
     {
         if (!callGameResult(app, cpu, at, kGameTrace, {reg32(slot), reg32(view), offset, zones}, {0x64, 2, kTraceText}))
             return {};
@@ -263,13 +263,13 @@ Result zoneSoundPlayed(App* app, CPU& cpu, reg32 esp, int32_t slot, reg32 car, r
     else
         volume = 0x7f;
     int32_t side = z.side;
-    if (kMirrored(app) != 0)
+    if (gameSettings(app).mirrored != 0)
     {
         side = negated(side);
         di = reg32(side);
     }
     reg32 pan;
-    if (kSplitScreen(app) == 1)
+    if (gameSettings(app).playMode == 1)
         pan = load<int32_t>(app, car + 0x1f0) != 0 ? 0xc000 : 0x3fff;
     else
     {
@@ -352,7 +352,7 @@ void sourcesReset(App* app, CPU& cpu)
 {
     const Entry e(cpu);
     kSourceLimit.set(app, 4);
-    const int32_t engineBank = kCarEngineBanks(app, kPlayerCar(app));
+    const int32_t engineBank = kCarEngineBanks(app, std::int32_t(gameSettings(app).track));
     kSourceCount.set(app, 0);
     kListenerEngineBank.set(app, engineBank);
     for (int32_t player = 0; player < 2; ++player)
@@ -362,14 +362,14 @@ void sourcesReset(App* app, CPU& cpu)
         p.second = 0;
         p.third = 0;
         resetSource(app, p.source, 0);
-        if (kSplitScreen(app) <= 1)
+        if (std::int32_t(gameSettings(app).playMode) <= 1)
         {
             if (player < kCarCount(app))
                 p.source.car = kCars(app, player);
         }
         else if (player == 0)
         {
-            const int32_t car = kPlayerIndex(app);
+            const int32_t car = gameSettings(app).localPlayer;
             if (car < kCarCount(app))
                 p.source.car = kCars(app, car);
         }

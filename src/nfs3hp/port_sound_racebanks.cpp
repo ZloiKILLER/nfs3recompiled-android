@@ -1,3 +1,4 @@
+#include "game_settings.h"
 #include "port_snd_speech.h"
 
 #include <cstdint>
@@ -28,11 +29,9 @@ constexpr reg32 kLoadBank = 0x410b50, kCarBank = 0x4138e0, kLoadingBar = 0x4a33d
 constexpr reg32 kPathEnd = 0x4529a0, kTrackName = 0x4392b0;
 constexpr reg32 kAudioDir = 0x7a2ab4, kCarsDir = 0x7a28b4;
 constexpr reg32 kUnitNamesAt = 0x41296c;   // 7 words in the code: the units' names
-constexpr Var<int32_t> kSurround{0x5525a4}, kPlayerIndex{0x6fd4f4}, kTrack{0x6fd4ac}, kRaceMode{0x6fd520};
-constexpr Var<int32_t> kGameMode{0x6fd3b8}, kCoDriverOn{0x6fd49c}, kCrowd{0x6fd4cc}, kNight{0x6fd4c8};
-constexpr Var<uint8_t> kCarFlags{0x6fd4fc}, kRaceFlags{0x55eb2e}, kRaceFlagsMore{0x55eb2f};
-constexpr Var<int32_t> kCopCar{0x6fd500};
-constexpr reg32 kRacers = 0x6fd540, kRacerSize = 0x6c;   // the racers' records, the model first
+constexpr Var<int32_t> kSurround{0x5525a4};
+constexpr Var<uint8_t> kRaceFlags{0x55eb2e}, kRaceFlagsMore{0x55eb2f};
+constexpr reg32 kRacerSize = 0x6c;  // the racers' records, the model first
 
 /* The game's inlined strcpy of `from` to `to`: esi is left where the copy
  * stopped reading, which the callees that follow may see. */
@@ -71,7 +70,7 @@ reg32 modelEnding(int32_t model)
 /* A racer's car model (in the 0..0x31 the archives have, else 0). */
 int32_t modelOf(App* app, int32_t racer)
 {
-    const int32_t model = load<int32_t>(app, kRacers + reg32(racer) * kRacerSize);
+    const int32_t model = int32_t(gameSettings(app).entryAt(reg32(racer) * kRacerSize).car);
     return model < 0 || model > 0x31 ? 0 : model;
 }
 
@@ -137,20 +136,20 @@ static Result raceBanksLoaded(App* app, CPU& cpu, reg32 esp)
     cpu.ecx = 0;
     cpu.esi = kUnitNamesAt + 28;
     cpu.edi = unitNames + 28;
-    const reg32 unit = reg32(kSpeechUnits(app));
+    const reg32 unit = reg32(gameSettings(app).language);
     if (unit <= 5)
     {
         copyName(app, cpu, units, kSpeechUnitFolders[unit]);
         cpu.edi = units;
     }
     int32_t other;
-    if (kSplitScreenMode(app) == 1)
+    if (gameSettings(app).playMode == 1)
     {
         // The split screen: each player's car, into banks 0 and 0x16; the third's
         // (a cop's) next.
-        for (const auto& [at, slot] : {std::pair<reg32, reg32>{0x6fd540, 0}, {0x6fd5ac, 0x16}})
+        for (const auto& [entry, slot] : {std::pair<reg32, reg32>{0, 0}, {1, 0x16}})
         {
-            const int32_t model = load<int32_t>(app, at);
+            const int32_t model = int32_t(gameSettings(app).entries[entry].car);
             if (model < 0 || model > 0x31)
             {
                 copy(kAudioDir);
@@ -161,24 +160,24 @@ static Result raceBanksLoaded(App* app, CPU& cpu, reg32 esp)
             else if (!carArchive(model, slot))
                 return {};
         }
-        other = kRaceMode(app) != 0 ? modelOf(app, 3) : 0;
+        other = gameSettings(app).opponentCount != 0 ? modelOf(app, 3) : 0;
     }
     else
     {
         // The player's car: a cop's (the flags' bit 2) by its own number, else by
         // its model.
-        const int32_t model = load<int32_t>(app, kRacers + reg32(kPlayerIndex(app)) * kRacerSize);
-        if ((kCarFlags(app) & 2) != 0)
+        const int32_t model = int32_t(gameSettings(app).entryAt(reg32(gameSettings(app).localPlayer) * kRacerSize).car);
+        if ((std::uint8_t(gameSettings(app).raceFlags) & 2) != 0)
         {
             copy(kAudioDir);
-            const reg32 cop = reg32(kCopCar(app)) + 0x32;
+            const reg32 cop = reg32(gameSettings(app).cheatTrack) + 0x32;
             cpu.ecx = cop;
             reg32 ending;
             if (model == 0x25b)
                 ending = 0x536ac8;
             else if (model >= 0x258)
                 ending = 0x536ad0;
-            else if (cop == 0x3e || cop == 0x35 || kCopCar(app) == 0x15)
+            else if (cop == 0x3e || cop == 0x35 || gameSettings(app).cheatTrack == 0x15)
                 ending = 0x536ad8;
             else
                 ending = 0x536ae0;
@@ -189,12 +188,12 @@ static Result raceBanksLoaded(App* app, CPU& cpu, reg32 esp)
         else if (!carArchive(model, 0))
             return {};
         // The other car: the opponent's.
-        other = modelOf(app, kPlayerIndex(app) == 0 ? 1 : 0);
+        other = modelOf(app, gameSettings(app).localPlayer == 0 ? 1 : 0);
     }
     // The other car's (or the cop's) bank, as player 1's.
     if (!carArchive(other, 1) || !bar())
         return {};
-    if (kGameMode(app) == 3)
+    if (gameSettings(app).raceType == 3)
     {
         // The pursuit: the cops' sounds and their radio.
         copy(kAudioDir);
@@ -214,7 +213,7 @@ static Result raceBanksLoaded(App* app, CPU& cpu, reg32 esp)
     cpu.esi = units;
     if (!loadBank(2) || !bar())
         return {};
-    const reg32 voiceUnit = reg32(kSpeechUnits(app));
+    const reg32 voiceUnit = reg32(gameSettings(app).language);
     copy(units);
     append(0x536b0c);
     append(load<reg32>(app, unitNames + voiceUnit * 4));
@@ -223,21 +222,21 @@ static Result raceBanksLoaded(App* app, CPU& cpu, reg32 esp)
         return {};
     copy(units);
     append(0x536b10);
-    append(load<reg32>(app, unitNames + reg32(kSpeechUnits(app)) * 4));
+    append(load<reg32>(app, unitNames + reg32(gameSettings(app).language) * 4));
     if (!loadBank(7) || !bar())
         return {};
     // The track's ambience: by its number, its weather and night.
-    const int32_t track = kTrack(app);
+    const int32_t track = gameSettings(app).track;
     if (track < 9)
     {
         if (!game(kSprintf, 0, 0, {name, kSurround(app) != 0 ? 0x536b14u : 0x536b20u, kAudioDir, reg32(track)}))
             return {};
         reg32 more = 0;
-        if (kCrowd(app) != 0 && kNight(app) != 0)
+        if (gameSettings(app).weather != 0 && gameSettings(app).night != 0)
             more = 0x536b2c;
-        else if (kCrowd(app) != 0)
+        else if (gameSettings(app).weather != 0)
             more = 0x536b30;
-        else if (kNight(app) != 0)
+        else if (gameSettings(app).night != 0)
             more = 0x536b34;
         if (more != 0)
         {
@@ -259,7 +258,7 @@ static Result raceBanksLoaded(App* app, CPU& cpu, reg32 esp)
     // The speech of the track: its four banks, by the track's place in the four
     // (in the units' folder, or the audio one past 7).
     const auto trackSpeech = [&](reg32 format, reg32 slot, bool audioPast7) {
-        const int32_t number = kTrack(app);
+        const int32_t number = gameSettings(app).track;
         reg32 folder = audioPast7 ? kAudioDir : units, value = reg32(number);
         if (number <= 7)
         {
@@ -269,7 +268,7 @@ static Result raceBanksLoaded(App* app, CPU& cpu, reg32 esp)
         return game(kSprintf, 0, 0, {name, format, folder, value}) && loadBank(slot) && bar();
     };
     const uint8_t mode = kRaceFlags(app);
-    if (((mode & 0x10) != 0 || (mode & 0x20) != 0) && kGameMode(app) == 3)
+    if (((mode & 0x10) != 0 || (mode & 0x20) != 0) && gameSettings(app).raceType == 3)
     {
         if (!trackSpeech(0x536b4c, 0xb, true) || !trackSpeech(0x536b58, 0xc, true) || !trackSpeech(0x536b64, 0xd, true)
             || !trackSpeech(0x536b70, 0xe, true))
@@ -281,16 +280,16 @@ static Result raceBanksLoaded(App* app, CPU& cpu, reg32 esp)
     append(0x536b7c);
     if (!loadBank(0xa) || !bar())
         return {};
-    if (kCoDriverOn(app) != 0)
+    if (gameSettings(app).raceOptionCopRadio != 0)
     {
         // The co-driver's.
         copy(units);
         append(0x536b84);
-        append(load<reg32>(app, unitNames + reg32(kSpeechUnits(app)) * 4));
+        append(load<reg32>(app, unitNames + reg32(gameSettings(app).language) * 4));
         if (!loadBank(9) || !bar())
             return {};
     }
-    if (kGameMode(app) != 3)
+    if (gameSettings(app).raceType != 3)
         return int32_t(r);
     if (!trackSpeech(0x536b4c, 0xb, false) || !trackSpeech(0x536b58, 0xc, false) || !trackSpeech(0x536b64, 0xd, false)
         || !trackSpeech(0x536b70, 0xe, false))

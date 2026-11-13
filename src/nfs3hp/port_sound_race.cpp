@@ -1,3 +1,4 @@
+#include "game_settings.h"
 #include "port_snd.h"
 
 #include <cmath>
@@ -27,7 +28,6 @@ struct Slot
     int32_t effect;
 };
 
-constexpr Var<int32_t> kSplitScreen{0x6fd3b0}, kCrowd{0x6fd4cc}, kPlayerIndex{0x6fd4f4};
 constexpr Var<int32_t> kFarEffect{0x571118}, kFarTicks{0x552934};
 constexpr Table<int32_t> kBankHandles{0x571124, 12};
 constexpr Table<Slot> kSlots{0x570de8};
@@ -79,7 +79,7 @@ Result startEffect(App* app, CPU& cpu, reg32 esp, reg32 esi, reg32 edi, int32_t 
 Result farEffectPlayed(App* app, CPU& cpu, reg32 esp, reg32 eax)
 {
     const HeldEbp ebp(cpu, esp - 5 * 4);
-    if (kCrowd(app) == 0)
+    if (gameSettings(app).weather == 0)
         return int32_t(eax);
     reg32 pan = nextRandom(app) & 0x7fff;
     const int32_t effect = kFarEffect(app);
@@ -111,7 +111,7 @@ void engineSoundsStart(App* app, CPU& cpu)
     const reg32 frame = e.frame(6);
     const HeldEbp ebp(cpu, frame);
     reg32 eax = e.eax, edi = e.edi;
-    const bool split = kSplitScreen(app) == 1;
+    const bool split = gameSettings(app).playMode == 1;
     if (kSlots(app, 0).sound == -1)
     {
         const reg32 pan = split ? kLeft : 0;
@@ -158,7 +158,7 @@ void farEffectAim(App* app, CPU& cpu)
     const Entry e(cpu);
     if (kFarTicks(app) != -1)
         return e.back(cpu, e.eax);
-    const reg32 car = kCars(app, kPlayerIndex(app));
+    const reg32 car = kCars(app, std::int32_t(gameSettings(app).localPlayer));
     const int32_t acrossFrom = int32_t(e.eax), alongFrom = int32_t(e.edx);
     const int32_t z = scaled(app, car + 0xa0);
     const int32_t dx = scaled(app, car + 0x98) - acrossFrom, dz = z - alongFrom;
@@ -214,7 +214,7 @@ void crowdEffect(App* app, CPU& cpu)
     const reg32 frame = e.frame(5);
     const HeldEbp ebp(cpu, frame);
     int32_t effect = int32_t(e.edx);
-    const bool split = kSplitScreen(app) == 1;
+    const bool split = gameSettings(app).playMode == 1;
     reg32 side = 0;
     if (split)
         side = e.eax != 0 ? kRight : kLeft;
@@ -238,7 +238,7 @@ void carEffectFifteen(App* app, CPU& cpu)
     const Entry e(cpu);
     const reg32 frame = e.frame(4);
     const HeldEbp ebp(cpu, frame);
-    const reg32 pan = kSplitScreen(app) == 1 ? (e.eax != 0 ? kRight : kLeft) : 0;
+    const reg32 pan = gameSettings(app).playMode == 1 ? (e.eax != 0 ? kRight : kLeft) : 0;
     e.finish(cpu, startEffect(app, cpu, frame, e.esi, e.edi, bankHandle(app, kCarBank), 0xf, 0x7f, pan));
 }
 

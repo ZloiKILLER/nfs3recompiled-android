@@ -31,13 +31,6 @@
  <string name="touch_settings">Comandi touch</string>
  <string name="screen_settings">Schermo</string>
  <string name="display_settings">Schermo</string>
- <string name="screen_adjustment">Regolazione immagine</string>
- <string name="brightness_label">Luminosità</string>
- <string name="contrast_label">Contrasto</string>
- <string name="adjust_hint">I campioni mostrano il risultato. Ha effetto al prossimo avvio del gioco.</string>
- <string name="adjust_reset">Ripristina</string>
- <string name="sample_dark">Notte</string>
- <string name="sample_bright">Giorno</string>
  <string name="back_to_launcher">Indietro</string>
  <string name="switch_data">Attiva</string>
  <string name="data_change">Cambia…</string>
@@ -71,7 +64,6 @@
  <string name="orientation_landscape_reverse">Fisso — orizzontale capovolto</string>
  <string name="fps_30">30 FPS</string>
  <string name="fps_60">60 FPS</string>
- <string name="gamma_label">Gamma</string>
  <string name="fps_cap_label">Frequenza fotogrammi</string>
  <string name="fps_error">Inserisci un numero intero da 1 a 240</string>
  <string name="save">Salva</string>
@@ -156,6 +148,8 @@
  <string name="faq_mapping"><b>Gamepad</b>\nIl gioco vede sempre due gamepad: il gamepad 1 è il giocatore 1 insieme ai comandi touch, il gamepad 2 è il giocatore 2. In Comandi → Gamepad scegli quale pad è quale premendo un suo tasto e imposta cosa fa ogni tasto, poi premi una volta Gamepad ATTIVO, che scrive i comandi corrispondenti nelle impostazioni del gioco e fa un backup del vecchio file. Lo stick sinistro sterza, i grilletti accelerano e frenano. Un pad ha due set di tasti, come i comandi touch hanno due disposizioni: quello da gara che imposti qui e uno fisso per i menu e i replay, dove Cross / A conferma, Circle / B torna indietro e la croce sposta la selezione. Per giocare con la tastiera, scrivi invece Predefinito del gioco.</string>
  <string name="faq_lights"><b>Fari e rientro in pista</b>\n☼ invia L. ↻ invia R per tornare in pista. I tasti si possono cambiare in Comandi → Touch → Tasti.</string>
  <string name="faq_screen_data"><b>Schermo e dati di gioco</b>\nOrizzontale blocca il gioco in landscape; Automatico consente la rotazione. Il limite FPS riduce la frequenza dei fotogrammi; un valore più basso alleggerisce il lavoro al secondo. «Dati di gioco» gestisce le importazioni e mostra il set attivo. «Gioca» si abilita quando un set è pronto.</string>
+ <string name="faq_picture"><b>Luminosità, contrasto e gamma</b>\nSi regolano nel gioco stesso: Options → Graphics → Advanced Settings, oppure Graphics nel menu di pausa durante una gara. L’immagine cambia subito mentre muovi il cursore. Done conserva i valori, Cancel ripristina quelli precedenti. Le impostazioni valgono per gare, menu e filmati.</string>
+ <string name="faq_network"><b>Gare in rete</b>\nApri Connect Players nella prima schermata del gioco. Local WiFi trova da solo le gare tra telefoni sulla stessa rete Wi-Fi. Network (TCP) si collega a chiunque conosca l’indirizzo dell’host, anche a un PC con il gioco originale o il Modern Patch. Sotto ci sono l’indirizzo di questo telefono (Your IP) e TCP Port: un tocco passa da 9803 (Modern Patch) a 1030 (gioco originale) e viceversa. Tutti i giocatori di una gara TCP devono usare la stessa porta.</string>
  <string name="gamepad_buttons">Tasti</string>
  <string name="gamepad_buttons_title">Tasti del gamepad %1$d</string>
  <string name="gamepad_buttons_hint">Cosa fa ogni tasto di questo pad mentre guidi. Lo stick sinistro sterza, il grilletto destro accelera e quello sinistro frena. Nei menu e nei replay i tasti sono fissi e non si impostano: Cross / A e Options / Menu confermano, Circle / B e Create / View tornano indietro, la croce sposta la selezione. Le azioni dei tasti arrivano al gioco una volta scritti in esso i comandi del gamepad.</string>
@@ -191,12 +185,5 @@
  <string name="force_feedback_phone_note">Il telefono riproduce urti, atterraggi e cambi di marcia, il motore ad alti giri e le curve strette.</string>
  <string name="force_feedback_gamepad_note">Il gamepad 1 riproduce gli effetti del gioco così come sono. La loro intensità si imposta nel gioco: Options → Controllers → Force Feedback.</string>
  <string name="editor_snap_grid">Aggancia alla griglia</string>
- <string name="network_title">Rete</string>
- <string name="network_address">Indirizzo di questo dispositivo in rete: %1$s</string>
- <string name="network_no_address">Nessuna connessione di rete</string>
- <string name="network_port_label">Porta TCP/IP</string>
- <string name="network_port_modern">9803 · Modern Patch</string>
- <string name="network_port_original">1030 · gioco originale</string>
- <string name="network_hint">IPX trova da solo le gare su questa rete Wi-Fi. TCP/IP collega chiunque conosca l\'indirizzo dell\'host, anche un PC con il gioco originale o il Modern Patch. Tutti i giocatori usano la stessa porta.</string>
  <string name="fps_unlimited">Illimitato</string>
 </resources>

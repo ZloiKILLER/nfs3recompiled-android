@@ -185,10 +185,8 @@ static const char g_blitVertexShader[] =
  * the point -- the night tracks are lit almost entirely by the car's own
  * headlights.
  *
- * Order matters and is mirrored exactly by the launcher's preview (see
- * ScreenAdjustment.transfer in the Java side), so what the player sees while
- * dragging a slider is what the game will draw: gamma first, then contrast
- * around mid grey, then brightness as an offset. */
+ * Order matters: gamma first, then contrast around mid grey, then brightness as
+ * an offset. */
 static const char g_blitFragmentShader[] =
 "in vec2 v_texCoord;"
 "layout (location=0) out vec4 o_color;"
@@ -204,10 +202,11 @@ static const char g_blitFragmentShader[] =
 "    o_color = vec4(clamp(c, vec3(0.0), vec3(1.0)), texel.a);"
 "}";
 
-/* Read once each: the launcher sets them before the game starts, the way it
- * does the frame cap and the orientation.  The neutral value is what an unset
- * or unparseable variable means, so a missing launcher leaves the picture
- * exactly as the game drew it. */
+/* The launcher sets them before the game starts, the way it does the frame cap
+ * and the orientation, and the game's graphics screens move them from then on
+ * (port_display.cpp).  The neutral value is what an unset or unparseable
+ * variable means, so a missing launcher leaves the picture exactly as the game
+ * drew it. */
 static float envFloat(const char* name, float neutral, float low, float high)
 {
     const char* value = SDL_getenv(name);
@@ -215,22 +214,34 @@ static float envFloat(const char* name, float neutral, float low, float high)
     return (parsed >= low && parsed <= high) ? parsed : neutral;
 }
 
-static float displayGamma()
+/* Written by the game's thread as a slider moves, read by whichever thread
+ * draws the frame. */
+struct DisplayValues
 {
-    static const float s_gamma = envFloat("NFS_GAMMA", 1.f, 0.05f, 10.f);
-    return s_gamma;
+    std::atomic<float> gamma{ envFloat("NFS_GAMMA", 1.f, 0.05f, 10.f) };
+    std::atomic<float> brightness{ envFloat("NFS_BRIGHTNESS", 0.f, -1.f, 1.f) };
+    std::atomic<float> contrast{ envFloat("NFS_CONTRAST", 1.f, 0.05f, 10.f) };
+};
+
+static DisplayValues& displayValues()
+{
+    static DisplayValues s_values;
+    return s_values;
 }
 
-static float displayBrightness()
+DisplayAdjustment displayAdjustment()
 {
-    static const float s_brightness = envFloat("NFS_BRIGHTNESS", 0.f, -1.f, 1.f);
-    return s_brightness;
+    DisplayValues& values = displayValues();
+    return { values.gamma.load(std::memory_order_relaxed), values.brightness.load(std::memory_order_relaxed),
+             values.contrast.load(std::memory_order_relaxed) };
 }
 
-static float displayContrast()
+void setDisplayAdjustment(const DisplayAdjustment& adjustment)
 {
-    static const float s_contrast = envFloat("NFS_CONTRAST", 1.f, 0.05f, 10.f);
-    return s_contrast;
+    DisplayValues& values = displayValues();
+    values.gamma.store(adjustment.gamma, std::memory_order_relaxed);
+    values.brightness.store(adjustment.brightness, std::memory_order_relaxed);
+    values.contrast.store(adjustment.contrast, std::memory_order_relaxed);
 }
 
 /* A context is created current on the thread that creates it, and a window's
@@ -559,12 +570,13 @@ void Renderer::presentFrame(x86::reg32 width, x86::reg32 height)
     glDisable(GL_BLEND);
 
     glUseProgram(m_blitProgram);
+    const DisplayAdjustment adjustment = displayAdjustment();
     if (m_blitGammaUniform >= 0)
-        glUniform1f(m_blitGammaUniform, displayGamma());
+        glUniform1f(m_blitGammaUniform, adjustment.gamma);
     if (m_blitBrightnessUniform >= 0)
-        glUniform1f(m_blitBrightnessUniform, displayBrightness());
+        glUniform1f(m_blitBrightnessUniform, adjustment.brightness);
     if (m_blitContrastUniform >= 0)
-        glUniform1f(m_blitContrastUniform, displayContrast());
+        glUniform1f(m_blitContrastUniform, adjustment.contrast);
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, m_texture);
     glBindVertexArray(m_blitVertexArray);

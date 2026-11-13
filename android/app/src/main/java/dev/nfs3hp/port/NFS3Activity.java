@@ -672,6 +672,23 @@ public class NFS3Activity extends SDLActivity
         runOnUiThread(()->{if(haptics!=null&&android.os.SystemClock.uptimeMillis()-sent<100)haptics.setTurn(turn);});
     }
 
+    /** JNI entry point: gamma, brightness and contrast as percentages, left
+     *  changed on the game's graphics screens (port_display.cpp).  They are read
+     *  back and handed to the game the next time it starts. */
+    public void onDisplayAdjusted(int gamma, int brightness, int contrast) {
+        GamePreferences.get(this).edit()
+            .putInt(GamePreferences.GAMMA, gamma)
+            .putInt(GamePreferences.BRIGHTNESS, brightness)
+            .putInt(GamePreferences.CONTRAST, contrast)
+            .commit();
+    }
+
+    /** JNI entry point: the TCP/IP port chosen on the connection screen
+     *  (port_connect.cpp).  Written at once, as this process ends with the game. */
+    public void onNetworkPortChosen(int port) {
+        GamePreferences.get(this).edit().putInt(GamePreferences.NETWORK_PORT, port).commit();
+    }
+
     /** Whether the player is driving, from the game itself (nfs3hp_main.cpp):
      *  the on-screen controls carry the racing layout while a race is running
      *  with nothing over it, and the menu layout the rest of the time -- in the

@@ -1,0 +1,18 @@
+# address name kind: the functions native whole in src/nfs3hp/native_frontend_tail.cpp, frontend::name.
+# kind: how frontend_checks enters it (Menu, Key, Item, None).
+4be240 taskBlockFree None
+4be3a0 taskListRun None
+4c48d0 raceFrameRun None
+4c7b50 raceQueuesClear None
+4c8470 trackPlaceNear None
+4c8550 trackPlaceAt None
+4c9a80 trackLaneOffset None
+4dcdf0 weatherSetUp None
+4dd230 weatherScatterAtCut None
+4dd330 weatherFadeByTime None
+4dd3d0 weatherFallingAtNode None
+4dd4c0 weatherShareSeen None
+4dd510 weatherViewChanged None
+4dd5e0 weatherMoveDrops None
+4dece0 weatherPassOverView None
+4eac60 angleSineCosine None

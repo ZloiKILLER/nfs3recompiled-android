@@ -1,4 +1,12 @@
+#include "native_frontend_view.h"
+#include "native_ea_memory.h"
+#include "native_ea_support.h"
 #include "native_frontend.h"
+#include "native_frontend_eab.h"
+#include "native_frontend_loop.h"
+#include "native_frontend_rende.h"
+#include "native_frontend_showcase.h"
+#include "native_load_cardb.h"
 #include <nfs3hp.h>
 #include <iterator>
 
@@ -15,7 +23,12 @@
  *
  * All of the game's state stays in guest memory.  What each function leaves in
  * eax and in the registers it does not save is kept: Watcom's callers may go on
- * with them. */
+ * with them.
+ *
+ * Plan step 5: each function a typed core in frontend::view (native_frontend_view.h), in a frame
+ * of its own where the game's function has one (fe::Frame), and an adapter under the game's name
+ * for the calls by address.  A core of this file calls another as C++ (guest::direct), and the
+ * typed cores of other files too (fe::direct); the rest of the game still by address. */
 namespace nfs3hp
 {
 
@@ -26,19 +39,13 @@ using fe::args;
 using fe::Guest;
 using fe::GuestString;
 using x86::reg32;
+using App = win32::WinApplication;
+using CPU = x86::CPU;
 
 constexpr reg32 kSprintf = 0x4df690;
 constexpr reg32 kStrcmp = 0x4ee310;
-constexpr reg32 kLoadFile = 0x4e0ec0;              // (name, flags): the file in a block, or 0
-constexpr reg32 kFreeBlock = 0x4e1890;
-constexpr reg32 kShapeInFile = 0x4ef1e0;           // (file, name): the .fsh's shape of that name
-constexpr reg32 kNewTile = 0x4d4080;               // (file, name, side, record), format: a tile's texture made
 constexpr reg32 kShapeIntoTexture = 0x4d5ed0;      // (texture, shape, side, format)
-constexpr reg32 kCarFolder = 0x4392b0;
-constexpr reg32 kCarFileStem = 0x439290;
 constexpr reg32 kCarFlag4 = 0x4395c0;              // the car has a folder of its own
-constexpr reg32 kCurrentMenuName = 0x44ae00;
-constexpr reg32 kFillTiles = 0x4647a0;
 
 /* ---------------------------------------------------------------------------
  * The tiles
@@ -63,45 +70,56 @@ constexpr reg32 kNameBytes = 0x100;
 constexpr reg32 kTilesFrame = 20 + kNameBytes;
 
 /* The file of the tiles, its path in the frame's buffer. */
-reg32 loadTileFile(Guest& guest, reg32 folder, reg32 fileName)
+reg32 loadTileFile(App* app, CPU& cpu, Guest& guest, reg32 folder, reg32 fileName)
 {
     const reg32 name = guest.frame();
     guest.call(kSprintf, args({}, { name, kPathFormat.address, folder, fileName }));
-    return guest.call(kLoadFile, args({ name, kLoadFlags }));
+    return *fe::direct<0x4e0ec0, ea::loadWhole>(app, cpu, name, kLoadFlags);
 }
 
+}  // namespace
+
 /* sub_464700: the tiles' records made from folder + fileName, then the file freed. */
-reg32 makeTiles(Guest& guest, reg32 folder, reg32 fileName)
+x86::reg32 frontend::view::makeTiles(App* app, CPU& cpu, reg32 fileName, reg32 folder)
 {
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, kTilesFrame);
     const reg32 name = guest.frame();
-    const reg32 file = loadTileFile(guest, folder, fileName);
+    const reg32 file = loadTileFile(app, cpu, guest, folder, fileName);
     for (reg32 tile = 0; tile < kTileCount; ++tile)
     {
         guest.call(kSprintf, args({}, { name, kTileNameFormat.address, tile }));
-        guest.call(kNewTile, args({ file, name, kTileSide, kTiles + kTileBytes * tile }, { kTileFormat }));
+        // The tile's texture made: (file, name, side, record), the format on the stack.
+        fe::direct<0x4d4080, rende::loadShapeTexture>(app, cpu, file, name, kTileSide, kTiles + kTileBytes * tile,
+                                                      kTileFormat);
     }
-    return guest.call(kFreeBlock, args({ file }));
+    return *fe::direct<0x4e1890, ea::purgeBlock>(app, cpu, file);
 }
 
 /* sub_4647a0: the same records' textures filled from folder + fileName, then the
  * file freed. */
-reg32 fillTiles(Guest& guest, reg32 folder, reg32 fileName)
+x86::reg32 frontend::view::fillTiles(App* app, CPU& cpu, reg32 fileName, reg32 folder)
 {
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, kTilesFrame);
     const reg32 name = guest.frame();
-    const reg32 file = loadTileFile(guest, folder, fileName);
+    const reg32 file = loadTileFile(app, cpu, guest, folder, fileName);
     for (reg32 tile = 0; tile < kTileCount; ++tile)
     {
         guest.call(kSprintf, args({}, { name, kTileNameFormat.address, tile }));
-        const reg32 shape = guest.call(kShapeInFile, args({ file, name }));
+        const reg32 shape = fe::direct<0x4ef1e0, eab::shapeFileFind>(app, cpu, file, name);
         const reg32 texture = guest.dword(kTiles + kTileBytes * tile + kTileTexture);
         guest.call(kShapeIntoTexture, args({ texture, shape, kTileSide, kTileFormat }));
     }
-    return guest.call(kFreeBlock, args({ file }));
+    return *fe::direct<0x4e1890, ea::purgeBlock>(app, cpu, file);
 }
 
 /* ---------------------------------------------------------------------------
  * The interior
  * ------------------------------------------------------------------------- */
+
+namespace
+{
 
 constexpr GuestString kInteriorFormat = { 0x53ab3c, "IN_%s.fsh" };
 constexpr GuestString kCredits = { 0x53ab48, "credits1" };
@@ -120,10 +138,14 @@ constexpr reg32 kCarRootCommon = 0x7a3234;         // the folder of the others' 
 constexpr reg32 kPathBytes = 300;
 constexpr reg32 kInteriorFrame = 24 + 2 * kPathBytes;
 
+}  // namespace
+
 /* sub_464eb0: the car's interior on the tiles, when the car is not the one they
  * hold.  Under a fade eax stays as it came; with the same car it is the car. */
-reg32 loadInterior(Guest& guest)
+x86::reg32 frontend::view::loadInterior(App* app, CPU& cpu)
 {
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, kInteriorFrame);
     if (guest.dword(kScreenFade) != 0)
         return guest.eax();
     const reg32 car = guest.dword(kCar);
@@ -134,11 +156,11 @@ reg32 loadInterior(Guest& guest)
 
     const reg32 picture = guest.frame();
     const reg32 folder = guest.frame() + kPathBytes;
-    const reg32 carFolder = guest.call(kCarFolder, args({ car }));
-    const reg32 stem = guest.call(kCarFileStem, args({ guest.dword(kShownCar) }));
+    const reg32 carFolder = *fe::direct<0x4392b0, load::folderOf>(app, cpu, car);
+    const reg32 stem = fe::direct<0x439290, frontend::showcase::carFileStem>(app, cpu, guest.dword(kShownCar));
     guest.call(kSprintf, args({}, { picture, kInteriorFormat.address, stem }));
 
-    const reg32 screen = guest.call(kCurrentMenuName);
+    const reg32 screen = fe::direct<0x44ae00, frontend::loop::currentMenuName>(app, cpu);
     if (guest.call(kStrcmp, args({ screen, kCredits.address })) == 0)
     {
         // By the car's number there.  The folder copied is the game's own dead store:
@@ -151,54 +173,58 @@ reg32 loadInterior(Guest& guest)
         guest.call(kSprintf, args({}, { folder, kCarFolderFormat.address, kCarRootOwn, carFolder }));
     else
         guest.copyString(folder, kCarRootCommon);
-    return guest.call(kFillTiles, args({ picture, folder }));
+    return guest::direct<0x4647a0, view::fillTiles>(app, cpu, picture, folder);
 }
 
 /* ---------------------------------------------------------------------------
  * The widget's state
  * ------------------------------------------------------------------------- */
 
+namespace
+{
+
 constexpr reg32 kDragging = 0x67894c;              // port_view's: the mouse drags the map
 constexpr reg32 kPanActive = 0x678950;             // port_view's: the map is panning
 constexpr reg32 kStateDragging = 2, kStatePanning = 1;
 constexpr reg32 kStateIdle = 0xfffffffd;           // -3
 
+constexpr std::uint8_t kRestoreBcSiDi = fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEsi | fe::kRestoreEdi;
+
+}  // namespace
+
 /* sub_4652f0: the table's +0x14. */
-reg32 widgetState(const Guest& guest)
+x86::reg32 frontend::view::widgetState(App* app, CPU& cpu)
 {
+    const Guest guest(app, cpu);
     if (guest.dword(kDragging) != 0)
         return kStateDragging;
     return guest.dword(kPanActive) != 0 ? kStatePanning : kStateIdle;
 }
 
-constexpr std::uint8_t kRestoreBcSiDi = fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEsi | fe::kRestoreEdi;
-
-}
-
 void frontend::viewMakeTiles(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_464700", 0, kTilesFrame, kTilesStrings, std::size(kTilesStrings), kRestoreBcSiDi };
+    static fe::Site site{ "sub_464700", 0, 0, kTilesStrings, std::size(kTilesStrings), kRestoreBcSiDi };
     const reg32 fileName = cpu.eax, folder = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest& guest) { return makeTiles(guest, folder, fileName); });
+    fe::runWhole(app, cpu, site, [&](Guest&) { return view::makeTiles(app, cpu, fileName, folder); });
 }
 
 void frontend::viewFillTiles(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_4647a0", 0, kTilesFrame, kTilesStrings, std::size(kTilesStrings), kRestoreBcSiDi };
+    static fe::Site site{ "sub_4647a0", 0, 0, kTilesStrings, std::size(kTilesStrings), kRestoreBcSiDi };
     const reg32 fileName = cpu.eax, folder = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest& guest) { return fillTiles(guest, folder, fileName); });
+    fe::runWhole(app, cpu, site, [&](Guest&) { return view::fillTiles(app, cpu, fileName, folder); });
 }
 
 void frontend::viewLoadInterior(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_464eb0", 0, kInteriorFrame, kInteriorStrings, std::size(kInteriorStrings), fe::kRestoreAll };
-    fe::runWhole(app, cpu, site, [](Guest& guest) { return loadInterior(guest); });
+    static fe::Site site{ "sub_464eb0", 0, 0, kInteriorStrings, std::size(kInteriorStrings), fe::kRestoreAll };
+    fe::runWhole(app, cpu, site, [&](Guest&) { return view::loadInterior(app, cpu); });
 }
 
 void frontend::viewWidgetState(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_4652f0", 0, 4, nullptr, 0, 0 };
-    fe::runWhole(app, cpu, site, [](Guest& guest) { return widgetState(guest); });
+    static fe::Site site{ "sub_4652f0", 0, 0, nullptr, 0, 0 };
+    fe::runWhole(app, cpu, site, [&](Guest&) { return view::widgetState(app, cpu); });
 }
 
 }

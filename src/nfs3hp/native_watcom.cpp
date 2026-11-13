@@ -1,6 +1,9 @@
 #include "native_guest.h"
 #include "native_watcom_heap.h"
+#include "native_windows.h"
 #include <lib/thread.h>
+#include <winapi/kernel32.h>
+#include <winapi/user32.h>
 #include <algorithm>
 #include <bitset>
 #include <cstring>
@@ -81,6 +84,15 @@ struct Kept
         cpu.ebp = ebp;
     }
 };
+
+/* A Windows function, its words handed in the order of its parameters: the port's own, called as
+ * C++ (native_windows.h); in the checks through its import's slot, as the code calls it.  False
+ * when the game stopped in it; eax what it gave back. */
+template <x86::reg32 Slot, auto Function, typename... Words>
+bool windows(win32::WinApplication* app, x86::CPU& cpu, Words... words)
+{
+    return guest::windows<Slot, Function>(app, cpu, words...).has_value();
+}
 
 }  // namespace
 
@@ -772,7 +784,7 @@ bool setErrnoDos(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 error)
 /* __set_errno_nt's: GetLastError's error, as __set_errno_dos has it. */
 bool setErrnoNt(win32::WinApplication* app, x86::CPU& cpu)
 {
-    return call(app, cpu, at(app, kGetLastError)) && setErrnoDos(app, cpu, cpu.eax);
+    return windows<kGetLastError, &win32::kernel32::GetLastError>(app, cpu) && setErrnoDos(app, cpu, cpu.eax);
 }
 
 /* What the runtime makes of a Windows function's BOOL: 0, or errno from
@@ -846,11 +858,12 @@ namespace
 {
 
 /* A function of one call to Windows on the path, BOOL its result. */
-void pathCall(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 slot, std::initializer_list<x86::reg32> arguments)
+template <x86::reg32 Slot, auto Function, typename... Words>
+void pathCall(win32::WinApplication* app, x86::CPU& cpu, Words... words)
 {
     const Kept kept(cpu);
     x86::reg32 result;
-    if (!call(app, cpu, at(app, slot), arguments) || !windowsResult(app, cpu, cpu.eax, result))
+    if (!windows<Slot, Function>(app, cpu, words...) || !windowsResult(app, cpu, cpu.eax, result))
         return;
     kept.back(cpu);
     returns(cpu, result);
@@ -868,7 +881,7 @@ bool fileAttributes(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 entry,
             return true;
     const x86::reg32 found = entry - 0x150;  // ebx, ecx, edx, esi; WIN32_FIND_DATA
     cpu.esp = found;
-    if (!call(app, cpu, at(app, kFindFirstFileA), {path, found}))
+    if (!windows<kFindFirstFileA, &win32::kernel32::FindFirstFileA>(app, cpu, path, found))
         return false;
     if (cpu.eax != 0xffffffff)
         attributes = at(app, found);
@@ -880,7 +893,7 @@ bool fileAttributes(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 entry,
 /* unlink (clib/handleio/c/unlnkwnt.c, 0x4e28a0): DeleteFileA. */
 void unlink(win32::WinApplication* app, x86::CPU& cpu)
 {
-    pathCall(app, cpu, kDeleteFileA, {cpu.eax});
+    pathCall<kDeleteFileA, &win32::kernel32::DeleteFileA>(app, cpu, cpu.eax);
 }
 
 /* remove (clib/file/c/remove.c, 0x4ee2e0): unlink. */
@@ -893,19 +906,19 @@ void remove(win32::WinApplication* app, x86::CPU& cpu)
  * attributes. */
 void mkdir(win32::WinApplication* app, x86::CPU& cpu)
 {
-    pathCall(app, cpu, kCreateDirectoryA, {cpu.eax, 0});
+    pathCall<kCreateDirectoryA, &win32::kernel32::CreateDirectoryA>(app, cpu, cpu.eax, 0);
 }
 
 /* rmdir (clib/direct/c/rmdirwnt.c, 0x4ee400): RemoveDirectoryA. */
 void rmdir(win32::WinApplication* app, x86::CPU& cpu)
 {
-    pathCall(app, cpu, kRemoveDirectoryA, {cpu.eax});
+    pathCall<kRemoveDirectoryA, &win32::kernel32::RemoveDirectoryA>(app, cpu, cpu.eax);
 }
 
 /* chdir (clib/direct/c/chdirwnt.c, 0x4f0260): SetCurrentDirectoryA. */
 void chdir(win32::WinApplication* app, x86::CPU& cpu)
 {
-    pathCall(app, cpu, kSetCurrentDirectoryA, {cpu.eax});
+    pathCall<kSetCurrentDirectoryA, &win32::kernel32::SetCurrentDirectoryA>(app, cpu, cpu.eax);
 }
 
 /* chmod (clib/file/c/chmodwnt.c, 0x4ee3c0): the file read-only unless edx
@@ -929,7 +942,7 @@ void chmod(win32::WinApplication* app, x86::CPU& cpu)
     else
     {
         attributes = (attributes & ~x86::reg32(1)) | ((mode & 0x80) != 0 ? 0 : 1);  // FILE_ATTRIBUTE_READONLY
-        if (!call(app, cpu, at(app, kSetFileAttributesA), {path, attributes})
+        if (!windows<kSetFileAttributesA, &win32::kernel32::SetFileAttributesA>(app, cpu, path, attributes)
             || !windowsResult(app, cpu, cpu.eax, result))
             return;
     }
@@ -943,7 +956,7 @@ void access(win32::WinApplication* app, x86::CPU& cpu)
 {
     const Kept kept(cpu);
     const x86::reg32 mode = cpu.edx;
-    if (!call(app, cpu, at(app, kGetFileAttributesA), {cpu.eax}))
+    if (!windows<kGetFileAttributesA, &win32::kernel32::GetFileAttributesA>(app, cpu, cpu.eax))
         return;
     const x86::reg32 attributes = cpu.eax;
     x86::reg32 result = 0;
@@ -985,7 +998,7 @@ void getcwd(win32::WinApplication* app, x86::CPU& cpu)
     put(app, entry - 0x10, cpu.edi);
     const x86::reg32 local = entry - 0x114;  // MAX_PATH bytes below them
     cpu.esp = local;
-    if (!call(app, cpu, at(app, kGetCurrentDirectoryA), {0x104, local}))
+    if (!windows<kGetCurrentDirectoryA, &win32::kernel32::GetCurrentDirectoryA>(app, cpu, 0x104, local))
         return;
     const x86::reg32 length = cpu.eax;
     x86::reg32 result = 0;
@@ -1048,7 +1061,7 @@ void getdiskfree(win32::WinApplication* app, x86::CPU& cpu)
     }
     cpu.esp = local;
     x86::reg32 result;
-    if (!call(app, cpu, at(app, kGetDiskFreeSpaceA), {root, local + 0x10, local + 0xc, local + 8, local + 4})
+    if (!windows<kGetDiskFreeSpaceA, &win32::kernel32::GetDiskFreeSpaceA>(app, cpu, root, local + 0x10, local + 0xc, local + 8, local + 4)
         || !windowsResult(app, cpu, cpu.eax, result))
         return;
     if (result == 0)
@@ -1138,7 +1151,7 @@ bool isTty(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 handle, x86::re
     result = 1;
     if (window == 0)
     {
-        if (!call(app, cpu, at(app, kGetFileType), {osHandle(app, handle)}))
+        if (!windows<kGetFileType, &win32::kernel32::GetFileType>(app, cpu, osHandle(app, handle)))
             return false;
         result = cpu.eax == 2 ? 1 : 0;  // FILE_TYPE_CHAR
     }
@@ -1235,7 +1248,7 @@ void lseek(win32::WinApplication* app, x86::CPU& cpu)
             return;
         if (x86::sreg32(offset) > 0 && !(mode & kAppend))
             setIoMode(app, handle, mode | kExtended);
-        if (!call(app, cpu, at(app, kSetFilePointer), {osHandle(app, handle), offset, 0, whence}))
+        if (!windows<kSetFilePointer, &win32::kernel32::SetFilePointer>(app, cpu, osHandle(app, handle), offset, 0, whence))
             return;
         result = cpu.eax;
         if (!fileLock(app, cpu, kReleaseFile, handle) || (result == 0xffffffff && !setErrnoNt(app, cpu)))
@@ -1259,7 +1272,8 @@ void tell(win32::WinApplication* app, x86::CPU& cpu)
     else
     {
         const x86::reg32 os = osHandle(app, handle);  // before the lock, as its code reads it
-        if (!fileLock(app, cpu, kAccessFile, handle) || !call(app, cpu, at(app, kSetFilePointer), {os, 0, 0, 1}))
+        if (!fileLock(app, cpu, kAccessFile, handle)
+            || !windows<kSetFilePointer, &win32::kernel32::SetFilePointer>(app, cpu, os, 0, 0, 1))
             return;
         result = cpu.eax;
         if (!fileLock(app, cpu, kReleaseFile, handle) || (result == 0xffffffff && !setErrnoNt(app, cpu)))
@@ -1296,7 +1310,7 @@ bool readHandle(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 handle, x8
         return false;
     if (window != 0)
         return windowTransfer(app, cpu, kWindowsStdin, handle, window, buffer, length, result);
-    if (!call(app, cpu, at(app, kReadFile), {osHandle(app, handle), buffer, length, local, 0}))
+    if (!windows<kReadFile, &win32::kernel32::ReadFile>(app, cpu, osHandle(app, handle), buffer, length, local, 0))
         return false;
     const bool done = cpu.eax != 0;
     result = done ? at(app, local) : 0xffffffff;
@@ -1314,7 +1328,7 @@ bool writeHandle(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 handle, x
         return false;
     if (mode & kAppend)
     {
-        if (!call(app, cpu, at(app, kSetFilePointer), {os, 0, 0, 2}))
+        if (!windows<kSetFilePointer, &win32::kernel32::SetFilePointer>(app, cpu, os, 0, 0, 2))
             return false;
         if (cpu.eax == 0xffffffff)
         {
@@ -1326,7 +1340,7 @@ bool writeHandle(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 handle, x
         return false;
     if (window != 0)
         return windowTransfer(app, cpu, kWindowsStdout, handle, window, buffer, length, result);
-    if (!call(app, cpu, at(app, kWriteFile), {os, buffer, length, local, 0}))
+    if (!windows<kWriteFile, &win32::kernel32::WriteFile>(app, cpu, os, buffer, length, local, 0))
         return false;
     if (cpu.eax == 0)
     {
@@ -1688,7 +1702,7 @@ bool currentTime(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 entry, x8
 {
     const x86::reg32 local = entry - 0x1c;  // ebx, ecx, edx; a SYSTEMTIME
     cpu.esp = local;
-    if (!call(app, cpu, at(app, kGetLocalTime), {local}))
+    if (!windows<kGetLocalTime, &win32::kernel32::GetLocalTime>(app, cpu, local))
         return false;
     auto word16 = [app, local](x86::reg32 offset) { return x86::reg32(app->getMemory<x86::reg16>(local + offset)); };
     put(app, tm + kYear, word16(0) - 1900);
@@ -2334,7 +2348,7 @@ bool syncHandle(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 handle, x8
         return badHandle(app, cpu, result);
     result = 0;
     if (!fileLock(app, cpu, kAccessFile, handle)
-        || !call(app, cpu, at(app, kFlushFileBuffers), {osHandle(app, handle)}))
+        || !windows<kFlushFileBuffers, &win32::kernel32::FlushFileBuffers>(app, cpu, osHandle(app, handle)))
         return false;
     if (cpu.eax == 0)
     {
@@ -3203,7 +3217,7 @@ x86::reg32 handlesFull(win32::WinApplication* app)
 bool fakeHandle(win32::WinApplication* app, x86::CPU& cpu, x86::reg32& handle)
 {
     const Frame frame(cpu, 8);  // ecx, edx
-    if (!call(app, cpu, at(app, kCreateEventA), {0, 0, 0, 0}))
+    if (!windows<kCreateEventA, &win32::kernel32::CreateEventA>(app, cpu, 0, 0, 0, 0))
         return false;
     handle = cpu.eax;
     if (handle == 0)
@@ -3297,7 +3311,7 @@ bool closeHandle(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 handle, x
     }
     if (window == 0)
     {
-        if (!call(app, cpu, at(app, kCloseHandle), {os}))
+        if (!windows<kCloseHandle, &win32::kernel32::CloseHandle>(app, cpu, os))
             return false;
         if (cpu.eax == 0)
         {
@@ -3396,14 +3410,14 @@ bool openHandle(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 name, x86:
         {
             disposition = byte(app, flags) & kOpenTruncate ? 5 : 3;  // TRUNCATE_EXISTING, OPEN_EXISTING
         }
-        if (!call(app, cpu, at(app, kCreateFileA),
-                  {name, at(app, access), at(app, share), security, disposition, fileAttributes, 0}))
+        if (!windows<kCreateFileA, &win32::kernel32::CreateFileA>(app, cpu, name, at(app, access), at(app, share), security,
+                                                               disposition, fileAttributes, 0))
             return false;
         x86::reg32 os = cpu.eax;
         if (os == 0xffffffff && (byte(app, flags) & kOpenCreate))
         {
-            if (!call(app, cpu, at(app, kCreateFileA),
-                      {name, at(app, access), at(app, share), 0, at(app, retry), fileAttributes, 0}))
+            if (!windows<kCreateFileA, &win32::kernel32::CreateFileA>(app, cpu, name, at(app, access), at(app, share), 0,
+                                                                   at(app, retry), fileAttributes, 0))
                 return false;
             os = cpu.eax;
         }
@@ -3415,7 +3429,7 @@ bool openHandle(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 name, x86:
         handle = cpu.eax;
         if (handle >= at(app, kFileCount))
         {
-            if (!call(app, cpu, at(app, kCloseHandle), {os}))
+            if (!windows<kCloseHandle, &win32::kernel32::CloseHandle>(app, cpu, os))
                 return false;
             return setThreadWord(app, cpu, kErrno, kENOMEM);
         }
@@ -4408,7 +4422,7 @@ void wctomb_(win32::WinApplication* app, x86::CPU& cpu)
     {
         cpu.esp = local;
         cpu.edx = at(app, kCodePage);
-        if (!call(app, cpu, at(app, kWideCharToMultiByte), {cpu.edx, 0x200, local, 1, cpu.eax, 2, 0, 0}))
+        if (!windows<kWideCharToMultiByte, &win32::kernel32::WideCharToMultiByte>(app, cpu, cpu.edx, 0x200, local, 1, cpu.eax, 2, 0, 0))
             return;
         if (cpu.eax == 0)
             cpu.eax = 0xffffffff;
@@ -6044,10 +6058,8 @@ void mbctoupper(win32::WinApplication* app, x86::CPU& cpu)
     }
     else
     {
-        push(app, cpu, 1);
         cpu.eax = local;
-        push(app, cpu, cpu.eax);
-        if (!indirect(app, cpu, at(app, kCharUpperBuffA)))
+        if (!windows<kCharUpperBuffA, &win32::user32::CharUpperBuffA>(app, cpu, cpu.eax, 1))
             return;
         cpu.eax = local;
         if (!direct(app, cpu, mbsnextc))
@@ -6562,9 +6574,8 @@ void tzWindows(win32::WinApplication* app, x86::CPU& cpu)
         return back();
     setHigh8(cpu.edx, byte(app, kZoneDone) | 2);
     cpu.eax = local;
-    push(app, cpu, cpu.eax);
     putByte(app, kZoneDone, reg8(cpu.edx >> 8));
-    if (!indirect(app, cpu, at(app, kGetTimeZoneInformation)))
+    if (!windows<kGetTimeZoneInformation, &win32::kernel32::GetTimeZoneInformation>(app, cpu, cpu.eax))
         return;
     if (cpu.eax == 0 || cpu.eax > 2)
         return back();
@@ -6860,8 +6871,7 @@ void exit_(win32::WinApplication* app, x86::CPU& cpu)
         if (!direct(app, cpu, FiniRtns) || !indirect(app, cpu, at(app, kExitDone)))
             return;
     }
-    push(app, cpu, cpu.ebx);
-    if (!indirect(app, cpu, at(app, kExitProcess)))
+    if (!windows<kExitProcess, &win32::kernel32::ExitProcess>(app, cpu, cpu.ebx))
         return;
     freeEnvironment(app, cpu);
 }
@@ -6960,15 +6970,10 @@ void fatalWrite(win32::WinApplication* app, x86::CPU& cpu)
             break;
         ++cpu.edx;
     }
-    push(app, cpu, 0);
-    cpu.eax = cpu.esp + 4;
-    push(app, cpu, cpu.eax);
-    push(app, cpu, cpu.edx);
+    const reg32 written = cpu.esp, length = cpu.edx;  // how many WriteFile wrote: the dword below them
     cpu.eax = at(app, kOsHandleTable);
-    push(app, cpu, cpu.edi);
     cpu.edx = at(app, cpu.eax + 8);
-    push(app, cpu, cpu.edx);
-    if (!indirect(app, cpu, at(app, kWriteFileSlot)))
+    if (!windows<kWriteFileSlot, &win32::kernel32::WriteFile>(app, cpu, cpu.edx, cpu.edi, length, written, 0))
         return;
     cpu.eax = cpu.esi;
     exit_(app, cpu);
@@ -7004,9 +7009,7 @@ void sleep(win32::WinApplication* app, x86::CPU& cpu)
     push(app, cpu, cpu.edx);
     cpu.edx = cpu.eax;
     cpu.eax *= 1000;
-    push(app, cpu, 0);
-    push(app, cpu, cpu.eax);
-    if (!indirect(app, cpu, at(app, kSleepEx)))
+    if (!windows<kSleepEx, &win32::kernel32::SleepEx>(app, cpu, cpu.eax, 0))
         return;
     cpu.edx = pop(app, cpu);
     cpu.ecx = pop(app, cpu);
@@ -7018,7 +7021,7 @@ void getpid(win32::WinApplication* app, x86::CPU& cpu)
 {
     push(app, cpu, cpu.ecx);
     push(app, cpu, cpu.edx);
-    if (!indirect(app, cpu, at(app, kGetCurrentProcessId)))
+    if (!windows<kGetCurrentProcessId, &win32::kernel32::GetCurrentProcessId>(app, cpu))
         return;
     cpu.edx = pop(app, cpu);
     cpu.ecx = pop(app, cpu);
@@ -7134,9 +7137,7 @@ void fullpath(win32::WinApplication* app, x86::CPU& cpu)
         return back();
     }
     cpu.eax = local;
-    for (const reg32 r : {cpu.eax, cpu.esi, cpu.ebx, cpu.ecx})
-        push(app, cpu, r);
-    if (!indirect(app, cpu, at(app, kGetFullPathNameA)))
+    if (!windows<kGetFullPathNameA, &win32::kernel32::GetFullPathNameA>(app, cpu, cpu.ecx, cpu.ebx, cpu.esi, cpu.eax))
         return;
     if (cpu.eax == 0)
     {
@@ -7446,18 +7447,14 @@ void mbtowc(win32::WinApplication* app, x86::CPU& cpu)
     cpu.eax = cpu.edx;
     if (!direct(app, cpu, mbclen))
         return;
-    push(app, cpu, 1);
     cpu.ecx = cpu.ebp - 4;
     cpu.edi = cpu.eax;
-    push(app, cpu, cpu.ecx);
     if (cpu.ebx < cpu.eax)
         cpu.eax = cpu.ebx;
-    push(app, cpu, cpu.eax);
-    push(app, cpu, cpu.edx);
-    push(app, cpu, 8);  // MB_ERR_INVALID_CHARS
+    const reg32 count = cpu.eax;
     cpu.eax = at(app, kCodePage);
-    push(app, cpu, cpu.eax);
-    if (!indirect(app, cpu, at(app, kMultiByteToWideChar)))
+    // MB_ERR_INVALID_CHARS
+    if (!windows<kMultiByteToWideChar, &win32::kernel32::MultiByteToWideChar>(app, cpu, cpu.eax, 8, cpu.edx, count, cpu.ecx, 1))
         return;
     if (cpu.eax == 0)
     {
@@ -8715,9 +8712,7 @@ void setenv(win32::WinApplication* app, x86::CPU& cpu)
     }
     if (toWindows)
     {
-        push(app, cpu, cpu.esi);
-        push(app, cpu, cpu.edi);
-        if (!indirect(app, cpu, at(app, kSetEnvironmentVariableA)))
+        if (!windows<kSetEnvironmentVariableA, &win32::kernel32::SetEnvironmentVariableA>(app, cpu, cpu.edi, cpu.esi))
             return;
         if (cpu.eax == 0)
             return back(0xffffffff);
@@ -10784,16 +10779,12 @@ constexpr reg32 kPeekConsoleInputA = 0x5345a0, kReadConsoleInputA = 0x5345ac;
 constexpr reg32 kGetConsoleMode = 0x5344fc, kSetConsoleMode = 0x5345d0, kWriteConsoleA = 0x53463c;
 
 /* One INPUT_RECORD from the console at ebx into the frame's first 0x14
- * bytes, how many at its 0x14th: Windows' `function`. */
-bool consoleInput(win32::WinApplication* app, x86::CPU& cpu, reg32 function, reg32 local)
+ * bytes, how many at its 0x14th: Windows' `Function`. */
+template <reg32 Slot, auto Function>
+bool consoleInput(win32::WinApplication* app, x86::CPU& cpu, reg32 local)
 {
-    cpu.eax = local + 0x14;
-    push(app, cpu, cpu.eax);
-    push(app, cpu, 1);
     cpu.eax = local;
-    push(app, cpu, cpu.eax);
-    push(app, cpu, cpu.ebx);
-    return indirect(app, cpu, at(app, function));
+    return windows<Slot, Function>(app, cpu, cpu.ebx, local, 1, local + 0x14);
 }
 
 /* The console's HANDLE opened, if it is not yet, at `handle`: CreateFileA of
@@ -10802,9 +10793,7 @@ bool openConsole(win32::WinApplication* app, x86::CPU& cpu, reg32 handle, reg32 
 {
     if (at(app, handle) != 0xffffffff)
         return true;
-    for (const reg32 word : {reg32(0), reg32(0x80), reg32(3), reg32(0), share, access, name})
-        push(app, cpu, word);
-    if (!indirect(app, cpu, at(app, kCreateFileA)))
+    if (!windows<kCreateFileA, &win32::kernel32::CreateFileA>(app, cpu, name, access, share, 0, 3, 0x80, 0))
         return false;
     put(app, handle, cpu.eax);
     return true;
@@ -10887,14 +10876,10 @@ void putch(win32::WinApplication* app, x86::CPU& cpu)
         cpu.eax = 1;
         if (!indirect(app, cpu, at(app, kAccessFile)) || !direct(app, cpu, NTConsoleOutput))
             return;
-        push(app, cpu, cpu.edx);
-        cpu.edx = cpu.esp + 4;
-        push(app, cpu, cpu.edx);
-        push(app, cpu, 1);
-        cpu.edx = cpu.esp + 0x10;
-        push(app, cpu, cpu.edx);
-        push(app, cpu, cpu.eax);
-        if (!indirect(app, cpu, at(app, kWriteConsoleA)))
+        // The character, and below it how many WriteConsoleA wrote.
+        const reg32 reserved = cpu.edx, written = cpu.esp;
+        cpu.edx = written + 4;
+        if (!windows<kWriteConsoleA, &win32::kernel32::WriteConsoleA>(app, cpu, cpu.eax, cpu.edx, 1, written, reserved))
             return;
         cpu.eax = 1;
         if (!indirect(app, cpu, at(app, kReleaseFile)))
@@ -10939,7 +10924,7 @@ void kbhit(win32::WinApplication* app, x86::CPU& cpu)
             app->lockContext(cpu);
             if (app->contextWanted())
                 app->yieldContext(cpu);
-            if (!consoleInput(app, cpu, kPeekConsoleInputA, local))
+            if (!consoleInput<kPeekConsoleInputA, &win32::kernel32::PeekConsoleInputA>(app, cpu, local))
                 return;
             if (at(app, local + 0x14) == 0)
                 break;
@@ -10948,7 +10933,7 @@ void kbhit(win32::WinApplication* app, x86::CPU& cpu)
                 return;
             if (cpu.eax != 0)
                 break;
-            if (!consoleInput(app, cpu, kReadConsoleInputA, local))
+            if (!consoleInput<kReadConsoleInputA, &win32::kernel32::ReadConsoleInputA>(app, cpu, local))
                 return;
         }
         cpu.eax = 0;
@@ -10997,7 +10982,7 @@ void do_getch(win32::WinApplication* app, x86::CPU& cpu)
         put(app, kKeyChar, cpu.edi);
         for (;;)
         {
-            if (!consoleInput(app, cpu, kReadConsoleInputA, local))
+            if (!consoleInput<kReadConsoleInputA, &win32::kernel32::ReadConsoleInputA>(app, cpu, local))
                 return;
             if (cpu.eax == 0)
             {
@@ -11069,22 +11054,15 @@ void getch(win32::WinApplication* app, x86::CPU& cpu)
                 return;
             cpu.ebx = cpu.eax;
             cpu.eax = local;
-            push(app, cpu, cpu.eax);
-            push(app, cpu, cpu.ebx);
-            if (!indirect(app, cpu, at(app, kGetConsoleMode)))
-                return;
-            push(app, cpu, 0);
-            push(app, cpu, cpu.ebx);
-            if (!indirect(app, cpu, at(app, kSetConsoleMode)))
+            if (!windows<kGetConsoleMode, &win32::kernel32::GetConsoleMode>(app, cpu, cpu.ebx, cpu.eax)
+                || !windows<kSetConsoleMode, &win32::kernel32::SetConsoleMode>(app, cpu, cpu.ebx, 0))
                 return;
             cpu.eax = cpu.ebx;
             if (!direct(app, cpu, do_getch))
                 return;
             cpu.ecx = at(app, local);
-            push(app, cpu, cpu.ecx);
-            push(app, cpu, cpu.ebx);
             cpu.esi = cpu.eax;
-            if (!indirect(app, cpu, at(app, kSetConsoleMode)))
+            if (!windows<kSetConsoleMode, &win32::kernel32::SetConsoleMode>(app, cpu, cpu.ebx, cpu.ecx))
                 return;
             cpu.eax = 0;
             if (!indirect(app, cpu, at(app, kReleaseFile)))
@@ -11406,12 +11384,8 @@ void stackLimits(win32::WinApplication* app, x86::CPU& cpu)
     const reg32 local = cpu.esp;
     cpu.ebx = cpu.eax;
     cpu.esi = cpu.edx;
-    push(app, cpu, 0x1c);
-    cpu.eax = cpu.esp + 4;
-    push(app, cpu, cpu.eax);
-    cpu.eax = cpu.esp + 0x24;
-    push(app, cpu, cpu.eax);
-    if (!indirect(app, cpu, at(app, kVirtualQuery)))
+    cpu.eax = local + 0x1c;  // in the frame: the region asked about, its MEMORY_BASIC_INFORMATION at local
+    if (!windows<kVirtualQuery, &win32::kernel32::VirtualQuery>(app, cpu, cpu.eax, local, 0x1c))
         return;
     cpu.edx = at(app, local) + at(app, local + 0xc);
     cpu.ecx = (cpu.ecx & 0xffff0000) | half(app, kOsBuild);
@@ -11463,7 +11437,7 @@ void initThread(win32::WinApplication* app, x86::CPU& cpu)
     {
         cpu.edx = 0;
         put(app, cpu.eax + 0xc, 1);
-        if (!direct(app, cpu, stackLimits) || !indirect(app, cpu, at(app, kGetCurrentThreadId)))
+        if (!direct(app, cpu, stackLimits) || !windows<kGetCurrentThreadId, &win32::kernel32::GetCurrentThreadId>(app, cpu))
             return;
         put(app, cpu.ebx + 0xda, cpu.eax);
     }
@@ -11512,8 +11486,7 @@ void initPOSIXHandles(win32::WinApplication* app, x86::CPU& cpu)
     push(app, cpu, cpu.edx);
     for (const reg32 which : {reg32(-10), reg32(-11), reg32(-12)})
     {
-        push(app, cpu, which);
-        if (!indirect(app, cpu, at(app, kGetStdHandle)))
+        if (!windows<kGetStdHandle, &win32::kernel32::GetStdHandle>(app, cpu, which))
             return;
         cpu.edx = cpu.eax;
         if ((cpu.eax == 0 || cpu.eax == 0xffffffff) && !direct(app, cpu, NTGetFakeHandle))
@@ -11541,15 +11514,12 @@ void moduleWideName(win32::WinApplication* app, x86::CPU& cpu)
     cpu.ebp = cpu.eax;
     cpu.esi = cpu.edx;
     cpu.edi = cpu.ebx;
-    if (!indirect(app, cpu, at(app, kGetVersion)))
+    if (!windows<kGetVersion, &win32::kernel32::GetVersion>(app, cpu))
         return;
     cpu.eax = (cpu.eax >> 16) & 0xffff;
     if (reg16(cpu.eax) < 0x8000)
     {
-        push(app, cpu, cpu.ebx);
-        push(app, cpu, cpu.esi);
-        push(app, cpu, cpu.ebp);
-        if (!indirect(app, cpu, at(app, kGetModuleFileNameW)))
+        if (!windows<kGetModuleFileNameW, &win32::kernel32::GetModuleFileNameW>(app, cpu, cpu.ebp, cpu.esi, cpu.ebx))
             return;
         return done();
     }
@@ -11559,10 +11529,7 @@ void moduleWideName(win32::WinApplication* app, x86::CPU& cpu)
     cpu.ebx = cpu.eax;
     if (cpu.eax == 0)
         return done();
-    push(app, cpu, 0x208);
-    push(app, cpu, cpu.eax);
-    push(app, cpu, cpu.ebp);
-    if (!indirect(app, cpu, at(app, kGetModuleFileNameA)))
+    if (!windows<kGetModuleFileNameA, &win32::kernel32::GetModuleFileNameA>(app, cpu, cpu.ebp, cpu.eax, 0x208))
         return;
     if (cpu.eax == 0)
     {
@@ -11572,9 +11539,7 @@ void moduleWideName(win32::WinApplication* app, x86::CPU& cpu)
         cpu.eax = 0;
         return done();
     }
-    for (const reg32 word : {cpu.edi, cpu.esi, reg32(-1), cpu.ebx, reg32(1), reg32(1)})
-        push(app, cpu, word);
-    if (!indirect(app, cpu, at(app, kMultiByteToWideChar)))
+    if (!windows<kMultiByteToWideChar, &win32::kernel32::MultiByteToWideChar>(app, cpu, 1, 1, cpu.ebx, reg32(-1), cpu.esi, cpu.edi))
         return;
     cpu.ebp = cpu.eax;
     cpu.eax = cpu.ebx;
@@ -11669,8 +11634,7 @@ void InitExceptionHandling(win32::WinApplication* app, x86::CPU& cpu)
         return;
     cpu.eax = at(app, cpu.eax + 0x54);
     put(app, cpu.efs + cpu.edx, cpu.eax);
-    push(app, cpu, kUnhandledFilter);
-    if (!indirect(app, cpu, at(app, kSetUnhandledExceptionFilter)))
+    if (!windows<kSetUnhandledExceptionFilter, &win32::kernel32::SetUnhandledExceptionFilter>(app, cpu, kUnhandledFilter))
         return;
     cpu.edx = pop(app, cpu);
     cpu.ecx = pop(app, cpu);
@@ -11704,16 +11668,16 @@ void NTInit(win32::WinApplication* app, x86::CPU& cpu)
     {
         if (cpu.esi != 0)
             return done();
-        push(app, cpu, 1);
-        if (!indirect(app, cpu, at(app, kExitProcess)))
+        if (!windows<kExitProcess, &win32::kernel32::ExitProcess>(app, cpu, 1))
             return;
     }
-    if (!direct(app, cpu, initPOSIXHandles) || !indirect(app, cpu, at(app, kGetEnvironmentStrings)))
+    if (!direct(app, cpu, initPOSIXHandles)
+        || !windows<kGetEnvironmentStrings, &win32::kernel32::GetEnvironmentStrings>(app, cpu))
         return;
     cpu.edx = 0;
     put(app, kEnvironmentStrings, cpu.eax);
     put(app, kEnviron, cpu.edx);
-    if (!indirect(app, cpu, at(app, kGetVersion)))
+    if (!windows<kGetVersion, &win32::kernel32::GetVersion>(app, cpu))
         return;
     // Its parts: the major and minor versions, the build -- and Windows'
     // version in Watcom's own words of it.
@@ -11721,12 +11685,10 @@ void NTInit(win32::WinApplication* app, x86::CPU& cpu)
     cpu.ebx = cpu.eax;
     putByte(app, kOsMajor, reg8(cpu.eax));
     cpu.eax = (cpu.eax >> 16) & 0xffff;
-    push(app, cpu, 0x104);
     putHalf(app, kOsBuild, reg16(cpu.eax));
     cpu.eax = 0;
     cpu.edx &= 0xffff;
     cpu.eax = half(app, kOsBuild);
-    push(app, cpu, kModuleName);
     put(app, kOsVersion, cpu.eax);
     cpu.eax = 0;
     cpu.edx = reg32(x86::sreg32(cpu.edx) >> 8);
@@ -11737,13 +11699,12 @@ void NTInit(win32::WinApplication* app, x86::CPU& cpu)
     putByte(app, kOsMinor, reg8(cpu.edx));
     setLow8(cpu.eax, cpu.edx);
     cpu.edx = at(app, kWinMajor);
-    push(app, cpu, 0);
     cpu.edx <<= 8;
     cpu.ebx = kModuleName;
     cpu.edx |= cpu.eax;
     put(app, kWinMinor, cpu.eax);
     put(app, kWinVersion, cpu.edx);
-    if (!indirect(app, cpu, at(app, kGetModuleFileNameA)))
+    if (!windows<kGetModuleFileNameA, &win32::kernel32::GetModuleFileNameA>(app, cpu, 0, kModuleName, 0x104))
         return;
     cpu.edx = kWideModuleName;
     put(app, kProgramName, cpu.ebx);
@@ -11756,7 +11717,7 @@ void NTInit(win32::WinApplication* app, x86::CPU& cpu)
 
     // The command line's copy, and its arguments: past the program's name,
     // quoted or not, and the white space after it.
-    if (!indirect(app, cpu, at(app, kGetCommandLineA)) || !direct(app, cpu, copyCommandLine))
+    if (!windows<kGetCommandLineA, &win32::kernel32::GetCommandLineA>(app, cpu) || !direct(app, cpu, copyCommandLine))
         return;
     cpu.edx = cpu.eax;
     setLow8(cpu.ebx, byte(app, cpu.eax));
@@ -11784,7 +11745,7 @@ void NTInit(win32::WinApplication* app, x86::CPU& cpu)
     put(app, kArguments, cpu.eax);
 
     // The wide one's, the same.
-    if (!indirect(app, cpu, at(app, kGetCommandLineW)))
+    if (!windows<kGetCommandLineW, &win32::kernel32::GetCommandLineW>(app, cpu))
         return;
     if (cpu.eax == 0)
         cpu.eax = kNoWideCommandLine;
@@ -11825,12 +11786,9 @@ void NTInit(win32::WinApplication* app, x86::CPU& cpu)
     // A DLL's own name, and wide.
     if (cpu.esi != 0)
     {
-        push(app, cpu, 0x104);
-        push(app, cpu, kDllName);
-        push(app, cpu, cpu.edi);
         cpu.esi = kDllName;
         cpu.ebx = 0x208;
-        if (!indirect(app, cpu, at(app, kGetModuleFileNameA)))
+        if (!windows<kGetModuleFileNameA, &win32::kernel32::GetModuleFileNameA>(app, cpu, cpu.edi, kDllName, 0x104))
             return;
         cpu.edx = kWideDllName;
         put(app, kDllNamePtr, cpu.esi);
@@ -11853,8 +11811,7 @@ void NTMain(win32::WinApplication* app, x86::CPU& cpu)
         push(app, cpu, r);
     cpu.esi = cpu.eax;
     cpu.edi = cpu.edx;
-    push(app, cpu, 0);
-    if (!indirect(app, cpu, at(app, kGetModuleHandleA)))
+    if (!windows<kGetModuleHandleA, &win32::kernel32::GetModuleHandleA>(app, cpu, 0))
         return;
     cpu.ebx = cpu.eax;
     cpu.edx = cpu.edi;

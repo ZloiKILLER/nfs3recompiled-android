@@ -1,6 +1,13 @@
+#include "native_ea_memory.h"
+#include "native_ea_threads.h"
 #include "native_guest.h"
+#include "native_windows.h"
+#include <winapi/kernel32.h>
 
-#include <utility>
+#include <cstdint>
+#include <cstring>
+#include <initializer_list>
+#include <optional>
 
 /* EA's memory manager and its memmove.  disassemble_nfs3hp.py binds each
  * address to the function of that name here (EA_MEMORY_NATIVES), and the
@@ -40,18 +47,22 @@
  * clearMemClasses, releasememclass, getfreememclass, memBlockFlags and
  * purgememclass have no callers in the game.
  *
- * Its memmove (0x4ea4f0) copies backwards a byte at a time where the copy
- * overlaps its source from above, and otherwise by the forward copy (0x5033e5,
- * mix::copy).
+ * Its memmove (0x4ea4f0) copies backwards where the copy overlaps its source
+ * from above, and otherwise by the forward copy (0x5033e5, mix::copy).
  *
- * Written as their code is: each push and pop to the guest's stack, each call
- * with the return address's slot, the frames' locals in the guest's memory,
- * the registers as the code leaves them, each x87 instruction on the x87's
- * stack in its order.  reservememadr, purgememadr and memmove are called by
- * address where this file calls them (tools/game_checks stands in for them),
- * as are Error (0x401010), the game's fill (0x4e070c), sprintf (0x4df690),
- * the locks made and freed (0x4eb2e0, 0x4eb360), the forward copy, and the
- * critical sections' Windows functions. */
+ * Each is a typed function under a name of its own, with an adapter under the
+ * game's name for the callers still on registers and the dispatch: it leaves
+ * eax, and the registers the code does not keep, as the code leaves them.
+ * This file's own are called as C++ (reservememadr and purgememadr too), and
+ * so are the locks made and freed (native_ea_threads.h's, guest::direct).
+ * Error (0x401010), the game's fill (0x4e070c), sprintf (0x4df690), the
+ * forward copy and the critical sections' Windows functions are called by
+ * address, their registers kept
+ * (KeptRegisters), at the depth the code calls them from: Error hands
+ * vsprintf its arguments' address, and creatememclass's names are made in its
+ * frame on the guest's stack, where sprintf's stand-in logs the frame's words
+ * past its arguments.  The free list's walks and the copies are host loops
+ * over the guest's memory. */
 namespace nfs3hp
 {
 namespace ea
@@ -68,6 +79,9 @@ using x86::reg16;
 using x86::reg32;
 using x86::reg8;
 using x86::sreg32;
+using App = win32::WinApplication;
+using CPU = x86::CPU;
+using i32 = std::int32_t;
 
 // The class table, and the default class; whether an error is reported.
 constexpr reg32 kClasses = 0x9ef5c0, kDefaultClass = 0x5643f4, kReportErrors = 0x56440c;
@@ -84,1132 +98,951 @@ constexpr reg32 kLowName = 0x5499ac, kHighName = 0x5499b4;
 constexpr reg32 kGetFreeName = 0x5499bc, kNoFreeClasses = 0x5499cc;
 constexpr reg32 kReserveName = 0x549a00, kInvalidSize = 0x549a10, kOutOfMemory = 0x549a6c;
 constexpr reg32 kPurgeName = 0x549ab8, kNotABlock = 0x549ac4;
+// The lines of memstd.c its errors name.
+constexpr reg32 kCreateLine = 0x11a, kGetFreeLine = 0x1ae, kInvalidSizeLine = 0x2ae, kOutOfMemoryLine = 0x2ed;
+constexpr reg32 kPurgeLine = 0x333;
 // What is called by address.
 constexpr reg32 kError = 0x401010, kFillZero = 0x4e070c, kSprintf = 0x4df690;
-constexpr reg32 kLockMade = 0x4eb2e0, kLockFreed = 0x4eb360;
-constexpr reg32 kReserve = 0x4e1620, kPurge = 0x4e1890, kForwardCopy = 0x5033e5;
+constexpr reg32 kForwardCopy = 0x5033e5;
 constexpr reg32 kEnterCriticalSection = 0x5344b8, kLeaveCriticalSection = 0x534588;
 
-reg16 half(win32::WinApplication* app, reg32 address)
+// A block's header: its flags (and their high byte), its size, the next and the one before in
+// memory; a free one's next and the one before in the free list.  Its body past them.
+constexpr reg32 kBlockFlags = 2, kBlockFlagsHigh = 3, kBlockSize = 4, kBlockNext = 8, kBlockPrevious = 0xc;
+constexpr reg32 kListNext = 0x10, kListPrevious = 0x14, kBlockHeader = 0x10;
+// A block's flags: the class's nibble; taken from the top, from the largest free block; named,
+// "BEND" after it, the file and line, a word cleared; those the class's flags add; LOW's own,
+// HIGH's; in the free list (in their high byte).
+constexpr reg32 kClassNibble = 0xf, kFromTop = 0x10, kFromLargest = 0x20;
+constexpr reg32 kNamed = 0x100, kBend = 0x200, kWhere = 0x400, kZeroWord = 0x800, kClassFlagsAdded = 0x700;
+constexpr reg32 kLowFlag = 0x8000, kHighFlags = 0x8010;
+constexpr reg8 kInFreeList = 0x40;
+// A class's header: where its memory starts and ends, the free list's sentinel (a block's header:
+// its size, the list's first and last), how blocks are aligned, how its start was, the bytes each
+// block takes past its body, its flags (their second byte's 1: names counted in), its lock, what
+// its creator said; 0x40 bytes.
+constexpr reg32 kClassStart = 8, kClassEnd = 0xc, kClassSentinel = 0x10, kClassAlign = 0x28;
+constexpr reg32 kClassStartAlign = 0x2c, kClassBytes = 0x30, kClassFlags = 0x34, kClassLock = 0x38;
+constexpr reg32 kClassWord = 0x3c, kClassHeader = 0x40;
+constexpr reg32 kSentinelSize = 0x7fffffff;
+// "BEND", as its four bytes lie in memory.
+constexpr reg32 kBendMark = 0x444e4542;
+// What is left of a free block past what is asked that is split off: more than this.
+constexpr i32 kSplitAbove = 0x40;
+// The least a block's body is.
+constexpr i32 kLeastBody = 8;
+
+reg16 half(App* app, reg32 address)
 {
     return app->getMemory<reg16>(address);
 }
 
-void putHalf(win32::WinApplication* app, reg32 address, reg16 value)
+void putHalf(App* app, reg32 address, reg16 value)
 {
     app->getMemory<reg16>(address) = value;
 }
 
-void push(win32::WinApplication* app, x86::CPU& cpu, reg32 value)
+/* The header of the class `flags` names. */
+reg32 classOf(App* app, reg32 flags)
 {
-    cpu.esp -= 4;
-    put(app, cpu.esp, value);
+    return at(app, kClasses + (flags & kClassNibble) * 4);
 }
 
-reg32 pop(win32::WinApplication* app, x86::CPU& cpu)
+/* The name at `from` copied to `to` up to its zero and the zero, a byte at a time forwards (the
+ * code's loop takes two at a time, each in turn). */
+void copyName(App* app, reg32 to, reg32 from)
 {
-    const reg32 value = at(app, cpu.esp);
-    cpu.esp += 4;
-    return value;
-}
-
-/* A call as the code makes it: the return address's slot, and esp as the
- * callee leaves it.  False when the game stopped in it. */
-bool direct(win32::WinApplication* app, x86::CPU& cpu, void (*function)(win32::WinApplication*, x86::CPU&))
-{
-    cpu.esp -= 4;
-    function(app, cpu);
-    return !cpu.terminate;
-}
-
-bool byAddress(win32::WinApplication* app, x86::CPU& cpu, reg32 target)
-{
-    cpu.esp -= 4;
-    app->dynamic_call(target, cpu);
-    return !cpu.terminate;
-}
-
-/* The two words copied at a time from esi to edi up to the first zero byte
- * -- the zero too: esi and edi left past the last word copied, al the last
- * byte read. */
-void copyName(win32::WinApplication* app, x86::CPU& cpu)
-{
-    for (;;)
+    reg8* const memory = &app->getMemory<reg8>(0);
+    for (reg32 i = 0;; ++i)
     {
-        cpu.al = byte(app, cpu.esi);
-        putByte(app, cpu.edi, cpu.al);
-        if (cpu.al == 0)
-            break;
-        cpu.al = byte(app, cpu.esi + 1);
-        cpu.esi += 2;
-        putByte(app, cpu.edi + 1, cpu.al);
-        cpu.edi += 2;
-        if (cpu.al == 0)
+        const reg8 b = memory[reg32(from + i)];
+        memory[reg32(to + i)] = b;
+        if (b == 0)
             break;
     }
 }
 
-/* sub ecx, ecx; dec ecx; xor eax, eax; repne scasb; not ecx; dec ecx; inc
- * ecx: ecx the length of the string at edi and its zero, edi past it, eax 0. */
-void nameLength(win32::WinApplication* app, x86::CPU& cpu)
+/* The bytes of the name at `name` and its zero (the code's repne scasb). */
+reg32 nameLength(App* app, reg32 name)
 {
-    cpu.ecx = 0xffffffff;
-    cpu.eax = 0;
-    while (cpu.ecx != 0)
-    {
-        --cpu.ecx;
-        const reg8 b = byte(app, cpu.edi);
-        ++cpu.edi;
-        if (b == cpu.al)
-            break;
-    }
-    cpu.ecx = ~cpu.ecx;
-    --cpu.ecx;
-    ++cpu.ecx;
+    return reg32(std::strlen(reinterpret_cast<const char*>(&app->getMemory<reg8>(name)))) + 1;
 }
 
-/* The error's place set: memstd.c, the function, the line. */
-void setWhere(win32::WinApplication* app, reg32 file, reg32 function, reg32 line)
+/* The registers a callee by address keeps as the code has them, put back after it. */
+class KeptRegisters
 {
-    put(app, kWhereFile, file);
+public:
+    explicit KeptRegisters(CPU& cpu)
+        : cpu_(cpu), ebx_(cpu.ebx), ecx_(cpu.ecx), edx_(cpu.edx), esi_(cpu.esi), edi_(cpu.edi), ebp_(cpu.ebp),
+          esp_(cpu.esp)
+    {
+    }
+    ~KeptRegisters()
+    {
+        cpu_.ebx = ebx_;
+        cpu_.ecx = ecx_;
+        cpu_.edx = edx_;
+        cpu_.esi = esi_;
+        cpu_.edi = edi_;
+        cpu_.ebp = ebp_;
+        cpu_.esp = esp_;
+    }
+
+private:
+    CPU& cpu_;
+    reg32 ebx_, ecx_, edx_, esi_, edi_, ebp_, esp_;
+};
+
+/* The code's depth on the guest's stack under esp on entry: `pushed` bytes of registers (and a
+ * call's return address slot), then `bytes` of its frame; esp under them while it lasts. */
+class GuestFrame
+{
+public:
+    GuestFrame(CPU& cpu, reg32 pushed, reg32 bytes) : cpu_(cpu), esp_(cpu.esp)
+    {
+        cpu.esp = esp_ - pushed - bytes;
+    }
+    ~GuestFrame() { cpu_.esp = esp_; }
+
+private:
+    CPU& cpu_;
+    const reg32 esp_;
+};
+
+/* Error with `format` and its arguments, memstd.c's `function` at `line` where it is from: cdecl, at
+ * esp as it is, every register but eax kept.  False when the game stopped. */
+bool error(App* app, CPU& cpu, reg32 function, reg32 line, std::initializer_list<reg32> arguments)
+{
+    put(app, kWhereFile, kFileName);
     put(app, kWhereFunction, function);
     put(app, kWhereLine, line);
+    return guest::call(app, cpu, kError, arguments);
+}
+
+/* `bytes` at `address` cleared by the game's fill. */
+bool clear(App* app, CPU& cpu, reg32 address, reg32 bytes)
+{
+    const KeptRegisters kept(cpu);
+    cpu.eax = address;
+    cpu.edx = bytes;
+    return guest::call(app, cpu, kFillZero);
+}
+
+/* sprintf of `format` with `name` into `buffer`, at esp as it is. */
+bool print(App* app, CPU& cpu, reg32 buffer, reg32 format, reg32 name)
+{
+    const KeptRegisters kept(cpu);
+    return guest::call(app, cpu, kSprintf, {buffer, format, name});
+}
+
+/* EnterCriticalSection or LeaveCriticalSection (`Function`, the import's slot `Slot`) on `lock`:
+ * the port's own, called as C++ (native_windows.h); in the check through the slot, stdcall.
+ * Windows' functions keep ebx, esi, edi and ebp; edx, which reservememadr does not keep, is handed
+ * over as the code has it there (`edx`) and what the function leaves in it given back there. */
+template <reg32 Slot, auto Function>
+bool section(App* app, CPU& cpu, reg32 lock, reg32& edx)
+{
+    const KeptRegisters kept(cpu);
+    cpu.edx = edx;
+    if (!guest::windows<Slot, Function>(app, cpu, lock))
+        return false;
+    edx = cpu.edx;
+    return true;
+}
+
+/* The memmove's forward copy: `count` bytes from `from` to `to`, ecx kept on the stack over it as
+ * the code keeps it.  What it leaves in eax, edx and ebx the memmove leaves. */
+bool forwardCopy(App* app, CPU& cpu, reg32 to, reg32 from, reg32 count)
+{
+    const GuestFrame frame(cpu, 4, 0);
+    const reg32 kept = cpu.ecx;
+    cpu.eax = to;
+    cpu.edx = from;
+    cpu.ebx = count;
+    if (!guest::call(app, cpu, kForwardCopy))
+        return false;
+    cpu.ecx = kept;
+    return true;
+}
+
+/* Whether a copy of `count` bytes from `from` to `to` lands on its source from above. */
+bool overlapsFromAbove(reg32 to, reg32 from, reg32 count)
+{
+    return to > from && to < from + count;
+}
+
+/* 0x4e1000: the first free block of class `cls` of at least `size` bytes, from the free list's
+ * start or its end; 0 if none -- the sentinel. */
+reg32 firstFreeBlock(App* app, reg32 cls, i32 size, bool fromEnd)
+{
+    const reg32 link = fromEnd ? kListPrevious : kListNext;
+    reg32 block = cls + kClassSentinel;
+    do
+        block = at(app, block + link);
+    while (size > i32(at(app, block + kBlockSize)));
+    return half(app, block) == kSentinel ? 0 : block;
+}
+
+/* What findLargestFreeBlock finds: the block (0 for none), its size -- for none the size asked
+ * less one, 0 at least -- and the sentinel its walk stopped at. */
+struct LargestFree
+{
+    reg32 block;
+    i32 size;
+    reg32 stop;
+};
+
+/* 0x4e1030: the largest free block of class `cls` of at least `asked` bytes (of any, 0 or less),
+ * the free list gone through from its start or its end -- of those as large, the first. */
+LargestFree largestFreeBlock(App* app, reg32 cls, reg32 asked, bool fromEnd)
+{
+    const reg32 link = fromEnd ? kListPrevious : kListNext;
+    i32 size = i32(asked - 1);
+    if (size < 0)
+        size = 0;
+    reg32 found = 0;
+    reg32 block = cls + kClassSentinel;
+    for (;;)
+    {
+        block = at(app, block + link);
+        const i32 blockSize = i32(at(app, block + kBlockSize));
+        if (size >= blockSize)
+            continue;
+        if (half(app, block) == kSentinel)
+            break;
+        size = blockSize;
+        found = block;
+    }
+    return {found, size, block};
+}
+
+/* A free block's neighbours in the free list. */
+struct Neighbours
+{
+    reg32 before, after;
+};
+
+/* What linkFreeBlock and unlinkFreeBlock leave in eax: a neighbour of `block` in the list, its
+ * second byte the block's flags' high byte. */
+reg32 listLeft(App* app, reg32 neighbour, reg32 block)
+{
+    return (neighbour & 0xffff00ff) | reg32(byte(app, block + kBlockFlagsHigh)) << 8;
+}
+
+/* 0x4e1080: `block` put into class `cls`'s free list where its address goes -- looked for from the
+ * list's end if it is past the middle of the first and last, else from its start -- as "FB", its
+ * size up to the next block, in the free list. */
+Neighbours linkFree(App* app, reg32 cls, reg32 block)
+{
+    const reg32 size = at(app, block + kBlockNext) - block - kBlockHeader;
+    const reg32 sentinel = cls + kClassSentinel;
+    const reg32 first = at(app, sentinel + kListNext);
+    const reg32 middle = ((at(app, sentinel + kListPrevious) - first) >> 1) + first;
+    reg32 before = sentinel, after = sentinel;
+    if (block > middle)
+    {
+        do
+            before = at(app, before + kListPrevious);
+        while (block < before);
+        after = at(app, before + kListNext);
+    }
+    else
+    {
+        do
+            after = at(app, after + kListNext);
+        while (block > after);
+        before = at(app, after + kListPrevious);
+    }
+    put(app, block + kListPrevious, before);
+    put(app, block + kBlockSize, size);
+    put(app, block + kListNext, after);
+    put(app, before + kListNext, block);
+    put(app, after + kListPrevious, block);
+    const reg8 flagsHigh = byte(app, block + kBlockFlagsHigh);
+    putHalf(app, block, kFree);
+    putByte(app, block + kBlockFlagsHigh, reg8(flagsHigh | kInFreeList));
+    return {before, after};
+}
+
+/* 0x4e10e0: free `block` taken out of its free list, its signature cleared and its place in the
+ * list; the block before it in the list. */
+reg32 unlinkFree(App* app, reg32 block)
+{
+    const reg32 before = at(app, block + kListPrevious), after = at(app, block + kListNext);
+    put(app, before + kListNext, after);
+    put(app, after + kListPrevious, before);
+    const reg8 flagsHigh = byte(app, block + kBlockFlagsHigh);
+    putHalf(app, block, 0);
+    putByte(app, block + kBlockFlagsHigh, reg8(flagsHigh & ~kInFreeList));
+    return before;
+}
+
+/* 0x4e1120: `block` marked in use ("MB"): `flags`, `size`, the blocks before and after it; after
+ * its body "BEND", the file and line it is asked for at and a zero word as the flags say,
+ * `classBytes` of the class's, and `name` if there is one and the flags say so.  The bytes from
+ * the block to past all that. */
+reg32 markBlock(App* app, reg32 block, reg32 flags, reg32 size, reg32 classBytes, reg32 name, reg32 before,
+                reg32 after)
+{
+    putHalf(app, block, kInUse);
+    putHalf(app, block + kBlockFlags, reg16(flags));
+    put(app, block + kBlockSize, size);
+    put(app, block + kBlockNext, after);
+    put(app, block + kBlockPrevious, before);
+    reg32 end = block + kBlockHeader + size;
+    if (flags & kBend)
+        put(app, end, kBendMark);
+    if (flags & kWhere)
+    {
+        const reg32 file = at(app, kCalledFile);
+        if (file == 0)
+        {
+            put(app, end + 4, at(app, kWhereFile));
+            put(app, end + 8, at(app, kWhereLine));
+        }
+        else
+        {
+            const reg32 line = at(app, kCalledLine);
+            put(app, end + 4, file);
+            put(app, end + 8, line);
+        }
+    }
+    if (flags & kZeroWord)
+        put(app, end + 0xc, 0);
+    end += classBytes;
+    if (name != 0 && (flags & kNamed))
+    {
+        copyName(app, end, name);
+        end += nameLength(app, end);
+    }
+    return end - block;
+}
+
+/* 0x4e11e0: the bytes a block of the class `flags` names takes past its body. */
+reg32 classBytes(App* app, reg32 flags)
+{
+    return at(app, classOf(app, flags) + kClassBytes);
+}
+
+/* 0x4e11f0: the bytes a block of the class `flags` names, named `name`, takes past its body: the
+ * class's, and the name and its zero if the class counts names in. */
+reg32 blockBytes(App* app, reg32 name, reg32 flags)
+{
+    const reg32 cls = classOf(app, flags);
+    reg32 nameBytes = 0;
+    if (name != 0 && (byte(app, cls + kClassFlags + 1) & 1))
+        nameBytes = nameLength(app, name);
+    return at(app, cls + kClassBytes) + nameBytes;
+}
+
+/* 0x4e1580, 0x4e15b0: the size of class `cls`'s largest free block, or 0. */
+reg32 largestFree(App* app, reg32 cls)
+{
+    const reg32 block = largestFreeBlock(app, cls, 0, false).block;
+    return block != 0 ? at(app, block + kBlockSize) : 0;
+}
+
+/* What creatememclass asks on the stack: how blocks are aligned, how the free block's start is, the
+ * bytes each block takes past its body; whether blocks have "BEND" after them, the file and line,
+ * their names; whether the class has a lock; what its creator said. */
+struct ClassAsked
+{
+    reg32 align, startAlign, blockBytes;
+    bool bend, where, named, locked;
+    reg32 word;
+};
+
+/* What creatememclass's code leaves in ecx and edx: the HIGH block's mark's -- its name's bytes, or
+ * its flags -- and the free block's neighbour before it in the free list. */
+struct Made
+{
+    reg32 highMark, before;
+};
+
+/* 0x4e1230: class `index` (0 to 15, else an error reported, if errors are, and 0) made, named
+ * `name`, over the `bytes` at `start`: its header in a block "<name> LOW" there, a free block from
+ * where the start's alignment puts it past that, a block "<name> HIGH" at the end.  The free
+ * block's size; nullopt when the game stopped. */
+std::optional<reg32> createClass(App* app, CPU& cpu, reg32 index, reg32 name, reg32 start, reg32 bytes,
+                                 const ClassAsked& asked, Made& made)
+{
+    // The code's frame: three registers kept, then 0x110 bytes, the names made at its bottom.
+    const GuestFrame frame(cpu, 0xc, 0x110);
+    const reg32 names = cpu.esp;
+    if (sreg32(index) < 0 || sreg32(index) >= 0x10)
+    {
+        if (at(app, kReportErrors) != 0
+            && !error(app, cpu, kCreateName, kCreateLine, {kCreateOutOfRange, index, 0x10}))
+            return std::nullopt;
+        return 0;
+    }
+    reg32 flags = index;
+    if (asked.bend)
+        flags |= kBend;
+    if (asked.where)
+        flags |= kWhere;
+    if (asked.named)
+        flags |= kNamed;
+    const reg32 alignLess = asked.startAlign - 1;
+    const reg32 freeBlock = ((start + 0x50 + asked.blockBytes + 0x18 + alignLess) & ~alignLess) - kBlockHeader;
+    const reg32 header = start + kBlockHeader;
+    const reg32 high = start + bytes - 0x18 - asked.blockBytes;
+    if (!print(app, cpu, names, kLowName, name))
+        return std::nullopt;
+    markBlock(app, start, flags | kLowFlag, kClassHeader, asked.blockBytes, names, 0, freeBlock);
+    markBlock(app, freeBlock, flags, high - freeBlock - kBlockHeader, asked.blockBytes, 0, start, high);
+    if (!print(app, cpu, names, kHighName, name))
+        return std::nullopt;
+    const reg32 highBytes = markBlock(app, high, flags | kHighFlags, 0, asked.blockBytes, names, freeBlock, 0);
+    // The class's header: in the table, cleared, named.
+    put(app, kClasses + (index & kClassNibble) * 4, header);
+    if (!clear(app, cpu, header, kClassHeader))
+        return std::nullopt;
+    copyName(app, header, name);
+    const reg32 sentinel = header + kClassSentinel;
+    putHalf(app, sentinel, kSentinel);
+    put(app, sentinel + kBlockSize, kSentinelSize);
+    put(app, header + kClassStart, start);
+    put(app, header + kClassEnd, high);
+    put(app, sentinel + kListNext, sentinel);
+    put(app, sentinel + kListPrevious, sentinel);
+    put(app, header + kClassAlign, asked.align);
+    put(app, header + kClassStartAlign, asked.startAlign);
+    put(app, header + kClassBytes, asked.blockBytes);
+    put(app, header + kClassFlags, flags);
+    put(app, header + kClassWord, asked.word);
+    put(app, header + kClassLock, 0);
+    // The free block into the free list; the lock.
+    const Neighbours neighbours = linkFree(app, header, freeBlock);
+    if (asked.locked)
+    {
+        // eax as the code has it at the call, which the lock maker's stand-in may leave.
+        cpu.eax = listLeft(app, neighbours.after, freeBlock);
+        const std::optional<reg32> lock = guest::direct<0x4eb2e0, ea::newLock>(app, cpu);
+        if (!lock)
+            return std::nullopt;
+        put(app, header + kClassLock, *lock);
+    }
+    made.highMark = asked.named ? highBytes - kBlockHeader - asked.blockBytes : flags | kHighFlags;
+    made.before = neighbours.before;
+    return at(app, freeBlock + kBlockSize);
+}
+
+/* 0x4e14b0: class `index`'s lock freed, if it has one, and its header cleared.  It stays in the
+ * table. */
+bool releaseClass(App* app, CPU& cpu, reg32 index)
+{
+    const reg32 cls = classOf(app, index);
+    if (const reg32 lock = at(app, cls + kClassLock);
+        lock != 0 && !guest::direct<0x4eb360, ea::lockFreed>(app, cpu, lock))
+        return false;
+    return clear(app, cpu, cls, kClassHeader);
+}
+
+/* 0x4e1500: the first class from 1 on with none in the table (16 if all have, an error reported if
+ * errors are); nullopt when the game stopped. */
+std::optional<reg32> freeClass(App* app, CPU& cpu)
+{
+    reg32 index = 1;
+    if (at(app, kClasses + 4) != 0)
+    {
+        do
+            ++index;
+        while (index < 0x10 && at(app, kClasses + index * 4) != 0);
+    }
+    if (at(app, kReportErrors) != 0 && index >= 0x10)
+    {
+        // ecx, edx, ebp and edi pushed.
+        const GuestFrame frame(cpu, 0x10, 0);
+        if (!error(app, cpu, kGetFreeName, kGetFreeLine, {kNoFreeClasses, 0x10}))
+            return std::nullopt;
+    }
+    return index;
 }
 
 }  // namespace
 
-void findFreeBlock(win32::WinApplication* app, x86::CPU& cpu);
-void findLargestFreeBlock(win32::WinApplication* app, x86::CPU& cpu);
-void linkFreeBlock(win32::WinApplication* app, x86::CPU& cpu);
-void unlinkFreeBlock(win32::WinApplication* app, x86::CPU& cpu);
-void clearMemClasses(win32::WinApplication* app, x86::CPU& cpu);
-void markMemBlock(win32::WinApplication* app, x86::CPU& cpu);
-void memClassOverhead(win32::WinApplication* app, x86::CPU& cpu);
-void memBlockOverhead(win32::WinApplication* app, x86::CPU& cpu);
-void creatememclass(win32::WinApplication* app, x86::CPU& cpu);
-void releasememclass(win32::WinApplication* app, x86::CPU& cpu);
-void getfreememclass(win32::WinApplication* app, x86::CPU& cpu);
-void largestmem(win32::WinApplication* app, x86::CPU& cpu);
-void largestmemclass(win32::WinApplication* app, x86::CPU& cpu);
-void memBlockSize(win32::WinApplication* app, x86::CPU& cpu);
-void memBlockName(win32::WinApplication* app, x86::CPU& cpu);
-void memBlockFlags(win32::WinApplication* app, x86::CPU& cpu);
-void reservememadr(win32::WinApplication* app, x86::CPU& cpu);
-void purgememadr(win32::WinApplication* app, x86::CPU& cpu);
-void purgememclass(win32::WinApplication* app, x86::CPU& cpu);
-void reservememStdcall(win32::WinApplication* app, x86::CPU& cpu);
-void purgememStdcall(win32::WinApplication* app, x86::CPU& cpu);
-void memmove(win32::WinApplication* app, x86::CPU& cpu);
-
-/* 0x4e1000: the first free block of class eax of at least edx bytes, from
- * the free list's start (ebx 0) or its end; 0 if none -- the sentinel. */
-void findFreeBlock(win32::WinApplication* app, x86::CPU& cpu)
+/* 0x4e1620: `size` bytes (8 at least) of the class `flags` names, named `name` (or 0), flags `flags`
+ * with the class's 0x700 -- under the class's lock, if it has one: the first free block large
+ * enough from the bottom (from the top, flag 0x10; the largest, 0x20), split if more than 0x40
+ * bytes are left over -- the rest left free below (above, from the top) -- and marked in use (its
+ * size the one asked for, 0x100 kept only for a name).  The body's address, or 0 for none large
+ * enough or a size less than 0, each an error reported if errors are; nullopt when the game
+ * stopped. */
+std::optional<reg32> reserveBlock(App* app, CPU& cpu, reg32 name, reg32 size, reg32 flags, ReserveLeft& left)
 {
-    cpu.eax += 0x10;
-    const reg32 link = cpu.ebx == 0 ? 0x10 : 0x14;
-    do
-        cpu.eax = at(app, cpu.eax + link);
-    while (sreg32(cpu.edx) > sreg32(at(app, cpu.eax + 4)));
-    if (half(app, cpu.eax) == kSentinel)
-        cpu.eax = 0;
-    cpu.esp += 4;
-}
-
-/* 0x4e1030: the largest free block of class eax of at least edx bytes (of
- * any, edx 0 or less), the free list gone through from its start (ebx 0) or
- * its end -- of those as large, the first; 0 if none.  edx left its size
- * less one, or the one asked for less one; ebx, from the end, the last
- * size looked at. */
-void findLargestFreeBlock(win32::WinApplication* app, x86::CPU& cpu)
-{
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.esi);
-    cpu.eax += 0x10;
-    --cpu.edx;
-    cpu.ecx = 0;
-    if (sreg32(cpu.edx) < 0)
-        cpu.edx = 0;
-    if (cpu.ebx == 0)
+    // The code's frame: four registers kept, then 0x14 bytes.
+    const GuestFrame frame(cpu, 0x10, 0x14);
+    const reg32 cls = classOf(app, flags);
+    left = {flags, 0};
+    if (const reg32 lock = at(app, cls + kClassLock);
+        lock != 0 && !section<kEnterCriticalSection, &win32::kernel32::EnterCriticalSection>(app, cpu, lock, left.edx))
+        return std::nullopt;
+    if (sreg32(size) < 0)
     {
-        for (;;)
-        {
-            cpu.eax = at(app, cpu.eax + 0x10);
-            cpu.esi = at(app, cpu.eax + 4);
-            if (sreg32(cpu.edx) >= sreg32(cpu.esi))
-                continue;
-            if (half(app, cpu.eax) == kSentinel)
-                break;
-            cpu.edx = cpu.esi;
-            cpu.ecx = cpu.eax;
-        }
-    }
-    else
-    {
-        for (;;)
-        {
-            cpu.eax = at(app, cpu.eax + 0x14);
-            cpu.ebx = at(app, cpu.eax + 4);
-            if (sreg32(cpu.edx) >= sreg32(cpu.ebx))
-                continue;
-            if (half(app, cpu.eax) == kSentinel)
-                break;
-            cpu.edx = cpu.ebx;
-            cpu.ecx = cpu.eax;
-        }
-    }
-    cpu.eax = cpu.ecx;
-    cpu.esi = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
-    cpu.esp += 4;
-}
-
-/* 0x4e1080: block edx put into class eax's free list where its address
- * goes -- looked for from the list's end if it is past the middle of the
- * first and last, else from its start -- as "FB", its size up to the next
- * block, flagged 0x4000.  eax left the block after it in the list, its
- * second byte the block's flags' high byte; edx the one before. */
-void linkFreeBlock(win32::WinApplication* app, x86::CPU& cpu)
-{
-    push(app, cpu, cpu.ebx);
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.esi);
-    push(app, cpu, cpu.edi);
-    cpu.ecx = cpu.edx;
-    cpu.ebx = at(app, cpu.ecx + 8);
-    cpu.ebx -= cpu.ecx;
-    cpu.esi = cpu.ebx - 0x10;
-    cpu.edi = at(app, cpu.eax + 0x20);
-    cpu.ebx = at(app, cpu.eax + 0x24);
-    cpu.ebx -= cpu.edi;
-    cpu.ebx >>= 1;
-    cpu.eax += 0x10;
-    cpu.ebx += cpu.edi;
-    cpu.edx = cpu.eax;
-    if (cpu.ecx > cpu.ebx)
-    {
-        do
-            cpu.edx = at(app, cpu.edx + 0x14);
-        while (cpu.ecx < cpu.edx);
-        cpu.eax = at(app, cpu.edx + 0x10);
-    }
-    else
-    {
-        do
-            cpu.eax = at(app, cpu.eax + 0x10);
-        while (cpu.ecx > cpu.eax);
-        cpu.edx = at(app, cpu.eax + 0x14);
-    }
-    put(app, cpu.ecx + 0x14, cpu.edx);
-    put(app, cpu.ecx + 4, cpu.esi);
-    put(app, cpu.ecx + 0x10, cpu.eax);
-    put(app, cpu.edx + 0x10, cpu.ecx);
-    put(app, cpu.eax + 0x14, cpu.ecx);
-    cpu.ah = byte(app, cpu.ecx + 3);
-    putHalf(app, cpu.ecx, kFree);
-    cpu.ah |= 0x40;
-    putByte(app, cpu.ecx + 3, cpu.ah);
-    cpu.edi = pop(app, cpu);
-    cpu.esi = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
-    cpu.ebx = pop(app, cpu);
-    cpu.esp += 4;
-}
-
-/* 0x4e10e0: free block edx taken out of its free list (eax, its class, not
- * looked at), its signature cleared and its 0x4000 flag.  eax left the
- * block before it in the list, its second byte the block's flags' high
- * byte. */
-void unlinkFreeBlock(win32::WinApplication* app, x86::CPU& cpu)
-{
-    push(app, cpu, cpu.ecx);
-    cpu.eax = at(app, cpu.edx + 0x14);
-    cpu.ecx = at(app, cpu.edx + 0x10);
-    put(app, cpu.eax + 0x10, cpu.ecx);
-    put(app, cpu.ecx + 0x14, cpu.eax);
-    cpu.ah = byte(app, cpu.edx + 3);
-    putHalf(app, cpu.edx, 0);
-    cpu.ah &= 0xbf;
-    putByte(app, cpu.edx + 3, cpu.ah);
-    cpu.ecx = pop(app, cpu);
-    cpu.esp += 4;
-}
-
-/* 0x4e1100: the class table cleared; 1.  No callers in the game. */
-void clearMemClasses(win32::WinApplication* app, x86::CPU& cpu)
-{
-    push(app, cpu, cpu.edx);
-    cpu.edx = 0x40;
-    cpu.eax = kClasses;
-    if (!byAddress(app, cpu, kFillZero))
-        return;
-    cpu.eax = 1;
-    cpu.edx = pop(app, cpu);
-    cpu.esp += 4;
-}
-
-/* 0x4e1120: block eax marked in use ("MB"): flags the first stack word,
- * size ebx, the block before and after the second and third; after its body
- * "BEND", the file and line it is asked for at and a zero word as the flags
- * say, ecx bytes of the class's, and name edx if there is one and the flags
- * say so.  eax the bytes from the block to past all that; the three words
- * taken off. */
-void markMemBlock(win32::WinApplication* app, x86::CPU& cpu)
-{
-    push(app, cpu, cpu.esi);
-    push(app, cpu, cpu.edi);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.eax;
-    cpu.esi = cpu.edx;
-    cpu.edi = cpu.ecx;
-    cpu.ecx = at(app, cpu.esp + 0x10);
-    putHalf(app, cpu.eax, kInUse);
-    putHalf(app, cpu.eax + 2, cpu.cx);
-    put(app, cpu.eax + 4, cpu.ebx);
-    cpu.eax = at(app, cpu.esp + 0x18);
-    cpu.edx = cpu.ebp + 0x10;
-    put(app, cpu.ebp + 8, cpu.eax);
-    cpu.eax = at(app, cpu.esp + 0x14);
-    cpu.edx += cpu.ebx;
-    put(app, cpu.ebp + 0xc, cpu.eax);
-    if (cpu.ch & 2)
-    {
-        cpu.eax = 0x42454e44;
-        cpu.eax = __builtin_bswap32(cpu.eax);
-        put(app, cpu.edx, cpu.eax);
-    }
-    if (cpu.ch & 4)
-    {
-        cpu.ebx = at(app, kCalledFile);
-        if (cpu.ebx == 0)
-        {
-            cpu.eax = at(app, kWhereFile);
-            put(app, cpu.edx + 4, cpu.eax);
-            cpu.eax = at(app, kWhereLine);
-        }
-        else
-        {
-            cpu.eax = at(app, kCalledLine);
-            put(app, cpu.edx + 4, cpu.ebx);
-        }
-        put(app, cpu.edx + 8, cpu.eax);
-    }
-    if (cpu.ch & 8)
-        put(app, cpu.edx + 0xc, 0);
-    cpu.edx += cpu.edi;
-    if (cpu.esi != 0 && (cpu.ch & 1))
-    {
-        cpu.edi = cpu.edx;
-        push(app, cpu, cpu.edi);
-        copyName(app, cpu);
-        cpu.edi = pop(app, cpu);
-        nameLength(app, cpu);
-        cpu.edx += cpu.ecx;
-    }
-    cpu.eax = cpu.edx;
-    cpu.eax -= cpu.ebp;
-    cpu.ebp = pop(app, cpu);
-    cpu.edi = pop(app, cpu);
-    cpu.esi = pop(app, cpu);
-    cpu.esp += 4 + 0xc;
-}
-
-/* 0x4e11e0: the bytes a block of class eax takes past its body. */
-void memClassOverhead(win32::WinApplication* app, x86::CPU& cpu)
-{
-    cpu.eax &= 0xf;
-    cpu.eax = at(app, cpu.eax * 4 + kClasses);
-    cpu.eax = at(app, cpu.eax + 0x30);
-    cpu.esp += 4;
-}
-
-/* 0x4e11f0: the bytes a block of class edx named eax takes past its body:
- * the class's, and the name and its zero if the class counts names in.  edx
- * left the class. */
-void memBlockOverhead(win32::WinApplication* app, x86::CPU& cpu)
-{
-    push(app, cpu, cpu.ecx);
-    cpu.edx &= 0xf;
-    cpu.ecx = 0;
-    cpu.edx = at(app, cpu.edx * 4 + kClasses);
-    if (cpu.eax != 0 && (byte(app, cpu.edx + 0x35) & 1))
-    {
-        push(app, cpu, cpu.edi);
-        cpu.edi = cpu.eax;
-        nameLength(app, cpu);
-        cpu.edi = pop(app, cpu);
-    }
-    cpu.eax = at(app, cpu.edx + 0x30);
-    cpu.eax += cpu.ecx;
-    cpu.ecx = pop(app, cpu);
-    cpu.esp += 4;
-}
-
-/* 0x4e1230: class eax (0 to 15, else an error reported, if errors are, and
- * 0) made, named edx, over the ecx bytes at ebx: its header in a block "<name>
- * LOW" there, a free block from where the stack's second word aligns past
- * it, a block "<name> HIGH" at the end.  The stack's words: how blocks are
- * aligned, how the free block is, the bytes each block takes past its body;
- * whether blocks have "BEND" after them (flag 0x200), the file and line
- * (0x400), their names (0x100); whether the class has a lock; a word kept.
- * The free block's size given back; the eight words taken off. */
-void creatememclass(win32::WinApplication* app, x86::CPU& cpu)
-{
-    push(app, cpu, cpu.esi);
-    push(app, cpu, cpu.edi);
-    push(app, cpu, cpu.ebp);
-    cpu.esp -= 0x110;
-    cpu.esi = cpu.eax;
-    cpu.edi = cpu.edx;
-    put(app, cpu.esp + 0x104, cpu.ebx);
-    put(app, cpu.esp + 0x10c, cpu.eax);
-    if (sreg32(cpu.eax) < 0 || sreg32(cpu.eax) >= 0x10)
-    {
+        if (const reg32 lock = at(app, cls + kClassLock);
+            lock != 0
+            && !section<kLeaveCriticalSection, &win32::kernel32::LeaveCriticalSection>(app, cpu, lock, left.edx))
+            return std::nullopt;
         if (at(app, kReportErrors) != 0)
         {
-            push(app, cpu, 0x10);
-            cpu.ebp = kFileName;
-            cpu.eax = kCreateName;
-            push(app, cpu, cpu.esi);
-            cpu.edx = 0x11a;
-            put(app, kWhereFile, cpu.ebp);
-            push(app, cpu, kCreateOutOfRange);
-            put(app, kWhereFunction, cpu.eax);
-            put(app, kWhereLine, cpu.edx);
-            if (!byAddress(app, cpu, kError))
-                return;
-            cpu.esp += 0xc;
+            left.ebx = kReserveName;
+            if (!error(app, cpu, kReserveName, kInvalidSizeLine,
+                       {kInvalidSize, name, size, largestFree(app, cls), flags}))
+                return std::nullopt;
         }
-        cpu.eax = 0;
-        cpu.esp += 0x110;
-        cpu.ebp = pop(app, cpu);
-        cpu.edi = pop(app, cpu);
-        cpu.esi = pop(app, cpu);
-        cpu.esp += 4 + 0x20;
-        return;
-    }
-    if (at(app, cpu.esp + 0x12c) != 0)
-    {
-        cpu.ah |= 2;
-        put(app, cpu.esp + 0x10c, cpu.eax);
-    }
-    if (at(app, cpu.esp + 0x130) != 0)
-        putByte(app, cpu.esp + 0x10d, byte(app, cpu.esp + 0x10d) | 4);
-    if (at(app, cpu.esp + 0x134) != 0)
-        putByte(app, cpu.esp + 0x10d, byte(app, cpu.esp + 0x10d) | 1);
-    // Where the free block starts, aligned; where the class ends.
-    cpu.eax = at(app, cpu.esp + 0x104);
-    cpu.edx = at(app, cpu.esp + 0x128);
-    cpu.eax += 0x50;
-    cpu.edx += cpu.eax;
-    cpu.eax = at(app, cpu.esp + 0x124);
-    cpu.edx += 0x18;
-    --cpu.eax;
-    cpu.edx += cpu.eax;
-    cpu.eax = ~cpu.eax;
-    push(app, cpu, cpu.edi);
-    cpu.edx &= cpu.eax;
-    push(app, cpu, kLowName);
-    cpu.edx -= 0x10;
-    cpu.eax = at(app, cpu.esp + 0x10c);
-    put(app, cpu.esp + 0x110, cpu.edx);
-    cpu.ecx += cpu.eax;
-    cpu.edx = at(app, cpu.esp + 0x130);
-    cpu.ebp = cpu.eax + 0x10;
-    cpu.ecx -= 0x18;
-    cpu.eax = cpu.esp + 8;
-    cpu.ecx -= cpu.edx;
-    push(app, cpu, cpu.eax);
-    put(app, cpu.esp + 0x10c, cpu.ecx);
-    if (!byAddress(app, cpu, kSprintf))
-        return;
-    cpu.esp += 0xc;
-    // The block "<name> LOW", the header's.
-    cpu.ecx = at(app, cpu.esp + 0x108);
-    push(app, cpu, cpu.ecx);
-    cpu.ebx = 0x40;
-    cpu.eax = at(app, cpu.esp + 0x110);
-    push(app, cpu, 0);
-    cpu.ah |= 0x80;
-    cpu.ecx = cpu.edx;
-    push(app, cpu, cpu.eax);
-    cpu.edx = cpu.esp + 0xc;
-    cpu.eax = at(app, cpu.esp + 0x110);
-    if (!direct(app, cpu, markMemBlock))
-        return;
-    // The free block, as one in use for now.
-    cpu.ebx = at(app, cpu.esp + 0x100);
-    cpu.eax = at(app, cpu.esp + 0x104);
-    push(app, cpu, cpu.ebx);
-    cpu.edx = at(app, cpu.esp + 0x110);
-    cpu.ecx = at(app, cpu.esp + 0x10c);
-    push(app, cpu, cpu.eax);
-    cpu.ebx -= cpu.ecx;
-    cpu.ecx = at(app, cpu.esp + 0x130);
-    cpu.eax = at(app, cpu.esp + 0x110);
-    push(app, cpu, cpu.edx);
-    cpu.ebx -= 0x10;
-    cpu.edx = 0;
-    if (!direct(app, cpu, markMemBlock))
-        return;
-    // The block "<name> HIGH".
-    push(app, cpu, cpu.edi);
-    push(app, cpu, kHighName);
-    cpu.eax = cpu.esp + 8;
-    push(app, cpu, cpu.eax);
-    if (!byAddress(app, cpu, kSprintf))
-        return;
-    cpu.esp += 0xc;
-    cpu.edx = cpu.esp;
-    push(app, cpu, 0);
-    cpu.ebx = at(app, cpu.esp + 0x10c);
-    cpu.eax = at(app, cpu.esp + 0x110);
-    push(app, cpu, cpu.ebx);
-    cpu.ax |= 0x8010;
-    cpu.ecx = at(app, cpu.esp + 0x130);
-    push(app, cpu, cpu.eax);
-    cpu.ebx = 0;
-    cpu.eax = at(app, cpu.esp + 0x10c);
-    if (!direct(app, cpu, markMemBlock))
-        return;
-    // The class's header: in the table, cleared, named.
-    cpu.eax = cpu.esi;
-    cpu.eax &= 0xf;
-    cpu.edx = 0x40;
-    cpu.esi = cpu.edi;
-    put(app, cpu.eax * 4 + kClasses, cpu.ebp);
-    cpu.eax = cpu.ebp;
-    cpu.edi = cpu.ebp;
-    if (!byAddress(app, cpu, kFillZero))
-        return;
-    push(app, cpu, cpu.edi);
-    copyName(app, cpu);
-    cpu.edi = pop(app, cpu);
-    putHalf(app, cpu.ebp + 0x10, kSentinel);
-    cpu.eax = at(app, cpu.esp + 0x104);
-    put(app, cpu.ebp + 0x14, 0x7fffffff);
-    put(app, cpu.ebp + 8, cpu.eax);
-    cpu.eax = at(app, cpu.esp + 0x100);
-    put(app, cpu.ebp + 0xc, cpu.eax);
-    cpu.eax = cpu.ebp + 0x10;
-    put(app, cpu.ebp + 0x20, cpu.eax);
-    put(app, cpu.ebp + 0x24, cpu.eax);
-    cpu.eax = at(app, cpu.esp + 0x120);
-    put(app, cpu.ebp + 0x28, cpu.eax);
-    cpu.eax = at(app, cpu.esp + 0x124);
-    put(app, cpu.ebp + 0x2c, cpu.eax);
-    cpu.eax = at(app, cpu.esp + 0x128);
-    put(app, cpu.ebp + 0x30, cpu.eax);
-    cpu.eax = at(app, cpu.esp + 0x10c);
-    cpu.edx = at(app, cpu.esp + 0x108);
-    put(app, cpu.ebp + 0x34, cpu.eax);
-    cpu.eax = at(app, cpu.esp + 0x13c);
-    cpu.esi = at(app, cpu.esp + 0x138);
-    put(app, cpu.ebp + 0x3c, cpu.eax);
-    cpu.eax = cpu.ebp;
-    put(app, cpu.ebp + 0x38, 0);
-    // The free block into the free list; the lock.
-    if (!direct(app, cpu, linkFreeBlock))
-        return;
-    if (cpu.esi != 0)
-    {
-        if (!byAddress(app, cpu, kLockMade))
-            return;
-        put(app, cpu.ebp + 0x38, cpu.eax);
-    }
-    cpu.eax = at(app, cpu.esp + 0x108);
-    cpu.eax = at(app, cpu.eax + 4);
-    cpu.esp += 0x110;
-    cpu.ebp = pop(app, cpu);
-    cpu.edi = pop(app, cpu);
-    cpu.esi = pop(app, cpu);
-    cpu.esp += 4 + 0x20;
-}
-
-/* 0x4e14b0: class eax's lock freed, if it has one, and its header cleared;
- * 1.  It stays in the table.  No callers in the game. */
-void releasememclass(win32::WinApplication* app, x86::CPU& cpu)
-{
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.edx);
-    cpu.eax &= 0xf;
-    cpu.ecx = at(app, cpu.eax * 4 + kClasses);
-    cpu.edx = at(app, cpu.ecx + 0x38);
-    if (cpu.edx != 0)
-    {
-        cpu.eax = cpu.edx;
-        if (!byAddress(app, cpu, kLockFreed))
-            return;
-    }
-    cpu.edx = 0x40;
-    cpu.eax = cpu.ecx;
-    if (!byAddress(app, cpu, kFillZero))
-        return;
-    cpu.eax = 1;
-    cpu.edx = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
-    cpu.esp += 4;
-}
-
-/* 0x4e1500: the first class from 1 on with none in the table (1 straight
- * away if 1 has none; 16 if all have) -- 16 an error reported, if errors
- * are.  No callers in the game. */
-void getfreememclass(win32::WinApplication* app, x86::CPU& cpu)
-{
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.edx);
-    push(app, cpu, cpu.ebp);
-    cpu.eax = 4;
-    cpu.ecx = at(app, kClasses + 4);
-    cpu.edx = 1;
-    if (cpu.ecx != 0)
-    {
-        do
-        {
-            cpu.eax += 4;
-            ++cpu.edx;
-        } while (sreg32(cpu.eax) < 0x40 && at(app, cpu.eax + kClasses) != 0);
-    }
-    if (at(app, kReportErrors) != 0 && sreg32(cpu.edx) >= 0x10)
-    {
-        push(app, cpu, cpu.edi);
-        cpu.edi = kFileName;
-        push(app, cpu, 0x10);
-        cpu.ebp = kGetFreeName;
-        cpu.eax = 0x1ae;
-        push(app, cpu, kNoFreeClasses);
-        setWhere(app, cpu.edi, cpu.ebp, cpu.eax);
-        if (!byAddress(app, cpu, kError))
-            return;
-        cpu.esp += 8;
-        cpu.edi = pop(app, cpu);
-    }
-    cpu.eax = cpu.edx;
-    cpu.ebp = pop(app, cpu);
-    cpu.edx = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
-    cpu.esp += 4;
-}
-
-/* 0x4e1580: the size of the default class's largest free block, or 0. */
-void largestmem(win32::WinApplication* app, x86::CPU& cpu)
-{
-    push(app, cpu, cpu.ebx);
-    push(app, cpu, cpu.edx);
-    cpu.eax = at(app, kDefaultClass);
-    cpu.eax &= 0xf;
-    cpu.ebx = 0;
-    cpu.edx = 0;
-    cpu.eax = at(app, cpu.eax * 4 + kClasses);
-    if (!direct(app, cpu, findLargestFreeBlock))
-        return;
-    if (cpu.eax != 0)
-        cpu.eax = at(app, cpu.eax + 4);
-    cpu.edx = pop(app, cpu);
-    cpu.ebx = pop(app, cpu);
-    cpu.esp += 4;
-}
-
-/* 0x4e15b0: the size of class eax's largest free block, or 0. */
-void largestmemclass(win32::WinApplication* app, x86::CPU& cpu)
-{
-    push(app, cpu, cpu.ebx);
-    push(app, cpu, cpu.edx);
-    cpu.eax &= 0xf;
-    cpu.ebx = 0;
-    cpu.edx = 0;
-    cpu.eax = at(app, cpu.eax * 4 + kClasses);
-    if (!direct(app, cpu, findLargestFreeBlock))
-        return;
-    if (cpu.eax != 0)
-        cpu.eax = at(app, cpu.eax + 4);
-    cpu.edx = pop(app, cpu);
-    cpu.ebx = pop(app, cpu);
-    cpu.esp += 4;
-}
-
-/* 0x4e15d0: the size asked for of the block at eax. */
-void memBlockSize(win32::WinApplication* app, x86::CPU& cpu)
-{
-    cpu.eax = at(app, cpu.eax - 0xc);
-    cpu.esp += 4;
-}
-
-/* 0x4e15e0: the name of the block at eax, past its body and its class's
- * bytes; 0 for one not named (flag 0x100). */
-void memBlockName(win32::WinApplication* app, x86::CPU& cpu)
-{
-    push(app, cpu, cpu.ebx);
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.edx);
-    cpu.edx = cpu.eax;
-    cpu.ebx = cpu.edx - 0x10;
-    cpu.ecx = 0;
-    cpu.cx = half(app, cpu.ebx + 2);
-    cpu.eax = 0;
-    if (cpu.ch & 1)
-    {
-        cpu.eax = cpu.ecx;
-        if (!direct(app, cpu, memClassOverhead))
-            return;
-        cpu.edx += at(app, cpu.ebx + 4);
-        cpu.eax += cpu.edx;
-    }
-    cpu.edx = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
-    cpu.ebx = pop(app, cpu);
-    cpu.esp += 4;
-}
-
-/* 0x4e1610: the flags of the block at eax.  No callers in the game. */
-void memBlockFlags(win32::WinApplication* app, x86::CPU& cpu)
-{
-    cpu.ax = half(app, cpu.eax - 0xe);
-    cpu.eax &= 0xffff;
-    cpu.esp += 4;
-}
-
-/* 0x4e1620: edx bytes (8 at least) of class ebx & 0xf, named eax (or 0),
- * flags ebx with the class's 0x700 -- under the class's lock, if it has one:
- * the first free block large enough from the bottom (from the top, flag
- * 0x10; the largest, 0x20), split if more than 0x40 bytes are left over --
- * the rest left free below (above, from the top) -- and marked in use (its
- * size the one asked for, 0x100 kept only for a name).  The body's address,
- * or 0 for none large enough or a size less than 0, each an error reported
- * if errors are. */
-void reservememadr(win32::WinApplication* app, x86::CPU& cpu)
-{
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.esi);
-    push(app, cpu, cpu.edi);
-    push(app, cpu, cpu.ebp);
-    cpu.esp -= 0x14;
-    put(app, cpu.esp + 0xc, cpu.eax);
-    cpu.ebp = cpu.edx;
-    put(app, cpu.esp + 0x10, cpu.ebx);
-    cpu.eax = cpu.ebx;
-    cpu.eax &= 0xf;
-    cpu.edi = at(app, cpu.eax * 4 + kClasses);
-    cpu.edx = 0;
-    cpu.ecx = at(app, cpu.edi + 0x38);
-    put(app, cpu.esp + 4, cpu.edx);
-    if (cpu.ecx != 0)
-    {
-        push(app, cpu, cpu.ecx);
-        if (!byAddress(app, cpu, at(app, kEnterCriticalSection)))
-            return;
-    }
-    cpu.ecx = cpu.ebp;
-    if (sreg32(cpu.ebp) < 8)
-    {
-        if (sreg32(cpu.ebp) < 0)
-        {
-            // A size less than 0.
-            cpu.esi = at(app, cpu.edi + 0x38);
-            if (cpu.esi != 0)
-            {
-                push(app, cpu, cpu.esi);
-                if (!byAddress(app, cpu, at(app, kLeaveCriticalSection)))
-                    return;
-            }
-            if (at(app, kReportErrors) != 0)
-            {
-                cpu.ecx = kFileName;
-                cpu.ebx = kReserveName;
-                cpu.esi = 0x2ae;
-                cpu.edi = at(app, cpu.esp + 0x10);
-                put(app, kWhereFile, cpu.ecx);
-                put(app, kWhereFunction, cpu.ebx);
-                push(app, cpu, cpu.edi);
-                cpu.eax = cpu.edi;
-                put(app, kWhereLine, cpu.esi);
-                if (!direct(app, cpu, largestmemclass))
-                    return;
-                push(app, cpu, cpu.eax);
-                push(app, cpu, cpu.ebp);
-                cpu.ebp = at(app, cpu.esp + 0x18);
-                push(app, cpu, cpu.ebp);
-                push(app, cpu, kInvalidSize);
-                if (!byAddress(app, cpu, kError))
-                    return;
-                cpu.esp += 0x14;
-            }
-            cpu.eax = 0;
-            cpu.esp += 0x14;
-            cpu.ebp = pop(app, cpu);
-            cpu.edi = pop(app, cpu);
-            cpu.esi = pop(app, cpu);
-            cpu.ecx = pop(app, cpu);
-            cpu.esp += 4;
-            return;
-        }
-        cpu.ecx = 8;
+        return 0;
     }
     // What the block takes, aligned; a block for it.
-    cpu.edx = at(app, cpu.esp + 0x10);
-    cpu.eax = at(app, cpu.esp + 0xc);
-    if (!direct(app, cpu, memBlockOverhead))
-        return;
-    cpu.ebx = at(app, cpu.edi + 0x28);
-    cpu.eax += cpu.ecx;
-    --cpu.ebx;
-    cpu.eax += 0x10;
-    put(app, cpu.esp + 8, cpu.ebx);
-    cpu.ecx = cpu.ebx + cpu.eax;
-    cpu.eax = cpu.ebx;
-    cpu.eax = ~cpu.eax;
-    cpu.eax &= cpu.ecx;
-    cpu.ecx = cpu.eax - 0x10;
-    cpu.ebx = at(app, cpu.esp + 0x10);
-    cpu.ah = byte(app, cpu.esp + 0x10);
-    cpu.ebx &= 0x10;
-    const bool largest = (cpu.ah & 0x20) != 0;
-    cpu.edx = cpu.ecx;
-    cpu.eax = cpu.edi;
-    if (!direct(app, cpu, largest ? findLargestFreeBlock : findFreeBlock))
-        return;
-    cpu.esi = cpu.eax;
-    if (cpu.esi == 0)
+    const reg32 body = sreg32(size) < kLeastBody ? reg32(kLeastBody) : size;
+    const reg32 alignLess = at(app, cls + kClassAlign) - 1;
+    const reg32 needed =
+        ((blockBytes(app, name, flags) + body + kBlockHeader + alignLess) & ~alignLess) - kBlockHeader;
+    const bool fromTop = (flags & kFromTop) != 0;
+    reg32 block;
+    if (flags & kFromLargest)
+    {
+        const LargestFree largest = largestFreeBlock(app, cls, needed, fromTop);
+        block = largest.block;
+        left = {fromTop ? at(app, largest.stop + kBlockSize) : 0, reg32(largest.size)};
+    }
+    else
+    {
+        block = firstFreeBlock(app, cls, i32(needed), fromTop);
+        left = {flags & kFromTop, needed};
+    }
+    reg32 result = 0;
+    if (block == 0)
     {
         // None large enough.
         if (at(app, kReportErrors) != 0)
         {
-            cpu.edx = at(app, cpu.edi + 0x38);
-            if (cpu.edx != 0)
-            {
-                push(app, cpu, cpu.edx);
-                if (!byAddress(app, cpu, at(app, kLeaveCriticalSection)))
-                    return;
-            }
-            cpu.ebx = kFileName;
-            cpu.esi = kReserveName;
-            cpu.edi = 0x2ed;
-            cpu.eax = at(app, cpu.esp + 0x10);
-            put(app, kWhereFile, cpu.ebx);
-            push(app, cpu, cpu.eax);
-            put(app, kWhereFunction, cpu.esi);
-            put(app, kWhereLine, cpu.edi);
-            if (!direct(app, cpu, largestmemclass))
-                return;
-            push(app, cpu, cpu.eax);
-            push(app, cpu, cpu.ebp);
-            cpu.edx = at(app, cpu.esp + 0x18);
-            push(app, cpu, cpu.edx);
-            push(app, cpu, kOutOfMemory);
-            if (!byAddress(app, cpu, kError))
-                return;
-            cpu.esp += 0x14;
-            cpu.eax = 0;
-            cpu.esp += 0x14;
-            cpu.ebp = pop(app, cpu);
-            cpu.edi = pop(app, cpu);
-            cpu.esi = pop(app, cpu);
-            cpu.ecx = pop(app, cpu);
-            cpu.esp += 4;
-            return;
+            reg32 held = at(app, cls + kClassLock);
+            if (held != 0
+                && !section<kLeaveCriticalSection, &win32::kernel32::LeaveCriticalSection>(app, cpu, held, held))
+                return std::nullopt;
+            left = {kFileName, name};
+            if (!error(app, cpu, kReserveName, kOutOfMemoryLine,
+                       {kOutOfMemory, name, size, largestFree(app, cls), flags}))
+                return std::nullopt;
+            return 0;
         }
     }
     else
     {
-        cpu.edx = cpu.esi;
-        cpu.eax = cpu.edi;
-        if (!direct(app, cpu, unlinkFreeBlock))
-            return;
-        cpu.eax = at(app, cpu.esi + 4);
-        cpu.eax -= cpu.ecx;
-        if (sreg32(cpu.eax) > 0x40)
+        unlinkFree(app, block);
+        const i32 rest = i32(at(app, block + kBlockSize) - needed);
+        if (rest > kSplitAbove)
         {
-            if (byte(app, cpu.esp + 0x10) & 0x10)
+            if (fromTop)
             {
                 // From the top: the rest, aligned down, left free below.
-                cpu.ecx = at(app, cpu.esp + 8);
-                cpu.ecx = ~cpu.ecx;
-                cpu.eax &= cpu.ecx;
-                put(app, cpu.esp, cpu.esi);
-                cpu.esi += cpu.eax;
-                cpu.eax = at(app, cpu.esp);
-                cpu.eax = at(app, cpu.eax + 8);
-                put(app, cpu.eax + 0xc, cpu.esi);
-                cpu.eax = at(app, cpu.esp);
-                cpu.eax = at(app, cpu.eax + 8);
-                put(app, cpu.esi + 8, cpu.eax);
-                cpu.eax = at(app, cpu.esp);
-                put(app, cpu.esi + 0xc, cpu.eax);
-                push(app, cpu, cpu.esi);
-                cpu.ebx = at(app, cpu.eax + 0xc);
-                push(app, cpu, cpu.ebx);
-                cpu.edx = 0;
-                push(app, cpu, 0);
-                cpu.ecx = 0;
-                cpu.ebx = 0;
-                if (!direct(app, cpu, markMemBlock))
-                    return;
-                cpu.edx = at(app, cpu.esp);
-                cpu.eax = cpu.edi;
-                if (!direct(app, cpu, linkFreeBlock))
-                    return;
+                const reg32 low = block;
+                block = low + (reg32(rest) & ~alignLess);
+                put(app, at(app, low + kBlockNext) + kBlockPrevious, block);
+                put(app, block + kBlockNext, at(app, low + kBlockNext));
+                put(app, block + kBlockPrevious, low);
+                markBlock(app, low, 0, 0, 0, 0, at(app, low + kBlockPrevious), block);
+                linkFree(app, cls, low);
             }
             else
             {
                 // From the bottom: the rest left free above.
-                cpu.eax = cpu.esi + 0x10;
-                cpu.eax += cpu.ecx;
-                put(app, cpu.esp, cpu.eax);
-                cpu.eax = at(app, cpu.esi + 8);
-                cpu.ecx = at(app, cpu.esp);
-                put(app, cpu.eax + 0xc, cpu.ecx);
-                cpu.ecx = at(app, cpu.esi + 8);
-                push(app, cpu, cpu.ecx);
-                push(app, cpu, cpu.esi);
-                cpu.ebx = 0;
-                cpu.edx = 0;
-                push(app, cpu, 0);
-                cpu.eax = at(app, cpu.esp + 0xc);
-                cpu.ecx = 0;
-                if (!direct(app, cpu, markMemBlock))
-                    return;
-                cpu.edx = at(app, cpu.esp);
-                cpu.eax = cpu.edi;
-                if (!direct(app, cpu, linkFreeBlock))
-                    return;
-                cpu.eax = at(app, cpu.esp);
-                put(app, cpu.esi + 8, cpu.eax);
+                const reg32 above = block + kBlockHeader + needed;
+                put(app, at(app, block + kBlockNext) + kBlockPrevious, above);
+                markBlock(app, above, 0, 0, 0, 0, block, at(app, block + kBlockNext));
+                linkFree(app, cls, above);
+                put(app, block + kBlockNext, above);
             }
         }
         // The block marked in use.
-        cpu.eax = at(app, cpu.edi + 0x34);
-        cpu.edx = at(app, cpu.esp + 0x10);
-        cpu.eax &= 0x700;
-        cpu.edx |= cpu.eax;
-        cpu.ecx = at(app, cpu.esp + 0xc);
-        put(app, cpu.esp + 0x10, cpu.edx);
-        if (cpu.ecx == 0)
-            putByte(app, cpu.esp + 0x11, byte(app, cpu.esp + 0x11) & 0xfe);
-        cpu.ebx = at(app, cpu.esi + 8);
-        push(app, cpu, cpu.ebx);
-        cpu.eax = at(app, cpu.esi + 0xc);
-        cpu.edx = at(app, cpu.esp + 0x14);
-        push(app, cpu, cpu.eax);
-        cpu.ecx = at(app, cpu.edi + 0x30);
-        cpu.ebx = cpu.ebp;
-        push(app, cpu, cpu.edx);
-        cpu.eax = cpu.esi;
-        cpu.edx = at(app, cpu.esp + 0x18);
-        cpu.esi += 0x10;
-        if (!direct(app, cpu, markMemBlock))
-            return;
-        put(app, cpu.esp + 4, cpu.esi);
+        reg32 marked = flags | (at(app, cls + kClassFlags) & kClassFlagsAdded);
+        if (name == 0)
+            marked &= ~kNamed;
+        const reg32 bytes = markBlock(app, block, marked, size, at(app, cls + kClassBytes), name,
+                                      at(app, block + kBlockPrevious), at(app, block + kBlockNext));
+        left = {(marked & kWhere) ? at(app, kCalledFile) : size, block + bytes};
+        result = block + kBlockHeader;
     }
-    cpu.ecx = at(app, cpu.edi + 0x38);
-    if (cpu.ecx != 0)
+    if (const reg32 lock = at(app, cls + kClassLock);
+        lock != 0 && !section<kLeaveCriticalSection, &win32::kernel32::LeaveCriticalSection>(app, cpu, lock, left.edx))
+        return std::nullopt;
+    return result;
+}
+
+/* 0x4e1890: the block at `body` given back to its class, under its lock if it has one: merged with
+ * the block before it and the one after if they are free, into the free list.  1 -- for none too;
+ * 0 for one not in use ("MB"), an error reported, if errors are, with its signature; nullopt when
+ * the game stopped. */
+std::optional<reg32> purgeBlock(App* app, CPU& cpu, reg32 body)
+{
+    if (body == 0)
+        return 1;
+    // Six registers kept.
+    const GuestFrame frame(cpu, 0x18, 0);
+    const reg32 block = body - kBlockHeader;
+    const reg32 cls = classOf(app, byte(app, block + kBlockFlags));
+    if (half(app, block) != kInUse)
     {
-        push(app, cpu, cpu.ecx);
-        if (!byAddress(app, cpu, at(app, kLeaveCriticalSection)))
-            return;
+        if (at(app, kReportErrors) != 0
+            && !error(app, cpu, kPurgeName, kPurgeLine,
+                      {kNotABlock, body, block, __builtin_bswap32(at(app, block)) >> 16}))
+            return std::nullopt;
+        return 0;
     }
-    cpu.eax = at(app, cpu.esp + 4);
-    cpu.esp += 0x14;
-    cpu.ebp = pop(app, cpu);
-    cpu.edi = pop(app, cpu);
-    cpu.esi = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
+    // Every register is kept here: what the Windows functions leave in edx is nobody's.
+    reg32 scratch = 0;
+    if (const reg32 lock = at(app, cls + kClassLock);
+        lock != 0 && !section<kEnterCriticalSection, &win32::kernel32::EnterCriticalSection>(app, cpu, lock, scratch))
+        return std::nullopt;
+    reg32 merged = block;
+    reg32 before = at(app, block + kBlockPrevious);
+    reg32 next = at(app, block + kBlockNext);
+    if (byte(app, before + kBlockFlagsHigh) & kInFreeList)
+    {
+        // Into the free block before it.
+        unlinkFree(app, before);
+        merged = before;
+        before = at(app, before + kBlockPrevious);
+        put(app, merged + kBlockNext, next);
+        put(app, before + kBlockNext, merged);
+        put(app, next + kBlockPrevious, merged);
+    }
+    if (byte(app, next + kBlockFlagsHigh) & kInFreeList)
+    {
+        // The free block after it into it.
+        unlinkFree(app, next);
+        next = at(app, next + kBlockNext);
+        put(app, merged + kBlockPrevious, before);
+        put(app, merged + kBlockNext, next);
+        put(app, next + kBlockPrevious, merged);
+    }
+    linkFree(app, cls, merged);
+    if (const reg32 lock = at(app, cls + kClassLock);
+        lock != 0 && !section<kLeaveCriticalSection, &win32::kernel32::LeaveCriticalSection>(app, cpu, lock, scratch))
+        return std::nullopt;
+    return 1;
+}
+
+namespace
+{
+
+/* 0x4e1990: every block of class `index` given back, from the start of its memory on, the next of
+ * each read after it is -- its LOW and HIGH blocks too, which are not free blocks to give back.
+ * `answer` the last one's, as it is for none; false when the game stopped. */
+bool purgeClass(App* app, CPU& cpu, reg32 index, reg32& answer)
+{
+    // edx pushed, and each call's return address.
+    const GuestFrame frame(cpu, 8, 0);
+    for (reg32 block = at(app, classOf(app, index) + kClassStart); block != 0; block = at(app, block + kBlockNext))
+    {
+        const std::optional<reg32> given = purgeBlock(app, cpu, block + kBlockHeader);
+        if (!given)
+            return false;
+        answer = *given;
+    }
+    return true;
+}
+
+/* 0x4e19d0: `size` bytes of the default class, not named -- what the files' code (0x4eb160) takes
+ * a buffer with. */
+std::optional<reg32> reserveDefault(App* app, CPU& cpu, reg32 size, ReserveLeft& left)
+{
+    // ebx pushed, and the call's return address.
+    const GuestFrame frame(cpu, 8, 0);
+    return reserveBlock(app, cpu, 0, size, at(app, kDefaultClass), left);
+}
+
+/* 0x4e19f0: the block at `body` given back, as the files' code (0x4eb160) frees its buffer. */
+std::optional<reg32> purgeDefault(App* app, CPU& cpu, reg32 body)
+{
+    // The call's return address.
+    const GuestFrame frame(cpu, 4, 0);
+    return purgeBlock(app, cpu, body);
+}
+
+}  // namespace
+
+/* 0x4ea4f0: `count` bytes from `from` to `to`: backwards where `to` is within them above `from`
+ * (memmove's backwards is the code's byte-at-a-time loop from the end), else by the forward
+ * copy. */
+bool moveMemory(App* app, CPU& cpu, reg32 to, reg32 from, reg32 count)
+{
+    if (!overlapsFromAbove(to, from, count))
+        return forwardCopy(app, cpu, to, from, count);
+    reg8* const memory = &app->getMemory<reg8>(0);
+    std::memmove(memory + to, memory + from, count);
+    return true;
+}
+
+void findFreeBlock(App* app, CPU& cpu);
+void findLargestFreeBlock(App* app, CPU& cpu);
+void linkFreeBlock(App* app, CPU& cpu);
+void unlinkFreeBlock(App* app, CPU& cpu);
+void clearMemClasses(App* app, CPU& cpu);
+void markMemBlock(App* app, CPU& cpu);
+void memClassOverhead(App* app, CPU& cpu);
+void memBlockOverhead(App* app, CPU& cpu);
+void creatememclass(App* app, CPU& cpu);
+void releasememclass(App* app, CPU& cpu);
+void getfreememclass(App* app, CPU& cpu);
+void largestmem(App* app, CPU& cpu);
+void largestmemclass(App* app, CPU& cpu);
+void memBlockSize(App* app, CPU& cpu);
+void memBlockName(App* app, CPU& cpu);
+void memBlockFlags(App* app, CPU& cpu);
+void reservememadr(App* app, CPU& cpu);
+void purgememadr(App* app, CPU& cpu);
+void purgememclass(App* app, CPU& cpu);
+void reservememStdcall(App* app, CPU& cpu);
+void purgememStdcall(App* app, CPU& cpu);
+void memmove(App* app, CPU& cpu);
+
+/* 0x4e1000: firstFreeBlock of class eax, edx bytes, from the end for ebx not 0. */
+void findFreeBlock(App* app, CPU& cpu)
+{
+    cpu.eax = firstFreeBlock(app, cpu.eax, i32(cpu.edx), cpu.ebx != 0);
     cpu.esp += 4;
 }
 
-/* 0x4e1890: the block at eax given back to its class, under its lock if it
- * has one: merged with the block before it and the one after if they are
- * free, into the free list.  1 -- for none too; 0 for one not in use ("MB"),
- * an error reported, if errors are, with its signature. */
-void purgememadr(win32::WinApplication* app, x86::CPU& cpu)
+/* 0x4e1030: largestFreeBlock of class eax, edx bytes, from the end for ebx not 0: edx left its
+ * size, ebx (from the end) the size of the sentinel the walk stopped at. */
+void findLargestFreeBlock(App* app, CPU& cpu)
 {
-    push(app, cpu, cpu.ebx);
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.edx);
-    push(app, cpu, cpu.esi);
-    push(app, cpu, cpu.edi);
-    push(app, cpu, cpu.ebp);
-    cpu.esi = cpu.eax;
-    cpu.ebp = 1;
-    if (cpu.eax != 0)
-    {
-        cpu.ax = half(app, cpu.eax - 0xe);
-        cpu.ah = 0;
-        cpu.al &= 0xf;
-        cpu.edx = cpu.esi - 0x10;
-        cpu.eax &= 0xffff;
-        cpu.cx = half(app, cpu.edx);
-        cpu.ebx = at(app, cpu.eax * 4 + kClasses);
-        if (cpu.cx != kInUse)
-        {
-            if (at(app, kReportErrors) != 0)
-            {
-                cpu.eax = kFileName;
-                cpu.ecx = kPurgeName;
-                cpu.ebx = 0x333;
-                put(app, kWhereFile, cpu.eax);
-                put(app, kWhereFunction, cpu.ecx);
-                cpu.ecx = 2;
-                cpu.eax = cpu.edx;
-                put(app, kWhereLine, cpu.ebx);
-                cpu.eax = at(app, cpu.eax);
-                cpu.eax = __builtin_bswap32(cpu.eax);
-                cpu.ecx = 0 - cpu.ecx;
-                cpu.ecx = cpu.ecx * 8 + 0x20;
-                cpu.eax >>= cpu.cl & 0x1f;
-                push(app, cpu, cpu.eax);
-                push(app, cpu, cpu.edx);
-                push(app, cpu, cpu.esi);
-                push(app, cpu, kNotABlock);
-                if (!byAddress(app, cpu, kError))
-                    return;
-                cpu.esp += 0x10;
-            }
-            cpu.eax = 0;
-            cpu.ebp = pop(app, cpu);
-            cpu.edi = pop(app, cpu);
-            cpu.esi = pop(app, cpu);
-            cpu.edx = pop(app, cpu);
-            cpu.ecx = pop(app, cpu);
-            cpu.ebx = pop(app, cpu);
-            cpu.esp += 4;
-            return;
-        }
-        cpu.edx = at(app, cpu.ebx + 0x38);
-        if (cpu.edx != 0)
-        {
-            push(app, cpu, cpu.edx);
-            if (!byAddress(app, cpu, at(app, kEnterCriticalSection)))
-                return;
-        }
-        cpu.ecx = cpu.esi - 0x10;
-        cpu.edi = at(app, cpu.ecx + 0xc);
-        cpu.ah = byte(app, cpu.edi + 3);
-        cpu.esi = at(app, cpu.ecx + 8);
-        if (cpu.ah & 0x40)
-        {
-            // Into the free block before it.
-            cpu.edx = cpu.edi;
-            cpu.eax = cpu.ebx;
-            cpu.ecx = cpu.edi;
-            if (!direct(app, cpu, unlinkFreeBlock))
-                return;
-            cpu.edi = at(app, cpu.edi + 0xc);
-            put(app, cpu.ecx + 8, cpu.esi);
-            put(app, cpu.edi + 8, cpu.ecx);
-            put(app, cpu.esi + 0xc, cpu.ecx);
-        }
-        if (byte(app, cpu.esi + 3) & 0x40)
-        {
-            // The free block after it into it.
-            cpu.edx = cpu.esi;
-            cpu.eax = cpu.ebx;
-            if (!direct(app, cpu, unlinkFreeBlock))
-                return;
-            cpu.esi = at(app, cpu.esi + 8);
-            put(app, cpu.ecx + 0xc, cpu.edi);
-            put(app, cpu.ecx + 8, cpu.esi);
-            put(app, cpu.esi + 0xc, cpu.ecx);
-        }
-        cpu.edx = cpu.ecx;
-        cpu.eax = cpu.ebx;
-        if (!direct(app, cpu, linkFreeBlock))
-            return;
-        cpu.esi = at(app, cpu.ebx + 0x38);
-        if (cpu.esi != 0)
-        {
-            push(app, cpu, cpu.esi);
-            if (!byAddress(app, cpu, at(app, kLeaveCriticalSection)))
-                return;
-        }
-    }
-    cpu.eax = cpu.ebp;
-    cpu.ebp = pop(app, cpu);
-    cpu.edi = pop(app, cpu);
-    cpu.esi = pop(app, cpu);
-    cpu.edx = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
-    cpu.ebx = pop(app, cpu);
+    const bool fromEnd = cpu.ebx != 0;
+    const LargestFree largest = largestFreeBlock(app, cpu.eax, cpu.edx, fromEnd);
+    cpu.eax = largest.block;
+    cpu.edx = reg32(largest.size);
+    if (fromEnd)
+        cpu.ebx = at(app, largest.stop + kBlockSize);
     cpu.esp += 4;
 }
 
-/* 0x4e1990: every block of class eax given back, from the start of its
- * memory on, the next of each read after it is -- its LOW and HIGH blocks
- * too, which are not free blocks to give back.  No callers in the game. */
-void purgememclass(win32::WinApplication* app, x86::CPU& cpu)
+/* 0x4e1080: linkFree of block edx into class eax: eax left the block after it in the list, its
+ * second byte the block's flags' high byte; edx the one before. */
+void linkFreeBlock(App* app, CPU& cpu)
 {
-    push(app, cpu, cpu.edx);
-    cpu.eax &= 0xf;
-    cpu.edx = at(app, cpu.eax * 4 + kClasses);
-    cpu.edx = at(app, cpu.edx + 8);
-    while (cpu.edx != 0)
-    {
-        cpu.eax = cpu.edx + 0x10;
-        if (!byAddress(app, cpu, kPurge))
-            return;
-        cpu.edx = at(app, cpu.edx + 8);
-    }
-    cpu.edx = pop(app, cpu);
+    const reg32 block = cpu.edx;
+    const Neighbours neighbours = linkFree(app, cpu.eax, block);
+    cpu.eax = listLeft(app, neighbours.after, block);
+    cpu.edx = neighbours.before;
     cpu.esp += 4;
 }
 
-/* 0x4e19d0: the stack word's bytes of the default class, not named -- what
- * the files' code (0x4eb160) takes a buffer with; stdcall. */
-void reservememStdcall(win32::WinApplication* app, x86::CPU& cpu)
+/* 0x4e10e0: unlinkFree of block edx (eax, its class, not looked at): eax left the block before it
+ * in the list, its second byte the block's flags' high byte. */
+void unlinkFreeBlock(App* app, CPU& cpu)
 {
-    push(app, cpu, cpu.ebx);
-    cpu.edx = at(app, cpu.esp + 8);
-    cpu.ebx = at(app, kDefaultClass);
-    cpu.eax = 0;
-    if (!byAddress(app, cpu, kReserve))
+    const reg32 block = cpu.edx;
+    const reg32 before = unlinkFree(app, block);
+    cpu.eax = listLeft(app, before, block);
+    cpu.esp += 4;
+}
+
+/* 0x4e1100: the class table cleared; 1.  No callers in the game. */
+void clearMemClasses(App* app, CPU& cpu)
+{
+    if (!clear(app, cpu, kClasses, 0x10 * 4))
         return;
-    cpu.ebx = pop(app, cpu);
+    cpu.eax = 1;
+    cpu.esp += 4;
+}
+
+/* 0x4e1120: markBlock of block eax, flags the first stack word, size ebx, ecx bytes of the
+ * class's, name edx, the blocks before and after the second and third: eax its bytes, edx past
+ * them, ebx the file the flags have it take (else the size), ecx the name's bytes (else the
+ * flags); the three words taken off. */
+void markMemBlock(App* app, CPU& cpu)
+{
+    const reg32 block = cpu.eax, size = cpu.ebx, bytesOfClass = cpu.ecx, name = cpu.edx;
+    const reg32 flags = at(app, cpu.esp + 4), before = at(app, cpu.esp + 8), after = at(app, cpu.esp + 0xc);
+    const reg32 bytes = markBlock(app, block, flags, size, bytesOfClass, name, before, after);
+    cpu.eax = bytes;
+    cpu.edx = block + bytes;
+    if (flags & kWhere)
+        cpu.ebx = at(app, kCalledFile);
+    cpu.ecx = name != 0 && (flags & kNamed) ? bytes - kBlockHeader - size - bytesOfClass : flags;
+    cpu.esp += 4 + 0xc;
+}
+
+/* 0x4e11e0: classBytes of the class eax names. */
+void memClassOverhead(App* app, CPU& cpu)
+{
+    cpu.eax = classBytes(app, cpu.eax);
+    cpu.esp += 4;
+}
+
+/* 0x4e11f0: blockBytes of a block of class edx named eax; edx left the class. */
+void memBlockOverhead(App* app, CPU& cpu)
+{
+    const reg32 flags = cpu.edx;
+    cpu.eax = blockBytes(app, cpu.eax, flags);
+    cpu.edx = classOf(app, flags);
+    cpu.esp += 4;
+}
+
+/* 0x4e1230: createClass of class eax named edx over the ecx bytes at ebx, the stack's eight words
+ * what it asks (ClassAsked): eax the free block's size, ebx the file HIGH's mark takes (else 0),
+ * ecx and edx as Made; for a class out of range, edx the error's line if one was reported.  The
+ * eight words taken off. */
+void creatememclass(App* app, CPU& cpu)
+{
+    const reg32 index = cpu.eax, name = cpu.edx, start = cpu.ebx, bytes = cpu.ecx;
+    const auto word = [&](reg32 i) { return at(app, cpu.esp + 4 + 4 * i); };
+    const ClassAsked asked = {word(0),      word(1),      word(2),      word(3) != 0,
+                              word(4) != 0, word(5) != 0, word(6) != 0, word(7)};
+    Made made = {};
+    const std::optional<reg32> freeBytes = createClass(app, cpu, index, name, start, bytes, asked, made);
+    if (!freeBytes)
+        return;
+    cpu.eax = *freeBytes;
+    if (sreg32(index) < 0 || sreg32(index) >= 0x10)
+    {
+        if (at(app, kReportErrors) != 0)
+            cpu.edx = kCreateLine;
+    }
+    else
+    {
+        cpu.ebx = asked.where ? at(app, kCalledFile) : 0;
+        cpu.ecx = made.highMark;
+        cpu.edx = made.before;
+    }
+    cpu.esp += 4 + 0x20;
+}
+
+/* 0x4e14b0: releaseClass of class eax; 1.  No callers in the game. */
+void releasememclass(App* app, CPU& cpu)
+{
+    if (!releaseClass(app, cpu, cpu.eax))
+        return;
+    cpu.eax = 1;
+    cpu.esp += 4;
+}
+
+/* 0x4e1500: freeClass.  No callers in the game. */
+void getfreememclass(App* app, CPU& cpu)
+{
+    const std::optional<reg32> index = freeClass(app, cpu);
+    if (!index)
+        return;
+    cpu.eax = *index;
+    cpu.esp += 4;
+}
+
+/* 0x4e1580: largestFree of the default class. */
+void largestmem(App* app, CPU& cpu)
+{
+    cpu.eax = largestFree(app, classOf(app, at(app, kDefaultClass)));
+    cpu.esp += 4;
+}
+
+/* 0x4e15b0: largestFree of class eax. */
+void largestmemclass(App* app, CPU& cpu)
+{
+    cpu.eax = largestFree(app, classOf(app, cpu.eax));
+    cpu.esp += 4;
+}
+
+/* 0x4e15d0: the size asked for of the block whose body is at `body`. */
+reg32 askedSize(App* app, reg32 body)
+{
+    return at(app, body - kBlockHeader + kBlockSize);
+}
+
+/* 0x4e15d0: askedSize of the block at eax. */
+void memBlockSize(App* app, CPU& cpu)
+{
+    cpu.eax = askedSize(app, cpu.eax);
+    cpu.esp += 4;
+}
+
+/* 0x4e15e0: the name of the block at eax, past its body and its class's bytes; 0 for one not
+ * named (flag 0x100). */
+void memBlockName(App* app, CPU& cpu)
+{
+    const reg32 body = cpu.eax, block = body - kBlockHeader;
+    const reg32 flags = half(app, block + kBlockFlags);
+    cpu.eax = (flags & kNamed) ? classBytes(app, flags) + body + at(app, block + kBlockSize) : 0;
+    cpu.esp += 4;
+}
+
+/* 0x4e1610: the flags of the block at eax.  No callers in the game. */
+void memBlockFlags(App* app, CPU& cpu)
+{
+    cpu.eax = half(app, cpu.eax - kBlockHeader + kBlockFlags);
+    cpu.esp += 4;
+}
+
+/* 0x4e1620: reserveBlock of edx bytes named eax, flags ebx; ebx and edx as ReserveLeft. */
+void reservememadr(App* app, CPU& cpu)
+{
+    ReserveLeft left = {};
+    const std::optional<reg32> body = reserveBlock(app, cpu, cpu.eax, cpu.edx, cpu.ebx, left);
+    if (!body)
+        return;
+    cpu.eax = *body;
+    cpu.ebx = left.ebx;
+    cpu.edx = left.edx;
+    cpu.esp += 4;
+}
+
+/* 0x4e1890: purgeBlock of the body at eax. */
+void purgememadr(App* app, CPU& cpu)
+{
+    const std::optional<reg32> answer = purgeBlock(app, cpu, cpu.eax);
+    if (!answer)
+        return;
+    cpu.eax = *answer;
+    cpu.esp += 4;
+}
+
+/* 0x4e1990: purgeClass of class eax: eax the last block's answer, or the class's number for none.
+ * No callers in the game. */
+void purgememclass(App* app, CPU& cpu)
+{
+    const reg32 index = cpu.eax & kClassNibble;
+    reg32 answer = index;
+    if (!purgeClass(app, cpu, index, answer))
+        return;
+    cpu.eax = answer;
+    cpu.esp += 4;
+}
+
+/* 0x4e19d0: reserveDefault of the stack word's bytes; edx as reservememadr leaves it; stdcall. */
+void reservememStdcall(App* app, CPU& cpu)
+{
+    ReserveLeft left = {};
+    const std::optional<reg32> body = reserveDefault(app, cpu, at(app, cpu.esp + 4), left);
+    if (!body)
+        return;
+    cpu.eax = *body;
+    cpu.edx = left.edx;
     cpu.esp += 4 + 4;
 }
 
-/* 0x4e19f0: the block at the stack word given back, as the files' code
- * (0x4eb160) frees its buffer; stdcall. */
-void purgememStdcall(win32::WinApplication* app, x86::CPU& cpu)
+/* 0x4e19f0: purgeDefault of the stack word's body; stdcall. */
+void purgememStdcall(App* app, CPU& cpu)
 {
-    cpu.eax = at(app, cpu.esp + 4);
-    if (!byAddress(app, cpu, kPurge))
+    const std::optional<reg32> answer = purgeDefault(app, cpu, at(app, cpu.esp + 4));
+    if (!answer)
         return;
+    cpu.eax = *answer;
     cpu.esp += 4 + 4;
 }
 
-/* 0x4ea4f0: ebx bytes from eax to edx: a byte at a time from the end where
- * edx is within them above eax, else by the MMX copy, the x87's or dwords as
- * 0x5643b4 and 0x5643ac say -- each handed eax the destination, edx the
- * source.  What each leaves in eax, edx and ebx left. */
-void memmove(win32::WinApplication* app, x86::CPU& cpu)
+/* 0x4ea4f0: moveMemory of ebx bytes from eax to edx: backwards, eax and edx left where they were
+ * and ebx all ones (the count run past 0); forwards, the three as the forward copy leaves them. */
+void memmove(App* app, CPU& cpu)
 {
-    push(app, cpu, cpu.ecx);
-    cpu.ecx = cpu.edx;
-    if (cpu.edx > cpu.eax)
-    {
-        cpu.edx = cpu.eax + cpu.ebx;
-        if (cpu.ecx < cpu.edx)
-        {
-            cpu.eax = cpu.edx;
-            cpu.edx = cpu.ecx + cpu.ebx;
-            for (;;)
-            {
-                --cpu.ebx;
-                if (cpu.ebx == 0xffffffff)
-                    break;
-                --cpu.edx;
-                cpu.cl = byte(app, cpu.eax - 1);
-                --cpu.eax;
-                putByte(app, cpu.edx, cpu.cl);
-            }
-            cpu.ecx = pop(app, cpu);
-            cpu.esp += 4;
-            return;
-        }
-    }
-    cpu.edx = cpu.eax;
-    cpu.eax = cpu.ecx;
-    if (!byAddress(app, cpu, kForwardCopy))
+    const reg32 from = cpu.eax, to = cpu.edx, count = cpu.ebx;
+    if (!moveMemory(app, cpu, to, from, count))
         return;
-    cpu.ecx = pop(app, cpu);
+    if (overlapsFromAbove(to, from, count))
+    {
+        cpu.eax = from;
+        cpu.edx = to;
+        cpu.ebx = 0xffffffff;
+    }
     cpu.esp += 4;
 }
 

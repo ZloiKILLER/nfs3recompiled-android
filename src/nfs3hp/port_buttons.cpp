@@ -1,3 +1,4 @@
+#include "game_settings.h"
 #include "port_buttons.h"
 #include "port_draw2d.h"
 #include "port_text.h"
@@ -254,8 +255,6 @@ T& item(App* app, reg32 at)
 
 constexpr Records<List> kLists{0x5563e8};
 constexpr reg32 kListNotFound = 0x5389fc;  // "list not found: %s\n"
-// The language: 1 to 5 German, French, Spanish, Italian, Swedish.
-constexpr Var<int32_t> kLanguage{0x6fbb4c};
 // The HUD's art, hud.fsh, the language's name of it, kept loaded and by name.
 constexpr reg32 kHud = 0x539004;
 constexpr reg32 kLanguageHuds[] = {0x53900c, 0x539018, 0x539024, 0x539030, 0x53903c};
@@ -278,17 +277,11 @@ constexpr Var<reg32> kScreenTextSize{0x559450};
 // The network: a race over it, this machine the host, ready.
 constexpr Var<int32_t> kNetworkRace{0x7a22e0};
 constexpr Var<int16_t> kNetworkHost{0x7a22da};
-constexpr Var<int32_t> kNetworkReady{0x6fd508};
 // The races' places on the screen (x, y words, 4 bytes apart).
 constexpr Table<int16_t> kPlaceX{0x559c6c, 4}, kPlaceY{0x559c94, 4};
 constexpr Var<int32_t> kScreenMode{0x66296c};
 // The buttons' styles (0x40 bytes each): name, x, y, shapes' names, colours.
 constexpr reg32 kStyles = 0x559fe4;
-// The players.
-constexpr Var<int32_t> kPlayers{0x6fd3b8};
-constexpr Var<int32_t> kGameMode{0x6fd3b0};
-// The track chosen and the track's map.
-constexpr Var<int32_t> kTrack{0x6fd4ac};
 // The strings the code compares.
 constexpr reg32 kGlow = 0x53a954, kLicence = 0x53a95c, kMainEffects = 0x53a964, kTextEffects = 0x53a970;
 constexpr reg32 kNfsLogo = 0x53a97c, kTrackImage = 0x53a984, kThreeButtons = 0x53a990, kTwoButtons = 0x53a998;
@@ -582,6 +575,8 @@ Result lengthOf(App* app, CPU& cpu, reg32 esp, reg32 name)
 
 /* ---- The HUD's art ---- */
 
+}  // namespace
+
 /* 0x44ac90's: the shapes of the .fsh named at `name` loaded (0x4956f0) and
  * kept at 0x55922c -- hud.fsh's name made the language's in place first --
  * unless they are, by that name; those before freed.  ebx the caller's. */
@@ -594,7 +589,7 @@ Result shapesLoaded(App* app, CPU& cpu, reg32 esp, reg32 name, reg32 ebx)
     const reg32 found = call.r;
     if (found != 0)
     {
-        const reg32 language = reg32(kLanguage(app)) - 1;
+        const reg32 language = reg32(gameSettings(app).language) - 1;
         if (language <= 4)
             copyString(app, found, kLanguageHuds[language]);
     }
@@ -614,7 +609,12 @@ Result shapesLoaded(App* app, CPU& cpu, reg32 esp, reg32 name, reg32 ebx)
     return int32_t(kHudShapes(app));
 }
 
+namespace
+{
+
 /* ---- The screen redrawn ---- */
+
+}  // namespace
 
 /* 0x44b170's: the screen drawn again -- its items, a dialog over them -- and
  * shown.  The registers but eax as the caller had them. */
@@ -634,6 +634,9 @@ Result redrawn(App* app, CPU& cpu, reg32 esp, const Args& in)
         return {};
     return int32_t(call.r);
 }
+
+namespace
+{
 
 /* 0x440d20's: as a network game is left, if it was asked for (0x555748),
  * the screen drawn and shown until its slide (0x5f3fcc) reaches 0x251. */
@@ -703,7 +706,7 @@ Result readyMarks(App* app, CPU& cpu, reg32 esp, int32_t x, int32_t y)
     reg32 eax = colour;
     const reg32 at = esp - 0x14 - 4;
     Caller call{app, cpu};
-    const int32_t ready = kNetworkReady(app);
+    const int32_t ready = gameSettings(app).networkLobby;
     const reg32 glow = ready != 0 ? 0x5f4004 : 0x5f3ff6, mark = ready != 0 ? 0x5f3ff4 : 0x5f3ff8;
     reg32 ecx = ready != 0 ? reg32(ready) : 0;
     if (half(app, glow) != 0)
@@ -725,6 +728,8 @@ Result readyMarks(App* app, CPU& cpu, reg32 esp, int32_t x, int32_t y)
 
 /* ---- The licence screen ---- */
 
+}  // namespace
+
 /* 0x4d88f0's: the rectangle (eax, edx) to (ebx, ecx) with a colour at each
  * corner, through 0x4d81b0. */
 Result colouredRectangle(App* app, CPU& cpu, reg32 esp, const Args& a, const reg32 colours[4])
@@ -734,6 +739,9 @@ Result colouredRectangle(App* app, CPU& cpu, reg32 esp, const Args& a, const reg
         return {};
     return int32_t(call.r);
 }
+
+namespace
+{
 
 /* 0x442450's: the licence screen's pass, once the clock is 5 past the last
  * (0x5f40c4): on a card without alpha and in a 2D mode, the band of the page
@@ -1095,7 +1103,7 @@ Result mapSlid(App* app, CPU& cpu, reg32 esp, reg32 advance)
 Result trackFacts(App* app, CPU& cpu, reg32 esp, const Args& in)
 {
     const reg32 frame = esp - 0x18, at = frame - 0x50, text = frame - 0x50;
-    const int32_t track = kTrack(app);
+    const int32_t track = gameSettings(app).track;
     int32_t x, y;
     if (track == 4)
         y = 0x1ae, x = 0xc8;
@@ -1104,27 +1112,29 @@ Result trackFacts(App* app, CPU& cpu, reg32 esp, const Args& in)
     else
         y = 0x186, x = 0x1d1;
     Caller call{app, cpu};
-    const int32_t language = kLanguage(app);
+    const int32_t language = gameSettings(app).language;
     if (language == 0)
     {
         if (!call(at, kLanguageText, {6, reg32(x), reg32(y), in.ecx}))
             return {};
         const reg32 miles = call.r;
-        if (!call(at, kSprintf, {miles, reg32(x), reg32(y), word(app, reg32(kTrack(app)) * 4 + 0x559644)},
-                  {text, 0x539a78, word(app, reg32(kTrack(app)) * 4 + 0x559644), miles}))
+        if (!call(at, kSprintf, {miles, reg32(x), reg32(y), word(app, reg32(gameSettings(app).track) * 4 + 0x559644)},
+                  {text, 0x539a78, word(app, reg32(gameSettings(app).track) * 4 + 0x559644), miles}))
             return {};
     }
     else
     {
         const reg32 table = language == 1 || language == 2 || language == 5 ? 0x559668 : 0x55968c;
-        const reg32 length = word(app, reg32(kTrack(app)) * 4 + table);
-        if (!call(at, kSprintf, {reg32(kTrack(app)), reg32(x), reg32(y), in.ecx}, {text, 0x539a80, length}))
+        const reg32 length = word(app, reg32(gameSettings(app).track) * 4 + table);
+        if (!call(at, kSprintf, {reg32(gameSettings(app).track), reg32(x), reg32(y), in.ecx}, {text, 0x539a80, length}))
             return {};
     }
     if (!call(at, kDrawMenuText, {text, reg32(x), reg32(y), kMenuFont}, {0, 0x488cfd}))
         return {};
     return int32_t(call.r);
 }
+
+}  // namespace
 
 /* 0x456800's: the track's map's tile `index` (its 16 by 16 picture of the
  * track's, 0x559764, on EA's bitmap) made shape `shape`'s textures: their
@@ -1144,7 +1154,7 @@ Result mapShape(App* app, CPU& cpu, reg32 esp, reg32 shape, int32_t index)
     reg32 edx = 0x100;
     if (kMapArt(app) != 0)
     {
-        edx = word(app, (reg32(kTrack(app)) << 4) + reg32(index) * 4 + 0x559764);
+        edx = word(app, (reg32(gameSettings(app).track) << 4) + reg32(index) * 4 + 0x559764);
         if (!call(at, kBitmapShape, {kMapArt(app), edx, 0x10, bitmap})
             || !call(at, kDrawBitmapShape, {call.r, edx, 0x10, bitmap}))
             return {};
@@ -1282,6 +1292,9 @@ Result turnedShape(App* app, CPU& cpu, reg32 esp, int32_t shape, int32_t x, int3
     return eax;
 }
 
+namespace
+{
+
 /* 0x4d88f0's adapter's core is colouredRectangle (above). */
 
 /* 0x456670's: the "glow" image's pass: on the track's screen once it has slid
@@ -1294,14 +1307,14 @@ Result glowDrawn(App* app, CPU& cpu, reg32 esp, const Args& in)
     constexpr Var<int32_t> kMapTrack{0x677d8c}, kAngle{0x559824}, kPulse{0x55981c}, kSpoken{0x559820};
     if (kSlidingIn(app) != 0)
         return 0;
-    if (kTrack(app) != kMapTrack(app))
+    if (gameSettings(app).track != kMapTrack(app))
         return 9;
     const reg32 at = esp - 0x18;
-    if (!trackFacts(app, cpu, at - 4, {in.eax, 0, in.ebx, reg32(kTrack(app))}))
+    if (!trackFacts(app, cpu, at - 4, {in.eax, 0, in.ebx, reg32(gameSettings(app).track)}))
         return {};
     const int32_t angle = kAngle(app) + 4;
     kAngle.set(app, angle);
-    const int32_t track = kTrack(app);
+    const int32_t track = gameSettings(app).track;
     const Result turned =
         turnedShape(app, cpu, at - 8 - 4, wide(half(app, 0x677d92)), wide(half(app, reg32(track) * 2 + 0x5596b0)),
                     wide(half(app, reg32(track) * 2 + 0x5596c2)), 0, angle, kOne);
@@ -1327,14 +1340,14 @@ Result glowDrawn(App* app, CPU& cpu, reg32 esp, const Args& in)
         }
         kMapStep.set(app, 0);
         kMapAlong.set(app, 0);
-        const int32_t lines = int32_t(word(app, reg32(kTrack(app)) * 4 + 0x5597f4));
+        const int32_t lines = int32_t(word(app, reg32(gameSettings(app).track) * 4 + 0x5597f4));
         if (kMapLine(app) <= lines
-            && !call(at, kDescriptionStart, {reg32(kMapLine(app)), 0x33, reg32(kLanguage(app)), alpha}))
+            && !call(at, kDescriptionStart, {reg32(kMapLine(app)), 0x33, reg32(gameSettings(app).language), alpha}))
             return {};
     }
     const int32_t line = kMapLine(app);
     const reg32 colour = (alpha << 24) + 0xffffff;
-    if (line > int32_t(word(app, reg32(kTrack(app)) * 4 + 0x5597f4)) || line <= 0)
+    if (line > int32_t(word(app, reg32(gameSettings(app).track) * 4 + 0x5597f4)) || line <= 0)
     {
         kSpoken.set(app, 1);
         return 0;
@@ -1625,15 +1638,15 @@ Result imageDrawn(App* app, CPU& cpu, reg32 esp, reg32 at, const Args& in)
                         return {};
                     if (call.r != 0)
                     {
-                        if (kTrack(app) != kTrackShown(app))
+                        if (gameSettings(app).track != kTrackShown(app))
                         {
                             const reg32 shape = reg32(wide(m.shape));
                             if (!call(call_at, kBitmapShape,
-                                      {kArt(app), word(app, reg32(kTrack(app)) * 4 + 0x559fb0), in.ebx, shape})
+                                      {kArt(app), word(app, reg32(gameSettings(app).track) * 4 + 0x559fb0), in.ebx, shape})
                                 || !call(call_at, kArtShapeTextures, {call.r, shape, in.ebx, shape}))
                                 return {};
                             item<ImageItem>(app, at).shape = int16_t(call.r);
-                            kTrackShown.set(app, kTrack(app));
+                            kTrackShown.set(app, std::int32_t(gameSettings(app).track));
                         }
                         drawPlain = true;
                     }
@@ -1784,18 +1797,18 @@ Result imageShowing(App* app, CPU& cpu, reg32 esp, reg32 at, const Args& in)
             return {};
         if (call.r != 0)
         {
-            if (!shapeOf(word(app, reg32(kTrack(app)) * 4 + 0x559fb0)))
+            if (!shapeOf(word(app, reg32(gameSettings(app).track) * 4 + 0x559fb0)))
                 return {};
             item<ImageItem>(app, at).shape = int16_t(call.r);
-            kTrackShown.set(app, kTrack(app));
-            return kTrack(app);
+            kTrackShown.set(app, std::int32_t(gameSettings(app).track));
+            return std::int32_t(gameSettings(app).track);
         }
         if (!codelinkIs(kMapImage))
             return {};
         if (call.r != 0)
         {
             reg32 eax;
-            if (kGameMode(app) == 1)
+            if (gameSettings(app).playMode == 1)
             {
                 kMapCar.set(app, int32_t((word(app, 0x678800) << 2) + word(app, 0x678860)));
                 eax = word(app, 0x678860);
@@ -1945,7 +1958,7 @@ Result buttonText(App* app, CPU& cpu, reg32 at, reg32 item_, reg32 text, bool dr
         return 0;
     }
     copyString(app, text, b.text);
-    const reg32 ellipsis = kLanguage(app) == 1 ? kEllipsisGerman : kEllipsis;
+    const reg32 ellipsis = gameSettings(app).language == 1 ? kEllipsisGerman : kEllipsis;
     if (b.nextMenu != 0 && b.listName == 0)
     {
         appendString(app, text, ellipsis);
@@ -1972,7 +1985,7 @@ Result buttonText(App* app, CPU& cpu, reg32 at, reg32 item_, reg32 text, bool dr
         if (call.r == 0)
             return 0;
     }
-    appendString(app, text, kLanguage(app) == 1 ? kEllipsisGerman : kEllipsis);
+    appendString(app, text, gameSettings(app).language == 1 ? kEllipsisGerman : kEllipsis);
     return 0;
 }
 
@@ -2302,6 +2315,8 @@ Result buttonDrawn(App* app, CPU& cpu, reg32 esp, reg32 at, reg32 lit)
 
 Result menuItemLaidOut(App* app, CPU& cpu, reg32 esp, reg32 at);
 
+}  // namespace
+
 /* 0x461270's: key `key` on button `at`.  With a list (+0x58), Enter steps
  * its line to the next that may be chosen, round to the first (none other:
  * it stays), a list's button laid out again and its handler told: 2 or its
@@ -2336,10 +2351,10 @@ Result buttonKeyed(App* app, CPU& cpu, reg32 esp, reg32 at, reg32 key)
                 if (!call(call_at, kAllPlayersReady, {call.r, kRaceNow, 0, at}))
                     return {};
                 if (call.r != 0)
-                    kNetworkReady.set(app, 1);
+                    gameSettings(app).networkLobby = 1;
                 return 0;
             }
-            kNetworkReady.set(app, kNetworkReady(app) == 0 ? 1 : 0);
+            gameSettings(app).networkLobby = gameSettings(app).networkLobby == 0 ? 1 : 0;
             return 0;
         }
         if (!call(call_at, kCodelinkMatches, {item<ButtonItem>(app, at).codelink, kExitProgram, 0, at}))
@@ -2378,6 +2393,9 @@ Result buttonKeyed(App* app, CPU& cpu, reg32 esp, reg32 at, reg32 key)
         return {};
     return int32_t(call.r);
 }
+
+namespace
+{
 
 /* 0x4613e0's: menu item `at` laid out -- a button's box: its place and size
  * from its style's and its own, and from its text (with " ..." where it opens
@@ -2599,7 +2617,7 @@ Result cascadeLine(App* app, CPU& cpu, reg32 esp, reg32 at, reg32 out, reg32 lin
     const auto stricmp = [&](reg32 name) {
         return call(call_at, kStricmp, {item<CascadeItem>(app, at).listName, name, chosenAt, out});
     };
-    if (kGameMode(app) <= 1)
+    if (std::int32_t(gameSettings(app).playMode) <= 1)
     {
         reg32 kindOf = 0;
         bool known = false;
@@ -2623,13 +2641,13 @@ Result cascadeLine(App* app, CPU& cpu, reg32 esp, reg32 at, reg32 out, reg32 lin
             reg32 player = 0;
             bool asked = false;
             if (call.r == 0)
-                player = word(app, 0x6fd328), asked = true;
+                player = gameSettings(app).players[1].car, asked = true;
             else
             {
                 if (!stricmp(kCars))
                     return {};
                 if (call.r == 0)
-                    player = word(app, 0x6fd2bc), asked = true;
+                    player = gameSettings(app).players[0].car, asked = true;
             }
             if (asked)
             {
@@ -2653,11 +2671,11 @@ Result cascadeLine(App* app, CPU& cpu, reg32 esp, reg32 at, reg32 out, reg32 lin
     eax = call.r;
     if (call.r != 0)
         return int32_t(eax);
-    const reg32 laps = word(app, 0x6fd4b4);
+    const reg32 laps = gameSettings(app).laps;
     if (!call(call_at, kLanguageText, {5, kTracks, chosenAt, out}))
         return {};
     const reg32 lapsText = call.r;
-    if (kPlayers(app) == 2 && word(app, 0x6fd470) == 1)
+    if (gameSettings(app).raceType == 2 && gameSettings(app).seriesVariant == 1)
     {
         if (!call(call_at, kLanguageText, {0xac, kTracks, chosenAt, laps}))
             return {};
@@ -2697,10 +2715,10 @@ Result trackMarks(App* app, CPU& cpu, reg32 at, int32_t line, int32_t left, int3
 {
     Caller call{app, cpu};
     const int32_t bit = 1 << (line & 31);
-    if ((wide(half(app, 0x6fd2b2)) & bit) != 0
+    if ((wide(gameSettings(app).duelsLost) & bit) != 0
         && !call(at, kDrawShape, {reg32(wide(half(app, first))), reg32(left - 0x21), reg32(top + 2)}))
         return {};
-    if ((wide(half(app, 0x6fd2b0)) & bit) != 0
+    if ((wide(gameSettings(app).duelsWon) & bit) != 0
         && !call(at, kDrawShape, {reg32(wide(half(app, second))), reg32(left - 0x11), reg32(top + 2)}))
         return {};
     return 0;
@@ -2789,7 +2807,7 @@ Result cascadeDrawn(App* app, CPU& cpu, reg32 esp, reg32 at, reg32 lit)
     Caller call{app, cpu};
     if (!call(call_at, kStricmp, {item<CascadeItem>(app, at).listName, kTracks, 0, lit}))
         return {};
-    const int32_t gap = call.r == 0 && kPlayers(app) == 3 ? 0x23 : 0xf;
+    const int32_t gap = call.r == 0 && gameSettings(app).raceType == 3 ? 0x23 : 0xf;
     const Result allowed = allowedOf(app, cpu, call_at - 4, item<CascadeItem>(app, at).listName);
     if (!allowed)
         return {};
@@ -2892,7 +2910,7 @@ Result cascadeDrawn(App* app, CPU& cpu, reg32 esp, reg32 at, reg32 lit)
         if (!call(call_at, kStricmp, {item<CascadeItem>(app, at).listName, kTracks, reg32(*allowed), kBlue}))
             return {};
         const int32_t left = wide(item<CascadeItem>(app, at).boxLeft) + gap;
-        if (call.r == 0 && kPlayers(app) == 3
+        if (call.r == 0 && gameSettings(app).raceType == 3
             && !trackMarks(app, cpu, call_at, i, left, wide(top), at + 0x5c, at + 0x5e))
             return {};
         const reg32 shade = wide(item<CascadeItem>(app, at).chosen) == i && may != 0 ? kYellow : may != 0 ? colour : kGrey;
@@ -3300,6 +3318,8 @@ Result overlayDrawn(App* app, CPU& cpu, reg32 esp, reg32 at, reg32 lit)
 
 constexpr Var<int32_t> kSelectHeld{0x55a428}, kSelectHeldLine{0x55a42c}, kJoining{0x55a430};
 
+}  // namespace
+
 /* 0x4633d0's: select list `at` laid out: its lines shown (as many as it has,
  * at most its own), the line chosen kept among them, its box 200 wide, its
  * arrows' boxes (none where there is nothing to scroll to). */
@@ -3330,6 +3350,9 @@ void selectLaidOut(App* app, reg32 at)
     s.downBox[2] = down;
     s.downBox[3] = down;
 }
+
+namespace
+{
 
 /* 0x462c30's: as select list `at` is shown: no lines, none chosen, 10 shown
  * where it says none, its arrows' shapes, the replays listed where it is the
@@ -3711,7 +3734,7 @@ Result dropLaidOut(App* app, CPU& cpu, reg32 esp, reg32 at);
 Result dropDrawn(App* app, CPU& cpu, reg32 esp, reg32 at, reg32 lit)
 {
     const reg32 frame = esp - 0x14, call_at = frame - 0x60, chosenAt = frame - 0x60;
-    const int32_t gap = kPlayers(app) == 3 ? 0x23 : 0xf;
+    const int32_t gap = gameSettings(app).raceType == 3 ? 0x23 : 0xf;
     if (demoHides(app))
         return 0;
     const Result allowed = allowedOf(app, cpu, call_at - 4, item<DropItem>(app, at).listName);
@@ -3791,7 +3814,7 @@ Result dropDrawn(App* app, CPU& cpu, reg32 esp, reg32 at, reg32 lit)
                 tracks = call.r == 0;
             }
             const int32_t left = wide(item<DropItem>(app, at).boxLeft) + gap;
-            if (tracks && kPlayers(app) == 3 && !trackMarks(app, cpu, call_at, i, left, wide(top), at + 0x60, at + 0x62))
+            if (tracks && gameSettings(app).raceType == 3 && !trackMarks(app, cpu, call_at, i, left, wide(top), at + 0x60, at + 0x62))
                 return {};
             const reg32 shade = wide(item<DropItem>(app, at).chosen) == i && may != 0 ? kYellow : may != 0 ? colour : kGrey;
             if (!call(call_at, kDrawMenuText,
@@ -3925,15 +3948,15 @@ Result dropDrawn(App* app, CPU& cpu, reg32 esp, reg32 at, reg32 lit)
                     || !call(call_at, kDrawMenuText, {call.r, reg32(tx), reg32(ty), kMenuFont}, {1, kBlue}))
                     return {};
                 kNudge.set(app, 0);
-                if (kPlayers(app) == 3)
+                if (gameSettings(app).raceType == 3)
                 {
                     const int32_t bit = 1 << (word(app, chosen) & 31);
-                    if ((wide(half(app, 0x6fd2b2)) & bit) != 0
+                    if ((wide(gameSettings(app).duelsLost) & bit) != 0
                         && !call(call_at, kDrawShape,
                                  {reg32(wide(item<DropItem>(app, at).marks[0])), reg32(wide(x) + 0x22),
                                   reg32(wide(y) + textY + 1)}))
                         return {};
-                    if ((wide(half(app, 0x6fd2b0)) & bit) != 0
+                    if ((wide(gameSettings(app).duelsWon) & bit) != 0
                         && !call(call_at, kDrawShape,
                                  {reg32(wide(item<DropItem>(app, at).marks[1])), reg32(wide(x) + 0x32),
                                   reg32(wide(y) + textY + 1)}))
@@ -4219,7 +4242,7 @@ Result listKeyed(App* app, CPU& cpu, reg32 esp, reg32 at, reg32 key)
 Result dropLaidOut(App* app, CPU& cpu, reg32 esp, reg32 at)
 {
     const reg32 frame = esp - 0x18, call_at = frame - 8;
-    const int32_t gap = kPlayers(app) == 3 ? 0x23 : 0xf;
+    const int32_t gap = gameSettings(app).raceType == 3 ? 0x23 : 0xf;
     const Result lines = linesOf(app, cpu, call_at - 4, item<DropItem>(app, at).listName, frame - 8);
     if (!lines)
         return {};

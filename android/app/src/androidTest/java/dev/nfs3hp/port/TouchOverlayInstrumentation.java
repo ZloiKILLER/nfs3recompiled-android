@@ -214,14 +214,9 @@ public final class TouchOverlayInstrumentation extends Instrumentation {
             runOnMainSync(()->activity.onBackPressed());waitForIdleSync();
             runOnMainSync(()->activity.onBackPressed());waitForIdleSync();
             require(activity.getScreen()==LauncherActivity.Screen.Main,"back walks up to the first screen");
-            /* Display, saved as it is chosen with no Save button, and Screen
-             * adjustment underneath it. */
+            /* Display, saved as it is chosen with no Save button. */
             runOnMainSync(()->activity.go(LauncherActivity.Screen.Display));waitForIdleSync();
             capture("ui-display.png");
-            runOnMainSync(()->activity.go(LauncherActivity.Screen.Adjustment));waitForIdleSync();
-            capture("ui-screen-adjustment.png");
-            runOnMainSync(()->activity.onBackPressed());waitForIdleSync();
-            require(activity.getScreen()==LauncherActivity.Screen.Display,"back from screen adjustment returns to display");
             runOnMainSync(()->activity.onBackPressed());waitForIdleSync();
             /* Data is a menu, so saves live one level down -- and back has to
              * return to that menu rather than all the way out. */

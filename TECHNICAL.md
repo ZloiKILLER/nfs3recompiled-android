@@ -66,9 +66,8 @@ The launcher holds what the game cannot ask for itself: **Controls → Touch** (
 on-screen controls, their layout editor, the key each one sends),
 **Controls → Gamepads** (which pad is which player, Analog or Digital for each,
 the key each button sends), **Controls → Force Feedback** (where the game's
-effects are felt: off, the phone or the gamepad), **Display** with **Screen
-adjustment** (orientation, frame rate cap, gamma, brightness, contrast) and
-**Advanced** (below).
+effects are felt: off, the phone or the gamepad), **Display** (orientation, frame
+rate cap) and **Advanced** (below).
 
 The orientation is the launcher's as well as the game's: **Auto-rotate** is
 `USER_LANDSCAPE`, both landscape directions as long as the system's rotation
@@ -275,6 +274,18 @@ Alpha intensity in Advanced Graphics works here as well. The original applies it
 only on its Direct3D driver, so on this one the slider used to move and change
 nothing.
 
+Gamma, brightness and contrast are sliders on the game's own Advanced Graphics
+screen. The port hands the game its own versions of two menu files
+(`src/nfs3hp/menu_data.cpp`): Advanced Graphics with the three sliders, of Alpha
+Intensity's kind, and both it and Graphics in the pause menu without Perspective,
+which picked a rasteriser this port does not have; the pause menu's Alpha
+Intensity stands in its row. `src/nfs3hp/port_display.cpp` runs after Advanced
+Graphics' handlers, which stay as the checks hold them: the picture follows a
+slider at once, as all three act on the finished frame, Cancel puts it back, and
+anything else writes the values to the launcher's preferences, which hand them to
+the game as it starts and carry them in its settings file. The three names are in
+English in every language.
+
 ### Full colour
 
 The picture is drawn with eight bits a channel, races and menus alike, with no
@@ -329,8 +340,12 @@ are hidden, as nothing carries them any more.
   wrapper.
 - **TCP/IP** connects to an address: phone with phone, or phone with a PC
   running the Modern Patch (tested both ways with 1.6.1). The port is 9803, as
-  the Modern Patch has it; the launcher's Network screen shows the phone's
-  address and switches to the original's 1030 (`NFS_NET_PORT`).
+  the Modern Patch has it; the connection screen shows the phone's address and
+  switches to the original's 1030 (`NFS_NET_PORT`).
+
+The game's own connection screen calls IPX "Local WiFi", and has the TCP/IP port
+and the phone's address under its buttons: the port's version of
+`MENUS/CONNECT.MNU` (`src/nfs3hp/menu_data.cpp`) and `src/nfs3hp/port_connect.cpp`.
 
 A race is lockstep: every machine simulates every car from the players'
 inputs, so the port works the x87 as a PC does in a race (every player needs
@@ -480,6 +495,31 @@ go through it:
   `tools/frontend_checks/groups/`: a row a function (`<address> <name> <kind>`),
   and that group's world, entries and watched memory, which run only in its own
   processes. A case past 200000 calls stops and says so.
+  Four tools take the chores of a group off its porter
+  (`tools/frontend_checks/`; the first three read nfs3.exe through `exe_index.py`,
+  the generator's own disassembly kept in the build directory):
+  `new_groups.py <name> <addresses>` is the sorting pass: `<name>.todo.json`, per
+  function its callers, callees, strings, x87 and instruction counts, and a flag
+  on what looks like data decoded as code.
+  `specs_from_exe.py <group> [--write]` writes the stand-in rows the group lacks,
+  `groups/<group>_specs.inc`, which `windows/run.py` adds to `kSpecs` in that group's
+  processes under `kSpecs`' own rows: it follows each register's value (a `push` or
+  a `mov` is no read, `xor r,r` only a write, what is popped back is no change) with
+  the callees' answers to a fixed point. An indirect call is assumed to change
+  eax, ebx, ecx, edx and read nothing more; a row says when that assumption or a
+  lost stack shows in it. `--validate` holds every row by hand against it,
+  `--show <address>` prints the reading.
+  `mutate.py <group> [--max N] [--rounds 300]` breaks the group's source one change
+  at a time (comparisons, small constants, dropped writes and calls, swapped
+  arguments, fp:: operand order and fp:: as plain floats), taking functions in
+  turn, and says per function what the check caught and what survived. Each
+  change is its own file and executable in a temporary directory, so they run side
+  by side and the tree's source is never touched.
+  `merge_group.py <copy> <group>` copies a group in and says what clashes. A tool's
+  patch site in a function of `MENU_NATIVES` needs no moving by hand: `port_sites.py`
+  takes it out of the tool's list for the generator's run and `generate.py` makes the
+  same change to the code the native is held against, by the instruction's address,
+  the tree's native names turned into `sub_xxx`.
 - The C runtime the game was linked with, Watcom's, goes native family by
   family (`src/nfs3hp/native_watcom.cpp`, in `nfs3hp::watcom`, bound as the
   game's own are, `WATCOM_NATIVES`). `src/nfs3hp/watcom.md` maps all of it in
@@ -928,10 +968,17 @@ same order. The dialogs were compared the same way, besides the x87's status
 and control words, in each of its precisions and rounding modes; and as a
 whole, the decompiled dialogs calling one another against the generated ones.
 
-`NFS_FE_NATIVE=0` goes back to the generated code for every decompiled
-function that still has it behind it, `NFS_FE_NATIVE_OFF=sub_437e00,...` for
-the ones named; the log says which ran which way (`[FE]`). The screens that
-are native whole have none to go back to.
+There is no generated code left to go back to: the switches that chose it,
+`NFS_FE_NATIVE` and `NFS_FE_NATIVE_OFF`, are gone. Each function of the
+`native_frontend_*.cpp` files is now a typed core in `frontend::<file>`, declared
+in `native_frontend_<file>.h`, with the game's name kept as a small adapter for
+calls by address; calls between cores are plain C++ calls
+(`guest::direct`/`fe::direct`, `src/nfs3hp/native_guest.h`), which keep every
+register but eax as Watcom's code does. The menu checks make those calls by
+address; `FRONTEND_STRICT=1 python tools/frontend_checks/windows/run.py` builds
+them apart (`tools/frontend_checks/build_strict`) with the game's own register
+behaviour, so a "calls differ", "memory" or "x87" there is a difference the game
+would show.
 
 ## Building
 
@@ -998,7 +1045,7 @@ from the phone; the rest matter for a desktop run.
 | Variable | Default | Description |
 |---|---|---|
 | `NFS_FPS_CAP` | `30` | Frame rate the renderer paces presents to. The game's logic is tuned for 30 Hz. |
-| `NFS_GAMMA`, `NFS_BRIGHTNESS`, `NFS_CONTRAST` | `1.0` | Applied to the finished frame in the final blit, so menus and movies are covered as well as a race. |
+| `NFS_GAMMA`, `NFS_BRIGHTNESS`, `NFS_CONTRAST` | `1.0`, `0`, `1.0` | Applied to the finished frame in the final blit, so menus and movies are covered as well as a race. Where they start; Advanced Graphics moves them from there. |
 | `NFS_ORIENTATION` | unset | `auto` allows both landscape directions as the rotation lock allows; anything else pins one. Must be set before `SDL_Init`. |
 | `NFS_CAR_DETAIL_FULL` | on | With Car Detail at High, every car keeps its detailed model and the player's texture size out to the draw distance, in every view, and the limit on how many are drawn at once is lifted. `0` restores the original. |
 | `NFS_MIRROR_FULL` | on | The rear-view mirror is drawn as the main view is: its distances, the track's detailed models, cars at full detail, the sky with clouds and lightning, car lights and the headlights' light. `0` restores the original short, coarse mirror. |
@@ -1007,17 +1054,14 @@ from the phone; the rest matter for a desktop run.
 | `NFS_TEXCOORD_REBASE` | on | `0` leaves far-out texture coordinates as the game sends them (see Projected headlights), to compare. |
 | `NFS_DEPTH16` | auto | On where the depth buffer has more than 16 bits and the GPU is not an Adreno 5xx. `0` keeps the GPU's own depth precision, `1` forces the Voodoo's 16-bit steps (see Projected headlights); the `[GPU]` lines count the frames drawn in them. |
 | `NFS_NATIVES` | on | `0` runs the generated code instead of the car-specs native, to compare speeds. The loading, movie, vertex, polygon and drawing natives always run. |
-| `NFS_MAD_CHECK` | off | `1` (debug) runs the generated MAD player and checks the native decoder (`src/nfs3hp/native_movie.cpp`) against the generated one ([MAD]). |
 | `NFS_LOG` | on | `0` (debug mode off, the launcher's Advanced screen) writes nothing to the log: log priority critical, and SDL's direct Android logging held back (`android/app/jni/sdl_quiet.h`). With debug mode off the launcher sets none of the diagnostic variables. |
-| `NFS_NET_PORT` | `9803` | TCP port of network races, as the Modern Patch has it; the launcher's Network screen offers the original's `1030`. |
+| `NFS_NET_PORT` | `9803` | TCP port of network races, as the Modern Patch has it; the connection screen offers the original's `1030`. |
 | `NFS_NET_TRACE` | off | `1` (extra `net_trace`) writes a network race into the log: EA's comm library events and packet sends (`[COMM]`), up to 400 datagrams per socket instead of 16 (`[NET]`), and each new indirect call target once per thread after the IPX transport opens (`[CALL]`). For finding where two machines stop on the way into a race. |
-| `NFS_FE_NATIVE` | on | `0` leaves every hooked decompiled menu function, the screens' and the engine's, to the generated code (see Decompiled menus); the main menu, what it calls of the menu loop and the dialogs, and the controls' screens are native whole and stay native. |
-| `NFS_FE_NATIVE_OFF` | unset | A list of generated functions, `sub_437e00,sub_438260`, left to the generated code while the other decompiled ones run. |
 | `NFS_REPLAY_TRACE` | off | `1` (debug mode, Traces: `replay_trace`) every car at every physics step to `logs/trace-*.bin` (see Comparing builds by a replay). |
 | `NFS_AUTO_REPLAY` | off | `1` (debug mode, launch extra `auto_replay`) no movies, and from the first menu straight into the replay in `replay.rp3`. |
 | `NFS_PERF_TRACE` | off | `1` (debug mode, Traces: `perf_trace`, "Missing performance data logging") follows player one's 0-100 and the other timings from the car (`sub_4cdf10`) through the race's take-down to the results' copy (`sub_455410`), for the race summary's Performance page showing `---`: `[PERF]` when the car's change, `[PERFTIME]` at each step of `takeDownRace` and when the results' records change. |
 | `NFS_FUNC_LOG` | off | `1` (debug mode, switch `live_counter`) samples which functions run, to `functions.bin` (see Live functions log). |
-| `NFS_NATIVE_CHECK` | off | `1` (or `load`) runs each call of the loading natives (`src/nfs3hp/native_loading.cpp`: RefPack, FCE models, FRD tracks) both ways -- the native, everything it wrote put back, then the generated code -- and logs any difference in memory, registers or flags (`[NATIVE]`), holding the guest context meanwhile (`WinApplication::KeepContext`). The vertex, polygon and drawing natives have no generated code left in the game to be held against: their checks are on the desktop (`tools/game_checks/vertices`, `tools/game_checks/render`). Launch extras: `--ez native_check true`, `--ez load_check true`. |
+| `NFS_NATIVE_CHECK` | off | The vertex, polygon and drawing natives have no generated code left in the game to be held against: their checks are on the desktop (`tools/game_checks/vertices`, `tools/game_checks/render`). Launch extras: `--ez native_check true`, `--ez load_check true`. |
 | `NFS_AUDIO_RATE` | unset | The output's own sample rate. The game mixes at 22050 Hz and SDL converts to this; a device opened at any other rate is resampled by Android, off its low-latency path. Unset, the device opens at SDL's default. |
 | `NFS_TOUCH_STEER_LEFT` etc. | unset | Keys the touch overlay sends for steering and the pedals, so that endpoint can report them as axes. |
 | `NFS_GAMEPAD1_SOUTH` etc. | built-in defaults | What a pad button sends, as `NFS_GAMEPAD<n>_<BUTTON>`: an SDL key name (`Space`, `Return`), `axis:steer_left`, `axis:steer_right`, `axis:accelerate`, `axis:brake`, or empty for nothing. `_UI` after it is the same button in the menus. `LEFT_TRIGGER` and `RIGHT_TRIGGER` are the triggers read as buttons, empty by default; the launcher gives them the pedals' keys for a pad set to Digital. |

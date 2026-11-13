@@ -40,3 +40,5 @@ plan.md
 
 # game_checks's Windows build (tools/game_checks/windows/run.py).
 tools/game_checks/windows/build/
+# frontend_checks's strict build (FRONTEND_STRICT=1 tools/frontend_checks/windows/run.py).
+tools/frontend_checks/build_strict/

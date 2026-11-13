@@ -125,7 +125,10 @@
     {"controls::stopDirectInput", true, true, 0},
     {"controls::openMouse", true, true, 0},
     {"controls::setPointerBounds", true, true, 0},
-    {"controls::readMouse", true, true, 0},
+    // ebx, ecx, edx: no caller reads what the code leaves there (its last event's, a callee's); the
+    // game's callers (0x434b60, 0x442580, 0x451500 and its callers, 0x4bc530 and its callers, 0x4bc560,
+    // 0x4bd4d0, 0x4c4e40) save them or write them first.  eax is compared: 0x4bc530 and 0x451500 give it back.
+    {"controls::readMouse", true, true, 0, false, kNoHeap, false, "ebx ecx edx"},
     {"controls::findJoysticks", true, true, 0},
     {"controls::describeJoystick", true, true, 0},
     {"controls::readJoystick", true, true, 0},
@@ -144,7 +147,10 @@
     {"controls::stopEffects", true, true, 0},
     {"controls::downloadEffect", true, true, 0},
     {"controls::unloadEffect", true, true, 0},
-    {"controls::updateEffect", true, true, 0},
+    // ebx, ecx, edx: no caller reads what the code leaves there (the last compare's, a callee's); the
+    // game's callers (0x470b90, 0x4714f0, 0x4716e0, 0x471860, 0x4719f0, 0x471af0, 0x471fd0 and its
+    // callers) save them or write them first.
+    {"controls::updateEffect", true, true, 0, false, kNoHeap, false, "ebx ecx edx"},
     {"controls::setCooperativeLevel", true, true, 0},
     {"controls::acquireDevice", true, true, 0},
     {"controls::unacquireDevice", true, true, 0},

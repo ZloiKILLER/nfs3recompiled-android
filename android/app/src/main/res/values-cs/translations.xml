@@ -31,13 +31,6 @@
  <string name="touch_settings">Dotykové ovládání</string>
  <string name="screen_settings">Obrazovka</string>
  <string name="display_settings">Obraz</string>
- <string name="screen_adjustment">Nastavení obrazu</string>
- <string name="brightness_label">Jas</string>
- <string name="contrast_label">Kontrast</string>
- <string name="adjust_hint">Ukázky ukazují výsledek. Projeví se při příštím spuštění hry.</string>
- <string name="adjust_reset">Obnovit</string>
- <string name="sample_dark">Noc</string>
- <string name="sample_bright">Den</string>
  <string name="back_to_launcher">Zpět</string>
  <string name="switch_data">Aktivovat</string>
  <string name="data_change">Změnit…</string>
@@ -71,7 +64,6 @@
  <string name="orientation_landscape_reverse">Pevně — na šířku, obráceně</string>
  <string name="fps_30">30 FPS</string>
  <string name="fps_60">60 FPS</string>
- <string name="gamma_label">Gama</string>
  <string name="fps_cap_label">Snímková frekvence</string>
  <string name="fps_error">Zadej celé číslo od 1 do 240</string>
  <string name="save">Uložit</string>
@@ -156,6 +148,8 @@
  <string name="faq_mapping"><b>Gamepady</b>\nHra vždy vidí dva gamepady: gamepad 1 je první hráč spolu s dotykovým ovládáním, gamepad 2 je druhý hráč. V Ovládání → Gamepady stiskem tlačítka vyberte, který ovladač je který, nastavte, co dělá každé tlačítko, a pak jednou stiskněte Gamepad ZAPNUTO. Tím se do nastavení hry zapíše odpovídající ovládání a starý soubor se zálohuje. Levá páčka zatáčí, spouště přidávají plyn a brzdí. Pad má dvě sady tlačítek, stejně jako má dotykové ovládání dvě rozložení: závodní, kterou nastavíte zde, a pevnou pro nabídky a záznamy, kde Cross / A potvrzuje, Circle / B se vrací a kříž posouvá výběr. Pro hru na klávesnici zapište místo toho Výchozí ve hře.</string>
  <string name="faq_lights"><b>Světla a návrat na trať</b>\n☼ posílá L. ↻ posílá R pro návrat na trať. Klávesy lze změnit v Ovládání → Dotyk → Klávesy.</string>
  <string name="faq_screen_data"><b>Obrazovka a herní data</b>\nNa šířku uzamkne hru vodorovně; Automaticky povolí otáčení. Limit FPS omezuje snímkovou frekvenci; nižší hodnota sníží zátěž. «Herní data» spravují importy a ukazují aktivní sadu. Tlačítko «Hrát» se zpřístupní, jakmile je sada připravená.</string>
+ <string name="faq_picture"><b>Jas, kontrast a gama</b>\nNastavují se přímo ve hře: Options → Graphics → Advanced Settings nebo Graphics v nabídce pauzy během závodu. Obraz se mění hned při posouvání jezdce. Done hodnoty uloží, Cancel vrátí původní. Nastavení platí pro závody, nabídky i videa.</string>
+ <string name="faq_network"><b>Síťové závody</b>\nOtevřete Connect Players na první obrazovce hry. Local WiFi sám najde závody mezi telefony ve stejné síti Wi-Fi. Network (TCP) se spojí s kýmkoli, kdo zná adresu hostitele, i s PC s původní hrou nebo Modern Patchem. Pod nimi je adresa tohoto telefonu (Your IP) a TCP Port: klepnutí přepíná mezi 9803 (Modern Patch) a 1030 (původní hra). Všichni hráči závodu přes TCP musí používat stejný port.</string>
  <string name="gamepad_buttons">Tlačítka</string>
  <string name="gamepad_buttons_title">Tlačítka gamepadu %1$d</string>
  <string name="gamepad_buttons_hint">Co dělá každé tlačítko tohoto padu při jízdě. Levá páčka zatáčí, pravá spoušť přidává plyn a levá brzdí. V nabídkách a v záznamech jsou tlačítka pevná a nic se nenastavuje: Cross / A a Options / Menu potvrzují, Circle / B a Create / View se vracejí, kříž posouvá výběr. Akce tlačítek se do hry dostanou, jakmile je do ní zapsáno ovládání gamepady.</string>
@@ -191,12 +185,5 @@
  <string name="force_feedback_phone_note">Telefon přehrává nárazy, dopady a řazení, motor ve vysokých otáčkách a ostré zatáčení.</string>
  <string name="force_feedback_gamepad_note">Gamepad 1 přehrává efekty hry tak, jak jsou. Jejich síla se nastavuje ve hře: Options → Controllers → Force Feedback.</string>
  <string name="editor_snap_grid">Přichytit k mřížce</string>
- <string name="network_title">Síť</string>
- <string name="network_address">Adresa tohoto zařízení v síti: %1$s</string>
- <string name="network_no_address">Žádné připojení k síti</string>
- <string name="network_port_label">Port TCP/IP</string>
- <string name="network_port_modern">9803 · Modern Patch</string>
- <string name="network_port_original">1030 · původní hra</string>
- <string name="network_hint">IPX sám najde závody v této síti Wi-Fi. TCP/IP spojí s každým, kdo zná adresu hostitele, i s PC s původní hrou nebo Modern Patchem. Všichni hráči používají stejný port.</string>
  <string name="fps_unlimited">Bez omezení</string>
 </resources>

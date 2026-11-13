@@ -1,3 +1,4 @@
+#include "game_settings.h"
 #include "port_loop.h"
 #include "diag_hooks.h"
 #include "port_text.h"
@@ -138,7 +139,6 @@ constexpr Var<reg32> kInRace{0x559234};       // the menus are a race's pause sc
 constexpr Var<reg32> kAfterRace{0x662968};    // the menus opened on "postgame"
 constexpr Var<int16_t> kNetworkGame{0x7a22dc};        // set up to race others over a network
 constexpr Var<reg32> kNetworkConnected{0x7a22e0};
-constexpr Var<reg32> kLobbyLocked{0x6fd508};  // a network race's lobby: only "racenow"
 constexpr Var<reg32> kMouseX{0x55e5e4};
 constexpr Var<reg32> kMouseY{0x55e5e8};
 constexpr Var<reg32> kMouseBlocked{0x5556d0};  // the network screens have the mouse
@@ -176,32 +176,17 @@ constexpr Var<reg32> kDrawColour{0x563aa4};    // what 2D is drawn with, alpha o
 
 // The race settings 0x44be60 keeps consistent (see there), and what it last
 // saw of them.
-constexpr Var<reg32> kRaceType{0x6fd3b8};
 constexpr reg32 kTournament = 1;
 constexpr reg32 kKnockout = 2;
 constexpr reg32 kHotPursuit = 3;
-constexpr Var<reg32> kSplitScreen{0x6fd3b0};   // players on this machine, 2 over a network
-constexpr Var<reg32> kSetting4d0{0x6fd4d0};    // 0 to 2, goes with kSetting4d4
-constexpr Var<reg32> kSetting4d4{0x6fd4d4};    // 0 to 4
 constexpr Var<reg32> kSeen4d0{0x559258};       // -1 before the first pass
 constexpr Var<reg32> kSeen4d4{0x55925c};
 constexpr Var<reg32> kSeenRaceType{0x559260};
-constexpr Var<reg32> kSettingBbe4{0x6fbbe4};
-constexpr Var<reg32> kSettingBbd8{0x6fbbd8};   // set when kSettingBbe4 is not
-constexpr Var<reg32> kSettingBc00{0x6fbc00};   // 0 or 1, kSetting292c the other way
 constexpr Var<reg32> kSetting292c{0x55292c};
-constexpr Var<reg32> kSetting504{0x6fd504};    // 0 to 3; 3 not in a two-player series
 constexpr Var<uint16_t> kSetting639c{0x55639c};
-constexpr Var<reg32> kSetting4e8{0x6fd4e8};
-constexpr Var<reg32> kSetting4ac{0x6fd4ac};
 constexpr Var<reg32> kValue5d004{0x55d004};
-constexpr Var<reg32> kSetting4b0{0x6fd4b0};
-constexpr Var<reg32> kSetting4b4{0x6fd4b4};
-constexpr Var<reg32> kSetting2ac{0x6fd2ac};
 constexpr Var<int16_t> kNetworkSetting2276{0x7a2276};
 constexpr Var<reg32> kNetworkSettingE5d0{0x55e5d0};
-constexpr Var<reg32> kPlayer1Car{0x6fd2bc};    // the players' cars, as 0x4396b0 reads them
-constexpr Var<reg32> kPlayer2Car{0x6fd328};
 
 // The loop's (0x44b230).
 constexpr Var<reg32> kLastAction{0x66296c};    // what left the last screen
@@ -213,8 +198,6 @@ constexpr Var<reg32> kAfterMovieScreen{0x559224};  // the screen a movie goes on
 constexpr Var<uint8_t> kNoHelpFlags{0x55eb2e}; // 0x10 or 0x20, no help box
 constexpr Var<uint8_t> kQuitting{0x559251};    // Yes was the answer
 constexpr Var<reg32> kNoQuitQuestion{0x55e894};
-constexpr Var<reg32> kDisplayChoice{0x6fbb4c};
-constexpr Var<reg32> kMusicChoice{0x6fbbe8};
 constexpr Var<reg32> kSuspended{0x559444};     // the game's window gone to the background
 constexpr Var<reg32> kResumed{0x55fec0};
 constexpr Var<reg32> kFade{0x559c60};          // a screen's fade out, to 500
@@ -227,8 +210,6 @@ constexpr reg32 kDialogButtons = 0x66297c;
 constexpr reg32 kQuitQuestion = 0xf4;
 constexpr reg32 kQuitYes = 0xc4;
 constexpr reg32 kQuitNo = 0xc5;
-constexpr reg32 kPlayer1Name = 0x6fd2fc;
-constexpr reg32 kPlayer2Name = 0x6fd368;
 constexpr reg32 kPlayer1NameTitle = 0xc9;
 constexpr reg32 kPlayer2NameTitle = 0xca;
 constexpr reg32 kPlayer1Default = 0xfa;        // "Player 1"
@@ -464,7 +445,7 @@ bool playSound(Game& g, reg32 esp, reg32 sound, reg32 volume)
 Result itemUsableCore(Game& g, reg32 esp, reg32 at)
 {
     App* app = g.app;
-    if (kNetworkConnected(app) == 0 || kLobbyLocked(app) == 0 || kInRace(app) != 0)
+    if (kNetworkConnected(app) == 0 || gameSettings(app).networkLobby == 0 || kInRace(app) != 0)
         return 1;
     GAME(esp - 8, kCodelinkMatches, {item(app, at).codelink, kRaceNow});
     return g.eax != 0 ? 1 : 0;
@@ -488,7 +469,7 @@ Result selectionState(Game& g, reg32 esp, reg32 at)
 Result keyAllowedCore(Game& g, reg32 esp, reg32 menu, uint16_t key)
 {
     App* app = g.app;
-    if (kNetworkConnected(app) == 0 || kLobbyLocked(app) == 0 || kInRace(app) != 0)
+    if (kNetworkConnected(app) == 0 || gameSettings(app).networkLobby == 0 || kInRace(app) != 0)
         return 1;
     const reg32 at = esp - 8;
     GAME(at, kNetworkBusy);
@@ -1446,69 +1427,69 @@ Result fitRaceSettingsCore(Game& g, reg32 esp)
         return int32_t(g.eax);
     if (kSeen4d0(app) == reg32(-1))
     {
-        kSeen4d0.set(app, kSetting4d0(app));
-        kSeen4d4.set(app, kSetting4d4(app));
+        kSeen4d0.set(app, gameSettings(app).trafficLevel);
+        kSeen4d4.set(app, gameSettings(app).opponentClass);
     }
     if (kSeenRaceType(app) == reg32(-1))
-        kSeenRaceType.set(app, kRaceType(app));
-    kSettingBbd8.set(app, kSettingBbe4(app) == 0 ? 1 : 0);
-    if (kSettingBc00(app) == 1)
+        kSeenRaceType.set(app, gameSettings(app).raceType);
+    gameSettings(app).soundFlag98 = gameSettings(app).musicMode == 0 ? 1 : 0;
+    if (gameSettings(app).soundSetup == 1)
         kSetting292c.set(app, 0);
-    else if (kSettingBc00(app) == 0)
+    else if (gameSettings(app).soundSetup == 0)
         kSetting292c.set(app, 1);
-    if (kRaceType(app) == kHotPursuit)
-        kSetting4d0.set(app, 2);
+    if (gameSettings(app).raceType == kHotPursuit)
+        gameSettings(app).trafficLevel = 2;
 
-    const reg32 first = kSetting4d0(app);
+    const reg32 first = gameSettings(app).trafficLevel;
     if (first != kSeen4d0(app))
     {
         kSeen4d0.set(app, first);
         auto setSecond = [&](reg32 value) {
             kSeen4d4.set(app, value);
-            kSetting4d4.set(app, value);
+            gameSettings(app).opponentClass = value;
         };
-        if (first == 0 && kSetting4d4(app) != 0)
+        if (first == 0 && gameSettings(app).opponentClass != 0)
             setSecond(0);
-        else if (first == 1 && kSetting4d4(app) == 0)
+        else if (first == 1 && gameSettings(app).opponentClass == 0)
             setSecond(4);
-        else if (first == 2 && kSetting4d4(app) == 0)
+        else if (first == 2 && gameSettings(app).opponentClass == 0)
             setSecond(1);
     }
-    else if (kSetting4d4(app) != kSeen4d4(app))
+    else if (gameSettings(app).opponentClass != kSeen4d4(app))
     {
-        const reg32 second = kSetting4d4(app);
+        const reg32 second = gameSettings(app).opponentClass;
         kSeen4d4.set(app, second);
         auto setFirst = [&](reg32 value) {
             kSeen4d0.set(app, value);
-            kSetting4d0.set(app, value);
+            gameSettings(app).trafficLevel = value;
         };
         if (second == 0)
             setFirst(0);
         else if (second <= 3)
         {
-            if (kSetting4d0(app) == 0)
+            if (gameSettings(app).trafficLevel == 0)
                 setFirst(2);
         }
-        else if (kSetting4d0(app) == 0)
+        else if (gameSettings(app).trafficLevel == 0)
             setFirst(1);
     }
-    if (kRaceType(app) != kSeenRaceType(app))
-        kSeenRaceType.set(app, kRaceType(app));
+    if (gameSettings(app).raceType != kSeenRaceType(app))
+        kSeenRaceType.set(app, gameSettings(app).raceType);
 
     ALLOW(0xd, 0);
     ALLOW(0x4004, 1);
-    if (int32_t(kSplitScreen(app)) >= 2)
+    if (int32_t(gameSettings(app).playMode) >= 2)
     {
-        if (kRaceType(app) == kTournament || kRaceType(app) == kKnockout)
+        if (gameSettings(app).raceType == kTournament || gameSettings(app).raceType == kKnockout)
         {
-            if (kSetting504(app) == 3)
-                kSetting504.set(app, 0);
+            if (gameSettings(app).setting504 == 3)
+                gameSettings(app).setting504 = 0;
             kSetting639c.set(app, 0);
         }
         else
             kSetting639c.set(app, 1);
         ALLOW(0x40004, 1);
-        switch (kSetting504(app))
+        switch (gameSettings(app).setting504)
         {
         case 0:
             ALLOW(0x66c, 1);
@@ -1523,12 +1504,12 @@ Result fitRaceSettingsCore(Game& g, reg32 esp)
             break;
         }
     }
-    if (kRaceType(app) == kTournament || kRaceType(app) == kKnockout)
+    if (gameSettings(app).raceType == kTournament || gameSettings(app).raceType == kKnockout)
     {
-        kSetting4e8.set(app, 1);
-        kSetting4d0.set(app, 2);
+        gameSettings(app).noTraffic = 1;
+        gameSettings(app).trafficLevel = 2;
         ALLOW(0x884, 1);
-        switch (kSetting4d4(app))
+        switch (gameSettings(app).opponentClass)
         {
         case 1:
             ALLOW(0x68, 1);
@@ -1543,22 +1524,22 @@ Result fitRaceSettingsCore(Game& g, reg32 esp)
             break;
         }
     }
-    if (kRaceType(app) != kHotPursuit)
+    if (gameSettings(app).raceType != kHotPursuit)
         ALLOW(0x4008, 1);
     else
     {
         ALLOW(0x2008, 1);
-        const int32_t players = int32_t(kSplitScreen(app));
+        const int32_t players = int32_t(gameSettings(app).playMode);
         bool cops;
         if (players >= 2)
             cops = kNetworkSetting2276(app) == int32_t(kNetworkSettingE5d0(app));
         else if (players == 1)
         {
-            GAME(at, kCarFlag10, {kPlayer1Car(app)});
+            GAME(at, kCarFlag10, {gameSettings(app).players[0].car});
             cops = g.eax != 0;
             if (cops)
             {
-                GAME(at, kCarFlag10, {kPlayer2Car(app)});
+                GAME(at, kCarFlag10, {gameSettings(app).players[1].car});
                 cops = g.eax != 0;
             }
         }
@@ -1599,24 +1580,24 @@ Result fitRaceSettingsCore(Game& g, reg32 esp)
         ALLOW(9, 1);
 
     auto widen = [](reg32 value) { return reg32(int32_t(int16_t(value))); };
-    if (kRaceType(app) == kTournament)
+    if (gameSettings(app).raceType == kTournament)
     {
-        const reg32 kind = int32_t(kSplitScreen(app)) > 1 ? 2 : 4;
+        const reg32 kind = int32_t(gameSettings(app).playMode) > 1 ? 2 : 4;
         GAME(at, kMap4cf160, {kind});
-        kSetting4b0.set(app, widen(g.eax));
-        kSetting4ac.set(app, kValue5d004(app));
+        gameSettings(app).lapsClass = widen(g.eax);
+        gameSettings(app).track = kValue5d004(app);
     }
-    else if (kRaceType(app) == kKnockout)
+    else if (gameSettings(app).raceType == kKnockout)
     {
         GAME(at, kMap4cf160, {2});
-        kSetting4b0.set(app, widen(g.eax));
-        kSetting4ac.set(app, 0);
+        gameSettings(app).lapsClass = widen(g.eax);
+        gameSettings(app).track = 0;
     }
-    GAME(at, kMap4cf190, {reg32(int32_t(int16_t(kSetting4b0(app))))});
-    kSetting4b4.set(app, widen(g.eax));
-    kSeen4d0.set(app, kSetting4d0(app));
-    kSeen4d4.set(app, kSetting4d4(app));
-    if (kSetting2ac(app) != 0)
+    GAME(at, kMap4cf190, {reg32(int32_t(int16_t(gameSettings(app).lapsClass)))});
+    gameSettings(app).laps = widen(g.eax);
+    kSeen4d0.set(app, gameSettings(app).trafficLevel);
+    kSeen4d4.set(app, gameSettings(app).opponentClass);
+    if (gameSettings(app).unlockedAll != 0)
         GAME(at, kMarkOption8, {8});
     return int32_t(g.eax);
 }
@@ -1678,10 +1659,10 @@ Result menuLoopCore(Game& g, reg32 esp, reg32 name, reg32 history)
     kInRace.set(app, 0);
     kFlagEb10.set(app, 0);
     kFrontendArt.set(app, 0);
-    GAME(at, kSetDisplay, {kDisplayChoice(app)});
+    GAME(at, kSetDisplay, {gameSettings(app).language});
     GAME(at, kResetInput);
     const reg32 afterRace = kAfterRace(app);
-    GAME(at, kStartMusic, {afterRace != 0 ? kSetting4ac(app) : reg32(0x16), kMusicChoice(app), afterRace});
+    GAME(at, kStartMusic, {afterRace != 0 ? gameSettings(app).track : reg32(0x16), gameSettings(app).menuMusicVolume, afterRace});
     GAME(at, kLoadMenus, {name, 1});
     kLastAction.set(app, 5);
     for (reg32 i = 0; i < kHistorySize; ++i)
@@ -1819,15 +1800,15 @@ Result menuLoopCore(Game& g, reg32 esp, reg32 name, reg32 history)
             }
             if (word(app, action) == kGoOn)
             {
-                if (byteAt(app, kPlayer1Name) == 0)
+                if (std::uint8_t(gameSettings(app).players[0].name[0]) == 0)
                 {
-                    if (!askName(g, at, kPlayer1Name, kPlayer1NameTitle, kPlayer1Default, kPlayer1NameAnswerAt))
+                    if (!askName(g, at, SETTINGS_ADDRESS(players[0].name), kPlayer1NameTitle, kPlayer1Default, kPlayer1NameAnswerAt))
                         return {};
                     setWord(app, action, 0);
                 }
-                else if (kSplitScreen(app) == 1 && byteAt(app, kPlayer2Name) == 0)
+                else if (gameSettings(app).playMode == 1 && std::uint8_t(gameSettings(app).players[1].name[0]) == 0)
                 {
-                    if (!askName(g, at, kPlayer2Name, kPlayer2NameTitle, kPlayer2Default, kPlayer2NameAnswerAt))
+                    if (!askName(g, at, SETTINGS_ADDRESS(players[1].name), kPlayer2NameTitle, kPlayer2Default, kPlayer2NameAnswerAt))
                         return {};
                     setWord(app, action, 0);
                 }
@@ -1998,6 +1979,94 @@ Result menuLoopCore(Game& g, reg32 esp, reg32 name, reg32 history)
 
 }  // namespace
 
+/* ---- The cores the menus call as C++ (port_loop.h): a core above with the
+ * Game it runs in made from `eax`, what the game's code has in eax at the
+ * call (the first register argument, where there is one) ---- */
+
+Result keysTakenOf(App* app, CPU& cpu, reg32 esp, reg32 eax)
+{
+    Game g{app, cpu, eax};
+    return keysTakenCore(g, esp);
+}
+
+Result selectableOf(App* app, CPU& cpu, reg32 esp, int32_t offset, reg32 menu)
+{
+    Game g{app, cpu, reg32(offset)};
+    return selectableCore(g, esp, offset, menu);
+}
+
+Result pointAtSelectedOf(App* app, CPU& cpu, reg32 esp, reg32 menu)
+{
+    Game g{app, cpu, menu};
+    return pointAtSelectedCore(g, esp, menu);
+}
+
+Result escapeButtonOf(App* app, CPU& cpu, reg32 esp, reg32 menu, reg32 offset)
+{
+    Game g{app, cpu, menu};
+    return escapeButtonCore(g, esp, menu, offset);
+}
+
+Result handleKeyOf(App* app, CPU& cpu, reg32 esp, reg32 menu, reg32 key)
+{
+    Game g{app, cpu, menu};
+    return handleKeyCore(g, esp, menu, key);
+}
+
+Result drawItemsOf(App* app, CPU& cpu, reg32 esp, reg32 menu)
+{
+    Game g{app, cpu, menu};
+    return drawItemsCore(g, esp, menu);
+}
+
+Result itemUnderMouseOf(App* app, CPU& cpu, reg32 esp, reg32 menu)
+{
+    Game g{app, cpu, menu};
+    return itemUnderMouseCore(g, esp, menu);
+}
+
+Result passItemsOf(App* app, CPU& cpu, reg32 esp, reg32 menu)
+{
+    Game g{app, cpu, menu};
+    return passItemsCore(g, esp, menu);
+}
+
+Result leaveScreenOf(App* app, CPU& cpu, reg32 esp, reg32 menu, reg32 action)
+{
+    Game g{app, cpu, menu};
+    return leaveScreenCore(g, esp, menu, action);
+}
+
+Result enterScreenOf(App* app, CPU& cpu, reg32 esp, reg32 menu)
+{
+    Game g{app, cpu, menu};
+    return enterScreenCore(g, esp, menu);
+}
+
+Result popMenuOf(App* app, CPU& cpu, reg32 eax)
+{
+    Game g{app, cpu, eax};
+    return popMenuCore(g);
+}
+
+Result pushMenuOf(App* app, CPU& cpu, reg32 eax)
+{
+    Game g{app, cpu, eax};
+    return pushMenuCore(g);
+}
+
+Result menuLoopOf(App* app, CPU& cpu, reg32 esp, reg32 name, reg32 history)
+{
+    Game g{app, cpu, name};
+    return menuLoopCore(g, esp, name, history);
+}
+
+/* 0x44aeb0's: the screen shown. */
+reg32 currentMenuOf(App* app)
+{
+    return kCurrentMenu(app);
+}
+
 /* ---- The adapters ---- */
 
 /* 0x4499b0: whether the item at eax can be used. */
@@ -2028,24 +2097,21 @@ void drawHelp(App* app, CPU& cpu)
 void keysTaken(App* app, CPU& cpu)
 {
     const Entry e(cpu);
-    Game g{app, cpu, e.eax};
-    e.finish(cpu, keysTakenCore(g, e.esp));
+    e.finish(cpu, keysTakenOf(app, cpu, e.esp, e.eax));
 }
 
 /* 0x449e50: whether the item eax of the screen edx can be selected. */
 void selectable(App* app, CPU& cpu)
 {
     const Entry e(cpu);
-    Game g{app, cpu, e.eax};
-    e.finish(cpu, selectableCore(g, e.esp, int32_t(e.eax), e.edx));
+    e.finish(cpu, selectableOf(app, cpu, e.esp, int32_t(e.eax), e.edx));
 }
 
 /* 0x449ea0: the pointer moved onto the selected item of the screen at eax. */
 void pointAtSelected(App* app, CPU& cpu)
 {
     const Entry e(cpu);
-    Game g{app, cpu, e.eax};
-    e.finish(cpu, pointAtSelectedCore(g, e.esp, e.eax));
+    e.finish(cpu, pointAtSelectedOf(app, cpu, e.esp, e.eax));
 }
 
 /* 0x449f30: the item before the selected one of the screen at eax selected. */
@@ -2068,16 +2134,14 @@ void selectNext(App* app, CPU& cpu)
 void escapeButton(App* app, CPU& cpu)
 {
     const Entry e(cpu);
-    Game g{app, cpu, e.eax};
-    e.finish(cpu, escapeButtonCore(g, e.esp, e.eax, e.edx));
+    e.finish(cpu, escapeButtonOf(app, cpu, e.esp, e.eax, e.edx));
 }
 
 /* 0x44a2d0: the key edx on the screen at eax. */
 void handleKey(App* app, CPU& cpu)
 {
     const Entry e(cpu);
-    Game g{app, cpu, e.eax};
-    e.finish(cpu, handleKeyCore(g, e.esp, e.eax, e.edx));
+    e.finish(cpu, handleKeyOf(app, cpu, e.esp, e.eax, e.edx));
 }
 
 /* 0x44a440: the selected item of the screen shown. */
@@ -2100,8 +2164,7 @@ void selectItem(App* app, CPU& cpu)
 void drawItems(App* app, CPU& cpu)
 {
     const Entry e(cpu);
-    Game g{app, cpu, e.eax};
-    e.finish(cpu, drawItemsCore(g, e.esp, e.eax));
+    e.finish(cpu, drawItemsOf(app, cpu, e.esp, e.eax));
 }
 
 /* 0x44a690: the mouse let go of the item it held. */
@@ -2116,8 +2179,7 @@ void releaseMouse(App* app, CPU& cpu)
 void itemUnderMouse(App* app, CPU& cpu)
 {
     const Entry e(cpu);
-    Game g{app, cpu, e.eax};
-    e.finish(cpu, itemUnderMouseCore(g, e.esp, e.eax));
+    e.finish(cpu, itemUnderMouseOf(app, cpu, e.esp, e.eax));
 }
 
 /* 0x44a860: every item of the screen at eax told it is up. */
@@ -2132,8 +2194,7 @@ void itemsShown(App* app, CPU& cpu)
 void passItems(App* app, CPU& cpu)
 {
     const Entry e(cpu);
-    Game g{app, cpu, e.eax};
-    e.finish(cpu, passItemsCore(g, e.esp, e.eax));
+    e.finish(cpu, passItemsOf(app, cpu, e.esp, e.eax));
 }
 
 /* 0x44a9e0: every item of the screen at eax told it is hidden. */
@@ -2148,8 +2209,7 @@ void hideItems(App* app, CPU& cpu)
 void leaveScreen(App* app, CPU& cpu)
 {
     const Entry e(cpu);
-    Game g{app, cpu, e.eax};
-    e.finish(cpu, leaveScreenCore(g, e.esp, e.eax, e.edx));
+    e.finish(cpu, leaveScreenOf(app, cpu, e.esp, e.eax, e.edx));
 }
 
 /* 0x44aad0: the items of the screen at eax back to their widgets' states. */
@@ -2164,8 +2224,7 @@ void resetItems(App* app, CPU& cpu)
 void enterScreen(App* app, CPU& cpu)
 {
     const Entry e(cpu);
-    Game g{app, cpu, e.eax};
-    e.finish(cpu, enterScreenCore(g, e.esp, e.eax));
+    e.finish(cpu, enterScreenOf(app, cpu, e.esp, e.eax));
 }
 
 /* 0x44ae60: the screen named eax. */
@@ -2180,23 +2239,21 @@ void menuByName(App* app, CPU& cpu)
 void currentMenu(App* app, CPU& cpu)
 {
     const Entry e(cpu);
-    e.back(cpu, kCurrentMenu(app));
+    e.back(cpu, currentMenuOf(app));
 }
 
 /* 0x44aec0: back to the screen gone from last. */
 void popMenu(App* app, CPU& cpu)
 {
     const Entry e(cpu);
-    Game g{app, cpu, e.eax};
-    e.finish(cpu, popMenuCore(g));
+    e.finish(cpu, popMenuOf(app, cpu, e.eax));
 }
 
 /* 0x44af10: the screen shown onto the history. */
 void pushMenu(App* app, CPU& cpu)
 {
     const Entry e(cpu);
-    Game g{app, cpu, e.eax};
-    e.finish(cpu, pushMenuCore(g));
+    e.finish(cpu, pushMenuOf(app, cpu, e.eax));
 }
 
 /* 0x44af50: the history set from the names at eax. */
@@ -2213,7 +2270,7 @@ void player1NameAnswer(App* app, CPU& cpu)
 {
     const Entry e(cpu);
     Game g{app, cpu, e.eax};
-    e.finish(cpu, nameAnswerCore(g, e.esp, e.eax, e.edx, kPlayer1Name, kPlayer1Default));
+    e.finish(cpu, nameAnswerCore(g, e.esp, e.eax, e.edx, SETTINGS_ADDRESS(players[0].name), kPlayer1Default));
 }
 
 /* 0x44b040: and player 2's. */
@@ -2221,7 +2278,7 @@ void player2NameAnswer(App* app, CPU& cpu)
 {
     const Entry e(cpu);
     Game g{app, cpu, e.eax};
-    e.finish(cpu, nameAnswerCore(g, e.esp, e.eax, e.edx, kPlayer2Name, kPlayer2Default));
+    e.finish(cpu, nameAnswerCore(g, e.esp, e.eax, e.edx, SETTINGS_ADDRESS(players[1].name), kPlayer2Default));
 }
 
 /* 0x44b0f0: the answer eax of the quit question; edx the byte that closes it. */
@@ -2244,8 +2301,7 @@ void waitWhileSuspended(App* app, CPU& cpu)
 void menuLoop(App* app, CPU& cpu)
 {
     const Entry e(cpu);
-    Game g{app, cpu, e.eax};
-    e.finish(cpu, menuLoopCore(g, e.esp, e.eax, e.edx));
+    e.finish(cpu, menuLoopOf(app, cpu, e.esp, e.eax, e.edx));
 }
 
 /* 0x44be60: the race settings kept consistent. */

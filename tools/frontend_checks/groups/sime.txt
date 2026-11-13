@@ -1,0 +1,30 @@
+# address name kind: the functions native whole in src/nfs3hp/native_frontend_sime.cpp, frontend::name.
+# kind: how frontend_checks enters it (Menu, Key, Item, None).
+43bcf0 carsRemoveNumberedFolders None
+478e10 effectsFogAtCamera None
+496310 mathMakeRootTable None
+497500 mathQuickNormal None
+4bc8b0 raceEffectsReset None
+4bc950 raceEffectsFree None
+4be970 raceViewsResize None
+4bea40 raceViewResize None
+4c6c70 effectsSkidSegmentPut None
+4c70f0 effectsSkidStripsTake None
+4c7130 effectsSkidStripsReset None
+4c7150 effectsSkidStripsFree None
+4c7b20 raceEffectsEndEmpty None
+4ca160 raceStripUnderWheels None
+4ca4b0 effectsParticleSlot None
+4ca500 effectsDropsOnView None
+4ca850 effectsParticleSpawn None
+4cab60 effectsParticleChildren None
+4cac20 effectsSparks None
+4cae00 effectsCrashPuff None
+4caea0 effectsRespawnSparkle None
+4cb010 effectsWheelParticles None
+4d5730 raceEffectsEndNothing None
+4db860 effectsWheelMarkCut None
+4dbba0 effectsWheelMarksResetAtLoad None
+4dbbc0 effectsWheelMarksReset None
+4dbbe0 effectsWheelMarksEndEmpty None
+4dbbf0 raceLoadTrackPieces None

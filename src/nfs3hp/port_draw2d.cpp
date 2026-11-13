@@ -1,3 +1,4 @@
+#include "game_settings.h"
 #include "port_draw2d.h"
 #include "port_text.h"
 #include "port_shapes.h"
@@ -107,7 +108,6 @@ constexpr Var<int32_t> kFontTextureIndex{0x8b7620};
 constexpr Var<int32_t> kNudge{0x563aa0};
 constexpr Var<reg32> kAccents{0x564180};
 constexpr Table<reg32> kLanguageAccents{0x564160};
-constexpr Var<int32_t> kLanguage{0x6fbb4c};
 constexpr int32_t kFrench = 2;
 constexpr Var<int32_t> kHighlightLine{0x7a1b98};
 constexpr uint32_t kHighlight = 0xffe440;
@@ -508,16 +508,24 @@ Result fieldBox(App* app, CPU& cpu, reg32 esp, int32_t x, int32_t y, int32_t wid
     return drawn;
 }
 
+/* 0x4d8ac0's: the field, but nothing (x back) on a race's pause screens. */
+Result drawFieldBoxOf(App* app, CPU& cpu, reg32 esp, int32_t x, int32_t y, int32_t width, int32_t height,
+                      const uint32_t colours[4])
+{
+    if (kOverRace(app) != 0)
+        return x;
+    return fieldBox(app, cpu, esp, x, y, width, height, colours);
+}
+
 /* 0x4d8ac0 (stdcall 0x10): a field to type in at eax, edx, ebx wide and ecx
  * high, the stack's four colours at its corners -- nothing on a race's pause
  * screens. */
 void drawFieldBox(App* app, CPU& cpu)
 {
     const Entry e(cpu);
-    if (kOverRace(app) != 0)
-        return e.back(cpu, e.eax, 0x10);
     const uint32_t colours[4] = {e.arg(app, 0), e.arg(app, 1), e.arg(app, 2), e.arg(app, 3)};
-    e.finish(cpu, fieldBox(app, cpu, e.esp, int32_t(e.eax), int32_t(e.edx), int32_t(e.ebx), int32_t(e.ecx), colours),
+    e.finish(cpu,
+             drawFieldBoxOf(app, cpu, e.esp, int32_t(e.eax), int32_t(e.edx), int32_t(e.ebx), int32_t(e.ecx), colours),
              0x10);
 }
 
@@ -568,17 +576,24 @@ Result line(App* app, CPU& cpu, reg32 esp, int32_t x0, int32_t y0, int32_t x1, i
     return int32_t(r);
 }
 
+/* 0x4d8ed0's: the line, but nothing (x0 back) on a race's pause screens. */
+Result drawLineOf(App* app, CPU& cpu, reg32 esp, int32_t x0, int32_t y0, int32_t x1, int32_t y1, uint32_t from,
+                  uint32_t to)
+{
+    if (kOverRace(app) != 0)
+        return x0;
+    return line(app, cpu, esp, x0, y0, x1, y1, from, to);
+}
+
 /* 0x4d8ed0 (stdcall 8): a line from eax, edx to ebx, ecx shaded from the
  * colour [esp+4] to [esp+8] -- nothing on a race's pause screens; alpha on
  * for it with softtria. */
 void drawLine(App* app, CPU& cpu)
 {
     const Entry e(cpu);
-    if (kOverRace(app) != 0)
-        return e.back(cpu, e.eax, 8);
     e.finish(cpu,
-             line(app, cpu, e.esp, int32_t(e.eax), int32_t(e.edx), int32_t(e.ebx), int32_t(e.ecx), e.arg(app, 0),
-                  e.arg(app, 1)),
+             drawLineOf(app, cpu, e.esp, int32_t(e.eax), int32_t(e.edx), int32_t(e.ebx), int32_t(e.ecx), e.arg(app, 0),
+                        e.arg(app, 1)),
              8);
 }
 
@@ -653,10 +668,10 @@ Result accented(App* app, CPU& cpu, reg32 esp, reg32 c)
 {
     const reg32 at = esp - 0x10;  // ebx, ecx, edx, ebp
     HeldEbp held(cpu, at);
-    const reg32 language = reg32(kLanguage(app));
+    const reg32 language = reg32(gameSettings(app).language);
     reg32 accents = kAccents(app);
     uint8_t al = uint8_t(c);
-    if (kLanguage(app) == kFrench && (al == 0xc9 || al == 0xe9))
+    if (gameSettings(app).language == kFrench && (al == 0xc9 || al == 0xe9))
     {
         // In French an e acute is an E.
         reg32 r;
@@ -761,8 +776,8 @@ Result makeScreenFont(App* app, CPU& cpu, reg32 esp)
     kFontTextureIndex.set(app, 0);
     kFontY.set(app, 0);
     kFontX.set(app, 0);
-    if (uint32_t(kLanguage(app)) <= 5)
-        kAccents.set(app, kLanguageAccents(app, kLanguage(app)));
+    if (uint32_t(gameSettings(app).language) <= 5)
+        kAccents.set(app, kLanguageAccents(app, std::int32_t(gameSettings(app).language)));
     // The accented characters, from the accented font.
     reg32 accents = kAccents(app);
     if (!callGame(app, cpu, at, kSprintf, {name, 0, accents, 0}, {name, kAccentedFontName, kFontPath}, r)

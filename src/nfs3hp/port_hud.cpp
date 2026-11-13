@@ -1,3 +1,4 @@
+#include "game_settings.h"
 #include "port_hud.h"
 #include "port_text.h"
 
@@ -102,9 +103,7 @@ void fourAppended(App* app, const Entry& e, reg32 group, int32_t first, int32_t 
 
 constexpr Var<int32_t> kHudRow{0x79c10c}, kHudColumn{0x79c110};
 constexpr Var<float> kHudScale{0x79c114}, kHudOffsetX{0x79c11c}, kHudOffsetY{0x79c120};
-constexpr reg32 kHudModes = 0x6fbc70;                // by column (0x348) and row (0x1a4): 1 turned
 constexpr Var<float> kTurnCosine{0x7930fc}, kTurnSine{0x793100};
-constexpr Var<reg32> kMirrored{0x6fd4c4};
 constexpr Table<float> kHudScaleX{0x792878}, kHudCentreY{0x792888}, kHudCentreX{0x792890};
 
 /* "indefinite" -- the NaN the x87 makes -- as a float's bits. */
@@ -126,7 +125,7 @@ void pointMoved(App* app, const Entry& e, reg32 gauge, reg32 xAt, reg32 yAt, reg
     app->getMemory<float>(yAt) = y;
     app->getMemory<float>(xAt) = x;
     float turnedX, turnedY;
-    const reg32 mode = app->getMemory<reg32>(kHudModes + reg32(kHudColumn(app)) * 0x348 + reg32(kHudRow(app)) * 0x1a4);
+    const reg32 mode = gameSettings(app).hudAt(reg32(kHudColumn(app)) * 0x348 + reg32(kHudRow(app)) * 0x1a4).mapStyle;
     if (mode == 1)
     {
         const double cosine = double(kTurnCosine(app)), sine = double(kTurnSine(app));
@@ -144,7 +143,7 @@ void pointMoved(App* app, const Entry& e, reg32 gauge, reg32 xAt, reg32 yAt, reg
         app->getMemory<float>(ebp - 4) = x;
         app->getMemory<float>(ebp - 8) = y;
     }
-    app->getMemory<float>(ebp - 0xc) = kMirrored(app) != 0 ? -1.0f : 1.0f;
+    app->getMemory<float>(ebp - 0xc) = gameSettings(app).mirrored != 0 ? -1.0f : 1.0f;
     const double sign = double(app->getMemory<float>(ebp - 0xc));
     const double gaugeScale = double(kHudScaleX(app, int32_t(gauge)));
     app->getMemory<float>(out) = float(((sign * gaugeScale) * double(app->getMemory<float>(ebp - 4))) +
@@ -441,7 +440,6 @@ bool rowsDrawn(App* app, CPU& cpu, const Entry& e, reg32& result)
 
 /* ---- 0x489c40 ---- */
 
-constexpr Var<reg32> kLanguage{0x6fbb4c};
 constexpr reg32 kTimeFormatA = 0x53b824, kTimeFormatB = 0x53b830;
 
 /* A time in milliseconds written as seconds and tenths with the language's
@@ -455,7 +453,7 @@ bool timeDrawn(App* app, CPU& cpu, const Entry& e, reg32& result)
     const reg32 buffer = ebp - 0x108;
     const int32_t time = int32_t(e.eax);
     const reg32 colour = e.arg(app, 0), colourSecond = e.arg(app, 1), x = e.arg(app, 2), y = e.arg(app, 3), scale = e.arg(app, 4);
-    const reg32 language = kLanguage(app);
+    const reg32 language = gameSettings(app).language;
     const reg32 format = (language == 1 || language == 2 || language == 5) ? kTimeFormatA : kTimeFormatB;
     reg32 line;
     if (!callGame(app, cpu, base, kLanguageText, {0x15c, 0, 0, 0}, {}, line))
@@ -490,8 +488,6 @@ bool timeDrawn(App* app, CPU& cpu, const Entry& e, reg32& result)
 
 constexpr Table<reg32> kScaleSlots{0x7925d8};        // by view (16 bytes): four floats' bits
 constexpr reg32 kCameraTarget = 0x422bd0;            // (view): its record
-constexpr Var<reg32> kScreens{0x6fd3b0};
-constexpr reg32 kViewStates = 0x6fbc50;              // by view (0x348), side (0x1a4): the states
 constexpr Var<float> kStepUp{0x53b9f4}, kStepDown{0x53b9f8}, kScaleFactor{0x53b9fc};
 constexpr Table<reg32> kViewScaleOut{0x792878}, kViewCentreXOut{0x792888}, kViewCentreYOut{0x792890};
 constexpr reg32 kViewRefresh = 0x48ccf0;             // (view)
@@ -514,20 +510,20 @@ bool zoomStepped(App* app, CPU& cpu, const Entry& e, reg32& result)
     if (!callGame(app, cpu, base, kCameraTarget, {view, view << 4, mode, view}, {}, record))
         return false;
     const reg32 second = (app->getMemory<uint8_t>(record + 0x200) & 0x20) != 0 ? 1 : 0;
-    const reg32 screens = kScreens(app);
+    const reg32 screens = gameSettings(app).playMode;
     const reg32 first = screens == 1 ? 1 : 0;
-    const reg32 state = kViewStates + 0x348 * (view + first) + 0x1a4 * second + 0x10;
+    HudRecord& state = gameSettings(app).hudOf(view + first, second);
     if (mode == 0)
     {
-        app->getMemory<float>(state) = float(double(app->getMemory<float>(state)) + double(kStepUp(app)));
-        if (app->getMemory<int32_t>(state) > 0x40800000)
-            app->getMemory<reg32>(state) = 0x40800000;
+        state.mapScale = float(double(state.mapScale) + double(kStepUp(app)));
+        if (int32_t(state.mapScaleBits) > 0x40800000)
+            state.mapScaleBits = 0x40800000;
     }
     else if (mode == 1)
     {
-        app->getMemory<float>(state) = float(double(app->getMemory<float>(state)) + double(kStepDown(app)));
-        if (app->getMemory<int32_t>(state) < 0x3f800000)
-            app->getMemory<reg32>(state) = 0x3f800000;
+        state.mapScale = float(double(state.mapScale) + double(kStepDown(app)));
+        if (int32_t(state.mapScaleBits) < 0x3f800000)
+            state.mapScaleBits = 0x3f800000;
     }
     const float a = float(double(app->getMemory<float>(ebp - 0x1c)) - double(app->getMemory<float>(ebp - 0x14)));
     app->getMemory<float>(ebp - 8) = a;
@@ -536,8 +532,8 @@ bool zoomStepped(App* app, CPU& cpu, const Entry& e, reg32& result)
     app->getMemory<float>(ebp - 0xc) = double(a) >= double(b) ? b : a;
     const double factor = double(kScaleFactor(app));
     app->getMemory<float>(kViewScaleOut.at + 4 * view) =
-        float((double(app->getMemory<float>(ebp - 0xc)) * factor) * double(app->getMemory<float>(state)));
-    if (app->getMemory<reg32>(state) == 0x3f800000)
+        float((double(app->getMemory<float>(ebp - 0xc)) * factor) * double(state.mapScale));
+    if (state.mapScaleBits == 0x3f800000)
     {
         app->getMemory<float>(kViewCentreXOut.at + 4 * view) =
             float((double(app->getMemory<float>(ebp - 0x14)) + double(app->getMemory<float>(ebp - 0x1c))) * factor);
@@ -565,52 +561,52 @@ bool paneStepped(App* app, CPU& cpu, const Entry& e, reg32& result)
     if (!callGame(app, cpu, base, kCameraTarget, {view, e.edx, e.ebx, view}, {}, record))
         return false;
     const reg32 second = (app->getMemory<uint8_t>(record + 0x200) & 0x20) != 0 ? 1 : 0;
-    const reg32 first = kScreens(app) == 1 ? 1 : 0;
+    const reg32 first = gameSettings(app).playMode == 1 ? 1 : 0;
     const reg32 index = view + first;
     const reg32 height = second != 0 ? 0x16 : 0x11;
     app->getMemory<reg32>(ebp - 4) = index * 0x348;
-    app->getMemory<reg32>(ebp - 8) = 0x6fbc50 + index * 0x348;
+    app->getMemory<reg32>(ebp - 8) = SETTINGS_ADDRESS(hud) + index * 0x348;
     app->getMemory<reg32>(ebp - 4) = second * 0x1a4;
-    const reg32 states = 0x6fbc50 + index * 0x348 + second * 0x1a4;
+    const reg32 states = SETTINGS_ADDRESS(hud) + index * 0x348 + second * 0x1a4;
     app->getMemory<reg32>(ebp - 8) = height << 4;
     app->getMemory<reg32>(ebp - 4) = states;
-    const reg32 rect = states + 0x24 + (height << 4), word = states + 0x20;
-    if (view != 0 && kScreens(app) != 1)
+    const reg32 rect = states + 0x24 + (height << 4);
+    if (view != 0 && gameSettings(app).playMode != 1)
     {
         result = rect;
         return true;
     }
-    const auto get32 = [&](reg32 at) -> reg32 { return app->getMemory<reg32>(at); };
-    const auto put32 = [&](reg32 at, reg32 value) { app->getMemory<reg32>(at) = value; };
-    if (get32(word) == 0)
+    HudRecord& hudRecord = gameSettings(app).hudOf(index, second);
+    HudRect& box = hudRecord.rects[height];
+    if (hudRecord.mapStyle == 0)
     {
-        put32(word, 2);
-        put32(rect, 0);
-        put32(rect + 8, 0x3f800000);
-        put32(rect + 4, get32(rect));
-        app->getMemory<float>(rect + 0xc) = float(double(app->getMemory<float>(rect + 8)));
+        hudRecord.mapStyle = 2;
+        box.topBits = 0;
+        box.bottomBits = 0x3f800000;
+        box.leftBits = box.topBits;
+        box.right = float(double(box.bottom));
         if (index == 1)
-            put32(rect + 8, 0x3f000000);
+            box.bottomBits = 0x3f000000;
         else if (index == 2)
         {
-            put32(rect + 8, 0x3f800000);
-            put32(rect, 0x3f000000);
+            box.bottomBits = 0x3f800000;
+            box.topBits = 0x3f000000;
         }
-        put32(states + 0x10, 0x3f800000);
+        hudRecord.mapScaleBits = 0x3f800000;
     }
-    else if (get32(word) != 1)
-        put32(word, 1);
-    else if ((get32(rect + 4) & 0x7fffffff) == 0 && get32(rect + 0xc) == 0x3f800000)
+    else if (hudRecord.mapStyle != 1)
+        hudRecord.mapStyle = 1;
+    else if ((box.leftBits & 0x7fffffff) == 0 && box.rightBits == 0x3f800000)
     {
-        put32(word, 2);
-        put32(rect + 4, get32(states + 0x198));
-        put32(rect, get32(states + 0x194));
-        put32(rect + 0xc, get32(states + 0x1a0));
-        put32(rect + 8, get32(states + 0x19c));
-        put32(states + 0x10, 0x40800000);
+        hudRecord.mapStyle = 2;
+        box.leftBits = hudRecord.rects[23].leftBits;
+        box.topBits = hudRecord.rects[23].topBits;
+        box.rightBits = hudRecord.rects[23].rightBits;
+        box.bottomBits = hudRecord.rects[23].bottomBits;
+        hudRecord.mapScaleBits = 0x40800000;
     }
     else
-        put32(word, 0);
+        hudRecord.mapStyle = 0;
     reg32 pane;
     if (!callGame(app, cpu, base, kPaneAt, {view, 0, 0, 0}, {}, pane))
         return false;
@@ -656,7 +652,6 @@ reg32 scalesSet(App* app, const Entry& e)
 
 constexpr reg32 kVertexPair = 0x49bcd0;              // (surface, &vertex, &vertex): two vertices of a quad's side
 constexpr reg32 kQuadStart = 0x49bd30;               // (surface, a, b, c) stdcall: d
-constexpr Var<reg32> kFlipped{0x6fd4c8};
 
 /* A quad's corners p[0] to p[3] given their colour (word by word from the
  * last to the first) and the two floats the code copies down the same way. */
@@ -669,7 +664,7 @@ void cornerStyle(App* app, const reg32 (&p)[4], reg32 colour)
     set(p[2] + 0x10, word(p[3] + 0x10));
     set(p[1] + 0x10, word(p[2] + 0x10));
     set(p[0] + 0x10, word(p[1] + 0x10));
-    set(p[3] + 0x18, kFlipped(app) != 0 ? 0x3ebf0000 : 0x3e020000);
+    set(p[3] + 0x18, gameSettings(app).night != 0 ? 0x3ebf0000 : 0x3e020000);
     copyFloat(p[3] + 0x18, p[2] + 0x18);
     copyFloat(p[2] + 0x18, p[1] + 0x18);
     copyFloat(p[1] + 0x18, p[0] + 0x18);
@@ -775,9 +770,9 @@ bool labelSet(App* app, CPU& cpu, const Entry& e, reg32& result)
     const reg32 label = reg32(slot) * 40 + group * 320;
     app->getMemory<reg32>(label + kLabels) = shown;
     app->getMemory<reg32>(label + kLabels + 0x24) = record;
-    const reg32 screens = kScreens(app);
+    const reg32 screens = gameSettings(app).playMode;
     const reg32 gate = (screens == 1 ? 1 : 0) + group;
-    const reg32 mode = app->getMemory<reg32>(gate * 0x348 + 0x6fbe0c);
+    const reg32 mode = gameSettings(app).hudOf(gate, 1).speedometerForm;
     reg32 factor;
     bool wide;
     if (mode == 1 || mode == 2)
@@ -1637,12 +1632,12 @@ bool rankDrawn(App* app, CPU& cpu, const Entry& e, reg32& result)
 
 constexpr Var<reg32> kLabelsOn{0x55fe3c}, kMenuOpen{0x7a3d10}, kCursorX{0x55d6b0}, kCursorY{0x55d6b4};
 constexpr Var<int32_t> kPaneRight{0x7d367c}, kPaneBottom{0x7d3678}, kRowGap{0x55d6c0}, kColumnGap{0x7925c0};
-constexpr Var<int32_t> kLabelCount{0x5efda0}, kSplitScreens{0x6fd3a0}, kReplayOn{0x7cd948};
+constexpr Var<int32_t> kLabelCount{0x5efda0}, kReplayOn{0x7cd948};
 constexpr Var<float> kRowsFactorA{0x53b8c0}, kRowsFactorB{0x53b8c4};
 constexpr Var<double> kRowsFactorC{0x53b8d4};
 constexpr reg32 kCursorGet = 0x4dab10, kRacerPicked = 0x4215c0, kRacerShown = 0x485640;
 constexpr reg32 kRaceCars = 0x5efac8, kPaneRects = 0x7497d8, kLabelRecords = 0x72529c;
-constexpr reg32 kHoverFlags = 0x55e5ec, kPickedRacer = 0x6fd4f8, kHoverReset = 0x563d3c, kMouseButtons = 0x55e5ed;
+constexpr reg32 kHoverFlags = 0x55e5ec, kHoverReset = 0x563d3c, kMouseButtons = 0x55e5ed;
 // The line the text of a kind of row is drawn in the colour of: kinds 1 to 7, anything else the last.
 constexpr reg32 kRowColours[7] = {0xff505050, 0xff505050, 0xff505050, 0xffa0a0a0, 0xffc0c0c0, 0x9ffafa00, 0x9ffafa00};
 
@@ -1770,18 +1765,18 @@ bool drawLabelRows(App* app, CPU& cpu, const Entry& e, reg32& result)
             continue;
         if ((app->getMemory<uint8_t>(racer + 0x200) & 1) != 0 && app->getMemory<reg32>(racer + 0x2c4) == 4)
             continue;
-        if (kSplitScreens(app) >= 2)
+        if (std::int32_t(gameSettings(app).replayMode) >= 2)
         {
             const reg32 rect = kPaneRects + group * 368;
             if (mouseX >= app->getMemory<int32_t>(rect) && mouseX <= app->getMemory<int32_t>(rect + 8) &&
                 mouseY >= app->getMemory<int32_t>(rect + 4) && mouseY <= app->getMemory<int32_t>(rect + 0xc))
                 continue;
         }
-        if (kSplitScreens(app) == 2 && kReplayOn(app) != 0)
+        if (gameSettings(app).replayMode == 2 && kReplayOn(app) != 0)
             continue;
         app->getMemory<reg32>(kHoverFlags) = 0;
         const reg32 index = app->getMemory<reg32>(app->getMemory<reg32>(group * 320 + reg32(i) * 40 + kLabelRecords) + 0x1f0);
-        app->getMemory<reg32>(kPickedRacer) = index;
+        gameSettings(app).viewedPlayer = index;
         w.r.ebx = group * 320;
         w.r.edx = index;
         w.r.eax = group;
@@ -1961,17 +1956,17 @@ bool drawStandings(App* app, CPU& cpu, const Entry& e, reg32& result)
         return true;
     if ((app->getMemory<uint8_t>(racer + 0x200) & 1) != 0 && word(racer + 0x2c4) == 4)
         return true;
-    if (kSplitScreens(app) >= 2)
+    if (std::int32_t(gameSettings(app).replayMode) >= 2)
     {
         const reg32 rect = kPaneRects + group * 368;
         if (mouseX >= app->getMemory<int32_t>(rect) && mouseX <= app->getMemory<int32_t>(rect + 8) &&
             mouseY >= app->getMemory<int32_t>(rect + 4) && mouseY <= app->getMemory<int32_t>(rect + 0xc))
             return true;
     }
-    if (kSplitScreens(app) == 2 && kReplayOn(app) != 0)
+    if (gameSettings(app).replayMode == 2 && kReplayOn(app) != 0)
         return true;
     set(kHoverFlags, 0);
-    set(kPickedRacer, index);
+    gameSettings(app).viewedPlayer = index;
     w.r.ebx = reg32(mouseX);
     w.r.ecx = group * 320;
     w.r.edx = index;
@@ -2211,18 +2206,17 @@ constexpr Var<float> kOutlineHalf{0x53b9bc};
 constexpr Var<int32_t> kOutlineLength{0x79c118};
 constexpr reg32 kOutlinePoints = 0x792898, kOutlineCentre = 0x79c11c, kOutlineInverse = 0x79c114, kMapColours = 0x793098;
 constexpr reg32 kCarSlotRecord = 0x422bd0, kSquareRoot = 0x4ea920, kRgbToHsv = 0x49c880, kHsvToRgb = 0x49ca50, kViewRefreshed = 0x48ccf0;
-constexpr reg32 kStatesA = 0x6fbc50, kStatesB = 0x6fbf98, kStatesC = 0x6fc2e0, kStateSize = 0x1a4;
-constexpr reg32 kPlayerColours = 0x6fd54c;
+constexpr reg32 kStateSize = 0x1a4;
 
 /* A float of a state's, as bits, held between 1.0 and 4.0 (the integer
  * comparison of a float's bits the code makes, signed). */
-void zoomHeld(App* app, reg32 at)
+void zoomHeld(HudRecord& state)
 {
-    const int32_t bits = int32_t(app->getMemory<reg32>(at));
+    const int32_t bits = int32_t(state.mapScaleBits);
     if (bits < 0x3f800000)
-        app->getMemory<reg32>(at) = 0x3f800000;
+        state.mapScaleBits = 0x3f800000;
     else if (bits > 0x40800000)
-        app->getMemory<reg32>(at) = 0x40800000;
+        state.mapScaleBits = 0x40800000;
 }
 
 /* The track map's outline set up as a race starts, and its colours: the
@@ -2245,16 +2239,16 @@ bool startMapOutline(App* app, CPU& cpu, const Entry& e, reg32& result)
     reg32 minY = w.r.edx, minX = w.r.edx, maxX = w.r.ecx, maxY = w.r.ecx, maxSquare = w.r.ecx;
     const reg32 slot = (app->getMemory<uint8_t>(w.r.eax + 0x200) & 0x20) != 0 ? 1 : 0;
     w.r.edx = slot;
-    const reg32 first = kStatesA + slot * kStateSize + 0x10;
-    w.r.ecx = word(first);
-    zoomHeld(app, first);
-    if (kScreens(app) == 1)
+    HudRecord& first = gameSettings(app).hudOf(0, slot);
+    w.r.ecx = first.mapScaleBits;
+    zoomHeld(first);
+    if (gameSettings(app).playMode == 1)
     {
-        zoomHeld(app, kStatesB + slot * kStateSize + 0x10);
+        zoomHeld(gameSettings(app).hudOf(1, slot));
         w.r.eax = 1;
         if (!w.call(kCarSlotRecord))
             return false;
-        zoomHeld(app, kStatesC + (app->getMemory<reg32>(w.r.eax + 0x200) & 0x20) * kStateSize + 0x10);
+        zoomHeld(gameSettings(app).hudOf(2, app->getMemory<reg32>(w.r.eax + 0x200) & 0x20));
     }
     set(kOutlineLength.at, 0);
     for (int32_t i = 0; i < kOutlineSamples(app);)
@@ -2315,9 +2309,8 @@ bool startMapOutline(App* app, CPU& cpu, const Entry& e, reg32& result)
     const reg32 rgb = ebp - 0x30, hsv = ebp - 0x40;
     for (reg32 c = 0; c < 16; ++c)
     {
-        const reg32 player = kPlayerColours + 108 * c;
         for (reg32 k = 0; k < 4; ++k)
-            set(rgb + 4 * k, app->getMemory<uint8_t>(player + k));
+            set(rgb + 4 * k, gameSettings(app).entries[c].colour[k]);
         w.r.eax = rgb;
         w.r.edx = hsv;
         if (!w.call(kRgbToHsv))
@@ -2353,7 +2346,6 @@ constexpr reg32 kPaneInts = 0x749758;                // by group (368) and shape
 constexpr reg32 kPaneFloats = 0x7925d8;              // by group (16): four floats
 constexpr reg32 kPaneMiddles = 0x792888;             // by group (4): middle y, then (0x8 further) middle x
 constexpr reg32 kPaneSizes = 0x792878;               // by group (4): the size of the smaller side, zoomed
-constexpr Var<reg32> kMirrorKind{0x6fd3b8};
 constexpr reg32 kIntegersAppended = 0x487350, kHudInsetDrawn = 0x487210, kHudBandDrawn = 0x487340, kCockpitShown = 0x422aa0;
 
 /* The HUD's views fitted to the screen for group `group` (the first player's
@@ -2385,9 +2377,9 @@ bool setHudViews(App* app, CPU& cpu, const Entry& e, reg32& result)
         return false;
     const reg32 slot = (app->getMemory<uint8_t>(w.r.eax + 0x200) & 0x20) != 0 ? 1 : 0;
     const reg32 shape = slot != 0 ? 0x16 : 0x11;
-    const reg32 view = group + (kScreens(app) == 1 ? 1u : 0u);
+    const reg32 view = group + (gameSettings(app).playMode == 1 ? 1u : 0u);
     const reg32 viewAt = view * 0x348 + slot * kStateSize;
-    const reg32 zoom = word(viewAt + 0x6fbc60);
+    const reg32 zoom = gameSettings(app).hudAt(viewAt).mapScaleBits;
     const reg32 ints = kPaneInts + (shape << 4) + 368 * group;
     const float a = float(app->getMemory<int32_t>(ints)), b = float(app->getMemory<int32_t>(ints + 4));
     const float c = float(app->getMemory<int32_t>(ints + 8)), d = float(app->getMemory<int32_t>(ints + 0xc));
@@ -2414,7 +2406,7 @@ bool setHudViews(App* app, CPU& cpu, const Entry& e, reg32& result)
     w.r.eax = group;
     if (!w.call(kHudBandDrawn))
         return false;
-    if (group == 0 && word(slot * kStateSize + 0x6fbc5c) != 0)
+    if (group == 0 && gameSettings(app).hudAt(slot * kStateSize).rearView != 0)
     {
         w.r.eax = 0;
         if (!w.call(kCockpitShown))
@@ -2423,7 +2415,7 @@ bool setHudViews(App* app, CPU& cpu, const Entry& e, reg32& result)
             return false;
     }
     const reg32 kinds = viewAt;
-    if (word(kinds + 0x6fbc6c) == 2 || word(kinds + 0x6fbc6c) == 3)
+    if (gameSettings(app).hudAt(kinds).tachometerForm == 2 || gameSettings(app).hudAt(kinds).tachometerForm == 3)
     {
         const reg32 at = kRectsA(app) + 224 * group;
         const int32_t third = chopped(floatAt(at + 0x44) + double(kRectIn(app)));
@@ -2433,7 +2425,7 @@ bool setHudViews(App* app, CPU& cpu, const Entry& e, reg32& result)
         if (!integersAppended(group, reg32(second), reg32(first), reg32(third), reg32(last)))
             return false;
     }
-    if (word(kinds + 0x6fbc68) == 4 || word(kinds + 0x6fbc68) == 2)
+    if (gameSettings(app).hudAt(kinds).speedometerForm == 4 || gameSettings(app).hudAt(kinds).speedometerForm == 2)
     {
         const reg32 at = kRectsB(app) + 256 * group;
         const int32_t third = chopped(floatAt(at + 0x44));
@@ -2443,7 +2435,7 @@ bool setHudViews(App* app, CPU& cpu, const Entry& e, reg32& result)
         if (!integersAppended(group, reg32(second), reg32(first), reg32(third), reg32(last)))
             return false;
     }
-    if (slot == 0 && kMirrorKind(app) == 3)
+    if (slot == 0 && gameSettings(app).raceType == 3)
     {
         const reg32 at = 368 * group;
         if (!integersAppended(group, word(at + 0x74985c), word(at + 0x749858), word(at + 0x749864), word(at + 0x749860)))
@@ -2511,7 +2503,7 @@ bool setHudPane(App* app, CPU& cpu, const Entry& e, reg32& result)
         return w.call(target, {at + 3});
     };
     w.r.eax = s;
-    w.r.edx = (kScreens(app) == 1 ? 1u : 0u) + s;
+    w.r.edx = (gameSettings(app).playMode == 1 ? 1u : 0u) + s;
     if (!call(kCarSlotRecord))
         return false;
     const reg32 view = w.r.edx;
@@ -2520,7 +2512,7 @@ bool setHudPane(App* app, CPU& cpu, const Entry& e, reg32& result)
     const reg32 slot = (app->getMemory<uint8_t>(record + 0x200) & 0x20) != 0 ? 1 : 0;
     w.r.eax = slot;
     w.r.ecx = view;
-    if (view != 0 && kScreens(app) != 1)
+    if (view != 0 && gameSettings(app).playMode != 1)
     {
         result = w.r.eax;
         return true;
@@ -2532,8 +2524,8 @@ bool setHudPane(App* app, CPU& cpu, const Entry& e, reg32& result)
         return false;
     w.r.edx = view * 0x348;
     w.r.eax = slot * kStateSize;
-    w.r.ebx = word(viewAt + 0x6fbc50);
-    const bool drawn = w.r.ebx != 0 && (kPaneUp(app) != 0 || kSplitScreens(app) != 2);
+    w.r.ebx = gameSettings(app).hudAt(viewAt).shown;
+    const bool drawn = w.r.ebx != 0 && (kPaneUp(app) != 0 || gameSettings(app).replayMode != 2);
     if (drawn)
     {
         w.r.eax = s;
@@ -2549,7 +2541,7 @@ bool setHudPane(App* app, CPU& cpu, const Entry& e, reg32& result)
         w.r.eax = w.r.edx * 0x348;
         w.r.edx = slot * kStateSize;
         w.r.eax += w.r.edx;
-        w.r.ebx = word(viewAt + 0x6fbc6c);
+        w.r.ebx = gameSettings(app).hudAt(viewAt).tachometerForm;
         const bool flagged = (app->getMemory<uint8_t>(record + 0x200) & 4) != 0;
         if ((w.r.ebx == 2 || w.r.ebx == 3) && flagged)
         {
@@ -2569,7 +2561,7 @@ bool setHudPane(App* app, CPU& cpu, const Entry& e, reg32& result)
         }
         w.r.edx = slot * kStateSize;
         w.r.eax = view * 0x348 + w.r.edx;
-        w.r.edx = word(viewAt + 0x6fbc68);
+        w.r.edx = gameSettings(app).hudAt(viewAt).speedometerForm;
         reg32 pair;
         if ((w.r.edx == 4 || w.r.edx == 2) && flagged)
         {
@@ -2625,7 +2617,7 @@ bool setHudPane(App* app, CPU& cpu, const Entry& e, reg32& result)
         w.r.ecx = slot;
         w.r.eax = slot * kStateSize;
         w.r.edx = view * 0x348;
-        if (word(viewAt + 0x6fbc58) != 0 && (kLabelCount(app) > 1 || slot != 0))
+        if (gameSettings(app).hudAt(viewAt).opponentList != 0 && (kLabelCount(app) > 1 || slot != 0))
         {
             if ((kFrameFlags(app) & 2) == 0)
             {
@@ -2686,7 +2678,7 @@ bool setHudPane(App* app, CPU& cpu, const Entry& e, reg32& result)
             return false;
     }
     // The pane's quads spaced out by the kind of view.
-    const reg32 kind = word(viewAt + 0x6fbc6c);
+    const reg32 kind = gameSettings(app).hudAt(viewAt).tachometerForm;
     w.r.ecx = view * 0x348 + slot * kStateSize;
     w.r.ebx = kind;
     if (kind != 0)
@@ -2723,8 +2715,8 @@ bool setHudPane(App* app, CPU& cpu, const Entry& e, reg32& result)
             app->getMemory<float>(kPaneBoxB + 4 * s) = float(three * double(kBoxThird(app)));
         }
     }
-    w.r.ebx = kScreens(app) == 1 ? word(0x7cdb14) : word(0x7cdb94);
-    w.r.edx = kScreens(app) == 1 ? word(0x7cdb10) : word(0x7cdb90);
+    w.r.ebx = gameSettings(app).playMode == 1 ? word(0x7cdb14) : word(0x7cdb94);
+    w.r.edx = gameSettings(app).playMode == 1 ? word(0x7cdb10) : word(0x7cdb90);
     w.r.eax = s;
     if (!call(kPaneScreen))
         return false;
@@ -3221,7 +3213,7 @@ bool setIndicator(App* app, CPU& cpu, const Entry& e, reg32& result)
     eax = (ecx + 0x80u);  // 489e2c lea eax, [ecx + 0x80]
     W(ebp + 0x7au) = eax;  // 489e32 mov dword ptr [ebp + 0x7a], eax
     eax = (ecx + 0xa0u);  // 489e35 lea eax, [ecx + 0xa0]
-    edx = W(0x6fd3b0u);  // 489e3b mov edx, dword ptr [0x6fd3b0]
+    edx = gameSettings(app).playMode;  // 489e3b mov edx, dword ptr [0x6fd3b0]
     W(ebp + 0x7eu) = eax;  // 489e41 mov dword ptr [ebp + 0x7e], eax
     edi = (ecx + 0xc0u);  // 489e44 lea edi, [ecx + 0xc0]
     eax = edx == 1 ? edx : 0;
@@ -3297,7 +3289,7 @@ bool setIndicator(App* app, CPU& cpu, const Entry& e, reg32& result)
     ecx = w.r.ecx;
     eax = reg32(int32_t(W(ebp + 0x66u)) * int32_t(840));  // 489f07 imul eax, dword ptr [ebp + 0x66], 0x348
     edx = reg32(int32_t(W(ebp + 0x62u)) * int32_t(420));  // 489f0e imul edx, dword ptr [ebp + 0x62], 0x1a4
-    if (W(edx + eax + 0x6fbc6cu) == 2)
+    if (gameSettings(app).hudAt(edx + eax).tachometerForm == 2)
     {
     x.push(F(ebp + 0x46u));  // 489f23 fld dword ptr [ebp + 0x46]
     x.st(0) = (x.st(0)) * (F(0x53b84cu));  // 489f26 fmul dword ptr [0x53b84c]
@@ -5959,7 +5951,7 @@ bool decompMarkers(App* app, CPU& cpu, const Entry& e, reg32& result, reg32& pop
     esi = edx;  // 48b604 mov esi, edx
     edi = ebx;  // 48b606 mov edi, ebx
     wr32((ebp + 0xeu), ecx);  // 48b608 mov dword ptr [ebp + 0xe], ecx
-    fl.sub(rd32((0x6fd4c4u)), 0u);  // 48b60b cmp dword ptr [0x6fd4c4], 0
+    fl.sub(gameSettings(app).mirrored, 0u);  // 48b60b cmp dword ptr [0x6fd4c4], 0
     if (fl.e()) goto L_48b61d;  // 48b612 je 0x48b61d
     wr32((ebp + 0x1au), 3212836864u);  // 48b614 mov dword ptr [ebp + 0x1a], 0xbf800000
     goto L_48b624;  // 48b61b jmp 0x48b624
@@ -7055,16 +7047,16 @@ bool decompMapPoints(App* app, CPU& cpu, const Entry& e, reg32& result, reg32& p
     edx = rd32((eax + 0x7925d8u));  // 48d4ee mov edx, dword ptr [eax + 0x7925d8]
     wr32((ebp - 0x12u), edx);  // 48d4f4 mov dword ptr [ebp - 0x12], edx
     eax = rd32((eax + 0x7925e0u));  // 48d4f7 mov eax, dword ptr [eax + 0x7925e0]
-    edx = rd32((0x6fd3b0u));  // 48d4fd mov edx, dword ptr [0x6fd3b0]
+    edx = gameSettings(app).playMode;  // 48d4fd mov edx, dword ptr [0x6fd3b0]
     wr32((ebp - 6u), eax);  // 48d503 mov dword ptr [ebp - 6], eax
     fl.sub(edx, 1u);  // 48d506 cmp edx, 1
     if (fl.ne()) goto L_48d510;  // 48d509 jne 0x48d510
     eax = rd32((ebp + 0x76u));  // 48d50b mov eax, dword ptr [ebp + 0x76]
     goto L_48d515;  // 48d50e jmp 0x48d515
 L_48d510:
-    eax = rd32((0x6fd4f4u));  // 48d510 mov eax, dword ptr [0x6fd4f4]
+    eax = gameSettings(app).localPlayer;  // 48d510 mov eax, dword ptr [0x6fd4f4]
 L_48d515:
-    ecx = rd32((0x6fd3b0u));  // 48d515 mov ecx, dword ptr [0x6fd3b0]
+    ecx = gameSettings(app).playMode;  // 48d515 mov ecx, dword ptr [0x6fd3b0]
     wr32((ebp + 0x32u), eax);  // 48d51b mov dword ptr [ebp + 0x32], eax
     fl.sub(ecx, 1u);  // 48d51e cmp ecx, 1
     if (fl.ne()) goto L_48d527;  // 48d521 jne 0x48d527
@@ -7089,7 +7081,7 @@ L_48d549:
     edx = reg32(int32_t(rd32((0x79c110u))) * int32_t(840u));  // 48d549 imul edx, dword ptr [0x79c110], 0x348
     wr32((0x79c10cu), eax);  // 48d553 mov dword ptr [0x79c10c], eax
     eax = reg32(int32_t(eax) * int32_t(420u));  // 48d558 imul eax, eax, 0x1a4
-    eax = rd32((edx + eax + 0x6fbc60u));  // 48d55e mov eax, dword ptr [edx + eax + 0x6fbc60]
+    eax = gameSettings(app).hudAt(edx + eax).mapScaleBits;  // 48d55e mov eax, dword ptr [edx + eax + 0x6fbc60]
     edx = rd32((ebp + 0x76u));  // 48d565 mov edx, dword ptr [ebp + 0x76]
     esi = 0u;  // 48d568 xor esi, esi
     fl.logic(0u);  // 48d568 xor esi, esi
@@ -7119,7 +7111,7 @@ L_48d549:
 L_48d5a9:
     edx = reg32(int32_t(rd32((0x79c110u))) * int32_t(840u));  // 48d5a9 imul edx, dword ptr [0x79c110], 0x348
     eax = reg32(int32_t(rd32((0x79c10cu))) * int32_t(420u));  // 48d5b3 imul eax, dword ptr [0x79c10c], 0x1a4
-    fl.sub(rd32((edx + eax + 0x6fbc70u)), 1u);  // 48d5bd cmp dword ptr [edx + eax + 0x6fbc70], 1
+    fl.sub(gameSettings(app).hudAt(edx + eax).mapStyle, 1u);  // 48d5bd cmp dword ptr [edx + eax + 0x6fbc70], 1
     if (fl.ne()) goto L_48d717;  // 48d5c5 jne 0x48d717
     eax = rd32((ebp + 0x72u));  // 48d5cb mov eax, dword ptr [ebp + 0x72]
     edx = 0u;  // 48d5ce xor edx, edx
@@ -7237,7 +7229,7 @@ L_48d6ad:
     if (fl.l()) goto L_48d6dc;  // 48d6d5 jl 0x48d6dc
     { const reg32 a_ = eax, b_ = 1024u; eax = a_ - b_; fl.sub(a_, b_); }  // 48d6d7 sub eax, 0x400
 L_48d6dc:
-    fl.sub(rd32((0x6fd4c0u)), 0u);  // 48d6dc cmp dword ptr [0x6fd4c0], 0
+    fl.sub(gameSettings(app).backwards, 0u);  // 48d6dc cmp dword ptr [0x6fd4c0], 0
     if (fl.e()) goto L_48d6f6;  // 48d6e3 je 0x48d6f6
     { const reg32 a_ = eax, b_ = 512u; eax = a_ + b_; fl.add(a_, b_); }  // 48d6e5 add eax, 0x200
     fl.sub(eax, 512u);  // 48d6ea cmp eax, 0x200
@@ -7359,7 +7351,7 @@ L_48d848:
     eax = reg32(int32_t(rd32((0x79c10cu))) * int32_t(420u));  // 48d873 imul eax, dword ptr [0x79c10c], 0x1a4
     ecx = 0u;  // 48d87d xor ecx, ecx
     fl.logic(0u);  // 48d87d xor ecx, ecx
-    edi = rd32((edx + eax + 0x6fbc70u));  // 48d87f mov edi, dword ptr [edx + eax + 0x6fbc70]
+    edi = gameSettings(app).hudAt(edx + eax).mapStyle;  // 48d87f mov edi, dword ptr [edx + eax + 0x6fbc70]
     fl.sub(edi, 1u);  // 48d886 cmp edi, 1
     if (fl.ne()) goto L_48d8f1;  // 48d889 jne 0x48d8f1
     x.push(F(0x79289cu));  // 48d88b fld dword ptr [0x79289c]
@@ -7400,7 +7392,7 @@ L_48d8f1:
     eax = rd32((0x79289cu));  // 48d8f9 mov eax, dword ptr [0x79289c]
     wr32((ebp + 0x42u), eax);  // 48d8fe mov dword ptr [ebp + 0x42], eax
 L_48d901:
-    fl.sub(rd32((0x6fd4c4u)), 0u);  // 48d901 cmp dword ptr [0x6fd4c4], 0
+    fl.sub(gameSettings(app).mirrored, 0u);  // 48d901 cmp dword ptr [0x6fd4c4], 0
     if (fl.e()) goto L_48d913;  // 48d908 je 0x48d913
     wr32((ebp + 0xau), 3212836864u);  // 48d90a mov dword ptr [ebp + 0xa], 0xbf800000
     goto L_48d91a;  // 48d911 jmp 0x48d91a
@@ -7477,7 +7469,7 @@ L_48d9a7:
     ecx = 0u;  // 48d9d6 xor ecx, ecx
     fl.logic(0u);  // 48d9d6 xor ecx, ecx
     eax = rd32((ebp + 0x5au));  // 48d9d8 mov eax, dword ptr [ebp + 0x5a]
-    esi = rd32((edx + 0x6fbc70u));  // 48d9db mov esi, dword ptr [edx + 0x6fbc70]
+    esi = gameSettings(app).hudAt(edx).mapStyle;  // 48d9db mov esi, dword ptr [edx + 0x6fbc70]
     carry_ = (eax >> 29) & 1u;  // 48d9e1 shl eax, 3
     { const reg32 r_ = eax << 3; eax = r_; fl.logic(r_); }  // 48d9e1 shl eax, 3
     fl.sub(esi, 1u);  // 48d9e4 cmp esi, 1
@@ -7520,7 +7512,7 @@ L_48da4f:
     wr32((ebp + 0x4au), edx);  // 48da5b mov dword ptr [ebp + 0x4a], edx
     wr32((ebp + 0x56u), eax);  // 48da5e mov dword ptr [ebp + 0x56], eax
 L_48da61:
-    fl.sub(rd32((0x6fd4c4u)), 0u);  // 48da61 cmp dword ptr [0x6fd4c4], 0
+    fl.sub(gameSettings(app).mirrored, 0u);  // 48da61 cmp dword ptr [0x6fd4c4], 0
     if (fl.e()) goto L_48da73;  // 48da68 je 0x48da73
     wr32((ebp + 6u), 3212836864u);  // 48da6a mov dword ptr [ebp + 6], 0xbf800000
     goto L_48da7a;  // 48da71 jmp 0x48da7a
@@ -7612,7 +7604,7 @@ L_48db52:
 L_48db5a:
     eax = reg32(int32_t(rd32((0x79c110u))) * int32_t(840u));  // 48db5a imul eax, dword ptr [0x79c110], 0x348
     edx = reg32(int32_t(rd32((0x79c10cu))) * int32_t(420u));  // 48db64 imul edx, dword ptr [0x79c10c], 0x1a4
-    esi = rd32((edx + eax + 0x6fbc70u));  // 48db6e mov esi, dword ptr [edx + eax + 0x6fbc70]
+    esi = gameSettings(app).hudAt(edx + eax).mapStyle;  // 48db6e mov esi, dword ptr [edx + eax + 0x6fbc70]
     fl.sub(esi, 1u);  // 48db75 cmp esi, 1
     if (fl.ne()) goto L_48dbe2;  // 48db78 jne 0x48dbe2
     x.push(F(0x79289cu));  // 48db7a fld dword ptr [0x79289c]
@@ -7655,7 +7647,7 @@ L_48dbe2:
     eax = rd32((0x79289cu));  // 48dbea mov eax, dword ptr [0x79289c]
     wr32((ebp + 0x66u), eax);  // 48dbef mov dword ptr [ebp + 0x66], eax
 L_48dbf2:
-    fl.sub(rd32((0x6fd4c4u)), 0u);  // 48dbf2 cmp dword ptr [0x6fd4c4], 0
+    fl.sub(gameSettings(app).mirrored, 0u);  // 48dbf2 cmp dword ptr [0x6fd4c4], 0
     if (fl.e()) goto L_48dc04;  // 48dbf9 je 0x48dc04
     wr32((ebp + 0x22u), 3212836864u);  // 48dbfb mov dword ptr [ebp + 0x22], 0xbf800000
     goto L_48dc0b;  // 48dc02 jmp 0x48dc0b
@@ -7688,7 +7680,7 @@ L_48dc49:
     edx = reg32(int32_t(rd32((0x79c10cu))) * int32_t(420u));  // 48dc62 imul edx, dword ptr [0x79c10c], 0x1a4
     { const reg32 a_ = edx, b_ = eax; edx = a_ + b_; fl.add(a_, b_); }  // 48dc6c add edx, eax
     eax = rd32((ebp + 0x5eu));  // 48dc6e mov eax, dword ptr [ebp + 0x5e]
-    ebx = rd32((edx + 0x6fbc70u));  // 48dc71 mov ebx, dword ptr [edx + 0x6fbc70]
+    ebx = gameSettings(app).hudAt(edx).mapStyle;  // 48dc71 mov ebx, dword ptr [edx + 0x6fbc70]
     carry_ = (eax >> 29) & 1u;  // 48dc77 shl eax, 3
     { const reg32 r_ = eax << 3; eax = r_; fl.logic(r_); }  // 48dc77 shl eax, 3
     fl.sub(ebx, 1u);  // 48dc7a cmp ebx, 1
@@ -7733,7 +7725,7 @@ L_48dce7:
     wr32((ebp + 0x52u), edx);  // 48dcf3 mov dword ptr [ebp + 0x52], edx
     wr32((ebp + 0x62u), eax);  // 48dcf6 mov dword ptr [ebp + 0x62], eax
 L_48dcf9:
-    fl.sub(rd32((0x6fd4c4u)), 0u);  // 48dcf9 cmp dword ptr [0x6fd4c4], 0
+    fl.sub(gameSettings(app).mirrored, 0u);  // 48dcf9 cmp dword ptr [0x6fd4c4], 0
     if (fl.e()) goto L_48dd0b;  // 48dd00 je 0x48dd0b
     wr32((ebp + 0xeu), 3212836864u);  // 48dd02 mov dword ptr [ebp + 0xe], 0xbf800000
     goto L_48dd12;  // 48dd09 jmp 0x48dd12
@@ -7799,7 +7791,7 @@ L_48dd8e:
     esp += 12u;  // 48ddb5 call 0x48cb50
     edx = reg32(int32_t(rd32((0x79c110u))) * int32_t(840u));  // 48ddba imul edx, dword ptr [0x79c110], 0x348
     eax = reg32(int32_t(rd32((0x79c10cu))) * int32_t(420u));  // 48ddc4 imul eax, dword ptr [0x79c10c], 0x1a4
-    fl.sub(rd32((edx + eax + 0x6fbc70u)), 1u);  // 48ddce cmp dword ptr [edx + eax + 0x6fbc70], 1
+    fl.sub(gameSettings(app).hudAt(edx + eax).mapStyle, 1u);  // 48ddce cmp dword ptr [edx + eax + 0x6fbc70], 1
     if (fl.ne()) goto L_48de27;  // 48ddd6 jne 0x48de27
     eax = rd32((0x5dd948u));  // 48ddd8 mov eax, dword ptr [0x5dd948]
     edx = rd32((eax + 0x15u));  // 48dddd mov edx, dword ptr [eax + 0x15]
@@ -7863,7 +7855,7 @@ L_48de56:
     x.pop();  // 48de56 fstp dword ptr [ebp + 0x3a]
     SF((ebp + 0x36u), x.st(0));  // 48de59 fstp dword ptr [ebp + 0x36]
     x.pop();  // 48de59 fstp dword ptr [ebp + 0x36]
-    fl.sub(rd32((0x6fd4c4u)), 0u);  // 48de5c cmp dword ptr [0x6fd4c4], 0
+    fl.sub(gameSettings(app).mirrored, 0u);  // 48de5c cmp dword ptr [0x6fd4c4], 0
     if (fl.e()) goto L_48de6e;  // 48de63 je 0x48de6e
     wr32((ebp - 2u), 3212836864u);  // 48de65 mov dword ptr [ebp - 2], 0xbf800000
     goto L_48de75;  // 48de6c jmp 0x48de75
@@ -7877,7 +7869,7 @@ L_48de75:
     x.st(2) = (x.st(2)) * (x.st(0));  // 48de83 fmulp st(2)
     x.pop();  // 48de83 fmulp st(2)
     x.st(0) = (x.st(0)) * (F(ebp + 0x3au));  // 48de85 fmul dword ptr [ebp + 0x3a]
-    eax = rd32((0x6fd4c4u));  // 48de88 mov eax, dword ptr [0x6fd4c4]
+    eax = gameSettings(app).mirrored;  // 48de88 mov eax, dword ptr [0x6fd4c4]
     x.fxch(1);  // 48de8d fxch st(1)
     x.st(0) = (F(ebp - 0x3au)) - (x.st(0));  // 48de8f fsubr dword ptr [ebp - 0x3a]
     x.fxch(1);  // 48de92 fxch st(1)
@@ -7957,7 +7949,7 @@ L_48deb3:
     esp += 12u;  // 48df74 call 0x48cb50
     ecx = reg32(int32_t(rd32((0x79c110u))) * int32_t(840u));  // 48df79 imul ecx, dword ptr [0x79c110], 0x348
     eax = reg32(int32_t(rd32((0x79c10cu))) * int32_t(420u));  // 48df83 imul eax, dword ptr [0x79c10c], 0x1a4
-    esi = rd32((ecx + eax + 0x6fbc70u));  // 48df8d mov esi, dword ptr [ecx + eax + 0x6fbc70]
+    esi = gameSettings(app).hudAt(ecx + eax).mapStyle;  // 48df8d mov esi, dword ptr [ecx + eax + 0x6fbc70]
     fl.sub(esi, 1u);  // 48df94 cmp esi, 1
     if (fl.ne()) goto L_48dffd;  // 48df97 jne 0x48dffd
     edx = rd32((edx + 0x7dd884u));  // 48df99 mov edx, dword ptr [edx + 0x7dd884]
@@ -8034,7 +8026,7 @@ L_48e041:
     x.pop();  // 48e041 fstp dword ptr [ebp + 0x2e]
     SF((ebp + 0x3eu), x.st(0));  // 48e044 fstp dword ptr [ebp + 0x3e]
     x.pop();  // 48e044 fstp dword ptr [ebp + 0x3e]
-    fl.sub(rd32((0x6fd4c4u)), 0u);  // 48e047 cmp dword ptr [0x6fd4c4], 0
+    fl.sub(gameSettings(app).mirrored, 0u);  // 48e047 cmp dword ptr [0x6fd4c4], 0
     if (fl.e()) goto L_48e059;  // 48e04e je 0x48e059
     wr32((ebp + 0x2au), 3212836864u);  // 48e050 mov dword ptr [ebp + 0x2a], 0xbf800000
     goto L_48e060;  // 48e057 jmp 0x48e060
@@ -8048,7 +8040,7 @@ L_48e060:
     x.st(2) = (x.st(2)) * (x.st(0));  // 48e06e fmulp st(2)
     x.pop();  // 48e06e fmulp st(2)
     x.st(0) = (x.st(0)) * (F(ebp + 0x2eu));  // 48e070 fmul dword ptr [ebp + 0x2e]
-    ecx = rd32((0x6fd4c4u));  // 48e073 mov ecx, dword ptr [0x6fd4c4]
+    ecx = gameSettings(app).mirrored;  // 48e073 mov ecx, dword ptr [0x6fd4c4]
     x.fxch(1);  // 48e079 fxch st(1)
     x.st(0) = (F(ebp - 0x3au)) - (x.st(0));  // 48e07b fsubr dword ptr [ebp - 0x3a]
     x.fxch(1);  // 48e07e fxch st(1)
@@ -8478,7 +8470,7 @@ L_48e5fc:
     fl.sub(rd32((eax + 0x2c4u)), 4u);  // 48e62b cmp dword ptr [eax + 0x2c4], 4
     if (fl.e()) goto L_48e6c5;  // 48e632 je 0x48e6c5
 L_48e638:
-    fl.sub(rd32((0x6fd3a0u)), 2u);  // 48e638 cmp dword ptr [0x6fd3a0], 2
+    fl.sub(gameSettings(app).replayMode, 2u);  // 48e638 cmp dword ptr [0x6fd3a0], 2
     if (fl.l()) goto L_48e675;  // 48e63f jl 0x48e675
     edx = rd32((ebp + 0x76u));  // 48e641 mov edx, dword ptr [ebp + 0x76]
     eax = (edx * 4u);  // 48e644 lea eax, [edx*4]
@@ -8497,7 +8489,7 @@ L_48e638:
     fl.sub(ebx, rd32((eax + 0x7497e4u)));  // 48e66d cmp ebx, dword ptr [eax + 0x7497e4]
     if (fl.le()) goto L_48e6c5;  // 48e673 jle 0x48e6c5
 L_48e675:
-    fl.sub(rd32((0x6fd3a0u)), 2u);  // 48e675 cmp dword ptr [0x6fd3a0], 2
+    fl.sub(gameSettings(app).replayMode, 2u);  // 48e675 cmp dword ptr [0x6fd3a0], 2
     if (fl.ne()) goto L_48e687;  // 48e67c jne 0x48e687
     fl.sub(rd32((0x7cd948u)), 0u);  // 48e67e cmp dword ptr [0x7cd948], 0
     if (fl.ne()) goto L_48e6c5;  // 48e685 jne 0x48e6c5
@@ -8513,7 +8505,7 @@ L_48e687:
     carry_ = (edi >> 26) & 1u;  // 48e6a4 shl edi, 6
     { const reg32 r_ = edi << 6; edi = r_; fl.logic(r_); }  // 48e6a4 shl edi, 6
     eax = rd32((edi + eax * 4u + 0x792608u));  // 48e6a7 mov eax, dword ptr [edi + eax*4 + 0x792608]
-    wr32((0x6fd4f8u), eax);  // 48e6ae mov dword ptr [0x6fd4f8], eax
+    gameSettings(app).viewedPlayer = eax;  // 48e6ae mov dword ptr [0x6fd4f8], eax
     edx = eax;  // 48e6b3 mov edx, eax
     eax = rd32((ebp + 0x76u));  // 48e6b5 mov eax, dword ptr [ebp + 0x76]
     { const int n0_ = cpu.fpu.count; cpu.ebp = ebp; if (!rawCall(app, cpu, 0x4215c0, esp, 0, eax, edx, ebx, ecx)) return false; pullX87(cpu, n0_, x); }  // 48e6b8 call 0x4215c0
@@ -8579,6 +8571,22 @@ L_48e761:
 }
 // (popped = 0
 }  // namespace
+
+/* 0x4844c0's, as C++ (port_hud.h): setHudPane for group in.eax, the rest of
+ * `in` handed on as the caller's edx, ebx and ecx, its frame from `esp`. */
+Result hudPaneSetOf(App* app, CPU& cpu, reg32 esp, const Args& in)
+{
+    Entry e(cpu);
+    e.esp = esp;
+    e.eax = in.eax;
+    e.edx = in.edx;
+    e.ebx = in.ebx;
+    e.ecx = in.ecx;
+    reg32 result;
+    if (!setHudPane(app, cpu, e, result))
+        return {};
+    return int32_t(result);
+}
 
 /* ---- The adapters ---- */
 
@@ -8802,9 +8810,7 @@ void hudViewsSet(App* app, CPU& cpu)
 void hudPaneSet(App* app, CPU& cpu)
 {
     const Entry e(cpu);
-    reg32 result;
-    if (setHudPane(app, cpu, e, result))
-        e.back(cpu, result);
+    e.finish(cpu, hudPaneSetOf(app, cpu, e.esp, {e.eax, e.edx, e.ebx, e.ecx}));
 }
 
 void hudTablesStarted(App* app, CPU& cpu)

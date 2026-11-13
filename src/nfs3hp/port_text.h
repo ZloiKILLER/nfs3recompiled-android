@@ -1,6 +1,7 @@
 #ifndef NFS3HP_PORT_TEXT_H
 #define NFS3HP_PORT_TEXT_H
 
+#include "native_guest.h"
 #include "port.h"
 
 /* The menus' text and the 2D drawing under it, rewritten (port.h says how;
@@ -64,8 +65,168 @@ void unqueueQuad(App* app, CPU& cpu);            // 0x49bdc0
 void mouseMenuKey(App* app, CPU& cpu);           // 0x49c000
 void loadLanguageText(App* app, CPU& cpu);       // 0x4d1750
 
+/* The typed cores the menus call as C++ (guest::direct), and how the game's code calls each by address
+ * (ByAddress below, for the checks' stand-ins).  A Result is nullopt when the game stopped in a call.  A core's
+ * `esp` is the frame base its adapter hands it: the game's esp on entry, at the return address.  A caller
+ * through guest::direct passes cpu.esp - 4 - 4 * N, N the stack words the game's call pushes: the esp the
+ * adapter hands it, so the core's frame lies where the game's does; by address the call makes it. */
+
+// The game's 0x452020: how wide `text` is in font `font` (5 for none); esp the frame base.
+Result menuTextWidth(App* app, CPU& cpu, reg32 esp, reg32 text, reg32 font);
+// The game's 0x452100: the 2D screens' font set to `font`.
+void selectFontOf(App* app, reg32 font);
+// The game's 0x452190: `text` in `font` at x, y, aligned by `align` (1..5), in `colour`; esp the frame base.
+Result menuTextDrawn(App* app, CPU& cpu, reg32 esp, reg32 text, int32_t x, int32_t y, reg32 font, int32_t align,
+                     reg32 colour);
+// The game's 0x4d1340: both fonts' queued quads drawn; esp the frame base.
+Result fontsDrawn(App* app, CPU& cpu, reg32 esp);
+// The game's 0x4d1400: the text scale kept; the scale (a float's bits).
+reg32 keepTextScaleOf(App* app);
+// The game's 0x4d1410: the text scale kept put back.
+void restoreTextScaleOf(App* app, CPU& cpu);
+// The game's 0x4d1750: language `language`'s text loaded (0..6): the block, or the language past them; esp the frame base.
+Result loadedLanguageText(App* app, CPU& cpu, reg32 esp, int32_t language);
+// The game's 0x4d1850: line `number` of the language's text, or a name past them (`edx` handed on to those); esp the frame base.
+Result lineText(App* app, CPU& cpu, reg32 esp, int32_t number, reg32 edx);
+// The game's 0x451530: the screen behind the menus dimmed by the float at `slot` (its stack argument's place, where a
+// race's pause screens put their shade instead): that shade, else `eax`.
+reg32 dimmed(App* app, CPU& cpu, reg32 slot, reg32 eax);
+// The game's 0x451960: the menus' key now, a held one repeating when `repeating`; esp the frame base.
+Result menuKeyOf(App* app, CPU& cpu, reg32 esp, reg32 repeating);
+
 }  // namespace text
 }  // namespace port
+
+namespace guest
+{
+
+// The text in eax, the font in edx; the width in eax.
+template <>
+struct ByAddress<port::text::menuTextWidth>
+{
+    template <x86::reg32 Address>
+    static port::Result call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32, x86::reg32 text, x86::reg32 font)
+    {
+        return watcomEax(app, cpu, Address, {text, font});
+    }
+};
+
+// The font in eax (eax left as it came).
+template <>
+struct ByAddress<port::text::selectFontOf>
+{
+    template <x86::reg32 Address>
+    static void call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 font)
+    {
+        watcom(app, cpu, Address, {font});
+    }
+};
+
+// Stdcall: the text in eax, x in edx, y in ebx, the font in ecx; the alignment and the colour pushed (ret 8).
+template <>
+struct ByAddress<port::text::menuTextDrawn>
+{
+    template <x86::reg32 Address>
+    static port::Result call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32, x86::reg32 text, std::int32_t x,
+                             std::int32_t y, x86::reg32 font, std::int32_t align, x86::reg32 colour)
+    {
+        const KeptRegisters kept(cpu);
+        cpu.eax = text;
+        cpu.edx = x86::reg32(x);
+        cpu.ebx = x86::reg32(y);
+        cpu.ecx = font;
+        if (!guest::call(app, cpu, Address, {x86::reg32(align), colour}))
+            return std::nullopt;
+        return std::int32_t(cpu.eax);
+    }
+};
+
+// Nothing handed over; eax back.
+template <>
+struct ByAddress<port::text::fontsDrawn>
+{
+    template <x86::reg32 Address>
+    static port::Result call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32)
+    {
+        return watcomEax(app, cpu, Address, {});
+    }
+};
+
+// Nothing handed over; the scale in eax.
+template <>
+struct ByAddress<port::text::keepTextScaleOf>
+{
+    template <x86::reg32 Address>
+    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu)
+    {
+        watcom(app, cpu, Address, {});
+        return cpu.eax;
+    }
+};
+
+// Nothing handed over (eax left as it came).
+template <>
+struct ByAddress<port::text::restoreTextScaleOf>
+{
+    template <x86::reg32 Address>
+    static void call(win32::WinApplication* app, x86::CPU& cpu)
+    {
+        watcom(app, cpu, Address, {});
+    }
+};
+
+// The language in eax; eax back.
+template <>
+struct ByAddress<port::text::loadedLanguageText>
+{
+    template <x86::reg32 Address>
+    static port::Result call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32, std::int32_t language)
+    {
+        return watcomEax(app, cpu, Address, {x86::reg32(language)});
+    }
+};
+
+// The number in eax, `edx` in edx; the text in eax.
+template <>
+struct ByAddress<port::text::lineText>
+{
+    template <x86::reg32 Address>
+    static port::Result call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32, std::int32_t number,
+                             x86::reg32 edx)
+    {
+        return watcomEax(app, cpu, Address, {x86::reg32(number), edx});
+    }
+};
+
+// Stdcall: `eax` in eax, the float at `slot` pushed (ret 4); what the function leaves in the argument's place
+// written back to `slot`, where the core writes it; eax back.
+template <>
+struct ByAddress<port::text::dimmed>
+{
+    template <x86::reg32 Address>
+    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 slot, x86::reg32 eax)
+    {
+        const KeptRegisters kept(cpu);
+        const x86::reg32 pushed = cpu.esp - 4;
+        cpu.eax = eax;
+        guest::call(app, cpu, Address, {guest::at(app, slot)});
+        guest::put(app, slot, guest::at(app, pushed));
+        return cpu.eax;
+    }
+};
+
+// Whether a held key repeats in eax; the key in eax.
+template <>
+struct ByAddress<port::text::menuKeyOf>
+{
+    template <x86::reg32 Address>
+    static port::Result call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32, x86::reg32 repeating)
+    {
+        return watcomEax(app, cpu, Address, {repeating});
+    }
+};
+
+}  // namespace guest
 }  // namespace nfs3hp
 
 #endif

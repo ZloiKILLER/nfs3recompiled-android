@@ -1,5 +1,17 @@
+#include "game_settings.h"
+#include "native_ea_files.h"
+#include "native_ea_memory.h"
+#include "native_ea_support.h"
 #include "native_guest.h"
+#include "native_load_saves.h"
+#include "native_load_track.h"
+#include "native_raceload.h"
+#include "native_vertices.h"
 
+#include <cstdint>
+#include <cstring>
+#include <initializer_list>
+#include <optional>
 #include <utility>
 
 /* The game's data: the race's data files -- the track's paths, its textures,
@@ -35,12 +47,15 @@
  * splashes').  The ghost: 0x20f4 bytes at 0x6ba5c4 and 18 bytes for each of
  * its [0x6bc6b4] records after them, read and written as one.
  *
- * Written as their code is: each push and pop to the guest's stack, each call
- * with the return address's slot, the frame's locals in the guest's memory,
- * the registers as the code leaves them; the x87's stack pushed and popped as
- * the code has it, every operation through cpu.fpu.  Every other function of
- * the game's, and those of this file other files call (they have stand-ins),
- * are called by address. */
+ * Each is a typed function under a name of its own, with an adapter under the game's name for
+ * the callers still on registers and the dispatch: it leaves the registers as the game's code
+ * does -- those it pushes and pops as they were, the others as its code leaves them, which for
+ * some is what the last call left there.  The other typed files' functions their headers
+ * declare are called as C++ (guest::direct); every other function of the game's is called by
+ * address through a small helper here, its arguments in the registers and on the guest's stack
+ * as the code hands them; a frame handed to one stays on the guest's stack at the code's depth
+ * (GuestFrame), so the callee sees the same addresses.  The x87's operations are fp's, in the
+ * game's order, a float kept where the game stores one. */
 namespace nfs3hp
 {
 namespace load
@@ -57,34 +72,46 @@ using x86::reg16;
 using x86::reg32;
 using x86::reg8;
 using x86::sreg32;
+using App = win32::WinApplication;
+using CPU = x86::CPU;
 
 // The file cache's: its magic, its blocks' names.
 constexpr reg32 kBigMagic = 0x42494746;  // 'FGIB': "BIGF" read as a dword
 constexpr reg32 kNodeName = 0x536c38, kDataName = 0x536c44, kCacheName = 0x536c50, kBufferName = 0x536c54;
+// A cache's: its list's head, its last node.  A node's: its name (at +0), its file's size and
+// data, the next node and the one before; a node's bytes.
+constexpr reg32 kCacheList = 4, kCacheLast = 8, kCacheBytes = 0xc;
+constexpr reg32 kNodeSize = 0x20, kNodeData = 0x24, kNodeNext = 0x28, kNodePrevious = 0x2c, kNodeBytes = 0x30;
+// A BIGF header's: its four numbers' bytes; an entry's offset, size and name.
+constexpr reg32 kBigHeaderBytes = 0x10, kEntrySize = 4, kEntryName = 8;
+// The game's allocator's flags for the cache's blocks.
+constexpr reg32 kBlockFlags = 0x10;
 // The track's: the data path, the track, the paths' buffers and formats.
-constexpr reg32 kDataPath = 0x7a27b4, kTrack = 0x6fd4ac;
+constexpr reg32 kDataPath = 0x7a27b4;
 constexpr reg32 kTrackFile = 0x5dd86c, kTrackFileFormat = 0x536cec;
 constexpr reg32 kFolderFile = 0x5dd8ec, kFolderFileFormat = 0x536d00;
 // The race: backwards, the track's own textures, the night, the weather; the
 // options' byte (2: the textures' smaller set); the loading stopped.
-constexpr reg32 kBackwards = 0x6fd4c0, kOwnTextures = 0x6fd4c4, kNight = 0x6fd4c8, kWeather = 0x6fd4cc;
 constexpr reg32 kOptions = 0x7a3a58, kLoadAborted = 0x55e88c;
+constexpr reg8 kSmallTextures = 2;
 // The opponents' speeds: speedsR.bin, speedsF.bin; the table, its second
 // half, the failure's flag; the track's nodes.
 constexpr reg32 kSpeedsBackward = 0x53679c, kSpeedsForward = 0x5367a8;
 constexpr reg32 kSpeeds = 0x552558, kSpeedsHalf = 0x55255c, kSpeedsFailed = 0x56f22c, kTrackNodes = 0x5dd940;
-// The cameras: the views (24 bytes each), the .can files loaded, the names.
+constexpr reg32 kSpeedsLoadFlags = 0x10;
+// The cameras: the views (24 bytes each, 256), the .can files loaded (slots 1 to 7), the names.
 constexpr reg32 kCameraViews = 0x56f234, kCameraFiles = 0x570a30;
+constexpr reg32 kCameraViewBytes = 24, kCameraViewCount = 0x100, kCameraFileCount = 7;
 constexpr reg32 kFirstCameraName = 0x5367fc, kCameraName = 0x536808;
 // The track's textures: the shapes loaded, the .qfs files' names, the trace.
 constexpr reg32 kTrackShapes = 0x5dd850;
 constexpr reg32 kNear8 = 0x536d20, kNear = 0x536d28, kFar8 = 0x536d58, kFar = 0x536d60;
-constexpr reg32 kTraceFile = 0x536d30, kTraceFormat = 0x536d50;
+constexpr reg32 kTraceFile = 0x536d30, kTraceFormat = 0x536d50, kTraceLine = 0x744, kTraceWords = 0xc;
 // The ghost: replaying, saving one; its file's name; its record, its records'
 // count, its records; ghost read.
-constexpr reg32 kReplaying = 0x6fd3a0, kGhostWanted = 0x6fd3ac, kGhostName = 0x53b0c8;
+constexpr reg32 kGhostName = 0x53b0c8;
 constexpr reg32 kGhost = 0x6ba5c4, kGhostCount = 0x6bc6b4, kGhostRecords = 0x6bc6b8, kGhostRead = 0x55d000;
-constexpr reg32 kGhostBytes = 0x20f4;
+constexpr reg32 kGhostBytes = 0x20f4, kGhostRecordBytes = 18;
 // The horizon's .hrz names (night and weather, night, weather, neither); the
 // records' block's name; its numbers: 0.01, 360/1024 in 16.16 turns, the
 // sun's scales, 2^-16 (a float), -1, 2^-16 (a double).
@@ -99,2048 +126,1671 @@ constexpr reg32 kSkyName = 0x53b340, kCloudPalette = 0x55d21c, kSunPalette = 0x6
 // splashes' names, their shapes; the weather's count (the horizon's).
 constexpr reg32 kWeatherName = 0x549794, kWeatherPath = 0x7a2934, kDropName = 0x5497a4, kSplashName = 0x5497ac;
 constexpr reg32 kDropShapes = 0x8ca200, kSplashShapes = 0x8ca288, kWeatherCount = 0x8ca1e8;
-// What is called by address.
-constexpr reg32 kAllocate = 0x4e1620, kFree = 0x4e1890, kMemset = 0x4e0640, kStricmp = 0x4e9ec0;
-constexpr reg32 kBigCount = 0x4ea440, kBigName = 0x4ea4a0, kBigEntry = 0x4ea290;
-constexpr reg32 kSprintf = 0x4df690, kFileExists = 0x4e0e60, kLoadFile = 0x4e0ec0, kLoadingTick = 0x4a33d0;
-constexpr reg32 kTrace = 0x42d500, kLoadShapes = 0x4956f0, kSaveGhostFile = 0x4777d0;
-constexpr reg32 kFseek = 0x4e9088, kFwrite = 0x4eebd0, kReadHandle = 0x4e2de0;
+// What is called by address.  (The game's memory, a file there and loaded, a .viv's entry
+// located, the trace, a handle read, the fixed sine and cosine and a vector's length are the
+// other typed files', called as C++: native_ea_memory.h, native_ea_support.h,
+// native_load_saves.h, native_raceload.h, native_ea_files.h, native_vertices.h.)
+constexpr reg32 kMemset = 0x4e0640, kStricmp = 0x4e9ec0;
+constexpr reg32 kBigCount = 0x4ea440, kBigName = 0x4ea4a0;
+constexpr reg32 kSprintf = 0x4df690, kLoadingTick = 0x4a33d0;
+constexpr reg32 kLoadShapes = 0x4956f0, kSaveGhostFile = 0x4777d0;
+constexpr reg32 kFseek = 0x4e9088, kFwrite = 0x4eebd0;
 constexpr reg32 kReadNumber = 0x4be020, kChop = 0x4dfd56, kCosine = 0x4ea950, kSine = 0x4ea930;
-constexpr reg32 kFixedSine = 0x4f2380, kFixedCosine = 0x4f23f0, kVectorLength = 0x4972f0;
 constexpr reg32 kFindShape = 0x4d4080, kPlaceSun = 0x47a970, kSkyMade = 0x47ae10;
 
-void push(win32::WinApplication* app, x86::CPU& cpu, reg32 value)
+/* The registers as an adapter is handed them, to put back those the game's code pushes and pops. */
+struct Entry
 {
-    cpu.esp -= 4;
-    put(app, cpu.esp, value);
-}
-
-reg32 pop(win32::WinApplication* app, x86::CPU& cpu)
-{
-    const reg32 value = at(app, cpu.esp);
-    cpu.esp += 4;
-    return value;
-}
-
-/* A call as the code makes it: the return address's slot, and esp as the
- * callee leaves it.  False when the game stopped in it. */
-bool direct(win32::WinApplication* app, x86::CPU& cpu, void (*function)(win32::WinApplication*, x86::CPU&))
-{
-    cpu.esp -= 4;
-    function(app, cpu);
-    return !cpu.terminate;
-}
-
-bool byAddress(win32::WinApplication* app, x86::CPU& cpu, reg32 target)
-{
-    cpu.esp -= 4;
-    app->dynamic_call(target, cpu);
-    return !cpu.terminate;
-}
-
-void putHalf(win32::WinApplication* app, reg32 address, reg16 value)
-{
-    app->getMemory<reg16>(address) = value;
-}
-
-x86::Float f32(win32::WinApplication* app, reg32 address)
-{
-    return x86::Float(app->getMemory<float>(address));
-}
-
-x86::Float f64(win32::WinApplication* app, reg32 address)
-{
-    return x86::Float(app->getMemory<double>(address));
-}
-
-x86::Float i32(win32::WinApplication* app, reg32 address)
-{
-    return x86::Float(sreg32(at(app, address)));
-}
-
-void putF32(win32::WinApplication* app, reg32 address, const x86::Float& value)
-{
-    app->getMemory<float>(address) = float(value);
-}
-
-/* push edi; mov eax, ecx; shr ecx, 2; rep movsd; mov cl, al; and cl, 3;
- * rep movsb; pop edi: ecx bytes from [esi] to [edi], esi past them, eax the
- * count, ecx 0, edi as it was. */
-void copyBytes(win32::WinApplication* app, x86::CPU& cpu)
-{
-    push(app, cpu, cpu.edi);
-    cpu.eax = cpu.ecx;
-    cpu.ecx >>= 2;
-    for (; cpu.ecx != 0; --cpu.ecx)
+    explicit Entry(const CPU& cpu)
+        : ebx(cpu.ebx), ecx(cpu.ecx), edx(cpu.edx), esi(cpu.esi), edi(cpu.edi), ebp(cpu.ebp)
     {
-        put(app, cpu.edi, at(app, cpu.esi));
-        cpu.edi += 4;
-        cpu.esi += 4;
     }
-    cpu.cl = cpu.al & 3;
-    for (; cpu.ecx != 0; --cpu.ecx)
-        putByte(app, cpu.edi++, byte(app, cpu.esi++));
-    cpu.edi = pop(app, cpu);
-}
+    reg32 ebx, ecx, edx, esi, edi, ebp;
+};
 
-/* The code's inlined strcpy: push edi, two bytes a turn from [esi] to [edi]
- * up to the ending, pop edi -- esi past the last pair started, al the ending. */
-void copyString(win32::WinApplication* app, x86::CPU& cpu)
+/* A function's frame on the guest's stack, as deep as the code's: `pushed` bytes of registers
+ * below esp, then `bytes` of locals; esp below them while it lasts. */
+class GuestFrame
 {
-    push(app, cpu, cpu.edi);
-    for (;;)
+public:
+    GuestFrame(CPU& cpu, reg32 pushed, reg32 bytes) : cpu(cpu), esp(cpu.esp), base(cpu.esp - pushed)
     {
-        cpu.al = byte(app, cpu.esi);
-        putByte(app, cpu.edi, cpu.al);
-        if (cpu.al == 0)
-            break;
-        cpu.al = byte(app, cpu.esi + 1);
-        cpu.esi += 2;
-        putByte(app, cpu.edi + 1, cpu.al);
-        cpu.edi += 2;
-        if (cpu.al == 0)
-            break;
+        cpu.esp = base - bytes;
     }
-    cpu.edi = pop(app, cpu);
-}
+    ~GuestFrame() { cpu.esp = esp; }
+    reg32 operator-(reg32 offset) const { return base - offset; }
 
-/* sub ecx, ecx; dec ecx; xor eax, eax; repne scasb; not ecx; dec ecx: the
- * string at edi's length in ecx, eax 0, edi past its ending. */
-void stringLength(win32::WinApplication* app, x86::CPU& cpu)
+private:
+    CPU& cpu;
+    const reg32 esp;
+    const reg32 base;
+};
+
+/* A function of the game's called by address: its arguments in the registers set before,
+ * `words` on the stack below esp, esp back after it.  Its eax, or nullopt when the game
+ * stopped in it. */
+std::optional<reg32> callGame(App* app, CPU& cpu, reg32 target, std::initializer_list<reg32> words = {})
 {
-    cpu.ecx = 0xffffffff;
-    cpu.eax = 0;
-    do
-    {
-        --cpu.ecx;
-    } while (byte(app, cpu.edi++) != cpu.al && cpu.ecx != 0);
-    cpu.ecx = ~cpu.ecx;
-    --cpu.ecx;
-}
-
-}  // namespace
-
-void loadOpponentSpeeds(win32::WinApplication* app, x86::CPU& cpu);
-void clearTrackCameras(win32::WinApplication* app, x86::CPU& cpu);
-void loadTrackCameras(win32::WinApplication* app, x86::CPU& cpu);
-void swapBigEndian(win32::WinApplication* app, x86::CPU& cpu);
-void newFileNode(win32::WinApplication* app, x86::CPU& cpu);
-void freeFileNode(win32::WinApplication* app, x86::CPU& cpu);
-void findFileNode(win32::WinApplication* app, x86::CPU& cpu);
-void insertFileNode(win32::WinApplication* app, x86::CPU& cpu);
-void newEmptyFileNode(win32::WinApplication* app, x86::CPU& cpu);
-void freeFileNodes(win32::WinApplication* app, x86::CPU& cpu);
-void countFileNodes(win32::WinApplication* app, x86::CPU& cpu);
-void findCachedFile(win32::WinApplication* app, x86::CPU& cpu);
-void addCachedFile(win32::WinApplication* app, x86::CPU& cpu);
-void newFileCache(win32::WinApplication* app, x86::CPU& cpu);
-void freeFileCache(win32::WinApplication* app, x86::CPU& cpu);
-void bigHeaderSize(win32::WinApplication* app, x86::CPU& cpu);
-void cachedDataSize(win32::WinApplication* app, x86::CPU& cpu);
-void writeBigFile(win32::WinApplication* app, x86::CPU& cpu);
-void packFileCache(win32::WinApplication* app, x86::CPU& cpu);
-void readBigFile(win32::WinApplication* app, x86::CPU& cpu);
-void openFileCache(win32::WinApplication* app, x86::CPU& cpu);
-void trackFilePath(win32::WinApplication* app, x86::CPU& cpu);
-void trackFolderPath(win32::WinApplication* app, x86::CPU& cpu);
-void loadTrackTextures(win32::WinApplication* app, x86::CPU& cpu);
-void saveGhost(win32::WinApplication* app, x86::CPU& cpu);
-void writeGhost(win32::WinApplication* app, x86::CPU& cpu);
-void readGhost(win32::WinApplication* app, x86::CPU& cpu);
-void loadHorizon(win32::WinApplication* app, x86::CPU& cpu);
-void loadSky(win32::WinApplication* app, x86::CPU& cpu);
-void loadWeatherShapes(win32::WinApplication* app, x86::CPU& cpu);
-
-/* 0x40e000: the opponents' speed table, speedsF.bin (speedsR.bin backwards)
- * in the track's folder, loaded to [0x552558] if it is there, [0x55255c] its
- * second half (half the track's nodes, rounded up, on) and [0x56f22c] 0; else
- * [0x552558] 0 and [0x56f22c] 1. */
-void loadOpponentSpeeds(win32::WinApplication* app, x86::CPU& cpu)
-{
-    push(app, cpu, cpu.ebx);
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.edx);
-    push(app, cpu, cpu.esi);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    cpu.eax = at(app, kBackwards) != 0 ? kSpeedsBackward : kSpeedsForward;
-    if (!direct(app, cpu, trackFolderPath))
-        return;
-    cpu.ecx = cpu.eax;
-    cpu.eax = cpu.ecx;
-    if (!byAddress(app, cpu, kFileExists))
-        return;
-    bool loaded = false;
-    if (cpu.eax != 0)
-    {
-        cpu.edx = 0x10;
-        cpu.eax = cpu.ecx;
-        if (!byAddress(app, cpu, kLoadFile))
-            return;
-        cpu.ecx = cpu.eax;
-        if (cpu.eax != 0)
-        {
-            cpu.edx = at(app, kTrackNodes);
-            ++cpu.edx;
-            put(app, kSpeeds, cpu.eax);
-            cpu.eax = cpu.edx;
-            cpu.edx = reg32(sreg32(cpu.edx) >> 31);
-            cpu.eax -= cpu.edx;
-            cpu.eax = reg32(sreg32(cpu.eax) >> 1);
-            cpu.ecx += cpu.eax;
-            put(app, kSpeedsHalf, cpu.ecx);
-            cpu.ecx = 0;
-            put(app, kSpeedsFailed, cpu.ecx);
-            loaded = true;
-        }
-    }
-    if (!loaded)
-    {
-        cpu.esi = 0;
-        cpu.ebx = 1;
-        put(app, kSpeeds, cpu.esi);
-        put(app, kSpeedsFailed, cpu.ebx);
-    }
-    cpu.ebp = pop(app, cpu);
-    cpu.esi = pop(app, cpu);
-    cpu.edx = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
-    cpu.ebx = pop(app, cpu);
-    cpu.esp += 4;
-}
-
-/* 0x40f230: the cameras' 256 views (24 bytes from 0x56f234) cleared -- 0, -1,
- * 0 -- the loading bar ticked (0x4a33d0) before each. */
-void clearTrackCameras(win32::WinApplication* app, x86::CPU& cpu)
-{
-    push(app, cpu, cpu.ebx);
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.edx);
-    push(app, cpu, cpu.esi);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    cpu.edx = 0;
-    do
-    {
-        if (!byAddress(app, cpu, kLoadingTick))
-            return;
-        cpu.ecx = cpu.edx;
-        cpu.eax = cpu.edx * 4;
-        cpu.eax -= cpu.edx;
-        cpu.ecx ^= cpu.edx;
-        cpu.ebx = 0xffffffff;
-        put(app, cpu.eax * 8 + kCameraViews, cpu.ecx);
-        cpu.esi = 0;
-        put(app, cpu.eax * 8 + kCameraViews + 4, cpu.ebx);
-        ++cpu.edx;
-        put(app, cpu.eax * 8 + kCameraViews + 8, cpu.esi);
-    } while (sreg32(cpu.edx) < 0x100);
-    cpu.ebp = pop(app, cpu);
-    cpu.esi = pop(app, cpu);
-    cpu.edx = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
-    cpu.ebx = pop(app, cpu);
-    cpu.esp += 4;
-}
-
-/* 0x40f280: the track's cameras, its path's start eax: the views cleared
- * (0x40f230), the 7 files' slots at 0x570a34 on cleared, then -- unless the
- * loading was stopped ([0x55e88c]: 0 back) -- "<eax>00a.can", "<eax>01.can",
- * "<eax>02.can"... loaded into them while they are there, up to 7.  How many
- * back. */
-void loadTrackCameras(win32::WinApplication* app, x86::CPU& cpu)
-{
-    push(app, cpu, cpu.ebx);
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.edx);
-    push(app, cpu, cpu.esi);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    cpu.esp -= 0x100;
-    const reg32 name = cpu.ebp - 0x100;
-    cpu.ebx = cpu.eax;
-    if (!direct(app, cpu, clearTrackCameras))
-        return;
-    cpu.ecx = 0;
-    ++cpu.ecx;
-    cpu.edx = 0;
-    if (!byAddress(app, cpu, kLoadingTick))
-        return;
-    put(app, cpu.ecx * 4 + kCameraFiles, cpu.edx);
-    while (sreg32(cpu.ecx) < 7)
-    {
-        ++cpu.ecx;
-        cpu.edx = 0;
-        if (!byAddress(app, cpu, kLoadingTick))
-            return;
-        put(app, cpu.ecx * 4 + kCameraFiles, cpu.edx);
-    }
-    cpu.esi = at(app, kLoadAborted);
-    cpu.ecx = 0;
-    if (cpu.esi != 0)
-    {
-        cpu.eax = 0;
-    }
-    else
-    {
-        push(app, cpu, cpu.ecx);
-        push(app, cpu, cpu.ebx);
-        push(app, cpu, kFirstCameraName);
-        for (;;)
-        {
-            cpu.eax = name;
-            push(app, cpu, cpu.eax);
-            if (!byAddress(app, cpu, kSprintf))
-                return;
-            cpu.esp += 0x10;
-            if (sreg32(cpu.ecx) >= 7)
-                break;
-            cpu.eax = name;
-            if (!byAddress(app, cpu, kFileExists))
-                return;
-            if (cpu.eax == 0)
-                break;
-            if (!byAddress(app, cpu, kLoadingTick))
-                return;
-            cpu.eax = name;
-            cpu.edx = 0;
-            ++cpu.ecx;
-            if (!byAddress(app, cpu, kLoadFile))
-                return;
-            push(app, cpu, cpu.ecx);
-            push(app, cpu, cpu.ebx);
-            push(app, cpu, kCameraName);
-            put(app, cpu.ecx * 4 + kCameraFiles, cpu.eax);
-        }
-        cpu.eax = cpu.ecx;
-    }
-    cpu.esp = cpu.ebp;
-    cpu.ebp = pop(app, cpu);
-    cpu.esi = pop(app, cpu);
-    cpu.edx = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
-    cpu.ebx = pop(app, cpu);
-    cpu.esp += 4;
-}
-
-/* 0x418d00: the dword at eax turned around in place, a BIGF archive's
- * big-endian number; it back in eax. */
-void swapBigEndian(win32::WinApplication* app, x86::CPU& cpu)
-{
-    push(app, cpu, cpu.ebx);
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.edx);
-    push(app, cpu, cpu.esi);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    cpu.esp -= 4;
-    cpu.edx = cpu.eax;
-    cpu.ecx = cpu.eax;
-    cpu.eax = 0;
-    do
-    {
-        cpu.esi = 3;
-        cpu.ebx = cpu.ecx + cpu.eax;
-        cpu.esi -= cpu.eax;
-        cpu.bl = byte(app, cpu.ebx);
-        ++cpu.eax;
-        putByte(app, cpu.esi + cpu.ebp - 4, cpu.bl);
-    } while (sreg32(cpu.eax) < 4);
-    cpu.eax = at(app, cpu.ebp - 4);
-    put(app, cpu.edx, cpu.eax);
-    cpu.esp = cpu.ebp;
-    cpu.ebp = pop(app, cpu);
-    cpu.esi = pop(app, cpu);
-    cpu.edx = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
-    cpu.ebx = pop(app, cpu);
-    cpu.esp += 4;
-}
-
-/* 0x418d40: a file cache's node, "FileNode" (0x30 bytes), allocated and
- * cleared -- cleared at 0 too if there is none. */
-void newFileNode(win32::WinApplication* app, x86::CPU& cpu)
-{
-    push(app, cpu, cpu.ebx);
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.edx);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    cpu.ebx = 0x10;
-    cpu.edx = 0x30;
-    cpu.eax = kNodeName;
-    if (!byAddress(app, cpu, kAllocate))
-        return;
-    cpu.ebx = 0x30;
-    cpu.edx = 0;
-    cpu.ecx = cpu.eax;
-    if (!byAddress(app, cpu, kMemset))
-        return;
-    cpu.eax = cpu.ecx;
-    cpu.ebp = pop(app, cpu);
-    cpu.edx = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
-    cpu.ebx = pop(app, cpu);
-    cpu.esp += 4;
-}
-
-/* 0x418d70: the node eax freed, its file's data first (if any); its size,
- * its data and its name's first byte cleared before. */
-void freeFileNode(win32::WinApplication* app, x86::CPU& cpu)
-{
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.edx);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    cpu.edx = cpu.eax;
-    if (cpu.eax != 0)
-    {
-        put(app, cpu.eax + 0x20, 0);
-        cpu.ecx = at(app, cpu.eax + 0x24);
-        putByte(app, cpu.eax, 0);
-        if (cpu.ecx != 0)
-        {
-            cpu.eax = cpu.ecx;
-            if (!byAddress(app, cpu, kFree))
-                return;
-            put(app, cpu.edx + 0x24, 0);
-        }
-        cpu.eax = cpu.edx;
-        if (!byAddress(app, cpu, kFree))
-            return;
-    }
-    cpu.ebp = pop(app, cpu);
-    cpu.edx = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
-    cpu.esp += 4;
-}
-
-/* 0x418dd0: the node named eax (stricmp, 0x4e9ec0) of the list after the
- * node edx, or 0. */
-void findFileNode(win32::WinApplication* app, x86::CPU& cpu)
-{
-    push(app, cpu, cpu.ebx);
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    cpu.ebx = cpu.eax;
-    cpu.ecx = at(app, cpu.edx + 0x28);
-    while (cpu.ecx != 0)
-    {
-        cpu.edx = cpu.ecx;
-        cpu.eax = cpu.ebx;
-        if (!byAddress(app, cpu, kStricmp))
-            return;
-        if (cpu.eax == 0)
-            break;
-        cpu.ecx = at(app, cpu.ecx + 0x28);
-    }
-    cpu.eax = cpu.ecx;
-    cpu.ebp = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
-    cpu.ebx = pop(app, cpu);
-    cpu.esp += 4;
-}
-
-/* 0x418e90: a node made for the file named eax, of edx bytes at ebx, and
- * linked in after the node ecx; it back, or 0 (ebx and edx it too). */
-void insertFileNode(win32::WinApplication* app, x86::CPU& cpu)
-{
-    push(app, cpu, cpu.esi);
-    push(app, cpu, cpu.edi);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    cpu.esp -= 8;
-    cpu.esi = cpu.eax;
-    put(app, cpu.ebp - 8, cpu.edx);
-    put(app, cpu.ebp - 4, cpu.ebx);
-    if (!direct(app, cpu, newFileNode))
-        return;
-    cpu.edx = cpu.eax;
-    cpu.ebx = cpu.eax;
-    if (cpu.eax != 0)
-    {
-        cpu.edi = cpu.eax;
-        copyString(app, cpu);
-        cpu.eax = at(app, cpu.ebp - 8);
-        put(app, cpu.edx + 0x20, cpu.eax);
-        cpu.eax = at(app, cpu.ebp - 4);
-        put(app, cpu.edx + 0x24, cpu.eax);
-        cpu.esi = at(app, cpu.ecx + 0x28);
-        if (cpu.esi != 0)
-            put(app, cpu.esi + 0x2c, cpu.edx);
-        cpu.eax = at(app, cpu.ecx + 0x28);
-        put(app, cpu.ebx + 0x28, cpu.eax);
-        put(app, cpu.ebx + 0x2c, cpu.ecx);
-        put(app, cpu.ecx + 0x28, cpu.ebx);
-    }
-    cpu.eax = cpu.ebx;
-    cpu.esp = cpu.ebp;
-    cpu.ebp = pop(app, cpu);
-    cpu.edi = pop(app, cpu);
-    cpu.esi = pop(app, cpu);
-    cpu.esp += 4;
-}
-
-/* 0x418f00: an empty node -- no name, size, data or links -- or 0. */
-void newEmptyFileNode(win32::WinApplication* app, x86::CPU& cpu)
-{
-    push(app, cpu, cpu.edx);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    if (!direct(app, cpu, newFileNode))
-        return;
-    cpu.edx = cpu.eax;
-    if (cpu.eax != 0)
-    {
-        put(app, cpu.eax + 0x20, 0);
-        put(app, cpu.eax + 0x24, 0);
-        put(app, cpu.eax + 0x28, 0);
-        put(app, cpu.eax + 0x2c, 0);
-        putByte(app, cpu.eax, 0);
-    }
-    cpu.eax = cpu.edx;
-    cpu.ebp = pop(app, cpu);
-    cpu.edx = pop(app, cpu);
-    cpu.esp += 4;
-}
-
-/* 0x418f40: the node eax and every node after it freed (0x418d70). */
-void freeFileNodes(win32::WinApplication* app, x86::CPU& cpu)
-{
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.edx);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    if (cpu.eax != 0)
-    {
-        cpu.edx = at(app, cpu.eax + 0x28);
-        if (!direct(app, cpu, freeFileNode))
-            return;
-        while (cpu.edx != 0)
-        {
-            cpu.eax = cpu.edx;
-            cpu.ecx = at(app, cpu.edx + 0x28);
-            if (!direct(app, cpu, freeFileNode))
-                return;
-            cpu.edx = cpu.ecx;
-        }
-    }
-    cpu.ebp = pop(app, cpu);
-    cpu.edx = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
-    cpu.esp += 4;
-}
-
-/* 0x418f70: the files in the cache eax: the nodes after its head. */
-void countFileNodes(win32::WinApplication* app, x86::CPU& cpu)
-{
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.edx);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    cpu.edx = cpu.eax;
-    cpu.ecx = at(app, cpu.edx + 4);
-    cpu.eax = 0;
-    if (cpu.ecx != 0)
-    {
-        cpu.edx = at(app, cpu.ecx + 0x28);
-        while (cpu.edx != 0)
-        {
-            ++cpu.eax;
-            cpu.edx = at(app, cpu.edx + 0x28);
-        }
-    }
-    cpu.ebp = pop(app, cpu);
-    cpu.edx = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
-    cpu.esp += 4;
-}
-
-/* 0x418fe0: the node of the file named edx in the cache eax (0x418dd0), or
- * 0 for no cache or no list. */
-void findCachedFile(win32::WinApplication* app, x86::CPU& cpu)
-{
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    cpu.ecx = cpu.edx;
-    bool found = false;
-    if (cpu.eax != 0)
-    {
-        cpu.edx = at(app, cpu.eax + 4);
-        if (cpu.edx != 0)
-        {
-            cpu.eax = cpu.ecx;
-            if (!direct(app, cpu, findFileNode))
-                return;
-            found = true;
-        }
-    }
-    if (!found)
-        cpu.eax = 0;
-    cpu.ebp = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
-    cpu.esp += 4;
-}
-
-/* 0x419000: the file named edx, ebx bytes at ecx, copied into a block of its
- * own ("mpFileData") and added at the end of the cache eax (0x418e90).  1
- * back, or 0 for no cache, list or last node, or no block or node. */
-void addCachedFile(win32::WinApplication* app, x86::CPU& cpu)
-{
-    push(app, cpu, cpu.esi);
-    push(app, cpu, cpu.edi);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    cpu.esp -= 0xc;
-    const reg32 cache = cpu.ebp - 4, size = cpu.ebp - 8, name = cpu.ebp - 0xc;
-    put(app, cache, cpu.eax);
-    put(app, name, cpu.edx);
-    put(app, size, cpu.ebx);
-    cpu.esi = cpu.ecx;
-    if (cpu.eax == 0 || at(app, cpu.eax + 4) == 0 || at(app, cpu.eax + 8) == 0)
-    {
-        cpu.eax = 0;
-    }
-    else
-    {
-        cpu.ebx = 0x10;
-        cpu.edx = at(app, size);
-        cpu.eax = kDataName;
-        if (!byAddress(app, cpu, kAllocate))
-            return;
-        cpu.ebx = cpu.eax;
-        if (cpu.eax != 0)
-        {
-            cpu.ecx = at(app, size);
-            cpu.edi = cpu.eax;
-            copyBytes(app, cpu);
-            cpu.ecx = at(app, cache);
-            cpu.edx = at(app, size);
-            cpu.eax = at(app, name);
-            cpu.ecx = at(app, cpu.ecx + 8);
-            if (!direct(app, cpu, insertFileNode))
-                return;
-            if (cpu.eax != 0)
-            {
-                cpu.ecx = at(app, cache);
-                put(app, cpu.ecx + 8, cpu.eax);
-                cpu.eax = 1;
-            }
-        }
-    }
-    cpu.esp = cpu.ebp;
-    cpu.ebp = pop(app, cpu);
-    cpu.edi = pop(app, cpu);
-    cpu.esi = pop(app, cpu);
-    cpu.esp += 4;
-}
-
-/* 0x419080: a file cache ("BFL"): 'FGIB', its head (an empty node) its
- * list's and its last; 0 if either cannot be had. */
-void newFileCache(win32::WinApplication* app, x86::CPU& cpu)
-{
-    push(app, cpu, cpu.ebx);
-    push(app, cpu, cpu.edx);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    cpu.ebx = 0x10;
-    cpu.edx = 0xc;
-    cpu.eax = kCacheName;
-    if (!byAddress(app, cpu, kAllocate))
-        return;
-    cpu.edx = cpu.eax;
-    if (cpu.eax != 0)
-    {
-        put(app, cpu.eax, kBigMagic);
-        put(app, cpu.eax + 4, 0);
-        put(app, cpu.eax + 8, 0);
-        if (!direct(app, cpu, newEmptyFileNode))
-            return;
-        if (cpu.eax != 0)
-        {
-            put(app, cpu.edx + 8, cpu.eax);
-            put(app, cpu.edx + 4, cpu.eax);
-            cpu.eax = cpu.edx;
-        }
-        else
-        {
-            cpu.eax = cpu.edx;
-            if (!byAddress(app, cpu, kFree))
-                return;
-            cpu.eax = 0;
-        }
-    }
-    cpu.ebp = pop(app, cpu);
-    cpu.edx = pop(app, cpu);
-    cpu.ebx = pop(app, cpu);
-    cpu.esp += 4;
-}
-
-/* 0x4190e0: the cache eax freed, its nodes first (0x418f40) and it cleared
- * then, if it has a list. */
-void freeFileCache(win32::WinApplication* app, x86::CPU& cpu)
-{
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.edx);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    cpu.edx = cpu.eax;
-    if (cpu.eax != 0)
-    {
-        cpu.ecx = at(app, cpu.eax + 4);
-        if (cpu.ecx != 0)
-        {
-            cpu.eax = cpu.ecx;
-            if (!direct(app, cpu, freeFileNodes))
-                return;
-            put(app, cpu.edx + 4, 0);
-            put(app, cpu.edx, 0);
-            put(app, cpu.edx + 8, 0);
-        }
-        cpu.eax = cpu.edx;
-        if (!byAddress(app, cpu, kFree))
-            return;
-    }
-    cpu.ebp = pop(app, cpu);
-    cpu.edx = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
-    cpu.esp += 4;
-}
-
-/* 0x419120: the BIGF header the cache eax's files take: 16 bytes and, for
- * each, 8 and its name with its ending.  0 for no cache or list, not a
- * cache's magic, a file of no size or no files. */
-void bigHeaderSize(win32::WinApplication* app, x86::CPU& cpu)
-{
-    push(app, cpu, cpu.ebx);
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.edx);
-    push(app, cpu, cpu.esi);
-    push(app, cpu, cpu.edi);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    cpu.edx = cpu.eax;
-    if (cpu.eax == 0 || (cpu.ecx = at(app, cpu.eax + 4)) == 0)
-    {
-        cpu.ebx = 0;
-    }
-    else
-    {
-        cpu.eax = at(app, cpu.eax);
-        if (cpu.eax != kBigMagic)
-        {
-            cpu.ebx = 0;
-        }
-        else
-        {
-            cpu.esi = 0x10;
-            cpu.ebx = at(app, cpu.ecx + 0x28);
-            bool sized = true;
-            while (cpu.ebx != 0)
-            {
-                if (at(app, cpu.ebx + 0x20) == 0)
-                {
-                    cpu.ebx = 0;
-                    sized = false;
-                    break;
-                }
-                cpu.eax = at(app, cpu.edx);
-                if (cpu.eax == kBigMagic)
-                {
-                    cpu.edi = cpu.ebx;
-                    stringLength(app, cpu);
-                    cpu.eax = cpu.ecx + 9;
-                    cpu.esi += cpu.eax;
-                }
-                cpu.ebx = at(app, cpu.ebx + 0x28);
-            }
-            if (sized)
-            {
-                cpu.eax = at(app, cpu.edx);
-                if (!(cpu.eax == kBigMagic && cpu.esi <= 0x10))
-                    cpu.ebx = cpu.esi;
-            }
-        }
-    }
-    cpu.eax = cpu.ebx;
-    cpu.ebp = pop(app, cpu);
-    cpu.edi = pop(app, cpu);
-    cpu.esi = pop(app, cpu);
-    cpu.edx = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
-    cpu.ebx = pop(app, cpu);
-    cpu.esp += 4;
-}
-
-/* 0x4191b0: the bytes of the cache eax's files, all told; 0 if one has none.
- * The cache and its list are taken to be there. */
-void cachedDataSize(win32::WinApplication* app, x86::CPU& cpu)
-{
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.edx);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    cpu.eax = at(app, cpu.eax + 4);
-    cpu.edx = 0;
-    for (;;)
-    {
-        cpu.eax = at(app, cpu.eax + 0x28);
-        if (cpu.eax == 0)
-        {
-            cpu.eax = cpu.edx;
-            break;
-        }
-        cpu.ecx = at(app, cpu.eax + 0x20);
-        if (cpu.ecx == 0)
-        {
-            cpu.eax = 0;
-            break;
-        }
-        cpu.edx += cpu.ecx;
-    }
-    cpu.ebp = pop(app, cpu);
-    cpu.edx = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
-    cpu.esp += 4;
-}
-
-namespace
-{
-
-/* The code's way with each of a BIGF header's numbers: eax into the frame's
- * [ebp - 0x3c], turned around there (0x418d00) and copied to edi (4 bytes
- * through copyBytes).  False when the game stopped. */
-bool putBigNumber(win32::WinApplication* app, x86::CPU& cpu, reg32 value, reg32 to)
-{
-    cpu.ecx = 4;
-    cpu.esi = cpu.ebp - 0x3c;
-    put(app, cpu.ebp - 0x3c, value);
-    cpu.eax = cpu.ebp - 0x3c;
-    cpu.edi = to;
-    if (!direct(app, cpu, swapBigEndian))
-        return false;
-    copyBytes(app, cpu);
-    return true;
-}
-
-}  // namespace
-
-/* 0x4191e0: the cache edx written as a BIGF archive into the ebx bytes at
- * eax (cleared first): each file's offset, size and name in the header and
- * its data after it, as far as they fit, then the header's four numbers.  1
- * back; 0 for no buffer, cache, size or list, no files, a header too small,
- * all of it not fitting, or a file of no size or data. */
-void writeBigFile(win32::WinApplication* app, x86::CPU& cpu)
-{
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.esi);
-    push(app, cpu, cpu.edi);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    cpu.esp -= 0x3c;
-    const reg32 buffer = cpu.ebp - 4, cursor = cpu.ebp - 8, size = cpu.ebp - 0xc, count = cpu.ebp - 0x10;
-    const reg32 headerEnd = cpu.ebp - 0x14, at4 = cpu.ebp - 0x18, at0 = cpu.ebp - 0x1c, header = cpu.ebp - 0x20;
-    const reg32 at12 = cpu.ebp - 0x24, at8 = cpu.ebp - 0x28, end = cpu.ebp - 0x2c, length = cpu.ebp - 0x30;
-    const reg32 nameAt = cpu.ebp - 0x34, sizeAt = cpu.ebp - 0x38, number = cpu.ebp - 0x3c;
-    put(app, buffer, cpu.eax);
-    cpu.ecx = cpu.edx;
-    put(app, size, cpu.ebx);
-    cpu.edx = 0;
-    cpu.eax += cpu.ebx;
-    put(app, number, cpu.edx);
-    put(app, end, cpu.eax);
-    put(app, count, cpu.edx);
-    bool written = false;
-    if (cpu.ecx != 0 && at(app, buffer) != 0 && cpu.ebx != 0 && at(app, cpu.ecx + 4) != 0)
-    {
-        cpu.eax = cpu.ecx;
-        if (!direct(app, cpu, countFileNodes))
-            return;
-        cpu.edx = cpu.eax;
-        cpu.eax = cpu.ecx;
-        if (!direct(app, cpu, bigHeaderSize))
-            return;
-        cpu.edi = cpu.eax;
-        put(app, header, cpu.eax);
-        cpu.eax = cpu.ecx;
-        if (!direct(app, cpu, cachedDataSize))
-            return;
-        if (sreg32(cpu.edx) > 0 && cpu.edi >= 0x10 && (cpu.eax += cpu.edi) <= cpu.ebx)
-        {
-            cpu.eax = at(app, buffer);
-            cpu.edx = 0;
-            if (!byAddress(app, cpu, kMemset))
-                return;
-            cpu.eax = at(app, buffer);
-            put(app, at0, cpu.eax);
-            cpu.eax += 4;
-            put(app, at4, cpu.eax);
-            cpu.eax = at(app, buffer);
-            cpu.eax += 8;
-            put(app, at8, cpu.eax);
-            cpu.eax = at(app, buffer);
-            cpu.ebx = at(app, buffer);
-            cpu.eax += 0xc;
-            cpu.edx = at(app, cpu.ecx + 4);
-            put(app, at12, cpu.eax);
-            cpu.eax = at(app, buffer);
-            cpu.ebx += 0x10;
-            cpu.eax += cpu.edi;
-            cpu.edx = at(app, cpu.edx + 0x28);
-            put(app, headerEnd, cpu.eax);
-            put(app, cursor, cpu.eax);
-            bool failed = false;
-            while (cpu.edx != 0)
-            {
-                cpu.eax = at(app, cursor);
-                cpu.esi = at(app, cpu.edx + 0x20);
-                cpu.edi = at(app, end);
-                cpu.eax += cpu.esi;
-                if (cpu.eax > cpu.edi || cpu.ebx >= at(app, headerEnd))
-                    break;
-                if (cpu.esi == 0 || at(app, cpu.edx + 0x24) == 0)
-                {
-                    failed = true;
-                    break;
-                }
-                cpu.eax = cpu.ebx + 4;
-                cpu.edi = cpu.edx;
-                put(app, sizeAt, cpu.eax);
-                cpu.eax = cpu.ebx + 8;
-                cpu.esi = cpu.edx;
-                put(app, nameAt, cpu.eax);
-                stringLength(app, cpu);
-                cpu.edi = at(app, nameAt);
-                put(app, length, cpu.ecx);
-                copyString(app, cpu);
-                cpu.eax = at(app, cursor);
-                cpu.edi = at(app, buffer);
-                cpu.eax -= cpu.edi;
-                if (!putBigNumber(app, cpu, cpu.eax, cpu.ebx))
-                    return;
-                if (!putBigNumber(app, cpu, at(app, cpu.edx + 0x20), at(app, sizeAt)))
-                    return;
-                cpu.edi = at(app, cursor);
-                cpu.ecx = at(app, cpu.edx + 0x20);
-                cpu.esi = at(app, cpu.edx + 0x24);
-                copyBytes(app, cpu);
-                cpu.eax = at(app, count);
-                cpu.ebx = at(app, nameAt);
-                ++cpu.eax;
-                cpu.esi = at(app, length);
-                put(app, count, cpu.eax);
-                cpu.eax = at(app, cpu.edx + 0x20);
-                cpu.ebx += cpu.esi;
-                cpu.ecx = cpu.edi + cpu.eax;
-                ++cpu.ebx;
-                put(app, cursor, cpu.ecx);
-                cpu.edx = at(app, cpu.edx + 0x28);
-            }
-            if (!failed)
-            {
-                cpu.edi = kBigMagic;
-                if (!putBigNumber(app, cpu, cpu.edi, at(app, at0)))
-                    return;
-                if (!putBigNumber(app, cpu, at(app, size), at(app, at4)))
-                    return;
-                if (!putBigNumber(app, cpu, at(app, count), at(app, at8)))
-                    return;
-                if (!putBigNumber(app, cpu, at(app, header), at(app, at12)))
-                    return;
-                cpu.eax = 1;
-                written = true;
-            }
-        }
-    }
-    if (!written)
-        cpu.eax = 0;
-    cpu.esp = cpu.ebp;
-    cpu.ebp = pop(app, cpu);
-    cpu.edi = pop(app, cpu);
-    cpu.esi = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
-    cpu.esp += 4;
-}
-
-/* 0x419460: the cache eax written as a BIGF archive into a block of its own
- * ("BigBuffer", 0x4191e0): it back and its size to [edx]; else 0 and 0 to
- * [edx] (the block freed). */
-void packFileCache(win32::WinApplication* app, x86::CPU& cpu)
-{
-    push(app, cpu, cpu.ebx);
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.esi);
-    push(app, cpu, cpu.edi);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    cpu.esp -= 4;
-    const reg32 size = cpu.ebp - 4;
-    cpu.ecx = cpu.eax;
-    cpu.edi = cpu.edx;
-    bool packed = false;
-    if (cpu.eax != 0 && at(app, cpu.eax + 4) != 0)
-    {
-        if (!direct(app, cpu, countFileNodes))
-            return;
-        cpu.eax = cpu.ecx;
-        if (!direct(app, cpu, bigHeaderSize))
-            return;
-        cpu.edx = cpu.eax;
-        cpu.eax = cpu.ecx;
-        if (!direct(app, cpu, cachedDataSize))
-            return;
-        if (cpu.edx != 0 && cpu.eax != 0)
-        {
-            cpu.ebx = 0x10;
-            cpu.edx += cpu.eax;
-            cpu.eax = kBufferName;
-            put(app, size, cpu.edx);
-            if (!byAddress(app, cpu, kAllocate))
-                return;
-            cpu.esi = cpu.eax;
-            if (cpu.eax == 0)
-            {
-                put(app, cpu.edi, cpu.eax);
-                packed = true;
-            }
-            else
-            {
-                cpu.eax = at(app, cpu.ecx);
-                if (cpu.eax == kBigMagic)
-                {
-                    cpu.ebx = at(app, size);
-                    cpu.edx = cpu.ecx;
-                    cpu.eax = cpu.esi;
-                    if (!direct(app, cpu, writeBigFile))
-                        return;
-                    if (cpu.eax != 0)
-                    {
-                        cpu.eax = at(app, size);
-                        put(app, cpu.edi, cpu.eax);
-                        cpu.eax = cpu.esi;
-                        packed = true;
-                    }
-                    else
-                    {
-                        put(app, cpu.edi, cpu.eax);
-                        cpu.eax = cpu.esi;
-                        if (!byAddress(app, cpu, kFree))
-                            return;
-                    }
-                }
-                else
-                {
-                    cpu.eax = cpu.esi;
-                    put(app, cpu.edi, 0);
-                    if (!byAddress(app, cpu, kFree))
-                        return;
-                }
-            }
-        }
-        else
-        {
-            put(app, cpu.edi, 0);
-        }
-    }
-    else
-    {
-        put(app, cpu.edi, 0);
-    }
-    if (!packed)
-        cpu.eax = 0;
-    cpu.esp = cpu.ebp;
-    cpu.ebp = pop(app, cpu);
-    cpu.edi = pop(app, cpu);
-    cpu.esi = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
-    cpu.ebx = pop(app, cpu);
-    cpu.esp += 4;
-}
-
-/* 0x419510: the files of the BIGF archive at edx added to the cache eax
- * (0x419000), each found by its name (0x4ea4a0, 0x4ea290); those of no size
- * passed over.  1 back; 0 for no cache or archive, not a BIGF, no files, or
- * a file not found or added. */
-void readBigFile(win32::WinApplication* app, x86::CPU& cpu)
-{
-    push(app, cpu, cpu.ebx);
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.esi);
-    push(app, cpu, cpu.edi);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    cpu.esp -= 0x34;
-    const reg32 data = cpu.ebp - 4, cache = cpu.ebp - 8, offset = cpu.ebp - 0xc, size = cpu.ebp - 0x10;
-    const reg32 magic = cpu.ebp - 0x14, name = cpu.ebp - 0x34;
-    put(app, cache, cpu.eax);
-    put(app, data, cpu.edx);
-    cpu.edx = 0;
-    cpu.esi = at(app, data);
-    put(app, offset, cpu.edx);
-    put(app, size, cpu.edx);
-    put(app, magic, cpu.edx);
-    if (cpu.esi == 0 || cpu.eax == 0)
-    {
-        cpu.eax = 0;
-    }
-    else
-    {
-        cpu.ecx = 4;
-        cpu.edi = magic;
-        copyBytes(app, cpu);
-        cpu.eax = magic;
-        if (!direct(app, cpu, swapBigEndian))
-            return;
-        if (at(app, magic) != kBigMagic)
-        {
-            cpu.eax = 0;
-        }
-        else
-        {
-            cpu.eax = at(app, data);
-            if (!byAddress(app, cpu, kBigCount))
-                return;
-            cpu.edi = cpu.eax;
-            if (cpu.eax != 0)
-            {
-                cpu.esi = 0;
-                for (;;)
-                {
-                    if (sreg32(cpu.esi) >= sreg32(cpu.edi))
-                    {
-                        cpu.eax = 1;
-                        break;
-                    }
-                    cpu.ebx = name;
-                    cpu.eax = at(app, data);
-                    cpu.edx = cpu.esi;
-                    cpu.ecx = offset;
-                    if (!byAddress(app, cpu, kBigName))
-                        return;
-                    cpu.eax = size;
-                    cpu.edx = name;
-                    push(app, cpu, cpu.eax);
-                    cpu.ebx = cpu.esi;
-                    cpu.eax = at(app, data);
-                    if (!byAddress(app, cpu, kBigEntry))
-                        return;
-                    if (cpu.eax == 0)
-                        break;
-                    cpu.edx = at(app, size);
-                    if (cpu.edx != 0)
-                    {
-                        cpu.ecx = at(app, data);
-                        cpu.ebx = at(app, offset);
-                        cpu.eax = at(app, cache);
-                        cpu.ecx += cpu.ebx;
-                        cpu.ebx = cpu.edx;
-                        cpu.edx = name;
-                        if (!direct(app, cpu, addCachedFile))
-                            return;
-                        if (cpu.eax == 0)
-                            break;
-                    }
-                    cpu.ah = 0;
-                    putByte(app, name, cpu.ah);
-                    cpu.eax = 0;
-                    ++cpu.esi;
-                    put(app, offset, cpu.eax);
-                    put(app, size, cpu.eax);
-                }
-            }
-        }
-    }
-    cpu.esp = cpu.ebp;
-    cpu.ebp = pop(app, cpu);
-    cpu.edi = pop(app, cpu);
-    cpu.esi = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
-    cpu.ebx = pop(app, cpu);
-    cpu.esp += 4;
-}
-
-/* 0x4195f0: a cache made of the BIGF archive at eax (0x419080, 0x419510),
- * or 0 -- for none, not a BIGF, or its files not all read (the cache freed). */
-void openFileCache(win32::WinApplication* app, x86::CPU& cpu)
-{
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.edx);
-    push(app, cpu, cpu.esi);
-    push(app, cpu, cpu.edi);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    cpu.esp -= 4;
-    const reg32 magic = cpu.ebp - 4;
-    cpu.edx = cpu.eax;
-    cpu.ecx = 0;
-    put(app, magic, cpu.ecx);
-    if (cpu.eax != 0)
-    {
-        cpu.ecx = 4;
-        cpu.edi = magic;
-        cpu.esi = cpu.eax;
-        copyBytes(app, cpu);
-        cpu.eax = magic;
-        if (!direct(app, cpu, swapBigEndian))
-            return;
-        if (at(app, magic) != kBigMagic)
-        {
-            cpu.eax = 0;
-        }
-        else
-        {
-            if (!direct(app, cpu, newFileCache))
-                return;
-            cpu.ecx = cpu.eax;
-            if (cpu.eax != 0)
-            {
-                if (!direct(app, cpu, readBigFile))
-                    return;
-                if (cpu.eax != 0)
-                {
-                    cpu.eax = cpu.ecx;
-                }
-                else
-                {
-                    cpu.eax = cpu.ecx;
-                    if (!direct(app, cpu, freeFileCache))
-                        return;
-                    cpu.eax = 0;
-                }
-            }
-        }
-    }
-    cpu.esp = cpu.ebp;
-    cpu.ebp = pop(app, cpu);
-    cpu.edi = pop(app, cpu);
-    cpu.esi = pop(app, cpu);
-    cpu.edx = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
-    cpu.esp += 4;
-}
-
-/* 0x41d8a0: the track's file named by the end eax, "<data path>TRKnnn\Trnn<eax>",
- * sprintf'd to 0x5dd86c and that back. */
-void trackFilePath(win32::WinApplication* app, x86::CPU& cpu)
-{
-    push(app, cpu, cpu.edx);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    push(app, cpu, cpu.eax);
-    cpu.edx = at(app, kTrack);
-    push(app, cpu, cpu.edx);
-    push(app, cpu, cpu.edx);
-    push(app, cpu, kDataPath);
-    push(app, cpu, kTrackFileFormat);
-    push(app, cpu, kTrackFile);
-    if (!byAddress(app, cpu, kSprintf))
-        return;
-    cpu.eax = kTrackFile;
-    cpu.esp += 0x18;
-    cpu.ebp = pop(app, cpu);
-    cpu.edx = pop(app, cpu);
-    cpu.esp += 4;
-}
-
-/* 0x41d8d0: the file eax in the track's folder, "<data path>TRKnnn\<eax>",
- * sprintf'd to 0x5dd8ec and that back. */
-void trackFolderPath(win32::WinApplication* app, x86::CPU& cpu)
-{
-    push(app, cpu, cpu.edx);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    push(app, cpu, cpu.eax);
-    cpu.edx = at(app, kTrack);
-    push(app, cpu, cpu.edx);
-    push(app, cpu, kDataPath);
-    push(app, cpu, kFolderFileFormat);
-    push(app, cpu, kFolderFile);
-    if (!byAddress(app, cpu, kSprintf))
-        return;
-    cpu.eax = kFolderFile;
-    cpu.esp += 0x14;
-    cpu.ebp = pop(app, cpu);
-    cpu.edx = pop(app, cpu);
-    cpu.esp += 4;
-}
-
-/* 0x41dbc0: the track's textures loaded (0x4956f0) to [0x5dd850] unless the
- * loading was stopped: its own Trnn1.qfs (Trnn1_8.qfs for the options' smaller
- * set) where the race has them and the file is there -- traced, as
- * bworld.c's line 1860 does (0x42d500) -- else Trnn0.qfs (Trnn0_8.qfs). */
-void loadTrackTextures(win32::WinApplication* app, x86::CPU& cpu)
-{
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.edx);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    cpu.edx = 0;
-    put(app, kTrackShapes, cpu.edx);
-    if (!byAddress(app, cpu, kLoadingTick))
-        return;
-    if (at(app, kLoadAborted) == 0)
-    {
-        bool own = false;
-        if (at(app, kOwnTextures) != 0)
-        {
-            cpu.ah = byte(app, kOptions);
-            cpu.eax = (cpu.ah & 2) != 0 ? kNear8 : kNear;
-            if (!direct(app, cpu, trackFilePath))
-                return;
-            cpu.ecx = cpu.eax;
-            cpu.eax = cpu.ecx;
-            if (!byAddress(app, cpu, kFileExists))
-                return;
-            if (cpu.eax != 0)
-            {
-                push(app, cpu, 0x744);
-                push(app, cpu, kTraceFile);
-                push(app, cpu, kTraceFormat);
-                if (!byAddress(app, cpu, kTrace))
-                    return;
-                cpu.esp += 0xc;
-                cpu.edx = 0;
-                cpu.eax = cpu.ecx;
-                own = true;
-            }
-        }
-        if (!own)
-        {
-            cpu.eax = (byte(app, kOptions) & 2) != 0 ? kFar8 : kFar;
-            cpu.edx = 0;
-            if (!direct(app, cpu, trackFilePath))
-                return;
-        }
-        if (!byAddress(app, cpu, kLoadShapes))
-            return;
-        put(app, kTrackShapes, cpu.eax);
-    }
-    cpu.ebp = pop(app, cpu);
-    cpu.edx = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
-    cpu.esp += 4;
-}
-
-/* 0x477a90: the ghost saved to ghost.gst (0x4777d0) when the race is no
- * replay and one is wanted. */
-void saveGhost(win32::WinApplication* app, x86::CPU& cpu)
-{
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    if (at(app, kReplaying) == 0 && at(app, kGhostWanted) != 0)
-    {
-        cpu.eax = kGhostName;
-        if (!byAddress(app, cpu, kSaveGhostFile))
-            return;
-    }
-    cpu.ebp = pop(app, cpu);
-    cpu.esp += 4;
-}
-
-/* 0x477ac0: the ghost written to the stream eax at edx (fseek from its
- * start, then fwrite: its record and its records, 0x20f4 + 18 bytes each). */
-void writeGhost(win32::WinApplication* app, x86::CPU& cpu)
-{
-    push(app, cpu, cpu.ebx);
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    cpu.ecx = cpu.eax;
-    if (cpu.eax != 0)
-    {
-        cpu.ebx = 0;
-        if (!byAddress(app, cpu, kFseek))
-            return;
-        cpu.edx = at(app, kGhostCount);
-        cpu.eax = cpu.edx * 8;
-        cpu.eax += cpu.edx;
-        cpu.eax += cpu.eax;
-        cpu.edx = cpu.eax + kGhostBytes;
-        cpu.ebx = 1;
-        cpu.eax = kGhost;
-        if (!byAddress(app, cpu, kFwrite))
-            return;
-    }
-    cpu.ebp = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
-    cpu.ebx = pop(app, cpu);
-    cpu.esp += 4;
-}
-
-/* 0x477b00: the ghost read from the game's file handle eax (0x4e2de0): its
- * record, then as many records as it says; [0x55d000] 1. */
-void readGhost(win32::WinApplication* app, x86::CPU& cpu)
-{
-    push(app, cpu, cpu.ebx);
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.edx);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    cpu.ecx = cpu.eax;
-    if (cpu.eax != 0)
-    {
-        cpu.ebx = kGhostBytes;
-        cpu.edx = kGhost;
-        if (!byAddress(app, cpu, kReadHandle))
-            return;
-        cpu.edx = at(app, kGhostCount);
-        cpu.ebx = cpu.edx * 8;
-        cpu.eax = cpu.ecx;
-        cpu.ebx += cpu.edx;
-        cpu.edx = kGhostRecords;
-        cpu.ebx += cpu.ebx;
-        if (!byAddress(app, cpu, kReadHandle))
-            return;
-        put(app, kGhostRead, 1);
-    }
-    cpu.ebp = pop(app, cpu);
-    cpu.edx = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
-    cpu.ebx = pop(app, cpu);
-    cpu.esp += 4;
-}
-
-namespace
-{
-
-/* lea eax, [ebp - 0x34]; call 0x4be020: the horizon's next number, its text's
- * place in the frame's [ebp - 0x34]. */
-bool readNumber(win32::WinApplication* app, x86::CPU& cpu)
-{
-    cpu.eax = cpu.ebp - 0x34;
-    return byAddress(app, cpu, kReadNumber);
-}
-
-/* A number into the horizon's record's byte at `offset` as the code puts
- * it: the number to [ebp - `value`], the record ([0x55d278] + edx) to
- * [ebp - `record`], edi it, al the number's byte. */
-bool readRecordByte(win32::WinApplication* app, x86::CPU& cpu, reg32 offset, reg32 value, reg32 record)
-{
-    if (!readNumber(app, cpu))
-        return false;
-    put(app, cpu.ebp - value, cpu.eax);
-    cpu.eax = at(app, 0x55d278);
-    cpu.eax += cpu.edx;
-    put(app, cpu.ebp - record, cpu.eax);
-    cpu.edi = at(app, cpu.ebp - record);
-    cpu.al = byte(app, cpu.ebp - value);
-    putByte(app, cpu.edi + offset, cpu.al);
-    return true;
-}
-
-/* A number into the record's dword at `offset`: edi the record. */
-bool readRecordWord(win32::WinApplication* app, x86::CPU& cpu, reg32 offset)
-{
-    if (!readNumber(app, cpu))
-        return false;
-    cpu.edi = at(app, 0x55d278);
-    cpu.edi += cpu.edx;
-    put(app, cpu.edi + offset, cpu.eax);
-    return true;
-}
-
-/* A number to [ebp - `local`], made a float by fild and stored at `to`. */
-bool readFloat(win32::WinApplication* app, x86::CPU& cpu, reg32 local, reg32 to)
-{
-    if (!readNumber(app, cpu))
-        return false;
-    put(app, cpu.ebp - local, cpu.eax);
-    cpu.fpu.push(i32(app, cpu.ebp - local));
-    cpu.eax = cpu.ebp - 0x34;
-    putF32(app, to, cpu.fpu.pop());
-    return true;
-}
-
-/* The sky's 8 bands' colour channel from a 16.16 number: sar edx, 31;
- * shl edx, 16; sbb eax, edx; sar eax, 16 -- rounded towards 0, edx left as
- * the shift leaves it. */
-reg32 bandChannel(x86::CPU& cpu, reg32 value)
-{
-    cpu.edx = value;
-    cpu.eax = value;
-    cpu.edx = reg32(sreg32(cpu.edx) >> 31);
-    const reg32 carry = (cpu.edx >> 16) & 1;
-    cpu.edx <<= 16;
-    cpu.eax = cpu.eax - cpu.edx - carry;
-    cpu.eax = reg32(sreg32(cpu.eax) >> 16);
+    if (!guest::call(app, cpu, target, words))
+        return std::nullopt;
     return cpu.eax;
 }
 
+/* A block of `bytes` from the game's allocator, named `name`: the block or 0. */
+std::optional<reg32> allocate(App* app, CPU& cpu, reg32 name, reg32 bytes, reg32 flags)
+{
+    // edx and ebx as the code hands them, which the allocator keeps: the code's own after it (an
+    // adapter leaves them so).
+    cpu.edx = bytes;
+    cpu.ebx = flags;
+    return guest::direct<0x4e1620, ea::reserved>(app, cpu, name, bytes, flags);
+}
+
+/* A block given back to the game's allocator.  False when the game stopped. */
+bool release(App* app, CPU& cpu, reg32 block)
+{
+    return guest::direct<0x4e1890, ea::purgeBlock>(app, cpu, block).has_value();
+}
+
+/* memset: `bytes` bytes at `to` set to `value`.  False when the game stopped. */
+bool fill(App* app, CPU& cpu, reg32 to, reg32 value, reg32 bytes)
+{
+    cpu.eax = to;
+    cpu.edx = value;
+    cpu.ebx = bytes;
+    return callGame(app, cpu, kMemset).has_value();
+}
+
+/* stricmp of the names at `name` and `other`: 0 when they are alike. */
+std::optional<reg32> compareNames(App* app, CPU& cpu, reg32 name, reg32 other)
+{
+    cpu.eax = name;
+    cpu.edx = other;
+    return callGame(app, cpu, kStricmp);
+}
+
+/* sprintf to `to`, of `format` and what follows it. */
+std::optional<reg32> format(App* app, CPU& cpu, std::initializer_list<reg32> words)
+{
+    return callGame(app, cpu, kSprintf, words);
+}
+
+/* Whether the file named `name` is there. */
+std::optional<bool> fileExists(App* app, CPU& cpu, reg32 name)
+{
+    return guest::direct<0x4e0e60, ea::fileThere>(app, cpu, name);
+}
+
+/* The file named `name` loaded into a block of its own (`flags` the allocator's): the block or 0. */
+std::optional<reg32> loadFile(App* app, CPU& cpu, reg32 name, reg32 flags)
+{
+    cpu.edx = flags;  // as the code hands it, which the loading keeps: the code's own after it
+    return guest::direct<0x4e0ec0, ea::loadWhole>(app, cpu, name, flags);
+}
+
+/* The loading screen's bar ticked on.  False when the game stopped. */
+bool loadingTick(App* app, CPU& cpu)
+{
+    return callGame(app, cpu, kLoadingTick).has_value();
+}
+
+/* A dword turned around: a BIGF archive's big-endian number. */
+reg32 turned(reg32 value)
+{
+    return value >> 24 | (value >> 8 & 0xff00) | (value << 8 & 0xff0000) | value << 24;
+}
+
+/* rep movsd, rep movsb: `bytes` bytes from `from` to `to`, a dword at a time and the last few
+ * a byte at a time, forwards. */
+void copyBytes(App* app, reg32 to, reg32 from, reg32 bytes)
+{
+    for (reg32 dwords = bytes >> 2; dwords != 0; --dwords, to += 4, from += 4)
+        put(app, to, at(app, from));
+    for (reg32 left = bytes & 3; left != 0; --left)
+        putByte(app, to++, byte(app, from++));
+}
+
+/* The code's inlined strcpy: the name at `from` to `to`, its ending too, a byte at a time. */
+void copyName(App* app, reg32 to, reg32 from)
+{
+    for (reg32 i = 0;; ++i)
+    {
+        const reg8 c = byte(app, from + i);
+        putByte(app, to + i, c);
+        if (c == 0)
+            break;
+    }
+}
+
+/* The code's inlined strlen (repne scasb). */
+reg32 nameLength(App* app, reg32 name)
+{
+    reg32 length = 0;
+    while (byte(app, name + length) != 0)
+        ++length;
+    return length;
+}
+
 }  // namespace
 
-/* 0x478340: the track eax's horizon, 3Trnn.hrz (with N at night, W in the
- * weather) in its folder, read number by number (0x4be020) into the sky's:
- * its colours, the fog's (1 to 100, a hundredth), its records (36 bytes
- * each, allocated to [0x55d278]), the sun's and the clouds' places and
- * sizes, the weather's counts (0x8ca1e8 on); the file freed, the sky loaded
- * (0x47ac30), the sun's direction worked out and its length taken, and the
- * sky's 8 bands of colours, top and bottom, from its two colours; the
- * fog's colour from the bottom one, or none. */
-void loadHorizon(win32::WinApplication* app, x86::CPU& cpu)
+void loadOpponentSpeeds(App* app, CPU& cpu);
+void clearTrackCameras(App* app, CPU& cpu);
+void loadTrackCameras(App* app, CPU& cpu);
+void swapBigEndian(App* app, CPU& cpu);
+void newFileNode(App* app, CPU& cpu);
+void freeFileNode(App* app, CPU& cpu);
+void findFileNode(App* app, CPU& cpu);
+void insertFileNode(App* app, CPU& cpu);
+void newEmptyFileNode(App* app, CPU& cpu);
+void freeFileNodes(App* app, CPU& cpu);
+void countFileNodes(App* app, CPU& cpu);
+void findCachedFile(App* app, CPU& cpu);
+void addCachedFile(App* app, CPU& cpu);
+void newFileCache(App* app, CPU& cpu);
+void freeFileCache(App* app, CPU& cpu);
+void bigHeaderSize(App* app, CPU& cpu);
+void cachedDataSize(App* app, CPU& cpu);
+void writeBigFile(App* app, CPU& cpu);
+void packFileCache(App* app, CPU& cpu);
+void readBigFile(App* app, CPU& cpu);
+void openFileCache(App* app, CPU& cpu);
+void trackFilePath(App* app, CPU& cpu);
+void trackFolderPath(App* app, CPU& cpu);
+void loadTrackTextures(App* app, CPU& cpu);
+void saveGhost(App* app, CPU& cpu);
+void writeGhost(App* app, CPU& cpu);
+void readGhost(App* app, CPU& cpu);
+void loadHorizon(App* app, CPU& cpu);
+void loadSky(App* app, CPU& cpu);
+void loadWeatherShapes(App* app, CPU& cpu);
+
+namespace
 {
-    x86::FPU& fpu = cpu.fpu;
-    push(app, cpu, cpu.ebx);
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.edx);
-    push(app, cpu, cpu.esi);
-    push(app, cpu, cpu.edi);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    cpu.esp -= 0x144;
-    const reg32 name = cpu.ebp - 0x144, text = cpu.ebp - 0x34, number = cpu.ebp - 0x14, other = cpu.ebp - 0x1c;
-    cpu.ecx = cpu.eax;
-    cpu.edx = 0;
-    cpu.ebx = at(app, kNight);
-    put(app, text, cpu.edx);
-    push(app, cpu, cpu.eax);
-    push(app, cpu, cpu.eax);
-    push(app, cpu, kDataPath);
-    if (cpu.ebx != 0)
-        push(app, cpu, at(app, kWeather) != 0 ? kHorizonNightWeather : kHorizonNight);
-    else
-        push(app, cpu, at(app, kWeather) != 0 ? kHorizonWeather : kHorizonName);
-    cpu.eax = name;
-    push(app, cpu, cpu.eax);
-    if (!byAddress(app, cpu, kSprintf))
-        return;
-    cpu.esp += 0x14;
-    if (!byAddress(app, cpu, kLoadingTick))
-        return;
-    cpu.edx = 0x10;
-    cpu.eax = name;
-    if (!byAddress(app, cpu, kLoadFile))
-        return;
-    cpu.edx = cpu.eax;
-    cpu.esi = cpu.eax;
-    if (cpu.eax != 0)
+
+/* The file `name` in the track's folder, "<data path>TRKnnn\<name>", sprintf'd to 0x5dd8ec:
+ * that path. */
+std::optional<reg32> trackFolderFile(App* app, CPU& cpu, reg32 name)
+{
+    if (!format(app, cpu, {kFolderFile, kFolderFileFormat, kDataPath, gameSettings(app).track, name}))
+        return std::nullopt;
+    return kFolderFile;
+}
+
+}  // namespace
+
+/* The track's file named by its end `end`, "<data path>TRKnnn\Trnn<end>", sprintf'd to 0x5dd86c:
+ * that path. */
+std::optional<reg32> trackFile(App* app, CPU& cpu, reg32 end)
+{
+    const reg32 track = gameSettings(app).track;
+    if (!format(app, cpu, {kTrackFile, kTrackFileFormat, kDataPath, track, track, end}))
+        return std::nullopt;
+    return kTrackFile;
+}
+
+/* The opponents' speed table, speedsF.bin (speedsR.bin backwards) in the track's folder, loaded
+ * to [0x552558] if it is there, [0x55255c] its second half (half the track's nodes, rounded up,
+ * on) and [0x56f22c] 0; else [0x552558] 0 and [0x56f22c] 1.  The second half's index, or 0. */
+std::optional<reg32> loadSpeeds(App* app, CPU& cpu)
+{
+    const std::optional<reg32> path =
+        trackFolderFile(app, cpu, gameSettings(app).backwards != 0 ? kSpeedsBackward : kSpeedsForward);
+    if (!path)
+        return std::nullopt;
+    const std::optional<bool> there = fileExists(app, cpu, *path);
+    if (!there)
+        return std::nullopt;
+    reg32 table = 0;
+    if (*there)
     {
-        put(app, text, cpu.eax);
-        // The sky's colour, its three bytes, and its fourth's dword.
-        for (const reg32 to : {0x55d26eu, 0x55d26du, 0x55d26cu})
+        const std::optional<reg32> loaded = loadFile(app, cpu, *path, kSpeedsLoadFlags);
+        if (!loaded)
+            return std::nullopt;
+        table = *loaded;
+    }
+    if (table == 0)
+    {
+        put(app, kSpeeds, 0);
+        put(app, kSpeedsFailed, 1);
+        return 0;
+    }
+    const reg32 half = reg32(sreg32(at(app, kTrackNodes) + 1) / 2);
+    put(app, kSpeeds, table);
+    put(app, kSpeedsHalf, table + half);
+    put(app, kSpeedsFailed, 0);
+    return half;
+}
+
+/* The cameras' 256 views (24 bytes from 0x56f234) cleared -- 0, -1, 0 -- the loading bar
+ * ticked before each.  False when the game stopped. */
+bool clearCameras(App* app, CPU& cpu)
+{
+    for (reg32 view = 0; view < kCameraViewCount; ++view)
+    {
+        if (!loadingTick(app, cpu))
+            return false;
+        const reg32 at = kCameraViews + view * kCameraViewBytes;
+        put(app, at, 0);
+        put(app, at + 4, 0xffffffff);
+        put(app, at + 8, 0);
+    }
+    return true;
+}
+
+/* The track's cameras, its path's start `path`: the views cleared, the 7 files' slots at
+ * 0x570a34 on cleared, then -- unless the loading was stopped ([0x55e88c]: 0 back) --
+ * "<path>00a.can", "<path>01.can", "<path>02.can"... loaded into them while they are there, up
+ * to 7.  How many. */
+std::optional<reg32> loadCameras(App* app, CPU& cpu, reg32 path)
+{
+    const GuestFrame frame(cpu, 0x14, 0x100);
+    const reg32 name = frame - 0x100;  // handed to sprintf and the loading
+    if (!clearCameras(app, cpu))
+        return std::nullopt;
+    for (reg32 slot = 1; slot <= kCameraFileCount; ++slot)
+    {
+        if (!loadingTick(app, cpu))
+            return std::nullopt;
+        put(app, kCameraFiles + slot * 4, 0);
+    }
+    if (at(app, kLoadAborted) != 0)
+        return 0;
+    reg32 loaded = 0;
+    reg32 nameFormat = kFirstCameraName;
+    for (;;)
+    {
+        if (!format(app, cpu, {name, nameFormat, path, loaded}))
+            return std::nullopt;
+        if (sreg32(loaded) >= sreg32(kCameraFileCount))
+            break;
+        const std::optional<bool> there = fileExists(app, cpu, name);
+        if (!there)
+            return std::nullopt;
+        if (!*there)
+            break;
+        if (!loadingTick(app, cpu))
+            return std::nullopt;
+        ++loaded;
+        const std::optional<reg32> file = loadFile(app, cpu, name, 0);
+        if (!file)
+            return std::nullopt;
+        nameFormat = kCameraName;
+        put(app, kCameraFiles + loaded * 4, *file);
+    }
+    return loaded;
+}
+
+namespace
+{
+
+/* The dword at `address` turned around in place (it read a byte at a time): what it is now. */
+reg32 swapInPlace(App* app, reg32 address)
+{
+    const reg32 value = turned(at(app, address));
+    put(app, address, value);
+    return value;
+}
+
+/* A file cache's node, "FileNode" (0x30 bytes), allocated and cleared -- cleared at 0 too if
+ * there is none: the node or 0. */
+std::optional<reg32> newNode(App* app, CPU& cpu)
+{
+    const std::optional<reg32> node = allocate(app, cpu, kNodeName, kNodeBytes, kBlockFlags);
+    if (!node || !fill(app, cpu, *node, 0, kNodeBytes))
+        return std::nullopt;
+    return node;
+}
+
+/* The node freed, its file's data first (if any); its size, its data and its name's first
+ * byte cleared before.  False when the game stopped. */
+bool freeNode(App* app, CPU& cpu, reg32 node)
+{
+    if (node == 0)
+        return true;
+    put(app, node + kNodeSize, 0);
+    const reg32 data = at(app, node + kNodeData);
+    putByte(app, node, 0);
+    if (data != 0)
+    {
+        if (!release(app, cpu, data))
+            return false;
+        put(app, node + kNodeData, 0);
+    }
+    return release(app, cpu, node);
+}
+
+/* The node named `name` (stricmp) of the list after the node `after`, or 0. */
+std::optional<reg32> findNode(App* app, CPU& cpu, reg32 name, reg32 after)
+{
+    for (reg32 node = at(app, after + kNodeNext); node != 0; node = at(app, node + kNodeNext))
+    {
+        const std::optional<reg32> differs = compareNames(app, cpu, name, node);
+        if (!differs)
+            return std::nullopt;
+        if (*differs == 0)
+            return node;
+    }
+    return 0;
+}
+
+/* A node made for the file named `name`, of `size` bytes at `data`, and linked in after the
+ * node `after`: the node, or 0. */
+std::optional<reg32> insertNode(App* app, CPU& cpu, reg32 name, reg32 size, reg32 data, reg32 after)
+{
+    const std::optional<reg32> node = newNode(app, cpu);
+    if (!node || *node == 0)
+        return node;
+    copyName(app, *node, name);
+    put(app, *node + kNodeSize, size);
+    put(app, *node + kNodeData, data);
+    const reg32 next = at(app, after + kNodeNext);
+    if (next != 0)
+        put(app, next + kNodePrevious, *node);
+    put(app, *node + kNodeNext, at(app, after + kNodeNext));
+    put(app, *node + kNodePrevious, after);
+    put(app, after + kNodeNext, *node);
+    return node;
+}
+
+/* An empty node -- no name, size, data or links -- or 0. */
+std::optional<reg32> newEmptyNode(App* app, CPU& cpu)
+{
+    const std::optional<reg32> node = newNode(app, cpu);
+    if (!node || *node == 0)
+        return node;
+    put(app, *node + kNodeSize, 0);
+    put(app, *node + kNodeData, 0);
+    put(app, *node + kNodeNext, 0);
+    put(app, *node + kNodePrevious, 0);
+    putByte(app, *node, 0);
+    return node;
+}
+
+/* The node and every node after it freed.  False when the game stopped. */
+bool freeNodes(App* app, CPU& cpu, reg32 node)
+{
+    if (node == 0)
+        return true;
+    reg32 next = at(app, node + kNodeNext);
+    if (!freeNode(app, cpu, node))
+        return false;
+    while (next != 0)
+    {
+        node = next;
+        next = at(app, node + kNodeNext);
+        if (!freeNode(app, cpu, node))
+            return false;
+    }
+    return true;
+}
+
+/* The files in the cache: the nodes after its head. */
+reg32 countFiles(App* app, reg32 cache)
+{
+    const reg32 list = at(app, cache + kCacheList);
+    reg32 count = 0;
+    if (list != 0)
+        for (reg32 node = at(app, list + kNodeNext); node != 0; node = at(app, node + kNodeNext))
+            ++count;
+    return count;
+}
+
+}  // namespace
+
+/* The node of the file named `name` in the cache, or 0 -- for no cache or no list too. */
+std::optional<reg32> findCached(App* app, CPU& cpu, reg32 cache, reg32 name)
+{
+    if (cache == 0)
+        return 0;
+    const reg32 list = at(app, cache + kCacheList);
+    if (list == 0)
+        return 0;
+    return findNode(app, cpu, name, list);
+}
+
+namespace
+{
+
+/* What addFile leaves: whether the cache had its list and its last node, the file's copy (0
+ * when no block was had), the node made for it (0 for none) and the last node it went after. */
+struct AddedFile
+{
+    bool listed = false;
+    reg32 copy = 0, node = 0, after = 0;
+};
+
+/* The file named `name`, `size` bytes at `data`, copied into a block of its own ("mpFileData")
+ * and added at the end of the cache, its last node then. */
+std::optional<AddedFile> addFile(App* app, CPU& cpu, reg32 cache, reg32 name, reg32 size, reg32 data)
+{
+    AddedFile added;
+    if (cache == 0 || at(app, cache + kCacheList) == 0 || at(app, cache + kCacheLast) == 0)
+        return added;
+    added.listed = true;
+    const std::optional<reg32> copy = allocate(app, cpu, kDataName, size, kBlockFlags);
+    if (!copy)
+        return std::nullopt;
+    added.copy = *copy;
+    if (*copy == 0)
+        return added;
+    copyBytes(app, *copy, data, size);
+    added.after = at(app, cache + kCacheLast);
+    const std::optional<reg32> node = insertNode(app, cpu, name, size, *copy, added.after);
+    if (!node)
+        return std::nullopt;
+    added.node = *node;
+    if (*node != 0)
+        put(app, cache + kCacheLast, *node);
+    return added;
+}
+
+/* A file cache ("BFL"): 'FGIB', its head (an empty node) its list's and its last; 0 if either
+ * cannot be had. */
+std::optional<reg32> newCache(App* app, CPU& cpu)
+{
+    const std::optional<reg32> cache = allocate(app, cpu, kCacheName, kCacheBytes, kBlockFlags);
+    if (!cache || *cache == 0)
+        return cache;
+    put(app, *cache, kBigMagic);
+    put(app, *cache + kCacheList, 0);
+    put(app, *cache + kCacheLast, 0);
+    const std::optional<reg32> head = newEmptyNode(app, cpu);
+    if (!head)
+        return std::nullopt;
+    if (*head != 0)
+    {
+        put(app, *cache + kCacheLast, *head);
+        put(app, *cache + kCacheList, *head);
+        return cache;
+    }
+    if (!release(app, cpu, *cache))
+        return std::nullopt;
+    return 0;
+}
+
+/* The cache freed, its nodes first and it cleared then, if it has a list.  False when the game
+ * stopped. */
+bool freeCache(App* app, CPU& cpu, reg32 cache)
+{
+    if (cache == 0)
+        return true;
+    const reg32 list = at(app, cache + kCacheList);
+    if (list != 0)
+    {
+        if (!freeNodes(app, cpu, list))
+            return false;
+        put(app, cache + kCacheList, 0);
+        put(app, cache, 0);
+        put(app, cache + kCacheLast, 0);
+    }
+    return release(app, cpu, cache);
+}
+
+/* The BIGF header the cache's files take: 16 bytes and, for each, 8 and its name with its
+ * ending.  0 for no cache or list, not a cache's magic, a file of no size or no files. */
+reg32 headerSize(App* app, reg32 cache)
+{
+    if (cache == 0)
+        return 0;
+    const reg32 list = at(app, cache + kCacheList);
+    if (list == 0 || at(app, cache) != kBigMagic)
+        return 0;
+    reg32 size = kBigHeaderBytes;
+    for (reg32 node = at(app, list + kNodeNext); node != 0; node = at(app, node + kNodeNext))
+    {
+        if (at(app, node + kNodeSize) == 0)
+            return 0;
+        size += nameLength(app, node) + kEntryName + 1;
+    }
+    return size <= kBigHeaderBytes ? 0 : size;
+}
+
+/* The bytes of the cache's files, all told; 0 if one has none.  The cache and its list are
+ * taken to be there. */
+reg32 dataSize(App* app, reg32 cache)
+{
+    reg32 total = 0;
+    for (reg32 node = at(app, at(app, cache + kCacheList) + kNodeNext); node != 0; node = at(app, node + kNodeNext))
+    {
+        const reg32 size = at(app, node + kNodeSize);
+        if (size == 0)
+            return 0;
+        total += size;
+    }
+    return total;
+}
+
+/* What writeBig leaves: 1 written, or 0; and where it stopped, as its callers' registers keep it:
+ * the header's next entry (the size handed, if it never began) and the next file (0, or the
+ * files' count when they did not fit). */
+struct BigWritten
+{
+    reg32 written, entry, file;
+};
+
+/* The cache written as a BIGF archive into the `size` bytes at `buffer` (cleared first): each
+ * file's offset, size and name in the header and its data after it, as far as they fit, then
+ * the header's four numbers.  Written 0 for no buffer, cache, size or list, no files, a header
+ * too small, all of it not fitting, or a file of no size or data. */
+std::optional<BigWritten> writeBig(App* app, CPU& cpu, reg32 buffer, reg32 cache, reg32 size)
+{
+    const reg32 end = buffer + size;
+    if (cache == 0 || buffer == 0 || size == 0 || at(app, cache + kCacheList) == 0)
+        return BigWritten{0, size, 0};
+    const reg32 files = countFiles(app, cache);
+    const reg32 header = headerSize(app, cache);
+    const reg32 data = dataSize(app, cache);
+    if (!(sreg32(files) > 0 && header >= kBigHeaderBytes && data + header <= size))
+        return BigWritten{0, size, files};
+    if (!fill(app, cpu, buffer, 0, size))
+        return std::nullopt;
+    reg32 entry = buffer + kBigHeaderBytes;
+    const reg32 headerEnd = buffer + header;
+    reg32 cursor = headerEnd;
+    reg32 count = 0;
+    reg32 file = at(app, at(app, cache + kCacheList) + kNodeNext);
+    for (; file != 0; file = at(app, file + kNodeNext))
+    {
+        const reg32 fileSize = at(app, file + kNodeSize);
+        if (cursor + fileSize > end || entry >= headerEnd)
+            break;
+        if (fileSize == 0 || at(app, file + kNodeData) == 0)
+            return BigWritten{0, entry, file};
+        const reg32 nameAt = entry + kEntryName;
+        const reg32 length = nameLength(app, file);
+        copyName(app, nameAt, file);
+        put(app, entry, turned(cursor - buffer));
+        put(app, entry + kEntrySize, turned(at(app, file + kNodeSize)));
+        copyBytes(app, cursor, at(app, file + kNodeData), at(app, file + kNodeSize));
+        ++count;
+        entry = nameAt + length + 1;
+        cursor += at(app, file + kNodeSize);
+    }
+    put(app, buffer, turned(kBigMagic));
+    put(app, buffer + 4, turned(size));
+    put(app, buffer + 8, turned(count));
+    put(app, buffer + 0xc, turned(header));
+    return BigWritten{1, entry, file};
+}
+
+}  // namespace
+
+/* The cache written as a BIGF archive into a block of its own ("BigBuffer"): it and its size to
+ * [sizeTo]; else 0 and 0 to [sizeTo] (the block freed). */
+std::optional<Packed> packCache(App* app, CPU& cpu, reg32 cache, reg32 sizeTo)
+{
+    if (cache == 0 || at(app, cache + kCacheList) == 0)
+    {
+        put(app, sizeTo, 0);
+        return Packed{0, sizeTo};
+    }
+    const reg32 header = headerSize(app, cache);
+    const reg32 data = dataSize(app, cache);
+    if (header == 0 || data == 0)
+    {
+        put(app, sizeTo, 0);
+        return Packed{0, header};
+    }
+    const reg32 size = header + data;
+    const std::optional<reg32> buffer = allocate(app, cpu, kBufferName, size, kBlockFlags);
+    if (!buffer)
+        return std::nullopt;
+    if (*buffer == 0)
+    {
+        put(app, sizeTo, 0);
+        return Packed{0, size};
+    }
+    if (at(app, cache) != kBigMagic)
+    {
+        put(app, sizeTo, 0);
+        if (!release(app, cpu, *buffer))
+            return std::nullopt;
+        return Packed{0, size};
+    }
+    const std::optional<BigWritten> written = writeBig(app, cpu, *buffer, cache, size);
+    if (!written)
+        return std::nullopt;
+    if (written->written != 0)
+    {
+        put(app, sizeTo, size);
+        return Packed{*buffer, written->file};
+    }
+    put(app, sizeTo, 0);
+    if (!release(app, cpu, *buffer))
+        return std::nullopt;
+    return Packed{0, written->file};
+}
+
+namespace
+{
+
+/* What readBig leaves: 1 read, or 0; and what its code leaves in edx, which no caller reads. */
+struct BigRead
+{
+    reg32 read, left;
+};
+
+/* The files of the BIGF archive at `data` added to the cache, each found by its name (0x4ea4a0,
+ * 0x4ea290); those of no size passed over.  Read 0 for no cache or archive, not a BIGF, no
+ * files, or a file not found or added. */
+std::optional<BigRead> readBig(App* app, CPU& cpu, reg32 cache, reg32 data)
+{
+    const GuestFrame frame(cpu, 0x14, 0x34);
+    // Handed to EA's BIG functions: a file's offset in the archive, its size, its name.
+    const reg32 offset = frame - 0xc, size = frame - 0x10, name = frame - 0x34;
+    put(app, offset, 0);
+    put(app, size, 0);
+    if (data == 0 || cache == 0)
+        return BigRead{0, 0};
+    if (turned(at(app, data)) != kBigMagic)
+        return BigRead{0, 0};
+    cpu.eax = data;
+    const std::optional<reg32> files = callGame(app, cpu, kBigCount);
+    if (!files)
+        return std::nullopt;
+    if (*files == 0)
+        return BigRead{0, 0};
+    reg32 left = 0;
+    for (reg32 file = 0; sreg32(file) < sreg32(*files); ++file)
+    {
+        cpu.eax = data;
+        cpu.edx = file;
+        cpu.ebx = name;
+        cpu.ecx = offset;
+        if (!callGame(app, cpu, kBigName))
+            return std::nullopt;
+        const std::optional<reg32> found = guest::direct<0x4ea290, locatedEntry>(app, cpu, data, name, file, offset, size);
+        if (!found)
+            return std::nullopt;
+        if (*found == 0)
+            return BigRead{0, name};
+        left = at(app, size);
+        if (left != 0)
         {
-            cpu.eax = text;
-            if (!byAddress(app, cpu, kReadNumber))
-                return;
-            putByte(app, to, cpu.al);
+            const std::optional<AddedFile> added = addFile(app, cpu, cache, name, left, data + at(app, offset));
+            if (!added)
+                return std::nullopt;
+            // What addFile's code leaves in edx: the name, the size, or the node.
+            left = !added->listed ? name : added->copy == 0 ? left : added->node;
+            if (!added->listed || added->copy == 0 || added->node == 0)
+                return BigRead{0, left};
         }
-        if (!readNumber(app, cpu))
-            return;
-        put(app, 0x55d270, cpu.eax);
-        // The fog: 1 to 100, a hundredth of it.
-        if (!readNumber(app, cpu))
-            return;
-        cpu.edx = cpu.eax;
-        if (sreg32(cpu.eax) >= 1 && sreg32(cpu.eax) > 0x64)
-            cpu.eax = 0x64;
-        else if (sreg32(cpu.edx) < 1)
-            cpu.eax = 1;
-        else
-            cpu.eax = cpu.edx;
-        put(app, number, cpu.eax);
-        fpu.push(i32(app, number));
-        fpu.st(0) = fp::mul(fpu.st(0), f32(app, kHundredth));
-        cpu.eax = text;
-        putF32(app, 0x55d268, fpu.pop());
-        // The records.
-        if (!byAddress(app, cpu, kReadNumber))
-            return;
-        put(app, 0x55d274, cpu.eax);
-        if (cpu.eax == 0)
+        putByte(app, name, 0);
+        put(app, offset, 0);
+        put(app, size, 0);
+    }
+    return BigRead{1, left};
+}
+
+}  // namespace
+
+/* A cache made of the BIGF archive at `data`, or 0 -- for none, not a BIGF, or its files not
+ * all read (the cache freed). */
+std::optional<reg32> openCache(App* app, CPU& cpu, reg32 data)
+{
+    const GuestFrame frame(cpu, 0x14, 4);  // as deep as the code's: readBig's frame below it
+    if (data == 0 || turned(at(app, data)) != kBigMagic)
+        return 0;
+    const std::optional<reg32> cache = newCache(app, cpu);
+    if (!cache || *cache == 0)
+        return cache;
+    std::optional<BigRead> read;
+    {
+        const GuestFrame slot(cpu, 0, 4);  // the call's return address
+        read = readBig(app, cpu, *cache, data);
+    }
+    if (!read)
+        return std::nullopt;
+    if (read->read != 0)
+        return cache;
+    if (!freeCache(app, cpu, *cache))
+        return std::nullopt;
+    return 0;
+}
+
+/* 0x40e000: loadSpeeds; eax the second half's index, or 0. */
+void loadOpponentSpeeds(App* app, CPU& cpu)
+{
+    const Entry entry(cpu);
+    const std::optional<reg32> half = loadSpeeds(app, cpu);
+    if (!half)
+        return;
+    cpu.eax = *half;
+    cpu.ebx = entry.ebx;
+    cpu.ecx = entry.ecx;
+    cpu.edx = entry.edx;
+    cpu.esi = entry.esi;
+    cpu.esp += 4;
+}
+
+/* 0x40f230: clearCameras; eax the last view's index times 3, as the code leaves it. */
+void clearTrackCameras(App* app, CPU& cpu)
+{
+    const Entry entry(cpu);
+    if (!clearCameras(app, cpu))
+        return;
+    cpu.eax = (kCameraViewCount - 1) * 3;
+    cpu.ebx = entry.ebx;
+    cpu.ecx = entry.ecx;
+    cpu.edx = entry.edx;
+    cpu.esi = entry.esi;
+    cpu.esp += 4;
+}
+
+/* 0x40f280: loadCameras for the path eax; eax how many. */
+void loadTrackCameras(App* app, CPU& cpu)
+{
+    const Entry entry(cpu);
+    const std::optional<reg32> loaded = loadCameras(app, cpu, cpu.eax);
+    if (!loaded)
+        return;
+    cpu.eax = *loaded;
+    cpu.ebx = entry.ebx;
+    cpu.ecx = entry.ecx;
+    cpu.edx = entry.edx;
+    cpu.esi = entry.esi;
+    cpu.esp += 4;
+}
+
+/* 0x418d00: swapInPlace of the dword at eax; eax it now. */
+void swapBigEndian(App* app, CPU& cpu)
+{
+    cpu.eax = swapInPlace(app, cpu.eax);
+    cpu.esp += 4;
+}
+
+/* 0x418d40: newNode; eax the node. */
+void newFileNode(App* app, CPU& cpu)
+{
+    const Entry entry(cpu);
+    const std::optional<reg32> node = newNode(app, cpu);
+    if (!node)
+        return;
+    cpu.eax = *node;
+    cpu.ebx = entry.ebx;
+    cpu.ecx = entry.ecx;
+    cpu.edx = entry.edx;
+    cpu.esp += 4;
+}
+
+/* 0x418d70: freeNode of the node eax; eax as the last free leaves it. */
+void freeFileNode(App* app, CPU& cpu)
+{
+    if (!freeNode(app, cpu, cpu.eax))
+        return;
+    cpu.esp += 4;
+}
+
+/* 0x418dd0: findNode of the name eax after the node edx; eax the node, edx as stricmp leaves it. */
+void findFileNode(App* app, CPU& cpu)
+{
+    const Entry entry(cpu);
+    const std::optional<reg32> node = findNode(app, cpu, cpu.eax, cpu.edx);
+    if (!node)
+        return;
+    cpu.eax = *node;
+    cpu.ebx = entry.ebx;
+    cpu.ecx = entry.ecx;
+    cpu.esp += 4;
+}
+
+/* 0x418e90: insertNode of the name eax, edx bytes at ebx, after the node ecx; eax, ebx and edx
+ * the node. */
+void insertFileNode(App* app, CPU& cpu)
+{
+    const Entry entry(cpu);
+    const std::optional<reg32> node = insertNode(app, cpu, cpu.eax, cpu.edx, cpu.ebx, cpu.ecx);
+    if (!node)
+        return;
+    cpu.eax = *node;
+    cpu.ebx = *node;
+    cpu.ecx = entry.ecx;
+    cpu.edx = *node;
+    cpu.esp += 4;
+}
+
+/* 0x418f00: newEmptyNode; eax the node. */
+void newEmptyFileNode(App* app, CPU& cpu)
+{
+    const Entry entry(cpu);
+    const std::optional<reg32> node = newEmptyNode(app, cpu);
+    if (!node)
+        return;
+    cpu.eax = *node;
+    cpu.ebx = entry.ebx;
+    cpu.ecx = entry.ecx;
+    cpu.edx = entry.edx;
+    cpu.esp += 4;
+}
+
+/* 0x418f40: freeNodes from the node eax; eax as the last free leaves it. */
+void freeFileNodes(App* app, CPU& cpu)
+{
+    if (!freeNodes(app, cpu, cpu.eax))
+        return;
+    cpu.esp += 4;
+}
+
+/* 0x418f70: countFiles of the cache eax. */
+void countFileNodes(App* app, CPU& cpu)
+{
+    cpu.eax = countFiles(app, cpu.eax);
+    cpu.esp += 4;
+}
+
+/* 0x418fe0: findCached of the name edx in the cache eax; edx, which no caller reads, as stricmp
+ * leaves it. */
+void findCachedFile(App* app, CPU& cpu)
+{
+    const Entry entry(cpu);
+    const reg32 cache = cpu.eax;
+    const std::optional<reg32> node = findCached(app, cpu, cache, cpu.edx);
+    if (!node)
+        return;
+    cpu.eax = *node;
+    cpu.ebx = entry.ebx;
+    cpu.ecx = entry.ecx;
+    cpu.esp += 4;
+}
+
+/* 0x419000: addFile of the name edx, ebx bytes at ecx, to the cache eax; eax 1 when it was
+ * added, and ebx, ecx and edx as the code leaves them. */
+void addCachedFile(App* app, CPU& cpu)
+{
+    const Entry entry(cpu);
+    const reg32 cache = cpu.eax;
+    const std::optional<AddedFile> added = addFile(app, cpu, cache, cpu.edx, cpu.ebx, cpu.ecx);
+    if (!added)
+        return;
+    cpu.eax = 0;
+    if (added->listed && added->copy == 0)
+    {
+        // edx as the allocation left it.
+        cpu.ebx = 0;
+        cpu.ecx = entry.ecx;
+    }
+    else if (added->listed)
+    {
+        cpu.eax = added->node != 0 ? 1 : 0;
+        cpu.ebx = added->node;
+        cpu.ecx = added->node != 0 ? cache : added->after;
+        cpu.edx = added->node;
+    }
+    cpu.esi = entry.esi;
+    cpu.edi = entry.edi;
+    cpu.esp += 4;
+}
+
+/* 0x419080: newCache; eax the cache. */
+void newFileCache(App* app, CPU& cpu)
+{
+    const Entry entry(cpu);
+    const std::optional<reg32> cache = newCache(app, cpu);
+    if (!cache)
+        return;
+    cpu.eax = *cache;
+    cpu.ebx = entry.ebx;
+    cpu.ecx = entry.ecx;
+    cpu.edx = entry.edx;
+    cpu.esp += 4;
+}
+
+/* 0x4190e0: freeCache of the cache eax; eax as the last free leaves it. */
+void freeFileCache(App* app, CPU& cpu)
+{
+    const Entry entry(cpu);
+    if (!freeCache(app, cpu, cpu.eax))
+        return;
+    cpu.ecx = entry.ecx;
+    cpu.edx = entry.edx;
+    cpu.esp += 4;
+}
+
+/* 0x419120: headerSize of the cache eax. */
+void bigHeaderSize(App* app, CPU& cpu)
+{
+    cpu.eax = headerSize(app, cpu.eax);
+    cpu.esp += 4;
+}
+
+/* 0x4191b0: dataSize of the cache eax. */
+void cachedDataSize(App* app, CPU& cpu)
+{
+    cpu.eax = dataSize(app, cpu.eax);
+    cpu.esp += 4;
+}
+
+/* 0x4191e0: writeBig of the cache edx into the ebx bytes at eax; eax 1 written, ebx and edx
+ * where it stopped. */
+void writeBigFile(App* app, CPU& cpu)
+{
+    const Entry entry(cpu);
+    const std::optional<BigWritten> written = writeBig(app, cpu, cpu.eax, cpu.edx, cpu.ebx);
+    if (!written)
+        return;
+    cpu.eax = written->written;
+    cpu.ebx = written->entry;
+    cpu.ecx = entry.ecx;
+    cpu.edx = written->file;
+    cpu.esi = entry.esi;
+    cpu.edi = entry.edi;
+    cpu.esp += 4;
+}
+
+/* 0x419460: packCache of the cache eax, its size to [edx]; eax the buffer, edx as the code
+ * leaves it. */
+void packFileCache(App* app, CPU& cpu)
+{
+    const Entry entry(cpu);
+    const std::optional<Packed> packed = packCache(app, cpu, cpu.eax, cpu.edx);
+    if (!packed)
+        return;
+    cpu.eax = packed->buffer;
+    cpu.ebx = entry.ebx;
+    cpu.ecx = entry.ecx;
+    cpu.edx = packed->left;
+    cpu.esi = entry.esi;
+    cpu.edi = entry.edi;
+    cpu.esp += 4;
+}
+
+/* 0x419510: readBig of the archive at edx into the cache eax; eax 1 read, edx as the code
+ * leaves it. */
+void readBigFile(App* app, CPU& cpu)
+{
+    const Entry entry(cpu);
+    const std::optional<BigRead> read = readBig(app, cpu, cpu.eax, cpu.edx);
+    if (!read)
+        return;
+    cpu.eax = read->read;
+    cpu.ebx = entry.ebx;
+    cpu.ecx = entry.ecx;
+    cpu.edx = read->left;
+    cpu.esi = entry.esi;
+    cpu.edi = entry.edi;
+    cpu.esp += 4;
+}
+
+/* 0x4195f0: openCache of the archive at eax; eax the cache. */
+void openFileCache(App* app, CPU& cpu)
+{
+    const Entry entry(cpu);
+    const std::optional<reg32> cache = openCache(app, cpu, cpu.eax);
+    if (!cache)
+        return;
+    cpu.eax = *cache;
+    cpu.ebx = entry.ebx;
+    cpu.ecx = entry.ecx;
+    cpu.edx = entry.edx;
+    cpu.esi = entry.esi;
+    cpu.edi = entry.edi;
+    cpu.esp += 4;
+}
+
+
+namespace
+{
+
+/* The track's textures loaded (0x4956f0) to [0x5dd850] unless the loading was stopped: its own
+ * Trnn1.qfs (Trnn1_8.qfs for the options' smaller set) where the race has them (mirrored) and
+ * the file is there -- traced, as bworld.c's line 1860 does (0x42d500) -- else Trnn0.qfs
+ * (Trnn0_8.qfs).  False when the game stopped. */
+bool loadTextures(App* app, CPU& cpu)
+{
+    put(app, kTrackShapes, 0);
+    if (!loadingTick(app, cpu))
+        return false;
+    if (at(app, kLoadAborted) != 0)
+        return true;
+    reg32 path = 0;
+    if (gameSettings(app).mirrored != 0)
+    {
+        const std::optional<reg32> own =
+            trackFile(app, cpu, (byte(app, kOptions) & kSmallTextures) != 0 ? kNear8 : kNear);
+        if (!own)
+            return false;
+        const std::optional<bool> there = fileExists(app, cpu, *own);
+        if (!there)
+            return false;
+        if (*there)
         {
-            put(app, 0x55d278, cpu.eax);
-        }
-        else
-        {
-            cpu.edx = cpu.eax * 8;
-            cpu.ebx = 0;
-            cpu.edx += cpu.eax;
-            cpu.eax = kNoName;
-            cpu.edx <<= 2;
-            if (!byAddress(app, cpu, kAllocate))
-                return;
-            put(app, 0x55d278, cpu.eax);
-            cpu.ebx = 0;
-            while (sreg32(cpu.ebx) < sreg32(at(app, 0x55d274)))
+            // The trace's words pushed as the code pushes them (it reads none of them).
+            const GuestFrame words(cpu, 0, kTraceWords);
+            reg32 slot = words - kTraceWords;
+            for (const reg32 word : {kTraceFormat, kTraceFile, kTraceLine})
             {
-                if (!readNumber(app, cpu))
-                    return;
-                cpu.edx = cpu.ebx * 8;
-                put(app, number, cpu.eax);
-                cpu.edx += cpu.ebx;
-                cpu.eax = at(app, 0x55d278);
-                cpu.edx <<= 2;
-                cpu.eax += cpu.edx;
-                put(app, other, cpu.eax);
-                cpu.edi = at(app, other);
-                cpu.al = byte(app, number);
-                putByte(app, cpu.edi + 2, cpu.al);
-                if (!readRecordByte(app, cpu, 1, 0x14, 0x1c) || !readRecordByte(app, cpu, 0, 0x14, 0x1c)
-                    || !readRecordWord(app, cpu, 0xc) || !readRecordByte(app, cpu, 6, 0x1c, 0x14)
-                    || !readRecordByte(app, cpu, 5, 0x14, 0x1c) || !readRecordByte(app, cpu, 4, 0x14, 0x1c)
-                    || !readRecordWord(app, cpu, 0x10) || !readRecordByte(app, cpu, 0xa, 0x14, 0x1c)
-                    || !readRecordByte(app, cpu, 9, 0x14, 0x1c))
-                    return;
-                if (!readNumber(app, cpu))
-                    return;
-                put(app, other, cpu.eax);
-                cpu.eax = at(app, 0x55d278);
-                cpu.edi = cpu.eax + cpu.edx;
-                cpu.al = byte(app, other);
-                putByte(app, cpu.edi + 8, cpu.al);
-                if (!readRecordWord(app, cpu, 0x14) || !readRecordWord(app, cpu, 0x18)
-                    || !readRecordWord(app, cpu, 0x1c) || !readNumber(app, cpu))
-                    return;
-                cpu.edi = at(app, 0x55d278);
-                cpu.edx += cpu.edi;
-                ++cpu.ebx;
-                put(app, cpu.edx + 0x20, cpu.eax);
+                put(app, slot, word);
+                slot += 4;
+            }
+            guest::direct<0x42d500, raceload::noHook>(app, cpu);
+            if (cpu.terminate)
+                return false;
+            path = *own;
+        }
+    }
+    if (path == 0)
+    {
+        const std::optional<reg32> shared =
+            trackFile(app, cpu, (byte(app, kOptions) & kSmallTextures) != 0 ? kFar8 : kFar);
+        if (!shared)
+            return false;
+        path = *shared;
+    }
+    cpu.eax = path;
+    cpu.edx = 0;
+    const std::optional<reg32> shapes = callGame(app, cpu, kLoadShapes);
+    if (!shapes)
+        return false;
+    put(app, kTrackShapes, *shapes);
+    return true;
+}
+
+/* The ghost saved to ghost.gst (0x4777d0) when the race is no replay and was run.  False when
+ * the game stopped. */
+bool saveRacedGhost(App* app, CPU& cpu)
+{
+    if (gameSettings(app).replayMode != 0 || gameSettings(app).lastTickRaced == 0)
+        return true;
+    cpu.eax = kGhostName;
+    return callGame(app, cpu, kSaveGhostFile).has_value();
+}
+
+}  // namespace
+
+/* The ghost written to the stream at `offset` (fseek from its start, then fwrite: its record
+ * and its records, 0x20f4 + 18 bytes each), if there is a stream.  False when the game stopped. */
+bool writeGhostTo(App* app, CPU& cpu, reg32 stream, reg32 offset)
+{
+    if (stream == 0)
+        return true;
+    cpu.eax = stream;
+    cpu.edx = offset;
+    cpu.ebx = 0;  // SEEK_SET
+    cpu.ecx = stream;
+    if (!callGame(app, cpu, kFseek))
+        return false;
+    cpu.eax = kGhost;
+    cpu.edx = at(app, kGhostCount) * kGhostRecordBytes + kGhostBytes;
+    cpu.ebx = 1;
+    return callGame(app, cpu, kFwrite).has_value();
+}
+
+/* The ghost read from the game's file handle (0x4e2de0), if there is one: its record, then as
+ * many records as it says; [0x55d000] 1.  False when the game stopped. */
+bool readGhostFrom(App* app, CPU& cpu, reg32 handle)
+{
+    if (handle == 0)
+        return true;
+    if (!guest::direct<0x4e2de0, ea::readChecked>(app, cpu, handle, kGhost, kGhostBytes))
+        return false;
+    if (!guest::direct<0x4e2de0, ea::readChecked>(app, cpu, handle, kGhostRecords, at(app, kGhostCount) * kGhostRecordBytes))
+        return false;
+    put(app, kGhostRead, 1);
+    return true;
+}
+
+/* 0x41d8a0: trackFile of the end eax; eax the path. */
+void trackFilePath(App* app, CPU& cpu)
+{
+    const Entry entry(cpu);
+    const std::optional<reg32> path = trackFile(app, cpu, cpu.eax);
+    if (!path)
+        return;
+    cpu.eax = *path;
+    cpu.edx = entry.edx;
+    cpu.esp += 4;
+}
+
+/* 0x41d8d0: trackFolderFile of the name eax; eax the path. */
+void trackFolderPath(App* app, CPU& cpu)
+{
+    const Entry entry(cpu);
+    const std::optional<reg32> path = trackFolderFile(app, cpu, cpu.eax);
+    if (!path)
+        return;
+    cpu.eax = *path;
+    cpu.edx = entry.edx;
+    cpu.esp += 4;
+}
+
+/* 0x41dbc0: loadTextures; eax as the last call leaves it (the shapes, or the loading bar's). */
+void loadTrackTextures(App* app, CPU& cpu)
+{
+    const Entry entry(cpu);
+    if (!loadTextures(app, cpu))
+        return;
+    cpu.ecx = entry.ecx;
+    cpu.edx = entry.edx;
+    cpu.esp += 4;
+}
+
+/* 0x477a90: saveRacedGhost; the registers as the saving leaves them. */
+void saveGhost(App* app, CPU& cpu)
+{
+    if (!saveRacedGhost(app, cpu))
+        return;
+    cpu.esp += 4;
+}
+
+/* 0x477ac0: writeGhostTo the stream eax at edx; eax and edx as fwrite leaves them. */
+void writeGhost(App* app, CPU& cpu)
+{
+    const Entry entry(cpu);
+    if (!writeGhostTo(app, cpu, cpu.eax, cpu.edx))
+        return;
+    cpu.ebx = entry.ebx;
+    cpu.ecx = entry.ecx;
+    cpu.esp += 4;
+}
+
+/* 0x477b00: readGhostFrom the handle eax; eax as the reading leaves it. */
+void readGhost(App* app, CPU& cpu)
+{
+    const Entry entry(cpu);
+    if (!readGhostFrom(app, cpu, cpu.eax))
+        return;
+    cpu.ebx = entry.ebx;
+    cpu.ecx = entry.ecx;
+    cpu.edx = entry.edx;
+    cpu.esp += 4;
+}
+
+namespace
+{
+
+// The sky's, as the horizon fills them: its colour (three bytes and a dword), the fog's
+// distance (a hundredth), the records' count and block (36 bytes each).
+constexpr reg32 kSkyColour = 0x55d26c, kSkyColourWord = 0x55d270, kFogScale = 0x55d268;
+constexpr reg32 kRecordCount = 0x55d274, kRecords = 0x55d278, kRecordBytes = 36;
+constexpr sreg32 kFogNearest = 1, kFogFarthest = 100;
+// The sun's and the clouds': four numbers, the sun's size (and its reciprocal), two floats, the
+// sun's height (chopped), its place (cosine and sine times its distance), the clouds' (two
+// numbers and a float), the clouds' turn (16.16 turns, and a float within 0 and 1), a number and
+// five floats.
+constexpr reg32 kSunNumbers[] = {0x55d1f4, 0x55d204, 0x55d260, 0x55d264};
+constexpr reg32 kSunSize = 0x55d208, kSunFloat = 0x55d248, kSunTripled = 0x55d24c;
+constexpr reg32 kSunNumber = 0x55d1f8, kSunOther = 0x55d200, kSunHeight = 0x55d1fc;
+constexpr reg32 kSunAcross = 0x55d20c, kSunAlong = 0x55d210;
+// [0x55d158]: no fog colour when not 0.
+constexpr reg32 kNoFog = 0x55d158, kCloudOther = 0x55d15c, kCloudFloat = 0x55d1c8;
+constexpr reg32 kCloudTurn = 0x55d1f0, kCloudTurnFloat = 0x55d1cc;
+constexpr sreg32 kDegreesTurn = 360;
+constexpr reg32 kCloudLast = 0x55d160;
+constexpr reg32 kCloudFloats[] = {0x55d164, 0x55d168, 0x55d16c, 0x55d170, 0x55d174};
+// The colours read as bytes: the fog's, the top's and the bottom's (blue, green, red).
+constexpr reg32 kColourBytes[] = {0x55d1c2, 0x55d1c1, 0x55d1c0, 0x55d1c6, 0x55d1c5, 0x55d1c4,
+                                  0x55d17a, 0x55d179, 0x55d178};
+// The weather's: three halves, four running counts, three dwords after.
+constexpr reg32 kWeatherHalves[] = {0x8ca1ea, 0x8ca1ec, 0x8ca1ee};
+constexpr reg32 kWeatherCounts = 0x8ca1f0;
+constexpr reg32 kWeatherWords[] = {0x8ca1f0, 0x8ca1f4, 0x8ca1f8, 0x8ca1fc, 0x55d148, 0x55d14c};
+constexpr reg32 kWeatherLast = 0x55d150;
+// The sun's direction (three floats, the middle one a half) and the 16.16 angle's scale.
+constexpr reg32 kSunDirection = 0x55d2a8;
+constexpr reg32 kHalfBits = 0x3f000000;
+// The sky's bands: 8, from the top's colour to the bottom's, each with its mirror (16 less it),
+// four bytes each from 0x55d178; the band at 0x55d17c copied to 0x55d1bc; the fog's colour.
+constexpr reg32 kBandCount = 8, kBands = 0x55d178, kBandMirror = 16, kBandCopy = 0x55d1bc;
+constexpr reg32 kFogColour = 0x6ff9f8;
+
+void putFloat(App* app, reg32 address, float value)
+{
+    app->getMemory<float>(address) = value;
+}
+
+float floatAt(App* app, reg32 address)
+{
+    return app->getMemory<float>(address);
+}
+
+reg32 bitsOf(float value)
+{
+    reg32 bits;
+    std::memcpy(&bits, &value, sizeof bits);
+    return bits;
+}
+
+/* The horizon's next number, its text's place at `text` (moved on past it). */
+std::optional<reg32> readNumber(App* app, CPU& cpu, reg32 text)
+{
+    cpu.eax = text;
+    return callGame(app, cpu, kReadNumber);
+}
+
+/* __CHP: `value` to a whole value, towards 0, on the x87. */
+std::optional<x86::Float> chop(App* app, CPU& cpu, x86::Float value)
+{
+    cpu.fpu.push(value);
+    if (!callGame(app, cpu, kChop))
+        return std::nullopt;
+    return cpu.fpu.take();
+}
+
+/* The cosine (0x4ea950) or sine (0x4ea930) of the float `degrees`, from the x87. */
+std::optional<x86::Float> trigonometry(App* app, CPU& cpu, reg32 target, float degrees)
+{
+    if (!callGame(app, cpu, target, {bitsOf(degrees)}))
+        return std::nullopt;
+    return cpu.fpu.take();
+}
+
+/* A 16.16 colour channel's whole part, towards 0 (sar, sbb, sar). */
+reg8 channel(reg32 value)
+{
+    return reg8(sreg32(value) / 0x10000);
+}
+
+/* The sky's horizon record `index`'s place: [0x55d278] read again each time, as the code does. */
+reg32 recordAt(App* app, reg32 index)
+{
+    return at(app, kRecords) + index * kRecordBytes;
+}
+
+/* The track's sky, sky.fsh in its folder: its clouds' shape (palette to 0x55d21c), the sun's (to
+ * 0x6ff9a0, 4 of its colours with the options' smaller textures, else 7) and the sun's glow
+ * placed (0x47a970) -- CLD/CHR/SUN with N at night, W in the weather, D by day -- [0x563a90] the
+ * sun's palette, the file freed and the sky made (0x47ae10).  False when the game stopped. */
+bool loadSkyShapes(App* app, CPU& cpu, reg32 track)
+{
+    const GuestFrame frame(cpu, 0x18, 0x100);
+    const reg32 name = frame - 0x100;  // handed to sprintf and the loading
+    if (!format(app, cpu, {name, kSkyName, kDataPath, track}))
+        return false;
+    const std::optional<reg32> file = loadFile(app, cpu, name, 0);
+    if (!file)
+        return false;
+    if (*file == 0)
+        return true;
+    if (!loadingTick(app, cpu))
+        return false;
+    const reg32 sunColours = (byte(app, kOptions) & kSmallTextures) != 0 ? 4 : 7;
+    // The shapes' names: clouds, sun, glow.
+    constexpr reg32 names[4][3] = {{0x53b354, 0x53b35c, 0x53b364},   // night, weather
+                                   {0x53b36c, 0x53b374, 0x53b37c},   // night
+                                   {0x53b384, 0x53b38c, 0x53b394},   // weather
+                                   {0x53b39c, 0x53b3a4, 0x53b3ac}};  // day
+    const reg32* shapes = names[(gameSettings(app).night != 0 ? 0 : 2) + (gameSettings(app).weather != 0 ? 0 : 1)];
+    cpu.eax = *file;
+    cpu.edx = shapes[0];
+    cpu.ebx = 0x40;
+    cpu.ecx = kCloudPalette;
+    if (!callGame(app, cpu, kFindShape, {7}))
+        return false;
+    cpu.eax = *file;
+    cpu.edx = shapes[1];
+    cpu.ebx = 0x80;
+    cpu.ecx = kSunPalette;
+    if (!callGame(app, cpu, kFindShape, {sunColours}))
+        return false;
+    cpu.eax = *file;
+    cpu.edx = shapes[2];
+    if (!callGame(app, cpu, kPlaceSun))
+        return false;
+    put(app, kSunShapes, kSunPalette);
+    if (!loadingTick(app, cpu) || !release(app, cpu, *file))
+        return false;
+    return callGame(app, cpu, kSkyMade) && loadingTick(app, cpu);
+}
+
+/* The track's horizon, 3Trnn.hrz (with N at night, W in the weather) in its folder, read number
+ * by number (0x4be020) into the sky's: its colours, the fog's (1 to 100, a hundredth), its
+ * records (36 bytes each, allocated to [0x55d278]), the sun's and the clouds' places and sizes,
+ * the weather's counts (0x8ca1e8 on); the file freed, the sky loaded (loadSkyShapes), the sun's
+ * direction worked out and its length taken, and the sky's 8 bands of colours, top and bottom,
+ * from its two colours; the fog's colour from the bottom one, or none.  What the code leaves in
+ * eax: the file's loading's 0, or the last tick's with the fog colour's last byte in it. */
+std::optional<reg32> readHorizon(App* app, CPU& cpu, reg32 track)
+{
+    const GuestFrame frame(cpu, 0x18, 0x144);
+    const reg32 name = frame - 0x144, text = frame - 0x34;  // handed to sprintf, the loading, the reading
+    put(app, text, 0);
+    const bool night = gameSettings(app).night != 0, weather = gameSettings(app).weather != 0;
+    const reg32 nameFormat = night ? (weather ? kHorizonNightWeather : kHorizonNight)
+                                   : (weather ? kHorizonWeather : kHorizonName);
+    if (!format(app, cpu, {name, nameFormat, kDataPath, track, track}) || !loadingTick(app, cpu))
+        return std::nullopt;
+    const std::optional<reg32> file = loadFile(app, cpu, name, 0x10);
+    if (!file)
+        return std::nullopt;
+    if (*file == 0)
+        return 0;
+    put(app, text, *file);
+    std::optional<reg32> number;
+    const auto next = [&] { return (number = readNumber(app, cpu, text)).has_value(); };
+
+    // The sky's colour, its three bytes, and its fourth's dword.
+    for (const reg32 to : {kSkyColour + 2, kSkyColour + 1, kSkyColour})
+    {
+        if (!next())
+            return std::nullopt;
+        putByte(app, to, reg8(*number));
+    }
+    if (!next())
+        return std::nullopt;
+    put(app, kSkyColourWord, *number);
+    // The fog: 1 to 100, a hundredth of it.
+    if (!next())
+        return std::nullopt;
+    const sreg32 fog = sreg32(*number) > kFogFarthest ? kFogFarthest
+                       : sreg32(*number) < kFogNearest ? kFogNearest
+                                                         : sreg32(*number);
+    putFloat(app, kFogScale, float(fp::mul(x86::Float(fog), x86::Float(floatAt(app, kHundredth)))));
+    // The records.
+    if (!next())
+        return std::nullopt;
+    put(app, kRecordCount, *number);
+    if (*number == 0)
+        put(app, kRecords, 0);
+    else
+    {
+        const std::optional<reg32> records = allocate(app, cpu, kNoName, *number * kRecordBytes, 0);
+        if (!records)
+            return std::nullopt;
+        put(app, kRecords, *records);
+        for (reg32 index = 0; sreg32(index) < sreg32(at(app, kRecordCount)); ++index)
+        {
+            // Its bytes and dwords, in the file's order.
+            constexpr struct { reg32 offset; bool dword; } fields[] = {
+                {2, false}, {1, false}, {0, false}, {0xc, true}, {6, false}, {5, false}, {4, false},
+                {0x10, true}, {0xa, false}, {9, false}, {8, false}, {0x14, true}, {0x18, true},
+                {0x1c, true}, {0x20, true}};
+            for (const auto& field : fields)
+            {
+                if (!next())
+                    return std::nullopt;
+                if (field.dword)
+                    put(app, recordAt(app, index) + field.offset, *number);
+                else
+                    putByte(app, recordAt(app, index) + field.offset, reg8(*number));
             }
         }
-        // The sun's and the clouds'.
-        for (const reg32 to : {0x55d1f4u, 0x55d204u, 0x55d260u, 0x55d264u})
-        {
-            if (!readNumber(app, cpu))
-                return;
-            put(app, to, cpu.eax);
-        }
-        if (!readNumber(app, cpu))
-            return;
-        put(app, number, cpu.eax);
-        fpu.push(i32(app, number));
-        putF32(app, 0x55d208, fpu.pop());
-        if ((at(app, 0x55d208) & 0x7fffffff) != 0)
-        {
-            fpu.push(f32(app, 0x55d208));
-            fpu.push(x86::Float(1.0));
-            fpu.st(1) = fp::div(fpu.st(0), fpu.st(1));
-            fpu.pop();
-            putF32(app, 0x55d208, fpu.pop());
-        }
-        if (!readFloat(app, cpu, 0x14, 0x55d248) || !readNumber(app, cpu))
-            return;
-        cpu.edx = cpu.eax;
-        cpu.eax <<= 2;
-        cpu.eax -= cpu.edx;
-        put(app, other, cpu.eax);
-        fpu.push(i32(app, other));
-        cpu.eax = text;
-        putF32(app, 0x55d24c, fpu.pop());
-        if (!byAddress(app, cpu, kReadNumber))
-            return;
-        put(app, 0x55d1f8, cpu.eax);
-        if (!readNumber(app, cpu))
-            return;
-        put(app, 0x55d200, cpu.eax);
-        if (!readNumber(app, cpu))
-            return;
-        put(app, number, cpu.eax);
-        fpu.push(i32(app, number));
-        fpu.push(fpu.st(0));
-        fpu.st(0) = fp::mul(fpu.st(0), f64(app, kHeightScale));
-        cpu.eax = text;
-        fpu.st(1) = fpu.st(0);
-        fpu.pop();
-        if (!byAddress(app, cpu, kChop))
-            return;
-        put(app, 0x55d1fc, reg32(fp::toInteger<sreg32>(fpu.pop())));
-        // The sun's angle and distance: its place on the sky.
-        if (!byAddress(app, cpu, kReadNumber))
-            return;
-        cpu.edx = cpu.eax;
-        if (!readNumber(app, cpu))
-            return;
-        put(app, number, cpu.eax);
-        put(app, other, cpu.edx);
-        fpu.push(i32(app, number));
-        fpu.st(0) = fp::mul(fpu.st(0), f64(app, kSunAngleScale));
-        fpu.push(i32(app, other));
-        fpu.st(0) = fp::mul(fpu.st(0), f64(app, kSunDistanceScale));
-        std::swap(fpu.st(0), fpu.st(1));
-        putF32(app, cpu.ebp - 0x38, fpu.pop());
-        push(app, cpu, at(app, cpu.ebp - 0x38));
-        putF32(app, cpu.ebp - 0x3c, fpu.pop());
-        if (!byAddress(app, cpu, kCosine))
-            return;
-        fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.ebp - 0x3c));
-        push(app, cpu, at(app, cpu.ebp - 0x38));
-        putF32(app, 0x55d20c, fpu.pop());
-        if (!byAddress(app, cpu, kSine))
-            return;
-        fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.ebp - 0x3c));
-        cpu.eax = text;
-        putF32(app, 0x55d210, fpu.pop());
-        if (!byAddress(app, cpu, kReadNumber))
-            return;
-        put(app, 0x55d158, cpu.eax);
-        if (!readNumber(app, cpu))
-            return;
-        put(app, 0x55d15c, cpu.eax);
-        if (!readNumber(app, cpu))
-            return;
-        put(app, number, cpu.eax);
-        fpu.push(i32(app, number));
-        putF32(app, 0x55d1c8, fpu.pop());
-        // The clouds' turn: degrees made 16.16 turns, then within 0 and 1.
-        if (!readNumber(app, cpu))
-            return;
-        cpu.eax <<= 16;
-        cpu.edx = cpu.eax;
-        cpu.ebx = 0x168;
-        cpu.edx = reg32(sreg32(cpu.edx) >> 31);
-        {
-            const x86::sreg64 dividend = x86::sreg64(x86::reg64(cpu.edx) << 32 | cpu.eax);
-            cpu.eax = reg32(dividend / sreg32(cpu.ebx));
-            cpu.edx = reg32(dividend % sreg32(cpu.ebx));
-        }
-        put(app, 0x55d1f0, cpu.eax);
-        fpu.push(i32(app, 0x55d1f0));
-        fpu.st(0) = fp::mul(fpu.st(0), f32(app, kTurnScale));
-        for (;;)
-        {
-            putF32(app, 0x55d1cc, fpu.pop());
-            fpu.compare(x86::Float(0.0), f32(app, 0x55d1cc));
-            cpu.ax = fpu.status.word;
-            if ((cpu.ah & 0x41) != 0)  // jbe: CF (C0) or ZF (C3)
-                break;
-            fpu.push(x86::Float(1.0));
-            fpu.st(0) = fp::add(fpu.st(0), f32(app, 0x55d1cc));
-        }
-        while (sreg32(at(app, 0x55d1cc)) > 0x3f800000)
-        {
-            fpu.push(f32(app, 0x55d1cc));
-            fpu.st(0) = fp::add(fpu.st(0), f32(app, kMinusOne));
-            putF32(app, 0x55d1cc, fpu.pop());
-        }
-        if (!readNumber(app, cpu))
-            return;
-        put(app, 0x55d160, cpu.eax);
-        if (!readFloat(app, cpu, 0x14, 0x55d164) || !readFloat(app, cpu, 0x14, 0x55d168)
-            || !readFloat(app, cpu, 0x14, 0x55d16c) || !readFloat(app, cpu, 0x14, 0x55d170)
-            || !readFloat(app, cpu, 0x1c, 0x55d174))
-            return;
-        // The sky's colours: the fog's, the top's, the bottom's.
-        for (const reg32 to : {0x55d1c2u, 0x55d1c1u, 0x55d1c0u, 0x55d1c6u, 0x55d1c5u, 0x55d1c4u, 0x55d17au,
-                               0x55d179u, 0x55d178u})
-        {
-            if (!readNumber(app, cpu))
-                return;
-            putByte(app, to, cpu.al);
-        }
-        if (!readNumber(app, cpu))
-            return;
-        cpu.bl = cpu.al;
-        if (!readNumber(app, cpu))
-            return;
-        cpu.bh = cpu.al;
-        if (!readNumber(app, cpu))
-            return;
-        putByte(app, cpu.ebp - 0xc, cpu.al);
-        if (!readNumber(app, cpu))
-            return;
-        cpu.dl = cpu.al;
-        if (!readNumber(app, cpu))
-            return;
-        putByte(app, cpu.ebp - 4, cpu.al);
-        if (!readNumber(app, cpu))
-            return;
-        putByte(app, cpu.ebp - 8, cpu.al);
-        // The weather's.
-        if (!readNumber(app, cpu))
-            return;
-        putByte(app, kWeatherCount, cpu.al);
-        for (const reg32 to : {0x8ca1eau, 0x8ca1ecu, 0x8ca1eeu})
-        {
-            if (!readNumber(app, cpu))
-                return;
-            putHalf(app, to, cpu.ax);
-        }
-        for (const reg32 to : {0x8ca1f0u, 0x8ca1f4u, 0x8ca1f8u, 0x8ca1fcu, 0x55d148u, 0x55d14cu})
-        {
-            if (!readNumber(app, cpu))
-                return;
-            put(app, to, cpu.eax);
-        }
-        if (!readNumber(app, cpu))
-            return;
-        cpu.edi = at(app, 0x8ca1f4);
-        put(app, 0x55d150, cpu.eax);
-        cpu.eax = at(app, 0x8ca1f0);
-        cpu.edi += cpu.eax;
-        put(app, 0x8ca1f4, cpu.edi);
-        cpu.eax = cpu.edi;
-        cpu.edi = at(app, 0x8ca1f8);
-        cpu.edi += cpu.eax;
-        put(app, 0x8ca1f8, cpu.edi);
-        cpu.eax = cpu.edi;
-        put(app, 0x8ca1fc, at(app, 0x8ca1fc) + cpu.eax);
-        if (cpu.esi != 0)
-        {
-            cpu.eax = cpu.esi;
-            if (!byAddress(app, cpu, kFree))
-                return;
-        }
-        cpu.eax = cpu.ecx;
-        if (!direct(app, cpu, loadSky) || !byAddress(app, cpu, kLoadingTick))
-            return;
-        // The sun's direction, 16.16 sine and cosine of the clouds' turn.
-        cpu.eax = at(app, 0x55d1f0);
-        if (!byAddress(app, cpu, kFixedSine))
-            return;
-        put(app, number, cpu.eax);
-        fpu.push(i32(app, number));
-        cpu.eax = 0x3f000000;
-        fpu.st(0) = fp::mul(fpu.st(0), f64(app, kFixedScale));
-        put(app, 0x55d2ac, cpu.eax);
-        cpu.eax = at(app, 0x55d1f0);
-        putF32(app, 0x55d2a8, fpu.pop());
-        if (!byAddress(app, cpu, kFixedCosine))
-            return;
-        put(app, number, cpu.eax);
-        cpu.ecx = 8;
-        fpu.push(i32(app, number));
-        fpu.st(0) = fp::mul(fpu.st(0), f64(app, kFixedScale));
-        put(app, cpu.ebp - 0x30, cpu.ecx);
-        cpu.eax = 0x55d2a8;
-        putF32(app, 0x55d2b0, fpu.pop());
-        if (!byAddress(app, cpu, kVectorLength))
-            return;
-        fpu.pop();
-        if (!byAddress(app, cpu, kLoadingTick))
-            return;
-        // The sky's 8 bands: from the top's colour to the bottom's in steps
-        // of an eighth, 16.16, the band and its mirror (16 - it) each.
-        cpu.eax = 0;
-        cpu.edx &= 0xff;
-        cpu.al = cpu.bl;
-        cpu.edx -= cpu.eax;
-        cpu.edx <<= 0xd;
-        put(app, cpu.ebp - 0x18, cpu.edx);
-        cpu.edx = 0;
-        cpu.esi = cpu.bh;
-        cpu.dl = byte(app, cpu.ebp - 4);
-        cpu.edi = 0;
-        cpu.edx -= cpu.esi;
-        cpu.ecx = cpu.eax;
-        cpu.edx <<= 0xd;
-        cpu.ebx = 0;
-        put(app, cpu.ebp - 0x10, cpu.edx);
-        cpu.edx = 0;
-        cpu.bl = byte(app, cpu.ebp - 0xc);
-        cpu.dl = byte(app, cpu.ebp - 8);
-        cpu.ecx <<= 0x10;
-        cpu.edx -= cpu.ebx;
-        cpu.esi <<= 0x10;
-        cpu.edx <<= 0xd;
-        cpu.ebx <<= 0x10;
-        put(app, cpu.ebp - 0x2c, cpu.edx);
-        while (sreg32(cpu.edi) < sreg32(at(app, cpu.ebp - 0x30)))
-        {
-            put(app, cpu.ebp - 0x28, bandChannel(cpu, cpu.ecx));
-            put(app, cpu.ebp - 0x24, bandChannel(cpu, cpu.esi));
-            bandChannel(cpu, cpu.ebx);
-            cpu.dl = byte(app, cpu.ebp - 0x28);
-            put(app, cpu.ebp - 0x20, cpu.eax);
-            putByte(app, cpu.edi * 4 + 0x55d17e, cpu.dl);
-            cpu.dl = byte(app, cpu.ebp - 0x24);
-            cpu.eax = 0x10;
-            putByte(app, cpu.edi * 4 + 0x55d17d, cpu.dl);
-            cpu.dl = byte(app, cpu.ebp - 0x20);
-            cpu.eax -= cpu.edi;
-            putByte(app, cpu.edi * 4 + 0x55d17c, cpu.dl);
-            cpu.dl = byte(app, cpu.ebp - 0x28);
-            putByte(app, cpu.eax * 4 + 0x55d17a, cpu.dl);
-            cpu.dl = byte(app, cpu.ebp - 0x24);
-            putByte(app, cpu.eax * 4 + 0x55d179, cpu.dl);
-            cpu.dl = byte(app, cpu.ebp - 0x20);
-            ++cpu.edi;
-            putByte(app, cpu.eax * 4 + 0x55d178, cpu.dl);
-            cpu.edx = at(app, cpu.ebp - 0x18);
-            cpu.eax = at(app, cpu.ebp - 0x10);
-            cpu.ecx += cpu.edx;
-            cpu.edx = at(app, cpu.ebp - 0x2c);
-            cpu.esi += cpu.eax;
-            cpu.ebx += cpu.edx;
-        }
-        cpu.eax = at(app, 0x55d17c);
-        put(app, 0x55d1bc, cpu.eax);
-        if (!byAddress(app, cpu, kLoadingTick))
-            return;
-        // The fog's colour: none, or the bottom's.
-        cpu.ecx = at(app, 0x55d158);
-        if (cpu.ecx != 0)
-        {
-            cpu.ah = 0;
-            putByte(app, 0x6ff9fa, cpu.ah);
-            putByte(app, 0x6ff9f9, cpu.ah);
-            putByte(app, 0x6ff9f8, cpu.ah);
-            putByte(app, 0x6ff9fb, cpu.ah);
-        }
-        else
-        {
-            cpu.al = byte(app, 0x55d17a);
-            putByte(app, 0x6ff9fa, cpu.al);
-            cpu.al = byte(app, 0x55d179);
-            cpu.bh = 0xff;
-            putByte(app, 0x6ff9f9, cpu.al);
-            cpu.al = byte(app, 0x55d178);
-            putByte(app, 0x6ff9fb, cpu.bh);
-            putByte(app, 0x6ff9f8, cpu.al);
-        }
     }
-    cpu.esp = cpu.ebp;
-    cpu.ebp = pop(app, cpu);
-    cpu.edi = pop(app, cpu);
-    cpu.esi = pop(app, cpu);
-    cpu.edx = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
-    cpu.ebx = pop(app, cpu);
-    cpu.esp += 4;
+    // The sun's and the clouds'.
+    for (const reg32 to : kSunNumbers)
+    {
+        if (!next())
+            return std::nullopt;
+        put(app, to, *number);
+    }
+    if (!next())
+        return std::nullopt;
+    const float sunSize = float(x86::Float(sreg32(*number)));
+    putFloat(app, kSunSize, sunSize);
+    if (sunSize != 0.0f)  // its bits but the sign's: a whole number's float, never a NaN
+        putFloat(app, kSunSize, float(fp::div(x86::Float(1.0), x86::Float(sunSize))));
+    if (!next())
+        return std::nullopt;
+    putFloat(app, kSunFloat, float(x86::Float(sreg32(*number))));
+    if (!next())
+        return std::nullopt;
+    putFloat(app, kSunTripled, float(x86::Float(sreg32(*number * 3))));
+    if (!next())
+        return std::nullopt;
+    put(app, kSunNumber, *number);
+    if (!next())
+        return std::nullopt;
+    put(app, kSunOther, *number);
+    if (!next())
+        return std::nullopt;
+    const std::optional<x86::Float> height =
+        chop(app, cpu, fp::mul(x86::Float(sreg32(*number)), x86::Float(app->getMemory<double>(kHeightScale))));
+    if (!height)
+        return std::nullopt;
+    put(app, kSunHeight, reg32(fp::toInteger<sreg32>(*height)));
+    // The sun's angle and distance: its place on the sky.
+    if (!next())
+        return std::nullopt;
+    const reg32 distanceNumber = *number;
+    if (!next())
+        return std::nullopt;
+    const float angle =
+        float(fp::mul(x86::Float(sreg32(*number)), x86::Float(app->getMemory<double>(kSunAngleScale))));
+    const float distance =
+        float(fp::mul(x86::Float(sreg32(distanceNumber)), x86::Float(app->getMemory<double>(kSunDistanceScale))));
+    const std::optional<x86::Float> cosine = trigonometry(app, cpu, kCosine, angle);
+    if (!cosine)
+        return std::nullopt;
+    putFloat(app, kSunAcross, float(fp::mul(*cosine, x86::Float(distance))));
+    const std::optional<x86::Float> sine = trigonometry(app, cpu, kSine, angle);
+    if (!sine)
+        return std::nullopt;
+    putFloat(app, kSunAlong, float(fp::mul(*sine, x86::Float(distance))));
+    if (!next())
+        return std::nullopt;
+    put(app, kNoFog, *number);
+    if (!next())
+        return std::nullopt;
+    put(app, kCloudOther, *number);
+    if (!next())
+        return std::nullopt;
+    putFloat(app, kCloudFloat, float(x86::Float(sreg32(*number))));
+    // The clouds' turn: degrees made 16.16 turns, then within 0 and 1.
+    if (!next())
+        return std::nullopt;
+    const std::int64_t turnDividend = sreg32(*number << 16);
+    const reg32 cloudTurn = reg32(turnDividend / kDegreesTurn);
+    put(app, kCloudTurn, cloudTurn);
+    float turn = float(fp::mul(x86::Float(sreg32(cloudTurn)), x86::Float(floatAt(app, kTurnScale))));
+    // fcom with 0, jbe: on while 0 is above it, not for a NaN -- a whole number times a constant
+    // and 1 added, never one; then its bits over 1.0's: a float over 1.0, never infinite.
+    for (;;)
+    {
+        putFloat(app, kCloudTurnFloat, turn);
+        if (!(turn < 0.0f))
+            break;
+        turn = float(fp::add(x86::Float(1.0), x86::Float(turn)));
+    }
+    while (turn > 1.0f)
+    {
+        turn = float(fp::add(x86::Float(turn), x86::Float(floatAt(app, kMinusOne))));
+        putFloat(app, kCloudTurnFloat, turn);
+    }
+    if (!next())
+        return std::nullopt;
+    put(app, kCloudLast, *number);
+    for (const reg32 to : kCloudFloats)
+    {
+        if (!next())
+            return std::nullopt;
+        putFloat(app, to, float(x86::Float(sreg32(*number))));
+    }
+    // The sky's colours: the fog's, the top's, the bottom's.
+    for (const reg32 to : kColourBytes)
+    {
+        if (!next())
+            return std::nullopt;
+        putByte(app, to, reg8(*number));
+    }
+    // The bands' two colours, top and bottom: red, green, blue.
+    reg8 top[3], bottom[3];
+    for (reg8* channelTo : {&top[0], &top[1], &top[2], &bottom[0], &bottom[1], &bottom[2]})
+    {
+        if (!next())
+            return std::nullopt;
+        *channelTo = reg8(*number);
+    }
+    // The weather's.
+    if (!next())
+        return std::nullopt;
+    putByte(app, kWeatherCount, reg8(*number));
+    for (const reg32 to : kWeatherHalves)
+    {
+        if (!next())
+            return std::nullopt;
+        app->getMemory<reg16>(to) = reg16(*number);
+    }
+    for (const reg32 to : kWeatherWords)
+    {
+        if (!next())
+            return std::nullopt;
+        put(app, to, *number);
+    }
+    if (!next())
+        return std::nullopt;
+    // The four counts made running sums.
+    const reg32 second = at(app, kWeatherCounts + 4);
+    put(app, kWeatherLast, *number);
+    const reg32 upToSecond = second + at(app, kWeatherCounts);
+    put(app, kWeatherCounts + 4, upToSecond);
+    const reg32 upToThird = at(app, kWeatherCounts + 8) + upToSecond;
+    put(app, kWeatherCounts + 8, upToThird);
+    put(app, kWeatherCounts + 0xc, at(app, kWeatherCounts + 0xc) + upToThird);
+    if (!release(app, cpu, *file))
+        return std::nullopt;
+    {
+        const GuestFrame slot(cpu, 0, 4);  // the call's return address
+        if (!loadSkyShapes(app, cpu, track))
+            return std::nullopt;
+    }
+    if (!loadingTick(app, cpu))
+        return std::nullopt;
+    // The sun's direction, 16.16 sine and cosine of the clouds' turn.
+    const reg32 fixedSine = guest::direct<0x4f2380, sineOf>(app, cpu, at(app, kCloudTurn));
+    if (cpu.terminate)
+        return std::nullopt;
+    const float across =
+        float(fp::mul(x86::Float(sreg32(fixedSine)), x86::Float(app->getMemory<double>(kFixedScale))));
+    put(app, kSunDirection + 4, kHalfBits);
+    putFloat(app, kSunDirection, across);
+    const reg32 fixedCosine = guest::direct<0x4f23f0, cosineOf>(app, cpu, at(app, kCloudTurn));
+    if (cpu.terminate)
+        return std::nullopt;
+    putFloat(app, kSunDirection + 8,
+             float(fp::mul(x86::Float(sreg32(fixedCosine)), x86::Float(app->getMemory<double>(kFixedScale)))));
+    // Its length, dropped.
+    guest::direct<0x4972f0, vertices::normaliseVector>(app, cpu, kSunDirection);
+    if (cpu.terminate)
+        return std::nullopt;
+    if (!loadingTick(app, cpu))
+        return std::nullopt;
+    // The sky's 8 bands: from the top's colour to the bottom's in steps of an eighth, 16.16, the
+    // band and its mirror (16 less it) each.
+    reg32 colour[3], step[3];
+    for (int i = 0; i < 3; ++i)
+    {
+        step[i] = (reg32(bottom[i]) - reg32(top[i])) << 13;
+        colour[i] = reg32(top[i]) << 16;
+    }
+    for (reg32 band = 0; band < kBandCount; ++band)
+    {
+        const reg8 red = channel(colour[0]), green = channel(colour[1]), blue = channel(colour[2]);
+        putByte(app, kBands + band * 4 + 6, red);
+        putByte(app, kBands + band * 4 + 5, green);
+        putByte(app, kBands + band * 4 + 4, blue);
+        const reg32 mirror = kBandMirror - band;
+        putByte(app, kBands + mirror * 4 + 2, red);
+        putByte(app, kBands + mirror * 4 + 1, green);
+        putByte(app, kBands + mirror * 4, blue);
+        for (int i = 0; i < 3; ++i)
+            colour[i] += step[i];
+    }
+    put(app, kBandCopy, at(app, kBands + 4));
+    cpu.eax = at(app, kBands + 4);  // as the code has it at the tick, which may leave it
+    const std::optional<reg32> ticked = callGame(app, cpu, kLoadingTick);
+    if (!ticked)
+        return std::nullopt;
+    // The fog's colour: none, or the bottom's.
+    if (at(app, kNoFog) != 0)
+    {
+        putByte(app, kFogColour + 2, 0);
+        putByte(app, kFogColour + 1, 0);
+        putByte(app, kFogColour, 0);
+        putByte(app, kFogColour + 3, 0);
+        return *ticked & 0xffff00ff;
+    }
+    putByte(app, kFogColour + 2, byte(app, kBands + 2));
+    putByte(app, kFogColour + 1, byte(app, kBands + 1));
+    putByte(app, kFogColour + 3, 0xff);
+    const reg8 lastRed = byte(app, kBands);
+    putByte(app, kFogColour, lastRed);
+    return (*ticked & 0xffffff00) | lastRed;
 }
 
-/* 0x47ac30: the track eax's sky, sky.fsh in its folder: its clouds' shape
- * (palette to 0x55d21c), the sun's (to 0x6ff9a0, 4 of its colours with the
- * options' smaller textures, else 7) and the sun's glow placed (0x47a970) --
- * CLD/CHR/SUN with N at night, W in the weather, D by day -- [0x563a90] the
- * sun's palette, the file freed and the sky made (0x47ae10). */
-void loadSky(win32::WinApplication* app, x86::CPU& cpu)
+/* The weather's shapes, weather.fsh: as many raindrops' (DRPn, to 0x8ca200) and splashes'
+ * (SPLn, to 0x8ca288) as the horizon's count ([0x8ca1e8]) says, by 0x4d4080 -- none for 0; the
+ * file freed.  False when the game stopped. */
+bool loadWeather(App* app, CPU& cpu)
 {
-    push(app, cpu, cpu.ebx);
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.edx);
-    push(app, cpu, cpu.esi);
-    push(app, cpu, cpu.edi);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    cpu.esp -= 0x100;
-    const reg32 name = cpu.ebp - 0x100;
-    push(app, cpu, cpu.eax);
-    push(app, cpu, kDataPath);
-    push(app, cpu, kSkyName);
-    cpu.eax = name;
-    push(app, cpu, cpu.eax);
-    if (!byAddress(app, cpu, kSprintf))
-        return;
-    cpu.esp += 0x10;
-    cpu.edx = 0;
-    cpu.eax = name;
-    if (!byAddress(app, cpu, kLoadFile))
-        return;
-    cpu.esi = cpu.eax;
-    if (cpu.eax != 0)
-    {
-        if (!byAddress(app, cpu, kLoadingTick))
-            return;
-        cpu.edi = (byte(app, kOptions) & 2) != 0 ? 4 : 7;
-        // The shapes' names: clouds, sun, glow.
-        constexpr reg32 names[4][3] = {{0x53b354, 0x53b35c, 0x53b364},   // night, weather
-                                       {0x53b36c, 0x53b374, 0x53b37c},   // night
-                                       {0x53b384, 0x53b38c, 0x53b394},   // weather
-                                       {0x53b39c, 0x53b3a4, 0x53b3ac}};  // day
-        const reg32* shapes = names[(at(app, kNight) != 0 ? 0 : 2) + (at(app, kWeather) != 0 ? 0 : 1)];
-        push(app, cpu, 7);
-        cpu.ecx = kCloudPalette;
-        cpu.ebx = 0x40;
-        cpu.edx = shapes[0];
-        cpu.eax = cpu.esi;
-        if (!byAddress(app, cpu, kFindShape))
-            return;
-        cpu.ecx = kSunPalette;
-        cpu.ebx = 0x80;
-        push(app, cpu, cpu.edi);
-        cpu.edx = shapes[1];
-        cpu.eax = cpu.esi;
-        if (!byAddress(app, cpu, kFindShape))
-            return;
-        cpu.edx = shapes[2];
-        cpu.eax = cpu.esi;
-        if (!byAddress(app, cpu, kPlaceSun))
-            return;
-        put(app, kSunShapes, kSunPalette);
-        if (!byAddress(app, cpu, kLoadingTick))
-            return;
-        if (cpu.esi != 0)
-        {
-            cpu.eax = cpu.esi;
-            if (!byAddress(app, cpu, kFree))
-                return;
-        }
-        if (!byAddress(app, cpu, kSkyMade) || !byAddress(app, cpu, kLoadingTick))
-            return;
-    }
-    cpu.esp = cpu.ebp;
-    cpu.ebp = pop(app, cpu);
-    cpu.edi = pop(app, cpu);
-    cpu.esi = pop(app, cpu);
-    cpu.edx = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
-    cpu.ebx = pop(app, cpu);
-    cpu.esp += 4;
-}
-
-/* 0x4dcd20: the weather's shapes, weather.fsh: as many raindrops' (DRPn, to
- * 0x8ca200) and splashes' (SPLn, to 0x8ca288) as the horizon's count
- * ([0x8ca1e8]) says, by 0x4d4080 -- none for 0; the file freed. */
-void loadWeatherShapes(win32::WinApplication* app, x86::CPU& cpu)
-{
-    push(app, cpu, cpu.ebx);
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.edx);
-    push(app, cpu, cpu.esi);
-    push(app, cpu, cpu.edi);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    cpu.esp -= 0x144;
-    const reg32 name = cpu.ebp - 0x144, shape = cpu.ebp - 0x44, file = cpu.ebp - 4;
-    push(app, cpu, kWeatherPath);
-    push(app, cpu, kWeatherName);
-    cpu.eax = name;
-    push(app, cpu, cpu.eax);
-    if (!byAddress(app, cpu, kSprintf))
-        return;
-    cpu.esp += 0xc;
-    cpu.edx = 0;
-    cpu.eax = name;
-    if (!byAddress(app, cpu, kLoadFile))
-        return;
-    cpu.edi = byte(app, kWeatherCount);
-    cpu.esi = cpu.eax;
-    put(app, file, cpu.eax);
-    if (cpu.edi != 0)
-    {
+    const GuestFrame frame(cpu, 0x18, 0x144);
+    const reg32 name = frame - 0x144, shape = frame - 0x44;  // handed to sprintf, the loading, the shapes
+    // The file's block, kept in the frame right after the shape's name and read back from there:
+    // a name of 0x40 bytes or more runs into it.
+    const reg32 kept = frame - 4;
+    if (!format(app, cpu, {name, kWeatherName, kWeatherPath}))
+        return false;
+    const std::optional<reg32> file = loadFile(app, cpu, name, 0);
+    if (!file)
+        return false;
+    put(app, kept, *file);
+    const reg32 count = byte(app, kWeatherCount);
+    if (count != 0)
         for (const auto& kind : {std::pair<reg32, reg32>{kDropName, kDropShapes}, {kSplashName, kSplashShapes}})
         {
-            push(app, cpu, cpu.edi);
-            push(app, cpu, kind.first);
-            cpu.eax = shape;
-            push(app, cpu, cpu.eax);
-            if (!byAddress(app, cpu, kSprintf))
-                return;
-            cpu.esp += 0xc;
-            cpu.ecx = kind.second;
-            cpu.ebx = 0x20;
-            push(app, cpu, 0);
+            if (!format(app, cpu, {shape, kind.first, count}))
+                return false;
+            cpu.eax = *file;
             cpu.edx = shape;
-            cpu.eax = cpu.esi;
-            if (!byAddress(app, cpu, kFindShape))
-                return;
+            cpu.ebx = 0x20;
+            cpu.ecx = kind.second;
+            if (!callGame(app, cpu, kFindShape, {0}))
+                return false;
         }
-    }
-    cpu.edx = at(app, file);
-    if (cpu.edx != 0)
-    {
-        cpu.eax = cpu.edx;
-        if (!byAddress(app, cpu, kFree))
-            return;
-    }
-    cpu.esp = cpu.ebp;
-    cpu.ebp = pop(app, cpu);
-    cpu.edi = pop(app, cpu);
-    cpu.esi = pop(app, cpu);
-    cpu.edx = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
-    cpu.ebx = pop(app, cpu);
+    const reg32 block = at(app, kept);
+    return block == 0 || release(app, cpu, block);
+}
+
+}  // namespace
+
+/* 0x478340: readHorizon for the track eax; eax as its code leaves it. */
+void loadHorizon(App* app, CPU& cpu)
+{
+    const Entry entry(cpu);
+    const std::optional<reg32> left = readHorizon(app, cpu, cpu.eax);
+    if (!left)
+        return;
+    cpu.eax = *left;
+    cpu.ebx = entry.ebx;
+    cpu.ecx = entry.ecx;
+    cpu.edx = entry.edx;
+    cpu.esi = entry.esi;
+    cpu.edi = entry.edi;
+    cpu.esp += 4;
+}
+
+/* 0x47ac30: loadSkyShapes for the track eax; eax as the last call leaves it. */
+void loadSky(App* app, CPU& cpu)
+{
+    const Entry entry(cpu);
+    if (!loadSkyShapes(app, cpu, cpu.eax))
+        return;
+    cpu.ebx = entry.ebx;
+    cpu.ecx = entry.ecx;
+    cpu.edx = entry.edx;
+    cpu.esi = entry.esi;
+    cpu.edi = entry.edi;
+    cpu.esp += 4;
+}
+
+/* 0x4dcd20: loadWeather; eax as the last call leaves it.  The registers the code pushes are
+ * kept on the guest's stack where it keeps them, and taken back from there: a shape's name of
+ * 0x40 bytes or more runs over the file's block into them. */
+void loadWeatherShapes(App* app, CPU& cpu)
+{
+    const reg32 pushed = cpu.esp;
+    put(app, pushed - 4, cpu.ebx);
+    put(app, pushed - 8, cpu.ecx);
+    put(app, pushed - 0xc, cpu.edx);
+    put(app, pushed - 0x10, cpu.esi);
+    put(app, pushed - 0x14, cpu.edi);
+    put(app, pushed - 0x18, cpu.ebp);
+    if (!loadWeather(app, cpu))
+        return;
+    cpu.ebx = at(app, pushed - 4);
+    cpu.ecx = at(app, pushed - 8);
+    cpu.edx = at(app, pushed - 0xc);
+    cpu.esi = at(app, pushed - 0x10);
+    cpu.edi = at(app, pushed - 0x14);
+    cpu.ebp = at(app, pushed - 0x18);
     cpu.esp += 4;
 }
 

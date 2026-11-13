@@ -1,4 +1,6 @@
+#include "game_settings.h"
 #include "port_snd.h"
+#include "port_sound_effects.h"
 
 #include <cstdint>
 #include <utility>
@@ -38,10 +40,8 @@ struct Bank
 
 // The game's sound settings and state.
 constexpr Var<int32_t> kEffectsOn{0x55290c}, kMenuSoundsOff{0x559234};
-constexpr Var<int32_t> kEffectsVolume{0x6fbbf4}, kEngineVolume{0x6fbbf8}, kSpeechVolume{0x6fbbfc};
-constexpr Var<int32_t> kSoundMode{0x6fbc00}, kSurround{0x5525a4}, kStereo{0x55292c}, kPlaying{0x552928};
-constexpr Var<int32_t> kMusicVolume{0x6fbbf0}, kTechVersion{0x6fbbe4}, kTechVersion2{0x552854};
-constexpr Var<int32_t> kPlayerCar{0x6fd4ac}, kGameMode{0x6fd3b8}, kCopRadioOn{0x6fd49c}, kSplitScreen{0x6fd3b0};
+constexpr Var<int32_t> kSurround{0x5525a4}, kStereo{0x55292c}, kPlaying{0x552928};
+constexpr Var<int32_t> kTechVersion2{0x552854};
 constexpr Var<uint8_t> kMusicUnmuted{0x552908}, kBusUsed{0x552930};
 constexpr Table<int32_t> kCarMusicShare{0x5525d0};
 constexpr Table<Bank> kGameBanks{0x571124};
@@ -91,7 +91,7 @@ uint8_t stereoPan(uint32_t pan)
  * pan (the middle with stereo off). */
 void place(App* app, PlayOptions& o, uint32_t pan)
 {
-    if (kSoundMode(app) == 2)
+    if (gameSettings(app).soundSetup == 2)
     {
         o.placed = 1;
         o.position = uint16_t(pan);
@@ -111,12 +111,12 @@ void place(App* app, PlayOptions& o, uint32_t pan)
 /* The music's volume, less the car's own share for the tech version. */
 int32_t musicVolume(App* app)
 {
-    if (kTechVersion(app) == 1 || kTechVersion2(app) == 1)
+    if (gameSettings(app).musicMode == 1 || kTechVersion2(app) == 1)
     {
-        const int32_t v = kMusicVolume(app) - kCarMusicShare(app, kPlayerCar(app));
+        const int32_t v = std::int32_t(gameSettings(app).raceMusicVolume) - kCarMusicShare(app, std::int32_t(gameSettings(app).track));
         return v < 0 ? 0 : v;
     }
-    return kMusicVolume(app);
+    return std::int32_t(gameSettings(app).raceMusicVolume);
 }
 
 /* Whether bank `bank` is a speech bank for effect `effect` now. */
@@ -125,13 +125,13 @@ bool isSpeech(App* app, int32_t bank, int32_t effect)
     const auto is = [&](int32_t i) { return bank == bankHandle(app, i); };
     if (is(kSpeechBank7) || is(kSpeechBank6) || is(kSpeechBank10))
         return true;
-    if (is(kBank5) && kGameMode(app) == 3 && effect >= 0x20 && effect < 0x29)
+    if (is(kBank5) && gameSettings(app).raceType == 3 && effect >= 0x20 && effect < 0x29)
         return true;
-    if (kGameMode(app) == 3)
+    if (gameSettings(app).raceType == 3)
         for (const int32_t i : {11, 14, 12, 13, 8, 15, 16, 17, 18, 19, 20, 21})
             if (is(i))
                 return true;
-    return is(kBank9) && kCopRadioOn(app) != 0;
+    return is(kBank9) && gameSettings(app).raceOptionCopRadio != 0;
 }
 
 /* A sound played: options from SND's defaults, filled by `fill`, where the
@@ -163,14 +163,14 @@ Result bankEffect(App* app, CPU& cpu, reg32 esp, int32_t bank, int32_t effect, i
         return -1;
     int32_t level;
     if (bank == 0 && effect == 2)
-        level = int32_t(uint32_t(volume) * uint32_t(kEngineVolume(app))) / 0x7f;
+        level = int32_t(uint32_t(volume) * uint32_t(gameSettings(app).engineVolume)) / 0x7f;
     else if (isSpeech(app, bank, effect))
-        level = scaled(kSpeechVolume(app), 0x7f, volume);
+        level = scaled(std::int32_t(gameSettings(app).speechVolume), 0x7f, volume);
     else if ((bank == bankHandle(app, kBank4) && (effect == 6 || effect == 7))
              || (bank == bankHandle(app, kCarBank) && effect == 0xf))
-        level = int32_t(uint32_t(volume) * uint32_t(kEffectsVolume(app))) / 0x7f;
+        level = int32_t(uint32_t(volume) * uint32_t(gameSettings(app).effectsVolume)) / 0x7f;
     else
-        level = scaled(kEffectsVolume(app), 55, volume);
+        level = scaled(std::int32_t(gameSettings(app).effectsVolume), 55, volume);
     return play(app, cpu, esp - 0xc - 0x14, [&](PlayOptions& o) {
         o.bank = int8_t(bank);
         o.patch = effect;
@@ -283,16 +283,16 @@ Result slotPlayed(App* app, CPU& cpu, reg32 esp, int32_t slot, int32_t effect, i
     }
     int32_t level;
     if (engine)
-        level = scaled(kEngineVolume(app), 63, volume);
+        level = scaled(std::int32_t(gameSettings(app).engineVolume), 63, volume);
     else if (slot == 0x10 || slot == 0x11)
-        level = scaled(kEffectsVolume(app), 80, volume);
+        level = scaled(std::int32_t(gameSettings(app).effectsVolume), 80, volume);
     else
-        level = scaled(kEffectsVolume(app), 55, volume);
+        level = scaled(std::int32_t(gameSettings(app).effectsVolume), 55, volume);
     const reg32 sound = reg32(old.sound);
     Result r = setVolume(app, cpu, at - 4, sound, level);
     if (r)
         r = setBend(app, cpu, at - 4, sound, pitch);
-    if (r && kSoundMode(app) == 2)
+    if (r && gameSettings(app).soundSetup == 2)
         r = placeSound(app, cpu, at - 4, sound, pan, 0);
     if (r && kSurround(app) != 0)
         return placeSound(app, cpu, at - 4, sound, kStereo(app) != 0 ? pan : 0, 0);
@@ -306,21 +306,21 @@ Result slotPlayed(App* app, CPU& cpu, reg32 esp, int32_t slot, int32_t effect, i
 /* The effects -- each its adapter (the game's registers and stack in, the
  * result in eax out) around what it does. */
 
-/* 0x4181d0: menu effect eax of the first bank at volume edx.  SNDplay's
- * handle (the effect itself, as the code leaves eax, with sounds off). */
-void playMenuEffect(App* app, CPU& cpu)
+/* 0x4181d0's: menu effect `effect` of the first bank at `volume`, the game's
+ * code's frame (4 words pushed) below `esp`.  SNDplay's handle (the effect
+ * itself, as the code leaves eax, with sounds off). */
+Result playMenuEffectOf(App* app, CPU& cpu, reg32 esp, int32_t effect, int32_t volume)
 {
-    const Entry e(cpu);
-    const HeldEbp ebp(cpu, e.frame(4));
-    const int32_t effect = int32_t(e.eax), volume = int32_t(e.edx);
+    const reg32 frame = esp - 4 * 4;
+    const HeldEbp ebp(cpu, frame);
     Result handle = effect;
     if (kMenuSoundsOff(app) == 0 && kEffectsOn(app) != 0)
-        handle = play(app, cpu, e.frame(4) - 0x10, [&](PlayOptions& o) {
+        handle = play(app, cpu, frame - 0x10, [&](PlayOptions& o) {
             o.bank = int8_t(bankHandle(app, kMenuBank));
-            o.volume = int8_t(scaled(kEffectsVolume(app), 55, volume));
+            o.volume = int8_t(scaled(std::int32_t(gameSettings(app).effectsVolume), 55, volume));
             o.patch = effect;
             o.bend = 0x40;
-            if (kSoundMode(app) == 2 || kSurround(app) != 0)
+            if (gameSettings(app).soundSetup == 2 || kSurround(app) != 0)
             {
                 o.placed = 1;
                 o.position = 0;
@@ -331,7 +331,15 @@ void playMenuEffect(App* app, CPU& cpu)
                 o.pan = 0x40;
             }
         });
-    e.finish(cpu, handle);
+    return handle;
+}
+
+/* 0x4181d0: menu effect eax of the first bank at volume edx.  SNDplay's
+ * handle (the effect itself, as the code leaves eax, with sounds off). */
+void playMenuEffect(App* app, CPU& cpu)
+{
+    const Entry e(cpu);
+    e.finish(cpu, playMenuEffectOf(app, cpu, e.esp, int32_t(e.eax), int32_t(e.edx)));
 }
 
 /* 0x4182b0 (stdcall 4): effect edx of bank eax at volume ecx, pan ebx, pitch
@@ -363,7 +371,7 @@ void playSpeechEffect(App* app, CPU& cpu)
         handle = play(app, cpu, e.frame(2) - 0x14, [&](PlayOptions& o) {
             o.bank = int8_t(e.eax);
             o.patch = int32_t(e.edx);
-            o.volume = int8_t(scaled(kSpeechVolume(app), 0x7f, int32_t(e.ecx)));
+            o.volume = int8_t(scaled(std::int32_t(gameSettings(app).speechVolume), 0x7f, int32_t(e.ecx)));
             o.bend = int8_t(e.arg(app, 0));
             place(app, o, e.ebx);
         });
@@ -500,7 +508,7 @@ void slotEffect(App* app, CPU& cpu)
     const int32_t effect = int32_t(e.edx);
     const reg32 volume = e.arg(app, 0), player = e.arg(app, 2);
     reg32 pan = e.arg(app, 1);
-    if (kSplitScreen(app) == 1)
+    if (gameSettings(app).playMode == 1)
     {
         pan = player != 0 ? 0xc000 : 0x3fff;
         if (player != 0)
@@ -508,7 +516,7 @@ void slotEffect(App* app, CPU& cpu)
     }
     const int32_t product = imul(int32_t(e.ecx), int32_t(e.ebx));
     const int32_t pitch = int32_t(uint32_t(product) + (product < 0 ? 0xffffu : 0u)) >> 16;
-    if (kPlayerCar(app) == 0 && effect == 4)
+    if (gameSettings(app).track == 0 && effect == 4)
     {
         const reg32 n = nextRandom(app);
         if (n % 0x64 > 0x32)

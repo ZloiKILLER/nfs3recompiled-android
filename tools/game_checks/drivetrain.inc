@@ -249,6 +249,21 @@ bool makeDrivetrainArguments(CheckApp& g, const std::string& name, x86::CPU& cpu
     // The revs the torque is asked at: the engine's range mostly.
     if (name == "engineTorque")
         cpu.edx = chance(90) ? below(12000) : random32();
+    // No gear past the tables' 8 for engineForce: its copy of the revs' drop by gear is on the game's
+    // frame, and past it the game's code reads its own locals, which the typed engineForce has not.
+    // No car has more: every table by gear has 8 rows.
+    if (name == "engineForce")
+    {
+        if (g.word(kDtHandling + 8) > 8)
+            g.word(kDtHandling + 8) = 8;
+        g.getMemory<x86::reg8>(kDtCar + 0x50b) &= 7;
+    }
+    // No force feedback's car for driverInputs: the kick's effect record has fields its code never
+    // sets, which hold what the stack last had -- in the game's code autoReverse's locals, which the
+    // typed autoReverse does not keep there -- and its addresses are the frame's.  gearChangeKick's
+    // own check holds it against its code.
+    if (name == "driverInputs" && g.word(0x678b54) == kDtCar)
+        g.word(0x678b54) = 0;
     return true;
 }
 #endif

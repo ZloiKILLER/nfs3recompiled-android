@@ -31,13 +31,6 @@
  <string name="touch_settings">Commandes tactiles</string>
  <string name="screen_settings">Réglages d\'écran</string>
  <string name="display_settings">Affichage</string>
- <string name="screen_adjustment">Réglage de l\'image</string>
- <string name="brightness_label">Luminosité</string>
- <string name="contrast_label">Contraste</string>
- <string name="adjust_hint">Les échantillons montrent le résultat. Prend effet au prochain lancement du jeu.</string>
- <string name="adjust_reset">Réinitialiser</string>
- <string name="sample_dark">Nuit</string>
- <string name="sample_bright">Jour</string>
  <string name="back_to_launcher">Retour</string>
  <string name="switch_data">Activer</string>
  <string name="data_change">Changer…</string>
@@ -71,7 +64,6 @@
  <string name="orientation_landscape_reverse">Fixe — paysage inversé</string>
  <string name="fps_30">30 FPS</string>
  <string name="fps_60">60 FPS</string>
- <string name="gamma_label">Gamma</string>
  <string name="fps_cap_label">Fréquence d\'images</string>
  <string name="fps_error">Saisissez un nombre entier de 1 à 240</string>
  <string name="save">Enregistrer</string>
@@ -156,6 +148,8 @@
  <string name="faq_mapping"><b>Manettes</b>\nLe jeu voit toujours deux manettes : la manette 1 est le joueur 1 avec les commandes tactiles, la manette 2 est le joueur 2. Dans Commandes → Manettes, choisissez quelle manette est laquelle en appuyant sur un de ses boutons et réglez ce que fait chaque bouton, puis appuyez une fois sur Manette ACTIVE. Les commandes correspondantes sont alors écrites dans les réglages du jeu et l\'ancien fichier est sauvegardé. Le stick gauche dirige, les gâchettes accélèrent et freinent. Une manette a deux jeux de boutons, comme les commandes tactiles ont deux dispositions : celui de la course, réglé ici, et un jeu fixe pour les menus et les replays, où Cross / A valide, Circle / B revient en arrière et la croix déplace la sélection. Pour jouer au clavier, écrivez plutôt Défaut du jeu.</string>
  <string name="faq_lights"><b>Phares et remise en piste</b>\n☼ envoie L. ↻ envoie R pour revenir sur la piste. Les touches se modifient dans Commandes → Tactile → Touches.</string>
  <string name="faq_screen_data"><b>Écran et données du jeu</b>\nPaysage verrouille le jeu à l\'horizontale ; Automatique autorise la rotation. La limite d\'IPS restreint la fréquence d\'images ; une valeur plus basse réduit le travail par seconde. « Données du jeu » gère les importations et indique le jeu de données actif. Jouer devient disponible dès qu\'un jeu de données est prêt.</string>
+ <string name="faq_picture"><b>Luminosité, contraste et gamma</b>\nIls se règlent dans le jeu lui-même : Options → Graphics → Advanced Settings, ou Graphics dans le menu de pause pendant une course. L’image change aussitôt que le curseur bouge. Done conserve les valeurs, Cancel rétablit les précédentes. Les réglages s’appliquent aux courses, aux menus et aux vidéos.</string>
+ <string name="faq_network"><b>Courses en réseau</b>\nOuvrez Connect Players sur le premier écran du jeu. Local WiFi trouve tout seul les courses entre téléphones sur le même réseau Wi-Fi. Network (TCP) se connecte à quiconque connaît l’adresse de l’hôte, y compris un PC avec le jeu original ou le Modern Patch. En dessous figurent l’adresse de ce téléphone (Your IP) et TCP Port : un appui bascule entre 9803 (Modern Patch) et 1030 (jeu original). Tous les joueurs d’une course TCP doivent utiliser le même port.</string>
  <string name="gamepad_buttons">Boutons</string>
  <string name="gamepad_buttons_title">Boutons de la manette %1$d</string>
  <string name="gamepad_buttons_hint">Ce que fait chaque bouton de cette manette au volant. Le stick gauche dirige, la gâchette droite accélère et la gauche freine. Dans les menus et les replays, les boutons sont fixes et ne se règlent pas : Cross / A et Options / Menu valident, Circle / B et Create / View reviennent en arrière, la croix déplace la sélection. Les actions des boutons atteignent le jeu une fois les commandes manette écrites dedans.</string>
@@ -191,12 +185,5 @@
  <string name="force_feedback_phone_note">Le téléphone restitue les chocs, les réceptions et les changements de rapport, le moteur à haut régime et les virages serrés.</string>
  <string name="force_feedback_gamepad_note">La manette 1 restitue les effets du jeu tels quels. Leur intensité se règle dans le jeu : Options → Controllers → Force Feedback.</string>
  <string name="editor_snap_grid">Aligner sur la grille</string>
- <string name="network_title">Réseau</string>
- <string name="network_address">Adresse de cet appareil sur le réseau : %1$s</string>
- <string name="network_no_address">Aucune connexion réseau</string>
- <string name="network_port_label">Port TCP/IP</string>
- <string name="network_port_modern">9803 · Modern Patch</string>
- <string name="network_port_original">1030 · jeu original</string>
- <string name="network_hint">IPX trouve seul les courses sur ce Wi-Fi. TCP/IP relie à quiconque connaît l\'adresse de l\'hôte, y compris un PC avec le jeu original ou le Modern Patch. Tous les joueurs utilisent le même port.</string>
  <string name="fps_unlimited">Illimité</string>
 </resources>

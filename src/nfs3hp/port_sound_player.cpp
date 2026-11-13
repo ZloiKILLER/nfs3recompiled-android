@@ -1,3 +1,4 @@
+#include "game_settings.h"
 #include "port_sound_slice.h"
 
 #include <cstdint>
@@ -21,10 +22,10 @@ namespace port
 namespace
 {
 
-constexpr Var<int32_t> kEffectsOn{0x55290c}, kSplitScreen{0x6fd3b0}, kSecondSet{0x6fd4c0}, kPlayers{0x6fd3a0};
-constexpr Var<int32_t> kPlayerCar{0x6fd4ac}, kStereoOn{0x55292c}, kEngineVolume{0x6fbbf8}, kCarBank{0x57113c};
+constexpr Var<int32_t> kEffectsOn{0x55290c};
+constexpr Var<int32_t> kStereoOn{0x55292c}, kCarBank{0x57113c};
 constexpr Var<reg32> kCells{0x5dd948};
-constexpr Var<uint8_t> kBusUsed{0x552930}, kGearCounter{0x552d8c}, kSpectator{0x6fd4fc};
+constexpr Var<uint8_t> kBusUsed{0x552930}, kGearCounter{0x552d8c};
 constexpr Table<int32_t> kLoads{0x571078};
 constexpr Table<uint8_t> kLoadCurve{0x552a38};
 constexpr Table<reg32> kPlayerViews{0x5e10b8}, kPlayerLooks{0x5e10b0};
@@ -82,7 +83,7 @@ Result engineSounded(App* app, CPU& cpu, reg32 esp, reg32 car, int32_t distanceS
     const reg32 frame = esp - 3 * 4;
     const HeldEbp ebp(cpu, frame);
     Game g(app, cpu, frame - 0x40);
-    const int32_t split = kSplitScreen(app);
+    const int32_t split = gameSettings(app).playMode;
     const uint8_t driver = byteAt(app, car + 0x1f0);
     const reg32 playerSlot = wordAt(app, car + 0x1f0);
     g.esi = car;
@@ -164,7 +165,7 @@ Result engineSounded(App* app, CPU& cpu, reg32 esp, reg32 car, int32_t distanceS
         const uint8_t counter = uint8_t(kGearCounter(app) + 1);
         const uint8_t turn = uint8_t(int32_t(counter) % gearEvery);
         kGearCounter.set(app, turn);
-        if (turn == 0 && int32_t(wordAt(app, car + 0x15c)) < 0x3e4ccccd && kPlayerCar(app) != 8)
+        if (turn == 0 && int32_t(wordAt(app, car + 0x15c)) < 0x3e4ccccd && gameSettings(app).track != 8)
         {
             const reg32 gearPitch = kind == 7 || kind == 0xc ? 0x28 : 0x40;
             if (!gearChange(gearPitch, reg32(towardZero(revsVolume, 1))))
@@ -209,14 +210,14 @@ Result engineSounded(App* app, CPU& cpu, reg32 esp, reg32 car, int32_t distanceS
     const int32_t rises = imul(rising, share) >> 7;
     g.edi = reg32(engine);
     // The pan: the game's, the player's side in the split screen.
-    reg32 panned = kPlayers(app) >= 2 ? stereoPanOf(pan) : 0x40;
+    reg32 panned = std::int32_t(gameSettings(app).replayMode) >= 2 ? stereoPanOf(pan) : 0x40;
     if (inSplit)
         panned = kStereoOn(app) == 0 ? 0x40 : (playerSlot != 0 ? 0 : 0x7f);
     const bool second = inSplit && playerSlot != 0;
     const reg32 first = second ? 0x570e50 : 0x570e48, low = second ? 0x570df0 : 0x570de8,
                 third = second ? 0x570e00 : 0x570df8;
     // The three sounds: their volume, pitch and pan.
-    const reg32 setting = reg32(kEngineVolume(app));
+    const reg32 setting = reg32(gameSettings(app).engineVolume);
     const int32_t scale = int32_t((setting + (((setting << 2) - setting) << 3)) * 2);
     const int32_t lead = shape + 0x32;
     if (!g.call(kSoundVolume, {wordAt(app, first), reg32(imul(scale, engine) >> 14)}, eax))
@@ -274,7 +275,7 @@ void playerCarSound(App* app, CPU& cpu)
     if (!g.call(kDotProduct, {car + 0xd8, up, e.ebx, cell}, eax))
         return;
     down = float(cpu.fpu.pop());
-    const int32_t second = kSecondSet(app);
+    const int32_t second = gameSettings(app).backwards;
     if (second != 0)
         down = -down;
     // The warning of the engine going backwards downhill, a counter's turn
@@ -300,8 +301,8 @@ void playerCarSound(App* app, CPU& cpu)
     const reg32 ahead = eax;
     // The pan: the player's side in the split screen, else by the angle (none
     // for a view of kind 2).
-    reg32 pan, looking = reg32(kSplitScreen(app));  // looking: ebx as the code leaves it
-    const int32_t split = kSplitScreen(app);
+    reg32 pan, looking = reg32(gameSettings(app).playMode);  // looking: ebx as the code leaves it
+    const int32_t split = gameSettings(app).playMode;
     if (split == 1)
         pan = player != 0 ? 0xc000 : 0x3fff;
     else
@@ -363,7 +364,7 @@ void playerCarSound(App* app, CPU& cpu)
                 return;
             continue;
         }
-        if (int32_t(slot) < 0 && kSplitScreen(app) != 1)
+        if (int32_t(slot) < 0 && gameSettings(app).playMode != 1)
         {
             // A new crash: heard from where it hit.
             reg32 crashAngle;
@@ -391,7 +392,7 @@ void playerCarSound(App* app, CPU& cpu)
             return;
     }
     eax = reg32(k);
-    if ((kSpectator(app) & 1) != 0)
+    if ((std::uint8_t(gameSettings(app).raceFlags) & 1) != 0)
         return e.back(cpu, eax);
     const reg32 flagAt = source;  // the source's flag (+0x20 of the pointer's place: +0x38 of the source)
     if ((byteAt(app, car + 0x200) & 0x20) != 0)

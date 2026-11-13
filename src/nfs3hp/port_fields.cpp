@@ -1,6 +1,9 @@
+#include "game_settings.h"
 #include "port_fields.h"
 #include "port_draw2d.h"
 #include "port_text.h"
+#include "native_windows.h"
+#include <winapi/user32.h>
 
 #include <cstring>
 #include <functional>
@@ -200,9 +203,6 @@ constexpr Var<int32_t> kOverRace{0x559234};
 // once), the colour set's, the 2D screens sliding in.
 constexpr Var<uint8_t> kMenuBits1{0x55eb2d}, kMenuBits3{0x55eb2f};
 constexpr Var<int32_t> kScreensSliding{0x559c60};
-// The players' cars, the custom colours kept as they are (not 0).
-constexpr reg32 kFirstCar = 0x6fd2bc, kSecondCar = 0x6fd328;
-constexpr Var<int32_t> kKeepCustomColours{0x6fd3a0};
 // A car's record's colours: the chosen (a dword a player), how many less
 // one, the colours (4 bytes each), the custom one (a player's).
 constexpr reg32 kChosenColours = 0x32c, kLastColour = 0x334, kColours = 0x338, kCustomColours = 0x378;
@@ -451,15 +451,16 @@ reg32 markCorners(App* app, int count)
 namespace
 {
 
-Result colourCount(App* app, CPU& cpu, reg32 esp, reg32 car);
+// colourCount and customColoursRefreshed: port_fields.h.
 Result colourRgb(App* app, CPU& cpu, reg32 esp, reg32 car, int32_t colour, int32_t player, reg32 out0, reg32 out1,
                  reg32 out2, reg32 out3);
-Result customColoursRefreshed(App* app, CPU& cpu, reg32 esp, reg32 eax);
 
 bool carRecordOf(App* app, CPU& cpu, reg32 esp, reg32 car, reg32& rec)
 {
     return callGame(app, cpu, esp, kCarRecord, {car}, {}, rec);
 }
+
+}  // namespace
 
 /* 0x439760's: how many colours car `car` has, its custom one counted. */
 Result colourCount(App* app, CPU& cpu, reg32 esp, reg32 car)
@@ -472,6 +473,9 @@ Result colourCount(App* app, CPU& cpu, reg32 esp, reg32 car)
     return int32_t(word(app, rec + kLastColour) + 1);
 }
 
+namespace
+{
+
 /* 0x439780's: the number of its custom colour, its last. */
 Result customColour(App* app, CPU& cpu, reg32 esp, reg32 car)
 {
@@ -480,6 +484,8 @@ Result customColour(App* app, CPU& cpu, reg32 esp, reg32 car)
         return {};
     return int32_t(reg32(*n) - 1);
 }
+
+}  // namespace
 
 /* 0x439790's: the colour player `player` chose for it, -1 for no player. */
 Result chosenColour(App* app, CPU& cpu, reg32 esp, reg32 car, int32_t player)
@@ -513,6 +519,9 @@ Result carTextOf(App* app, CPU& cpu, reg32 esp, reg32 car, int32_t n)
     return int32_t(r);
 }
 
+namespace
+{
+
 /* 0x4397c0's: the name of colour `colour` (its text 0x1e on). */
 Result colourName(App* app, CPU& cpu, reg32 esp, reg32 car, int32_t colour)
 {
@@ -531,6 +540,8 @@ Result colourSaved(App* app, CPU& cpu, reg32 esp, reg32 car)
     return r == 0 ? 0 : -1;
 }
 
+}  // namespace
+
 /* 0x4397d0's: player `player`'s colour of car `car` set to `colour`, the
  * record saved and the custom colours taken afresh: 0, or -1. */
 Result colourSet(App* app, CPU& cpu, reg32 esp, reg32 car, int32_t player, int32_t colour)
@@ -548,6 +559,9 @@ Result colourSet(App* app, CPU& cpu, reg32 esp, reg32 car, int32_t player, int32
         return {};
     return *saved == 0 ? 0 : -1;
 }
+
+namespace
+{
 
 /* 0x439810's: colour `colour` of car `car` -- its custom one, the player's,
  * for the last -- its four bytes to `out0` to `out3`: 0, or -1 past them. */
@@ -579,6 +593,8 @@ Result colourRgb(App* app, CPU& cpu, reg32 esp, reg32 car, int32_t colour, int32
     setByte(app, out3, byteAt(app, from + 3));
     return 0;
 }
+
+}  // namespace
 
 /* 0x4398c0's: player `player`'s custom colour of car `car` set, saved: 0 or
  * -1. */
@@ -612,24 +628,27 @@ Result customColourSet(App* app, CPU& cpu, reg32 esp, reg32 car, int32_t player,
  * settings saved; eax as it was otherwise. */
 Result customColoursRefreshed(App* app, CPU& cpu, reg32 esp, reg32 eax)
 {
-    if (kKeepCustomColours(app) != 0)
+    if (gameSettings(app).replayMode != 0)
         return int32_t(eax);
     const reg32 at = esp - 0x14, inner = at - 0xc - 4;
     HeldEbp held(cpu, at);
-    const Result c0 = chosenColour(app, cpu, inner, word(app, kFirstCar), 0);
-    if (!c0 || !colourRgb(app, cpu, inner, word(app, kFirstCar), *c0, 0, 0x6fd307, 0x6fd308, 0x6fd309, 0x6fd30a))
+    const Result c0 = chosenColour(app, cpu, inner, gameSettings(app).players[0].car, 0);
+    if (!c0 || !colourRgb(app, cpu, inner, gameSettings(app).players[0].car, *c0, 0, SETTINGS_ADDRESS(players[0].colour), SETTINGS_ADDRESS(players[0].colour[1]), SETTINGS_ADDRESS(players[0].colour[2]), SETTINGS_ADDRESS(players[0].colour[3])))
         return {};
-    const Result c1 = chosenColour(app, cpu, inner, word(app, kSecondCar), 1);
+    const Result c1 = chosenColour(app, cpu, inner, gameSettings(app).players[1].car, 1);
     if (!c1)
         return {};
-    const Result r1 = colourRgb(app, cpu, inner, word(app, kSecondCar), *c1, 1, 0x6fd373, 0x6fd374, 0x6fd375, 0x6fd376);
+    const Result r1 = colourRgb(app, cpu, inner, gameSettings(app).players[1].car, *c1, 1, SETTINGS_ADDRESS(players[1].colour), SETTINGS_ADDRESS(players[1].colour[1]), SETTINGS_ADDRESS(players[1].colour[2]), SETTINGS_ADDRESS(players[1].colour[3]));
     if (!r1)
         return {};
     reg32 r;
-    if (!callGame(app, cpu, at, kSaveSettings, {reg32(*r1), reg32(*c1), 1, 0x6fd373}, {}, r))
+    if (!callGame(app, cpu, at, kSaveSettings, {reg32(*r1), reg32(*c1), 1, SETTINGS_ADDRESS(players[1].colour)}, {}, r))
         return {};
     return int32_t(r);
 }
+
+namespace
+{
 
 /* 0x43dbe0's: the colour wheel `item`'s colours (hue, saturation, value and
  * 0xff, twice) from its player's car's custom colour. */
@@ -643,7 +662,7 @@ Result wheelFromCar(App* app, CPU& cpu, reg32 esp, reg32 item)
     if (r == 0)
         return 0;
     const int32_t player = int32_t(word(app, item + 0x60));
-    const reg32 car = player == 0 ? word(app, kFirstCar) : word(app, kSecondCar);
+    const reg32 car = player == 0 ? gameSettings(app).players[0].car : gameSettings(app).players[1].car;
     const Result colour = customColour(app, cpu, at - 4, car);
     if (!colour || !colourRgb(app, cpu, at - 0xc - 4, car, *colour, player, ebp - 4, ebp - 0x10, ebp - 0xc, ebp - 8))
         return {};
@@ -1145,6 +1164,8 @@ Result listWidth(App* app, CPU& cpu, reg32 esp, reg32 item, reg32 edx)
     return int32_t(r);
 }
 
+}  // namespace
+
 /* 0x456a20's: the list's player's car, its colours, the chosen one's. */
 Result listRefreshed(App* app, CPU& cpu, reg32 esp, reg32 item)
 {
@@ -1154,20 +1175,20 @@ Result listRefreshed(App* app, CPU& cpu, reg32 esp, reg32 item)
         return 0;
     HeldEbp held(cpu, ebp);
     const int32_t player = colourList(app, item).player != 0 ? 1 : 0;
-    const reg32 car = player != 0 ? kSecondCar : kFirstCar;
+    const reg32 car = player != 0 ? SETTINGS_ADDRESS(players[1].car) : SETTINGS_ADDRESS(players[0].car);
     reg32 rec;
-    if (!carRecordOf(app, cpu, at, word(app, car), rec))
+    if (!carRecordOf(app, cpu, at, gameSettings(app).players[player].car, rec))
         return {};
     if (rec == 0)
         return 0;
     colourList(app, item).car = car;
-    colourList(app, item).shownCar = int32_t(word(app, car));
-    const Result chosen = chosenColour(app, cpu, at - 4, word(app, car), player);
+    colourList(app, item).shownCar = int32_t(gameSettings(app).players[player].car);
+    const Result chosen = chosenColour(app, cpu, at - 4, gameSettings(app).players[player].car, player);
     if (!chosen)
         return {};
     colourList(app, item).chosen = *chosen;
     colourList(app, item).highlighted = *chosen;
-    if (!colourRgb(app, cpu, at - 0xc - 4, word(app, car), *chosen, player, ebp - 0x14, ebp - 4, ebp - 0x10,
+    if (!colourRgb(app, cpu, at - 0xc - 4, gameSettings(app).players[player].car, *chosen, player, ebp - 0x14, ebp - 4, ebp - 0x10,
                    ebp - 0xc))
         return {};
     const Result count = colourCount(app, cpu, at - 4, word(app, colourList(app, item).car));
@@ -1178,6 +1199,9 @@ Result listRefreshed(App* app, CPU& cpu, reg32 esp, reg32 item)
                                    | reg32(byteAt(app, ebp - 4)) << 8 | byteAt(app, ebp - 0x10);
     return byteAt(app, ebp - 0x10);
 }
+
+namespace
+{
 
 /* 0x4d8aa0's: a frame around the rectangle in `colour`. */
 Result framed(App* app, CPU& cpu, reg32 esp, reg32 x, reg32 y, reg32 width, reg32 height, reg32 colour)
@@ -2613,6 +2637,8 @@ ListBox& listBox(App* app, reg32 item)
     return record<ListBox>(app, item);
 }
 
+}  // namespace
+
 /* 0x4d8570's: the triangle (x0, y0), (x1, y1), (x2, y2), a colour at each
  * corner, in the 2D screens' quad's first three corners -- over a race near
  * the eye, its corners put on the screen's own (x2's in its stack word, at
@@ -2672,6 +2698,9 @@ Result triangle(App* app, CPU& cpu, reg32 esp, int32_t x0, int32_t y0, int32_t x
         return {};
     return int32_t(r);
 }
+
+namespace
+{
 
 /* A call of the triangle as the list makes it: its five stack words below
  * `at`, x2 among them. */
@@ -3735,10 +3764,17 @@ Result twoAxisKeyed(App* app, CPU& cpu, reg32 esp, reg32 item, reg32 ebx)
         return 0;
     if (key != kLeft && key != kRight)
         return 0;
-    reg32 r;
-    if (!callGame(app, cpu, at, word(app, kGetKeyStateSlot), {ebx, 0, item, uint16_t(slider(app, item).held)}, {0x10}, r))
+    // GetAsyncKeyState(Shift), the registers and esp as the code has them: the port's own, called as
+    // C++ (native_windows.h); in the check through its import's slot.
+    cpu.esp = at;
+    cpu.eax = ebx;
+    cpu.edx = 0;
+    cpu.ebx = item;
+    cpu.ecx = uint16_t(slider(app, item).held);
+    const std::optional<reg32> r = guest::windows<kGetKeyStateSlot, &win32::user32::GetAsyncKeyState>(app, cpu, 0x10);
+    if (!r)
         return {};
-    const int32_t axis = (r & 0x8000) != 0 ? 0 : 1;
+    const int32_t axis = (*r & 0x8000) != 0 ? 0 : 1;
     cpu.fpu.compare(Float(0.0), floatOf(slider(app, item).step));
     const reg32 step = cpu.fpu.status.c0 && int32_t(slider(app, item).step) <= int32_t(kOne)
                            ? slider(app, item).step
@@ -4567,6 +4603,48 @@ Result twoAxisDrawn(App* app, CPU& cpu, reg32 esp, reg32 item, reg32 hot)
 
 }  // namespace
 
+/* 0x46c950's: the slider `item` set to `value` -- a two-axis one's axis
+ * `axis`; none of kind 1. */
+Result sliderSetValueOf(App* app, CPU& cpu, reg32 esp, reg32 item, reg32 value, reg32 axis)
+{
+    const reg32 at = esp - 8;
+    HeldEbp held(cpu, at);
+    const uint16_t kind = uint16_t(slider(app, item).kind);
+    Result r;
+    if (kind == 1)
+        r = int32_t(item);
+    else if (kind == 2)
+        r = twoAxisValueSet(app, cpu, argsBelow(app, at, {value, axis}), item, item);
+    else
+        r = valueSet(app, cpu, argsBelow(app, at, {value, 0}), item);
+    return r;
+}
+
+/* 0x46cae0's: the slider `item` drawn, worked by the mouse first where `hot`:
+ * kind 2 a two-axis one, kind 1 none.  Greyed as the menus grey their
+ * controls. */
+Result sliderDrawOf(App* app, CPU& cpu, reg32 esp, reg32 item, reg32 hot)
+{
+    const reg32 at = esp - 0x10;
+    HeldEbp held(cpu, at);
+    greyed(app, item);
+    const uint16_t kind = uint16_t(slider(app, item).kind);
+    Result r = 0;
+    if (kind == 2)
+    {
+        if (hot != 0 && !twoAxisTracked(app, cpu, at - 4, item))
+            return {};
+        r = twoAxisDrawn(app, cpu, at - 4, item, hot);
+    }
+    else if (kind != 1)
+    {
+        if (hot != 0 && !sliderTracked(app, cpu, at - 4, item))
+            return {};
+        r = sliderDrawn(app, cpu, at - 4, item, hot);
+    }
+    return r;
+}
+
 /* ---- The adapters ---- */
 
 /* 0x4692c0: the part of the slider eax under the pointer, or -1. */
@@ -4752,17 +4830,7 @@ void sliderShape(App* app, CPU& cpu)
 void sliderSetValue(App* app, CPU& cpu)
 {
     const Entry e(cpu);
-    const reg32 item = e.eax, at = e.esp - 8;
-    HeldEbp held(cpu, at);
-    const uint16_t kind = uint16_t(slider(app, item).kind);
-    Result r;
-    if (kind == 1)
-        r = int32_t(item);
-    else if (kind == 2)
-        r = twoAxisValueSet(app, cpu, argsBelow(app, at, {e.arg(app, 0), e.arg(app, 1)}), item, item);
-    else
-        r = valueSet(app, cpu, argsBelow(app, at, {e.arg(app, 0), 0}), item);
-    e.finish(cpu, r, 8);
+    e.finish(cpu, sliderSetValueOf(app, cpu, e.esp, e.eax, e.arg(app, 0), e.arg(app, 1)), 8);
 }
 
 /* 0x46cae0: the slider eax drawn, worked by the mouse first where edx: kind 2
@@ -4770,24 +4838,7 @@ void sliderSetValue(App* app, CPU& cpu)
 void sliderDraw(App* app, CPU& cpu)
 {
     const Entry e(cpu);
-    const reg32 item = e.eax, at = e.esp - 0x10;
-    HeldEbp held(cpu, at);
-    greyed(app, item);
-    const uint16_t kind = uint16_t(slider(app, item).kind);
-    Result r = 0;
-    if (kind == 2)
-    {
-        if (e.edx != 0 && !twoAxisTracked(app, cpu, at - 4, item))
-            return;
-        r = twoAxisDrawn(app, cpu, at - 4, item, e.edx);
-    }
-    else if (kind != 1)
-    {
-        if (e.edx != 0 && !sliderTracked(app, cpu, at - 4, item))
-            return;
-        r = sliderDrawn(app, cpu, at - 4, item, e.edx);
-    }
-    e.finish(cpu, r);
+    e.finish(cpu, sliderDrawOf(app, cpu, e.esp, e.eax, e.edx));
 }
 
 /* 0x46cb80: key cx on the slider eax. */

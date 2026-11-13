@@ -1,6 +1,8 @@
 #include "native_watcom_heap.h"
 #include "native_guest.h"
 #include "native_thrash.h"
+#include "native_windows.h"
+#include <winapi/kernel32.h>
 
 /* Watcom's near heap, as the runtime's code keeps it, on its variables in
  * guest memory (WatcomHeap): the game's -- whose functions native_watcom.cpp
@@ -27,13 +29,23 @@
 namespace nfs3hp
 {
 
+namespace
+{
+
+/* The runtimes' VirtualAlloc and VirtualFree: the slots of the game's imports, and of voodoo2a's. */
+constexpr x86::reg32 kGameVirtualAlloc = 0x534624, kGameVirtualFree = 0x534628;
+constexpr x86::reg32 kVoodoo2aVirtualAlloc = 0xa9042c, kVoodoo2aVirtualFree = 0xa90430;
+
+}  // namespace
+
 const WatcomHeap kGameHeap = {
-    0x566f4c, 0x566f50, 0x566f54, 0x9f3800, 0xa0b140, 0x56af68, 0x5677f8, 0x56af6c, 0x534624, 0x534628,
-    0x567780, 0x567788,
+    0x566f4c, 0x566f50, 0x566f54, 0x9f3800, 0xa0b140, 0x56af68, 0x5677f8, 0x56af6c, kGameVirtualAlloc,
+    kGameVirtualFree, 0x567780, 0x567788,
 };
 
 const WatcomHeap kVoodoo2aHeap = {
-    0xa9267c, 0xa92680, 0xa92684, 0xa93850, 0xa93eb0, 0xa92830, 0xa9273c, 0xa92834, 0xa9042c, 0xa90430, 0, 0,
+    0xa9267c, 0xa92680, 0xa92684, 0xa93850, 0xa93eb0, 0xa92830, 0xa9273c, 0xa92834, kVoodoo2aVirtualAlloc,
+    kVoodoo2aVirtualFree, 0, 0,
 };
 
 namespace watcomheap
@@ -54,6 +66,27 @@ using guest::put;
 bool lock(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 slot)
 {
     return slot == 0 || call(app, cpu, word(app, slot));
+}
+
+/* The runtime's VirtualAlloc and VirtualFree, their words handed: the port's own, called as C++
+ * (native_windows.h); in the checks through the slot the heap names, the game's import's or
+ * voodoo2a's.  False when the game stopped; eax what it gave back. */
+template <typename... Words>
+bool virtualAlloc(win32::WinApplication* app, x86::CPU& cpu, const WatcomHeap& h, Words... words)
+{
+    const auto done = h.virtualAlloc == kGameVirtualAlloc
+        ? guest::windows<kGameVirtualAlloc, &win32::kernel32::VirtualAlloc>(app, cpu, words...)
+        : guest::windows<kVoodoo2aVirtualAlloc, &win32::kernel32::VirtualAlloc>(app, cpu, words...);
+    return done.has_value();
+}
+
+template <typename... Words>
+bool virtualFree(win32::WinApplication* app, x86::CPU& cpu, const WatcomHeap& h, Words... words)
+{
+    const auto done = h.virtualFree == kGameVirtualFree
+        ? guest::windows<kGameVirtualFree, &win32::kernel32::VirtualFree>(app, cpu, words...)
+        : guest::windows<kVoodoo2aVirtualFree, &win32::kernel32::VirtualFree>(app, cpu, words...);
+    return done.has_value();
 }
 
 }  // namespace
@@ -298,7 +331,7 @@ bool adjust(win32::WinApplication* app, const WatcomHeap& h, x86::reg32& amount)
 bool giveBack(win32::WinApplication* app, x86::CPU& cpu, const WatcomHeap& h, x86::reg32 heap, x86::reg32& result)
 {
     const x86::reg32 after = word(app, heap + 8);
-    if (!call(app, cpu, word(app, h.virtualFree), {heap, 0, 0x8000}))  // MEM_RELEASE
+    if (!virtualFree(app, cpu, h, heap, 0, 0x8000))  // MEM_RELEASE
         return false;
     if (cpu.eax == 0)
     {
@@ -365,7 +398,7 @@ bool create(win32::WinApplication* app, x86::CPU& cpu, const WatcomHeap& h, x86:
     result = 0;
     if (word(app, h.enabled) == 0 || word(app, h.brk) == 0xfffffffe || !adjust(app, h, amount))
         return true;
-    if (!call(app, cpu, word(app, h.virtualAlloc), {0, amount, 0x1000, 0x40}))  // MEM_COMMIT, PAGE_EXECUTE_READWRITE
+    if (!virtualAlloc(app, cpu, h, 0, amount, 0x1000, 0x40))  // MEM_COMMIT, PAGE_EXECUTE_READWRITE
         return false;
     const x86::reg32 heap = cpu.eax;
     if (heap == 0 || amount - 4 > amount || amount - 4 < 0x38)

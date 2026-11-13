@@ -1,4 +1,12 @@
+#include "native_ea_files.h"
+#include "native_ea_memory.h"
+#include "native_ea_support.h"
+#include "native_ea_threads.h"
 #include "native_guest.h"
+#include "native_windows.h"
+#include <winapi/kernel32.h>
+
+#include <optional>
 
 /* EA's trace and log, files loaded whole into memory, and .viv archives.  disassemble_nfs3hp.py binds each
  * address to the function of that name here (EA_SUPPORT_NATIVES), and the
@@ -30,12 +38,21 @@
  * into a block (byte-swapping the first, count and size words), findInViv
  * looks a file's name, without its path, up in it.
  *
- * Written as their code is: each push and pop to the guest's stack, each call
- * with the return address's slot, the frame's locals in the guest's memory,
- * the registers as the code leaves them.  The text's switch on the control
- * byte goes by the targets nfs3.exe's table at 0x4e0a48 holds.  Every other
- * function of the game's, and Windows' through its imports, is called by
- * address. */
+ * Each is a typed function under a name of its own, with an adapter under the
+ * game's name for the callers still on registers and the dispatch: it leaves
+ * the registers as the game's code does.  Other files' typed functions
+ * whose callers take nothing of them but their answer -- the trace's lock
+ * made, the window's rows moved, a file opened and closed to see it is there,
+ * a loaded file closed -- are called as C++ (guest::direct, their headers).
+ * Every other function of the game's, and Windows' through its imports, is
+ * called by address, with its arguments in the registers (Watcom's eax, edx,
+ * ebx, ecx) and on the guest's stack as the code hands them over -- among
+ * them the archive's block reserved and freed, and a loaded file's open,
+ * block, read and free, whose edx (and ebx) the code leaves as they leave
+ * them, which their headers do not give back; a core keeps the registers its
+ * code pushes and pops around them (Kept), and leaves the rest as the calls
+ * leave them, as the code does.  A frame whose address a callee is handed stays on
+ * the guest's stack at the code's depth (GuestFrame). */
 namespace nfs3hp
 {
 namespace ea
@@ -48,9 +65,12 @@ using guest::at;
 using guest::byte;
 using guest::put;
 using guest::putByte;
+using x86::reg16;
 using x86::reg32;
 using x86::reg8;
 using x86::sreg32;
+using App = win32::WinApplication;
+using CPU = x86::CPU;
 
 // The trace's: its level, its lock; the monitor's page, the cursor, the
 // window's top row, the attribute, the tab's width.
@@ -58,6 +78,14 @@ constexpr reg32 kTraceLevel = 0x5644c8, kTraceLock = 0x5644c4;
 constexpr reg32 kMonoPage = 0x5644d0, kMonoCursor = 0x5644d4;
 constexpr reg32 kMonoTop = 0x5644d8, kMonoAttribute = 0x5644d9, kMonoTab = 0x5644da;
 constexpr reg32 kRowBytes = 0xa0, kPageBytes = 0xfa0, kLastRow = 0xf00;
+// The page's rows and columns; the level the trace writes from; the page's
+// place (0xb0000, 0x8000 a page).
+constexpr sreg32 kRows = 0x19, kColumns = 0x50, kTraceWrites = 2;
+constexpr reg32 kMonoMemory = 0xb0000, kMonoPageShift = 0xf;
+// The text's controls: backspace, tab, newline, the window's top, the page
+// cleared (8 to 0xc, by the code's table at 0x4e0a48); the attribute's
+// escape; the first byte written as it is.
+constexpr reg8 kBackspace = 8, kLastControl = 4, kAttributeEscape = 0x0e, kFirstPrinted = 0x20;
 // EA's random numbers' six words (snd::eaRandom draws from them).
 constexpr reg32 kRandom = 0x5644e0;
 // The loads': whether a missing file is complained of; the last file's size;
@@ -65,66 +93,549 @@ constexpr reg32 kRandom = 0x5644e0;
 constexpr reg32 kComplain = 0x56440c, kLoadedSize = 0x5643f8;
 constexpr reg32 kLoadHook = 0x567868, kLoadSomething = 0x567860;
 constexpr reg32 kWhere = 0x552190, kWhereFunction = 0x552194, kWhereLine = 0x552198;
-constexpr reg32 kLoadFile = 0x549928, kLoadFunction = 0x549938;
-// The archive's: fopen's mode "rb", the block's name "".
+constexpr reg32 kLoadFile = 0x549928, kLoadFunction = 0x549938, kLoadLine = 0x4b;
+// The stream's top-up before a load, and the bytes of the file each more of it is.
+constexpr reg32 kTopUpFirst = 0x1f4;
+constexpr sreg32 kTopUpBytes = 0x10e;
+// The archive's: fopen's mode "rb", the block's name ""; the header's words
+// (its size at 0xc, the files' count at 8, the entries from 0x10, each its
+// offset, size and name); the block's slack and its allocation's flags;
+// fseek's SEEK_SET; the name's length looked for.
 constexpr reg32 kReadBinary = 0x5376e4, kNoName = 0x537690;
+constexpr reg32 kVivCount = 8, kVivHeaderSize = 0xc, kVivEntries = 0x10, kVivEntryName = 8;
+constexpr reg32 kVivSlack = 0x30, kVivBlockFlags = 0x10, kSeekSet = 0, kVivNameBytes = 0x1d;
 // What is called by address.
 constexpr reg32 kEnterCriticalSection = 0x5344b8, kLeaveCriticalSection = 0x534588;
-constexpr reg32 kNewLock = 0x4eb2e0, kVsprintf = 0x4df674, kMoveMemory = 0x4ea4f0, kFillZero = 0x4e070c;
-constexpr reg32 kOpen = 0x4e28d0, kClose = 0x4e2da0, kRead = 0x4e2de0;
+constexpr reg32 kVsprintf = 0x4df674, kFillZero = 0x4e070c;
+constexpr reg32 kOpen = 0x4e28d0, kRead = 0x4e2de0;
 constexpr reg32 kTopUp = 0x4ff7c0, kTopUpEnd = 0x4ff7e0, kLoadBlockSize = 0x4ff820, kLoadFlags = 0x4ff830;
 constexpr reg32 kAllocate = 0x4e1620, kFree = 0x4e1890, kLoadWhole = 0x4e0ec0;
 constexpr reg32 kFopen = 0x4edfe8, kFclose = 0x4ee100, kFseek = 0x4e9088, kFread = 0x4e9200;
 constexpr reg32 kMemset = 0x4e0640, kStrrchr = 0x4ee2f0, kStrncpy = 0x4e0e30, kStricmp = 0x4e9ec0;
 
-void push(win32::WinApplication* app, x86::CPU& cpu, reg32 value)
+// The registers Kept keeps.
+constexpr unsigned kKeepEbx = 1, kKeepEcx = 2, kKeepEdx = 4;
+
+/* Registers the game's code pushes on entry and pops before its ret, which
+ * the calls by address in between may change: as they were when the scope
+ * ends. */
+class Kept
 {
-    cpu.esp -= 4;
-    put(app, cpu.esp, value);
+public:
+    Kept(CPU& cpu, unsigned which) : cpu_(cpu), which_(which), ebx_(cpu.ebx), ecx_(cpu.ecx), edx_(cpu.edx) {}
+    Kept(const Kept&) = delete;
+    Kept& operator=(const Kept&) = delete;
+    ~Kept()
+    {
+        if (which_ & kKeepEbx)
+            cpu_.ebx = ebx_;
+        if (which_ & kKeepEcx)
+            cpu_.ecx = ecx_;
+        if (which_ & kKeepEdx)
+            cpu_.edx = edx_;
+    }
+
+private:
+    CPU& cpu_;
+    const unsigned which_;
+    const reg32 ebx_, ecx_, edx_;
+};
+
+/* Room on the guest's stack for what a callee is handed the address of: the
+ * code's frame (`pushed` bytes of registers under esp on entry, then
+ * `bytes`), esp under it while the core runs and back after (as
+ * native_collide.cpp's). */
+class GuestFrame
+{
+public:
+    GuestFrame(CPU& cpu, reg32 pushed, reg32 bytes) : cpu_(cpu), esp_(cpu.esp), base_(cpu.esp - pushed)
+    {
+        cpu.esp = base_ - bytes;
+    }
+    GuestFrame(const GuestFrame&) = delete;
+    GuestFrame& operator=(const GuestFrame&) = delete;
+    ~GuestFrame() { cpu_.esp = esp_; }
+    reg32 operator-(reg32 offset) const { return base_ - offset; }
+
+private:
+    CPU& cpu_;
+    const reg32 esp_;
+    const reg32 base_;
+};
+
+/* One of the game's functions at `target`, handed `arguments` in Watcom's
+ * registers, eax, edx, ebx and ecx in that order (the others as they are):
+ * what it gives back in eax.  nullopt when the game stopped in it. */
+std::optional<reg32> watcom(App* app, CPU& cpu, reg32 target, std::initializer_list<reg32> arguments)
+{
+    reg32* const registers[] = {&cpu.eax, &cpu.edx, &cpu.ebx, &cpu.ecx};
+    reg32* const* into = registers;
+    for (const reg32 argument : arguments)
+        **into++ = argument;
+    if (!guest::call(app, cpu, target))
+        return std::nullopt;
+    return cpu.eax;
 }
 
-reg32 pop(win32::WinApplication* app, x86::CPU& cpu)
+/* Win32's function `Function`, handed `handle`: the port's own, called as
+ * C++ (native_windows.h); in the check through its import's slot `Slot`,
+ * stdcall.  What it gives back in eax.  nullopt when the game stopped in it. */
+template <reg32 Slot, auto Function>
+std::optional<reg32> windows(App* app, CPU& cpu, reg32 handle)
 {
-    const reg32 value = at(app, cpu.esp);
-    cpu.esp += 4;
-    return value;
+    return guest::windows<Slot, Function>(app, cpu, handle);
 }
 
-/* A call as the code makes it: the return address's slot, and esp as the
- * callee leaves it.  False when the game stopped in it. */
-bool direct(win32::WinApplication* app, x86::CPU& cpu, void (*function)(win32::WinApplication*, x86::CPU&))
+/* The trace's lock, made the first time it is wanted (native_ea_threads.h's
+ * newLock), eax left it as the code leaves it: the calls after hand eax over
+ * as it is.  False when the game stopped. */
+bool traceLockMade(App* app, CPU& cpu)
 {
-    cpu.esp -= 4;
-    function(app, cpu);
-    return !cpu.terminate;
-}
-
-bool byAddress(win32::WinApplication* app, x86::CPU& cpu, reg32 target)
-{
-    cpu.esp -= 4;
-    app->dynamic_call(target, cpu);
-    return !cpu.terminate;
-}
-
-/* The trace's lock, made the first time it is wanted. */
-bool makeLock(win32::WinApplication* app, x86::CPU& cpu)
-{
-    if (!byAddress(app, cpu, kNewLock))
+    if (at(app, kTraceLock) != 0)
+        return true;
+    const std::optional<reg32> lock = guest::direct<0x4eb2e0, ea::newLock>(app, cpu);
+    if (!lock)
         return false;
-    put(app, kTraceLock, cpu.eax);
+    put(app, kTraceLock, *lock);
+    cpu.eax = *lock;
     return true;
 }
 
-/* The lock's address pushed from `reg` and EnterCriticalSection or
- * LeaveCriticalSection called with it. */
-bool lockCall(win32::WinApplication* app, x86::CPU& cpu, reg32& reg, reg32 slot)
+/* The trace's lock taken or given back (EnterCriticalSection,
+ * LeaveCriticalSection): what Windows gives back. */
+template <reg32 Slot, auto Function>
+std::optional<reg32> traceLock(App* app, CPU& cpu)
 {
-    reg = at(app, kTraceLock);
-    push(app, cpu, reg);
-    return byAddress(app, cpu, at(app, slot));
+    return windows<Slot, Function>(app, cpu, at(app, kTraceLock));
+}
+
+/* A word of an archive's, big-endian, as the host has it. */
+reg32 bigEndian(reg32 word)
+{
+    return (word & 0xff) << 24 | (word & 0xff00) << 8 | (word & 0xff0000) >> 8 | (word & 0xff000000) >> 24;
 }
 
 }  // namespace
+
+/* The .viv archive named `name` opened, its FILE to [`file`]: its header's
+ * size (big-endian at 0xc) read into the frame (under ebx, ecx, esi, edi and
+ * ebp pushed), a block of it and 0x30 more allocated and cleared, the header
+ * read into it whole and its first word, the files' count and the header's
+ * size byte-swapped.  The block, or 0 -- the file closed and [`file`] 0 when
+ * there is no block.  ebx and ecx kept. */
+std::optional<reg32> vivOpened(App* app, CPU& cpu, reg32 name, reg32 file)
+{
+    const GuestFrame frame(cpu, 0x14, 4);
+    const reg32 sizeAt = frame - 4;
+    const Kept kept(cpu, kKeepEbx | kKeepEcx);
+    const auto stream = watcom(app, cpu, kFopen, {name, kReadBinary});
+    if (!stream)
+        return std::nullopt;
+    put(app, file, *stream);
+    if (*stream == 0)
+        return 0;
+    if (!watcom(app, cpu, kFseek, {*stream, kVivHeaderSize, kSeekSet})
+        || !watcom(app, cpu, kFread, {sizeAt, 4, 1, at(app, file)}))
+        return std::nullopt;
+    const reg32 bytes = bigEndian(at(app, sizeAt)) + kVivSlack;
+    const auto block = watcom(app, cpu, kAllocate, {kNoName, bytes, kVivBlockFlags});
+    if (!block)
+        return std::nullopt;
+    if (*block == 0)
+    {
+        if (!watcom(app, cpu, kFclose, {at(app, file)}))
+            return std::nullopt;
+        put(app, file, 0);
+        return 0;
+    }
+    if (!watcom(app, cpu, kMemset, {*block, 0, bytes}) || !watcom(app, cpu, kFseek, {at(app, file), 0, kSeekSet})
+        || !watcom(app, cpu, kFread, {*block, bytes, 1, at(app, file)}))
+        return std::nullopt;
+    put(app, *block, bigEndian(at(app, *block)));
+    put(app, *block + kVivHeaderSize, bigEndian(at(app, *block + kVivHeaderSize)));
+    put(app, *block + kVivCount, bigEndian(at(app, *block + kVivCount)));
+    return *block;
+}
+
+/* The archive's block `block` freed and its FILE at [`file`] closed, [`file`]
+ * 0: what fclose gives back. */
+std::optional<reg32> vivClosed(App* app, CPU& cpu, reg32 block, reg32 file)
+{
+    if (!watcom(app, cpu, kFree, {block}))
+        return std::nullopt;
+    const auto closed = watcom(app, cpu, kFclose, {at(app, file)});
+    if (!closed)
+        return std::nullopt;
+    put(app, file, 0);
+    return *closed;
+}
+
+namespace
+{
+
+/* The file named `wanted` (case aside, _stricmp) looked for among the
+ * entries of the archive's header `header`.  Found, its offset byte-swapped
+ * to [`offsetTo`] and its size to [`sizeTo`]; else both 0. */
+std::optional<VivSearch> vivEntry(App* app, CPU& cpu, reg32 header, reg32 wanted, reg32 offsetTo, reg32 sizeTo)
+{
+    reg32 entry = header + kVivEntries;
+    for (reg32 index = 0; index < at(app, header + kVivCount); ++index)
+    {
+        const reg32 name = entry + kVivEntryName;
+        const auto differs = watcom(app, cpu, kStricmp, {wanted, name});
+        if (!differs)
+            return std::nullopt;
+        if (*differs == 0)
+        {
+            const reg32 sizeWord = at(app, entry + 4);
+            put(app, offsetTo, bigEndian(at(app, entry)));
+            put(app, sizeTo, bigEndian(sizeWord));
+            return VivSearch{entry, true, sizeWord};
+        }
+        entry = name;
+        while (byte(app, entry) != 0)
+            ++entry;
+        ++entry;
+    }
+    put(app, offsetTo, 0);
+    put(app, sizeTo, 0);
+    return VivSearch{entry, false, 0};
+}
+
+}  // namespace
+
+/* The file named at `path` -- after its last backslash, 0x1d bytes of it,
+ * copied into the frame (under esi, edi and ebp pushed) -- looked up in the
+ * archive's header `header` (vivEntry).  ebx kept. */
+std::optional<VivSearch> vivFile(App* app, CPU& cpu, reg32 header, reg32 path, reg32 offsetTo, reg32 sizeTo)
+{
+    const GuestFrame frame(cpu, 0xc, 0x24);
+    const reg32 name = frame - 0x24;
+    const Kept kept(cpu, kKeepEbx);
+    const auto slash = watcom(app, cpu, kStrrchr, {path, '\\'});
+    if (!slash || !watcom(app, cpu, kStrncpy, {name, *slash != 0 ? *slash + 1 : path, kVivNameBytes}))
+        return std::nullopt;
+    return vivEntry(app, cpu, header, name, offsetTo, sizeTo);
+}
+
+namespace
+{
+
+/* What a look-up leaves in the registers, as the code does: ecx the entry;
+ * found, eax the size word's top byte and edx the size; else eax the header
+ * (edx as _stricmp left it). */
+void vivSearchLeft(CPU& cpu, reg32 header, const VivSearch& search)
+{
+    cpu.ecx = search.entry;
+    if (search.found)
+    {
+        cpu.eax = search.sizeWord >> 24;
+        cpu.edx = bigEndian(search.sizeWord);
+    }
+    else
+    {
+        cpu.eax = header;
+    }
+    cpu.esp += 4;
+}
+
+/* The window's rows below its top moved up one (native_ea_memory.h's moveMemory),
+ * the last cleared (0x4e070c), the cursor at its start -- once the cursor is
+ * past the page.  `left` what the code leaves in eax: the clearing's.  ebx,
+ * ecx and edx kept.  False when the game stopped. */
+bool scrolled(App* app, CPU& cpu, reg32& left)
+{
+    if (sreg32(at(app, kMonoCursor)) < sreg32(kPageBytes))
+        return true;
+    const Kept kept(cpu, kKeepEbx | kKeepEcx | kKeepEdx);
+    const reg32 top = byte(app, kMonoTop);
+    const reg32 page = at(app, kMonoPage);
+    if (!guest::direct<0x4ea4f0, ea::moveMemory>(app, cpu, page + top * kRowBytes, page + (top + 1) * kRowBytes,
+                                                 (kRows - 1 - top) * kRowBytes)
+        || !watcom(app, cpu, kFillZero, {at(app, kMonoPage) + kLastRow, kRowBytes}))
+        return false;
+    put(app, kMonoCursor, kLastRow);
+    left = cpu.eax;
+    return true;
+}
+
+/* The monitor's page cleared, a dword at a time, under the trace's lock,
+ * while the trace's level is 2 or more.  The cursor stays.  `left` what the
+ * code leaves in eax, handed over as it is (the lock's calls give it back as
+ * they find it, now and then): what LeaveCriticalSection gives back, eax the
+ * clearing's end before it.  ecx and edx kept.  False when the game stopped. */
+bool pageCleared(App* app, CPU& cpu, reg32& left)
+{
+    if (sreg32(at(app, kTraceLevel)) < kTraceWrites)
+        return true;
+    const Kept kept(cpu, kKeepEcx | kKeepEdx);
+    cpu.eax = left;
+    if (!traceLockMade(app, cpu) || !traceLock<kEnterCriticalSection, &win32::kernel32::EnterCriticalSection>(app, cpu))
+        return false;
+    for (reg32 offset = 0; offset < kPageBytes; offset += 4)
+        put(app, at(app, kMonoPage) + offset, 0);
+    cpu.eax = kPageBytes;
+    const auto given = traceLock<kLeaveCriticalSection, &win32::kernel32::LeaveCriticalSection>(app, cpu);
+    if (!given)
+        return false;
+    left = *given;
+    return true;
+}
+
+/* The text at `text` written at the monitor's cursor, while the trace's
+ * level is 2 or more: each byte from 0x20 a cell in the attribute (the window
+ * scrolled first if the cursor is past the page); 8 a cell back, 9 on to the
+ * next tab, 0xa the next row's start (scrolled), 0xb the window's top, 0xc
+ * the page cleared and the window's top; 0x0e the next byte the attribute.
+ * What the code leaves in eax back (`left`, the check holds it to that): each
+ * cell's word summed in eax out of what eax and edx held before, their upper
+ * halves with it (`carried`, edx's), and each control's own. */
+std::optional<reg32> monoText(App* app, CPU& cpu, reg32 text)
+{
+    if (sreg32(at(app, kTraceLevel)) < kTraceWrites)
+        return text;
+    reg32 length = 0;
+    while (byte(app, text + length) != 0)
+        ++length;
+    reg32 left = 0;
+    reg32 carried = text;
+    bool attributeNext = false;
+    for (reg32 i = 0; sreg32(i) < sreg32(length); ++i)
+    {
+        const reg8 c = byte(app, text + i);
+        if (attributeNext)
+        {
+            left = c;
+            attributeNext = false;
+            putByte(app, kMonoAttribute, c);
+            continue;
+        }
+        attributeNext = c == kAttributeEscape;
+        const reg32 cursor = at(app, kMonoCursor);
+        if (c >= kFirstPrinted)
+        {
+            if (!scrolled(app, cpu, left))
+                return std::nullopt;
+            const reg32 next = at(app, kMonoCursor) + 2;
+            left = ((((left & 0xff0000) << 8) | reg32(byte(app, kMonoAttribute)) << 8) + ((carried & 0xffff0000) | c));
+            carried = at(app, kMonoPage);
+            put(app, kMonoCursor, next);
+            app->getMemory<reg16>(carried + next - 2) = reg16(left);
+            continue;
+        }
+        const reg8 control = reg8(c - kBackspace);
+        if (control > kLastControl)
+        {
+            left = (left & 0xffffff00) | control;
+            continue;
+        }
+        left = control;
+        switch (control)
+        {
+        case 0:  // backspace
+            if (sreg32(cursor) >= 2)
+                put(app, kMonoCursor, cursor - 2);
+            break;
+        case 1:  // tab: the column on to the next multiple of the tab's width
+        {
+            const reg32 tab = byte(app, kMonoTab);
+            if (tab <= 1)
+                break;
+            const sreg32 rowStart = sreg32(cursor) / sreg32(kRowBytes) * sreg32(kRowBytes);
+            const sreg32 column = (sreg32(cursor) - rowStart) / 2;
+            left = reg32((column / sreg32(tab) + 1) * sreg32(tab) * 2);
+            carried = reg32(column % sreg32(tab));
+            put(app, kMonoCursor, left + reg32(rowStart));
+            break;
+        }
+        case 2:  // newline: the next row's start, the window scrolled at the bottom
+            left = reg32(sreg32(cursor) / sreg32(kRowBytes));
+            carried = reg32(sreg32(cursor) % sreg32(kRowBytes));
+            put(app, kMonoCursor, (left + 1) * kRowBytes);
+            if (!scrolled(app, cpu, left))
+                return std::nullopt;
+            break;
+        case 3:  // the window's top
+            put(app, kMonoCursor, byte(app, kMonoTop) * kRowBytes);
+            break;
+        case 4:  // the page cleared, the window's top
+            if (!pageCleared(app, cpu, left))
+                return std::nullopt;
+            put(app, kMonoCursor, byte(app, kMonoTop) * kRowBytes);
+            break;
+        }
+    }
+    return left;
+}
+
+/* EA's trace, printf's way, the format at `format` and its arguments at
+ * `arguments`, written to the monitor (monoText) under the trace's lock --
+ * formatted (vsprintf: eax the buffer, edx the format, ebx the va_list's
+ * address) into the 0x100 bytes of the frame, the va_list's slot above it.
+ * eax handed to LeaveCriticalSection as monoText leaves it.  ebx, ecx and
+ * edx kept.  False when the game stopped. */
+bool tracePrinted(App* app, CPU& cpu, reg32 format, reg32 arguments)
+{
+    const GuestFrame frame(cpu, 0, 0x104);
+    const reg32 list = frame - 4, buffer = frame - 0x104;
+    const Kept kept(cpu, kKeepEbx | kKeepEcx | kKeepEdx);
+    if (!traceLockMade(app, cpu) || !traceLock<kEnterCriticalSection, &win32::kernel32::EnterCriticalSection>(app, cpu))
+        return false;
+    put(app, list, arguments);
+    if (!watcom(app, cpu, kVsprintf, {buffer, format, list}))
+        return false;
+    const auto left = monoText(app, cpu, buffer);
+    if (!left)
+        return false;
+    cpu.eax = *left;
+    return traceLock<kLeaveCriticalSection, &win32::kernel32::LeaveCriticalSection>(app, cpu).has_value();
+}
+
+/* The cursor moved to `column` and `row`, if they are on the page. */
+void cursorTo(App* app, reg32 column, reg32 row)
+{
+    if (sreg32(column) >= 0 && sreg32(column) < kColumns && sreg32(row) >= 0 && sreg32(row) < kRows)
+        put(app, kMonoCursor, (row * reg32(kColumns) + column) * 2);
+}
+
+/* The scrolling window's top row `row` (0 to 24, else as it was), under the
+ * trace's lock: what LeaveCriticalSection gives back.  ecx and edx kept. */
+std::optional<reg32> windowTopSet(App* app, CPU& cpu, reg32 row)
+{
+    const Kept kept(cpu, kKeepEcx | kKeepEdx);
+    if (!traceLockMade(app, cpu) || !traceLock<kEnterCriticalSection, &win32::kernel32::EnterCriticalSection>(app, cpu))
+        return std::nullopt;
+    if (sreg32(row) >= 0 && sreg32(row) < kRows)
+        putByte(app, kMonoTop, reg8(row));
+    return traceLock<kLeaveCriticalSection, &win32::kernel32::LeaveCriticalSection>(app, cpu);
+}
+
+/* The monitor's page `page`: 0xb0000 + page * 0x8000, kept and back. */
+reg32 monitorPage(App* app, reg32 page)
+{
+    const reg32 address = (page << kMonoPageShift) + kMonoMemory;
+    put(app, kMonoPage, address);
+    return address;
+}
+
+}  // namespace
+
+/* EA's random numbers seeded from `seed`: their six words, each the one
+ * before plus a constant.  The last back. */
+reg32 randomSeeded(App* app, reg32 seed)
+{
+    static const reg32 steps[] = {0xf22d0e56, 0x96041893, 0x3df3b646, 0x40dde76d, 0x97327ae1, 0xd1a9fbe7};
+    for (reg32 i = 0; i < 6; ++i)
+    {
+        seed += steps[i];
+        put(app, kRandom + 4 * i, seed);
+    }
+    return seed;
+}
+
+/* Whether the file named `name` is there: opened (openToRead, its handle,
+ * where and size into the frame under ebx, ecx, edx and esi pushed) with the
+ * complaint at a missing one off, closed again (closeChecked).  ebx, ecx and
+ * edx kept. */
+std::optional<bool> fileThere(App* app, CPU& cpu, reg32 name)
+{
+    const GuestFrame frame(cpu, 0x10, 0xc);
+    const reg32 handleAt = frame - 0xc, whereAt = frame - 8, sizeAt = frame - 4;
+    const Kept kept(cpu, kKeepEbx | kKeepEcx | kKeepEdx);
+    const reg32 complain = at(app, kComplain);
+    put(app, kComplain, 0);
+    if (!guest::direct<0x4e28d0, ea::openToRead>(app, cpu, name, handleAt, whereAt, sizeAt))
+        return std::nullopt;
+    const reg32 handle = at(app, handleAt);
+    if (handle != 0)
+    {
+        cpu.ebx = 1;  // as the code has it, to say the file is there
+        if (!guest::direct<0x4e2da0, ea::closeChecked>(app, cpu, handle))
+            return std::nullopt;
+    }
+    put(app, kComplain, complain);
+    return handle != 0;
+}
+
+/* loadfileadr: the file named `name` loaded whole into a block allocated
+ * with `flags` -- the sound's stream topped up before (0x4ff7c0), the more so
+ * the bigger the file; its size kept at 0x5643f8.  The load's hook
+ * (0x567868), if set, is handed the block, the name and the flags, and what
+ * it gives back is the block (none: the block freed; edx left it).  The
+ * block, or 0.  The open's handle, where and size are in the frame, under
+ * ebx, ecx, esi, edi and ebp pushed, their addresses in the registers before
+ * the first top-up already.  ebx and ecx kept; edx as the calls leave it --
+ * the open's, the block's, the read's and the free's by address for that. */
+std::optional<reg32> loadWhole(App* app, CPU& cpu, reg32 name, reg32 flags)
+{
+    const GuestFrame frame(cpu, 0x14, 0xc);
+    const reg32 sizeAt = frame - 0xc, whereAt = frame - 8, handleAt = frame - 4;
+    const Kept kept(cpu, kKeepEbx | kKeepEcx);
+    cpu.edx = handleAt;
+    cpu.ebx = whereAt;
+    cpu.ecx = sizeAt;
+    if (!watcom(app, cpu, kTopUp, {kTopUpFirst}))
+        return std::nullopt;
+    const auto opened = watcom(app, cpu, kOpen, {name, handleAt, whereAt, sizeAt});
+    if (!opened)
+        return std::nullopt;
+    if (*opened == 0 || at(app, sizeAt) == 0)
+    {
+        // Not there, or empty (edx the size the code read): closed if it was opened.
+        if (*opened != 0)
+            cpu.edx = 0;
+        const reg32 handle = at(app, handleAt);
+        if (handle != 0 && !guest::direct<0x4e2da0, ea::closeChecked>(app, cpu, handle))
+            return std::nullopt;
+        return 0;
+    }
+    const sreg32 size = sreg32(at(app, sizeAt));
+    const auto loadFlags = watcom(app, cpu, kLoadFlags, {at(app, handleAt)});
+    if (!loadFlags)
+        return std::nullopt;
+    const auto blockSize = watcom(app, cpu, kLoadBlockSize, {at(app, kLoadSomething), *loadFlags, kLoadFile});
+    if (!blockSize || !watcom(app, cpu, kTopUp, {*blockSize + reg32(size / kTopUpBytes)}))
+        return std::nullopt;
+    const reg32 bytes = at(app, sizeAt);
+    put(app, kWhere, kLoadFile);
+    put(app, kWhereLine, kLoadLine);
+    put(app, kWhereFunction, kLoadFunction);
+    const auto block = watcom(app, cpu, kAllocate, {name, bytes, flags});
+    if (!block)
+        return std::nullopt;
+    if (*block != 0)
+    {
+        if (!watcom(app, cpu, kRead, {at(app, handleAt), *block, at(app, sizeAt)}))
+            return std::nullopt;
+        put(app, kLoadedSize, at(app, sizeAt));
+    }
+    if (!guest::direct<0x4e2da0, ea::closeChecked>(app, cpu, at(app, handleAt))
+        || !watcom(app, cpu, kTopUpEnd, {}))
+        return std::nullopt;
+    if (at(app, kLoadHook) == 0 || *block == 0)
+        return *block;
+    const auto other = watcom(app, cpu, at(app, kLoadHook), {*block, name, flags});
+    if (!other)
+        return std::nullopt;
+    cpu.edx = *other;
+    if (*other == 0 && !watcom(app, cpu, kFree, {*block}))
+        return std::nullopt;
+    return *other;
+}
+
+/* loadWhole (by address) with the complaint at a missing file off: ebx 0 and
+ * ecx the complaint as the code hands them over.  ebx and ecx kept. */
+std::optional<reg32> loadQuietly(App* app, CPU& cpu, reg32 name, reg32 flags)
+{
+    const Kept kept(cpu, kKeepEbx | kKeepEcx);
+    const reg32 complain = at(app, kComplain);
+    put(app, kComplain, 0);
+    const auto block = watcom(app, cpu, kLoadWhole, {name, flags, 0, complain});
+    if (!block)
+        return std::nullopt;
+    put(app, kComplain, complain);
+    return *block;
+}
 
 void gameTrace(win32::WinApplication* app, x86::CPU& cpu);
 void openViv(win32::WinApplication* app, x86::CPU& cpu);
@@ -146,645 +657,146 @@ void fileExists(win32::WinApplication* app, x86::CPU& cpu);
 void loadFile(win32::WinApplication* app, x86::CPU& cpu);
 void loadFileQuietly(win32::WinApplication* app, x86::CPU& cpu);
 
-/* 0x42d510: the game's own trace (a level, a channel, a format and its
- * arguments on the stack), compiled out -- push ebp, mov ebp, esp, pop ebp. */
-void gameTrace(win32::WinApplication* app, x86::CPU& cpu)
+/* 0x42d510's core: the game's own trace, compiled out: nothing. */
+void traceOff(App*)
 {
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    cpu.ebp = pop(app, cpu);
+}
+
+/* 0x42d510: the game's own trace (a level, a channel, a format and its
+ * arguments on the stack), compiled out: nothing (its frame only). */
+void gameTrace(win32::WinApplication*, x86::CPU& cpu)
+{
     cpu.esp += 4;
 }
 
-/* 0x43b830: the .viv archive named eax opened, its FILE to [edx]: its header's
- * size (big-endian at 0xc) read, a block of it and 0x30 more allocated and
- * cleared, the header read into it whole and its first word, the files'
- * count (8) and the header's size (0xc) byte-swapped.  The block, or 0 --
- * the file closed and [edx] 0 when there is no block. */
+/* 0x43b830: vivOpened of the archive named eax, its FILE to [edx]: the
+ * block, or 0; edx left the files' count where there is a block. */
 void openViv(win32::WinApplication* app, x86::CPU& cpu)
 {
-    push(app, cpu, cpu.ebx);
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.esi);
-    push(app, cpu, cpu.edi);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    cpu.esp -= 4;
-    const reg32 size = cpu.ebp - 4;
-    const auto leave = [&] {
-        cpu.esp = cpu.ebp;
-        cpu.ebp = pop(app, cpu);
-        cpu.edi = pop(app, cpu);
-        cpu.esi = pop(app, cpu);
-        cpu.ecx = pop(app, cpu);
-        cpu.ebx = pop(app, cpu);
-        cpu.esp += 4;
-    };
-    cpu.edi = cpu.edx;
-    cpu.edx = kReadBinary;
-    if (!byAddress(app, cpu, kFopen))
+    const auto block = vivOpened(app, cpu, cpu.eax, cpu.edx);
+    if (!block)
         return;
-    put(app, cpu.edi, cpu.eax);
-    if (cpu.eax == 0)
-        return leave();
-    cpu.edx = 0xc;
-    cpu.ebx = 0;
-    if (!byAddress(app, cpu, kFseek))
-        return;
-    cpu.ebx = 1;
-    cpu.edx = 4;
-    cpu.eax = size;
-    cpu.ecx = at(app, cpu.edi);
-    if (!byAddress(app, cpu, kFread))
-        return;
-    cpu.eax = at(app, size);
-    cpu.edx = at(app, size);
-    cpu.eax &= 0xff;
-    cpu.edx &= 0xff00;
-    cpu.eax <<= 0x18;
-    cpu.edx <<= 8;
-    cpu.edx |= cpu.eax;
-    cpu.eax = at(app, size);
-    cpu.eax &= 0xff0000;
-    cpu.eax >>= 8;
-    cpu.edx |= cpu.eax;
-    cpu.eax = at(app, size);
-    cpu.eax &= 0xff000000;
-    cpu.eax >>= 0x18;
-    cpu.ebx = 0x10;
-    cpu.edx |= cpu.eax;
-    cpu.eax = kNoName;
-    put(app, size, cpu.edx);
-    cpu.edx += 0x30;
-    if (!byAddress(app, cpu, kAllocate))
-        return;
-    cpu.esi = cpu.eax;
-    if (cpu.eax == 0)
-    {
-        cpu.eax = at(app, cpu.edi);
-        if (!byAddress(app, cpu, kFclose))
-            return;
-        cpu.eax = 0;
-        put(app, cpu.edi, cpu.esi);
-        return leave();
-    }
-    cpu.ebx = at(app, size);
-    cpu.edx = 0;
-    cpu.ebx += 0x30;
-    if (!byAddress(app, cpu, kMemset))
-        return;
-    cpu.eax = at(app, cpu.edi);
-    cpu.ebx = 0;
-    cpu.edx = 0;
-    if (!byAddress(app, cpu, kFseek))
-        return;
-    cpu.edx = at(app, size);
-    cpu.ebx = 1;
-    cpu.eax = cpu.esi;
-    cpu.ecx = at(app, cpu.edi);
-    cpu.edx += 0x30;
-    if (!byAddress(app, cpu, kFread))
-        return;
-    // The first word: edx the low bytes, eax the high, into eax.
-    cpu.edx = at(app, cpu.esi);
-    cpu.eax = at(app, cpu.esi);
-    cpu.edx &= 0xff;
-    cpu.eax &= 0xff00;
-    cpu.edx <<= 0x18;
-    cpu.eax <<= 8;
-    cpu.edx |= cpu.eax;
-    cpu.eax = at(app, cpu.esi);
-    cpu.eax &= 0xff0000;
-    cpu.eax >>= 8;
-    cpu.eax |= cpu.edx;
-    cpu.edx = at(app, cpu.esi);
-    cpu.edx &= 0xff000000;
-    cpu.edx >>= 0x18;
-    cpu.eax |= cpu.edx;
-    put(app, cpu.esi, cpu.eax);
-    // The header's size.
-    cpu.edx = at(app, cpu.esi + 0xc);
-    cpu.eax = at(app, cpu.esi + 0xc);
-    cpu.edx &= 0xff;
-    cpu.eax &= 0xff00;
-    cpu.edx <<= 0x18;
-    cpu.eax <<= 8;
-    cpu.edx |= cpu.eax;
-    cpu.eax = at(app, cpu.esi + 0xc);
-    cpu.eax &= 0xff0000;
-    cpu.eax >>= 8;
-    cpu.edx |= cpu.eax;
-    cpu.eax = at(app, cpu.esi + 0xc);
-    cpu.eax &= 0xff000000;
-    cpu.eax >>= 0x18;
-    cpu.edx |= cpu.eax;
-    put(app, cpu.esi + 0xc, cpu.edx);
-    // The files' count.
-    cpu.eax = at(app, cpu.esi + 8);
-    cpu.edx = at(app, cpu.esi + 8);
-    cpu.eax &= 0xff;
-    cpu.edx &= 0xff00;
-    cpu.eax <<= 0x18;
-    cpu.edx <<= 8;
-    cpu.edx |= cpu.eax;
-    cpu.eax = at(app, cpu.esi + 8);
-    cpu.eax &= 0xff0000;
-    cpu.eax >>= 8;
-    cpu.edx |= cpu.eax;
-    cpu.eax = at(app, cpu.esi + 8);
-    cpu.eax &= 0xff000000;
-    cpu.eax >>= 0x18;
-    cpu.edx |= cpu.eax;
-    cpu.eax = cpu.esi;
-    put(app, cpu.esi + 8, cpu.edx);
-    leave();
+    if (*block != 0)
+        cpu.edx = at(app, *block + kVivCount);
+    cpu.eax = *block;
+    cpu.esp += 4;
 }
 
-/* 0x43b9b0: the archive's block eax freed and its FILE at [edx] closed, [edx]
- * 0. */
+/* 0x43b9b0: vivClosed of block eax and the FILE at [edx]. */
 void closeViv(win32::WinApplication* app, x86::CPU& cpu)
 {
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    if (!byAddress(app, cpu, kFree))
+    const auto closed = vivClosed(app, cpu, cpu.eax, cpu.edx);
+    if (!closed)
         return;
-    cpu.eax = at(app, cpu.edx);
-    if (!byAddress(app, cpu, kFclose))
-        return;
-    put(app, cpu.edx, 0);
-    cpu.ebp = pop(app, cpu);
+    cpu.eax = *closed;
     cpu.esp += 4;
 }
 
-/* 0x43b9d0: the file named edx -- its path after the last backslash, 0x1d
- * bytes of it -- looked up in the archive's header eax (findVivEntry): its
- * offset to [ebx], its size to [ecx]. */
+/* 0x43b9d0: vivFile of the name at edx in the header eax: its offset to
+ * [ebx], its size to [ecx]. */
 void findInViv(win32::WinApplication* app, x86::CPU& cpu)
 {
-    push(app, cpu, cpu.esi);
-    push(app, cpu, cpu.edi);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    cpu.esp -= 0x24;
-    cpu.edi = cpu.eax;
-    cpu.esi = cpu.edx;
-    put(app, cpu.ebp - 4, cpu.ebx);
-    cpu.edx = '\\';
-    cpu.eax = cpu.esi;
-    if (!byAddress(app, cpu, kStrrchr))
+    const reg32 header = cpu.eax;
+    const auto search = vivFile(app, cpu, header, cpu.edx, cpu.ebx, cpu.ecx);
+    if (!search)
         return;
-    cpu.edx = cpu.eax != 0 ? cpu.eax + 1 : cpu.esi;
-    cpu.ebx = 0x1d;
-    cpu.eax = cpu.ebp - 0x24;
-    if (!byAddress(app, cpu, kStrncpy))
-        return;
-    cpu.ebx = at(app, cpu.ebp - 4);
-    cpu.edx = cpu.ebp - 0x24;
-    cpu.eax = cpu.edi;
-    if (!direct(app, cpu, findVivEntry))
-        return;
-    cpu.esp = cpu.ebp;
-    cpu.ebp = pop(app, cpu);
-    cpu.edi = pop(app, cpu);
-    cpu.esi = pop(app, cpu);
-    cpu.esp += 4;
+    vivSearchLeft(cpu, header, *search);
 }
 
-/* 0x4679f0: the file named edx (case aside, _stricmp) looked for among the
- * [eax + 8] entries of the archive's header eax, from 0x10 on -- each its
- * offset and size, big-endian, and its name, ended.  Found, its offset
- * byte-swapped to [ebx] and its size to [ecx]; else both 0.  ecx left the
- * entry's, edx the size's or the last _stricmp's. */
+/* 0x4679f0: vivEntry of the name at edx in the header eax: its offset to
+ * [ebx], its size to [ecx]. */
 void findVivEntry(win32::WinApplication* app, x86::CPU& cpu)
 {
-    push(app, cpu, cpu.esi);
-    push(app, cpu, cpu.edi);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    cpu.esp -= 0xc;
-    const reg32 header = cpu.ebp - 4, name = cpu.ebp - 8, wanted = cpu.ebp - 0xc;
-    put(app, header, cpu.eax);
-    put(app, wanted, cpu.edx);
-    cpu.esi = cpu.ecx;
-    cpu.ecx = cpu.eax + 0x10;
-    cpu.edi = 0;
-    for (;;)
-    {
-        cpu.eax = at(app, header);
-        if (cpu.edi >= at(app, cpu.eax + 8))
-        {
-            put(app, cpu.ebx, 0);
-            put(app, cpu.esi, 0);
-            break;
-        }
-        cpu.eax = cpu.ecx + 8;
-        put(app, name, cpu.eax);
-        cpu.edx = cpu.eax;
-        cpu.eax = at(app, wanted);
-        if (!byAddress(app, cpu, kStricmp))
-            return;
-        if (cpu.eax != 0)
-        {
-            cpu.ecx = at(app, name);
-            while (byte(app, cpu.ecx) != 0)
-                ++cpu.ecx;
-            ++cpu.edi;
-            ++cpu.ecx;
-            continue;
-        }
-        // The offset and the size, each: edx the low bytes, eax the high.
-        for (const reg32 offset : {0u, 4u})
-        {
-            const reg32 from = cpu.ecx + offset, to = offset == 0 ? cpu.ebx : cpu.esi;
-            cpu.edx = at(app, from);
-            cpu.eax = at(app, from);
-            cpu.edx &= 0xff;
-            cpu.eax &= 0xff00;
-            cpu.edx <<= 0x18;
-            cpu.eax <<= 8;
-            cpu.edx |= cpu.eax;
-            cpu.eax = at(app, from);
-            cpu.eax &= 0xff0000;
-            cpu.eax >>= 8;
-            cpu.edx |= cpu.eax;
-            cpu.eax = at(app, from);
-            cpu.eax &= 0xff000000;
-            cpu.eax >>= 0x18;
-            cpu.edx |= cpu.eax;
-            put(app, to, cpu.edx);
-        }
-        break;
-    }
-    cpu.esp = cpu.ebp;
-    cpu.ebp = pop(app, cpu);
-    cpu.edi = pop(app, cpu);
-    cpu.esi = pop(app, cpu);
-    cpu.esp += 4;
+    const reg32 header = cpu.eax;
+    const auto search = vivEntry(app, cpu, header, cpu.edx, cpu.ebx, cpu.ecx);
+    if (!search)
+        return;
+    vivSearchLeft(cpu, header, *search);
 }
 
 /* 0x4e08f0: EA's trace, printf's way (the format and its arguments on the
- * stack), written to the monochrome monitor (monoWrite) under the trace's
- * lock -- formatted into 0x100 bytes of the frame (vsprintf) -- while the
- * trace's level is 2 or more. */
+ * stack): tracePrinted, while the trace's level is 2 or more.  eax as LeaveCriticalSection gives it back (as it was, with
+ * nothing written). */
 void monoPrintf(win32::WinApplication* app, x86::CPU& cpu)
 {
-    cpu.esp -= 0x104;
-    if (sreg32(at(app, kTraceLevel)) >= 2)
-    {
-        if (at(app, kTraceLock) == 0 && !makeLock(app, cpu))
-            return;
-        push(app, cpu, cpu.edi);
-        push(app, cpu, cpu.esi);
-        push(app, cpu, cpu.edx);
-        push(app, cpu, cpu.ecx);
-        push(app, cpu, cpu.ebx);
-        if (!lockCall(app, cpu, cpu.ebx, kEnterCriticalSection))
-            return;
-        cpu.eax = cpu.esp + 0x120;
-        cpu.ebx = cpu.esp + 0x114;
-        cpu.edx = at(app, cpu.esp + 0x11c);
-        put(app, cpu.esp + 0x114, cpu.eax);
-        cpu.eax = cpu.esp + 0x14;
-        cpu.esi = 0;
-        if (!byAddress(app, cpu, kVsprintf))
-            return;
-        cpu.eax = cpu.esp + 0x14;
-        put(app, cpu.esp + 0x114, cpu.esi);
-        if (!direct(app, cpu, monoWrite))
-            return;
-        if (!lockCall(app, cpu, cpu.edi, kLeaveCriticalSection))
-            return;
-        cpu.ebx = pop(app, cpu);
-        cpu.ecx = pop(app, cpu);
-        cpu.edx = pop(app, cpu);
-        cpu.esi = pop(app, cpu);
-        cpu.edi = pop(app, cpu);
-    }
-    cpu.esp += 0x104;
+    if (sreg32(at(app, kTraceLevel)) >= kTraceWrites
+        && !tracePrinted(app, cpu, at(app, cpu.esp + 4), cpu.esp + 8))
+        return;
     cpu.esp += 4;
 }
 
-/* 0x4e0980: monoPrintf at column [esp+4] and row [esp+8] (the cursor moved
- * there if they are on the page, 80 by 25), the format after them. */
+/* 0x4e0980: monoPrintf at column [esp + 4] and row [esp + 8] (the cursor
+ * moved there, once the lock is taken, if they are on the page), the format
+ * after them; the frame under ebx, esi and ebp pushed.  eax as the lock's
+ * calls leave it, the lock handed in it. */
 void monoPrintfAt(win32::WinApplication* app, x86::CPU& cpu)
 {
-    push(app, cpu, cpu.ebx);
-    push(app, cpu, cpu.esi);
-    push(app, cpu, cpu.ebp);
-    cpu.esp -= 0x104;
-    cpu.esi = at(app, cpu.esp + 0x114);
-    cpu.ebx = at(app, cpu.esp + 0x118);
-    if (sreg32(at(app, kTraceLevel)) >= 2)
+    if (sreg32(at(app, kTraceLevel)) < kTraceWrites)
     {
-        if (at(app, kTraceLock) == 0 && !makeLock(app, cpu))
-            return;
-        push(app, cpu, cpu.edi);
-        push(app, cpu, cpu.edx);
-        push(app, cpu, cpu.ecx);
-        if (!lockCall(app, cpu, cpu.edi, kEnterCriticalSection))
-            return;
-        if (sreg32(cpu.esi) >= 0 && sreg32(cpu.esi) < 0x50 && sreg32(cpu.ebx) >= 0 && sreg32(cpu.ebx) < 0x19)
-        {
-            cpu.eax = cpu.ebx * 4;
-            cpu.eax += cpu.ebx;
-            cpu.eax <<= 4;
-            cpu.eax += cpu.esi;
-            cpu.eax += cpu.eax;
-            put(app, kMonoCursor, cpu.eax);
-        }
-        cpu.eax = cpu.esp + 0x12c;
-        cpu.ebx = cpu.esp + 0x10c;
-        cpu.edx = at(app, cpu.esp + 0x128);
-        put(app, cpu.esp + 0x10c, cpu.eax);
-        cpu.eax = cpu.esp + 0xc;
-        cpu.ebp = 0;
-        if (!byAddress(app, cpu, kVsprintf))
-            return;
-        cpu.eax = cpu.esp + 0xc;
-        put(app, cpu.esp + 0x10c, cpu.ebp);
-        if (!direct(app, cpu, monoWrite))
-            return;
-        if (!lockCall(app, cpu, cpu.eax, kLeaveCriticalSection))
-            return;
-        cpu.ecx = pop(app, cpu);
-        cpu.edx = pop(app, cpu);
-        cpu.edi = pop(app, cpu);
+        cpu.esp += 4;
+        return;
     }
-    cpu.esp += 0x104;
-    cpu.ebp = pop(app, cpu);
-    cpu.esi = pop(app, cpu);
-    cpu.ebx = pop(app, cpu);
+    const reg32 column = at(app, cpu.esp + 4), row = at(app, cpu.esp + 8);
+    const reg32 format = at(app, cpu.esp + 0xc), arguments = cpu.esp + 0x10;
+    // The cursor is moved after the lock is taken: tracePrinted's own steps,
+    // with the move between them.
+    {
+        const GuestFrame frame(cpu, 0xc, 0x104);
+        const reg32 list = frame - 4, buffer = frame - 0x104;
+        const Kept kept(cpu, kKeepEbx | kKeepEcx | kKeepEdx);
+        if (!traceLockMade(app, cpu)
+            || !traceLock<kEnterCriticalSection, &win32::kernel32::EnterCriticalSection>(app, cpu))
+            return;
+        cursorTo(app, column, row);
+        put(app, list, arguments);
+        if (!watcom(app, cpu, kVsprintf, {buffer, format, list}) || !monoText(app, cpu, buffer))
+            return;
+        cpu.eax = at(app, kTraceLock);
+        if (!traceLock<kLeaveCriticalSection, &win32::kernel32::LeaveCriticalSection>(app, cpu))
+            return;
+    }
     cpu.esp += 4;
 }
 
-/* 0x4e0a60: the text at eax written at the monitor's cursor, while the
- * trace's level is 2 or more: each byte from 0x20 a cell in the attribute
- * (the window scrolled first if the cursor is past the page); 8 a cell back,
- * 9 on to the next tab, 0xa the next row's start (scrolled), 0xb the window's
- * top, 0xc the page cleared and the window's top; 0x0e the next byte the
- * attribute.  eax left as the cells' last made it. */
+/* 0x4e0a60: monoText of the text at eax: eax as the code leaves it. */
 void monoWrite(win32::WinApplication* app, x86::CPU& cpu)
 {
-    push(app, cpu, cpu.ebx);
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.edx);
-    push(app, cpu, cpu.esi);
-    push(app, cpu, cpu.edi);
-    push(app, cpu, cpu.ebp);
-    cpu.esp -= 4;
-    cpu.esi = at(app, kMonoCursor);
-    cpu.edx = cpu.eax;
-    const auto leave = [&] {
-        cpu.esi = at(app, kMonoCursor);
-        cpu.esp += 4;
-        cpu.ebp = pop(app, cpu);
-        cpu.edi = pop(app, cpu);
-        cpu.esi = pop(app, cpu);
-        cpu.edx = pop(app, cpu);
-        cpu.ecx = pop(app, cpu);
-        cpu.ebx = pop(app, cpu);
-        cpu.esp += 4;
-    };
-    if (sreg32(at(app, kTraceLevel)) < 2)
-        return leave();
-    // repne scasb for the ending: ecx its length.
-    cpu.edi = cpu.eax;
-    cpu.ecx = 0;
-    --cpu.ecx;
-    cpu.eax = 0;
-    do
-    {
-        --cpu.ecx;
-    } while (byte(app, cpu.edi++) != cpu.al && cpu.ecx != 0);
-    cpu.ecx = ~cpu.ecx;
-    --cpu.ecx;
-    cpu.bl = 0;
-    put(app, cpu.esp, cpu.ecx);
-    cpu.edi = 0;
-    if (sreg32(cpu.ecx) <= 0)
-        return leave();
-    cpu.ecx = cpu.edx;
-    for (;;)
-    {
-        if (cpu.bl == 0x0e)
-        {
-            cpu.eax = 0;
-            cpu.al = byte(app, cpu.ecx);
-            cpu.bl = 0;
-            if (!direct(app, cpu, monoSetAttribute))
-                return;
-        }
-        else
-        {
-            cpu.bl = byte(app, cpu.ecx);
-            cpu.esi = at(app, kMonoCursor);
-            if (cpu.bl >= 0x20)
-            {
-                if (!direct(app, cpu, monoScroll))
-                    return;
-                cpu.esi = at(app, kMonoCursor);
-                cpu.ah = 0;
-                cpu.dh = 0;
-                cpu.al = byte(app, kMonoAttribute);
-                cpu.dl = cpu.bl;
-                cpu.esi += 2;
-                cpu.eax <<= 8;
-                cpu.eax += cpu.edx;
-                cpu.edx = at(app, kMonoPage);
-                put(app, kMonoCursor, cpu.esi);
-                app->getMemory<x86::reg16>(cpu.edx + cpu.esi - 2) = x86::reg16(cpu.eax);
-            }
-            else
-            {
-                cpu.al = cpu.bl;
-                cpu.al -= 8;
-                if (cpu.al <= 4)
-                {
-                    cpu.eax &= 0xff;
-                    // The table at 0x4e0a48: 0x4e0b10, 0x4e0b30, 0x4e0b86, 0x4e0bc0, 0x4e0be5.
-                    switch (cpu.eax)
-                    {
-                    case 0:  // backspace
-                        if (sreg32(cpu.esi) >= 2)
-                        {
-                            cpu.esi -= 2;
-                            put(app, kMonoCursor, cpu.esi);
-                        }
-                        break;
-                    case 1:  // tab
-                    {
-                        if (byte(app, kMonoTab) <= 1)
-                            break;
-                        cpu.ebp = kRowBytes;
-                        cpu.edx = cpu.esi;
-                        cpu.eax = cpu.esi;
-                        cpu.edx = reg32(sreg32(cpu.edx) >> 31);
-                        cpu.eax = reg32(sreg32(cpu.esi) / sreg32(cpu.ebp));
-                        cpu.edx = reg32(sreg32(cpu.esi) % sreg32(cpu.ebp));
-                        cpu.ebp *= cpu.eax;
-                        cpu.edx = cpu.esi;
-                        cpu.edx -= cpu.ebp;
-                        cpu.eax = cpu.edx;
-                        cpu.edx = reg32(sreg32(cpu.edx) >> 31);
-                        cpu.eax -= cpu.edx;
-                        cpu.eax = reg32(sreg32(cpu.eax) >> 1);
-                        cpu.edx = cpu.eax;
-                        cpu.esi = byte(app, kMonoTab);
-                        cpu.edx = reg32(sreg32(cpu.edx) >> 31);
-                        const sreg32 column = sreg32(cpu.eax);
-                        cpu.eax = reg32(column / sreg32(cpu.esi));
-                        cpu.edx = reg32(column % sreg32(cpu.esi));
-                        ++cpu.eax;
-                        cpu.eax *= cpu.esi;
-                        cpu.eax += cpu.eax;
-                        cpu.esi = cpu.eax + cpu.ebp;
-                        put(app, kMonoCursor, cpu.esi);
-                        break;
-                    }
-                    case 2:  // newline
-                    {
-                        cpu.eax = cpu.esi;
-                        cpu.edx = cpu.esi;
-                        cpu.esi = kRowBytes;
-                        cpu.edx = reg32(sreg32(cpu.edx) >> 31);
-                        const sreg32 cursor = sreg32(cpu.eax);
-                        cpu.eax = reg32(cursor / sreg32(cpu.esi));
-                        cpu.edx = reg32(cursor % sreg32(cpu.esi));
-                        cpu.esi = cpu.eax + 1;
-                        cpu.esi *= kRowBytes;
-                        put(app, kMonoCursor, cpu.esi);
-                        if (!direct(app, cpu, monoScroll))
-                            return;
-                        cpu.esi = at(app, kMonoCursor);
-                        break;
-                    }
-                    case 3:  // the window's top
-                        cpu.esi = byte(app, kMonoTop);
-                        cpu.esi *= kRowBytes;
-                        put(app, kMonoCursor, cpu.esi);
-                        break;
-                    case 4:  // the page cleared
-                        if (!direct(app, cpu, monoClear))
-                            return;
-                        cpu.esi = byte(app, kMonoTop);
-                        cpu.esi *= kRowBytes;
-                        put(app, kMonoCursor, cpu.esi);
-                        break;
-                    }
-                }
-            }
-        }
-        cpu.ebp = at(app, cpu.esp);
-        ++cpu.edi;
-        ++cpu.ecx;
-        if (sreg32(cpu.edi) >= sreg32(cpu.ebp))
-            return leave();
-    }
+    const auto left = monoText(app, cpu, cpu.eax);
+    if (!left)
+        return;
+    cpu.eax = *left;
+    cpu.esp += 4;
 }
 
-/* 0x4e0c10: the cursor past the page: the window's rows below its top moved
- * up one (0x4ea4f0), the last cleared (0x4e070c), the cursor at its start. */
+/* 0x4e0c10: the window scrolled if the cursor is past the page (scrolled):
+ * eax as the clearing leaves it, else as it was. */
 void monoScroll(win32::WinApplication* app, x86::CPU& cpu)
 {
-    if (sreg32(at(app, kMonoCursor)) < sreg32(kPageBytes))
-    {
-        cpu.esp += 4;
+    reg32 left = cpu.eax;
+    if (!scrolled(app, cpu, left))
         return;
-    }
-    push(app, cpu, cpu.edi);
-    push(app, cpu, cpu.esi);
-    push(app, cpu, cpu.edx);
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.ebx);
-    cpu.edx = 0;
-    cpu.ecx = 0x19;
-    cpu.dl = byte(app, kMonoTop);
-    cpu.ecx -= cpu.edx;
-    cpu.eax = cpu.edx * 4;
-    --cpu.ecx;
-    cpu.eax += cpu.edx;
-    cpu.ebx = cpu.ecx * 4;
-    cpu.eax <<= 5;
-    cpu.ebx += cpu.ecx;
-    cpu.ecx = at(app, kMonoPage);
-    ++cpu.edx;
-    cpu.ecx += cpu.eax;
-    cpu.eax = cpu.edx * 4;
-    cpu.esi = at(app, kMonoPage);
-    cpu.eax += cpu.edx;
-    cpu.ebx <<= 5;
-    cpu.eax <<= 5;
-    cpu.edx = cpu.ecx;
-    cpu.eax += cpu.esi;
-    if (!byAddress(app, cpu, kMoveMemory))
-        return;
-    cpu.eax = at(app, kMonoPage);
-    cpu.edx = kRowBytes;
-    cpu.eax += kLastRow;
-    cpu.edi = kLastRow;
-    if (!byAddress(app, cpu, kFillZero))
-        return;
-    put(app, kMonoCursor, cpu.edi);
-    cpu.ebx = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
-    cpu.edx = pop(app, cpu);
-    cpu.esi = pop(app, cpu);
-    cpu.edi = pop(app, cpu);
+    cpu.eax = left;
     cpu.esp += 4;
 }
 
-/* 0x4e0ca0: the monitor's page cleared, a dword at a time, under the trace's
- * lock, while the trace's level is 2 or more.  The cursor stays. */
+/* 0x4e0ca0: pageCleared: eax as LeaveCriticalSection gives it back (as it
+ * was, with nothing cleared). */
 void monoClear(win32::WinApplication* app, x86::CPU& cpu)
 {
-    if (sreg32(at(app, kTraceLevel)) < 2)
-    {
-        cpu.esp += 4;
+    reg32 left = cpu.eax;
+    if (!pageCleared(app, cpu, left))
         return;
-    }
-    push(app, cpu, cpu.esi);
-    push(app, cpu, cpu.edx);
-    push(app, cpu, cpu.ecx);
-    if (at(app, kTraceLock) == 0 && !makeLock(app, cpu))
-        return;
-    push(app, cpu, cpu.ebx);
-    if (!lockCall(app, cpu, cpu.ebx, kEnterCriticalSection))
-        return;
-    cpu.eax = 0;
-    cpu.ebx = pop(app, cpu);
-    do
-    {
-        cpu.edx = at(app, kMonoPage);
-        put(app, cpu.edx + cpu.eax, 0);
-        cpu.eax += 4;
-    } while (sreg32(cpu.eax) < sreg32(kPageBytes));
-    if (!lockCall(app, cpu, cpu.esi, kLeaveCriticalSection))
-        return;
-    cpu.ecx = pop(app, cpu);
-    cpu.edx = pop(app, cpu);
-    cpu.esi = pop(app, cpu);
+    cpu.eax = left;
     cpu.esp += 4;
 }
 
-/* 0x4e0d00: the scrolling window's top row eax (0 to 24, else as it was),
- * under the trace's lock.  No caller in the game. */
+/* 0x4e0d00: windowTopSet to eax.  No caller in the game. */
 void monoSetTop(win32::WinApplication* app, x86::CPU& cpu)
 {
-    push(app, cpu, cpu.ebx);
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.edx);
-    cpu.ebx = cpu.eax;
-    if (at(app, kTraceLock) == 0 && !makeLock(app, cpu))
+    const auto given = windowTopSet(app, cpu, cpu.eax);
+    if (!given)
         return;
-    if (!lockCall(app, cpu, cpu.ecx, kEnterCriticalSection))
-        return;
-    if (sreg32(cpu.ebx) >= 0 && sreg32(cpu.ebx) <= 0x18)
-        putByte(app, kMonoTop, cpu.bl);
-    if (!lockCall(app, cpu, cpu.ebx, kLeaveCriticalSection))
-        return;
-    cpu.edx = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
-    cpu.ebx = pop(app, cpu);
+    cpu.eax = *given;
     cpu.esp += 4;
 }
 
@@ -803,12 +815,10 @@ void monoSetTab(win32::WinApplication* app, x86::CPU& cpu)
     cpu.esp += 4;
 }
 
-/* 0x4e0d70: the monitor's page eax: 0xb0000 + eax * 0x8000.  No caller. */
+/* 0x4e0d70: monitorPage eax: eax left the page's address.  No caller. */
 void monoPage(win32::WinApplication* app, x86::CPU& cpu)
 {
-    cpu.eax <<= 0xf;
-    cpu.eax += 0xb0000;
-    put(app, kMonoPage, cpu.eax);
+    cpu.eax = monitorPage(app, cpu.eax);
     cpu.esp += 4;
 }
 
@@ -821,180 +831,43 @@ void monoNoCursor(win32::WinApplication* app, x86::CPU& cpu)
     cpu.esp += 4;
 }
 
-/* 0x4e0dee: EA's random numbers (snd::eaRandom, 0x4e0d88, just before it)
- * seeded from eax: their six words at 0x5644e0, each the one before plus a
- * constant.  Not the trace's: it only follows it in the library. */
+/* 0x4e0dee: randomSeeded from eax (snd::eaRandom, 0x4e0d88, just before it,
+ * draws from them): eax left the last word.  Not the trace's: it only follows
+ * it in the library. */
 void seedRandom(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static const reg32 steps[] = {0xf22d0e56, 0x96041893, 0x3df3b646, 0x40dde76d, 0x97327ae1, 0xd1a9fbe7};
-    for (reg32 i = 0; i < 6; ++i)
-    {
-        cpu.eax += steps[i];
-        put(app, kRandom + 4 * i, cpu.eax);
-    }
+    cpu.eax = randomSeeded(app, cpu.eax);
     cpu.esp += 4;
 }
 
-/* 0x4e0e60: whether the file named eax is there: opened (0x4e28d0) with the
- * complaint at a missing one off, closed again; 1, or 0. */
+/* 0x4e0e60: fileThere of the file named eax: 1, or 0. */
 void fileExists(win32::WinApplication* app, x86::CPU& cpu)
 {
-    push(app, cpu, cpu.ebx);
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.edx);
-    push(app, cpu, cpu.esi);
-    cpu.esp -= 0xc;
-    cpu.ecx = cpu.esp + 8;
-    cpu.ebx = cpu.esp + 4;
-    cpu.edx = 0;
-    cpu.esi = at(app, kComplain);
-    put(app, kComplain, cpu.edx);
-    cpu.edx = cpu.esp;
-    if (!byAddress(app, cpu, kOpen))
+    const auto there = fileThere(app, cpu, cpu.eax);
+    if (!there)
         return;
-    cpu.ecx = at(app, cpu.esp);
-    if (cpu.ecx != 0)
-    {
-        cpu.eax = cpu.ecx;
-        cpu.ebx = 1;
-        if (!byAddress(app, cpu, kClose))
-            return;
-        put(app, cpu.esp, cpu.ebx);
-    }
-    cpu.eax = at(app, cpu.esp);
-    put(app, kComplain, cpu.esi);
-    cpu.esp += 0xc;
-    cpu.esi = pop(app, cpu);
-    cpu.edx = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
-    cpu.ebx = pop(app, cpu);
+    cpu.eax = *there ? 1 : 0;
     cpu.esp += 4;
 }
 
-/* 0x4e0ec0 (loadfileadr, cmn\loadfile.c): the file named eax loaded whole
- * into a block allocated with flags edx -- the sound's stream topped up
- * before (0x4ff7c0), the more so the bigger the file; its size kept at
- * 0x5643f8.  The load's hook (0x567868), if set, is handed the block, the
- * name and the flags, and what it gives back is the block (none: the block
- * freed).  The block, or 0. */
+/* 0x4e0ec0 (loadfileadr, cmn\loadfile.c): loadWhole of the file named eax,
+ * flags edx: the block, or 0. */
 void loadFile(win32::WinApplication* app, x86::CPU& cpu)
 {
-    push(app, cpu, cpu.ebx);
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.esi);
-    push(app, cpu, cpu.edi);
-    push(app, cpu, cpu.ebp);
-    cpu.esp -= 0xc;
-    const auto leave = [&] {
-        cpu.esp += 0xc;
-        cpu.ebp = pop(app, cpu);
-        cpu.edi = pop(app, cpu);
-        cpu.esi = pop(app, cpu);
-        cpu.ecx = pop(app, cpu);
-        cpu.ebx = pop(app, cpu);
-        cpu.esp += 4;
-    };
-    cpu.edi = cpu.eax;
-    cpu.ebp = cpu.edx;
-    cpu.eax = 0x1f4;
-    cpu.ecx = cpu.esp;
-    cpu.ebx = cpu.esp + 4;
-    cpu.edx = cpu.esp + 8;
-    if (!byAddress(app, cpu, kTopUp))
+    const auto block = loadWhole(app, cpu, cpu.eax, cpu.edx);
+    if (!block)
         return;
-    cpu.eax = cpu.edi;
-    cpu.esi = 0;
-    if (!byAddress(app, cpu, kOpen))
-        return;
-    if (cpu.eax == 0 || (cpu.edx = at(app, cpu.esp)) == 0)
-    {
-        // Not there, or empty: closed if it was opened.
-        cpu.ecx = at(app, cpu.esp + 8);
-        if (cpu.ecx != 0)
-        {
-            cpu.eax = cpu.ecx;
-            if (!byAddress(app, cpu, kClose))
-                return;
-        }
-        cpu.eax = cpu.esi;
-        return leave();
-    }
-    cpu.ecx = 0x10e;
-    cpu.eax = cpu.edx;
-    cpu.edx = reg32(sreg32(cpu.edx) >> 31);
-    const sreg32 size = sreg32(cpu.eax);
-    cpu.eax = reg32(size / 0x10e);
-    cpu.edx = reg32(size % 0x10e);
-    cpu.ecx = cpu.eax;
-    cpu.eax = at(app, cpu.esp + 8);
-    if (!byAddress(app, cpu, kLoadFlags))
-        return;
-    cpu.esi = at(app, kLoadSomething);
-    cpu.edx = cpu.eax;
-    cpu.eax = cpu.esi;
-    cpu.ebx = kLoadFile;
-    if (!byAddress(app, cpu, kLoadBlockSize))
-        return;
-    cpu.eax += cpu.ecx;
-    cpu.esi = kLoadFunction;
-    if (!byAddress(app, cpu, kTopUp))
-        return;
-    cpu.eax = 0x4b;
-    cpu.edx = at(app, cpu.esp);
-    put(app, kWhere, cpu.ebx);
-    put(app, kWhereLine, cpu.eax);
-    cpu.ebx = cpu.ebp;
-    cpu.eax = cpu.edi;
-    put(app, kWhereFunction, cpu.esi);
-    if (!byAddress(app, cpu, kAllocate))
-        return;
-    cpu.esi = cpu.eax;
-    if (cpu.eax != 0)
-    {
-        cpu.ebx = at(app, cpu.esp);
-        cpu.edx = cpu.eax;
-        cpu.eax = at(app, cpu.esp + 8);
-        if (!byAddress(app, cpu, kRead))
-            return;
-        cpu.eax = at(app, cpu.esp);
-        put(app, kLoadedSize, cpu.eax);
-    }
-    cpu.eax = at(app, cpu.esp + 8);
-    if (!byAddress(app, cpu, kClose) || !byAddress(app, cpu, kTopUpEnd))
-        return;
-    if (at(app, kLoadHook) != 0 && cpu.esi != 0)
-    {
-        cpu.ebx = cpu.ebp;
-        cpu.edx = cpu.edi;
-        cpu.eax = cpu.esi;
-        if (!byAddress(app, cpu, at(app, kLoadHook)))
-            return;
-        cpu.edx = cpu.eax;
-        if (cpu.eax == 0)
-        {
-            cpu.eax = cpu.esi;
-            if (!byAddress(app, cpu, kFree))
-                return;
-        }
-        cpu.esi = cpu.edx;
-    }
-    cpu.eax = cpu.esi;
-    leave();
+    cpu.eax = *block;
+    cpu.esp += 4;
 }
 
-/* 0x4e0fe0: loadFile (by address) with the complaint at a missing file off. */
+/* 0x4e0fe0: loadQuietly of the file named eax, flags edx. */
 void loadFileQuietly(win32::WinApplication* app, x86::CPU& cpu)
 {
-    push(app, cpu, cpu.ebx);
-    push(app, cpu, cpu.ecx);
-    cpu.ebx = 0;
-    cpu.ecx = at(app, kComplain);
-    put(app, kComplain, cpu.ebx);
-    if (!byAddress(app, cpu, kLoadWhole))
+    const auto block = loadQuietly(app, cpu, cpu.eax, cpu.edx);
+    if (!block)
         return;
-    put(app, kComplain, cpu.ecx);
-    cpu.ecx = pop(app, cpu);
-    cpu.ebx = pop(app, cpu);
+    cpu.eax = *block;
     cpu.esp += 4;
 }
 

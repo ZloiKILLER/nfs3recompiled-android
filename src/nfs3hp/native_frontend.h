@@ -1,6 +1,9 @@
 #ifndef NATIVE_FRONTEND_H_
 #define NATIVE_FRONTEND_H_
 
+#include "game_settings.h"
+#include "native_guest.h"
+
 #include <lib/winapp.h>
 #include <cpu.h>
 #include <array>
@@ -58,6 +61,8 @@ class Guest
 public:
     Guest(win32::WinApplication* app, x86::CPU& cpu) : m_app(app), m_cpu(cpu) {}
 
+    win32::WinApplication* app() const { return m_app; }
+
     std::uint8_t byte(x86::reg32 address) const { return m_app->getMemory<x86::reg8>(address); }
     std::uint16_t word(x86::reg32 address) const { return m_app->getMemory<x86::reg16>(address); }
     std::uint32_t dword(x86::reg32 address) const { return m_app->getMemory<x86::reg32>(address); }
@@ -108,6 +113,71 @@ private:
     x86::CPU& m_cpu;
     x86::reg32 m_frame = 0;
 };
+
+/* A typed core's own frame on the guest's stack (plan step 5): `bytes` below esp as the core
+ * starts -- the generated function's pushes and locals, its Site's frameBytes -- made guest's
+ * frame(), and esp back as the core ends, however it ends.  Called as the game's code calls it
+ * (an adapter, or guest::direct, which leaves the return address's slot under esp), the frame
+ * lies where the game's does.  Only for a frame whose address something called is handed (a
+ * buffer, a string, strtok's pointer); C++ locals otherwise. */
+class Frame
+{
+public:
+    Frame(Guest& guest, x86::CPU& cpu, x86::reg32 bytes) : m_cpu(cpu), m_esp(cpu.esp)
+    {
+        cpu.esp -= bytes;
+        guest.setFrame(cpu.esp);
+    }
+    ~Frame() { m_cpu.esp = m_esp; }
+    Frame(const Frame&) = delete;
+    Frame& operator=(const Frame&) = delete;
+
+private:
+    x86::CPU& m_cpu;
+    const x86::reg32 m_esp;
+};
+
+/* How a menu file's header (native_frontend_<file>.h) calls one of its typed cores by address,
+ * in guest::ByAddress<core>::call, for the checks' stand-ins: as Guest::call calls -- the
+ * arguments in eax, edx, ebx, ecx and on the stack, the registers left as the function leaves
+ * them, eax back, Terminated thrown when the game stopped in it. */
+inline x86::reg32 callByAddress(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 address,
+                                const Arguments& arguments)
+{
+    Guest guest(app, cpu);
+    return guest.call(address, arguments);
+}
+
+/* A typed core called as C++ from a menu's core (guest::direct, native_guest.h): another menu
+ * file's, the port's, a library's.  Terminated thrown when the game stopped in it, as Guest::call
+ * throws; its result as the core gives it (an optional, a bool, a value). */
+template <x86::reg32 Address, auto Core, typename... Args>
+auto direct(win32::WinApplication* app, x86::CPU& cpu, Args... args)
+{
+    if constexpr (std::is_void_v<decltype(guest::direct<Address, Core>(app, cpu, args...))>)
+    {
+        guest::direct<Address, Core>(app, cpu, args...);
+        if (cpu.terminate)
+            throw Terminated();
+    }
+    else
+    {
+        auto result = guest::direct<Address, Core>(app, cpu, args...);
+        if (cpu.terminate)
+            throw Terminated();
+        return result;
+    }
+}
+
+}  // namespace fe
+
+inline GameSettings& gameSettings(const fe::Guest& guest)
+{
+    return gameSettings(guest.app());
+}
+
+namespace fe
+{
 
 /* The x87 as the generated code uses it, for a stand-in that computes in
  * floating point as the game does: each sum and product rounded as the

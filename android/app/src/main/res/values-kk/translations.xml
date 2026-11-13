@@ -31,13 +31,6 @@
  <string name="touch_settings">Сенсорлық басқару</string>
  <string name="screen_settings">Экран</string>
  <string name="display_settings">Дисплей</string>
- <string name="screen_adjustment">Кескінді реттеу</string>
- <string name="brightness_label">Жарықтық</string>
- <string name="contrast_label">Контраст</string>
- <string name="adjust_hint">Үлгілер нәтижені көрсетеді. Ойын келесі рет қосылғанда қолданылады.</string>
- <string name="adjust_reset">Ысыру</string>
- <string name="sample_dark">Түн</string>
- <string name="sample_bright">Күндіз</string>
  <string name="back_to_launcher">Артқа</string>
  <string name="switch_data">Белсенді ету</string>
  <string name="data_change">Өзгерту…</string>
@@ -71,7 +64,6 @@
  <string name="orientation_landscape_reverse">Бекітілген — көлденең кері</string>
  <string name="fps_30">30 FPS</string>
  <string name="fps_60">60 FPS</string>
- <string name="gamma_label">Гамма</string>
  <string name="fps_cap_label">Кадр жиілігі</string>
  <string name="fps_error">1-ден 240-қа дейінгі бүтін сан енгіз</string>
  <string name="save">Сақтау</string>
@@ -156,6 +148,8 @@
  <string name="faq_mapping"><b>Геймпадтар</b>\nОйын әрдайым екі геймпадты көреді: «Геймпад 1» — сенсорлық басқарумен бірге 1-ойыншы, «Геймпад 2» — 2-ойыншы. «Басқару → Геймпадтар» бөлімінде қай геймпад кімдікі екенін оның түймесін басып таңдаңыз, әр түйменің не істейтінін баптаңыз, содан кейін «Геймпад ҚОСУЛЫ» түймесін бір рет басыңыз. Ол сәйкес басқаруды ойын баптауларына жазып, ескі файлдың көшірмесін сақтайды. Сол жақ стик бұрады, триггерлер газ беріп, тежейді. Геймпадта екі түйме жиыны бар, дәл сенсорлық басқаруда екі сұлба болғаны сияқты: осында бапталатын жарыс жиыны және мәзірлер мен қайталаулар үшін тұрақты жиын, онда Cross / A растайды, Circle / B артқа қайтарады, ал крест таңдауды жылжытады. Пернетақтамен ойнау үшін оның орнына «Ойындағы әдепкі» жазыңыз.</string>
  <string name="faq_lights"><b>Шамдар және жолға оралу</b>\n☼ L жібереді. ↻ жолға оралу үшін R жібереді. Пернелерді «Басқару → Сенсор → Пернелер» бөлімінде өзгертуге болады.</string>
  <string name="faq_screen_data"><b>Экран және ойын деректері</b>\nКөлденең ойынды көлденең бекітеді; Автоматты бұрылуға рұқсат етеді. FPS шегі кадр жиілігін шектейді; кіші мән секундтық жүктемені азайтады. «Ойын деректері» импорттарды басқарады және қай жиын белсенді екенін көрсетеді. Жиын дайын болғанда «Ойнау» қолжетімді болады.</string>
+ <string name="faq_picture"><b>Жарықтық, контраст және гамма</b>\nОлар ойынның өзінде реттеледі: Options → Graphics → Advanced Settings немесе жарыс кезінде кідіріс мәзіріндегі Graphics. Сырғытпаны жылжытқан сәтте сурет бірден өзгереді. Done мәндерді сақтайды, Cancel бұрынғыларын қайтарады. Баптаулар жарыстарға, мәзірлерге және бейнелерге әсер етеді.</string>
+ <string name="faq_network"><b>Желілік жарыстар</b>\nОйынның бірінші экранында Connect Players ашыңыз. Local WiFi бір Wi-Fi желісіндегі телефондар арасындағы жарыстарды өзі табады. Network (TCP) хост мекенжайын білетін кез келген адаммен, соның ішінде түпнұсқа ойыны немесе Modern Patch орнатылған ДК-мен қосылады. Төменде осы телефонның мекенжайы (Your IP) және TCP Port көрсетілген: басу 9803 (Modern Patch) пен 1030 (түпнұсқа ойын) арасында ауыстырады. TCP жарысының барлық ойыншысында порт бірдей болуы керек.</string>
  <string name="gamepad_buttons">Түймелер</string>
  <string name="gamepad_buttons_title">Геймпад %1$d түймелері</string>
  <string name="gamepad_buttons_hint">Осы геймпадтың әр түймесі жүргізу кезінде не істейді. Сол жақ стик бұрады, оң жақ триггер газ береді, сол жақ триггер тежейді. Мәзірлер мен қайталауларда түймелер тұрақты әрі бапталмайды: Cross / A және Options / Menu растайды, Circle / B және Create / View артқа қайтарады, крест таңдауды жылжытады. Түймелердің әрекеттері ойынға геймпад басқаруы жазылғаннан кейін жетеді.</string>
@@ -191,12 +185,5 @@
  <string name="force_feedback_phone_note">Телефон соқтығысуларды, қонуларды және беріліс ауыстыруды, жоғары айналымдағы қозғалтқышты және күрт бұрылыстарды береді.</string>
  <string name="force_feedback_gamepad_note">«Геймпад 1» ойын әсерлерін сол күйінде береді. Олардың күші ойында бапталады: Options → Controllers → Force Feedback.</string>
  <string name="editor_snap_grid">Торға тіркеу</string>
- <string name="network_title">Желі</string>
- <string name="network_address">Құрылғының желідегі мекенжайы: %1$s</string>
- <string name="network_no_address">Желіге қосылмаған</string>
- <string name="network_port_label">TCP/IP порты</string>
- <string name="network_port_modern">9803 · Modern Patch</string>
- <string name="network_port_original">1030 · түпнұсқа ойын</string>
- <string name="network_hint">IPX осы Wi-Fi желісіндегі жарыстарды өзі табады. TCP/IP хост мекенжайын білетін кез келген адаммен, соның ішінде түпнұсқа ойын немесе Modern Patch орнатылған ДК-мен байланыстырады. Барлық ойыншы бір портты пайдаланады.</string>
  <string name="fps_unlimited">Шектеусіз</string>
 </resources>

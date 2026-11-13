@@ -1331,13 +1331,66 @@ Result dialogPassCore(Game& g, reg32 esp)
 
 }  // namespace
 
+/* ---- The cores the menus call as C++ (port_dialogs.h): a core above with the Game it runs in
+ * made from `eax`, what the game's code has in eax at the call ---- */
+
+/* 0x4438b0's: whether a dialog is up. */
+uint8_t dialogShownOf(App* app)
+{
+    return kShown(app);
+}
+
+/* 0x444a60's. */
+Result endMessageOf(App* app, CPU& cpu, reg32 eax)
+{
+    Game g{app, cpu, eax};
+    return endMessageCore(g);
+}
+
+/* 0x445150's: the list entry highlighted. */
+reg32 listFocusOf(App* app)
+{
+    return kListFocus(app);
+}
+
+/* 0x445750's. */
+Result openListOf(App* app, CPU& cpu, reg32 esp, reg32 lineCount, reg32 lines, int32_t entryCount, reg32 names,
+                  reg32 ticks, reg32 entryHelp, int32_t buttonCount, reg32 buttons, reg32 buttonHelp, int32_t focus,
+                  reg32 column, reg32 callback)
+{
+    Game g{app, cpu, lineCount};
+    return openListCore(g, esp, lineCount, lines, entryCount, names, ticks, entryHelp, buttonCount, buttons,
+                        buttonHelp, focus, column, callback);
+}
+
+/* 0x445e60's. */
+Result dialogKeyOf(App* app, CPU& cpu, reg32 esp, reg32 key)
+{
+    Game g{app, cpu, key};
+    return dialogKeyCore(g, esp, key);
+}
+
+/* 0x445f10's. */
+Result closeDialogOf(App* app, CPU& cpu, reg32 eax)
+{
+    Game g{app, cpu, eax};
+    return closeDialogCore(g);
+}
+
+/* 0x445f50's. */
+Result dialogPassOf(App* app, CPU& cpu, reg32 esp, reg32 eax)
+{
+    Game g{app, cpu, eax};
+    return dialogPassCore(g, esp);
+}
+
 /* ---- The adapters ---- */
 
 /* 0x4438b0: whether a dialog is up, in al. */
 void dialogShown(App* app, CPU& cpu)
 {
     const Entry e(cpu);
-    e.back(cpu, (e.eax & ~0xffu) | kShown(app));
+    e.back(cpu, (e.eax & ~0xffu) | dialogShownOf(app));
 }
 
 /* 0x4438c0: the kind of dialog up, 0 for none. */
@@ -1407,8 +1460,7 @@ void questionPass(App* app, CPU& cpu)
 void endMessage(App* app, CPU& cpu)
 {
     const Entry e(cpu);
-    Game g{app, cpu, e.eax};
-    e.finish(cpu, endMessageCore(g));
+    e.finish(cpu, endMessageOf(app, cpu, e.eax));
 }
 
 /* 0x444b20: the key eax for a message. */
@@ -1447,7 +1499,7 @@ void editPass(App* app, CPU& cpu)
 void listFocus(App* app, CPU& cpu)
 {
     const Entry e(cpu);
-    e.back(cpu, kListFocus(app));
+    e.back(cpu, listFocusOf(app));
 }
 
 /* 0x445160: the pointer moved onto the bottom right of the entry eax's box. */
@@ -1502,11 +1554,10 @@ void listPass(App* app, CPU& cpu)
 void openList(App* app, CPU& cpu)
 {
     const Entry e(cpu);
-    Game g{app, cpu, e.eax};
     e.finish(cpu,
-             openListCore(g, e.esp, e.eax, e.edx, int32_t(e.ebx), e.ecx, e.arg(app, 0), e.arg(app, 1),
-                          int32_t(e.arg(app, 2)), e.arg(app, 3), e.arg(app, 4), int32_t(e.arg(app, 5)), e.arg(app, 6),
-                          e.arg(app, 7)),
+             openListOf(app, cpu, e.esp, e.eax, e.edx, int32_t(e.ebx), e.ecx, e.arg(app, 0), e.arg(app, 1),
+                        int32_t(e.arg(app, 2)), e.arg(app, 3), e.arg(app, 4), int32_t(e.arg(app, 5)), e.arg(app, 6),
+                        e.arg(app, 7)),
              0x20);
 }
 
@@ -1530,24 +1581,21 @@ void loadDialogArt(App* app, CPU& cpu)
 void dialogKey(App* app, CPU& cpu)
 {
     const Entry e(cpu);
-    Game g{app, cpu, e.eax};
-    e.finish(cpu, dialogKeyCore(g, e.esp, e.eax));
+    e.finish(cpu, dialogKeyOf(app, cpu, e.esp, e.eax));
 }
 
 /* 0x445f10: the dialog closed. */
 void closeDialog(App* app, CPU& cpu)
 {
     const Entry e(cpu);
-    Game g{app, cpu, e.eax};
-    e.finish(cpu, closeDialogCore(g));
+    e.finish(cpu, closeDialogOf(app, cpu, e.eax));
 }
 
 /* 0x445f50: a pass of the dialog up. */
 void dialogPass(App* app, CPU& cpu)
 {
     const Entry e(cpu);
-    Game g{app, cpu, e.eax};
-    e.finish(cpu, dialogPassCore(g, e.esp));
+    e.finish(cpu, dialogPassOf(app, cpu, e.esp, e.eax));
 }
 
 }  // namespace dialogs

@@ -82,196 +82,49 @@ namespace nfs3hp
 
 /* sub_533dd8: native, nfs3hp::dead::stub_0x533dd8 */
 
-/* align: skip  */
-void Application::sub_533dde(WinApplication* app, x86::CPU& cpu)
-{
-  NFS2_USE(cpu);
-  NFS2_USE(app);
-    // 00533dde  ff2584465300           -jmp dword ptr [0x534684]
-    return app->dynamic_call(app->getMemory<x86::reg32>(5457540), cpu.handOver());
-}
+/* sub_533dde: native, nfs3hp::imports::thunk_0x533dde */
 
 /* sub_533de4: native, nfs3hp::watcom::RtlUnwindThunk */
 
-/* align: skip  */
-void Application::sub_533dea(WinApplication* app, x86::CPU& cpu)
-{
-  NFS2_USE(cpu);
-  NFS2_USE(app);
-    // 00533dea  ff2588465300           -jmp dword ptr [0x534688]
-    return app->dynamic_call(app->getMemory<x86::reg32>(5457544), cpu.handOver());
-}
+/* sub_533dea: native, nfs3hp::imports::thunk_0x533dea */
 
-/* align: skip  */
-void Application::sub_533df0(WinApplication* app, x86::CPU& cpu)
-{
-  NFS2_USE(cpu);
-  NFS2_USE(app);
-    // 00533df0  ff258c465300           -jmp dword ptr [0x53468c]
-    return app->dynamic_call(app->getMemory<x86::reg32>(5457548), cpu.handOver());
-}
+/* sub_533df0: native, nfs3hp::imports::thunk_0x533df0 */
 
-/* align: skip  */
-void Application::sub_533df6(WinApplication* app, x86::CPU& cpu)
-{
-  NFS2_USE(cpu);
-  NFS2_USE(app);
-    // 00533df6  ff2590465300           -jmp dword ptr [0x534690]
-    return app->dynamic_call(app->getMemory<x86::reg32>(5457552), cpu.handOver());
-}
+/* sub_533df6: native, nfs3hp::imports::thunk_0x533df6 */
 
-/* align: skip  */
-void Application::sub_533dfc(WinApplication* app, x86::CPU& cpu)
-{
-  NFS2_USE(cpu);
-  NFS2_USE(app);
-    // 00533dfc  ff2594465300           -jmp dword ptr [0x534694]
-    return app->dynamic_call(app->getMemory<x86::reg32>(5457556), cpu.handOver());
-}
+/* sub_533dfc: native, nfs3hp::imports::thunk_0x533dfc */
 
-/* align: skip  */
-void Application::sub_533e02(WinApplication* app, x86::CPU& cpu)
-{
-  NFS2_USE(cpu);
-  NFS2_USE(app);
-    // 00533e02  ff2598465300           -jmp dword ptr [0x534698]
-    return app->dynamic_call(app->getMemory<x86::reg32>(5457560), cpu.handOver());
-}
+/* sub_533e02: native, nfs3hp::imports::thunk_0x533e02 */
 
-/* align: skip  */
-void Application::sub_533e08(WinApplication* app, x86::CPU& cpu)
-{
-  NFS2_USE(cpu);
-  NFS2_USE(app);
-    // 00533e08  ff259c465300           -jmp dword ptr [0x53469c]
-    return app->dynamic_call(app->getMemory<x86::reg32>(5457564), cpu.handOver());
-}
+/* sub_533e08: native, nfs3hp::imports::thunk_0x533e08 */
 
-/* align: skip  */
-void Application::sub_533e0e(WinApplication* app, x86::CPU& cpu)
-{
-  NFS2_USE(cpu);
-  NFS2_USE(app);
-    // 00533e0e  ff25a0465300           -jmp dword ptr [0x5346a0]
-    return app->dynamic_call(app->getMemory<x86::reg32>(5457568), cpu.handOver());
-}
+/* sub_533e0e: native, nfs3hp::imports::thunk_0x533e0e */
 
-/* align: skip  */
-void Application::sub_533e14(WinApplication* app, x86::CPU& cpu)
-{
-  NFS2_USE(cpu);
-  NFS2_USE(app);
-    // 00533e14  ff25a4465300           -jmp dword ptr [0x5346a4]
-    return app->dynamic_call(app->getMemory<x86::reg32>(5457572), cpu.handOver());
-}
+/* sub_533e14: native, nfs3hp::imports::thunk_0x533e14 */
 
-/* align: skip  */
-void Application::sub_533e1a(WinApplication* app, x86::CPU& cpu)
-{
-  NFS2_USE(cpu);
-  NFS2_USE(app);
-    // 00533e1a  ff25a8465300           -jmp dword ptr [0x5346a8]
-    return app->dynamic_call(app->getMemory<x86::reg32>(5457576), cpu.handOver());
-}
+/* sub_533e1a: native, nfs3hp::imports::thunk_0x533e1a */
 
-/* align: skip  */
-void Application::sub_533e20(WinApplication* app, x86::CPU& cpu)
-{
-  NFS2_USE(cpu);
-  NFS2_USE(app);
-    // 00533e20  ff25ac465300           -jmp dword ptr [0x5346ac]
-    return app->dynamic_call(app->getMemory<x86::reg32>(5457580), cpu.handOver());
-}
+/* sub_533e20: native, nfs3hp::imports::thunk_0x533e20 */
 
-/* align: skip  */
-void Application::sub_533e26(WinApplication* app, x86::CPU& cpu)
-{
-  NFS2_USE(cpu);
-  NFS2_USE(app);
-    // 00533e26  ff25b0465300           -jmp dword ptr [0x5346b0]
-    return app->dynamic_call(app->getMemory<x86::reg32>(5457584), cpu.handOver());
-}
+/* sub_533e26: native, nfs3hp::imports::thunk_0x533e26 */
 
-/* align: skip  */
-void Application::sub_533e2c(WinApplication* app, x86::CPU& cpu)
-{
-  NFS2_USE(cpu);
-  NFS2_USE(app);
-    // 00533e2c  ff25b4465300           -jmp dword ptr [0x5346b4]
-    return app->dynamic_call(app->getMemory<x86::reg32>(5457588), cpu.handOver());
-}
+/* sub_533e2c: native, nfs3hp::imports::thunk_0x533e2c */
 
-/* align: skip  */
-void Application::sub_533e32(WinApplication* app, x86::CPU& cpu)
-{
-  NFS2_USE(cpu);
-  NFS2_USE(app);
-    // 00533e32  ff25b8465300           -jmp dword ptr [0x5346b8]
-    return app->dynamic_call(app->getMemory<x86::reg32>(5457592), cpu.handOver());
-}
+/* sub_533e32: native, nfs3hp::imports::thunk_0x533e32 */
 
-/* align: skip  */
-void Application::sub_533e38(WinApplication* app, x86::CPU& cpu)
-{
-  NFS2_USE(cpu);
-  NFS2_USE(app);
-    // 00533e38  ff25bc465300           -jmp dword ptr [0x5346bc]
-    return app->dynamic_call(app->getMemory<x86::reg32>(5457596), cpu.handOver());
-}
+/* sub_533e38: native, nfs3hp::imports::thunk_0x533e38 */
 
-/* align: skip  */
-void Application::sub_533e3e(WinApplication* app, x86::CPU& cpu)
-{
-  NFS2_USE(cpu);
-  NFS2_USE(app);
-    // 00533e3e  ff25c0465300           -jmp dword ptr [0x5346c0]
-    return app->dynamic_call(app->getMemory<x86::reg32>(5457600), cpu.handOver());
-}
+/* sub_533e3e: native, nfs3hp::imports::thunk_0x533e3e */
 
-/* align: skip  */
-void Application::sub_533e44(WinApplication* app, x86::CPU& cpu)
-{
-  NFS2_USE(cpu);
-  NFS2_USE(app);
-    // 00533e44  ff25c4465300           -jmp dword ptr [0x5346c4]
-    return app->dynamic_call(app->getMemory<x86::reg32>(5457604), cpu.handOver());
-}
+/* sub_533e44: native, nfs3hp::imports::thunk_0x533e44 */
 
-/* align: skip  */
-void Application::sub_533e4a(WinApplication* app, x86::CPU& cpu)
-{
-  NFS2_USE(cpu);
-  NFS2_USE(app);
-    // 00533e4a  ff25c8465300           -jmp dword ptr [0x5346c8]
-    return app->dynamic_call(app->getMemory<x86::reg32>(5457608), cpu.handOver());
-}
+/* sub_533e4a: native, nfs3hp::imports::thunk_0x533e4a */
 
-/* align: skip  */
-void Application::sub_533e50(WinApplication* app, x86::CPU& cpu)
-{
-  NFS2_USE(cpu);
-  NFS2_USE(app);
-    // 00533e50  ff25cc465300           -jmp dword ptr [0x5346cc]
-    return app->dynamic_call(app->getMemory<x86::reg32>(5457612), cpu.handOver());
-}
+/* sub_533e50: native, nfs3hp::imports::thunk_0x533e50 */
 
-/* align: skip  */
-void Application::sub_533e56(WinApplication* app, x86::CPU& cpu)
-{
-  NFS2_USE(cpu);
-  NFS2_USE(app);
-    // 00533e56  ff25d0465300           -jmp dword ptr [0x5346d0]
-    return app->dynamic_call(app->getMemory<x86::reg32>(5457616), cpu.handOver());
-}
+/* sub_533e56: native, nfs3hp::imports::thunk_0x533e56 */
 
-/* align: skip  */
-void Application::sub_533e5c(WinApplication* app, x86::CPU& cpu)
-{
-  NFS2_USE(cpu);
-  NFS2_USE(app);
-    // 00533e5c  ff25d4465300           -jmp dword ptr [0x5346d4]
-    return app->dynamic_call(app->getMemory<x86::reg32>(5457620), cpu.handOver());
-}
+/* sub_533e5c: native, nfs3hp::imports::thunk_0x533e5c */
 
 /* sub_533e62: native, nfs3hp::dead::stub_0x533e62 */
 
@@ -285,77 +138,21 @@ void Application::sub_533e5c(WinApplication* app, x86::CPU& cpu)
 
 /* sub_533e80: native, nfs3hp::dead::stub_0x533e80 */
 
-/* align: skip  */
-void Application::sub_533e86(WinApplication* app, x86::CPU& cpu)
-{
-  NFS2_USE(cpu);
-  NFS2_USE(app);
-    // 00533e86  ff2568465300           -jmp dword ptr [0x534668]
-    return app->dynamic_call(app->getMemory<x86::reg32>(5457512), cpu.handOver());
-}
+/* sub_533e86: native, nfs3hp::imports::thunk_0x533e86 */
 
-/* align: skip  */
-void Application::sub_533e8c(WinApplication* app, x86::CPU& cpu)
-{
-  NFS2_USE(cpu);
-  NFS2_USE(app);
-    // 00533e8c  ff257c465300           -jmp dword ptr [0x53467c]
-    return app->dynamic_call(app->getMemory<x86::reg32>(5457532), cpu.handOver());
-}
+/* sub_533e8c: native, nfs3hp::imports::thunk_0x533e8c */
 
-/* align: skip  */
-void Application::sub_533e92(WinApplication* app, x86::CPU& cpu)
-{
-  NFS2_USE(cpu);
-  NFS2_USE(app);
-    // 00533e92  ff2574465300           -jmp dword ptr [0x534674]
-    return app->dynamic_call(app->getMemory<x86::reg32>(5457524), cpu.handOver());
-}
+/* sub_533e92: native, nfs3hp::imports::thunk_0x533e92 */
 
-/* align: skip  */
-void Application::sub_533e98(WinApplication* app, x86::CPU& cpu)
-{
-  NFS2_USE(cpu);
-  NFS2_USE(app);
-    // 00533e98  ff2578465300           -jmp dword ptr [0x534678]
-    return app->dynamic_call(app->getMemory<x86::reg32>(5457528), cpu.handOver());
-}
+/* sub_533e98: native, nfs3hp::imports::thunk_0x533e98 */
 
-/* align: skip  */
-void Application::sub_533e9e(WinApplication* app, x86::CPU& cpu)
-{
-  NFS2_USE(cpu);
-  NFS2_USE(app);
-    // 00533e9e  ff25d8465300           -jmp dword ptr [0x5346d8]
-    return app->dynamic_call(app->getMemory<x86::reg32>(5457624), cpu.handOver());
-}
+/* sub_533e9e: native, nfs3hp::imports::thunk_0x533e9e */
 
-/* align: skip  */
-void Application::sub_533ea4(WinApplication* app, x86::CPU& cpu)
-{
-  NFS2_USE(cpu);
-  NFS2_USE(app);
-    // 00533ea4  ff25dc465300           -jmp dword ptr [0x5346dc]
-    return app->dynamic_call(app->getMemory<x86::reg32>(5457628), cpu.handOver());
-}
+/* sub_533ea4: native, nfs3hp::imports::thunk_0x533ea4 */
 
-/* align: skip  */
-void Application::sub_533eaa(WinApplication* app, x86::CPU& cpu)
-{
-  NFS2_USE(cpu);
-  NFS2_USE(app);
-    // 00533eaa  ff25e0465300           -jmp dword ptr [0x5346e0]
-    return app->dynamic_call(app->getMemory<x86::reg32>(5457632), cpu.handOver());
-}
+/* sub_533eaa: native, nfs3hp::imports::thunk_0x533eaa */
 
-/* align: skip  */
-void Application::sub_533eb0(WinApplication* app, x86::CPU& cpu)
-{
-  NFS2_USE(cpu);
-  NFS2_USE(app);
-    // 00533eb0  ff25e4465300           -jmp dword ptr [0x5346e4]
-    return app->dynamic_call(app->getMemory<x86::reg32>(5457636), cpu.handOver());
-}
+/* sub_533eb0: native, nfs3hp::imports::thunk_0x533eb0 */
 
 /* sub_533eb6: native, nfs3hp::dead::stub_0x533eb6 */
 
@@ -371,13 +168,6 @@ void Application::sub_533eb0(WinApplication* app, x86::CPU& cpu)
 
 /* sub_533eda: native, nfs3hp::dead::stub_0x533eda */
 
-/* align: skip  */
-void Application::sub_533ee0(WinApplication* app, x86::CPU& cpu)
-{
-  NFS2_USE(cpu);
-  NFS2_USE(app);
-    // 00533ee0  ff25b8475300           -jmp dword ptr [0x5347b8]
-    return app->dynamic_call(app->getMemory<x86::reg32>(5457848), cpu.handOver());
-}
+/* sub_533ee0: native, nfs3hp::dead::stub_0x533ee0 */
 
 }

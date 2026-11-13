@@ -46,7 +46,9 @@
 // started, its rate set (snd::SNDinit, snd::SNDsetrate), the effect bus
 // (port::busInit).
 {0x411750, "a police chase called", kWatcom, 4, 0, kEax, -1, 0, kNothing},
-{0x4aa79f, "a car's drive reset", kWatcom, 2, 0, kEax, -1, 0, kNothing},
+// The drive reset reads the car in eax alone: the code's edx (the spin, for the scaling after
+// it) is no argument of its, and native_aiplan.cpp's call as C++ (guest::direct) hands none.
+{0x4aa79f, "a car's drive reset", kWatcom, 1, 0, kEax, -1, 0, kNothing},
 {0x40e000, "the opponents' speeds loaded", kWatcom, 0, 0, kEax, -1, 0, kNothing},
 {0x4e2630, "the sound library started", kWatcom, 2, 0, kEax, -1, 0, kNothing},
 {0x4e2228, "the sound's rate set", kWatcom, 1, 0, kEax, -1, 0, kNothing},
@@ -78,17 +80,20 @@
 #elif defined(AIPLAN_PROMISES)
 // {"aiplan::name", watcom, result, arguments, fpu, heap, liveOnly},
 // The registers each is handed (eax, edx, ebx, ecx), the caller's no longer;
-// eax as each leaves it; the x87's registers for those that leave a float on its stack.
+// eax as each leaves it, but for the void ones (result false): what their code
+// leaves there (a compare's status word, a loop's index, a callee's) the game's
+// compiled callers never read; the x87's registers for those that leave a float
+// on its stack.
 {"aiplan::leastTrafficPlayer", true, true, 1},
 {"aiplan::placeTrafficCar", true, true, 1},
-{"aiplan::reactToTraffic", true, true, 1},
+{"aiplan::reactToTraffic", true, false, 1},  // eax: what the code leaves no caller reads (void)
 {"aiplan::slowForPolice", true, true, 1},
 {"aiplan::countStopped", true, true, 0},
 {"aiplan::nearPoliceCar", true, true, 2},
 {"aiplan::weighLaneVotes", true, true, 0},
 {"aiplan::voteRoadside", true, true, 1},
 {"aiplan::atRoadside", true, true, 1},
-{"aiplan::advanceCarAi", true, true, 1},
+{"aiplan::advanceCarAi", true, false, 1},  // eax: what the code leaves no caller reads (void)
 {"aiplan::clearSensedCars", true, true, 0},
 {"aiplan::cacheTrafficSide", true, true, 0},
 {"aiplan::resetTrafficCar", true, true, 1},
@@ -96,16 +101,16 @@
 {"aiplan::placeOnTrack", true, true, 1},
 {"aiplan::brakeToStop", true, true, 1},
 {"aiplan::voteCurrentLane", true, true, 1},
-{"aiplan::senseTraffic", true, true, 1},
-{"aiplan::planLaneChange", true, true, 2},
-{"aiplan::edgeLaneCost", true, true, 2},
+{"aiplan::senseTraffic", true, false, 1},  // eax: what the code leaves no caller reads (void)
+{"aiplan::planLaneChange", true, false, 2},  // eax: what the code leaves no caller reads (void)
+{"aiplan::edgeLaneCost", true, false, 2},  // eax: what the code leaves no caller reads (void)
 {"aiplan::scoreLanesByRoad", true, true, 1},
-{"aiplan::scoreLanesByObstacles", true, true, 1},
-{"aiplan::scoreLanesByCars", true, true, 1},
+{"aiplan::scoreLanesByObstacles", true, false, 1},  // eax: what the code leaves no caller reads (void)
+{"aiplan::scoreLanesByCars", true, false, 1},  // eax: what the code leaves no caller reads (void)
 {"aiplan::edgePenalty", true, true, 0},
 {"aiplan::sumLaneVotes", true, true, 1},
-{"aiplan::steerToLane", true, true, 1},
-{"aiplan::beginLanePlanning", true, true, 1},
+{"aiplan::steerToLane", true, false, 1},  // eax: what the code leaves no caller reads (void)
+{"aiplan::beginLanePlanning", true, false, 1},  // eax: what the code leaves no caller reads (void)
 {"aiplan::chooseLane", true, true, 1},
 {"aiplan::startHorn", true, true, 1},
 {"aiplan::stopHorn", true, true, 1},
@@ -122,7 +127,7 @@
 {"aiplan::roadSliceIndex", true, true, 1},
 {"aiplan::carSlices", true, true, 1},
 {"aiplan::fillTrackTuning", true, true, 4},
-{"aiplan::setupTrackTuning", true, true, 0},
+{"aiplan::setupTrackTuning", true, false, 0},  // eax: what the code leaves no caller reads (void)
 {"aiplan::freeSpeedTable", true, true, 0},
 {"aiplan::trafficSide", true, true, 0},
 {"aiplan::roadIsWide", true, true, 0},
@@ -147,8 +152,8 @@
 {"aiplan::pathEndPose", true, true, 4},
 {"aiplan::animationStep", true, true, 3},
 {"aiplan::animationPlaying", true, true, 1},
-{"aiplan::startSound", true, true, 0},
-{"aiplan::restartSound", true, true, 1},
+{"aiplan::startSound", true, false, 0},  // eax: what the code leaves no caller reads (void)
+{"aiplan::restartSound", true, false, 1},  // eax: what the code leaves no caller reads (void)
 #elif defined(AIPLAN_ARGUMENTS)
 /* Where the cases keep their own: the cars (0xa00 each), the nodes, the speed
  * tables, the animation paths (0x400 each), the arguments' buffers. */

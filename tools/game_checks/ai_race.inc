@@ -76,7 +76,8 @@ case kAiTrackPlace:
 {0x40cd80, "a chase off", kWatcom, 1, 0, kEax, -1, 0, kNothing},
 {0x40d720, "the lanes taken", kWatcom, 1, 0, kEax, -1, 0, kNothing},
 {0x40d800, "the lanes ahead", kWatcom, 1, 0, kEax, -1, 0, kNothing},
-{0x40d9f0, "the lanes' edges", kWatcom, 1, 0, kEax, -1, 0, kNothing},
+// (No register logged: aiplan::penaliseCloseCars reads none, and the cops' code calls it as C++.)
+{0x40d9f0, "the lanes' edges", kWatcom, 0, 0, kEax, -1, 0, kNothing},
 {0x40deb0, "a rival looked for", kWatcom, 1, 0, kEax, -1, 0, kNothing},
 {0x40de50, "a lane by the rival", kWatcom, 1, 0, kEax, -1, 0, kNothing},
 {0x40b220, "the radio: a cop joins", kWatcom, 1, 0, kEax, -1, 0, kNothing},

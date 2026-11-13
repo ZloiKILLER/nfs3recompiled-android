@@ -1,4 +1,13 @@
+#include "game_settings.h"
+#include "native_ea_formats.h"
+#include "native_ea_memory.h"
+#include "native_ea_net.h"
+#include "native_ea_threads.h"
 #include "native_guest.h"
+#include "native_windows.h"
+#include <winapi/kernel32.h>
+
+#include <optional>
 
 /* EA's network layer under the menus: packets sent, NET and CONN, the queues, LAYER.  disassemble_nfs3hp.py binds each address to the function of that
  * name here (EA_NET_NATIVES), and the generated code calls it by name.
@@ -43,17 +52,29 @@
  * and byte pairs (0x46fb, 0x47fb), the last with its tables in its own frame
  * and their addresses at 0xa0b030 to 0xa0b040.
  *
- * Written as their code is: each push and pop to the guest's stack, each call
- * with the return address's slot, the frame's locals in the guest's memory,
- * the registers as the code leaves them, bytes copied as the code copies
- * them (movsd, then movsb for the rest).  The run's jump table (0x510100) is
- * followed by the targets nfs3.exe's table holds.  Windows' functions are
- * called through their imports' slots; the connections', NET's, the link's
- * and the layers' functions through the pointers the game keeps; every other
- * function of the game's by address -- the packet sent (0x4a60e0) and a
+ * The network's functions are typed: a core of its own name, and the
+ * adapter under the game's name, for the dispatch and the callers still on
+ * registers, leaving each register as the code leaves it -- what a Windows
+ * function or a callee left in one the code does not restore too, which the
+ * cores hand back.  The frames a callee is handed the address of stay on
+ * the guest's stack at the code's depth: the packets announceMachineLeft and
+ * closeNetwork send, with the registers the code pushed above them (the
+ * send's check reads on past the packet), connSend's piece, sendOverLink's
+ * address.  Windows' functions are called through their imports' slots; the
+ * connections', NET's, the link's and the layers' functions through the
+ * pointers the game keeps.  Other files' typed functions whose answer is all
+ * the code takes of them -- a sleep, a block reserved, a block freed for its
+ * eax, a copy, a lock freed, a timer's callback removed -- are called as C++
+ * (guest::direct, their headers); every other function of the game's by
+ * address -- a block freed whose edx and ebx are left, the messages closed
+ * whose registers are handed on, and the packet sent (0x4a60e0) and a
  * machine's number (0x4a6650) too, which other natives' checks stand in for.
- * Huffman's (0x50ed50), a knot of jumps, is written with them, a label at
- * each target. */
+ *
+ * The unpackers are typed too, the byte pairs' tables in their frame at the
+ * code's depth (their addresses are kept at 0xa0b034 to 0xa0b040) -- but
+ * Huffman's (0x50ed50), a knot of jumps, still written as its code is: each
+ * push and pop to the guest's stack, the frame's locals in the guest's
+ * memory, the registers as the code leaves them, a label at each target. */
 namespace nfs3hp
 {
 namespace ea
@@ -70,2266 +91,1837 @@ using x86::reg16;
 using x86::reg32;
 using x86::reg8;
 using x86::sreg32;
+using App = win32::WinApplication;
+using CPU = x86::CPU;
 
 // Where an Error is from: the file, the function, the line.
 constexpr reg32 kWhereFile = 0x552190, kWhereFunction = 0x552194, kWhereLine = 0x552198;
 // The game's network: its sessions -- how many, the current one's id, the
-// first one's id and its flag (0x2c bytes each) -- the game ending, its lock;
-// the link's id.
+// first one's id and its flag (0x2c bytes each, 11 dwords) -- the game
+// ending, its lock; the link's id.
 constexpr reg32 kSessionCount = 0x55e718, kSessionId = 0x55e71c, kSessionIds = 0x55e734, kSessionFlags = 0x55e738;
+constexpr reg32 kSessionBytes = 0x2c, kSessionWords = 11;
 constexpr reg32 kEnding = 0x55e860, kEndingLock = 0x55e864, kLinkId = 0x55ecb0;
 // The NET object; the connections left (7 of them), the links open.
 constexpr reg32 kNet = 0x7a0390, kPendingPlayers = 0x7a02e8, kLinksOpen = 0x7a01e0;
-// The link's: its broadcast's buffer, its port, its function.
+// The NET object's functions, its check (a function at its +0x40), its
+// game; of its functions the game shut, ended, a player killed.
+constexpr reg32 kNetFunctions = 4, kNetCheck = 8, kNetGame = 0xc, kCheckSlot = 0x40;
+constexpr reg32 kShutGameSlot = 0x24, kEndGameSlot = 0x2c, kKillPlayerSlot = 0x34;
+// The link's: its broadcast's buffer, its port, its function; the kinds of
+// address it is handed, a machine's or all.
 constexpr reg32 kLinkBroadcast = 0x7a20a0, kLinkPort = 0x7a215c, kLinkSend = 0x7a21b8;
+constexpr reg32 kLinkToOne = 0xb0, kLinkToAll = 0xc0;
 // The machines' connections, their count (the high word), the players' machines.
 constexpr reg32 kMachines = 0x7a21f0, kMachineCount = 0x7a2274, kMachinePlayers = 0x7a227a;
 constexpr reg32 kSetUp = 0x7a2276, kInputNotSent = 0x7a2290, kStateBlock = 0x7a2294, kStateChanged = 0x7a2296;
 constexpr reg32 kPlayerStates = 0x7a22ba, kMachineStates = 0x7a22ca;
+constexpr reg32 kStateBlockBytes = 0x26, kStatesBytes = 0x10;
 constexpr reg32 kNetworkHost = 0x7a22da, kConnectionLost = 0x7a22dc, kConnectionLostToo = 0x7a22de;
 constexpr reg32 kGameState = 0x7a22e0, kNetworkKind = 0x7a22e4, kConnections = 0x7a22e8;
-constexpr reg32 kConnectionCount = 7, kConnectionUp = 0x24, kConnectionOpen = 0x10;
-constexpr reg32 kOwnOnly = 0x6fd50c;
-// The packets: a machine left (0xe), the network closed (4), the input (6).
-constexpr reg32 kMachineLeftPacket = 0xe, kClosedPacket = 4, kInputPacket = 6;
+// The network's kinds: a host's, two machines' over the link; the game
+// under way; a machine gone, in its state.
+constexpr reg32 kHostNetwork = 1, kLinked = 2, kUnderWay = 3;
+constexpr reg16 kMachineGone = 2;
+// A connection: its functions (+8 its send, +0xc whether it counts, +0x10
+// its close), it open, it up, its layers' queue, its player (the byte the
+// link addresses it by); 0x6c bytes each of the 7.
+constexpr reg32 kConnectionFunctions = 4, kConnectionOpen = 0x10, kConnectionUp = 0x24, kConnectionLayers = 0x30;
+constexpr reg32 kConnectionPlayer = 0x34, kConnectionBytes = 0x6c, kConnectionCount = 7;
+constexpr reg32 kSendSlot = 8, kCountsSlot = 0xc, kCloseSlot = 0x10;
+// A packet tried again 9 times before the connection counts as lost.
+constexpr reg32 kTries = 9;
+// The packets: a machine left (0xe, the machines' states after it, 0x12
+// bytes), the network closed (4, its word 0xc after a byte, 4 bytes), the
+// input (6).
+constexpr reg8 kMachineLeftPacket = 0xe, kClosedPacket = 4, kInputPacket = 6;
+constexpr reg32 kMachineLeftBytes = 0x12, kClosedBytes = 4;
+constexpr reg16 kClosedWord = 0xc;
 // EA's: the trace's level; the connections restored; the open connections.
 constexpr reg32 kTraceLevel = 0x566de0, kRestoring = 0x566df4, kOpenCount = 0x566df8;
 // The queues: the players, the connections, those closing.
 constexpr reg32 kPlayersQueue = 0x9f25f0, kConnectionsQueue = 0x9f260c, kClosingQueue = 0x9f2628;
+// A queue: its count (+0), flags, first and last, a priority's function
+// and its argument, its lock, the layer last handed on (a queue of layers).
+constexpr reg32 kQueueFlags = 4, kQueueFirst = 8, kQueueLast = 0xc, kQueuePriority = 0x10;
+constexpr reg32 kQueuePriorityArgument = 0x14, kQueueLock = 0x18, kQueueLayer = 0x1c;
+constexpr reg8 kQueueChanged = 1, kOwnLock = 2;
+// A layer: its packer, its data.
+constexpr reg32 kLayerPacker = 4, kLayerData = 0xc;
 // The byte pairs' tables and where they write.
 constexpr reg32 kPairOut = 0xa0b030, kPairLeft = 0xa0b034, kPairIn = 0xa0b038, kPairRight = 0xa0b03c;
 constexpr reg32 kPairKind = 0xa0b040;
-// The game's strings: NET's, CONN's, the queues', LAYER's.
+// The game's strings: NET's, CONN's, the queues', LAYER's; the Errors' lines.
 constexpr reg32 kShutGameName = 0x54d138, kEndGameName = 0x54d158, kKillPlayerName = 0x54d174;
 constexpr reg32 kConnectC = 0x54d194, kRestoreName = 0x54d1a4, kNotRemoved = 0x54d1b4;
 constexpr reg32 kQueueC = 0x54fbb8, kUninitialized = 0x54fbcc, kQfreeName = 0x54fc00, kQremoveName = 0x54fc34;
 constexpr reg32 kQlengthName = 0x54fc3c, kQpositionName = 0x54fc44, kQfindindexName = 0x54fc78;
 constexpr reg32 kLayerC = 0x550194, kLayerSendName = 0x5501a0, kFilterName = 0x5501ac;
 constexpr reg32 kCallPackerName = 0x5501cc, kFindFailed = 0x5501e0;
+constexpr reg32 kRestoreLine = 0xdb, kQfreeLine = 0xf0, kQremoveLine = 0x21c, kQlengthLine = 0x245;
+constexpr reg32 kQpositionLine = 0x271, kQfindindexLine = 0x30f, kLayerSendLine = 0x2d, kCallPackerLine = 0x63;
 // Windows' functions, by their imports' slots.
 constexpr reg32 kEnterCriticalSection = 0x5344b8, kLeaveCriticalSection = 0x534588;
 // The game's functions, by address.
 constexpr reg32 kError = 0x401010, kCloseMessages = 0x42d7f0, kFreeNetworkLocks = 0x49a4d0, kSend = 0x4a60e0;
-constexpr reg32 kMachineNumber = 0x4a6650, kSleep = 0x4df8e0, kMemset = 0x4e0640, kFillZero = 0x4e070c;
-constexpr reg32 kAllocate = 0x4e1620, kFree = 0x4e1890, kTimers = 0x4e7630, kMoveMemory = 0x4ea4f0;
-constexpr reg32 kFreeLock = 0x4eb360, kRemoveTask = 0x4f29b0, kNetMessage = 0x512180;
+constexpr reg32 kMachineNumber = 0x4a6650, kMemset = 0x4e0640, kFillZero = 0x4e070c;
+constexpr reg32 kFree = 0x4e1890, kTimers = 0x4e7630, kNetMessage = 0x512180;
 constexpr reg32 kConnectionTask = 0x4f5110;
 
-void push(win32::WinApplication* app, x86::CPU& cpu, reg32 value)
+void push(App* app, CPU& cpu, reg32 value)
 {
     cpu.esp -= 4;
     put(app, cpu.esp, value);
 }
 
-reg32 pop(win32::WinApplication* app, x86::CPU& cpu)
+reg32 pop(App* app, CPU& cpu)
 {
     const reg32 value = at(app, cpu.esp);
     cpu.esp += 4;
     return value;
 }
 
-reg16 word16(win32::WinApplication* app, reg32 address)
+reg16 word16(App* app, reg32 address)
 {
     return app->getMemory<reg16>(address);
 }
 
-void putWord16(win32::WinApplication* app, reg32 address, reg16 value)
+void putWord16(App* app, reg32 address, reg16 value)
 {
     app->getMemory<reg16>(address) = value;
 }
 
-/* A call as the code makes it: the return address's slot, and esp as the
- * callee leaves it.  False when the game stopped in it. */
-bool direct(win32::WinApplication* app, x86::CPU& cpu, void (*function)(win32::WinApplication*, x86::CPU&))
+/* `count` bytes from `from` to `to`, as rep movsd and rep movsb copy them: a
+ * dword at a time, then the bytes left. */
+void copyMemory(App* app, reg32 to, reg32 from, reg32 count)
 {
-    cpu.esp -= 4;
-    function(app, cpu);
-    return !cpu.terminate;
+    for (reg32 n = count >> 2; n != 0; --n, to += 4, from += 4)
+        put(app, to, at(app, from));
+    for (reg32 n = count & 3; n != 0; --n, ++to, ++from)
+        putByte(app, to, byte(app, from));
 }
 
-bool byAddress(win32::WinApplication* app, x86::CPU& cpu, reg32 target)
+/* The registers a function pushes on entry, in the order it pushes them. */
+struct Saved
 {
-    cpu.esp -= 4;
-    app->dynamic_call(target, cpu);
-    return !cpu.terminate;
+    reg32 ebx, ecx, edx, esi, edi, ebp;
+};
+
+/* `call` (true, or false when the game stopped) made with the four registers
+ * as the code has them; every register as it was before after it.  What the
+ * callee left in the four; nullopt when the game stopped. */
+template <typename Call>
+std::optional<Regs> callWithRegisters(CPU& cpu, Regs in, Call call)
+{
+    const reg32 result = cpu.eax;
+    const Saved kept{cpu.ebx, cpu.ecx, cpu.edx, cpu.esi, cpu.edi, cpu.ebp};
+    cpu.eax = in.eax;
+    cpu.edx = in.edx;
+    cpu.ebx = in.ebx;
+    cpu.ecx = in.ecx;
+    if (!call())
+        return std::nullopt;
+    const Regs left{cpu.eax, cpu.edx, cpu.ebx, cpu.ecx};
+    cpu.eax = result;
+    cpu.ebx = kept.ebx;
+    cpu.ecx = kept.ecx;
+    cpu.edx = kept.edx;
+    cpu.esi = kept.esi;
+    cpu.edi = kept.edi;
+    cpu.ebp = kept.ebp;
+    return left;
 }
 
-/* A Windows function, through its import's slot. */
-bool windows(win32::WinApplication* app, x86::CPU& cpu, reg32 slot)
+/* A call by address with the four registers as the code has them and
+ * `words` pushed (the first at the top), taken off after it; every register
+ * as it was before after it, esp too.  What the callee left in the four;
+ * nullopt when the game stopped. */
+std::optional<Regs> callWith(App* app, CPU& cpu, reg32 target, Regs in, std::initializer_list<reg32> words = {})
 {
-    return byAddress(app, cpu, at(app, slot));
+    return callWithRegisters(cpu, in, [&] { return guest::call(app, cpu, target, words); });
 }
 
-/* push edi; mov eax, ecx; shr ecx, 2; rep movsd; mov cl, al; and cl, 3;
- * rep movsb; pop edi: ecx bytes from esi to edi, esi past them, edi as it
- * was, eax the count, ecx 0. */
-void copyBytes(win32::WinApplication* app, x86::CPU& cpu)
+/* EnterCriticalSection or LeaveCriticalSection (`Function`) on `lock`, as
+ * callWith calls: the port's own, called as C++ (native_windows.h); in the
+ * check through its import's slot `Slot`. */
+template <reg32 Slot, auto Function>
+std::optional<Regs> lockCall(App* app, CPU& cpu, reg32 lock, Regs in)
 {
-    push(app, cpu, cpu.edi);
-    cpu.eax = cpu.ecx;
-    cpu.ecx >>= 2;
-    for (; cpu.ecx != 0; --cpu.ecx)
+    return callWithRegisters(cpu, in, [&] { return guest::windows<Slot, Function>(app, cpu, lock).has_value(); });
+}
+
+/* An Error from `file`'s `function` at `line` (set where Error reads them,
+ * in that order), its words on the stack, the format first.  It keeps every
+ * register but eax: eax as it leaves it. */
+std::optional<reg32> reportError(App* app, CPU& cpu, reg32 file, reg32 function, reg32 line, Regs in,
+                                 std::initializer_list<reg32> words)
+{
+    put(app, kWhereFile, file);
+    put(app, kWhereFunction, function);
+    put(app, kWhereLine, line);
+    const auto left = callWith(app, cpu, kError, in, words);
+    if (!left)
+        return std::nullopt;
+    return left->eax;
+}
+
+/* The queue `queue` uninitialized, as the queues report one in `function`
+ * at `line`: its address and the function's name. */
+std::optional<reg32> reportUninitialized(App* app, CPU& cpu, reg32 queue, reg32 function, reg32 line, Regs in)
+{
+    return reportError(app, cpu, kQueueC, function, line, in, {kUninitialized, function, queue});
+}
+
+/* The guest's stack lowered `bytes` while it lives, as the code's pushes and
+ * frame lower it: a frame whose address a callee is handed lies where the
+ * code has it. */
+class Lowered
+{
+public:
+    Lowered(CPU& cpu, reg32 bytes) : cpu_(cpu), esp_(cpu.esp) { cpu_.esp -= bytes; }
+    ~Lowered() { cpu_.esp = esp_; }
+    Lowered(const Lowered&) = delete;
+    Lowered& operator=(const Lowered&) = delete;
+
+private:
+    CPU& cpu_;
+    const reg32 esp_;
+};
+
+/* What `call` gives, called with the guest's stack `bytes` lower: at the
+ * depth the code calls it, under what it pushed and its return address --
+ * Error's text is formatted from its arguments' address, which its
+ * formatting's check logs. */
+template <typename Call>
+auto below(CPU& cpu, reg32 bytes, Call call)
+{
+    const Lowered lowered(cpu, bytes);
+    return call();
+}
+
+/* The registers the code pushes on entry, written below `esp` as its pushes
+ * write them: what a callee handed the frame under them reads past its end. */
+void pushRegisters(App* app, reg32 esp, std::initializer_list<reg32> registers)
+{
+    for (const reg32 value : registers)
     {
-        put(app, cpu.edi, at(app, cpu.esi));
-        cpu.edi += 4;
-        cpu.esi += 4;
+        esp -= 4;
+        put(app, esp, value);
     }
-    cpu.cl = cpu.al;
-    cpu.cl &= 3;
-    for (; cpu.ecx != 0; --cpu.ecx)
-    {
-        putByte(app, cpu.edi, byte(app, cpu.esi));
-        ++cpu.edi;
-        ++cpu.esi;
-    }
-    cpu.edi = pop(app, cpu);
 }
 
-/* lea eax, [reg*4]; sub eax, reg; shl eax, 2; mov edx, eax; shl eax, 3;
- * add eax, edx: reg * 0x6c, a connection's offset, edx its twelfth. */
-void connectionOffset(x86::CPU& cpu, reg32 index)
+/* The adapters' end: eax the answer, the return address taken off. */
+void answer(CPU& cpu, reg32 result)
 {
-    cpu.eax = index * 4;
-    cpu.eax -= index;
-    cpu.eax <<= 2;
-    cpu.edx = cpu.eax;
-    cpu.eax <<= 3;
-    cpu.eax += cpu.edx;
-}
-
-/* lea eax, [reg*4]; sub eax, reg; shl eax, 3; add eax, reg; add eax, eax;
- * add eax, 0xa: the sleep before try reg + 1, 50 * reg + 10. */
-void retryWait(x86::CPU& cpu, reg32 index)
-{
-    cpu.eax = index * 4;
-    cpu.eax -= index;
-    cpu.eax <<= 3;
-    cpu.eax += index;
-    cpu.eax += cpu.eax;
-}
-
-/* mov edx, eax; shl eax, 2; sub eax, edx; shl eax, 2; sub eax, edx: eax * 11,
- * a session's dword index (0x2c bytes each). */
-void sessionOffset(x86::CPU& cpu, reg32& scratch)
-{
-    scratch = cpu.eax;
-    cpu.eax <<= 2;
-    cpu.eax -= scratch;
-    cpu.eax <<= 2;
-    cpu.eax -= scratch;
-}
-
-/* An Error, as the queues and CONN report one: where it is from, and the
- * words the code pushed for it taken off after. */
-bool error(win32::WinApplication* app, x86::CPU& cpu, reg32 words)
-{
-    if (!byAddress(app, cpu, kError))
-        return false;
-    cpu.esp += 4 * words;
-    return true;
+    cpu.eax = result;
+    cpu.esp += 4;
 }
 
 }  // namespace
 
-void dropMachine(win32::WinApplication* app, x86::CPU& cpu);
-void announceMachineLeft(win32::WinApplication* app, x86::CPU& cpu);
-void endNetworkGame(win32::WinApplication* app, x86::CPU& cpu);
-void sessionIndex(win32::WinApplication* app, x86::CPU& cpu);
-void forgetPendingPlayer(win32::WinApplication* app, x86::CPU& cpu);
-void sendOverLink(win32::WinApplication* app, x86::CPU& cpu);
-void sendPacket(win32::WinApplication* app, x86::CPU& cpu);
-void resetNetwork(win32::WinApplication* app, x86::CPU& cpu);
-void closeNetwork(win32::WinApplication* app, x86::CPU& cpu);
-void machineNumber(win32::WinApplication* app, x86::CPU& cpu);
-void playerMachine(win32::WinApplication* app, x86::CPU& cpu);
-void netTrace(win32::WinApplication* app, x86::CPU& cpu);
-void netShutGame(win32::WinApplication* app, x86::CPU& cpu);
-void netEndGame(win32::WinApplication* app, x86::CPU& cpu);
-void netKillPlayer(win32::WinApplication* app, x86::CPU& cpu);
-void netCheckPlayer(win32::WinApplication* app, x86::CPU& cpu);
-void connRestore(win32::WinApplication* app, x86::CPU& cpu);
-void connSend(win32::WinApplication* app, x86::CPU& cpu);
-void connClose(win32::WinApplication* app, x86::CPU& cpu);
-void qnth(win32::WinApplication* app, x86::CPU& cpu);
-void qunlink(win32::WinApplication* app, x86::CPU& cpu);
-void qfree(win32::WinApplication* app, x86::CPU& cpu);
-void qremove(win32::WinApplication* app, x86::CPU& cpu);
-void qlength(win32::WinApplication* app, x86::CPU& cpu);
-void qposition(win32::WinApplication* app, x86::CPU& cpu);
-void qfindindex(win32::WinApplication* app, x86::CPU& cpu);
-void huffUnpack(win32::WinApplication* app, x86::CPU& cpu);
-void runUnpack(win32::WinApplication* app, x86::CPU& cpu);
-void dxtBlock(win32::WinApplication* app, x86::CPU& cpu);
-void dxtUnpack(win32::WinApplication* app, x86::CPU& cpu);
-void pairExpand(win32::WinApplication* app, x86::CPU& cpu);
-void pairUnpack(win32::WinApplication* app, x86::CPU& cpu);
-void layerSend(win32::WinApplication* app, x86::CPU& cpu);
-void layerCallPacker(win32::WinApplication* app, x86::CPU& cpu);
-void layerPackFromTop(win32::WinApplication* app, x86::CPU& cpu);
-void layerFree(win32::WinApplication* app, x86::CPU& cpu);
-void layerSendPacket(win32::WinApplication* app, x86::CPU& cpu);
+void dropMachine(App* app, CPU& cpu);
+void announceMachineLeft(App* app, CPU& cpu);
+void endNetworkGame(App* app, CPU& cpu);
+void sessionIndex(App* app, CPU& cpu);
+void forgetPendingPlayer(App* app, CPU& cpu);
+void sendOverLink(App* app, CPU& cpu);
+void sendPacket(App* app, CPU& cpu);
+void resetNetwork(App* app, CPU& cpu);
+void closeNetwork(App* app, CPU& cpu);
+void machineNumber(App* app, CPU& cpu);
+void playerMachine(App* app, CPU& cpu);
+void netTrace(App* app, CPU& cpu);
+void netShutGame(App* app, CPU& cpu);
+void netEndGame(App* app, CPU& cpu);
+void netKillPlayer(App* app, CPU& cpu);
+void netCheckPlayer(App* app, CPU& cpu);
+void connRestore(App* app, CPU& cpu);
+void connSend(App* app, CPU& cpu);
+void connClose(App* app, CPU& cpu);
+void qnth(App* app, CPU& cpu);
+void qunlink(App* app, CPU& cpu);
+void qfree(App* app, CPU& cpu);
+void qremove(App* app, CPU& cpu);
+void qlength(App* app, CPU& cpu);
+void qposition(App* app, CPU& cpu);
+void qfindindex(App* app, CPU& cpu);
+void huffUnpack(App* app, CPU& cpu);
+void runUnpack(App* app, CPU& cpu);
+void dxtBlock(App* app, CPU& cpu);
+void dxtUnpack(App* app, CPU& cpu);
+void pairExpand(App* app, CPU& cpu);
+void pairUnpack(App* app, CPU& cpu);
+void layerSend(App* app, CPU& cpu);
+void layerCallPacker(App* app, CPU& cpu);
+void layerPackFromTop(App* app, CPU& cpu);
+void layerFree(App* app, CPU& cpu);
+void layerSendPacket(App* app, CPU& cpu);
 
-/* 0x49ecb0: the connection eax dropped, if it is one and open: closed
- * (connClose), its player killed in the NET game (netKillPlayer, its +0x34),
- * the machines' states changed and the links open one fewer. */
-void dropMachine(win32::WinApplication* app, x86::CPU& cpu)
+namespace
 {
-    push(app, cpu, cpu.ebx);
-    push(app, cpu, cpu.edx);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    cpu.edx = cpu.eax;
-    if (cpu.eax != 0 && at(app, cpu.eax + kConnectionOpen) != 0)
-    {
-        if (!direct(app, cpu, connClose))
-            return;
-        cpu.eax = kNet;
-        cpu.edx += 0x34;
-        if (!direct(app, cpu, netKillPlayer))
-            return;
-        cpu.ebx = at(app, kLinksOpen);
-        cpu.edx = 1;
-        --cpu.ebx;
-        putWord16(app, kStateChanged, cpu.dx);
-        put(app, kLinksOpen, cpu.ebx);
-    }
-    cpu.ebp = pop(app, cpu);
-    cpu.edx = pop(app, cpu);
-    cpu.ebx = pop(app, cpu);
-    cpu.esp += 4;
+
+/* The connection `index` of the 7. */
+constexpr reg32 connectionAt(reg32 index)
+{
+    return kConnections + index * kConnectionBytes;
 }
 
-/* 0x49ecf0: machine eax gone: its pending player forgotten
- * (forgetPendingPlayer, its connection's +0x34); then, unless the game is
- * ending and for machines 0 to 7, under the ending's lock, a machine whose
- * state was 0 marked 2 and the others told: packet 0xe, the 8 machines'
- * states after it, 0x12 bytes, sent to all. */
-void announceMachineLeft(win32::WinApplication* app, x86::CPU& cpu)
+/* The sleep before try `tries` + 1 of a packet, in milliseconds. */
+constexpr reg32 retryWait(reg32 tries)
 {
-    push(app, cpu, cpu.ebx);
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.edx);
-    push(app, cpu, cpu.esi);
-    push(app, cpu, cpu.edi);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    cpu.esp -= 0x14;
-    const auto leave = [&] {
-        cpu.esp = cpu.ebp;
-        cpu.ebp = pop(app, cpu);
-        cpu.edi = pop(app, cpu);
-        cpu.esi = pop(app, cpu);
-        cpu.edx = pop(app, cpu);
-        cpu.ecx = pop(app, cpu);
-        cpu.ebx = pop(app, cpu);
-        cpu.esp += 4;
-    };
-    cpu.ebx = cpu.eax;
-    cpu.eax = at(app, cpu.eax * 4 + kMachines);
-    cpu.eax += 0x34;
-    if (!direct(app, cpu, forgetPendingPlayer))
-        return;
-    if (at(app, kEnding) != 0 || sreg32(cpu.ebx) > 7 || sreg32(cpu.ebx) < 0)
-        return leave();
-    cpu.ecx = at(app, kEndingLock);
-    push(app, cpu, cpu.ecx);
-    if (!windows(app, cpu, kEnterCriticalSection))
-        return;
-    cpu.eax = cpu.ebx + cpu.ebx;
-    if (word16(app, cpu.eax + kMachineStates) != 0)
-    {
-        cpu.esi = at(app, kEndingLock);
-        push(app, cpu, cpu.esi);
-        if (!windows(app, cpu, kLeaveCriticalSection))
-            return;
-        return leave();
-    }
-    putWord16(app, cpu.eax + kMachineStates, 2);
-    cpu.ebx = at(app, kEndingLock);
-    push(app, cpu, cpu.ebx);
-    cpu.esi = kMachineStates;
-    cpu.edi = cpu.ebp - 0x12;
-    if (!windows(app, cpu, kLeaveCriticalSection))
-        return;
-    cpu.ah = kMachineLeftPacket;
-    cpu.ecx = 0x10;
-    cpu.ebx = 0x12;
-    cpu.edx = cpu.ebp - 0x14;
-    putByte(app, cpu.ebp - 0x14, cpu.ah);
-    copyBytes(app, cpu);
-    cpu.ecx = 1;
-    cpu.eax = 0;
-    putWord16(app, kStateChanged, cpu.cx);
-    if (!byAddress(app, cpu, kSend))
-        return;
-    leave();
+    return tries * 50 + 10;
 }
 
-/* 0x49eed0: the network game ended, if under way (state 3) on a host's
- * network: the host's connections dropped (dropMachine); with the game
- * ending and the session's flag, the NET game shut (netShutGame, 1); with
- * the flag, the NET game ended (netEndGame); the game no longer ending. */
-void endNetworkGame(win32::WinApplication* app, x86::CPU& cpu)
+/* 0x49f1c0: the index of the session whose id is `id`, of [0x55e718], or -1. */
+reg32 findSession(App* app, reg32 id)
 {
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.edx);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    if (at(app, kGameState) == 3)
+    for (reg32 session = 0; sreg32(session) < sreg32(at(app, kSessionCount)); ++session)
+        if (at(app, kSessionIds + session * kSessionBytes) == id)
+            return session;
+    return 0xffffffff;
+}
+
+/* Session `session`'s flag; -1's is the dword before the first's id. */
+reg32 sessionFlag(App* app, reg32 session)
+{
+    return at(app, kSessionFlags + session * kSessionBytes);
+}
+
+}  // namespace
+
+/* 0x4a6650: the number of the machine whose connection is `connection` -- 1
+ * up to the machines' count (0x7a2274's high word, signed) -- or -1; -1 for
+ * none. */
+reg32 machineOf(App* app, reg32 connection)
+{
+    if (connection == 0)
+        return 0xffffffff;
+    for (reg32 machine = 1;; ++machine)
     {
-        if (at(app, kNetworkKind) != 2)
+        if (sreg32(machine) >= sreg32(at(app, kMachineCount)) >> 16)
+            return 0xffffffff;
+        if (at(app, kMachines + machine * 4) == connection)
+            return machine;
+    }
+}
+
+namespace
+{
+
+/* 0x4a6690: the machine whose player is `player`, of the 8 (0x7a227a), or -1. */
+reg32 machineOfPlayer(App* app, reg16 player)
+{
+    for (reg32 machine = 0; machine < 8; ++machine)
+        if (word16(app, kMachinePlayers + machine * 2) == player)
+            return machine;
+    return 0xffffffff;
+}
+
+/* 0x4f4c50: NET's trace of the call named `name`, when [0x566de0] is 1 or
+ * more: the network's message (0x512180, stdcall) with its registers name,
+ * 0, 0, 0 and 0, 0 on the stack.  eax as the code leaves it: the message's,
+ * or the name untraced. */
+std::optional<reg32> traceNet(App* app, CPU& cpu, reg32 name)
+{
+    if (sreg32(at(app, kTraceLevel)) < 1)
+        return name;
+    const auto left = callWith(app, cpu, kNetMessage, {name, 0, 0, 0}, {0, 0});
+    if (!left)
+        return std::nullopt;
+    return left->eax;
+}
+
+/* The NET object `net`'s function at `slot` of its functions, traced as
+ * `name` first, asked with `argument` (edx); what it gives back. */
+std::optional<reg32> callNet(App* app, CPU& cpu, reg32 net, reg32 name, reg32 slot, reg32 argument)
+{
+    if (!traceNet(app, cpu, name))
+        return std::nullopt;
+    const reg32 functions = at(app, net + kNetFunctions);
+    const auto left = callWith(app, cpu, at(app, functions + slot), {net, argument, functions, net});
+    if (!left)
+        return std::nullopt;
+    return left->eax;
+}
+
+/* 0x4f5040: whether the player `player` is the NET object `net`'s: its
+ * check's function asked with the object's game.  No trace. */
+std::optional<reg32> checkNetPlayer(App* app, CPU& cpu, reg32 net, reg32 player)
+{
+    const reg32 check = at(app, net + kNetCheck);
+    const auto left = callWith(app, cpu, at(app, check + kCheckSlot), {at(app, net + kNetGame), player, cpu.ebx, check});
+    if (!left)
+        return std::nullopt;
+    return left->eax;
+}
+
+/* What qnth gives back: the element, and the count as it leaves it in edx. */
+struct Nth
+{
+    reg32 element, left;
+};
+
+/* 0x50dc00: the element `n` + 1 past `element` -- its next, and on -- or 0
+ * past the last; `n` counted down to -1, or as far as the list went. */
+Nth nth(App* app, reg32 element, reg32 n)
+{
+    element = at(app, element);
+    if (element != 0)
+    {
+        for (;;)
         {
-            if (word16(app, kNetworkHost) != 0)
+            --n;
+            if (n == 0xffffffff)
+                break;
+            element = at(app, element);
+            if (element == 0)
+                break;
+        }
+    }
+    return {element, n};
+}
+
+/* 0x50dc20: the element `element` taken out of the queue `queue`, its lock
+ * not taken (qremove's): the count one fewer, the first or the last moved
+ * past it; taken out, its next 0 and the queue's flag 1 (changed) set.  1 if
+ * it was there, else 0. */
+reg32 unlink(App* app, reg32 queue, reg32 element)
+{
+    reg32 found = 0;
+    const reg32 count = element != 0 ? at(app, queue) : 0;
+    if (count != 0)
+    {
+        const reg32 first = at(app, queue + kQueueFirst);
+        if (element == first)
+        {
+            found = 1;
+            const reg32 last = at(app, queue + kQueueLast);
+            put(app, queue, count - 1);
+            if (first == last)
             {
-                for (cpu.edx = 0; sreg32(cpu.edx) < sreg32(kConnectionCount); ++cpu.edx)
-                {
-                    cpu.eax = cpu.edx * 4;
-                    cpu.eax -= cpu.edx;
-                    cpu.eax <<= 2;
-                    cpu.ecx = cpu.eax;
-                    cpu.eax <<= 3;
-                    cpu.eax += cpu.ecx;
-                    if (at(app, cpu.eax + kConnections + kConnectionOpen) != 0)
-                    {
-                        cpu.eax += kConnections;
-                        if (!direct(app, cpu, dropMachine))
-                            return;
-                    }
-                }
-                if (at(app, kEnding) != 0)
-                {
-                    cpu.eax = at(app, kSessionId);
-                    if (!direct(app, cpu, sessionIndex))
-                        return;
-                    sessionOffset(cpu, cpu.edx);
-                    if (at(app, cpu.eax * 4 + kSessionFlags) != 0)
-                    {
-                        cpu.edx = 1;
-                        cpu.eax = kNet;
-                        if (!direct(app, cpu, netShutGame))
-                            return;
-                    }
-                }
+                put(app, queue + kQueueFirst, 0);
+                put(app, queue + kQueueLast, at(app, queue + kQueueFirst));
             }
-            cpu.eax = at(app, kSessionId);
-            if (!direct(app, cpu, sessionIndex))
-                return;
-            sessionOffset(cpu, cpu.edx);
-            if (at(app, cpu.eax * 4 + kSessionFlags) != 0)
+            else
             {
-                cpu.eax = kNet;
-                if (!direct(app, cpu, netEndGame))
-                    return;
+                put(app, queue + kQueueFirst, at(app, first));
             }
         }
-        cpu.ecx = 0;
-        put(app, kEnding, cpu.ecx);
+        else
+        {
+            reg32 before = first;
+            if (at(app, first) != 0)
+            {
+                while (element != at(app, before))
+                {
+                    before = at(app, before);
+                    if (at(app, before) == 0)
+                        break;
+                }
+            }
+            const reg32 next = at(app, before);
+            if (next != 0 && element == next)
+            {
+                found = 1;
+                put(app, queue, at(app, queue) - 1);
+                put(app, before, at(app, next));
+                if (element == at(app, queue + kQueueLast))
+                    put(app, queue + kQueueLast, before);
+            }
+        }
     }
-    cpu.ebp = pop(app, cpu);
-    cpu.edx = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
-    cpu.esp += 4;
+    if (found != 0)
+    {
+        put(app, element, 0);
+        putByte(app, queue + kQueueFlags, byte(app, queue + kQueueFlags) | kQueueChanged);
+    }
+    return found;
 }
 
-/* 0x49f1c0: the index of the session whose id is eax, of [0x55e718], or -1. */
-void sessionIndex(win32::WinApplication* app, x86::CPU& cpu)
+/* 0x50dde0, EA's qfree: the queue's lock let go -- freed (0x4eb360) if it is
+ * its own -- and forgotten; an Error for a queue uninitialized.  eax as the
+ * code leaves it: the queue, or what Error or the lock's freeing left. */
+std::optional<reg32> freeQueueLock(App* app, CPU& cpu, reg32 queue)
 {
-    push(app, cpu, cpu.ebx);
-    push(app, cpu, cpu.edx);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    cpu.ebx = cpu.eax;
-    cpu.eax = 0xffffffff;
-    for (cpu.edx = 0; sreg32(cpu.edx) < sreg32(at(app, kSessionCount)); ++cpu.edx)
+    reg32 left = queue;
+    if (at(app, queue + kQueueLock) == 0)
     {
-        cpu.eax = cpu.edx * 4;
-        cpu.eax -= cpu.edx;
-        cpu.eax <<= 2;
-        cpu.eax -= cpu.edx;
-        if (cpu.ebx == at(app, cpu.eax * 4 + kSessionIds))
+        const auto reported = below(cpu, 0x10, [&] {
+            return reportUninitialized(app, cpu, queue, kQfreeName, kQfreeLine, {queue, queue, kQueueC, cpu.ecx});
+        });
+        if (!reported)
+            return std::nullopt;
+        left = *reported;
+    }
+    if ((byte(app, queue + kQueueFlags) & kOwnLock) != 0)
+    {
+        const auto freed = guest::direct<0x4eb360, ea::lockFreed>(app, cpu, at(app, queue + kQueueLock));
+        if (!freed)
+            return std::nullopt;
+        left = *freed;
+    }
+    put(app, queue + kQueueLock, 0);
+    return left;
+}
+
+/* 0x50e1d0, EA's qlength: how many elements the queue holds; an Error for a
+ * queue uninitialized. */
+std::optional<reg32> queueLength(App* app, CPU& cpu, reg32 queue)
+{
+    if (at(app, queue + kQueueLock) == 0 && !below(cpu, 0x10, [&] {
+            return reportUninitialized(app, cpu, queue, kQlengthName, kQlengthLine, {queue, queue, kQueueC, cpu.ecx});
+        }))
+        return std::nullopt;
+    return at(app, queue);
+}
+
+/* 0x50e150, EA's qremove: the element taken out of the queue under its lock
+ * (unlink); 1 if it was there.  Asked for none, what eax gives back is
+ * `forNone`, edi as the caller had it.  eax, and in edx what
+ * LeaveCriticalSection left. */
+std::optional<Regs> removeFromQueue(App* app, CPU& cpu, reg32 queue, reg32 element, reg32 forNone)
+{
+    const reg32 lock = at(app, queue + kQueueLock);
+    const auto entered = lockCall<kEnterCriticalSection, &win32::kernel32::EnterCriticalSection>(
+        app, cpu, lock, {queue, lock, queue, cpu.ecx});
+    if (!entered)
+        return std::nullopt;
+    Regs held = *entered;
+    if (at(app, queue + kQueueLock) == 0)
+    {
+        const Regs in{kQremoveName, kQremoveLine, queue, held.ecx};
+        const auto reported = below(cpu, 0x14, [&] {
+            return reportError(app, cpu, kQueueC, kQremoveName, kQremoveLine, in, {kUninitialized, kQremoveName, queue});
+        });
+        if (!reported)
+            return std::nullopt;
+        held = {*reported, kQremoveLine, queue, held.ecx};
+    }
+    reg32 result = forNone;
+    if (element != 0)
+    {
+        result = unlink(app, queue, element);
+        held.eax = result;
+        held.edx = element;
+    }
+    const reg32 unlock = at(app, queue + kQueueLock);
+    const auto left = lockCall<kLeaveCriticalSection, &win32::kernel32::LeaveCriticalSection>(
+        app, cpu, unlock, {held.eax, held.edx, queue, unlock});
+    if (!left)
+        return std::nullopt;
+    return Regs{result, left->edx, queue, unlock};
+}
+
+/* 0x50e220, EA's qposition: under the queue's lock, the index of the
+ * element, or -1.  A queue with a priority's function is looked through only
+ * as far as the elements whose priority is not above the element's.  eax,
+ * and in edx what LeaveCriticalSection left. */
+std::optional<Regs> queuePosition(App* app, CPU& cpu, reg32 queue, reg32 element)
+{
+    const reg32 lock = at(app, queue + kQueueLock);
+    const auto entered = lockCall<kEnterCriticalSection, &win32::kernel32::EnterCriticalSection>(
+        app, cpu, lock, {queue, lock, cpu.ebx, cpu.ecx});
+    if (!entered)
+        return std::nullopt;
+    Regs held = *entered;
+    reg32 index = 0;
+    if (at(app, queue + kQueueLock) == 0)
+    {
+        const Regs in{kQpositionName, kQpositionLine, index, 0};
+        const auto reported = below(cpu, 0x18, [&] {
+            return reportError(app, cpu, kQueueC, kQpositionName, kQpositionLine, in,
+                               {kUninitialized, kQpositionName, queue});
+        });
+        if (!reported)
+            return std::nullopt;
+        held = {*reported, kQpositionLine, index, 0};
+    }
+    bool found = false;
+    if (element != 0)
+    {
+        const reg32 priority = at(app, queue + kQueuePriority);
+        reg32 current = at(app, queue + kQueueFirst);
+        // The element's own priority, none without the function.
+        held.eax = 0;
+        if (priority != 0)
         {
-            cpu.eax = cpu.edx;
+            const auto own = callWith(app, cpu, priority, {element, at(app, queue + kQueuePriorityArgument), index, current});
+            if (!own)
+                return std::nullopt;
+            held = *own;
+        }
+        const reg32 elementsPriority = held.eax;
+        while (current != 0 && current != element)
+        {
+            if (priority != 0)
+            {
+                const auto its = callWith(app, cpu, priority, {current, at(app, queue + kQueuePriorityArgument), index, current});
+                if (!its)
+                    return std::nullopt;
+                held = *its;
+                if (its->eax > elementsPriority)
+                    break;
+            }
+            current = at(app, current);
+            ++index;
+        }
+        found = current == element;
+    }
+    if (!found)
+        index = 0xffffffff;
+    const reg32 unlock = at(app, queue + kQueueLock);
+    const auto left = lockCall<kLeaveCriticalSection, &win32::kernel32::LeaveCriticalSection>(
+        app, cpu, unlock, {held.eax, held.edx, index, unlock});
+    if (!left)
+        return std::nullopt;
+    return Regs{index, left->edx, index, unlock};
+}
+
+/* 0x50e470, EA's qfindindex: under the queue's lock, its element `index`
+ * (nth past the first), or 0.  eax, and in edx what LeaveCriticalSection
+ * left. */
+std::optional<Regs> findInQueue(App* app, CPU& cpu, reg32 queue, reg32 index)
+{
+    const reg32 lock = at(app, queue + kQueueLock);
+    const auto entered = lockCall<kEnterCriticalSection, &win32::kernel32::EnterCriticalSection>(
+        app, cpu, lock, {queue, lock, queue, cpu.ecx});
+    if (!entered)
+        return std::nullopt;
+    Regs held = *entered;
+    if (at(app, queue + kQueueLock) == 0)
+    {
+        const Regs in{kQfindindexLine, held.edx, queue, held.ecx};
+        const auto reported = below(cpu, 0x14, [&] {
+            return reportError(app, cpu, kQueueC, kQfindindexName, kQfindindexLine, in,
+                               {kUninitialized, kQfindindexName, queue});
+        });
+        if (!reported)
+            return std::nullopt;
+        held.eax = *reported;
+    }
+    const reg32 first = at(app, queue + kQueueFirst);
+    held.edx = first;
+    reg32 found = first;
+    if (first == 0)
+    {
+        found = 0;
+    }
+    else if (index != 0)
+    {
+        const Nth n = nth(app, at(app, queue + kQueueFirst), index - 1);
+        found = n.element;
+        held.eax = n.element;
+        held.edx = n.left;
+    }
+    const reg32 unlock = at(app, queue + kQueueLock);
+    const auto left = lockCall<kLeaveCriticalSection, &win32::kernel32::LeaveCriticalSection>(
+        app, cpu, unlock, {held.eax, held.edx, queue, unlock});
+    if (!left)
+        return std::nullopt;
+    return Regs{found, left->edx, queue, unlock};
+}
+
+/* 0x5123b0, EA's LAYER_send: the `count` pieces at `pieces` ({length,
+ * address} each) gathered into one block ('FILTER', the game's allocation)
+ * and sent by the connection's own send (the block, its length); the block
+ * freed, and what the send gave back.  edx and ebx as the free left them. */
+std::optional<Regs> gatherAndSend(App* app, CPU& cpu, reg32 connection, reg32 count, reg32 pieces)
+{
+    reg32 total = 0;
+    if (sreg32(count) > 0)
+    {
+        reg32 piece = pieces;
+        for (reg32 i = 0; sreg32(i) < sreg32(count); ++i, piece += 8)
+            total += at(app, piece);
+    }
+    put(app, kWhereFile, kLayerC);
+    put(app, kWhereFunction, kLayerSendName);
+    put(app, kWhereLine, kLayerSendLine);
+    const auto block = guest::direct<0x4e1620, ea::reserved>(app, cpu, kFilterName, total, 0u);
+    if (!block)
+        return std::nullopt;
+    if (sreg32(count) > 0)
+    {
+        reg32 to = *block, piece = pieces;
+        for (reg32 i = 0; sreg32(i) < sreg32(count); ++i, piece += 8)
+        {
+            if (!guest::direct<0x4ea4f0, ea::moveMemory>(app, cpu, to, at(app, piece + 4), at(app, piece)))
+                return std::nullopt;
+            to += at(app, piece);
+        }
+    }
+    const reg32 functions = at(app, connection + kConnectionFunctions);
+    const auto sent = callWith(app, cpu, at(app, functions + kSendSlot), {connection, *block, total, functions});
+    if (!sent)
+        return std::nullopt;
+    // By address: the free's edx and ebx are what this leaves, which native_ea_memory.h's purgeBlock
+    // does not give back.
+    const auto freed = callWith(app, cpu, kFree, {*block, sent->edx, sent->ebx, sent->eax});
+    if (!freed)
+        return std::nullopt;
+    return Regs{sent->eax, freed->edx, freed->ebx, pieces};
+}
+
+/* 0x512530, EA's LAYER_callpacker: the packet -- `count` pieces at `pieces`
+ * -- on the connection handed to layer `layer` of the queue `layers` (its
+ * index noted at the queue's +0x1c): its packer (stdcall, with its data, the
+ * queue on the stack) -- an Error, and the packer read from an element 0,
+ * when qfindindex finds none.  Past the layers, sent (gatherAndSend).  The
+ * four registers as the packer or the send leaves them. */
+std::optional<Regs> callPacker(App* app, CPU& cpu, reg32 connection, reg32 layer, reg32 count, reg32 pieces,
+                               reg32 layers)
+{
+    bool down = false;
+    if (sreg32(layer) >= 0)
+    {
+        const auto length = below(cpu, 0x10, [&] { return queueLength(app, cpu, layers); });
+        if (!length)
+            return std::nullopt;
+        down = layer < *length;
+    }
+    if (!down)
+        return gatherAndSend(app, cpu, connection, count, pieces);
+    put(app, layers + kQueueLayer, layer);
+    const auto found = below(cpu, 0x10, [&] { return findInQueue(app, cpu, layers, layer); });
+    if (!found)
+        return std::nullopt;
+    const reg32 element = found->eax;
+    if (element == 0 && !below(cpu, 0xc, [&] {
+            return reportError(app, cpu, kLayerC, kCallPackerName, kCallPackerLine,
+                               {kCallPackerName, kCallPackerLine, layers, pieces}, {kFindFailed});
+        }))
+        return std::nullopt;
+    return callWith(app, cpu, at(app, element + kLayerPacker), {connection, at(app, element + kLayerData), count, pieces},
+                    {layers});
+}
+
+/* 0x512630: the packet -- `count` pieces at `pieces` -- on the connection
+ * handed to the top layer of the queue `layers` (callPacker, its last). */
+std::optional<Regs> packFromTop(App* app, CPU& cpu, reg32 connection, reg32 count, reg32 pieces, reg32 layers)
+{
+    const auto length = below(cpu, 0xc, [&] { return queueLength(app, cpu, layers); });
+    if (!length)
+        return std::nullopt;
+    return below(cpu, 0xc, [&] { return callPacker(app, cpu, connection, *length - 1, count, pieces, layers); });
+}
+
+/* 0x512770: the packet -- `count` pieces at `pieces` -- sent on the
+ * connection if it is one and up, down its layers (packFromTop); else 0. */
+std::optional<Regs> sendDownLayers(App* app, CPU& cpu, reg32 connection, reg32 count, reg32 pieces)
+{
+    if (connection == 0 || at(app, connection + kConnectionUp) == 0)
+        return Regs{0, count, pieces, cpu.ecx};
+    const reg32 layers = at(app, connection + kConnectionLayers);
+    return below(cpu, 8, [&] { return packFromTop(app, cpu, connection, count, pieces, layers); });
+}
+
+/* 0x4f5310: a packet of `length` bytes at `packet` sent on the connection
+ * through its layers (sendDownLayers, one piece).  cpu.esp where the call
+ * leaves it: the piece in the 8 bytes below it, handed on. */
+std::optional<Regs> sendOnConnection(App* app, CPU& cpu, reg32 connection, reg32 packet, reg32 length)
+{
+    const Lowered frame(cpu, 8);
+    const reg32 piece = cpu.esp;
+    put(app, piece + 4, packet);
+    put(app, piece, length);
+    return below(cpu, 4, [&] { return sendDownLayers(app, cpu, connection, 1, piece); });
+}
+
+/* 0x5126c0: the connection's queue of layers, if any, let go (qfree), freed
+ * and forgotten.  eax as the code leaves it: the free's, or the connection. */
+std::optional<reg32> freeLayers(App* app, CPU& cpu, reg32 connection)
+{
+    const reg32 layers = at(app, connection + kConnectionLayers);
+    if (layers == 0)
+        return connection;
+    if (!below(cpu, 0xc, [&] { return freeQueueLock(app, cpu, layers); }))
+        return std::nullopt;
+    const auto freed = guest::direct<0x4e1890, ea::purgeBlock>(app, cpu, at(app, connection + kConnectionLayers));
+    if (!freed)
+        return std::nullopt;
+    put(app, connection + kConnectionLayers, 0);
+    return *freed;
+}
+
+/* 0x4f5330: the connection closed, if it is one and open: its close;
+ * closed, one that counts makes one open connection fewer, the last taking
+ * the connections' task (0x4f5110) off (0x4f29b0); its layers freed.  What
+ * the close gave back, or 0. */
+std::optional<reg32> closeConnection(App* app, CPU& cpu, reg32 connection)
+{
+    if (connection == 0 || at(app, connection + kConnectionOpen) == 0)
+        return 0;
+    const reg32 functions = at(app, connection + kConnectionFunctions);
+    const auto closed = callWith(app, cpu, at(app, functions + kCloseSlot), {connection, connection, cpu.ebx, functions});
+    if (!closed)
+        return std::nullopt;
+    if (closed->eax != 0 && at(app, at(app, connection + kConnectionFunctions) + kCountsSlot) != 0)
+    {
+        const reg32 open = at(app, kOpenCount);
+        if (open != 0)
+        {
+            put(app, kOpenCount, open - 1);
+            if (open - 1 == 0 && !guest::direct<0x4f29b0, ea::removeTimer>(app, cpu, kConnectionTask))
+                return std::nullopt;
+        }
+    }
+    if (!below(cpu, 0x14, [&] { return freeLayers(app, cpu, connection); }))
+        return std::nullopt;
+    return closed->eax;
+}
+
+/* 0x4f5280, EA's CONN_restore: when connections are restored, each closing
+ * connection closed as long as there is a first, then each connection:
+ * closed and, if its close left it in the list, removed -- an Error when it
+ * was there to remove ("NOT REMOVED FROM LIST BY CLOSE").  eax as the code
+ * leaves it: 0, or `handed` (eax as handed over) when nothing is restored. */
+std::optional<reg32> restoreConnections(App* app, CPU& cpu, reg32 handed)
+{
+    if (at(app, kRestoring) == 0)
+        return handed;
+    for (;;)
+    {
+        const auto closing = below(cpu, 0x1c, [&] { return findInQueue(app, cpu, kClosingQueue, 0); });
+        if (!closing)
+            return std::nullopt;
+        if (closing->eax == 0)
             break;
-        }
-        cpu.eax = 0xffffffff;
+        if (!below(cpu, 0x1c, [&] { return closeConnection(app, cpu, closing->eax); }))
+            return std::nullopt;
     }
-    cpu.ebp = pop(app, cpu);
-    cpu.edx = pop(app, cpu);
-    cpu.ebx = pop(app, cpu);
-    cpu.esp += 4;
+    for (;;)
+    {
+        const auto found = below(cpu, 0x1c, [&] { return findInQueue(app, cpu, kConnectionsQueue, 0); });
+        if (!found)
+            return std::nullopt;
+        const reg32 connection = found->eax;
+        if (connection == 0)
+            return 0;
+        if (!below(cpu, 0x1c, [&] { return closeConnection(app, cpu, connection); }))
+            return std::nullopt;
+        const auto removed =
+            below(cpu, 0x1c, [&] { return removeFromQueue(app, cpu, kConnectionsQueue, connection, kConnectC); });
+        if (!removed)
+            return std::nullopt;
+        if (removed->eax != 0 && !below(cpu, 0x18, [&] {
+                return reportError(app, cpu, kConnectC, kRestoreName, kRestoreLine,
+                                   {kRestoreLine, removed->edx, 0, connection}, {kNotRemoved, connection});
+            }))
+            return std::nullopt;
+    }
 }
 
-/* 0x49f550: the player at eax forgotten among the 7 pending (0x7a02e8)
- * unless the current session's flag is set: each pending one the NET
- * object's check (netCheckPlayer) says it is, cleared. */
-void forgetPendingPlayer(win32::WinApplication* app, x86::CPU& cpu)
+/* 0x4f4f90, EA's NET_endgame: the NET object's game ended (its function
+ * +0x2c) -- 1 without it when the object is not among the players' queue's. */
+std::optional<reg32> endNetGame(App* app, CPU& cpu, reg32 net)
 {
-    push(app, cpu, cpu.ebx);
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.edx);
-    push(app, cpu, cpu.esi);
-    push(app, cpu, cpu.edi);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    cpu.esi = cpu.eax;
-    cpu.eax = at(app, kSessionId);
-    if (!direct(app, cpu, sessionIndex))
-        return;
-    sessionOffset(cpu, cpu.ecx);
-    if (at(app, cpu.eax * 4 + kSessionFlags) == 0)
+    if (!traceNet(app, cpu, kEndGameName))
+        return std::nullopt;
+    const auto position = below(cpu, 0xc, [&] { return queuePosition(app, cpu, kPlayersQueue, net); });
+    if (!position)
+        return std::nullopt;
+    if (position->eax == 0xffffffff)
+        return 1;
+    const reg32 functions = at(app, net + kNetFunctions);
+    const auto left = callWith(app, cpu, at(app, functions + kEndGameSlot), {net, functions, cpu.ebx, net});
+    if (!left)
+        return std::nullopt;
+    return left->eax;
+}
+
+/* 0x49ecb0: the connection dropped, if it is one and open: closed, its
+ * player (its +0x34) killed in the NET game, the machines' states changed
+ * and the links open one fewer.  eax as the code leaves it: what killing
+ * gave back, or the connection. */
+std::optional<reg32> dropConnection(App* app, CPU& cpu, reg32 connection)
+{
+    if (connection == 0 || at(app, connection + kConnectionOpen) == 0)
+        return connection;
+    if (!below(cpu, 0x10, [&] { return closeConnection(app, cpu, connection); }))
+        return std::nullopt;
+    const auto killed = callNet(app, cpu, kNet, kKillPlayerName, kKillPlayerSlot, connection + kConnectionPlayer);
+    if (!killed)
+        return std::nullopt;
+    const reg32 links = at(app, kLinksOpen);
+    putWord16(app, kStateChanged, 1);
+    put(app, kLinksOpen, links - 1);
+    return killed;
+}
+
+/* 0x49f550: the player `player` forgotten among the 7 pending (0x7a02e8)
+ * unless the current session's flag is set: each pending one cleared when
+ * the NET object's check says the player is its -- the player asked about,
+ * not the one pending, the game's code as it is.  eax as the code leaves
+ * it: 0 once a check was made, else the session's dword index. */
+std::optional<reg32> forgetPending(App* app, CPU& cpu, reg32 player)
+{
+    const reg32 session = findSession(app, at(app, kSessionId));
+    reg32 left = session * kSessionWords;
+    if (sessionFlag(app, session) != 0)
+        return left;
+    for (reg32 i = 0; i < kConnectionCount; ++i)
     {
-        for (cpu.ecx = 0; sreg32(cpu.ecx) < sreg32(kConnectionCount); ++cpu.ecx)
+        if (at(app, kPendingPlayers + i * 4) == 0)
+            continue;
+        const auto its = checkNetPlayer(app, cpu, kNet, player);
+        if (!its)
+            return std::nullopt;
+        left = 0;
+        if (*its != 0)
+            put(app, kPendingPlayers + i * 4, 0);
+    }
+    return left;
+}
+
+/* 0x49ecf0: machine `machine` gone: its pending player forgotten (its
+ * connection's +0x34); then, unless the game is ending and for machines 0
+ * to 7, under the ending's lock, a machine whose state was 0 marked gone and
+ * the others told: packet 0xe, the 8 machines' states after it, 0x12 bytes,
+ * sent to all.  cpu.esp where the call leaves it, and the registers the code
+ * pushes there `saved`: the packet lies under them, and the send's check
+ * reads 9 words of it.  Its second byte and the two after it are what the
+ * frame held. */
+std::optional<reg32> announceLeft(App* app, CPU& cpu, reg32 machine, const Saved& saved)
+{
+    pushRegisters(app, cpu.esp, {saved.ebx, saved.ecx, saved.edx, saved.esi, saved.edi, saved.ebp});
+    const Lowered frame(cpu, 6 * 4 + 0x14);
+    const reg32 packet = cpu.esp;
+    const auto forgotten = forgetPending(app, cpu, at(app, kMachines + machine * 4) + kConnectionPlayer);
+    if (!forgotten)
+        return std::nullopt;
+    if (at(app, kEnding) != 0 || sreg32(machine) > 7 || sreg32(machine) < 0)
+        return forgotten;
+    const reg32 lock = at(app, kEndingLock);
+    const auto entered = lockCall<kEnterCriticalSection, &win32::kernel32::EnterCriticalSection>(
+        app, cpu, lock, {*forgotten, saved.edx, machine, lock});
+    if (!entered)
+        return std::nullopt;
+    const reg32 state = kMachineStates + machine * 2;
+    if (word16(app, state) != 0)
+    {
+        const reg32 unlock = at(app, kEndingLock);
+        const auto left = lockCall<kLeaveCriticalSection, &win32::kernel32::LeaveCriticalSection>(
+            app, cpu, unlock, {machine * 2, entered->edx, machine, entered->ecx});
+        if (!left)
+            return std::nullopt;
+        return left->eax;
+    }
+    putWord16(app, state, kMachineGone);
+    const reg32 unlock = at(app, kEndingLock);
+    if (!lockCall<kLeaveCriticalSection, &win32::kernel32::LeaveCriticalSection>(
+            app, cpu, unlock, {machine * 2, entered->edx, unlock, entered->ecx}))
+        return std::nullopt;
+    putByte(app, packet, kMachineLeftPacket);
+    copyMemory(app, packet + 2, kMachineStates, kStatesBytes);
+    putWord16(app, kStateChanged, 1);
+    const auto sent = callWith(app, cpu, kSend, {0, packet, kMachineLeftBytes, 1});
+    if (!sent)
+        return std::nullopt;
+    return sent->eax;
+}
+
+/* 0x49eed0: the network game ended, if under way on a host's network: the
+ * host's open connections dropped; with the game ending and the session's
+ * flag, the NET game shut (1); with the flag, the NET game ended; the game
+ * no longer ending.  eax as the code leaves it, `handed` (eax as handed
+ * over) when the game is not under way or the network is the link. */
+std::optional<reg32> endNetwork(App* app, CPU& cpu, reg32 handed)
+{
+    reg32 left = handed;
+    if (at(app, kGameState) != kUnderWay)
+        return left;
+    if (at(app, kNetworkKind) != kLinked)
+    {
+        if (word16(app, kNetworkHost) != 0)
         {
-            cpu.edi = cpu.ecx * 4;
-            cpu.ebx = at(app, cpu.edi + kPendingPlayers);
-            if (cpu.ebx == 0)
-                continue;
-            cpu.eax = kNet;
-            cpu.edx = cpu.esi;
-            if (!direct(app, cpu, netCheckPlayer))
-                return;
-            if (cpu.eax != 0)
-            {
-                cpu.eax = 0;
-                put(app, cpu.edi + kPendingPlayers, cpu.eax);
-            }
+            for (reg32 i = 0; i < kConnectionCount; ++i)
+                if (at(app, connectionAt(i) + kConnectionOpen) != 0
+                    && !below(cpu, 0x10, [&] { return dropConnection(app, cpu, connectionAt(i)); }))
+                    return std::nullopt;
+            if (at(app, kEnding) != 0 && sessionFlag(app, findSession(app, at(app, kSessionId))) != 0
+                && !callNet(app, cpu, kNet, kShutGameName, kShutGameSlot, 1))
+                return std::nullopt;
+        }
+        const reg32 session = findSession(app, at(app, kSessionId));
+        left = session * kSessionWords;
+        if (sessionFlag(app, session) != 0)
+        {
+            const auto ended = below(cpu, 0x10, [&] { return endNetGame(app, cpu, kNet); });
+            if (!ended)
+                return std::nullopt;
+            left = *ended;
         }
     }
-    cpu.ebp = pop(app, cpu);
-    cpu.edi = pop(app, cpu);
-    cpu.esi = pop(app, cpu);
-    cpu.edx = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
-    cpu.ebx = pop(app, cpu);
-    cpu.esp += 4;
+    put(app, kEnding, 0);
+    return left;
 }
 
-/* 0x4a5d10: a packet sent over the two machines' link (the network's kind
- * 2): edx it, ebx its length, to machine eax -- its +0x34 byte the
- * address, 0xb0 -- or with eax 0 to all, 0xc0 and the broadcast's buffer;
- * the link's function at 0x7a21b8 called (cdecl, 7 words). */
-void sendOverLink(win32::WinApplication* app, x86::CPU& cpu)
+/* 0x4a5d10: a packet of `length` bytes at `packet` sent over the two
+ * machines' link: to machine `machine` -- its +0x34 byte the address, 0xb0
+ * -- or with 0 to all, 0xc0 and the broadcast's buffer; the link's function
+ * called (cdecl, 7 words).  cpu.esp where the call leaves it: the machine's
+ * address in the dword under the 3 registers the code pushes, handed on.
+ * eax and edx as the link left them, ebx the length or the link's port. */
+std::optional<Regs> sendLinked(App* app, CPU& cpu, reg32 machine, reg32 packet, reg32 length)
 {
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.esi);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    cpu.esp -= 4;
-    cpu.ecx = cpu.eax;
-    if (cpu.eax == 0)
+    const Lowered frame(cpu, 3 * 4 + 4);
+    const reg32 address = cpu.esp;
+    std::optional<Regs> sent;
+    if (machine == 0)
     {
-        push(app, cpu, cpu.ebx);
-        push(app, cpu, cpu.edx);
-        push(app, cpu, 1);
-        push(app, cpu, kLinkBroadcast);
-        push(app, cpu, 0xc0);
-        cpu.edx = at(app, kLinkPort);
-        push(app, cpu, cpu.edx);
-        cpu.ecx = at(app, kLinkId);
-        push(app, cpu, cpu.ecx);
+        const reg32 port = at(app, kLinkPort), id = at(app, kLinkId);
+        sent = callWith(app, cpu, at(app, kLinkSend), {0, port, length, id},
+                        {id, port, kLinkToAll, kLinkBroadcast, 1, packet, length});
     }
     else
     {
-        push(app, cpu, cpu.ebx);
-        cpu.eax = 0;
-        push(app, cpu, cpu.edx);
-        cpu.al = byte(app, cpu.ecx + 0x34);
-        push(app, cpu, 1);
-        put(app, cpu.ebp - 4, cpu.eax);
-        cpu.eax = cpu.ebp - 4;
-        push(app, cpu, cpu.eax);
-        push(app, cpu, 0xb0);
-        cpu.ebx = at(app, kLinkPort);
-        push(app, cpu, cpu.ebx);
-        cpu.esi = at(app, kLinkId);
-        push(app, cpu, cpu.esi);
+        put(app, address, byte(app, machine + kConnectionPlayer));
+        const reg32 port = at(app, kLinkPort), id = at(app, kLinkId);
+        sent = callWith(app, cpu, at(app, kLinkSend), {address, packet, port, machine},
+                        {id, port, kLinkToOne, address, 1, packet, length});
     }
-    if (!byAddress(app, cpu, at(app, kLinkSend)))
-        return;
-    cpu.esp += 0x1c;
-    cpu.esp = cpu.ebp;
-    cpu.ebp = pop(app, cpu);
-    cpu.esi = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
-    cpu.esp += 4;
+    if (!sent)
+        return std::nullopt;
+    return Regs{sent->eax, sent->edx, sent->ebx, cpu.ecx};
 }
 
-/* 0x4a60e0: a packet sent -- edx it, ebx its length -- to the connection eax,
- * or with eax 0 to all; nothing once the connection is lost.  Over the link
- * (the network's kind 2) by sendOverLink.  A client's (or anyone's to all
- * on a network of kind 0) goes to its host's connection (0x7a22e8): sent,
+/* The connection counts as lost: edx 1 as the code leaves it. */
+Regs connectionLost(App* app, Regs left)
+{
+    putWord16(app, kConnectionLostToo, 1);
+    putWord16(app, kConnectionLost, 1);
+    left.edx = 1;
+    return left;
+}
+
+}  // namespace
+
+/* 0x4a60e0: a packet of `length` bytes at `packet` sent to the connection
+ * `connection`, or with 0 to all; nothing once the connection is lost.  Over
+ * the link (the network's kind 2) by sendLinked.  A client's (or anyone's
+ * to all on a network of kind 0) goes to its host's connection: sent,
  * [0x7a2290] is 0; not sent, the input's packet (6) on a host's network
  * leaves [0x7a2290] 1, anything else is tried 9 times more, a sleep before
  * each, and then the connection counts as lost.  A host's to one machine is
  * tried as long as its connection is up, to all to each of the 7 up; a
  * machine still not reached is announced gone while the game is under way
- * (announceMachineLeft, by its number), and otherwise the connection counts
- * as lost. */
-void sendPacket(win32::WinApplication* app, x86::CPU& cpu)
+ * (by its number, 0x4a6650), and otherwise the connection counts as lost.
+ * cpu.esp where the call leaves it: connSend, sendOverLink and
+ * announceMachineLeft are called under the 4 registers it pushes and its
+ * 0xc bytes of frame, where their frames' addresses are as the code has
+ * them.  eax, edx and ebx as the code leaves them. */
+std::optional<Regs> sendPacketTo(App* app, CPU& cpu, reg32 connection, reg32 packet, reg32 length)
 {
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.esi);
-    push(app, cpu, cpu.edi);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    cpu.esp -= 0xc;
-    const auto leave = [&] {
-        cpu.esp = cpu.ebp;
-        cpu.ebp = pop(app, cpu);
-        cpu.edi = pop(app, cpu);
-        cpu.esi = pop(app, cpu);
-        cpu.ecx = pop(app, cpu);
-        cpu.esp += 4;
-    };
-    // The connection counts as lost.
-    const auto lost = [&] {
-        cpu.edx = 1;
-        putWord16(app, kConnectionLostToo, cpu.dx);
-        putWord16(app, kConnectionLost, cpu.dx);
-        leave();
-    };
-    cpu.edi = cpu.eax;
-    cpu.ecx = cpu.edx;
-    cpu.esi = cpu.ebx;
+    const reg32 frameBase = cpu.esp - 4 * 4;  // ebp, as the code has it and announceMachineLeft pushes it
+    const Lowered frame(cpu, 4 * 4 + 0xc + 4);
+    Regs left{connection, packet, length, 0};
     if (word16(app, kConnectionLost) != 0)
-        return leave();
-    cpu.edx = at(app, kNetworkKind);
-    if (cpu.edx == 2)
+        return left;
+    const reg32 kind = at(app, kNetworkKind);
+    if (kind == kLinked)
+        return sendLinked(app, cpu, connection, packet, length);
+    // The sleep before try `tries` + 1.
+    const auto sleep = [&](reg32 tries) {
+        return guest::direct<0x4df8e0, ea::sleepFor>(app, cpu, retryWait(tries)).has_value();
+    };
+    // The machine of the connection handed (eax) announced gone; `counter`
+    // the code's edi, which announceMachineLeft pushes.
+    const auto announce = [&](Regs handed, reg32 counter) -> std::optional<Regs> {
+        const auto number = callWith(app, cpu, kMachineNumber, handed);
+        if (!number)
+            return std::nullopt;
+        const reg32 machine = reg32(sreg32(x86::sreg16(reg16(number->eax))));
+        const Saved pushed{number->ebx, packet, number->edx, length, counter, frameBase};
+        const auto told = announceLeft(app, cpu, machine, pushed);
+        if (!told)
+            return std::nullopt;
+        return Regs{*told, number->edx, number->ebx, packet};
+    };
+    if (word16(app, kNetworkHost) == 0 || kind == 0)
     {
-        cpu.edx = cpu.ecx;
-        if (!direct(app, cpu, sendOverLink))
-            return;
-        return leave();
-    }
-    if (word16(app, kNetworkHost) == 0 || cpu.edx == 0)
-    {
+        left.edx = kind;
         if (at(app, kConnections + kConnectionUp) == 0)
-            return leave();
-        cpu.eax = kConnections;
-        cpu.ebx = cpu.esi;
-        cpu.edx = cpu.ecx;
-        if (!direct(app, cpu, connSend))
-            return;
-        if (cpu.eax != 0)
+            return left;
+        auto sent = sendOnConnection(app, cpu, kConnections, packet, length);
+        if (!sent)
+            return std::nullopt;
+        if (sent->eax != 0)
         {
-            cpu.edi = 0;
-            put(app, kInputNotSent, cpu.edi);
-            return leave();
+            put(app, kInputNotSent, 0);
+            return sent;
         }
-        cpu.ah = byte(app, cpu.ecx);
-        if (cpu.ah == kInputPacket)
+        left = *sent;
+        left.eax = reg32(byte(app, packet)) << 8;
+        if (byte(app, packet) == kInputPacket)
         {
-            cpu.eax = at(app, kNetworkKind);
-            if (cpu.eax == 1)
+            left.eax = at(app, kNetworkKind);
+            if (left.eax == kHostNetwork)
             {
-                put(app, kInputNotSent, cpu.eax);
-                return leave();
+                put(app, kInputNotSent, left.eax);
+                return left;
             }
         }
-        for (cpu.edi = 0; at(app, kConnections + kConnectionUp) != 0 && word16(app, kConnectionLost) == 0;)
+        for (reg32 tries = 0; at(app, kConnections + kConnectionUp) != 0 && word16(app, kConnectionLost) == 0;)
         {
-            retryWait(cpu, cpu.edi);
-            cpu.ebx = cpu.esi;
-            cpu.eax += 0xa;
-            cpu.edx = cpu.ecx;
-            if (!byAddress(app, cpu, kSleep))
-                return;
-            cpu.eax = kConnections;
-            if (!direct(app, cpu, connSend))
-                return;
-            if (cpu.eax != 0)
+            if (!sleep(tries))
+                return std::nullopt;
+            sent = sendOnConnection(app, cpu, kConnections, packet, length);
+            if (!sent)
+                return std::nullopt;
+            left = *sent;
+            if (sent->eax != 0)
             {
-                cpu.esi = 0;
-                put(app, kInputNotSent, cpu.esi);
-                return leave();
+                put(app, kInputNotSent, 0);
+                return left;
             }
-            ++cpu.edi;
-            if (sreg32(cpu.edi) >= 9)
+            if (sreg32(++tries) >= sreg32(kTries))
                 break;
         }
-        return lost();
+        return connectionLost(app, left);
     }
-    if (cpu.eax != 0)
+    if (connection != 0)
     {
-        if (at(app, cpu.eax + kConnectionUp) == 0)
-            return leave();
-        cpu.ebx = cpu.esi;
-        cpu.edx = cpu.ecx;
-        cpu.eax = cpu.edi;
-        if (!direct(app, cpu, connSend))
-            return;
-        if (cpu.eax != 0)
-            return leave();
-        put(app, cpu.ebp - 8, cpu.eax);
-        while (at(app, cpu.edi + kConnectionUp) != 0 && word16(app, kConnectionLost) == 0)
+        left.edx = kind;
+        if (at(app, connection + kConnectionUp) == 0)
+            return left;
+        auto sent = sendOnConnection(app, cpu, connection, packet, length);
+        if (!sent)
+            return std::nullopt;
+        left = *sent;
+        if (sent->eax != 0)
+            return left;
+        for (reg32 tries = 0; at(app, connection + kConnectionUp) != 0 && word16(app, kConnectionLost) == 0;)
         {
-            cpu.edx = at(app, cpu.ebp - 8);
-            retryWait(cpu, cpu.edx);
-            cpu.ebx = cpu.esi;
-            cpu.eax += 0xa;
-            cpu.edx = cpu.ecx;
-            if (!byAddress(app, cpu, kSleep))
-                return;
-            cpu.eax = cpu.edi;
-            if (!direct(app, cpu, connSend))
-                return;
-            if (cpu.eax != 0)
-                return leave();
-            put(app, cpu.ebp - 8, at(app, cpu.ebp - 8) + 1);
-            if (sreg32(at(app, cpu.ebp - 8)) >= 9)
+            if (!sleep(tries))
+                return std::nullopt;
+            sent = sendOnConnection(app, cpu, connection, packet, length);
+            if (!sent)
+                return std::nullopt;
+            left = *sent;
+            if (sent->eax != 0)
+                return left;
+            if (sreg32(++tries) >= sreg32(kTries))
                 break;
         }
-        if (at(app, kGameState) != 3)
-            return lost();
-        cpu.eax = cpu.edi;
-        if (!byAddress(app, cpu, kMachineNumber))
-            return;
-        cpu.eax = reg32(sreg32(x86::sreg16(cpu.ax)));
-        if (!direct(app, cpu, announceMachineLeft))
-            return;
-        return leave();
+        if (at(app, kGameState) != kUnderWay)
+            return connectionLost(app, left);
+        return announce({connection, left.edx, left.ebx, packet}, connection);
     }
-    // To all: each connection up, di its index.
-    cpu.edi ^= cpu.eax;
-    for (;;)
+    // To all: each of the 7 up.  The code's flag at its frame's -0xc, which
+    // says not to announce or lose, is set 0 and never changed.
+    for (reg32 index = 0;;)
     {
-        connectionOffset(cpu, reg32(sreg32(x86::sreg16(cpu.di))));
-        if (at(app, cpu.eax + kConnections + kConnectionUp) != 0)
+        const reg32 to = connectionAt(index);
+        left.eax = index * kConnectionBytes;
+        left.edx = index * 12;
+        if (at(app, to + kConnectionUp) != 0)
         {
-            cpu.eax += kConnections;
-            cpu.ebx = cpu.esi;
-            cpu.edx = cpu.ecx;
-            if (!direct(app, cpu, connSend))
-                return;
-            if (cpu.eax == 0)
+            auto sent = sendOnConnection(app, cpu, to, packet, length);
+            if (!sent)
+                return std::nullopt;
+            left = *sent;
+            if (sent->eax == 0)
             {
-                put(app, cpu.ebp - 0xc, cpu.eax);
-                put(app, cpu.ebp - 4, cpu.eax);
-                bool sent = false;
-                for (;;)
+                bool reached = false;
+                for (reg32 tries = 0;;)
                 {
-                    cpu.edx = reg32(sreg32(x86::sreg16(cpu.di)));
-                    cpu.eax = cpu.edx * 4;
-                    cpu.eax -= cpu.edx;
-                    cpu.eax <<= 2;
-                    cpu.ebx = cpu.eax * 8;
-                    cpu.ebx += cpu.eax;
-                    if (at(app, cpu.ebx + kConnections + kConnectionUp) == 0 || word16(app, kConnectionLost) != 0)
+                    left = {index * 12, index, index * kConnectionBytes, packet};
+                    if (at(app, to + kConnectionUp) == 0 || word16(app, kConnectionLost) != 0)
                         break;
-                    cpu.edx = at(app, cpu.ebp - 4);
-                    retryWait(cpu, cpu.edx);
-                    cpu.eax += 0xa;
-                    if (!byAddress(app, cpu, kSleep))
-                        return;
-                    cpu.eax = kConnections;
-                    cpu.edx = cpu.ecx;
-                    cpu.eax += cpu.ebx;
-                    cpu.ebx = cpu.esi;
-                    if (!direct(app, cpu, connSend))
-                        return;
-                    sent = cpu.eax != 0;
-                    if (sent)
-                        break;
-                    put(app, cpu.ebp - 4, at(app, cpu.ebp - 4) + 1);
-                    if (sreg32(at(app, cpu.ebp - 4)) >= 9)
+                    if (!sleep(tries))
+                        return std::nullopt;
+                    sent = sendOnConnection(app, cpu, to, packet, length);
+                    if (!sent)
+                        return std::nullopt;
+                    left = *sent;
+                    reached = sent->eax != 0;
+                    if (reached || sreg32(++tries) >= sreg32(kTries))
                         break;
                 }
-                if (!sent && at(app, cpu.ebp - 0xc) == 0)
+                if (!reached)
                 {
-                    if (at(app, kGameState) == 3)
+                    if (at(app, kGameState) == kUnderWay)
                     {
-                        connectionOffset(cpu, reg32(sreg32(x86::sreg16(cpu.di))));
-                        cpu.eax += kConnections;
-                        if (!byAddress(app, cpu, kMachineNumber))
-                            return;
-                        cpu.eax = reg32(sreg32(x86::sreg16(cpu.ax)));
-                        if (!direct(app, cpu, announceMachineLeft))
-                            return;
+                        const auto told = announce({to, index * 12, left.ebx, packet}, index);
+                        if (!told)
+                            return std::nullopt;
+                        left = *told;
                     }
                     else
                     {
-                        cpu.edx = 1;
-                        putWord16(app, kConnectionLostToo, cpu.dx);
-                        putWord16(app, kConnectionLost, cpu.dx);
+                        left = connectionLost(app, left);
                     }
                 }
             }
         }
-        ++cpu.edi;
-        if (x86::sreg16(cpu.di) >= 7)
-            return leave();
+        if (x86::sreg16(reg16(++index)) >= 7)
+            return left;
     }
-}
-
-/* 0x4a6390: the network's state made anew: set up, the state's block (0x26
- * bytes), the players' and the machines' states (0x10 bytes each) zeroed,
- * this machine the host, the connection not lost, no game under way; with
- * eax nonzero, the second lost flag cleared too.  edx left 0. */
-void resetNetwork(win32::WinApplication* app, x86::CPU& cpu)
-{
-    push(app, cpu, cpu.ebx);
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.edx);
-    push(app, cpu, cpu.esi);
-    push(app, cpu, cpu.edi);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    cpu.ecx = cpu.eax;
-    cpu.edx = 1;
-    cpu.eax = kStateBlock;
-    putWord16(app, kSetUp, cpu.dx);
-    cpu.edx = 0x26;
-    if (!byAddress(app, cpu, kFillZero))
-        return;
-    cpu.edx = 0x10;
-    cpu.eax = kPlayerStates;
-    cpu.ebx = 1;
-    if (!byAddress(app, cpu, kFillZero))
-        return;
-    cpu.edx = 0x10;
-    cpu.eax = kMachineStates;
-    cpu.esi = 0;
-    if (!byAddress(app, cpu, kFillZero))
-        return;
-    putWord16(app, kNetworkHost, cpu.bx);
-    cpu.edx = 0;
-    putWord16(app, kConnectionLost, cpu.si);
-    put(app, kGameState, cpu.edx);
-    if (cpu.ecx != 0)
-    {
-        cpu.edi = 0;
-        putWord16(app, kConnectionLostToo, cpu.di);
-    }
-    cpu.ebp = pop(app, cpu);
-    cpu.edi = pop(app, cpu);
-    cpu.esi = pop(app, cpu);
-    cpu.edx = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
-    cpu.ebx = pop(app, cpu);
-    cpu.esp += 4;
-}
-
-/* 0x4a65e0: the network closed: the game's timers stopped; a host tells the
- * others (packet 4, 4 bytes); the connections restored
- * (connRestore); the timers stopped again; the network game ended
- * (endNetworkGame), the race's messages closed, the network's locks freed
- * (0x49a4d0); the network's state made anew (resetNetwork, 0), and only
- * this machine's player queued no longer (0x6fd50c, resetNetwork's edx).
- * The packet: 4, the byte the frame held there (never written, a game bug
- * kept), the word 0xc. */
-void closeNetwork(win32::WinApplication* app, x86::CPU& cpu)
-{
-    push(app, cpu, cpu.ebx);
-    push(app, cpu, cpu.edx);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    cpu.esp -= 4;
-    cpu.eax = 0;
-    if (!byAddress(app, cpu, kTimers))
-        return;
-    if (word16(app, kNetworkHost) != 0)
-    {
-        cpu.ah = kClosedPacket;
-        cpu.ebx = 0xc;
-        cpu.edx = cpu.ebp - 4;
-        putByte(app, cpu.ebp - 4, cpu.ah);
-        putWord16(app, cpu.ebp - 2, cpu.bx);
-        cpu.ebx = 4;
-        cpu.eax = 0;
-        if (!byAddress(app, cpu, kSend))
-            return;
-    }
-    if (!direct(app, cpu, connRestore))
-        return;
-    cpu.eax = 0;
-    if (!byAddress(app, cpu, kTimers))
-        return;
-    if (!direct(app, cpu, endNetworkGame))
-        return;
-    if (!byAddress(app, cpu, kCloseMessages))
-        return;
-    if (!byAddress(app, cpu, kFreeNetworkLocks))
-        return;
-    cpu.eax = 0;
-    cpu.edx = 0;
-    if (!direct(app, cpu, resetNetwork))
-        return;
-    put(app, kOwnOnly, cpu.edx);
-    cpu.esp = cpu.ebp;
-    cpu.ebp = pop(app, cpu);
-    cpu.edx = pop(app, cpu);
-    cpu.ebx = pop(app, cpu);
-    cpu.esp += 4;
-}
-
-/* 0x4a6650: the number of the machine whose connection is eax -- 1 up to
- * the machines' count (0x7a2274's high word) -- or -1; -1 for eax 0. */
-void machineNumber(win32::WinApplication* app, x86::CPU& cpu)
-{
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.edx);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    cpu.edx = cpu.eax;
-    cpu.eax = 0xffffffff;
-    if (cpu.edx != 0)
-    {
-        for (cpu.eax = 1;; ++cpu.eax)
-        {
-            cpu.ecx = reg32(sreg32(at(app, kMachineCount)) >> 16);
-            if (sreg32(cpu.eax) >= sreg32(cpu.ecx))
-            {
-                cpu.eax = 0xffffffff;
-                break;
-            }
-            if (cpu.edx == at(app, cpu.eax * 4 + kMachines))
-                break;
-        }
-    }
-    cpu.ebp = pop(app, cpu);
-    cpu.edx = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
-    cpu.esp += 4;
-}
-
-/* 0x4a6690: the machine whose player is ax, of the 8 (0x7a227a), or -1. */
-void playerMachine(win32::WinApplication* app, x86::CPU& cpu)
-{
-    push(app, cpu, cpu.edx);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    cpu.edx = cpu.eax;
-    cpu.eax = 0;
-    while (cpu.dx != word16(app, cpu.eax * 2 + kMachinePlayers))
-    {
-        ++cpu.eax;
-        if (sreg32(cpu.eax) >= 8)
-        {
-            cpu.eax = 0xffffffff;
-            break;
-        }
-    }
-    cpu.ebp = pop(app, cpu);
-    cpu.edx = pop(app, cpu);
-    cpu.esp += 4;
-}
-
-/* 0x4f4c50: NET's trace of the call named eax, when [0x566de0] is 1 or
- * more: the network's message (0x512180) with 0, 0 on the stack. */
-void netTrace(win32::WinApplication* app, x86::CPU& cpu)
-{
-    if (sreg32(at(app, kTraceLevel)) < 1)
-    {
-        cpu.esp += 4;
-        return;
-    }
-    push(app, cpu, cpu.edx);
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.ebx);
-    push(app, cpu, 0);
-    cpu.ecx = 0;
-    push(app, cpu, 0);
-    cpu.ebx = 0;
-    cpu.edx = 0;
-    if (!byAddress(app, cpu, kNetMessage))
-        return;
-    cpu.ebx = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
-    cpu.edx = pop(app, cpu);
-    cpu.esp += 4;
 }
 
 namespace
 {
 
-/* The NET object eax's function at `slot` of its functions (+4), traced as
- * `name` first: push ebx; push ecx; ... pop ecx; pop ebx; ret. */
-void netCall(win32::WinApplication* app, x86::CPU& cpu, reg32 name, reg32 slot)
+/* 0x4a6390: the network's state made anew: set up, the state's block, the
+ * players' and the machines' states cleared (0x4e070c), this machine the
+ * host, the connection not lost, no game under way; with `alsoLostToo`, the
+ * second lost flag cleared too.  eax as the last clearing left it. */
+std::optional<reg32> resetNetworkState(App* app, CPU& cpu, reg32 alsoLostToo)
 {
-    push(app, cpu, cpu.ebx);
-    push(app, cpu, cpu.ecx);
-    cpu.ecx = cpu.eax;
-    cpu.eax = name;
-    if (!direct(app, cpu, netTrace))
-        return;
-    cpu.ebx = at(app, cpu.ecx + 4);
-    cpu.eax = cpu.ecx;
-    if (!byAddress(app, cpu, at(app, cpu.ebx + slot)))
-        return;
-    cpu.ecx = pop(app, cpu);
-    cpu.ebx = pop(app, cpu);
-    cpu.esp += 4;
+    putWord16(app, kSetUp, 1);
+    if (!callWith(app, cpu, kFillZero, {kStateBlock, kStateBlockBytes, cpu.ebx, alsoLostToo})
+        || !callWith(app, cpu, kFillZero, {kPlayerStates, kStatesBytes, 1, alsoLostToo}))
+        return std::nullopt;
+    const auto cleared = callWith(app, cpu, kFillZero, {kMachineStates, kStatesBytes, 1, alsoLostToo});
+    if (!cleared)
+        return std::nullopt;
+    putWord16(app, kNetworkHost, 1);
+    putWord16(app, kConnectionLost, 0);
+    put(app, kGameState, 0);
+    if (alsoLostToo != 0)
+        putWord16(app, kConnectionLostToo, 0);
+    return cleared->eax;
+}
+
+/* 0x4a65e0: the network closed: the game's timers stopped; a host tells the
+ * others (packet 4, 4 bytes); the connections restored; the timers stopped
+ * again; the network game ended, the race's messages closed, the network's
+ * locks freed (0x49a4d0); the network's state made anew, and only this
+ * machine's player queued no longer (0x6fd50c, the 0 resetNetwork keeps in
+ * edx).  The packet: 4, the byte the frame held there (never written, a
+ * game bug kept), the word 0xc.  cpu.esp where the call leaves it: the
+ * packet under the 3 registers the code pushes (written: the send's check
+ * reads 9 words of it).  eax, and ecx as the callees left it. */
+std::optional<Regs> closeNetworkAt(App* app, CPU& cpu)
+{
+    pushRegisters(app, cpu.esp, {cpu.ebx, cpu.edx, cpu.ebp});
+    const Lowered frame(cpu, 3 * 4 + 4);
+    const reg32 packet = cpu.esp;
+    const auto stopped = callWith(app, cpu, kTimers, {0, cpu.edx, cpu.ebx, cpu.ecx});
+    if (!stopped)
+        return std::nullopt;
+    reg32 left = stopped->eax;
+    if (word16(app, kNetworkHost) != 0)
+    {
+        putByte(app, packet, kClosedPacket);
+        putWord16(app, packet + 2, kClosedWord);
+        const auto sent = callWith(app, cpu, kSend, {0, packet, kClosedBytes, cpu.ecx});
+        if (!sent)
+            return std::nullopt;
+        left = sent->eax;
+    }
+    const auto restored = below(cpu, 4, [&] { return restoreConnections(app, cpu, left); });
+    if (!restored)
+        return std::nullopt;
+    const auto again = callWith(app, cpu, kTimers, {0, cpu.edx, cpu.ebx, cpu.ecx});
+    if (!again)
+        return std::nullopt;
+    const auto ended = below(cpu, 4, [&] { return endNetwork(app, cpu, again->eax); });
+    if (!ended)
+        return std::nullopt;
+    // By address: the four registers it leaves are handed on, which native_raceload.h's
+    // closeAllMessages does not give back.
+    const auto closed = callWith(app, cpu, kCloseMessages, {*ended, cpu.edx, cpu.ebx, cpu.ecx});
+    if (!closed)
+        return std::nullopt;
+    const auto freed = callWith(app, cpu, kFreeNetworkLocks, *closed);
+    if (!freed)
+        return std::nullopt;
+    const auto reset = resetNetworkState(app, cpu, 0);
+    if (!reset)
+        return std::nullopt;
+    gameSettings(app).networkGame = 0;
+    return Regs{*reset, cpu.edx, cpu.ebx, freed->ecx};
 }
 
 }  // namespace
 
-/* 0x4f4f50, EA's NET_shutgame: the NET object eax's game shut, edx how
- * (its function +0x24). */
-void netShutGame(win32::WinApplication* app, x86::CPU& cpu)
+/* 0x49ecb0: dropConnection of eax. */
+void dropMachine(App* app, CPU& cpu)
 {
-    netCall(app, cpu, kShutGameName, 0x24);
+    if (const auto dropped = dropConnection(app, cpu, cpu.eax))
+        answer(cpu, *dropped);
 }
 
-/* 0x4f4f90, EA's NET_endgame: the NET object eax's game ended (its function
- * +0x2c) -- 1 without it when the object is not among the players' queue's
- * (0x9f25f0). */
-void netEndGame(win32::WinApplication* app, x86::CPU& cpu)
+/* 0x49ecf0: announceLeft of machine eax. */
+void announceMachineLeft(App* app, CPU& cpu)
 {
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.edx);
-    cpu.ecx = cpu.eax;
-    cpu.eax = kEndGameName;
-    if (!direct(app, cpu, netTrace))
-        return;
-    cpu.edx = cpu.ecx;
-    cpu.eax = kPlayersQueue;
-    if (!direct(app, cpu, qposition))
-        return;
-    if (cpu.eax == 0xffffffff)
-        cpu.eax = 1;
-    else
+    const Saved saved{cpu.ebx, cpu.ecx, cpu.edx, cpu.esi, cpu.edi, cpu.ebp};
+    if (const auto told = announceLeft(app, cpu, cpu.eax, saved))
+        answer(cpu, *told);
+}
+
+/* 0x49eed0: endNetwork. */
+void endNetworkGame(App* app, CPU& cpu)
+{
+    if (const auto ended = endNetwork(app, cpu, cpu.eax))
+        answer(cpu, *ended);
+}
+
+/* 0x49f1c0: findSession of id eax. */
+void sessionIndex(App* app, CPU& cpu)
+{
+    answer(cpu, findSession(app, cpu.eax));
+}
+
+/* 0x49f550: forgetPending of the player eax. */
+void forgetPendingPlayer(App* app, CPU& cpu)
+{
+    if (const auto forgotten = forgetPending(app, cpu, cpu.eax))
+        answer(cpu, *forgotten);
+}
+
+/* 0x4a5d10: sendLinked to machine eax of edx, ebx long; edx and ebx as it
+ * leaves them. */
+void sendOverLink(App* app, CPU& cpu)
+{
+    if (const auto sent = sendLinked(app, cpu, cpu.eax, cpu.edx, cpu.ebx))
     {
-        cpu.edx = at(app, cpu.ecx + 4);
-        cpu.eax = cpu.ecx;
-        if (!byAddress(app, cpu, at(app, cpu.edx + 0x2c)))
-            return;
+        cpu.edx = sent->edx;
+        cpu.ebx = sent->ebx;
+        answer(cpu, sent->eax);
     }
-    cpu.edx = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
-    cpu.esp += 4;
+}
+
+/* 0x4a60e0: sendPacketTo the connection eax of edx, ebx long; edx and ebx
+ * as it leaves them. */
+void sendPacket(App* app, CPU& cpu)
+{
+    if (const auto sent = sendPacketTo(app, cpu, cpu.eax, cpu.edx, cpu.ebx))
+    {
+        cpu.edx = sent->edx;
+        cpu.ebx = sent->ebx;
+        answer(cpu, sent->eax);
+    }
+}
+
+/* 0x4a6390: resetNetworkState, the second lost flag too for eax nonzero. */
+void resetNetwork(App* app, CPU& cpu)
+{
+    if (const auto reset = resetNetworkState(app, cpu, cpu.eax))
+        answer(cpu, *reset);
+}
+
+/* 0x4a65e0: closeNetworkAt; ecx as it leaves it. */
+void closeNetwork(App* app, CPU& cpu)
+{
+    if (const auto closed = closeNetworkAt(app, cpu))
+    {
+        cpu.ecx = closed->ecx;
+        answer(cpu, closed->eax);
+    }
+}
+
+/* 0x4a6650: machineOf the connection eax. */
+void machineNumber(App* app, CPU& cpu)
+{
+    answer(cpu, machineOf(app, cpu.eax));
+}
+
+/* 0x4a6690: machineOfPlayer of ax. */
+void playerMachine(App* app, CPU& cpu)
+{
+    answer(cpu, machineOfPlayer(app, cpu.ax));
+}
+
+/* 0x4f4c50: traceNet of the name eax. */
+void netTrace(App* app, CPU& cpu)
+{
+    if (const auto traced = traceNet(app, cpu, cpu.eax))
+        answer(cpu, *traced);
+}
+
+/* 0x4f4f50, EA's NET_shutgame: the NET object eax's game shut, edx how
+ * (its function +0x24). */
+void netShutGame(App* app, CPU& cpu)
+{
+    if (const auto shut = callNet(app, cpu, cpu.eax, kShutGameName, kShutGameSlot, cpu.edx))
+        answer(cpu, *shut);
+}
+
+/* 0x4f4f90: endNetGame of the NET object eax. */
+void netEndGame(App* app, CPU& cpu)
+{
+    if (const auto ended = endNetGame(app, cpu, cpu.eax))
+        answer(cpu, *ended);
 }
 
 /* 0x4f4ff0, EA's NET_killplayer: the player edx killed in the NET object
  * eax's game (its function +0x34). */
-void netKillPlayer(win32::WinApplication* app, x86::CPU& cpu)
+void netKillPlayer(App* app, CPU& cpu)
 {
-    netCall(app, cpu, kKillPlayerName, 0x34);
+    if (const auto killed = callNet(app, cpu, cpu.eax, kKillPlayerName, kKillPlayerSlot, cpu.edx))
+        answer(cpu, *killed);
 }
 
-/* 0x4f5040: whether the player edx is the NET object eax's: its check's
- * function (+8, its +0x40) asked with the object's game (+0xc).  No trace. */
-void netCheckPlayer(win32::WinApplication* app, x86::CPU& cpu)
+/* 0x4f5040: checkNetPlayer of the NET object eax, the player edx. */
+void netCheckPlayer(App* app, CPU& cpu)
 {
-    push(app, cpu, cpu.ecx);
-    cpu.ecx = at(app, cpu.eax + 8);
-    cpu.eax = at(app, cpu.eax + 0xc);
-    if (!byAddress(app, cpu, at(app, cpu.ecx + 0x40)))
-        return;
-    cpu.ecx = pop(app, cpu);
-    cpu.esp += 4;
+    if (const auto its = checkNetPlayer(app, cpu, cpu.eax, cpu.edx))
+        answer(cpu, *its);
 }
 
-/* 0x4f5280, EA's CONN_restore: when connections are restored
- * ([0x566df4]), each closing connection (0x9f2628) closed (connClose) as
- * long as there is a first, then each connection (0x9f260c): closed and, if
- * its close left it in the list, removed -- an Error when it was there to
- * remove ("NOT REMOVED FROM LIST BY CLOSE"). */
-void connRestore(win32::WinApplication* app, x86::CPU& cpu)
+/* 0x4f5280: restoreConnections. */
+void connRestore(App* app, CPU& cpu)
 {
-    push(app, cpu, cpu.ebx);
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.edx);
-    push(app, cpu, cpu.esi);
-    push(app, cpu, cpu.edi);
-    push(app, cpu, cpu.ebp);
-    const auto leave = [&] {
-        cpu.ebp = pop(app, cpu);
-        cpu.edi = pop(app, cpu);
-        cpu.esi = pop(app, cpu);
-        cpu.edx = pop(app, cpu);
-        cpu.ecx = pop(app, cpu);
-        cpu.ebx = pop(app, cpu);
-        cpu.esp += 4;
-    };
-    if (at(app, kRestoring) == 0)
-        return leave();
-    cpu.ebx = kClosingQueue;
-    cpu.ecx = 0;
-    for (;;)
+    if (const auto restored = restoreConnections(app, cpu, cpu.eax))
+        answer(cpu, *restored);
+}
+
+/* 0x4f5310: sendOnConnection eax of edx, ebx long; edx and ebx as it leaves
+ * them. */
+void connSend(App* app, CPU& cpu)
+{
+    if (const auto sent = sendOnConnection(app, cpu, cpu.eax, cpu.edx, cpu.ebx))
     {
-        cpu.edx = cpu.ecx;
-        cpu.eax = cpu.ebx;
-        if (!direct(app, cpu, qfindindex))
-            return;
-        if (cpu.eax == 0)
+        cpu.edx = sent->edx;
+        cpu.ebx = sent->ebx;
+        answer(cpu, sent->eax);
+    }
+}
+
+/* 0x4f5330: closeConnection of eax. */
+void connClose(App* app, CPU& cpu)
+{
+    if (const auto closed = closeConnection(app, cpu, cpu.eax))
+        answer(cpu, *closed);
+}
+
+/* 0x50dc00: nth of eax, edx; edx as it leaves it. */
+void qnth(App* app, CPU& cpu)
+{
+    const Nth n = nth(app, cpu.eax, cpu.edx);
+    cpu.edx = n.left;
+    answer(cpu, n.element);
+}
+
+/* 0x50dc20: unlink the element edx from the queue eax. */
+void qunlink(App* app, CPU& cpu)
+{
+    answer(cpu, unlink(app, cpu.eax, cpu.edx));
+}
+
+/* 0x50dde0: freeQueueLock of the queue eax. */
+void qfree(App* app, CPU& cpu)
+{
+    if (const auto freed = freeQueueLock(app, cpu, cpu.eax))
+        answer(cpu, *freed);
+}
+
+/* 0x50e150: removeFromQueue of the element edx from the queue eax; edx as
+ * it leaves it. */
+void qremove(App* app, CPU& cpu)
+{
+    if (const auto removed = removeFromQueue(app, cpu, cpu.eax, cpu.edx, cpu.edi))
+    {
+        cpu.edx = removed->edx;
+        answer(cpu, removed->eax);
+    }
+}
+
+/* 0x50e1d0: queueLength of the queue eax. */
+void qlength(App* app, CPU& cpu)
+{
+    if (const auto length = queueLength(app, cpu, cpu.eax))
+        answer(cpu, *length);
+}
+
+/* 0x50e220: queuePosition of the element edx in the queue eax; edx as it
+ * leaves it. */
+void qposition(App* app, CPU& cpu)
+{
+    if (const auto position = queuePosition(app, cpu, cpu.eax, cpu.edx))
+    {
+        cpu.edx = position->edx;
+        answer(cpu, position->eax);
+    }
+}
+
+/* 0x50e470: findInQueue of element edx of the queue eax; edx as it leaves
+ * it. */
+void qfindindex(App* app, CPU& cpu)
+{
+    if (const auto found = findInQueue(app, cpu, cpu.eax, cpu.edx))
+    {
+        cpu.edx = found->edx;
+        answer(cpu, found->eax);
+    }
+}
+
+/* 0x5123b0: gatherAndSend of the edx pieces at ebx on the connection eax;
+ * edx and ebx as it leaves them. */
+void layerSend(App* app, CPU& cpu)
+{
+    if (const auto sent = gatherAndSend(app, cpu, cpu.eax, cpu.edx, cpu.ebx))
+    {
+        cpu.edx = sent->edx;
+        cpu.ebx = sent->ebx;
+        answer(cpu, sent->eax);
+    }
+}
+
+/* 0x512530: callPacker of the ebx pieces at ecx on the connection eax to
+ * layer edx of the queue on the stack, taken off (stdcall); edx, ebx and ecx
+ * as it leaves them. */
+void layerCallPacker(App* app, CPU& cpu)
+{
+    if (const auto packed = callPacker(app, cpu, cpu.eax, cpu.edx, cpu.ebx, cpu.ecx, at(app, cpu.esp + 4)))
+    {
+        cpu.edx = packed->edx;
+        cpu.ebx = packed->ebx;
+        cpu.ecx = packed->ecx;
+        answer(cpu, packed->eax);
+        cpu.esp += 4;
+    }
+}
+
+/* 0x512630: packFromTop of the edx pieces at ebx on the connection eax, the
+ * queue of layers ecx; edx, ebx and ecx as it leaves them. */
+void layerPackFromTop(App* app, CPU& cpu)
+{
+    if (const auto packed = packFromTop(app, cpu, cpu.eax, cpu.edx, cpu.ebx, cpu.ecx))
+    {
+        cpu.edx = packed->edx;
+        cpu.ebx = packed->ebx;
+        cpu.ecx = packed->ecx;
+        answer(cpu, packed->eax);
+    }
+}
+
+/* 0x5126c0: freeLayers of the connection eax. */
+void layerFree(App* app, CPU& cpu)
+{
+    if (const auto freed = freeLayers(app, cpu, cpu.eax))
+        answer(cpu, *freed);
+}
+
+/* 0x512770: sendDownLayers of the edx pieces at ebx on the connection eax;
+ * edx and ebx as it leaves them. */
+void layerSendPacket(App* app, CPU& cpu)
+{
+    if (const auto sent = sendDownLayers(app, cpu, cpu.eax, cpu.edx, cpu.ebx))
+    {
+        cpu.edx = sent->edx;
+        cpu.ebx = sent->ebx;
+        answer(cpu, sent->eax);
+    }
+}
+
+namespace
+{
+
+/* The `n` bytes at `address`, big-endian: the dword read there, its bytes
+ * swapped and shifted down, as the code reads them. */
+reg32 bigEndian(App* app, reg32 address, reg32 n)
+{
+    const reg32 value = at(app, address);
+    const reg32 swapped = (value >> 24) | (value >> 8 & 0xff00) | (value << 8 & 0xff0000) | (value << 24);
+    return swapped >> ((0x20 - n * 8) & 31);
+}
+
+}  // namespace
+
+/* 0x510110: EA's runs (0x4afb; 0x4b31 with a 16-bit length) unpacked from
+ * `source` to `to`; the length unpacked, as the header says.  Each code
+ * byte: its low 6 bits a count, its top 2 what of: 0 bytes copied, 1 a byte
+ * given filled, 2 the last byte filled again (0 before any), 3 a byte given
+ * and then nibbles, two to a byte, each under its high nibble.  The fills by
+ * the game's memset (0x4e0640) -- the run's table (0x510100) goes to them
+ * in this order. */
+std::optional<reg32> unpackRuns(App* app, CPU& cpu, reg32 source, reg32 to)
+{
+    constexpr reg32 kShortLength = 0x4b31;
+    reg8 fill = 0;
+    reg32 total, in;
+    if (bigEndian(app, source, 2) == kShortLength)
+    {
+        total = bigEndian(app, source + 2, 2);
+        in = source + 4;
+    }
+    else
+    {
+        total = bigEndian(app, source + 2, 3);
+        in = source + 5;
+    }
+    reg32 left = total;
+    if (sreg32(total) <= 0)
+        return total;
+    do
+    {
+        const reg8 code = byte(app, in);
+        reg32 count = code & 0x3f;
+        ++in;
+        switch (code >> 6)
+        {
+        case 0:
+            copyMemory(app, to, in, count);
+            in += count;
+            left -= count;
+            to += count;
             break;
-        if (!direct(app, cpu, connClose))
-            return;
-    }
-    cpu.esi = kConnectionsQueue;
-    cpu.edi = kConnectC;
-    cpu.ebp = kRestoreName;
-    cpu.ebx = 0;
-    for (;;)
-    {
-        cpu.edx = cpu.ebx;
-        cpu.eax = cpu.esi;
-        if (!direct(app, cpu, qfindindex))
-            return;
-        cpu.ecx = cpu.eax;
-        if (cpu.eax == 0)
-            return leave();
-        if (!direct(app, cpu, connClose))
-            return;
-        cpu.edx = cpu.ecx;
-        cpu.eax = cpu.esi;
-        if (!direct(app, cpu, qremove))
-            return;
-        if (cpu.eax == 0)
-            continue;
-        push(app, cpu, cpu.ecx);
-        cpu.eax = 0xdb;
-        put(app, kWhereFile, cpu.edi);
-        push(app, cpu, kNotRemoved);
-        put(app, kWhereFunction, cpu.ebp);
-        put(app, kWhereLine, cpu.eax);
-        if (!error(app, cpu, 2))
-            return;
-    }
-}
-
-/* 0x4f5310: a packet -- edx it, ebx its length -- sent on the connection
- * eax through its layers (layerSendPacket, one piece). */
-void connSend(win32::WinApplication* app, x86::CPU& cpu)
-{
-    cpu.esp -= 8;
-    put(app, cpu.esp + 4, cpu.edx);
-    put(app, cpu.esp, cpu.ebx);
-    cpu.ebx = cpu.esp;
-    cpu.edx = 1;
-    if (!direct(app, cpu, layerSendPacket))
-        return;
-    cpu.esp += 8;
-    cpu.esp += 4;
-}
-
-/* 0x4f5330: the connection eax closed, if it is one and open: its close
- * (+0x10 of its functions); closed, one that counts (its functions' +0xc)
- * makes one open connection fewer, the last taking the connections' task
- * (0x4f5110) off (0x4f29b0); its layers freed (layerFree).  What the close
- * gave back, or 0. */
-void connClose(win32::WinApplication* app, x86::CPU& cpu)
-{
-    push(app, cpu, cpu.edx);
-    cpu.edx = cpu.eax;
-    if (cpu.eax == 0 || at(app, cpu.eax + kConnectionOpen) == 0)
-    {
-        cpu.eax = 0;
-        cpu.edx = pop(app, cpu);
-        cpu.esp += 4;
-        return;
-    }
-    push(app, cpu, cpu.edi);
-    push(app, cpu, cpu.esi);
-    push(app, cpu, cpu.ecx);
-    cpu.ecx = at(app, cpu.eax + 4);
-    if (!byAddress(app, cpu, at(app, cpu.ecx + 0x10)))
-        return;
-    cpu.ecx = cpu.eax;
-    if (cpu.eax != 0)
-    {
-        cpu.eax = at(app, cpu.edx + 4);
-        if (at(app, cpu.eax + 0xc) != 0)
+        case 1:
+            fill = byte(app, in);
+            ++in;
+            [[fallthrough]];
+        case 2:
+            if (!callWith(app, cpu, kMemset, {to, fill, count, cpu.ecx}))
+                return std::nullopt;
+            left -= count;
+            to += count;
+            break;
+        default:
         {
-            cpu.esi = at(app, kOpenCount);
-            if (cpu.esi != 0)
+            const reg8 given = byte(app, in);
+            ++in;
+            putByte(app, to, given);
+            ++to;
+            const reg8 high = given & 0xf0;
+            left -= count;
+            for (--count; sreg32(count) > 0;)
             {
-                cpu.edi = cpu.esi - 1;
-                put(app, kOpenCount, cpu.edi);
-                if (cpu.edi == 0)
+                const reg8 nibbles = byte(app, in);
+                --count;
+                putByte(app, to, reg8(nibbles >> 4 | high));
+                ++to;
+                ++in;
+                if (sreg32(count) > 0)
                 {
-                    cpu.eax = kConnectionTask;
-                    if (!byAddress(app, cpu, kRemoveTask))
-                        return;
+                    --count;
+                    putByte(app, to, reg8((nibbles & 0xf) | high));
+                    ++to;
                 }
             }
+            break;
         }
-    }
-    cpu.eax = cpu.edx;
-    if (!direct(app, cpu, layerFree))
-        return;
-    cpu.eax = cpu.ecx;
-    cpu.ecx = pop(app, cpu);
-    cpu.esi = pop(app, cpu);
-    cpu.edi = pop(app, cpu);
-    cpu.edx = pop(app, cpu);
-    cpu.esp += 4;
-}
-
-/* 0x50dc00: the element edx after the first of the queue whose first
- * element's address is at eax, or 0 past the last (the list walked as qnth
- * would). */
-void qnth(win32::WinApplication* app, x86::CPU& cpu)
-{
-    cpu.eax = at(app, cpu.eax);
-    if (cpu.eax != 0)
-    {
-        for (;;)
-        {
-            --cpu.edx;
-            if (cpu.edx == 0xffffffff)
-                break;
-            cpu.eax = at(app, cpu.eax);
-            if (cpu.eax == 0)
-                break;
         }
-    }
-    cpu.esp += 4;
-}
-
-/* 0x50dc20: the element edx taken out of the queue eax, its lock not taken
- * (qremove's): the count one fewer, the first or the last moved past it;
- * taken out, its next 0 and the queue's flag 1 (changed) set.  1 if it was
- * there, else 0. */
-void qunlink(win32::WinApplication* app, x86::CPU& cpu)
-{
-    push(app, cpu, cpu.ebx);
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.esi);
-    push(app, cpu, cpu.edi);
-    push(app, cpu, cpu.ebp);
-    const auto leave = [&] {
-        if (cpu.ebx != 0)
-        {
-            put(app, cpu.edx, 0);
-            putByte(app, cpu.ecx + 4, byte(app, cpu.ecx + 4) | 1);
-        }
-        cpu.eax = cpu.ebx;
-        cpu.ebp = pop(app, cpu);
-        cpu.edi = pop(app, cpu);
-        cpu.esi = pop(app, cpu);
-        cpu.ecx = pop(app, cpu);
-        cpu.ebx = pop(app, cpu);
-        cpu.esp += 4;
-    };
-    cpu.ecx = cpu.eax;
-    cpu.ebx = 0;
-    if (cpu.edx == 0)
-        return leave();
-    cpu.esi = at(app, cpu.eax);
-    if (cpu.esi == 0)
-        return leave();
-    cpu.edi = at(app, cpu.eax + 8);
-    if (cpu.edx == cpu.edi)
-    {
-        cpu.ebx = 1;
-        cpu.eax = cpu.esi;
-        cpu.eax -= cpu.ebx;
-        cpu.esi = at(app, cpu.ecx + 0xc);
-        put(app, cpu.ecx, cpu.eax);
-        if (cpu.edi == cpu.esi)
-        {
-            put(app, cpu.ecx + 8, 0);
-            cpu.eax = at(app, cpu.ecx + 8);
-            put(app, cpu.ecx + 0xc, cpu.eax);
-        }
-        else
-        {
-            cpu.eax = at(app, cpu.edi);
-            put(app, cpu.ecx + 8, cpu.eax);
-        }
-        return leave();
-    }
-    cpu.ebp = at(app, cpu.edi);
-    cpu.eax = cpu.edi;
-    if (cpu.ebp != 0)
-    {
-        while (cpu.edx != at(app, cpu.eax))
-        {
-            cpu.eax = at(app, cpu.eax);
-            if (at(app, cpu.eax) == 0)
-                break;
-        }
-    }
-    cpu.esi = at(app, cpu.eax);
-    if (cpu.esi != 0 && cpu.edx == cpu.esi)
-    {
-        cpu.ebx = 1;
-        put(app, cpu.ecx, at(app, cpu.ecx) - cpu.ebx);
-        cpu.esi = at(app, cpu.esi);
-        put(app, cpu.eax, cpu.esi);
-        if (cpu.edx == at(app, cpu.ecx + 0xc))
-            put(app, cpu.ecx + 0xc, cpu.eax);
-    }
-    leave();
+    } while (sreg32(left) > 0);
+    return total;
 }
 
 namespace
 {
 
-/* What the queues report of a queue eax uninitialized: its address, the
- * function's name and Error's three words. */
-bool uninitialized(win32::WinApplication* app, x86::CPU& cpu, reg32 name, reg32 line, reg32& nameReg,
-                   reg32& fileReg, reg32& lineReg)
+/* What dxtBlock leaves in eax and edx: the last row's last colour and the
+ * one before it. */
+struct LastColours
 {
-    push(app, cpu, cpu.eax);
-    nameReg = name;
-    fileReg = kQueueC;
-    push(app, cpu, nameReg);
-    lineReg = line;
-    put(app, kWhereFile, fileReg);
-    push(app, cpu, kUninitialized);
-    put(app, kWhereFunction, nameReg);
-    put(app, kWhereLine, lineReg);
-    return error(app, cpu, 3);
+    reg32 last, beforeLast;
+};
+
+/* 0x510420: a DXT1 block at `block` unpacked to 4 rows of 4 16-bit pixels
+ * at `to`, `pitch` bytes apart: its two colours (5-6-5), and between them
+ * two thirds and a third of the way (each channel times 0xaaaa and 0x5556,
+ * 16 bits up) -- or, with the first not above the second, half way and 0. */
+LastColours unpackBlock(App* app, reg32 to, reg32 pitch, reg32 block)
+{
+    constexpr reg32 kRed = 0xf800, kGreen = 0x7e0, kBlue = 0x1f;
+    constexpr reg32 kTwoThirds = 0xaaaa, kOneThird = 0x5556;
+    reg16 colours[4];
+    const reg32 first = word16(app, block), second = word16(app, block + 2);
+    colours[0] = reg16(first);
+    colours[1] = reg16(second);
+    const reg32 red0 = first & kRed, green0 = first & kGreen, blue0 = first & kBlue;
+    const reg32 red1 = second & kRed, green1 = second & kGreen, blue1 = second & kBlue;
+    if (first > second)
+    {
+        colours[2] = reg16(((red0 * kTwoThirds + red1 * kOneThird) >> 16 & kRed)
+                           | ((green0 * kTwoThirds + green1 * kOneThird) >> 16 & kGreen)
+                           | ((blue0 * kTwoThirds + blue1 * kOneThird) >> 16 & kBlue));
+        colours[3] = reg16(((red1 * kTwoThirds + red0 * kOneThird) >> 16 & kRed)
+                           | ((green1 * kTwoThirds + green0 * kOneThird) >> 16 & kGreen)
+                           | ((blue1 * kTwoThirds + blue0 * kOneThird) >> 16 & kBlue));
+    }
+    else
+    {
+        colours[2] = reg16((((red0 << 15) + (red1 << 15)) >> 16 & kRed)
+                           | (((green0 << 15) + (green1 << 15)) >> 16 & kGreen)
+                           | (((blue1 << 15) + (blue0 << 15)) >> 16 & kBlue));
+        colours[3] = 0;
+    }
+    for (reg32 row = 0; row < 4; ++row)
+    {
+        const reg8 codes = byte(app, block + 4 + row);
+        const reg32 line = to + row * pitch;
+        for (reg32 pixel = 0; pixel < 4; ++pixel)
+            putWord16(app, line + pixel * 2, colours[codes >> (pixel * 2) & 3]);
+    }
+    const reg8 last = byte(app, block + 7);
+    return {colours[last >> 6], colours[last >> 4 & 3]};
 }
 
 }  // namespace
 
-/* 0x50dde0, EA's qfree: the queue eax's lock let go -- freed (0x4eb360) if it
- * is its own (flag 2) -- and 0; an Error for a queue uninitialized. */
-void qfree(win32::WinApplication* app, x86::CPU& cpu)
+/* 0x510760: EA's DXT1 image (0x18fb) unpacked from `source` to `to`: its
+ * length unpacked (3 bytes, big-endian, at +2) and its width (2 bytes at
+ * +6), the blocks after them a row of blocks at a time (unpackBlock).  With
+ * `blocksToo` 0 only the length; the length either way.  eax, edx and ebx
+ * as the code leaves them (edx `to` as handed over, without the blocks). */
+Regs unpackDxt(App* app, reg32 source, reg32 to, reg32 blocksToo)
 {
-    push(app, cpu, cpu.edx);
-    cpu.edx = cpu.eax;
-    if (at(app, cpu.eax + 0x18) == 0)
+    const reg32 total = bigEndian(app, source + 2, 3);
+    const reg32 width = bigEndian(app, source + 6, 2);
+    if (blocksToo == 0)
+        return {total, to, 0, 0};
+    if (sreg32(total) <= 0)
+        return {total, 0, blocksToo, 0};
+    // A row of pixels' bytes, a row of blocks' (4 rows), the 3 rows after one.
+    const reg32 pitch = width * 2, blockRow = width * 8, rowsAfter = width * 6;
+    reg32 block = source + 8, done = 0;
+    do
     {
-        push(app, cpu, cpu.edi);
-        push(app, cpu, cpu.esi);
-        push(app, cpu, cpu.ebx);
-        if (!uninitialized(app, cpu, kQfreeName, 0xf0, cpu.esi, cpu.ebx, cpu.edi))
-            return;
-        cpu.ebx = pop(app, cpu);
-        cpu.esi = pop(app, cpu);
-        cpu.edi = pop(app, cpu);
-    }
-    if ((byte(app, cpu.edx + 4) & 2) != 0)
-    {
-        cpu.eax = at(app, cpu.edx + 0x18);
-        if (!byAddress(app, cpu, kFreeLock))
-            return;
-    }
-    put(app, cpu.edx + 0x18, 0);
-    cpu.edx = pop(app, cpu);
-    cpu.esp += 4;
-}
-
-/* 0x50e150, EA's qremove: the element edx taken out of the queue eax under
- * its lock (qunlink); 1 if it was there.  Asked for none, what eax gives
- * back is edi as the caller had it. */
-void qremove(win32::WinApplication* app, x86::CPU& cpu)
-{
-    push(app, cpu, cpu.ebx);
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.esi);
-    push(app, cpu, cpu.edi);
-    push(app, cpu, cpu.ebp);
-    cpu.ebx = cpu.eax;
-    cpu.esi = cpu.edx;
-    cpu.edx = at(app, cpu.eax + 0x18);
-    push(app, cpu, cpu.edx);
-    if (!windows(app, cpu, kEnterCriticalSection))
-        return;
-    if (at(app, cpu.ebx + 0x18) == 0)
-    {
-        push(app, cpu, cpu.ebx);
-        cpu.eax = kQremoveName;
-        cpu.ebp = kQueueC;
-        push(app, cpu, cpu.eax);
-        cpu.edx = 0x21c;
-        put(app, kWhereFile, cpu.ebp);
-        push(app, cpu, kUninitialized);
-        put(app, kWhereFunction, cpu.eax);
-        put(app, kWhereLine, cpu.edx);
-        if (!error(app, cpu, 3))
-            return;
-    }
-    if (cpu.esi != 0)
-    {
-        cpu.edx = cpu.esi;
-        cpu.eax = cpu.ebx;
-        if (!direct(app, cpu, qunlink))
-            return;
-        cpu.edi = cpu.eax;
-    }
-    cpu.ecx = at(app, cpu.ebx + 0x18);
-    push(app, cpu, cpu.ecx);
-    if (!windows(app, cpu, kLeaveCriticalSection))
-        return;
-    cpu.eax = cpu.edi;
-    cpu.ebp = pop(app, cpu);
-    cpu.edi = pop(app, cpu);
-    cpu.esi = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
-    cpu.ebx = pop(app, cpu);
-    cpu.esp += 4;
-}
-
-/* 0x50e1d0, EA's qlength: how many elements the queue eax holds; an Error
- * for a queue uninitialized. */
-void qlength(win32::WinApplication* app, x86::CPU& cpu)
-{
-    push(app, cpu, cpu.edx);
-    cpu.edx = cpu.eax;
-    if (at(app, cpu.eax + 0x18) == 0)
-    {
-        push(app, cpu, cpu.edi);
-        push(app, cpu, cpu.esi);
-        push(app, cpu, cpu.ebx);
-        if (!uninitialized(app, cpu, kQlengthName, 0x245, cpu.esi, cpu.ebx, cpu.edi))
-            return;
-        cpu.ebx = pop(app, cpu);
-        cpu.esi = pop(app, cpu);
-        cpu.edi = pop(app, cpu);
-    }
-    cpu.eax = at(app, cpu.edx);
-    cpu.edx = pop(app, cpu);
-    cpu.esp += 4;
-}
-
-/* 0x50e220, EA's qposition: under the queue eax's lock, the index of the
- * element edx, or -1.  A queue with a priority's function (+0x10, its
- * argument +0x14) is looked through only as far as the elements whose
- * priority is not above edx's. */
-void qposition(win32::WinApplication* app, x86::CPU& cpu)
-{
-    push(app, cpu, cpu.ebx);
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.esi);
-    push(app, cpu, cpu.edi);
-    push(app, cpu, cpu.ebp);
-    cpu.esp -= 4;
-    const reg32 f = cpu.esp;
-    cpu.edi = cpu.eax;
-    cpu.ebp = cpu.edx;
-    cpu.edx = at(app, cpu.eax + 0x18);
-    push(app, cpu, cpu.edx);
-    if (!windows(app, cpu, kEnterCriticalSection))
-        return;
-    cpu.ecx = at(app, cpu.edi + 0x18);
-    cpu.ebx = 0;
-    if (cpu.ecx == 0)
-    {
-        push(app, cpu, cpu.edi);
-        cpu.eax = kQpositionName;
-        cpu.esi = kQueueC;
-        push(app, cpu, cpu.eax);
-        cpu.edx = 0x271;
-        put(app, kWhereFile, cpu.esi);
-        push(app, cpu, kUninitialized);
-        put(app, kWhereFunction, cpu.eax);
-        put(app, kWhereLine, cpu.edx);
-        if (!error(app, cpu, 3))
-            return;
-    }
-    bool found = false;
-    if (cpu.ebp != 0)
-    {
-        cpu.esi = at(app, cpu.edi + 0x10);
-        cpu.ecx = at(app, cpu.edi + 8);
-        if (cpu.esi != 0)
+        if (sreg32(width) > 0)
         {
-            cpu.eax = cpu.ebp;
-            cpu.edx = at(app, cpu.edi + 0x14);
-            if (!byAddress(app, cpu, cpu.esi))
-                return;
-        }
-        else
-            cpu.eax = 0;
-        put(app, f, cpu.eax);
-        while (cpu.ecx != 0 && cpu.ecx != cpu.ebp)
-        {
-            if (cpu.esi != 0)
-            {
-                cpu.eax = cpu.ecx;
-                cpu.edx = at(app, cpu.edi + 0x14);
-                if (!byAddress(app, cpu, cpu.esi))
-                    return;
-                if (cpu.eax > at(app, f))
-                    break;
-            }
-            cpu.ecx = at(app, cpu.ecx);
-            ++cpu.ebx;
-        }
-        found = cpu.ecx == cpu.ebp;
-    }
-    if (!found)
-        cpu.ebx = 0xffffffff;
-    cpu.ecx = at(app, cpu.edi + 0x18);
-    push(app, cpu, cpu.ecx);
-    if (!windows(app, cpu, kLeaveCriticalSection))
-        return;
-    cpu.eax = cpu.ebx;
-    cpu.esp += 4;
-    cpu.ebp = pop(app, cpu);
-    cpu.edi = pop(app, cpu);
-    cpu.esi = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
-    cpu.ebx = pop(app, cpu);
-    cpu.esp += 4;
-}
-
-/* 0x50e470, EA's qfindindex: under the queue eax's lock, its element edx
- * (qnth past the first), or 0. */
-void qfindindex(win32::WinApplication* app, x86::CPU& cpu)
-{
-    push(app, cpu, cpu.ebx);
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.esi);
-    push(app, cpu, cpu.ebp);
-    cpu.ebx = cpu.eax;
-    cpu.esi = cpu.edx;
-    cpu.edx = at(app, cpu.eax + 0x18);
-    push(app, cpu, cpu.edx);
-    if (!windows(app, cpu, kEnterCriticalSection))
-        return;
-    if (at(app, cpu.ebx + 0x18) == 0)
-    {
-        push(app, cpu, cpu.edi);
-        push(app, cpu, cpu.ebx);
-        cpu.ebp = kQfindindexName;
-        cpu.edi = kQueueC;
-        push(app, cpu, cpu.ebp);
-        cpu.eax = 0x30f;
-        put(app, kWhereFile, cpu.edi);
-        push(app, cpu, kUninitialized);
-        put(app, kWhereFunction, cpu.ebp);
-        put(app, kWhereLine, cpu.eax);
-        if (!error(app, cpu, 3))
-            return;
-        cpu.edi = pop(app, cpu);
-    }
-    cpu.edx = at(app, cpu.ebx + 8);
-    if (cpu.edx == 0)
-        cpu.esi = 0;
-    else if (cpu.esi != 0)
-    {
-        cpu.edx = cpu.esi - 1;
-        cpu.eax = at(app, cpu.ebx + 8);
-        if (!direct(app, cpu, qnth))
-            return;
-        cpu.esi = cpu.eax;
-    }
-    else
-        cpu.esi = cpu.edx;
-    cpu.ecx = at(app, cpu.ebx + 0x18);
-    push(app, cpu, cpu.ecx);
-    if (!windows(app, cpu, kLeaveCriticalSection))
-        return;
-    cpu.eax = cpu.esi;
-    cpu.ebp = pop(app, cpu);
-    cpu.esi = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
-    cpu.ebx = pop(app, cpu);
-    cpu.esp += 4;
-}
-
-/* 0x5123b0, EA's LAYER_send: the edx pieces at ebx ({length, address} each)
- * gathered into one block ('FILTER', the game's allocation) and sent by the
- * connection eax's own send (+8 of its functions: the block, its length);
- * the block freed, and what the send gave back. */
-void layerSend(win32::WinApplication* app, x86::CPU& cpu)
-{
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.esi);
-    push(app, cpu, cpu.edi);
-    push(app, cpu, cpu.ebp);
-    cpu.esp -= 0xc;
-    const reg32 f = cpu.esp;
-    put(app, f + 4, cpu.eax);
-    put(app, f + 8, cpu.edx);
-    cpu.ecx = cpu.ebx;
-    cpu.eax = 0;
-    cpu.ebp = 0;
-    if (sreg32(cpu.edx) > 0)
-    {
-        cpu.edi = at(app, f + 8);
-        cpu.esi = cpu.ebx;
-        do
-        {
-            cpu.ebx = at(app, cpu.esi);
-            cpu.esi += 8;
-            ++cpu.eax;
-            cpu.ebp += cpu.ebx;
-        } while (sreg32(cpu.eax) < sreg32(cpu.edi));
-    }
-    cpu.eax = kLayerC;
-    cpu.edx = kLayerSendName;
-    cpu.ebx = 0x2d;
-    put(app, kWhereFile, cpu.eax);
-    put(app, kWhereFunction, cpu.edx);
-    put(app, kWhereLine, cpu.ebx);
-    cpu.eax = kFilterName;
-    cpu.edx = cpu.ebp;
-    cpu.ebx = 0;
-    if (!byAddress(app, cpu, kAllocate))
-        return;
-    put(app, f, cpu.eax);
-    cpu.esi = cpu.eax;
-    cpu.eax = at(app, f + 8);
-    cpu.edi = 0;
-    if (sreg32(cpu.eax) > 0)
-    {
-        do
-        {
-            cpu.edx = cpu.esi;
-            cpu.ebx = at(app, cpu.ecx);
-            cpu.eax = at(app, cpu.ecx + 4);
-            cpu.ecx += 8;
-            if (!byAddress(app, cpu, kMoveMemory))
-                return;
-            ++cpu.edi;
-            cpu.edx = at(app, cpu.ecx - 8);
-            cpu.ebx = at(app, f + 8);
-            cpu.esi += cpu.edx;
-        } while (sreg32(cpu.edi) < sreg32(cpu.ebx));
-    }
-    cpu.ecx = at(app, f + 4);
-    cpu.edx = at(app, f);
-    cpu.ecx = at(app, cpu.ecx + 4);
-    cpu.eax = at(app, f + 4);
-    cpu.ebx = cpu.ebp;
-    if (!byAddress(app, cpu, at(app, cpu.ecx + 8)))
-        return;
-    cpu.ecx = cpu.eax;
-    cpu.eax = at(app, f);
-    if (!byAddress(app, cpu, kFree))
-        return;
-    cpu.eax = cpu.ecx;
-    cpu.esp += 0xc;
-    cpu.ebp = pop(app, cpu);
-    cpu.edi = pop(app, cpu);
-    cpu.esi = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
-    cpu.esp += 4;
-}
-
-/* 0x512530, EA's LAYER_callpacker: the packet -- ebx pieces at ecx -- on
- * the connection eax handed to layer edx of the queue on the stack (its
- * index noted at the queue's +0x1c): its packer (+4, with its data +0xc,
- * the queue on the stack) -- an Error, and the packer read from an element
- * 0, when qfindindex finds none.  Past the layers, sent (layerSend).  The
- * stack's word taken off. */
-void layerCallPacker(win32::WinApplication* app, x86::CPU& cpu)
-{
-    push(app, cpu, cpu.esi);
-    push(app, cpu, cpu.edi);
-    push(app, cpu, cpu.ebp);
-    cpu.esi = cpu.eax;
-    cpu.edi = cpu.ebx;
-    cpu.ebx = at(app, cpu.esp + 0x10);
-    bool layer = false;
-    if (sreg32(cpu.edx) >= 0)
-    {
-        cpu.eax = cpu.ebx;
-        if (!direct(app, cpu, qlength))
-            return;
-        layer = cpu.edx < cpu.eax;
-    }
-    if (layer)
-    {
-        cpu.eax = cpu.ebx;
-        put(app, cpu.ebx + 0x1c, cpu.edx);
-        if (!direct(app, cpu, qfindindex))
-            return;
-        cpu.ebp = cpu.eax;
-        if (cpu.eax == 0)
-        {
-            cpu.edx = kLayerC;
-            cpu.eax = kCallPackerName;
-            push(app, cpu, kFindFailed);
-            put(app, kWhereFile, cpu.edx);
-            cpu.edx = 0x63;
-            put(app, kWhereFunction, cpu.eax);
-            put(app, kWhereLine, cpu.edx);
-            if (!error(app, cpu, 1))
-                return;
-        }
-        push(app, cpu, cpu.ebx);
-        cpu.eax = cpu.esi;
-        cpu.edx = at(app, cpu.ebp + 0xc);
-        cpu.ebx = cpu.edi;
-        if (!byAddress(app, cpu, at(app, cpu.ebp + 4)))
-            return;
-    }
-    else
-    {
-        cpu.ebx = cpu.ecx;
-        cpu.edx = cpu.edi;
-        cpu.eax = cpu.esi;
-        if (!direct(app, cpu, layerSend))
-            return;
-    }
-    cpu.ebp = pop(app, cpu);
-    cpu.edi = pop(app, cpu);
-    cpu.esi = pop(app, cpu);
-    cpu.esp += 4 + 4;
-}
-
-/* 0x512630: the packet -- edx pieces at ebx -- on the connection eax handed
- * to the top layer of the queue ecx (layerCallPacker, its last). */
-void layerPackFromTop(win32::WinApplication* app, x86::CPU& cpu)
-{
-    push(app, cpu, cpu.esi);
-    cpu.esi = cpu.eax;
-    cpu.eax = cpu.ecx;
-    push(app, cpu, cpu.ecx);
-    if (!direct(app, cpu, qlength))
-        return;
-    --cpu.eax;
-    cpu.ecx = cpu.ebx;
-    cpu.ebx = cpu.edx;
-    cpu.edx = cpu.eax;
-    cpu.eax = cpu.esi;
-    if (!direct(app, cpu, layerCallPacker))
-        return;
-    cpu.esi = pop(app, cpu);
-    cpu.esp += 4;
-}
-
-/* 0x5126c0: the connection eax's queue of layers (+0x30), if any, let go
- * (qfree), freed and forgotten. */
-void layerFree(win32::WinApplication* app, x86::CPU& cpu)
-{
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.edx);
-    cpu.edx = cpu.eax;
-    cpu.ecx = at(app, cpu.eax + 0x30);
-    if (cpu.ecx != 0)
-    {
-        cpu.eax = cpu.ecx;
-        if (!direct(app, cpu, qfree))
-            return;
-        cpu.eax = at(app, cpu.edx + 0x30);
-        if (!byAddress(app, cpu, kFree))
-            return;
-        put(app, cpu.edx + 0x30, 0);
-    }
-    cpu.edx = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
-    cpu.esp += 4;
-}
-
-/* 0x512770: the packet -- edx pieces at ebx -- sent on the connection eax
- * if it is one and up (+0x24), down its layers (layerPackFromTop); else 0. */
-void layerSendPacket(win32::WinApplication* app, x86::CPU& cpu)
-{
-    if (cpu.eax == 0 || at(app, cpu.eax + kConnectionUp) == 0)
-    {
-        cpu.eax = 0;
-        cpu.esp += 4;
-        return;
-    }
-    push(app, cpu, cpu.ecx);
-    cpu.ecx = at(app, cpu.eax + 0x30);
-    if (!direct(app, cpu, layerPackFromTop))
-        return;
-    cpu.ecx = pop(app, cpu);
-    cpu.esp += 4;
-}
-
-namespace
-{
-
-/* mov ecx, n; mov eax, [address]; bswap eax; neg ecx; lea ecx, [ecx*8 +
- * 0x20]; shr eax, cl: the n bytes at address, big-endian; ecx the shift. */
-void bigEndian(win32::WinApplication* app, x86::CPU& cpu, reg32 address, reg32 n)
-{
-    cpu.ecx = n;
-    cpu.eax = at(app, address);
-    cpu.eax = (cpu.eax >> 24) | (cpu.eax >> 8 & 0xff00) | (cpu.eax << 8 & 0xff0000) | (cpu.eax << 24);
-    cpu.ecx = 0 - cpu.ecx;
-    cpu.ecx = cpu.ecx * 8 + 0x20;
-    cpu.eax >>= cpu.cl & 31;
-}
-
-}  // namespace
-
-/* 0x510110: EA's runs unpacked (0x4afb; 0x4b31 with a 16-bit length) from
- * eax to edx; the length unpacked, as the header says.  Each code byte: its
- * low 6 bits a count, its top 2 what of: 0 bytes copied, 1 a byte given
- * filled, 2 the last byte filled again (0 before any), 3 a byte given and
- * then nibbles, two to a byte, each under its high nibble.  The fills by the
- * game's memset (0x4e0640); the run's table (0x510100) followed by its
- * targets. */
-void runUnpack(win32::WinApplication* app, x86::CPU& cpu)
-{
-    push(app, cpu, cpu.ebx);
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.esi);
-    push(app, cpu, cpu.edi);
-    push(app, cpu, cpu.ebp);
-    cpu.esp -= 0x14;
-    const reg32 f = cpu.esp;
-    // The frame: where it reads, what is left, the length, where it writes,
-    // the byte filled.
-    constexpr reg32 kIn = 0, kTotal = 4, kLeft = 8, kOut = 0xc, kFill = 0x10;
-    cpu.ebp = cpu.eax;
-    cpu.ah = 0;
-    cpu.ecx = 2;
-    putByte(app, f + kFill, cpu.ah);
-    cpu.eax = cpu.ebp;
-    put(app, f + kOut, cpu.edx);
-    bigEndian(app, cpu, cpu.eax, 2);
-    cpu.edx = cpu.eax;
-    cpu.eax = cpu.ebp + 2;
-    if (cpu.edx == 0x4b31)
-    {
-        bigEndian(app, cpu, cpu.eax, 2);
-        cpu.ebp += 4;
-    }
-    else
-    {
-        bigEndian(app, cpu, cpu.eax, 3);
-        cpu.ebp += 5;
-    }
-    put(app, f + kLeft, cpu.eax);
-    put(app, f + kIn, cpu.ebp);
-    cpu.eax = at(app, f + kLeft);
-    put(app, f + kTotal, cpu.eax);
-    if (sreg32(cpu.eax) > 0)
-    {
-        do
-        {
-            cpu.eax = at(app, f + kIn);
-            cpu.al = byte(app, cpu.eax);
-            cpu.ah = cpu.al;
-            cpu.ah &= 0x3f;
-            cpu.ebp = cpu.ah;
-            cpu.ebx = at(app, f + kIn);
-            cpu.eax &= 0xff;
-            ++cpu.ebx;
-            cpu.eax = reg32(sreg32(cpu.eax) >> 6);
-            put(app, f + kIn, cpu.ebx);
-            if (cpu.eax > 3)
-                continue;
-            static const reg32 targets[] = {0x51019d, 0x5101ff, 0x51020b, 0x510232};
-            static_assert(sizeof targets == 0x10, "the run's table at 0x510100");
-            switch (targets[cpu.eax])
-            {
-            case 0x51019d:
-                cpu.edi = at(app, f + kOut);
-                cpu.ecx = cpu.ebp;
-                cpu.esi = cpu.ebx;
-                cpu.edx = at(app, f + kLeft);
-                copyBytes(app, cpu);
-                cpu.eax = at(app, f + kOut);
-                cpu.edi = cpu.ebx + cpu.ebp;
-                cpu.edx -= cpu.ebp;
-                put(app, f + kIn, cpu.edi);
-                cpu.eax += cpu.ebp;
-                put(app, f + kLeft, cpu.edx);
-                put(app, f + kOut, cpu.eax);
-                break;
-            case 0x5101ff:
-                cpu.ecx = cpu.ebx + 1;
-                cpu.al = byte(app, cpu.ebx);
-                put(app, f + kIn, cpu.ecx);
-                putByte(app, f + kFill, cpu.al);
-                [[fallthrough]];
-            case 0x51020b:
-                cpu.eax = at(app, f + kOut);
-                cpu.edx = 0;
-                cpu.ebx = cpu.ebp;
-                cpu.dl = byte(app, f + kFill);
-                cpu.esi = at(app, f + kLeft);
-                if (!byAddress(app, cpu, kMemset))
-                    return;
-                cpu.ebx = at(app, f + kOut);
-                cpu.esi -= cpu.ebp;
-                cpu.ebx += cpu.ebp;
-                put(app, f + kLeft, cpu.esi);
-                put(app, f + kOut, cpu.ebx);
-                break;
-            case 0x510232:
-                cpu.edx = at(app, f + kOut);
-                cpu.esi = cpu.ebx + 1;
-                cpu.ah = byte(app, cpu.ebx);
-                put(app, f + kIn, cpu.esi);
-                cpu.edi = cpu.edx + 1;
-                putByte(app, cpu.edx, cpu.ah);
-                cpu.edx = at(app, f + kLeft);
-                cpu.ah &= 0xf0;
-                put(app, f + kOut, cpu.edi);
-                cpu.edx -= cpu.ebp;
-                --cpu.ebp;
-                put(app, f + kLeft, cpu.edx);
-                while (sreg32(cpu.ebp) > 0)
-                {
-                    cpu.edx = at(app, f + kIn);
-                    cpu.al = byte(app, cpu.edx);
-                    cpu.edx = 0;
-                    cpu.ecx = 0;
-                    cpu.dl = cpu.al;
-                    cpu.cl = cpu.ah;
-                    cpu.edx = reg32(sreg32(cpu.edx) >> 4);
-                    cpu.edx |= cpu.ecx;
-                    cpu.ecx = at(app, f + kOut);
-                    cpu.ebx = at(app, f + kOut);
-                    --cpu.ebp;
-                    putByte(app, cpu.ecx, cpu.dl);
-                    cpu.ecx = at(app, f + kIn);
-                    ++cpu.ebx;
-                    ++cpu.ecx;
-                    put(app, f + kOut, cpu.ebx);
-                    put(app, f + kIn, cpu.ecx);
-                    if (sreg32(cpu.ebp) > 0)
-                    {
-                        cpu.al &= 0xf;
-                        cpu.esi = cpu.ebx + 1;
-                        --cpu.ebp;
-                        cpu.al |= cpu.ah;
-                        put(app, f + kOut, cpu.esi);
-                        putByte(app, cpu.ebx, cpu.al);
-                    }
-                }
-                break;
-            }
-        } while (sreg32(at(app, f + kLeft)) > 0);
-    }
-    cpu.eax = at(app, f + kTotal);
-    cpu.esp += 0x14;
-    cpu.ebp = pop(app, cpu);
-    cpu.edi = pop(app, cpu);
-    cpu.esi = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
-    cpu.ebx = pop(app, cpu);
-    cpu.esp += 4;
-}
-
-namespace
-{
-
-/* lea eax, [r*4]; add eax, r; add eax, eax; mov edx, eax; shl eax, 4; add
- * eax, edx; mov edx, eax; shl eax, 8; add eax, edx: r * 0xaaaa -- two
- * thirds of a channel, 16 bits up -- edx left r * 0xaa. */
-void twoThirds(x86::CPU& cpu, reg32 r)
-{
-    cpu.eax = r * 4;
-    cpu.eax += r;
-    cpu.eax += cpu.eax;
-    cpu.edx = cpu.eax;
-    cpu.eax <<= 4;
-    cpu.eax += cpu.edx;
-    cpu.edx = cpu.eax;
-    cpu.eax <<= 8;
-    cpu.eax += cpu.edx;
-}
-
-/* A row of the block: the byte at `codes` of 2-bit indices into the frame's
- * four colours, 4 pixels at esi. */
-void dxtRow(win32::WinApplication* app, x86::CPU& cpu, reg32 f, reg32 codes, reg32 at)
-{
-    cpu.eax = 0;
-    cpu.al = byte(app, codes);
-    cpu.edx = cpu.eax;
-    cpu.edx &= 3;
-    cpu.dx = word16(app, f + cpu.edx * 2);
-    putWord16(app, at, cpu.dx);
-    cpu.edx = cpu.eax;
-    cpu.edx >>= 2;
-    cpu.edx &= 3;
-    cpu.dx = word16(app, f + cpu.edx * 2);
-    putWord16(app, at + 2, cpu.dx);
-    cpu.edx = cpu.eax;
-    cpu.edx >>= 4;
-    cpu.edx &= 3;
-    cpu.dx = word16(app, f + cpu.edx * 2);
-    cpu.eax >>= 6;
-    putWord16(app, at + 4, cpu.dx);
-    cpu.ax = word16(app, f + cpu.eax * 2);
-    putWord16(app, at + 6, cpu.ax);
-}
-
-}  // namespace
-
-/* 0x510420: a DXT1 block at ebx unpacked to 4 rows of 4 16-bit pixels at
- * eax, edx bytes apart: its two colours (5-6-5), and between them two
- * thirds and a third of the way -- or, with the first not above the
- * second, half way and 0. */
-void dxtBlock(win32::WinApplication* app, x86::CPU& cpu)
-{
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.esi);
-    push(app, cpu, cpu.edi);
-    push(app, cpu, cpu.ebp);
-    cpu.esp -= 0x20;
-    const reg32 f = cpu.esp;
-    // The frame: the four colours; the channels -- the first's green, blue,
-    // red, the second's red, green, blue in the order the code keeps them.
-    constexpr reg32 kColours = 0, kSum = 8, kBlue1 = 0xc, kRed1 = 0x10, kRed0 = 0x14, kGreen0 = 0x18;
-    constexpr reg32 kBlue0 = 0x1c;
-    cpu.esi = cpu.eax;
-    cpu.edi = cpu.edx;
-    cpu.ecx = 2;
-    cpu.eax = cpu.ebx;
-    cpu.eax = at(app, cpu.ecx + cpu.eax - 4);
-    cpu.ecx = 0 - cpu.ecx;
-    cpu.ecx = cpu.ecx * 8 + 0x20;
-    cpu.eax >>= cpu.cl & 31;
-    cpu.ecx = 2;
-    cpu.edx = cpu.eax;
-    putWord16(app, f + kColours, cpu.ax);
-    cpu.eax = cpu.ebx + 2;
-    cpu.eax = at(app, cpu.ecx + cpu.eax - 4);
-    cpu.ecx = 0 - cpu.ecx;
-    cpu.ecx = cpu.ecx * 8 + 0x20;
-    cpu.eax >>= cpu.cl & 31;
-    cpu.ebp = cpu.edx;
-    putWord16(app, f + kColours + 2, cpu.ax);
-    cpu.ecx = cpu.eax;
-    cpu.ebp &= 0x7e0;
-    cpu.ecx &= 0x1f;
-    put(app, f + kGreen0, cpu.ebp);
-    put(app, f + kBlue1, cpu.ecx);
-    cpu.ebp = cpu.eax;
-    cpu.ecx = cpu.edx;
-    cpu.ebp &= 0xf800;
-    cpu.ecx &= 0x1f;
-    put(app, f + kRed1, cpu.ebp);
-    put(app, f + kBlue0, cpu.ecx);
-    cpu.ebp = cpu.edx;
-    cpu.ecx = cpu.eax;
-    cpu.ebp &= 0xf800;
-    cpu.ecx &= 0x7e0;
-    put(app, f + kRed0, cpu.ebp);
-    if (cpu.edx > cpu.eax)
-    {
-        // Two thirds of the first and a third of the second, then the other
-        // way round.
-        twoThirds(cpu, cpu.ebp);
-        cpu.ebp = at(app, f + kRed1) * 0x5556;
-        cpu.ebp += cpu.eax;
-        twoThirds(cpu, at(app, f + kGreen0));
-        put(app, f + kSum, cpu.eax);
-        cpu.eax = cpu.ecx * 0x5556;
-        cpu.eax += at(app, f + kSum);
-        cpu.ebp >>= 0x10;
-        cpu.eax >>= 0x10;
-        cpu.ebp &= 0xf800;
-        cpu.eax &= 0x7e0;
-        cpu.edx = at(app, f + kBlue0);
-        cpu.ebp |= cpu.eax;
-        twoThirds(cpu, cpu.edx);
-        cpu.edx = at(app, f + kBlue1) * 0x5556;
-        cpu.eax += cpu.edx;
-        cpu.eax >>= 0x10;
-        cpu.eax &= 0x1f;
-        cpu.eax |= cpu.ebp;
-        putWord16(app, f + kColours + 4, cpu.ax);
-        cpu.ebp = at(app, f + kRed0) * 0x5556;
-        twoThirds(cpu, at(app, f + kRed1));
-        cpu.edx = at(app, f + kGreen0);
-        cpu.eax += cpu.ebp;
-        cpu.ebp = cpu.edx * 0x5556;
-        cpu.eax >>= 0x10;
-        cpu.eax &= 0xf800;
-        put(app, f + kSum, cpu.eax);
-        twoThirds(cpu, cpu.ecx);
-        cpu.eax += cpu.ebp;
-        cpu.eax >>= 0x10;
-        cpu.ecx = at(app, f + kSum);
-        cpu.eax &= 0x7e0;
-        cpu.ecx |= cpu.eax;
-        cpu.ebp = at(app, f + kBlue0) * 0x5556;
-        twoThirds(cpu, at(app, f + kBlue1));
-        cpu.eax += cpu.ebp;
-        cpu.eax >>= 0x10;
-        cpu.eax &= 0x1f;
-        cpu.eax |= cpu.ecx;
-        putWord16(app, f + kColours + 6, cpu.ax);
-    }
-    else
-    {
-        // Half way, and 0.
-        cpu.eax = at(app, f + kRed1);
-        cpu.edx = cpu.ebp;
-        cpu.eax <<= 0xf;
-        cpu.edx <<= 0xf;
-        cpu.edx += cpu.eax;
-        cpu.eax = at(app, f + kGreen0);
-        cpu.ecx <<= 0xf;
-        cpu.eax <<= 0xf;
-        cpu.edx >>= 0x10;
-        cpu.eax += cpu.ecx;
-        cpu.edx &= 0xf800;
-        cpu.eax >>= 0x10;
-        cpu.ecx = cpu.edx;
-        cpu.eax &= 0x7e0;
-        cpu.edx = at(app, f + kBlue0);
-        cpu.ecx |= cpu.eax;
-        cpu.eax = at(app, f + kBlue1);
-        cpu.edx <<= 0xf;
-        cpu.eax <<= 0xf;
-        cpu.eax += cpu.edx;
-        cpu.eax >>= 0x10;
-        cpu.eax &= 0x1f;
-        cpu.edx = 0;
-        cpu.eax |= cpu.ecx;
-        putWord16(app, f + kColours + 6, cpu.dx);
-        putWord16(app, f + kColours + 4, cpu.ax);
-    }
-    dxtRow(app, cpu, f, cpu.ebx + 4, cpu.esi);
-    cpu.esi += cpu.edi;
-    dxtRow(app, cpu, f, cpu.ebx + 5, cpu.esi);
-    cpu.esi += cpu.edi;
-    dxtRow(app, cpu, f, cpu.ebx + 6, cpu.esi);
-    dxtRow(app, cpu, f, cpu.ebx + 7, cpu.edi + cpu.esi);
-    cpu.esp += 0x20;
-    cpu.ebp = pop(app, cpu);
-    cpu.edi = pop(app, cpu);
-    cpu.esi = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
-    cpu.esp += 4;
-}
-
-/* 0x510760: EA's DXT1 image (0x18fb) unpacked from eax to edx: its length
- * unpacked (3 bytes, big-endian, at +2) and its width (2 bytes at +6), the
- * blocks after them a row of blocks at a time (dxtBlock).  With ebx 0 only
- * the length; the length either way. */
-void dxtUnpack(win32::WinApplication* app, x86::CPU& cpu)
-{
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.esi);
-    push(app, cpu, cpu.edi);
-    push(app, cpu, cpu.ebp);
-    cpu.esp -= 0x14;
-    const reg32 f = cpu.esp;
-    // The frame: a row of blocks' bytes, the rest of its 4 rows', the
-    // length, the bytes so far, the width.
-    constexpr reg32 kBlockRow = 0, kRowsAfter = 4, kTotal = 8, kDone = 0xc, kWidth = 0x10;
-    cpu.edi = cpu.eax;
-    bigEndian(app, cpu, cpu.eax + 2, 3);
-    cpu.ecx = 2;
-    cpu.ebp = cpu.eax;
-    put(app, f + kTotal, cpu.eax);
-    cpu.eax = cpu.edi + 6;
-    cpu.esi = cpu.edx;
-    bigEndian(app, cpu, cpu.eax, 2);
-    put(app, f + kWidth, cpu.eax);
-    if (cpu.ebx != 0)
-    {
-        cpu.edx = 0;
-        cpu.edi += 8;
-        put(app, f + kDone, cpu.edx);
-        if (sreg32(cpu.ebp) > 0)
-        {
-            cpu.ebp = cpu.eax + cpu.eax;
-            cpu.ecx = cpu.eax * 4;
-            cpu.ecx -= cpu.eax;
-            cpu.ecx += cpu.ecx;
-            cpu.eax <<= 3;
-            put(app, f + kRowsAfter, cpu.ecx);
-            put(app, f + kBlockRow, cpu.eax);
+            reg32 x = 0;
             do
             {
-                cpu.ebx = at(app, f + kWidth);
-                cpu.ecx = 0;
-                if (sreg32(cpu.ebx) > 0)
-                {
-                    do
-                    {
-                        cpu.ebx = cpu.edi;
-                        cpu.edx = cpu.ebp;
-                        cpu.eax = cpu.esi;
-                        if (!direct(app, cpu, dxtBlock))
-                            return;
-                        cpu.ecx += 4;
-                        cpu.eax = at(app, f + kWidth);
-                        cpu.esi += 8;
-                        cpu.edi += 8;
-                    } while (sreg32(cpu.ecx) < sreg32(cpu.eax));
-                }
-                cpu.ecx = at(app, f + kRowsAfter);
-                cpu.eax = at(app, f + kBlockRow);
-                cpu.ebx = at(app, f + kDone);
-                cpu.edx = at(app, f + kTotal);
-                cpu.ebx += cpu.eax;
-                cpu.esi += cpu.ecx;
-                put(app, f + kDone, cpu.ebx);
-            } while (sreg32(cpu.ebx) < sreg32(cpu.edx));
+                unpackBlock(app, to, pitch, block);
+                x += 4;
+                to += 8;
+                block += 8;
+            } while (sreg32(x) < sreg32(width));
         }
-    }
-    cpu.eax = at(app, f + kTotal);
-    cpu.esp += 0x14;
-    cpu.ebp = pop(app, cpu);
-    cpu.edi = pop(app, cpu);
-    cpu.esi = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
-    cpu.esp += 4;
+        done += blockRow;
+        to += rowsAfter;
+    } while (sreg32(done) < sreg32(total));
+    return {total, total, done, 0};
 }
 
-/* 0x510820: the byte al written out ([0xa0b030] on), or -- its kind
- * ([0xa0b040]) not 0 -- the pair it stands for: its first byte expanded
- * ([0xa0b034]) and then its second ([0xa0b03c]). */
-void pairExpand(win32::WinApplication* app, x86::CPU& cpu)
+namespace
 {
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.edx);
-    for (;;)
+
+/* 0x510820: the byte `code` (its low byte) written out ([0xa0b030] on), or
+ * -- its kind ([0xa0b040]) not 0 -- the pair it stands for: its first byte
+ * expanded ([0xa0b034]) and then its second ([0xa0b03c]).  eax as the code
+ * leaves it: `code`, or the last pair's second byte. */
+reg32 expandPair(App* app, reg32 code)
+{
+    while (byte(app, at(app, kPairKind) + (code & 0xff)) != 0)
     {
-        cpu.edx = 0;
-        cpu.ecx = at(app, kPairKind);
-        cpu.dl = cpu.al;
-        if (byte(app, cpu.ecx + cpu.edx) == 0)
-            break;
-        cpu.eax = at(app, kPairLeft);
-        cpu.al = byte(app, cpu.edx + cpu.eax);
-        cpu.eax &= 0xff;
-        if (!direct(app, cpu, pairExpand))
-            return;
-        cpu.eax = at(app, kPairRight);
-        cpu.al = byte(app, cpu.edx + cpu.eax);
-        cpu.eax &= 0xff;
+        const reg32 pair = code & 0xff;
+        expandPair(app, byte(app, at(app, kPairLeft) + pair));
+        code = byte(app, at(app, kPairRight) + pair);
     }
-    cpu.edx = at(app, kPairOut);
-    ++cpu.edx;
-    putByte(app, cpu.edx - 1, cpu.al);
-    put(app, kPairOut, cpu.edx);
-    cpu.edx = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
-    cpu.esp += 4;
+    const reg32 out = at(app, kPairOut);
+    putByte(app, out, reg8(code));
+    put(app, kPairOut, out + 1);
+    return code;
 }
+
+}  // namespace
 
 /* 0x510870: EA's byte pairs (0x46fb; 0x47fb with 3 bytes more) unpacked
- * from eax to edx; the length unpacked, as the header says (0 for eax 0).
- * After the length: the escape, the pairs' count and each pair's byte and
- * its two (into tables in the frame, their addresses at 0xa0b034 to
- * 0xa0b040); then bytes -- one of no pair as it is, a pair's expanded
- * (pairExpand), the escape and the byte after it as that byte, the escape
- * and 0 the end.  Where it read to is left at 0xa0b038. */
-void pairUnpack(win32::WinApplication* app, x86::CPU& cpu)
+ * from `source` to `to`; the length unpacked, as the header says (0 for
+ * none).  After the length: the escape, the pairs' count and each pair's
+ * byte and its two (into tables in the frame, their addresses at 0xa0b034
+ * to 0xa0b040); then bytes -- one of no pair as it is, a pair's expanded
+ * (expandPair), the escape and the byte after it as that byte, the escape
+ * and 0 the end.  Where it read to is left at 0xa0b038.  cpu.esp where the
+ * call leaves it: the tables under the 2 registers the code pushes, where
+ * the code has them.  eax, and edx as the code leaves it. */
+Regs unpackPairs(App* app, CPU& cpu, reg32 source, reg32 to)
 {
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.ebp);
-    cpu.esp -= 0x304;
-    const reg32 f = cpu.esp;
-    // The frame: the pairs' first bytes, their second, the bytes' kinds (0
-    // none, 1 the escape, 0xff a pair), the length.
-    constexpr reg32 kLeft = 0, kRight = 0x100, kKinds = 0x200, kTotal = 0x300;
-    put(app, kPairOut, cpu.edx);
-    cpu.edx = 0;
-    put(app, f + kTotal, cpu.edx);
-    cpu.edx = f + kKinds;
-    put(app, kPairKind, cpu.edx);
-    cpu.edx = f + kLeft;
-    put(app, kPairLeft, cpu.edx);
-    cpu.edx = f + kRight;
-    cpu.ecx = cpu.eax;
-    put(app, kPairRight, cpu.edx);
-    if (cpu.eax != 0)
+    constexpr reg32 kPairsMore = 0x47fb;
+    constexpr reg8 kNone = 0, kEscape = 1, kPair = 0xff;
+    const Lowered frame(cpu, 2 * 4 + 0x304);
+    const reg32 lefts = cpu.esp, rights = lefts + 0x100, kinds = lefts + 0x200;
+    put(app, kPairOut, to);
+    put(app, kPairKind, kinds);
+    put(app, kPairLeft, lefts);
+    put(app, kPairRight, rights);
+    if (source == 0)
     {
-        cpu.edx = 0;
-        cpu.ecx = cpu.eax + 1;
-        cpu.dl = byte(app, cpu.eax);
-        cpu.eax = 0;
-        cpu.edx <<= 8;
-        cpu.al = byte(app, cpu.ecx);
-        cpu.edx += cpu.eax;
-        ++cpu.ecx;
-        if (cpu.edx == 0x47fb)
-            cpu.ecx += 3;
-        push(app, cpu, cpu.esi);
-        cpu.eax = 0;
-        cpu.edx = 0;
-        cpu.al = byte(app, cpu.ecx);
-        cpu.dl = byte(app, cpu.ecx + 1);
-        put(app, f + kTotal, cpu.eax);
-        cpu.eax <<= 8;
-        cpu.eax += cpu.edx;
-        put(app, f + kTotal, cpu.eax);
-        ++cpu.ecx;
-        cpu.edx = at(app, f + kTotal);
-        cpu.eax = 0;
-        cpu.edx <<= 8;
-        cpu.al = byte(app, cpu.ecx + 1);
-        ++cpu.ecx;
-        cpu.edx += cpu.eax;
-        ++cpu.ecx;
-        put(app, f + kTotal, cpu.edx);
-        cpu.edx = 0;
-        do
-        {
-            cpu.eax = at(app, kPairKind);
-            cpu.esi = cpu.eax + cpu.edx;
-            ++cpu.edx;
-            putByte(app, cpu.esi, 0);
-        } while (sreg32(cpu.edx) < 0x100);
-        ++cpu.ecx;
-        cpu.edx = 0;
-        cpu.dl = byte(app, cpu.ecx - 1);
-        ++cpu.ecx;
-        putByte(app, cpu.edx + cpu.eax, 1);
-        cpu.ebp = byte(app, cpu.ecx - 1);
-        cpu.eax = 0;
-        if (sreg32(cpu.ebp) > 0)
-        {
-            push(app, cpu, cpu.edi);
-            push(app, cpu, cpu.ebx);
-            do
-            {
-                cpu.edx = 0;
-                cpu.ebx = at(app, kPairLeft);
-                cpu.dl = byte(app, cpu.ecx);
-                cpu.esi = cpu.ecx + 1;
-                cpu.edi = cpu.ebx + cpu.edx;
-                cpu.ecx = cpu.esi + 1;
-                cpu.bl = byte(app, cpu.esi);
-                cpu.esi = cpu.ecx;
-                putByte(app, cpu.edi, cpu.bl);
-                cpu.edi = at(app, kPairRight);
-                cpu.bl = byte(app, cpu.esi);
-                putByte(app, cpu.edx + cpu.edi, cpu.bl);
-                cpu.ebx = at(app, kPairKind);
-                ++cpu.eax;
-                ++cpu.ecx;
-                putByte(app, cpu.edx + cpu.ebx, 0xff);
-            } while (sreg32(cpu.eax) < sreg32(cpu.ebp));
-            cpu.ebx = pop(app, cpu);
-            cpu.edi = pop(app, cpu);
-        }
-        put(app, kPairIn, cpu.ecx);
-        cpu.esi = pop(app, cpu);
-        for (;;)
-        {
-            cpu.ecx = at(app, kPairIn);
-            cpu.edx = 0;
-            cpu.eax = at(app, kPairKind);
-            cpu.dl = byte(app, cpu.ecx);
-            cpu.al = byte(app, cpu.edx + cpu.eax);
-            ++cpu.ecx;
-            if (cpu.al == 0)
-            {
-                cpu.eax = at(app, kPairOut);
-                ++cpu.eax;
-                put(app, kPairIn, cpu.ecx);
-                putByte(app, cpu.eax - 1, cpu.dl);
-                put(app, kPairOut, cpu.eax);
-                continue;
-            }
-            put(app, kPairIn, cpu.ecx);
-            if (x86::sreg8(cpu.al) < 0)
-            {
-                cpu.eax = at(app, kPairLeft);
-                cpu.al = byte(app, cpu.edx + cpu.eax);
-                cpu.eax &= 0xff;
-                if (!direct(app, cpu, pairExpand))
-                    return;
-                cpu.eax = at(app, kPairRight);
-                cpu.al = byte(app, cpu.edx + cpu.eax);
-                cpu.eax &= 0xff;
-                if (!direct(app, cpu, pairExpand))
-                    return;
-                continue;
-            }
-            cpu.edx = 0;
-            cpu.dl = byte(app, cpu.ecx);
-            ++cpu.ecx;
-            if (cpu.edx == 0)
-                break;
-            cpu.eax = at(app, kPairOut);
-            ++cpu.eax;
-            put(app, kPairIn, cpu.ecx);
-            putByte(app, cpu.eax - 1, cpu.dl);
-            put(app, kPairOut, cpu.eax);
-        }
+        put(app, kPairIn, 0);
+        return {0, rights, 0, 0};
     }
-    cpu.eax = at(app, f + kTotal);
-    put(app, kPairIn, cpu.ecx);
-    cpu.esp += 0x304;
-    cpu.ebp = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
-    cpu.esp += 4;
+    reg32 in = source + 2;
+    if ((reg32(byte(app, source)) << 8 | byte(app, source + 1)) == kPairsMore)
+        in += 3;
+    const reg32 total = reg32(byte(app, in)) << 16 | reg32(byte(app, in + 1)) << 8 | byte(app, in + 2);
+    for (reg32 i = 0; i < 0x100; ++i)
+        putByte(app, at(app, kPairKind) + i, kNone);
+    const reg8 escape = byte(app, in + 3);
+    putByte(app, kinds + escape, kEscape);
+    const reg32 pairs = byte(app, in + 4);
+    in += 5;
+    for (reg32 i = 0; sreg32(i) < sreg32(pairs); ++i, in += 3)
+    {
+        const reg8 pair = byte(app, in);
+        putByte(app, at(app, kPairLeft) + pair, byte(app, in + 1));
+        putByte(app, at(app, kPairRight) + pair, byte(app, in + 2));
+        putByte(app, at(app, kPairKind) + pair, kPair);
+    }
+    put(app, kPairIn, in);
+    for (;;)
+    {
+        in = at(app, kPairIn);
+        const reg8 c = byte(app, in);
+        const reg8 kind = byte(app, at(app, kPairKind) + c);
+        ++in;
+        if (kind == kNone)
+        {
+            const reg32 out = at(app, kPairOut);
+            put(app, kPairIn, in);
+            putByte(app, out, c);
+            put(app, kPairOut, out + 1);
+            continue;
+        }
+        put(app, kPairIn, in);
+        if (x86::sreg8(kind) < 0)
+        {
+            expandPair(app, byte(app, at(app, kPairLeft) + c));
+            expandPair(app, byte(app, at(app, kPairRight) + c));
+            continue;
+        }
+        const reg8 escaped = byte(app, in);
+        ++in;
+        if (escaped == 0)
+            break;
+        const reg32 out = at(app, kPairOut);
+        put(app, kPairIn, in);
+        putByte(app, out, escaped);
+        put(app, kPairOut, out + 1);
+    }
+    put(app, kPairIn, in);
+    return {total, 0, 0, 0};
+}
+
+/* 0x510110: unpackRuns from eax to edx. */
+void runUnpack(App* app, CPU& cpu)
+{
+    if (const auto total = unpackRuns(app, cpu, cpu.eax, cpu.edx))
+        answer(cpu, *total);
+}
+
+/* 0x510420: unpackBlock at ebx to eax, edx bytes a row; edx as it leaves it. */
+void dxtBlock(App* app, CPU& cpu)
+{
+    const LastColours left = unpackBlock(app, cpu.eax, cpu.edx, cpu.ebx);
+    cpu.edx = left.beforeLast;
+    answer(cpu, left.last);
+}
+
+/* 0x510760: unpackDxt from eax to edx, the blocks too for ebx not 0; edx
+ * and ebx as it leaves them. */
+void dxtUnpack(App* app, CPU& cpu)
+{
+    const Regs left = unpackDxt(app, cpu.eax, cpu.edx, cpu.ebx);
+    cpu.edx = left.edx;
+    cpu.ebx = left.ebx;
+    answer(cpu, left.eax);
+}
+
+/* 0x510820: expandPair of al. */
+void pairExpand(App* app, CPU& cpu)
+{
+    answer(cpu, expandPair(app, cpu.eax));
+}
+
+/* 0x510870: unpackPairs from eax to edx; edx as it leaves it. */
+void pairUnpack(App* app, CPU& cpu)
+{
+    const Regs left = unpackPairs(app, cpu, cpu.eax, cpu.edx);
+    cpu.edx = left.edx;
+    answer(cpu, left.eax);
 }
 
 /* 0x50ed50: EA's Huffman with runs (0x30fb, 0x32fb and 0x34fb -- each with

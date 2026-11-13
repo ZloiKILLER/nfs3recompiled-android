@@ -1,9 +1,29 @@
+#include "game_settings.h"
+#include "native_carstate.h"
+#include "native_collide.h"
+#include "native_controls_input.h"
+#include "native_controls_race.h"
+#include "native_ea_formats.h"
+#include "native_ea_memory.h"
+#include "native_ea_support.h"
+#include "native_ea_threads.h"
 #include "native_guest.h"
+#include "native_graphics.h"
+#include "native_load_cardb.h"
+#include "native_load_saves.h"
+#include "native_raceload.h"
+#include "native_track.h"
+#include "native_windows.h"
 #include "diag_hooks.h"
 #include "thrash.h"
+#include <winapi/advapi32.h>
+#include <winapi/kernel32.h>
+#include <winapi/user32.h>
 
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
+#include <optional>
 
 /* The game's graphics that were still generated: what drives the THRASH
  * driver itself (voodoo2a, the port's own in port_thrash.cpp) -- its states,
@@ -12,12 +32,23 @@
  * addresses of decompiled.json named in "graphics" to the functions of those
  * names here (DECOMPILED_NATIVES), and the generated code calls them by name.
  *
- * Written as their code is, as the other natives: each push and pop to the
- * guest's stack, each call with the return address's slot, the registers as
- * the code leaves them, results in eax.  What they call of the driver they
- * call through the game's pointers to it (0x9ef900 on, thrash.h's order), of
- * the game's by address.  tools/game_checks holds each against its generated
- * code, with every one of the driver's functions stood in by its name. */
+ * Each is a typed function of its own (a core), with an adapter under the
+ * game's name for the callers still on registers and the dispatch: it takes
+ * the registers, calls the core and leaves eax, the registers the game's code
+ * pushes and pops (Kept) and the x87 as the code does.  The other typed
+ * files' functions their headers declare the cores call as C++
+ * (guest::direct), the registers the code has around such a call as it has
+ * them; the game's other functions they call by address, through a small
+ * helper each with the registers the code has at that call (the check's
+ * stand-ins log them, and a void one leaves eax as it was); the driver's
+ * through the game's pointers to it (0x9ef900 on, thrash.h's order,
+ * thrash()).  Locals a callee is handed the
+ * address of stay on the guest's stack as deep as the code has them
+ * (GuestFrame), and so does a call that reaches the Error, which hands
+ * vsprintf an address on the stack.  gameMain alone is still written as its
+ * code is, each push and pop to the guest's stack.
+ * tools/game_checks holds each against its generated code, with every one of
+ * the driver's functions stood in by its name. */
 namespace nfs3hp
 {
 namespace graphics
@@ -58,15 +89,6 @@ void putHalf(win32::WinApplication* app, reg32 address, reg16 value)
     app->getMemory<reg16>(address) = value;
 }
 
-/* A call as the code makes it: the return address's slot, and esp as the
- * callee leaves it.  False when the game stopped in it. */
-bool direct(win32::WinApplication* app, x86::CPU& cpu, void (*function)(win32::WinApplication*, x86::CPU&))
-{
-    cpu.esp -= 4;
-    function(app, cpu);
-    return !cpu.terminate;
-}
-
 bool byAddress(win32::WinApplication* app, x86::CPU& cpu, reg32 target)
 {
     cpu.esp -= 4;
@@ -84,13 +106,79 @@ constexpr reg32 kThrashUnlockWindow = 0x9ef95c, kThrashTUpdate = 0x9ef964, kThra
 constexpr reg32 kThrashSetState = 0x9ef96c, kThrashClearWindow = 0x9ef970, kThrashDrawTri = 0x9ef974;
 constexpr reg32 kThrashInit = 0x9ef978, kThrashRestore = 0x9ef97c, kThrashAbout = 0x9ef980;
 
-/* THRASH_setstate(state, value), as the code pushes it: value, then state. */
-bool setState(win32::WinApplication* app, x86::CPU& cpu, reg32 state, reg32 value)
+using App = win32::WinApplication;
+using CPU = x86::CPU;
+
+/* One of the driver's functions, through the game's pointer to it: stdcall, its arguments on the
+ * guest's stack.  What it leaves in eax -- a void one leaves eax as the caller had it, so eax at the
+ * call is what the game's code has there -- or nullopt when the game stopped in it. */
+std::optional<reg32> thrash(App* app, CPU& cpu, reg32 pointer, std::initializer_list<reg32> arguments = {})
 {
-    push(app, cpu, value);
-    push(app, cpu, state);
-    return byAddress(app, cpu, at(app, kThrashSetState));
+    if (!guest::call(app, cpu, at(app, pointer), arguments))
+        return std::nullopt;
+    return cpu.eax;
 }
+
+/* THRASH_setstate(state, value). */
+std::optional<reg32> setState(App* app, CPU& cpu, reg32 state, reg32 value)
+{
+    return thrash(app, cpu, kThrashSetState, {state, value});
+}
+
+/* Locals the game's code hands a callee the address of: kept on the guest's stack as deep as the
+ * code has them (`pushed` below esp on entry, `bytes` of them), esp under them while it lives. */
+class GuestFrame
+{
+public:
+    GuestFrame(CPU& cpu, reg32 pushed, reg32 bytes) : cpu(cpu), esp(cpu.esp), base(cpu.esp - pushed)
+    {
+        cpu.esp = base - bytes;
+    }
+    ~GuestFrame() { cpu.esp = esp; }
+    reg32 operator-(reg32 offset) const { return base - offset; }
+
+private:
+    CPU& cpu;
+    const reg32 esp;
+    const reg32 base;
+};
+
+constexpr reg32 kError = 0x401010;
+
+/* sub_401010, the game's Error, by address: its text on the stack (cdecl). */
+bool error(App* app, CPU& cpu, reg32 text)
+{
+    return guest::call(app, cpu, kError, {text});
+}
+
+// Which of ebx, ecx, edx, esi, edi a function of the game's pushes on entry and pops before it
+// returns.
+constexpr unsigned kEbx = 1, kEcx = 2, kEdx = 4, kEsi = 8, kEdi = 0x10;
+
+/* Those registers as the caller had them, which an adapter gives back: whatever the driver or the
+ * callees left in them, the game's code's caller sees them unchanged. */
+struct Kept
+{
+    Kept(const CPU& cpu, unsigned which)
+        : which(which), ebx(cpu.ebx), ecx(cpu.ecx), edx(cpu.edx), esi(cpu.esi), edi(cpu.edi)
+    {
+    }
+    void back(CPU& cpu) const
+    {
+        if (which & kEbx)
+            cpu.ebx = ebx;
+        if (which & kEcx)
+            cpu.ecx = ecx;
+        if (which & kEdx)
+            cpu.edx = edx;
+        if (which & kEsi)
+            cpu.esi = esi;
+        if (which & kEdi)
+            cpu.edi = edi;
+    }
+    unsigned which;
+    reg32 ebx, ecx, edx, esi, edi;
+};
 
 // The driver's flags (sub_4b6020): 1 << its type, a word.  0x06 the software
 // renderers, 0x180 PowerVR's.
@@ -111,95 +199,79 @@ constexpr reg32 kKeptDepth = 0x554e64;          // thrash::kStateDepth
 constexpr reg32 kKeptFogDensity = 0x554e68;     // thrash::kStateFogDensity
 constexpr reg32 kKeptFogColour = 0x554e6c;      // thrash::kStateFogColour
 
-/* 0x431900: state eax set to edx through THRASH_setstate.  The texture, the
- * blending, the fog, the texture's addressing and the depth test are sent
- * only when they change; a new fog density or colour sends the fog's own state
- * again after it, unless that is negative.  Every other state is sent as it
- * comes.  eax: the driver's answer, or 1 for one not sent. */
-void setRenderState(win32::WinApplication* app, x86::CPU& cpu)
+/* 0x431900's core: render state `state` set to `value` through THRASH_setstate.  The texture, the
+ * blending, the fog, the texture's addressing and the depth test are sent only when they change; a
+ * new fog density or colour sends the fog's own state again after it, unless that is negative.
+ * Every other state is sent as it comes.  The driver's answer (the first's, of two), or 1 for one
+ * not sent.  eax at each call as the game's code has it: the value, the fog for the fog again after
+ * a density, the first answer after a colour. */
+std::optional<reg32> renderState(App* app, CPU& cpu, reg32 state, reg32 value)
 {
-    push(app, cpu, cpu.ebx);
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    cpu.ecx = cpu.eax;
-    cpu.eax = cpu.edx;
-    cpu.ebx = 1;
-    // A kept state: sent if it changed, the driver's answer in ebx.
-    auto kept = [&](reg32 keptAt, reg32 state, reg32 value) {
+    cpu.eax = value;
+    // A kept state: sent if it changed.
+    auto kept = [&](reg32 keptAt) -> std::optional<reg32> {
         if (value == at(app, keptAt))
-            return true;
-        push(app, cpu, value);
-        push(app, cpu, state);
+            return 1;
         put(app, keptAt, value);
-        if (!byAddress(app, cpu, at(app, kThrashSetState)))
-            return false;
-        cpu.ebx = cpu.eax;
-        return true;
+        return setState(app, cpu, state, value);
     };
-    // The fog's state again after its density or colour, when it is not negative.
-    auto fogAgain = [&](reg32 fog) {
+    // A fog density or colour, kept, then the fog's own state again when it is not negative.
+    auto keptThenFog = [&](reg32 keptAt) -> std::optional<reg32> {
+        if (value == at(app, keptAt))
+            return 1;
+        put(app, keptAt, value);
+        const std::optional<reg32> answer = setState(app, cpu, state, value);
+        if (!answer)
+            return std::nullopt;
+        const reg32 fog = at(app, kKeptFog);
         if (sreg32(fog) < 0)
-            return true;
-        push(app, cpu, fog);
-        push(app, cpu, thrash::kStateFog);
-        return byAddress(app, cpu, at(app, kThrashSetState));
+            return answer;
+        if (state == thrash::kStateFogDensity)
+            cpu.eax = fog;
+        if (!setState(app, cpu, thrash::kStateFog, fog))
+            return std::nullopt;
+        return answer;
     };
-    const reg32 state = cpu.ecx;
-    bool going = true;
-    if (state == thrash::kStateTexture)
-        going = kept(kKeptTexture, cpu.ebx, cpu.edx);
-    else if (state == thrash::kStateDepth)
-        going = kept(kKeptDepth, thrash::kStateDepth, cpu.edx);
-    else if (state == thrash::kStateTextureAddress)
-        going = kept(kKeptTextureAddress, thrash::kStateTextureAddress, cpu.edx);
-    else if (state == thrash::kStateFogDensity)
+    switch (state)
     {
-        if (cpu.edx != at(app, kKeptFogDensity))
-        {
-            push(app, cpu, cpu.edx);
-            push(app, cpu, thrash::kStateFogDensity);
-            put(app, kKeptFogDensity, cpu.edx);
-            if (!byAddress(app, cpu, at(app, kThrashSetState)))
-                return;
-            cpu.ebx = cpu.eax;
-            cpu.eax = at(app, kKeptFog);
-            going = fogAgain(cpu.eax);
-        }
+    case thrash::kStateTexture:
+        return kept(kKeptTexture);
+    case thrash::kStateDepth:
+        return kept(kKeptDepth);
+    case thrash::kStateTextureAddress:
+        return kept(kKeptTextureAddress);
+    case thrash::kStateFogDensity:
+        return keptThenFog(kKeptFogDensity);
+    case thrash::kStateFogColour:
+        return keptThenFog(kKeptFogColour);
+    case thrash::kStateFog:
+        return kept(kKeptFog);
+    case thrash::kStateBlend:
+        return kept(kKeptBlend);
+    default:
+        return setState(app, cpu, state, value);
     }
-    else if (state == thrash::kStateFogColour)
-    {
-        if (cpu.eax != at(app, kKeptFogColour))
-        {
-            push(app, cpu, cpu.eax);
-            push(app, cpu, cpu.ecx);
-            put(app, kKeptFogColour, cpu.eax);
-            if (!byAddress(app, cpu, at(app, kThrashSetState)))
-                return;
-            cpu.ecx = at(app, kKeptFog);
-            cpu.ebx = cpu.eax;
-            going = fogAgain(cpu.ecx);
-        }
-    }
-    else if (state == thrash::kStateFog)
-        going = kept(kKeptFog, thrash::kStateFog, cpu.eax);
-    else if (state == thrash::kStateBlend)
-        going = kept(kKeptBlend, cpu.ecx, cpu.edx);
-    else
-    {
-        push(app, cpu, cpu.eax);
-        push(app, cpu, cpu.ecx);
-        if (!byAddress(app, cpu, at(app, kThrashSetState)))
-            return;
-        cpu.ebx = cpu.eax;
-    }
-    if (!going)
-        return;
-    cpu.eax = cpu.ebx;
-    cpu.ebp = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
-    cpu.ebx = pop(app, cpu);
-    cpu.esp += 4;
+}
+
+/* renderState as the game's code calls 0x431900: the value in edx, eax its answer after, ebx and
+ * ecx kept.  False when the game stopped. */
+bool sendState(App* app, CPU& cpu, reg32 state, reg32 value)
+{
+    const Kept kept(cpu, kEbx | kEcx);
+    cpu.edx = value;
+    const std::optional<reg32> answer = renderState(app, cpu, state, value);
+    if (!answer)
+        return false;
+    cpu.eax = *answer;
+    kept.back(cpu);
+    return true;
+}
+
+/* 0x431900: renderState for state eax, value edx. */
+void setRenderState(App* app, CPU& cpu)
+{
+    if (sendState(app, cpu, cpu.eax, cpu.edx))
+        cpu.esp += 4;
 }
 
 /* The software renderers' blending (softtria's): the rows of the colour
@@ -212,150 +284,110 @@ constexpr reg32 kBlendTableGreen = 0x5f0798;       // the green rows of a 5:6:5 
 constexpr reg32 kBlendRowBlue = 0x5f1f98, kBlendRowRed = 0x5f1f9c, kBlendRowGreen = 0x5f1fa4;  // the rows chosen
 constexpr reg32 kScreenBits = 0x56438c;            // 15 for a 5:5:5 screen
 
-/* 0x432390: with the blending on (kKeptBlend 1), the rows for colour eax
- * (0xAARRGGBB) chosen -- each channel times the alpha, >> 11 -- and sent with
- * kSoftwareBlendDraw. */
-void setSoftwareBlendColour(win32::WinApplication* app, x86::CPU& cpu)
+/* A blended colour's row of the blending tables: the channel times the alpha, by 2048, a row a
+ * step. */
+reg32 blendStep(reg32 channel, reg32 alpha)
 {
-    push(app, cpu, cpu.ebx);
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.edx);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    cpu.edx = cpu.eax;
-    if (at(app, kKeptBlend) == 1)
-    {
-        cpu.ecx = reg32(sreg32(cpu.eax) >> 0x18) & 0xff;
-        cpu.eax = (cpu.eax & 0xff) * cpu.ecx;
-        cpu.eax = reg32(sreg32(cpu.eax) >> 0xb) << 6;
-        cpu.ebx = kBlendTable + cpu.eax;
-        cpu.eax = (reg32(sreg32(cpu.edx) >> 0x10) & 0xff) * cpu.ecx;
-        put(app, kBlendRowBlue, cpu.ebx);
-        cpu.eax = reg32(sreg32(cpu.eax) >> 0xb) << 6;
-        cpu.ebx = kBlendTable + cpu.eax;
-        cpu.eax = (reg32(sreg32(cpu.edx) >> 8) & 0xff) * cpu.ecx;
-        put(app, kBlendRowRed, cpu.ebx);
-        cpu.eax = reg32(sreg32(cpu.eax) >> 0xb);
-        cpu.ebx = at(app, kScreenBits);
-        cpu.eax <<= 5;
-        if (cpu.ebx == 0xf)
-        {
-            cpu.edx = kBlendTable;
-            cpu.eax += cpu.eax;
-        }
-        else
-        {
-            cpu.edx = kBlendTableGreen;
-            cpu.eax <<= 2;
-        }
-        cpu.edx += cpu.eax;
-        put(app, kBlendRowGreen, cpu.edx);
-        if (!setState(app, cpu, kStateSoftwareBlend, kSoftwareBlendDraw))
-            return;
-    }
-    cpu.ebp = pop(app, cpu);
-    cpu.edx = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
-    cpu.ebx = pop(app, cpu);
+    return channel * alpha >> 11;  // at most 255 * 255: the code's sar is a shift
+}
+
+/* 0x432390's core: with the blending on (kKeptBlend 1), the rows for colour 0xAARRGGBB chosen and
+ * sent with kSoftwareBlendDraw.  eax at the call as the code has it: the green row's offset. */
+bool softwareBlendColour(App* app, CPU& cpu, reg32 colour)
+{
+    if (at(app, kKeptBlend) != 1)
+        return true;
+    const reg32 alpha = colour >> 24;
+    put(app, kBlendRowBlue, kBlendTable + (blendStep(colour & 0xff, alpha) << 6));
+    put(app, kBlendRowRed, kBlendTable + (blendStep(colour >> 16 & 0xff, alpha) << 6));
+    const reg32 green = blendStep(colour >> 8 & 0xff, alpha) << 5;
+    const reg32 offset = at(app, kScreenBits) == 0xf ? green * 2 : green << 2;
+    put(app, kBlendRowGreen, (at(app, kScreenBits) == 0xf ? kBlendTable : kBlendTableGreen) + offset);
+    cpu.eax = offset;
+    return setState(app, cpu, kStateSoftwareBlend, kSoftwareBlendDraw).has_value();
+}
+
+/* 0x432390: softwareBlendColour for colour eax. */
+void setSoftwareBlendColour(App* app, CPU& cpu)
+{
+    const Kept kept(cpu, kEbx | kEcx | kEdx);
+    if (!softwareBlendColour(app, cpu, cpu.eax))
+        return;
+    kept.back(cpu);
     cpu.esp += 4;
 }
 
 /* 0x432370: the software renderers' blending off (kStateSoftwareBlend 0). */
-void clearSoftwareBlend(win32::WinApplication* app, x86::CPU& cpu)
+void clearSoftwareBlend(App* app, CPU& cpu)
 {
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.edx);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
+    const Kept kept(cpu, kEcx | kEdx);
     if (!setState(app, cpu, kStateSoftwareBlend, 0))
         return;
-    cpu.ebp = pop(app, cpu);
-    cpu.edx = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
+    kept.back(cpu);
     cpu.esp += 4;
 }
 
 /* ---- The frame ---- */
 
-/* 0x434a00: a frame ended: the window (THRASH_window 2) but on PowerVR, the
- * picture flushed if edx, flipped if eax, the window again, and on a card
- * that is neither PowerVR nor a software renderer, the window cleared. */
-void endFrame(win32::WinApplication* app, x86::CPU& cpu)
+/* 0x434a00's core: a frame ended: the window taken (THRASH_window 2) but on PowerVR, the picture
+ * flushed if `flush`, flipped if `flip`, the window again, and on a card that is neither PowerVR nor
+ * a software renderer, the window cleared.  eax as the driver leaves it. */
+bool frameEnd(App* app, CPU& cpu, bool flip, bool flush)
 {
-    push(app, cpu, cpu.ebx);
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.esi);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    cpu.esi = cpu.eax;
-    cpu.ebx = cpu.edx;
-    auto window = [&]() {
-        if (half(app, kDriverFlags) & kDriverPowerVr)
-            return true;
-        push(app, cpu, 2);
-        return byAddress(app, cpu, at(app, kThrashWindow));
-    };
-    if (!window())
+    const bool powerVr = half(app, kDriverFlags) & kDriverPowerVr;
+    auto window = [&]() { return powerVr || thrash(app, cpu, kThrashWindow, {2}); };
+    if (!window() || (flush && !thrash(app, cpu, kThrashFlushWindow)) || (flip && !thrash(app, cpu, kThrashPageFlip))
+        || !window())
+        return false;
+    if (!(byte(app, kDriverFlags) & kDriverSoftware) && !powerVr)
+        return thrash(app, cpu, kThrashClearWindow).has_value();
+    return true;
+}
+
+/* 0x434a00: frameEnd, flipped if eax, flushed if edx. */
+void endFrame(App* app, CPU& cpu)
+{
+    const Kept kept(cpu, kEbx | kEcx);
+    if (!frameEnd(app, cpu, cpu.eax != 0, cpu.edx != 0))
         return;
-    if (cpu.ebx != 0 && !byAddress(app, cpu, at(app, kThrashFlushWindow)))
-        return;
-    if (cpu.esi != 0 && !byAddress(app, cpu, at(app, kThrashPageFlip)))
-        return;
-    if (!window())
-        return;
-    if (!(byte(app, kDriverFlags) & kDriverSoftware) && !(half(app, kDriverFlags) & kDriverPowerVr)
-        && !byAddress(app, cpu, at(app, kThrashClearWindow)))
-        return;
-    cpu.ebp = pop(app, cpu);
-    cpu.esi = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
-    cpu.ebx = pop(app, cpu);
+    kept.back(cpu);
     cpu.esp += 4;
 }
 
-/* 0x434b20: the driver waited for (THRASH_sync 0) and the window taken
- * (THRASH_window 2). */
-void syncWindow(win32::WinApplication* app, x86::CPU& cpu)
+/* 0x434b20: the driver waited for (THRASH_sync 0) and the window taken (THRASH_window 2). */
+void syncWindow(App* app, CPU& cpu)
 {
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.edx);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    push(app, cpu, 0);
-    if (!byAddress(app, cpu, at(app, kThrashSync)))
+    const Kept kept(cpu, kEcx | kEdx);
+    if (!thrash(app, cpu, kThrashSync, {0}) || !thrash(app, cpu, kThrashWindow, {2}))
         return;
-    push(app, cpu, 2);
-    if (!byAddress(app, cpu, at(app, kThrashWindow)))
-        return;
-    cpu.ebp = pop(app, cpu);
-    cpu.edx = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
+    kept.back(cpu);
     cpu.esp += 4;
 }
 
-/* 0x434b40: the picture flushed and flipped. */
-void flushAndFlip(win32::WinApplication* app, x86::CPU& cpu)
+/* The picture flushed and flipped (THRASH_flushwindow, THRASH_pageflip). */
+bool flushFlip(App* app, CPU& cpu)
 {
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.edx);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    if (!byAddress(app, cpu, at(app, kThrashFlushWindow)) || !byAddress(app, cpu, at(app, kThrashPageFlip)))
+    return thrash(app, cpu, kThrashFlushWindow) && thrash(app, cpu, kThrashPageFlip);
+}
+
+/* 0x434b40: flushFlip. */
+void flushAndFlip(App* app, CPU& cpu)
+{
+    const Kept kept(cpu, kEcx | kEdx);
+    if (!flushFlip(app, cpu))
         return;
-    cpu.ebp = pop(app, cpu);
-    cpu.edx = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
+    kept.back(cpu);
     cpu.esp += 4;
 }
 
 /* 0x5244e0: THRASH_idle; eax 0. */
-void driverIdle(win32::WinApplication* app, x86::CPU& cpu)
+void driverIdle(App* app, CPU& cpu)
 {
-    push(app, cpu, cpu.ecx);
-    if (!byAddress(app, cpu, at(app, kThrashIdle)))
+    const Kept kept(cpu, kEcx);
+    if (!thrash(app, cpu, kThrashIdle))
         return;
     cpu.eax = 0;
-    cpu.ecx = pop(app, cpu);
+    kept.back(cpu);
     cpu.esp += 4;
 }
 
@@ -364,153 +396,154 @@ void driverIdle(win32::WinApplication* app, x86::CPU& cpu)
 constexpr reg32 kDriverOnCard = 0x7a3a60;      // 1 but on the software renderers (sub_4b59c0)
 constexpr reg16 kDriverSofttria = 0x02;        // kDriverFlags' bit for softtria
 
-/* 0x4d5c90: the window cleared with the depth test as the driver has it, and
- * the depth test off after. */
-void clearWithDepth(win32::WinApplication* app, x86::CPU& cpu)
+/* 0x4d5c90's core: the window cleared with the depth test as the driver has it, and the depth test
+ * off after; ecx and edx kept, as the game's code keeps them for its callers.  eax: the last
+ * state's answer. */
+bool clearDepth(App* app, CPU& cpu)
 {
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.edx);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    cpu.eax = thrash::kStateDepth;
-    cpu.edx = at(app, kDriverOnCard);
-    if (!direct(app, cpu, setRenderState) || !byAddress(app, cpu, at(app, kThrashClearWindow)))
-        return;
-    cpu.eax = thrash::kStateDepth;
-    cpu.edx = 0;
-    if (!direct(app, cpu, setRenderState))
-        return;
-    cpu.ebp = pop(app, cpu);
-    cpu.edx = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
-    cpu.esp += 4;
+    const Kept kept(cpu, kEcx | kEdx);
+    if (!sendState(app, cpu, thrash::kStateDepth, at(app, kDriverOnCard)) || !thrash(app, cpu, kThrashClearWindow)
+        || !sendState(app, cpu, thrash::kStateDepth, 0))
+        return false;
+    kept.back(cpu);
+    return true;
+}
+
+/* 0x4d5c90: clearDepth. */
+void clearWithDepth(App* app, CPU& cpu)
+{
+    if (clearDepth(app, cpu))
+        cpu.esp += 4;
 }
 
 constexpr reg32 kDrawingBegun = 0x563b30;      // set by beginDrawing, once
 constexpr reg32 kResetTextures = 0x4d5c40;
 
-/* 0x4d5cc0: drawing begun, once: the textures reset first if eax; then each
- * buffer (THRASH_window 2, then 1) cleared if edx. */
-void beginDrawing(win32::WinApplication* app, x86::CPU& cpu)
+/* sub_4d5c40, every texture let go of (port_shapes), by address: eax, edx, ebx and ecx as the
+ * game's code has them there, which its stand-in logs. */
+bool resetTextures(App* app, CPU& cpu)
 {
-    push(app, cpu, cpu.ebx);
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    cpu.ebx = cpu.edx;
-    if (at(app, kDrawingBegun) == 0)
-    {
-        put(app, kDrawingBegun, 1);
-        if (cpu.eax != 0 && !byAddress(app, cpu, kResetTextures))
-            return;
-        for (const reg32 buffer : {2u, 1u})
-        {
-            push(app, cpu, buffer);
-            if (!byAddress(app, cpu, at(app, kThrashWindow)))
-                return;
-            if (cpu.ebx != 0 && !direct(app, cpu, clearWithDepth))
-                return;
-        }
-    }
-    cpu.ebp = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
-    cpu.ebx = pop(app, cpu);
+    return byAddress(app, cpu, kResetTextures);
+}
+
+/* 0x4d5cc0's core: drawing begun, once: the textures reset first if `reset` (in eax, `clear` in edx
+ * and ebx at that call, as the code has them); then each buffer (THRASH_window 2, then 1) cleared
+ * if `clear`. */
+bool drawingBegun(App* app, CPU& cpu, reg32 reset, reg32 clear)
+{
+    if (at(app, kDrawingBegun) != 0)
+        return true;
+    put(app, kDrawingBegun, 1);
+    cpu.ebx = clear;
+    if (reset != 0 && !resetTextures(app, cpu))
+        return false;
+    for (const reg32 buffer : {2u, 1u})
+        if (!thrash(app, cpu, kThrashWindow, {buffer}) || (clear != 0 && !clearDepth(app, cpu)))
+            return false;
+    return true;
+}
+
+/* 0x4d5cc0: drawingBegun, reset eax, clear edx. */
+void beginDrawing(App* app, CPU& cpu)
+{
+    const Kept kept(cpu, kEbx | kEcx);
+    if (!drawingBegun(app, cpu, cpu.eax, cpu.edx))
+        return;
+    kept.back(cpu);
     cpu.esp += 4;
 }
 
-/* Both buffers cleared: the window taken, then twice cleared, flushed and
- * flipped. */
-bool clearTwice(win32::WinApplication* app, x86::CPU& cpu)
+/* Both buffers cleared: the window taken, then twice cleared, flushed and flipped. */
+bool clearTwice(App* app, CPU& cpu)
 {
-    push(app, cpu, 2);
-    if (!byAddress(app, cpu, at(app, kThrashWindow)))
+    if (!thrash(app, cpu, kThrashWindow, {2}))
         return false;
     for (int i = 0; i < 2; ++i)
-        if (!direct(app, cpu, clearWithDepth) || !byAddress(app, cpu, at(app, kThrashFlushWindow))
-            || !byAddress(app, cpu, at(app, kThrashPageFlip)))
+        if (!clearDepth(app, cpu) || !flushFlip(app, cpu))
             return false;
     return true;
 }
 
 /* 0x4d5d30: both buffers cleared. */
-void clearBothBuffers(win32::WinApplication* app, x86::CPU& cpu)
+void clearBothBuffers(App* app, CPU& cpu)
 {
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.edx);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
+    const Kept kept(cpu, kEcx | kEdx);
     if (!clearTwice(app, cpu))
         return;
-    cpu.ebp = pop(app, cpu);
-    cpu.edx = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
+    kept.back(cpu);
     cpu.esp += 4;
 }
 
 /* 0x4d5d70: both buffers cleared, then the textures reset. */
-void clearBothBuffersAndReset(win32::WinApplication* app, x86::CPU& cpu)
+void clearBothBuffersAndReset(App* app, CPU& cpu)
 {
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.edx);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    if (!clearTwice(app, cpu) || !byAddress(app, cpu, kResetTextures))
+    const Kept kept(cpu, kEcx | kEdx);
+    if (!clearTwice(app, cpu) || !resetTextures(app, cpu))
         return;
-    cpu.ebp = pop(app, cpu);
-    cpu.edx = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
+    kept.back(cpu);
     cpu.esp += 4;
 }
 
-/* 0x4d9120: the window taken (THRASH_window 2) and, but on softtria, cleared. */
-void takeWindowAndClear(win32::WinApplication* app, x86::CPU& cpu)
+/* 0x4d9120's core: the window taken (THRASH_window 2) and, but on softtria, cleared; ecx and edx
+ * kept, as the code keeps them. */
+bool windowTakenAndCleared(App* app, CPU& cpu)
 {
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.edx);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    push(app, cpu, 2);
-    if (!byAddress(app, cpu, at(app, kThrashWindow)))
-        return;
-    if (!(byte(app, kDriverFlags) & kDriverSofttria) && !direct(app, cpu, clearWithDepth))
-        return;
-    cpu.ebp = pop(app, cpu);
-    cpu.edx = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
-    cpu.esp += 4;
+    const Kept kept(cpu, kEcx | kEdx);
+    if (!thrash(app, cpu, kThrashWindow, {2})
+        || (!(byte(app, kDriverFlags) & kDriverSofttria) && !clearDepth(app, cpu)))
+        return false;
+    kept.back(cpu);
+    return true;
+}
+
+/* 0x4d9120: windowTakenAndCleared. */
+void takeWindowAndClear(App* app, CPU& cpu)
+{
+    if (windowTakenAndCleared(app, cpu))
+        cpu.esp += 4;
 }
 
 constexpr reg32 kTicks = 0x79c1a4;             // the game's clock (native_frontend_loop.cpp's)
 constexpr reg32 kLastFlipTick = 0x56415c;      // the clock at the last flipAndWaitFrames
 constexpr reg32 kWaitForTicks = 0x4c9860;
 
-/* 0x4d9140: the picture flushed and flipped, then sub_4c9860 waited in with
- * the clock in eax and edx until it is two ticks past the last flip's, which
- * it is kept as. */
-void flipAndWaitFrames(win32::WinApplication* app, x86::CPU& cpu)
+/* sub_4c9860, a wait for the clock, by address: the clock in eax and edx. */
+bool waitForTicks(App* app, CPU& cpu, reg32 ticks)
 {
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.edx);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    if (!byAddress(app, cpu, at(app, kThrashFlushWindow)) || !byAddress(app, cpu, at(app, kThrashPageFlip)))
-        return;
-    cpu.eax = at(app, kTicks);
-    cpu.edx = cpu.eax;
-    for (;;)
+    cpu.eax = ticks;
+    cpu.edx = ticks;
+    return byAddress(app, cpu, kWaitForTicks);
+}
+
+/* 0x4d9140's core: the picture flushed and flipped, then waited (sub_4c9860) until the clock is two
+ * ticks past the last flip's, which it is kept as.  The tick waited for, as eax has it, or nullopt
+ * when the game stopped. */
+std::optional<reg32> flipAndWait(App* app, CPU& cpu)
+{
+    if (!flushFlip(app, cpu))
+        return std::nullopt;
+    reg32 now = at(app, kTicks);
+    reg32 until = at(app, kLastFlipTick) + 2;
+    while (sreg32(until) > sreg32(now))
     {
-        cpu.eax = at(app, kLastFlipTick) + 2;
-        if (sreg32(cpu.eax) <= sreg32(cpu.edx))
-            break;
-        cpu.eax = at(app, kTicks);
-        cpu.edx = cpu.eax;
-        if (!byAddress(app, cpu, kWaitForTicks))
-            return;
+        now = at(app, kTicks);
+        if (!waitForTicks(app, cpu, now))
+            return std::nullopt;
+        until = at(app, kLastFlipTick) + 2;
     }
-    put(app, kLastFlipTick, cpu.edx);
-    cpu.ebp = pop(app, cpu);
-    cpu.edx = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
+    put(app, kLastFlipTick, now);
+    return until;
+}
+
+/* 0x4d9140: flipAndWait. */
+void flipAndWaitFrames(App* app, CPU& cpu)
+{
+    const Kept kept(cpu, kEcx | kEdx);
+    const std::optional<reg32> until = flipAndWait(app, cpu);
+    if (!until)
+        return;
+    cpu.eax = *until;
+    kept.back(cpu);
     cpu.esp += 4;
 }
 
@@ -521,119 +554,100 @@ void flipAndWaitFrames(win32::WinApplication* app, x86::CPU& cpu)
 constexpr reg32 kRectCorners = 0x5599a0;
 constexpr reg32 kCornerBytes = 0x20, kCornerColour = 0x10;
 
-void storeTop(win32::WinApplication* app, x86::CPU& cpu, reg32 address)
+void putFloat(App* app, reg32 address, float value)
 {
-    app->getMemory<float>(address) = float(cpu.fpu.pop());
+    app->getMemory<float>(address) = value;
 }
 
-/* 0x459350: a rectangle drawn flat, untextured: corners (eax, edx) and
- * (ebx, ecx), the colour [esp+4] at each.  Its corners clockwise from the
- * first; eax THRASH_drawquad's answer. */
-void drawFlatRectangle(win32::WinApplication* app, x86::CPU& cpu)
+float floatAt(App* app, reg32 address)
 {
-    push(app, cpu, cpu.esi);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    cpu.esp -= 0x10;
-    cpu.esi = cpu.ebx;
-    cpu.ebx = at(app, cpu.ebp + 0xc);
-    put(app, cpu.ebp - 0x10, cpu.eax);
-    put(app, cpu.ebp - 0xc, cpu.esi);
-    put(app, cpu.ebp - 8, cpu.edx);
-    put(app, cpu.ebp - 4, cpu.ecx);
-    for (reg32 corner = 3; corner < 4; --corner)
-        put(app, kRectCorners + corner * kCornerBytes + kCornerColour, cpu.ebx);
-    auto& fpu = cpu.fpu;
-    for (const reg32 local : {0x10u, 0xcu, 8u, 4u})
-        fpu.push(x86::Float(sreg32(at(app, cpu.ebp - local))));
-    cpu.eax = 1;
-    std::swap(fpu.st(0), fpu.st(3));
-    storeTop(app, cpu, kRectCorners);                      // the first corner's x: eax
-    std::swap(fpu.st(0), fpu.st(1));
-    storeTop(app, cpu, kRectCorners + kCornerBytes);       // the second's x: ebx
-    storeTop(app, cpu, kRectCorners + 4);                  // the first's y: edx
-    storeTop(app, cpu, kRectCorners + 2 * kCornerBytes + 4);  // the third's y: ecx
-    cpu.edx = 0;
-    for (const reg32 at4 : {kRectCorners + kCornerBytes, kRectCorners, kRectCorners + 4,
-                            kRectCorners + 2 * kCornerBytes + 4})
-        fpu.push(x86::Float(app->getMemory<float>(at4)));
-    std::swap(fpu.st(0), fpu.st(3));
-    storeTop(app, cpu, kRectCorners + 2 * kCornerBytes);       // the third's x: ebx
-    std::swap(fpu.st(0), fpu.st(1));
-    storeTop(app, cpu, kRectCorners + 3 * kCornerBytes);       // the fourth's x: eax
-    storeTop(app, cpu, kRectCorners + kCornerBytes + 4);       // the second's y: edx
-    storeTop(app, cpu, kRectCorners + 3 * kCornerBytes + 4);   // the fourth's y: ecx
-    if (!direct(app, cpu, setRenderState))
+    return app->getMemory<float>(address);
+}
+
+reg32 bitsOf(float value)
+{
+    reg32 bits;
+    std::memcpy(&bits, &value, sizeof bits);
+    return bits;
+}
+
+/* 0x459350's core: a rectangle drawn flat, untextured, between corners (left, top) and (right,
+ * bottom), `colour` at each: its corners clockwise from the first, the texture off, THRASH_drawquad.
+ * eax as the driver leaves it. */
+bool flatRectangle(App* app, CPU& cpu, sreg32 left, sreg32 top, sreg32 right, sreg32 bottom, reg32 colour)
+{
+    const auto corner = [](reg32 n) { return kRectCorners + n * kCornerBytes; };
+    for (reg32 n = 3; n < 4; --n)
+        put(app, corner(n) + kCornerColour, colour);
+    // Each fild and fstp: the integer as a float, rounded as C++ rounds it.
+    putFloat(app, corner(0), float(left));
+    putFloat(app, corner(1), float(right));
+    putFloat(app, corner(0) + 4, float(top));
+    putFloat(app, corner(2) + 4, float(bottom));
+    putFloat(app, corner(2), floatAt(app, corner(1)));
+    putFloat(app, corner(3), floatAt(app, corner(0)));
+    putFloat(app, corner(1) + 4, floatAt(app, corner(0) + 4));
+    putFloat(app, corner(3) + 4, floatAt(app, corner(2) + 4));
+    return sendState(app, cpu, thrash::kStateTexture, 0)
+        && thrash(app, cpu, kThrashDrawQuad, {corner(0), corner(1), corner(2), corner(3)});
+}
+
+/* 0x459350: flatRectangle from (eax, edx) to (ebx, ecx), the colour [esp+4], which ebx is left. */
+void drawFlatRectangle(App* app, CPU& cpu)
+{
+    const reg32 colour = at(app, cpu.esp + 4);
+    if (!flatRectangle(app, cpu, sreg32(cpu.eax), sreg32(cpu.edx), sreg32(cpu.ebx), sreg32(cpu.ecx), colour))
         return;
-    for (reg32 corner = 3; corner < 4; --corner)
-        push(app, cpu, kRectCorners + corner * kCornerBytes);
-    if (!byAddress(app, cpu, at(app, kThrashDrawQuad)))
-        return;
-    cpu.esp = cpu.ebp;
-    cpu.ebp = pop(app, cpu);
-    cpu.esi = pop(app, cpu);
+    cpu.ebx = colour;
     cpu.esp += 4 + 4;
 }
 
 /* The picture drawn whole on the screen: its four corners and the mesh that
  * makes them one quad. */
 constexpr reg32 kPictureCorners = 0x55e60c, kPictureMesh = 0x55e68c;
-constexpr reg32 kPollMessages = 0x4f0120;
 
-/* 0x49c570: a frame of one picture, texture eax, over the whole screen: the
- * window taken and cleared, the picture drawn, flushed, flipped, waited for;
- * then the game's messages seen to (sub_4f0120). */
-void showPicture(win32::WinApplication* app, x86::CPU& cpu)
+/* 0x49c570's core: a frame of one picture, `texture`, over the whole screen: the window taken and
+ * cleared, the picture drawn, flushed, flipped, waited for; then the game's messages seen to
+ * (ea::waitKey, 0x4f0120). */
+bool picture(App* app, CPU& cpu, reg32 texture)
 {
-    push(app, cpu, cpu.ebx);
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.edx);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    cpu.ebx = cpu.eax;
-    push(app, cpu, 2);
-    if (!byAddress(app, cpu, at(app, kThrashWindow)) || !byAddress(app, cpu, at(app, kThrashClearWindow)))
+    return thrash(app, cpu, kThrashWindow, {2}) && thrash(app, cpu, kThrashClearWindow)
+        && thrash(app, cpu, kThrashSetTexture, {texture})
+        && thrash(app, cpu, kThrashDrawQuadMesh, {1, kPictureCorners, kPictureMesh}) && flushFlip(app, cpu)
+        && thrash(app, cpu, kThrashSync, {0}) && guest::direct<0x4f0120, ea::waitKey>(app, cpu).has_value();
+}
+
+/* 0x49c570: picture, texture eax. */
+void showPicture(App* app, CPU& cpu)
+{
+    const Kept kept(cpu, kEbx | kEcx | kEdx);
+    if (!picture(app, cpu, cpu.eax))
         return;
-    push(app, cpu, cpu.ebx);
-    if (!byAddress(app, cpu, at(app, kThrashSetTexture)))
-        return;
-    push(app, cpu, kPictureMesh);
-    push(app, cpu, kPictureCorners);
-    push(app, cpu, 1);
-    if (!byAddress(app, cpu, at(app, kThrashDrawQuadMesh)) || !byAddress(app, cpu, at(app, kThrashFlushWindow))
-        || !byAddress(app, cpu, at(app, kThrashPageFlip)))
-        return;
-    push(app, cpu, 0);
-    if (!byAddress(app, cpu, at(app, kThrashSync)) || !byAddress(app, cpu, kPollMessages))
-        return;
-    cpu.ebp = pop(app, cpu);
-    cpu.edx = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
-    cpu.ebx = pop(app, cpu);
+    kept.back(cpu);
     cpu.esp += 4;
 }
 
-constexpr reg32 kTextureFormatFor = 0x49c5c0;
+std::optional<reg32> textureFormat(App* app, CPU& cpu);
 
-/* 0x49c600: a texture allocated (THRASH_talloc): eax and edx as given, its
- * format from sub_49c5c0 (eax). */
-void allocTexture(win32::WinApplication* app, x86::CPU& cpu)
+/* 0x49c600's core: a texture allocated (THRASH_talloc) of `width` and `height` -- eax and edx as
+ * the code hands them on -- in the format textureFormat gives.  eax as the driver leaves it. */
+bool textureAllocated(App* app, CPU& cpu, reg32 width, reg32 height)
 {
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    cpu.ecx = cpu.eax;
-    if (!byAddress(app, cpu, kTextureFormatFor))
+    std::optional<reg32> format;
+    {
+        const GuestFrame deep(cpu, 0xc, 0);  // the code's two pushes and the call's slot, for the Error's
+        format = textureFormat(app, cpu);
+    }
+    return format && thrash(app, cpu, kThrashTAlloc, {width, height, *format, 0, 0});
+}
+
+/* 0x49c600: textureAllocated, eax by edx. */
+void allocTexture(App* app, CPU& cpu)
+{
+    const Kept kept(cpu, kEcx);
+    if (!textureAllocated(app, cpu, cpu.eax, cpu.edx))
         return;
-    push(app, cpu, 0);
-    push(app, cpu, 0);
-    push(app, cpu, cpu.eax);
-    push(app, cpu, cpu.edx);
-    push(app, cpu, cpu.ecx);
-    if (!byAddress(app, cpu, at(app, kThrashTAlloc)))
-        return;
-    cpu.ebp = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
+    kept.back(cpu);
     cpu.esp += 4;
 }
 
@@ -642,128 +656,80 @@ void allocTexture(win32::WinApplication* app, x86::CPU& cpu)
 constexpr reg32 kScreenWidth = 0x7cda68, kScreenHeight = 0x7cda6c;
 constexpr reg32 kClipLeft = 0x7cda70, kClipTop = 0x7cda74, kClipWidth = 0x7cda78, kClipHeight = 0x7cda7c;
 constexpr reg32 kSetViewCorners = 0x4bf1b0;    // left, top, right, bottom as floats, then two more
+constexpr reg32 kViewNear = 0x3f800000, kViewDepthScale = 0x3b0355ad;  // setViewCorners' two more: 1, about 0.002
 
-/* 0x4bebe0: the rectangle drawn in set to x eax, y edx, width ebx, height
- * ecx, kept on the screen: THRASH_clip given its corners, sub_4bf1b0 them as
- * floats with 1 and 0.002. */
-void setClip(win32::WinApplication* app, x86::CPU& cpu)
+/* 0x4bebe0's core: the rectangle drawn in set to x, y, `wide` by `high`, kept on the screen:
+ * THRASH_clip given its corners, sub_4bf1b0 them as floats with 1 and 0.002.  The registers at that
+ * call as the code has them: eax the right, ebx the width, ecx the height. */
+bool clipSet(App* app, CPU& cpu, sreg32 x, sreg32 y, sreg32 wide, sreg32 high)
 {
-    push(app, cpu, cpu.esi);
-    push(app, cpu, cpu.edi);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    cpu.esp -= 4;
-    if (sreg32(cpu.eax) < 0)
-        cpu.eax = 0;
-    if (sreg32(cpu.edx) < 0)
-        cpu.edx = 0;
-    cpu.esi = at(app, kScreenWidth) - 1;
-    if (sreg32(cpu.eax) >= sreg32(cpu.esi))
-        cpu.eax = cpu.esi;
-    put(app, kClipLeft, cpu.eax);
-    cpu.eax = at(app, kScreenHeight) - 1;
-    if (sreg32(cpu.edx) >= sreg32(cpu.eax))
-        cpu.edx = cpu.eax;
-    cpu.eax = at(app, kScreenWidth);
-    put(app, kClipTop, cpu.edx);
-    cpu.eax -= at(app, kClipLeft);
-    if (sreg32(cpu.ebx) < sreg32(cpu.eax))
-        cpu.eax = cpu.ebx;
-    cpu.ebx = at(app, kClipTop);
-    put(app, kClipWidth, cpu.eax);
-    cpu.eax = at(app, kScreenHeight) - cpu.ebx;
-    if (sreg32(cpu.ecx) < sreg32(cpu.eax))
-        cpu.eax = cpu.ecx;
-    cpu.esi = at(app, kClipTop);
-    put(app, kClipHeight, cpu.eax);
-    cpu.eax += cpu.esi;
-    cpu.edi = at(app, kClipWidth);
-    push(app, cpu, cpu.eax);
-    cpu.eax = at(app, kClipLeft) + cpu.edi;
-    push(app, cpu, cpu.eax);
-    push(app, cpu, cpu.esi);
-    cpu.edx = at(app, kClipLeft);
-    push(app, cpu, cpu.edx);
-    if (!byAddress(app, cpu, at(app, kThrashClip)))
-        return;
-    push(app, cpu, 0x3b0355ad);  // 0.002f
-    push(app, cpu, 0x3f800000);  // 1.0f
-    cpu.ecx = at(app, kClipHeight);
-    cpu.ebx = at(app, kClipWidth);
-    // Each fild and fstp: a corner as a float -- the bottom, the right
-    // (through [ebp-4]), the top and the left.
-    auto pushFloat = [&](reg32 address) {
-        cpu.esp -= 4;
-        app->getMemory<float>(cpu.esp) = float(sreg32(at(app, address)));
-    };
-    cpu.eax = at(app, kClipTop) + cpu.ecx;
-    put(app, cpu.ebp - 4, cpu.eax);
-    pushFloat(cpu.ebp - 4);
-    cpu.eax = at(app, kClipLeft) + cpu.ebx;
-    put(app, cpu.ebp - 4, cpu.eax);
-    pushFloat(cpu.ebp - 4);
-    pushFloat(kClipTop);
-    pushFloat(kClipLeft);
-    if (!byAddress(app, cpu, kSetViewCorners))
-        return;
-    cpu.esp = cpu.ebp;
-    cpu.ebp = pop(app, cpu);
-    cpu.edi = pop(app, cpu);
-    cpu.esi = pop(app, cpu);
-    cpu.esp += 4;
+    x = x < 0 ? 0 : x;
+    y = y < 0 ? 0 : y;
+    const sreg32 lastX = sreg32(at(app, kScreenWidth) - 1), lastY = sreg32(at(app, kScreenHeight) - 1);
+    put(app, kClipLeft, reg32(x >= lastX ? lastX : x));
+    put(app, kClipTop, reg32(y >= lastY ? lastY : y));
+    const sreg32 widthLeft = sreg32(at(app, kScreenWidth) - at(app, kClipLeft));
+    put(app, kClipWidth, reg32(wide < widthLeft ? wide : widthLeft));
+    const sreg32 heightLeft = sreg32(at(app, kScreenHeight) - at(app, kClipTop));
+    put(app, kClipHeight, reg32(high < heightLeft ? high : heightLeft));
+    const reg32 left = at(app, kClipLeft), top = at(app, kClipTop);
+    cpu.edx = left;
+    if (!thrash(app, cpu, kThrashClip,
+                {left, top, left + at(app, kClipWidth), at(app, kClipHeight) + top}))
+        return false;
+    const reg32 width = at(app, kClipWidth), height = at(app, kClipHeight);
+    const reg32 right = at(app, kClipLeft) + width, bottom = at(app, kClipTop) + height;
+    cpu.eax = right;
+    cpu.ebx = width;
+    cpu.ecx = height;
+    // Each fild and fstp: the integer as a float, rounded as C++ rounds it.
+    return guest::call(app, cpu, kSetViewCorners,
+                       {bitsOf(float(sreg32(at(app, kClipLeft)))), bitsOf(float(sreg32(at(app, kClipTop)))),
+                        bitsOf(float(sreg32(right))), bitsOf(float(sreg32(bottom))), kViewNear, kViewDepthScale});
+}
+
+/* 0x4bebe0: clipSet to x eax, y edx, width ebx, height ecx. */
+void setClip(App* app, CPU& cpu)
+{
+    if (clipSet(app, cpu, sreg32(cpu.eax), sreg32(cpu.edx), sreg32(cpu.ebx), sreg32(cpu.ecx)))
+        cpu.esp += 4;
 }
 
 /* The view and what surrounds it. */
 constexpr reg32 kViewWidth = 0x7cdba0;         // the view's rectangle, from 0x7cdb98: x, y, width, height
 constexpr reg32 kViewSurroundFrames = 0x7cdba8;  // counted down at each drawViewSurround
-constexpr reg32 kWideScreen = 0x6fbc4c;        // Wide Screen in the Graphics menu: the view between bars
-constexpr reg32 kGameMode = 0x6fd3b0;          // 1: two players on one screen
 constexpr reg32 kSurroundCorners = 0x55fed4, kSurroundMesh = 0x560054;
 
-/* 0x4be8e0: the quads around the view, untextured, without the depth test --
- * two of them in split screen, four otherwise -- when the view is narrower
- * than the screen, or with Wide Screen in a race of one screen's player. */
-void drawViewSurround(win32::WinApplication* app, x86::CPU& cpu)
+/* 0x4be8e0's core: the quads around the view, untextured, without the depth test -- two of them in
+ * split screen, four otherwise -- when the view is narrower than the screen, or with Wide Screen in
+ * a race of one screen's player.  The last state's answer, or the view's width when nothing is
+ * drawn: what eax is left. */
+std::optional<reg32> viewSurround(App* app, CPU& cpu)
 {
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.edx);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    cpu.edx = at(app, kViewSurroundFrames) - 1;
-    cpu.eax = at(app, kViewWidth);
-    cpu.ecx = at(app, kScreenWidth);
-    put(app, kViewSurroundFrames, cpu.edx);
-    const bool narrower = sreg32(cpu.eax) < sreg32(cpu.ecx);
-    if (narrower || (at(app, kWideScreen) != 0 && at(app, kGameMode) != 1))
-    {
-        cpu.eax = thrash::kStateTexture;
-        cpu.edx = 0;
-        if (!direct(app, cpu, setRenderState))
-            return;
-        cpu.eax = thrash::kStateDepth;
-        cpu.edx = 0;
-        if (!direct(app, cpu, setRenderState))
-            return;
-        push(app, cpu, kSurroundMesh);
-        push(app, cpu, kSurroundCorners);
-        push(app, cpu, at(app, kGameMode) == 1 ? 2 : 4);
-        if (!byAddress(app, cpu, at(app, kThrashDrawQuadMesh)))
-            return;
-        cpu.eax = thrash::kStateDepth;
-        cpu.edx = at(app, kDriverOnCard);
-        if (!direct(app, cpu, setRenderState))
-            return;
-    }
-    cpu.ebp = pop(app, cpu);
-    cpu.edx = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
-    cpu.esp += 4;
+    put(app, kViewSurroundFrames, at(app, kViewSurroundFrames) - 1);
+    const reg32 viewWidth = at(app, kViewWidth);
+    const bool narrower = sreg32(viewWidth) < sreg32(at(app, kScreenWidth));
+    if (!narrower && (gameSettings(app).wideScreen == 0 || gameSettings(app).playMode == 1))
+        return viewWidth;
+    if (!sendState(app, cpu, thrash::kStateTexture, 0) || !sendState(app, cpu, thrash::kStateDepth, 0)
+        || !thrash(app, cpu, kThrashDrawQuadMesh,
+                   {gameSettings(app).playMode == 1 ? 2u : 4u, kSurroundCorners, kSurroundMesh})
+        || !sendState(app, cpu, thrash::kStateDepth, at(app, kDriverOnCard)))
+        return std::nullopt;
+    return cpu.eax;
 }
 
-/* The quad of a shape of the menus' art (sub_4d7160 fills its corners). */
-constexpr reg32 kShapeCorners = 0x563ab0;      // four of kCornerBytes
-constexpr reg32 kStateSoftwareShape = 0x2bf;
-constexpr reg32 kDrawPolygon = 0x4c12e0;       // native_render's polygon, the corners in eax, edx, ebx, ecx
+/* 0x4be8e0: viewSurround. */
+void drawViewSurround(App* app, CPU& cpu)
+{
+    const Kept kept(cpu, kEcx | kEdx);
+    const std::optional<reg32> left = viewSurround(app, cpu);
+    if (!left)
+        return;
+    cpu.eax = *left;
+    kept.back(cpu);
+    cpu.esp += 4;
+}
 
 /* ---- The software renderer's frame buffer ---- */
 
@@ -772,74 +738,74 @@ constexpr reg32 kFrameLock = 0xa18220;         // THRASH_lockwindow's record, or
 constexpr reg32 kFrameBuffers = 0x565020;      // two buffers to free as the lock goes
 constexpr reg32 kFreeBuffer = 0x509b10;
 
-/* 0x5248f0: the frame buffer's lock let go of (THRASH_unlockwindow) and its
- * two buffers freed, if it is locked. */
-void unlockFrameBuffer(win32::WinApplication* app, x86::CPU& cpu)
+/* sub_509b10, a block freed, by address: the block in eax. */
+bool freeBlock(App* app, CPU& cpu, reg32 block)
 {
-    push(app, cpu, cpu.edx);
-    cpu.edx = at(app, kFrameLock);
-    if (cpu.edx != 0)
-    {
-        push(app, cpu, cpu.ecx);
-        push(app, cpu, cpu.ebx);
-        push(app, cpu, cpu.edx);
-        if (!byAddress(app, cpu, at(app, kThrashUnlockWindow)))
-            return;
-        cpu.ebx = 0;
-        cpu.eax = at(app, kFrameBuffers);
-        put(app, kFrameLock, cpu.ebx);
-        if (!byAddress(app, cpu, kFreeBuffer))
-            return;
-        cpu.eax = at(app, kFrameBuffers + 4);
-        if (!byAddress(app, cpu, kFreeBuffer))
-            return;
-        cpu.ebx = pop(app, cpu);
-        cpu.ecx = pop(app, cpu);
-    }
-    cpu.edx = pop(app, cpu);
-    cpu.esp += 4;
+    cpu.eax = block;
+    return byAddress(app, cpu, kFreeBuffer);
 }
 
-/* 0x5178d0: the frame buffer let go of -- unlocked straight when the game
- * locked it, by unlockFrameBuffer when the driver did -- and the window taken
- * (THRASH_window 0). */
-void releaseFrameLock(win32::WinApplication* app, x86::CPU& cpu)
+/* 0x5248f0's core: the frame buffer's lock let go of (THRASH_unlockwindow) and its two buffers
+ * freed, if it is locked; ebx, ecx and edx kept, as the code keeps them.  eax as the last call
+ * leaves it. */
+bool frameBufferUnlocked(App* app, CPU& cpu)
 {
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.edx);
+    const Kept kept(cpu, kEbx | kEcx | kEdx);
+    const reg32 lock = at(app, kFrameLock);
+    if (lock != 0)
+    {
+        if (!thrash(app, cpu, kThrashUnlockWindow, {lock}))
+            return false;
+        put(app, kFrameLock, 0);
+        if (!freeBlock(app, cpu, at(app, kFrameBuffers)) || !freeBlock(app, cpu, at(app, kFrameBuffers + 4)))
+            return false;
+    }
+    kept.back(cpu);
+    return true;
+}
+
+/* 0x5248f0: frameBufferUnlocked. */
+void unlockFrameBuffer(App* app, CPU& cpu)
+{
+    if (frameBufferUnlocked(app, cpu))
+        cpu.esp += 4;
+}
+
+/* 0x5178d0's core: the frame buffer let go of -- unlocked straight when the game locked it, by
+ * frameBufferUnlocked when the driver did -- and the window taken (THRASH_window 0); ecx and edx
+ * kept, as the code keeps them. */
+bool frameLockReleased(App* app, CPU& cpu)
+{
+    const Kept kept(cpu, kEcx | kEdx);
     if (at(app, kFrameLocked) != 0)
     {
-        push(app, cpu, cpu.esi);
-        push(app, cpu, cpu.ebx);
-        cpu.ebx = at(app, kFrameLock);
-        push(app, cpu, cpu.ebx);
-        cpu.esi = 0;
-        if (!byAddress(app, cpu, at(app, kThrashUnlockWindow)))
-            return;
-        put(app, kFrameLock, cpu.esi);
-        put(app, kFrameLocked, cpu.esi);
-        cpu.ebx = pop(app, cpu);
-        cpu.esi = pop(app, cpu);
+        if (!thrash(app, cpu, kThrashUnlockWindow, {at(app, kFrameLock)}))
+            return false;
+        put(app, kFrameLock, 0);
+        put(app, kFrameLocked, 0);
     }
-    else if (at(app, kFrameLock) != 0 && !direct(app, cpu, unlockFrameBuffer))
-        return;
-    push(app, cpu, 0);
-    if (!byAddress(app, cpu, at(app, kThrashWindow)))
-        return;
-    cpu.edx = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
-    cpu.esp += 4;
+    else if (at(app, kFrameLock) != 0 && !frameBufferUnlocked(app, cpu))
+        return false;
+    if (!thrash(app, cpu, kThrashWindow, {0}))
+        return false;
+    kept.back(cpu);
+    return true;
+}
+
+/* 0x5178d0: frameLockReleased. */
+void releaseFrameLock(App* app, CPU& cpu)
+{
+    if (frameLockReleased(app, cpu))
+        cpu.esp += 4;
 }
 
 /* 0x517990: the frame buffer let go of and the picture flipped. */
-void releaseAndFlip(win32::WinApplication* app, x86::CPU& cpu)
+void releaseAndFlip(App* app, CPU& cpu)
 {
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.edx);
-    if (!direct(app, cpu, releaseFrameLock) || !byAddress(app, cpu, at(app, kThrashPageFlip)))
+    const Kept kept(cpu, kEcx | kEdx);
+    if (!frameLockReleased(app, cpu) || !thrash(app, cpu, kThrashPageFlip))
         return;
-    cpu.edx = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
+    kept.back(cpu);
     cpu.esp += 4;
 }
 
@@ -852,7 +818,6 @@ constexpr reg32 kInstance = 0x564480;          // sub_4eb2e0's, the first time
 constexpr reg32 kGameWindow = 0x9f3d24;        // native_game's kWindow
 constexpr reg32 kLambdasRecord = 0x56afd0;     // thrash::kStateLambdas' record
 constexpr reg32 kErrorLock = 0x564418;         // native_game's: called before an Error's box
-constexpr reg32 kGetInstance = 0x4eb2e0;
 constexpr reg32 kMakeWindow = 0x4cd6c0;        // eax the width, ebx whether a window of its own
 constexpr reg32 kDestroyWindow = 0x4cdaa0;
 constexpr reg32 kAcquireWindow = 0x4eba70;     // native_game's AcquireWindow
@@ -861,84 +826,110 @@ constexpr reg32 kAtExit = 0x4f2a78;            // eax a function, called as the 
 constexpr reg32 kDriverIdle = 0x5244e0;        // driverIdle
 constexpr reg32 kCloseDriverAtExit = 0x524640, kCloseDriverForError = 0x524620;
 
-/* 0x5246a0: the driver opened, unless it is already: the game's window made
- * if it has none (one of its own for eax 0), the driver given the window's
- * mode (eax), the window and the game's callbacks, and THRASH_init; if that
- * fails, the window destroyed again.  Once open, driverIdle on a timer if
- * the driver has THRASH_idle, the driver closed at the game's end and before
- * an Error's box.  eax: whether it is open. */
-void openDriver(win32::WinApplication* app, x86::CPU& cpu)
+/* A function of the game's by address, the registers as the caller set them: its eax, or nullopt
+ * when the game stopped in it. */
+std::optional<reg32> game(App* app, CPU& cpu, reg32 target)
 {
-    push(app, cpu, cpu.ebx);
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.edx);
-    push(app, cpu, cpu.esi);
-    auto done = [&]() {
-        cpu.eax = byte(app, kDriverOpen);
-        cpu.esi = pop(app, cpu);
-        cpu.edx = pop(app, cpu);
-        cpu.ecx = pop(app, cpu);
-        cpu.ebx = pop(app, cpu);
-        cpu.esp += 4;
-    };
-    cpu.esi = cpu.eax;
-    cpu.ebx = 1;
-    cpu.ecx = at(app, kWantedWidth);
-    cpu.edx = at(app, kWantedHeight);
-    if (cpu.ecx == 0)
-        cpu.ecx = 0x280;
-    if (cpu.edx == 0)
-        cpu.edx = 0x1e0;
-    if (byte(app, kDriverOpen) != 0)
-        return done();
+    if (!byAddress(app, cpu, target))
+        return std::nullopt;
+    return cpu.eax;
+}
+
+/* sub_4cd6c0, the game's window made, by address: eax the width, edx the height, ebx whether a
+ * window of its own.  Its answer, 0 for none. */
+std::optional<reg32> makeWindow(App* app, CPU& cpu, reg32 width, reg32 height, bool own)
+{
+    cpu.eax = width;
+    cpu.edx = height;
+    cpu.ebx = own ? 1 : 0;
+    return game(app, cpu, kMakeWindow);
+}
+
+/* port::addSystemTask (0x4e7520), by address: eax the function, edx its argument, ebx the ticks
+ * between. */
+bool addTask(App* app, CPU& cpu, reg32 function, reg32 argument, reg32 ticks)
+{
+    cpu.eax = function;
+    cpu.edx = argument;
+    cpu.ebx = ticks;
+    return byAddress(app, cpu, kAddTimer);
+}
+
+/* sub_4f2a78, `function` run as the game ends, by address (eax). */
+bool atExit(App* app, CPU& cpu, reg32 function)
+{
+    cpu.eax = function;
+    return byAddress(app, cpu, kAtExit);
+}
+
+constexpr reg32 kDefaultWidth = 640, kDefaultHeight = 480;
+
+/* 0x5246a0's core: the driver opened, unless it is already: the game's window made if it has none
+ * (one of its own for `windowMode` 0), the driver given the window's mode, the window and the
+ * game's callbacks, and THRASH_init; if that fails, the window destroyed again.  Once open,
+ * driverIdle on a timer if the driver has THRASH_idle, the driver closed at the game's end and
+ * before an Error's box.  Whether it is open -- kDriverOpen's byte, as the code hands it back --
+ * or nullopt when the game stopped. */
+std::optional<reg32> driverOpened(App* app, CPU& cpu, reg32 windowMode)
+{
+    const reg32 width = at(app, kWantedWidth) == 0 ? kDefaultWidth : at(app, kWantedWidth);
+    const reg32 height = at(app, kWantedHeight) == 0 ? kDefaultHeight : at(app, kWantedHeight);
+    const auto open = [&]() { return reg32(byte(app, kDriverOpen)); };
+    if (open() != 0)
+        return open();
     if (at(app, kInstance) == 0)
     {
-        if (!byAddress(app, cpu, kGetInstance))
-            return;
-        put(app, kInstance, cpu.eax);
+        const std::optional<reg32> instance = guest::direct<0x4eb2e0, ea::newLock>(app, cpu);
+        if (!instance)
+            return std::nullopt;
+        put(app, kInstance, *instance);
     }
     if (at(app, kGameWindow) == 0)
     {
-        cpu.ebx = cpu.esi == 0 ? 1 : 0;
-        cpu.eax = cpu.ecx;
-        if (!byAddress(app, cpu, kMakeWindow))
-            return;
-        cpu.ebx = cpu.eax;
+        const std::optional<reg32> made = makeWindow(app, cpu, width, height, windowMode == 0);
+        if (!made)
+            return std::nullopt;
+        if (*made == 0)
+            return open();
     }
-    if (cpu.ebx == 0)
-        return done();
-    if (!setState(app, cpu, thrash::kStateWindowMode, cpu.esi) || !byAddress(app, cpu, kAcquireWindow)
-        || !setState(app, cpu, thrash::kStateWindow, cpu.eax)
-        || !setState(app, cpu, thrash::kStateLambdas, kLambdasRecord)
-        || !byAddress(app, cpu, at(app, kThrashInit)))
-        return;
-    if (cpu.eax == 0)
+    if (!setState(app, cpu, thrash::kStateWindowMode, windowMode))
+        return std::nullopt;
+    const std::optional<reg32> window = game(app, cpu, kAcquireWindow);
+    if (!window || !setState(app, cpu, thrash::kStateWindow, *window)
+        || !setState(app, cpu, thrash::kStateLambdas, kLambdasRecord))
+        return std::nullopt;
+    const std::optional<reg32> initialised = thrash(app, cpu, kThrashInit);
+    if (!initialised)
+        return std::nullopt;
+    if (*initialised == 0)
     {
         if (!byAddress(app, cpu, kDestroyWindow))
-            return;
-        return done();
+            return std::nullopt;
+        return open();
     }
-    if (at(app, kThrashIdle) != 0)
-    {
-        cpu.ebx = 1;
-        cpu.eax = kDriverIdle;
-        cpu.edx = cpu.ebx;
-        if (!byAddress(app, cpu, kAddTimer))
-            return;
-    }
+    if (at(app, kThrashIdle) != 0 && !addTask(app, cpu, kDriverIdle, 1, 1))
+        return std::nullopt;
     if (byte(app, kCloseAtExit) == 0)
     {
-        cpu.eax = kCloseDriverAtExit;
-        cpu.edx = (cpu.edx & ~0xff00u) | 0x100;  // mov dh, 1
-        if (!byAddress(app, cpu, kAtExit))
-            return;
-        putByte(app, kCloseAtExit, reg8(cpu.edx >> 8));
+        if (!atExit(app, cpu, kCloseDriverAtExit))
+            return std::nullopt;
+        putByte(app, kCloseAtExit, 1);
     }
-    cpu.edx = kCloseDriverForError;
-    cpu.ebx = (cpu.ebx & ~0xffu) | 1;  // mov bl, 1
-    put(app, kErrorLock, cpu.edx);
-    putByte(app, kDriverOpen, reg8(cpu.ebx));
-    done();
+    put(app, kErrorLock, kCloseDriverForError);
+    putByte(app, kDriverOpen, 1);
+    return open();
+}
+
+/* 0x5246a0: driverOpened, the window's mode eax; eax whether it is open. */
+void openDriver(App* app, CPU& cpu)
+{
+    const Kept kept(cpu, kEbx | kEcx | kEdx);
+    const std::optional<reg32> open = driverOpened(app, cpu, cpu.eax);
+    if (!open)
+        return;
+    cpu.eax = *open;
+    kept.back(cpu);
+    cpu.esp += 4;
 }
 
 /* ---- The screen's mode ---- */
@@ -958,151 +949,125 @@ constexpr reg32 kSetUpScreen = 0x5179d0;       // eax which, ebx its record
 constexpr reg32 kRegFlushKey = 0x534468;       // the import
 constexpr reg32 kModeAtExit = 0x517580, kModeForError = 0x5175b0;
 
-/* 0x517610: the screen set to width eax, height edx, ebx bits (0 for 640,
- * 480 and 16 bits; -1 for 1024 by 768; 15 bits as 16): the size kept
- * (sub_5247c0); the first time the driver opened -- in a window for bit 0 of
- * [0x564390] -- and what to do at the game's end and before an Error's box
- * set; THRASH_setvideomode given the mode of that width (or of the height,
- * else 1), the buffers of the last mode freed, the screens set up again and
- * what they came to kept, the registry flushed.  eax: 1, or 0 when the
- * driver would not open. */
-void setVideoMode(win32::WinApplication* app, x86::CPU& cpu)
+// native_game's kWhere: the file, the function and the line an Error names.
+constexpr reg32 kWhereFile = 0x552190, kWhereFunction = 0x552194, kWhereLine = 0x552198;
+constexpr reg32 kNotReadyFile = 0x5505b0, kNotReadyFunction = 0x5505c0, kNotReadyLine = 0x3b;
+constexpr reg32 kNotReady = 0x5505d0;          // the Error's text: modes asked for before they are set up
+constexpr reg32 kHkeyClassesRoot = 0x80000000;
+
+/* The driver's mode for a screen `width` (or `height`) wide: THRASH_setvideomode's numbers. */
+reg32 driverMode(reg32 width, reg32 height)
 {
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.esi);
-    push(app, cpu, cpu.edi);
-    push(app, cpu, cpu.ebp);
-    auto done = [&]() {
-        cpu.ebp = pop(app, cpu);
-        cpu.edi = pop(app, cpu);
-        cpu.esi = pop(app, cpu);
-        cpu.ecx = pop(app, cpu);
-        cpu.esp += 4;
-    };
-    cpu.ecx = cpu.eax;
-    cpu.esi = cpu.edx;
+    switch (width)
+    {
+    case 0x140: return 4;
+    case 0x200: return 6;
+    case 0x320: return 2;
+    case 0x3c0: return 0xa;
+    case 0x358: return 0xb;
+    case 0x400: return 0xd;
+    default: return height == 0x1f6 ? 0x11 : height == 0x336 ? 0x12 : 1;
+    }
+}
+
+bool screenSetUp(App* app, CPU& cpu, reg32 which, reg32 window, reg32 record);
+
+/* sub_4eff00, something let go of, by address: eax it. */
+bool letGo(App* app, CPU& cpu, reg32 handle)
+{
+    cpu.eax = handle;
+    return byAddress(app, cpu, kLetGo);
+}
+
+/* 0x517610's core: the screen set to `width` by `height`, `bits` deep (0 for 640, 480 and 16 bits;
+ * -1 for 1024 by 768; 15 bits as 16): the size kept (sub_5247c0); the first time the driver opened
+ * -- in a window for bit 0 of [0x564390] -- and what to do at the game's end and before an Error's
+ * box set; THRASH_setvideomode given the mode of that width (or of the height, else 1), the
+ * buffers of the last mode freed, the screens set up again and what they came to kept, the registry
+ * flushed.  1, or 0 when the driver would not open; the registers at each call as the code has
+ * them (ebx and edx are left as the last call leaves them). */
+std::optional<reg32> videoModeSet(App* app, CPU& cpu, reg32 width, reg32 height, reg32 bits)
+{
     if (at(app, kVideoReady) == 0)
     {
-        cpu.edi = 0x5505b0;
-        cpu.ebp = 0x5505c0;
-        cpu.eax = 0x3b;
-        push(app, cpu, 0x5505d0);
-        put(app, 0x552190, cpu.edi);  // native_game's kWhere: the file, the function, the line
-        put(app, 0x552194, cpu.ebp);
-        put(app, 0x552198, cpu.eax);
-        if (!byAddress(app, cpu, 0x401010))  // Error
-            return;
-        cpu.esp += 4;
+        put(app, kWhereFile, kNotReadyFile);
+        put(app, kWhereFunction, kNotReadyFunction);
+        put(app, kWhereLine, kNotReadyLine);
+        const GuestFrame deep(cpu, 0x10, 0);  // under the code's four pushes: the Error's vsprintf sees the stack
+        if (!error(app, cpu, kNotReady))
+            return std::nullopt;
     }
-    if (cpu.ecx == 0)
-        cpu.ecx = 0x280;
-    else if (cpu.ecx == 0xffffffff)
-        cpu.ecx = 0x400;
-    if (cpu.esi == 0)
-        cpu.esi = 0x1e0;
-    else if (cpu.esi == 0xffffffff)
-        cpu.esi = 0x300;
-    if (cpu.ebx == 0 || cpu.ebx == 0xffffffff || cpu.ebx == 0xf)
-        cpu.ebx = 0x10;
-    cpu.edx = cpu.esi;
-    cpu.eax = cpu.ecx;
+    width = width == 0 ? kDefaultWidth : width == 0xffffffff ? 0x400 : width;
+    height = height == 0 ? kDefaultHeight : height == 0xffffffff ? 0x300 : height;
+    bits = bits == 0 || bits == 0xffffffff || bits == 0xf ? 0x10 : bits;
+    cpu.eax = width;
+    cpu.edx = height;
+    cpu.ebx = bits;
     if (!byAddress(app, cpu, kKeepScreenSize))
-        return;
+        return std::nullopt;
     if (at(app, kModeSet) == 0)
     {
-        cpu.eax = byte(app, kWindowedFlags) & 1 ? 0 : 1;
-        if (!direct(app, cpu, openDriver))
-            return;
-        if (cpu.eax == 0)
-            return done();
-        cpu.eax = kModeAtExit;
+        const Kept kept(cpu, kEbx | kEcx | kEdx);  // as openDriver keeps them
+        const std::optional<reg32> open = driverOpened(app, cpu, byte(app, kWindowedFlags) & 1 ? 0 : 1);
+        if (!open)
+            return std::nullopt;
+        kept.back(cpu);
+        if (*open == 0)
+            return 0;
         cpu.ebx = kModeForError;
-        if (!byAddress(app, cpu, kAtExit))
-            return;
-        put(app, kErrorLock, cpu.ebx);
+        if (!atExit(app, cpu, kModeAtExit))
+            return std::nullopt;
+        put(app, kErrorLock, kModeForError);
     }
-    reg32 mode = 1;
-    switch (cpu.ecx)
+    if (!thrash(app, cpu, kThrashSetVideoMode, {driverMode(width, height), 2, 1}))
+        return std::nullopt;
+    for (const reg32 buffer : {kModeBuffers, kModeBuffers + 4})
+        if (at(app, buffer) != 0 && !freeBlock(app, cpu, at(app, buffer)))
+            return std::nullopt;
+    const reg32 more = at(app, kModeBuffersMore);
+    put(app, kModeBuffers, 0);
+    put(app, kModeBuffers + 4, 0);
+    if (more != 0 && !freeBlock(app, cpu, more))
+        return std::nullopt;
+    if (at(app, kModeBuffersMore + 4) != 0 && !freeBlock(app, cpu, at(app, kModeBuffersMore + 4)))
+        return std::nullopt;
+    const reg32 handle = at(app, kModeHandle);
+    put(app, kModeBuffersMore, 0);
+    put(app, kModeBuffersMore + 4, 0);
+    if (handle != 0)
     {
-    case 0x140: mode = 4; break;
-    case 0x200: mode = 6; break;
-    case 0x320: mode = 2; break;
-    case 0x3c0: mode = 0xa; break;
-    case 0x358: mode = 0xb; break;
-    case 0x400: mode = 0xd; break;
-    default: mode = cpu.esi == 0x1f6 ? 0x11 : cpu.esi == 0x336 ? 0x12 : 1; break;
+        if (!letGo(app, cpu, handle))
+            return std::nullopt;
+        put(app, kModeHandle, 0);
     }
-    push(app, cpu, 1);
-    push(app, cpu, 2);
-    push(app, cpu, mode);
-    if (!byAddress(app, cpu, at(app, kThrashSetVideoMode)))
-        return;
-    cpu.esi = at(app, kModeBuffers);
-    if (cpu.esi != 0)
-    {
-        cpu.eax = cpu.esi;
-        if (!byAddress(app, cpu, kFreeBuffer))
-            return;
-    }
-    cpu.edi = at(app, kModeBuffers + 4);
-    if (cpu.edi != 0)
-    {
-        cpu.eax = cpu.edi;
-        if (!byAddress(app, cpu, kFreeBuffer))
-            return;
-    }
-    cpu.ebp = 0;
-    cpu.edx = at(app, kModeBuffersMore);
-    put(app, kModeBuffers, cpu.ebp);
-    put(app, kModeBuffers + 4, cpu.ebp);
-    if (cpu.edx != 0)
-    {
-        cpu.eax = cpu.edx;
-        if (!byAddress(app, cpu, kFreeBuffer))
-            return;
-    }
-    cpu.ecx = at(app, kModeBuffersMore + 4);
-    if (cpu.ecx != 0)
-    {
-        cpu.eax = cpu.ecx;
-        if (!byAddress(app, cpu, kFreeBuffer))
-            return;
-    }
-    cpu.ebx = 0;
-    cpu.edi = at(app, kModeHandle);
-    put(app, kModeBuffersMore, cpu.ebx);
-    put(app, kModeBuffersMore + 4, cpu.ebx);
-    if (cpu.edi != 0)
-    {
-        cpu.eax = cpu.edi;
-        if (!byAddress(app, cpu, kLetGo))
-            return;
-        put(app, kModeHandle, cpu.ebx);
-    }
-    cpu.eax = 1;
-    cpu.ebx = kFirstScreen;
-    cpu.edx = 0;
-    put(app, kModeSet, cpu.eax);
-    if (!byAddress(app, cpu, kSetUpScreen))
-        return;
-    if (sreg32(at(app, kScreens)) > 1)
-    {
-        cpu.ebx = kSecondScreen;
-        cpu.eax = 2;
+    put(app, kModeSet, 1);
+    const auto screen = [&](reg32 which, reg32 record) {
+        cpu.eax = which;
         cpu.edx = 0;
-        if (!byAddress(app, cpu, kSetUpScreen))
-            return;
-    }
+        cpu.ebx = record;
+        return screenSetUp(app, cpu, which, 0, record);
+    };
+    if (!screen(1, kFirstScreen) || (sreg32(at(app, kScreens)) > 1 && !screen(2, kSecondScreen)))
+        return std::nullopt;
     put(app, kWantedWidth, at(app, kScreenSetWidth));
-    cpu.eax = at(app, kScreenSetHeight);
-    put(app, kWantedHeight, cpu.eax);
+    put(app, kWantedHeight, at(app, kScreenSetHeight));
     cpu.eax = byte(app, kScreenSetBits);
-    push(app, cpu, 0x80000000);  // HKEY_CLASSES_ROOT
     put(app, kScreenBits, cpu.eax);
-    if (!byAddress(app, cpu, at(app, kRegFlushKey)))
+    if (!guest::windows<kRegFlushKey, &win32::advapi32::RegFlushKey>(app, cpu, kHkeyClassesRoot))
+        return std::nullopt;
+    return 1;
+}
+
+/* 0x517610: videoModeSet, eax by edx, ebx bits. */
+void setVideoMode(App* app, CPU& cpu)
+{
+    const Kept kept(cpu, kEcx);
+    const std::optional<reg32> set = videoModeSet(app, cpu, cpu.eax, cpu.edx, cpu.ebx);
+    if (!set)
         return;
-    cpu.eax = 1;
-    done();
+    cpu.eax = *set;
+    kept.back(cpu);
+    cpu.esp += 4;
 }
 
 /* ---- The game's end ---- */
@@ -1110,35 +1075,51 @@ void setVideoMode(win32::WinApplication* app, x86::CPU& cpu)
 constexpr reg32 kFpuControl = 0x79f3f4;        // the x87's control word as the game runs it
 constexpr reg32 kStopSounds = 0x410aa0, kStopMoreSounds = 0x40feb0;  // native_frontend_options' kStopSound2, 4
 constexpr reg32 kNothingToEnd = 0x4a6f70;      // an empty function
-constexpr reg32 kEndThread = 0x4df870;         // eax a thread's record: TerminateThread, CloseHandle
 constexpr reg32 kGameThread = 0x7a3aac;
 constexpr reg32 kReleaseWindowThing = 0x4cdc50;
-constexpr reg32 kForceFeedbackOff = 0x471fb0;  // native_controls_race's: every device's actuators off
-constexpr reg32 kInputStopped = 0x434fd0;      // native_controls_input's: DirectInput stopped
 
-/* 0x4b6250: what the game does as it ends: the x87 reset to its own control
- * word, the sounds stopped, the thread at 0x7a3aac ended, sub_4cdc50's
- * release, the force feedback off, DirectInput stopped and the screen given
- * back to Windows (THRASH_restore). */
-void shutDown(win32::WinApplication* app, x86::CPU& cpu)
+/* ea::endThread (0x4df870), a thread ended (TerminateThread, CloseHandle): its record in eax, the
+ * stale handle the code's ebx; eax as it leaves it. */
+bool endThread(App* app, CPU& cpu, reg32 thread)
 {
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.edx);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
+    const std::optional<reg32> closed = guest::direct<0x4df870, ea::endThread>(app, cpu, thread, cpu.ebx);
+    if (!closed)
+        return false;
+    cpu.eax = *closed;
+    return true;
+}
+
+/* native_controls_race's every device's actuators off (0x471fb0), and native_controls_input's
+ * DirectInput stopped (0x434fd0): eax as the first leaves it, then as the code has it. */
+bool inputLetGo(App* app, CPU& cpu)
+{
+    const std::optional<reg32> off = guest::direct<0x471fb0, controls::actuatorsOff>(app, cpu, cpu.eax);
+    if (!off)
+        return false;
+    cpu.eax = *off;
+    return guest::direct<0x434fd0, controls::stopInput>(app, cpu);
+}
+
+/* 0x4b6250's core: what the game does as it ends: the x87 reset to its own control word, the
+ * sounds stopped, the thread at 0x7a3aac ended, sub_4cdc50's release, the force feedback off,
+ * DirectInput stopped and the screen given back to Windows (THRASH_restore).  eax as the last
+ * call leaves it. */
+bool gameEnded(App* app, CPU& cpu)
+{
     cpu.fpu.init();
     cpu.fpu.setControl(half(app, kFpuControl));
-    if (!byAddress(app, cpu, kStopSounds) || !byAddress(app, cpu, kStopMoreSounds)
-        || !byAddress(app, cpu, kNothingToEnd))
+    return byAddress(app, cpu, kStopSounds) && byAddress(app, cpu, kStopMoreSounds)
+        && byAddress(app, cpu, kNothingToEnd) && endThread(app, cpu, kGameThread)
+        && byAddress(app, cpu, kReleaseWindowThing) && inputLetGo(app, cpu) && thrash(app, cpu, kThrashRestore);
+}
+
+/* 0x4b6250: gameEnded. */
+void shutDown(App* app, CPU& cpu)
+{
+    const Kept kept(cpu, kEcx | kEdx);
+    if (!gameEnded(app, cpu))
         return;
-    cpu.eax = kGameThread;
-    if (!byAddress(app, cpu, kEndThread) || !byAddress(app, cpu, kReleaseWindowThing)
-        || !byAddress(app, cpu, kForceFeedbackOff) || !byAddress(app, cpu, kInputStopped)
-        || !byAddress(app, cpu, at(app, kThrashRestore)))
-        return;
-    cpu.ebp = pop(app, cpu);
-    cpu.edx = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
+    kept.back(cpu);
     cpu.esp += 4;
 }
 
@@ -1148,7 +1129,6 @@ constexpr reg32 kLoadingTextShown = 0x79f288;  // the loading text is up; cleare
 constexpr reg32 kLoadingTextX = 0x79f280;      // where the loading text ends, a float (native_render)
 constexpr reg32 kModeRect = 0x7cdac0;          // the mode's rectangle: x, y, width, height
 constexpr reg32 kGetRect = 0x4beb20;           // eax a rectangle into edx, ebx, ecx and [esp+4]
-constexpr reg32 kTwoDStates = 0x431aa0;        // the render states for 2D
 constexpr reg32 kTextScale = 0x791b54;
 constexpr reg32 kSetTextScale = 0x4d1390;      // [esp+4] the scale, the last one onto the x87's stack
 constexpr reg32 kTextColour = 0x561b34, kTextMeasuring = 0x561b3c;  // port_text's
@@ -1162,86 +1142,109 @@ constexpr reg32 kChop = 0x4dfd56;              // Watcom's __CHP: st(0) towards 
 constexpr reg32 kDrawText = 0x4d1000;          // port_text's drawText, its width onto the x87's stack
 constexpr reg32 kFlushText = 0x4d1340;
 
-/* 0x494bd0: a loading cut short: when the loading text is up, "... Aborted"
- * drawn after it -- in yellow (0xffe0e000), at row 451 of 480 scaled to the
- * mode -- and the picture flushed and flipped; the loading text then counts
- * as gone. */
-void drawLoadingAborted(win32::WinApplication* app, x86::CPU& cpu)
+/* sub_4beb20, a rectangle copied out, by address: eax the rectangle, its x, y, width and height into
+ * [edx], [ebx], [ecx] and [[esp+4]] -- that one pushed, and esp left as the callee leaves it, as the
+ * code leaves it. */
+bool copyRect(App* app, CPU& cpu, reg32 rect, reg32 x, reg32 y, reg32 width, reg32 height)
 {
-    push(app, cpu, cpu.ebx);
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.edx);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    cpu.esp -= 0x118;
-    auto& fpu = cpu.fpu;
-    const reg32 text = cpu.ebp - 0x118;
-    const reg32 scale = cpu.ebp - 0xc;           // the mode's height over 480, a float
-    if (at(app, kLoadingTextShown) != 0)
-    {
-        cpu.eax = cpu.ebp - 0x10;                // the height
-        cpu.ecx = cpu.ebp - 0x14;
-        cpu.ebx = cpu.ebp - 0x18;
-        push(app, cpu, cpu.eax);
-        cpu.edx = cpu.ebp - 8;
-        cpu.eax = kModeRect;
-        if (!byAddress(app, cpu, kGetRect))
-            return;
-        cpu.eax = at(app, cpu.ebp - 0x10);
-        put(app, cpu.ebp - 4, cpu.eax);
-        cpu.ecx = 0;
-        const x86::Float perLine =
-            fp::mul(x86::Float(sreg32(at(app, cpu.ebp - 4))), x86::Float(app->getMemory<float>(kHeightPer480)));
-        put(app, kLoadingTextShown, cpu.ecx);
-        app->getMemory<float>(scale) = float(perLine);
-        if (!byAddress(app, cpu, kTwoDStates))
-            return;
-        push(app, cpu, at(app, kTextScale));
-        cpu.ebx = 0xffe0e000;
-        if (!byAddress(app, cpu, kSetTextScale))
-            return;
-        fpu.count -= 1;                          // fstp st(0): the last scale
-        cpu.eax = kAbortedLine;
-        put(app, kTextColour, cpu.ebx);
-        put(app, kTextMeasuring, cpu.ecx);
-        if (!byAddress(app, cpu, kLanguageText))
-            return;
-        push(app, cpu, cpu.eax);
-        push(app, cpu, kDotsFormat);
-        push(app, cpu, text);
-        if (!byAddress(app, cpu, kSprintf))
-            return;
-        const x86::Float row =
-            fp::mul(x86::Float(app->getMemory<float>(scale)), x86::Float(app->getMemory<float>(kAbortedRow)));
-        const x86::Float x = x86::Float(app->getMemory<float>(kLoadingTextX));
-        cpu.eax = text;
-        cpu.esp += 0xc;
-        fpu.count += 2;
-        fpu.st(0) = x;
-        fpu.st(1) = row;
-        // Each chopped and stored as an integer: x into edx, the row into ebx.
-        if (!byAddress(app, cpu, kChop))
-            return;
-        put(app, cpu.ebp - 4, reg32(fp::toInteger<sreg32>(fpu.st(0))));
-        cpu.edx = at(app, cpu.ebp - 4);
-        fpu.count -= 1;
-        if (!byAddress(app, cpu, kChop))
-            return;
-        put(app, cpu.ebp - 4, reg32(fp::toInteger<sreg32>(fpu.st(0))));
-        cpu.ebx = at(app, cpu.ebp - 4);
-        fpu.count -= 1;
-        if (!byAddress(app, cpu, kDrawText))
-            return;
-        fpu.count -= 1;                          // fstp st(0): the text's width
-        if (!byAddress(app, cpu, kFlushText) || !byAddress(app, cpu, at(app, kThrashFlushWindow))
-            || !byAddress(app, cpu, at(app, kThrashPageFlip)))
-            return;
-    }
-    cpu.esp = cpu.ebp;
-    cpu.ebp = pop(app, cpu);
-    cpu.edx = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
-    cpu.ebx = pop(app, cpu);
+    cpu.eax = rect;
+    cpu.edx = x;
+    cpu.ebx = y;
+    cpu.ecx = width;
+    push(app, cpu, height);
+    return byAddress(app, cpu, kGetRect);
+}
+
+/* Watcom's __CHP (0x4dfd56), by address, on `value` pushed onto the x87's stack: chopped towards 0,
+ * stored as an integer (fistp) and popped.  nullopt when the game stopped. */
+std::optional<sreg32> chop(App* app, CPU& cpu, x86::Float value)
+{
+    cpu.fpu.push(value);
+    if (!byAddress(app, cpu, kChop))
+        return std::nullopt;
+    const sreg32 whole = fp::toInteger<sreg32>(cpu.fpu.st(0));
+    cpu.fpu.pop();
+    return whole;
+}
+
+/* port_text's text scale set (0x4d1390, stdcall), by address: the last scale onto the x87's stack,
+ * dropped (fstp st(0)). */
+bool setTextScale(App* app, CPU& cpu, reg32 scale)
+{
+    if (!guest::call(app, cpu, kSetTextScale, {scale}))
+        return false;
+    cpu.fpu.pop();
+    return true;
+}
+
+/* port_text's languageText (0x4d1850), by address: line eax of the game's text. */
+std::optional<reg32> languageText(App* app, CPU& cpu, reg32 line)
+{
+    cpu.eax = line;
+    return game(app, cpu, kLanguageText);
+}
+
+/* port_text's drawText (0x4d1000), by address: text eax at x edx, row ebx; its width onto the x87's
+ * stack, dropped (fstp st(0)). */
+bool drawText(App* app, CPU& cpu, reg32 text, reg32 x, reg32 row)
+{
+    cpu.eax = text;
+    cpu.edx = x;
+    cpu.ebx = row;
+    if (!byAddress(app, cpu, kDrawText))
+        return false;
+    cpu.fpu.pop();
+    return true;
+}
+
+constexpr reg32 kAbortedColour = 0xffe0e000;   // yellow
+
+/* 0x494bd0's core: a loading cut short: when the loading text is up, "... Aborted" drawn after it
+ * -- in yellow, at row 451 of 480 scaled to the mode -- and the picture flushed and flipped; the
+ * loading text then counts as gone.  The rectangle's and the text's buffers on the guest's stack, as
+ * deep as the code has them; the registers at the calls as it has them (ecx 0 from the text's
+ * measuring on).  eax as the last call leaves it. */
+bool loadingAborted(App* app, CPU& cpu)
+{
+    if (at(app, kLoadingTextShown) == 0)
+        return true;
+    const GuestFrame frame(cpu, 0x10, 0x118);
+    const reg32 text = frame - 0x118;
+    if (!copyRect(app, cpu, kModeRect, frame - 8, frame - 0x18, frame - 0x14, frame - 0x10))
+        return false;
+    const reg32 height = at(app, frame - 0x10);
+    const float scale = float(fp::mul(x86::Float(sreg32(height)), x86::Float(floatAt(app, kHeightPer480))));
+    put(app, kLoadingTextShown, 0);
+    cpu.eax = height;
+    cpu.ecx = 0;
+    if (!guest::direct<0x431aa0, collide::textStates>(app, cpu))
+        return false;
+    cpu.ebx = kAbortedColour;
+    if (!setTextScale(app, cpu, at(app, kTextScale)))
+        return false;
+    put(app, kTextColour, kAbortedColour);
+    put(app, kTextMeasuring, 0);
+    const std::optional<reg32> aborted = languageText(app, cpu, kAbortedLine);
+    if (!aborted || !guest::call(app, cpu, kSprintf, {text, kDotsFormat, *aborted}))
+        return false;
+    const x86::Float row = fp::mul(x86::Float(scale), x86::Float(floatAt(app, kAbortedRow)));
+    cpu.eax = text;
+    const std::optional<sreg32> x = chop(app, cpu, x86::Float(floatAt(app, kLoadingTextX)));
+    if (!x)
+        return false;
+    cpu.edx = reg32(*x);
+    const std::optional<sreg32> y = chop(app, cpu, row);
+    return y && drawText(app, cpu, text, reg32(*x), reg32(*y)) && byAddress(app, cpu, kFlushText)
+        && flushFlip(app, cpu);
+}
+
+/* 0x494bd0: loadingAborted. */
+void drawLoadingAborted(App* app, CPU& cpu)
+{
+    const Kept kept(cpu, kEbx | kEcx | kEdx);
+    if (!loadingAborted(app, cpu))
+        return;
+    kept.back(cpu);
     cpu.esp += 4;
 }
 
@@ -1254,9 +1257,10 @@ constexpr reg32 kMenuView = 0x7cdb68;
 constexpr reg32 kSetViewAngle = 0x4bed50;      // eax a view, edx 90
 constexpr reg32 kSetViewScale = 0x4bed70;      // eax a view, ecx 1.0f
 constexpr reg32 kViewScale = 0x560094, kViewOffset = 0x560098;
-constexpr reg32 kSetPointerBounds = 0x4352d0;  // native_controls_input's setPointerBounds
 constexpr reg32 kRaceEndExtra = 0x495600;      // for eax nonzero
-constexpr reg32 kRaceEnds[] = {0x4bc950, 0x4bcd60, 0x42dd00, 0x478000, 0x4c4830, 0x4782d0, 0x41da60};
+// The race's own ends by address: before raceload's controls' tick stopped (0x42dd00), and after it
+// up to the track let go of (0x41da60).
+constexpr reg32 kRaceEndsFirst[] = {0x4bc950, 0x4bcd60}, kRaceEndsThen[] = {0x478000, 0x4c4830, 0x4782d0};
 
 }  // namespace graphics
 
@@ -1270,7 +1274,17 @@ namespace graphics
 constexpr reg32 kModeWidth = 0x7cdac8;
 constexpr reg32 kTextWidth = 0x4d1480;         // port_text's textWidthWithOverhang: onto the x87's stack
 constexpr reg32 kTextHeight = 0x4d1540;        // eax a font: its height
-constexpr reg32 kTrace = 0x42d500;             // the game's trace, cdecl
+constexpr reg32 kTraceWord = 4;                // raceload::noHook's (the game's trace): a word pushed
+
+/* raceload::noHook (0x42d500, the game's trace), its word `word` pushed as the code pushes it (it
+ * reads none).  False when the game stopped. */
+bool traced(App* app, CPU& cpu, reg32 word)
+{
+    const GuestFrame pushed(cpu, 0, kTraceWord);
+    put(app, pushed - kTraceWord, word);
+    guest::direct<0x42d500, raceload::noHook>(app, cpu);
+    return !cpu.terminate;
+}
 
 namespace
 {
@@ -1286,485 +1300,472 @@ void movsd(win32::WinApplication* app, x86::CPU& cpu)
 
 }  // namespace
 
-/* The menus' quad (drawShapeQuad's kShapeCorners) and the rectangle its
- * corners are kept to. */
-constexpr reg32 kShapeDepth = 0x563aa8, kShapeW = 0x563aac;  // each corner's +8 and +0xc, floats
+/* The loading bar's quad: its corners' clip codes into their +0x14, as the menus' quads work them
+ * out: 0x10 for a +0xc negative or behind the far edge, else 8 above, 4 below, 1 left of, 2 right of the
+ * rectangle -- each a float's bits compared as integers, a negative one counting as short. */
 constexpr reg32 kClipFar = 0x7d34f8, kClipTopEdge = 0x7d3504, kClipBottomEdge = 0x7d3500;
 constexpr reg32 kClipLeftEdge = 0x7d34fc, kClipRightEdge = 0x7d350c;  // a float's bits, compared as integers
+constexpr reg32 kCornerClipCode = 0x14;
 
-/* A corner's clip code into its +0x14, as the menus' quads work it out: 0x10
- * for a +0xc behind the far edge, else 8 above, 4 below, 1 left of, 2 right
- * of the rectangle -- each a float's bits compared as integers, a negative
- * one counting as short.  The registers as the code leaves them. */
-void shapeClipCode(win32::WinApplication* app, x86::CPU& cpu, reg32 corner)
+/* Whether a float's bits are short of `edge`'s, compared as integers: a negative one always is. */
+bool shortOf(reg32 bits, reg32 edge)
 {
-    cpu.edi = corner + 0x14;
-    cpu.esi = corner;
-    cpu.eax = at(app, cpu.esi + 0xc);
-    cpu.ecx = at(app, kClipFar);
-    if ((cpu.eax & 0x80000000) || sreg32(cpu.eax) >= sreg32(cpu.ecx))
-        cpu.ebx = 0x10;
+    return (bits & 0x80000000) || sreg32(bits) < sreg32(edge);
+}
+
+void putClipCode(App* app, reg32 corner)
+{
+    const reg32 w = at(app, corner + 0xc);
+    reg8 code = 0;
+    if ((w & 0x80000000) || sreg32(w) >= sreg32(at(app, kClipFar)))
+        code = 0x10;
     else
     {
-        cpu.eax = at(app, cpu.esi + 4);
-        cpu.ebx = 0;
-        cpu.ecx = at(app, kClipTopEdge);
-        cpu.edx = at(app, kClipBottomEdge);
-        if ((cpu.eax & 0x80000000) || sreg32(cpu.eax) < sreg32(cpu.ecx))
-            cpu.ebx |= 8;
-        else if (sreg32(cpu.eax) > sreg32(cpu.edx))
-            cpu.ebx |= 4;
-        cpu.eax = at(app, cpu.esi);
-        cpu.ecx = at(app, kClipLeftEdge);
-        cpu.edx = at(app, kClipRightEdge);
-        if ((cpu.eax & 0x80000000) || sreg32(cpu.eax) < sreg32(cpu.ecx))
-            cpu.ebx |= 1;
-        else if (sreg32(cpu.eax) > sreg32(cpu.edx))
-            cpu.ebx |= 2;
+        const reg32 y = at(app, corner + 4);
+        if (shortOf(y, at(app, kClipTopEdge)))
+            code |= 8;
+        else if (sreg32(y) > sreg32(at(app, kClipBottomEdge)))
+            code |= 4;
+        const reg32 x = at(app, corner);
+        if (shortOf(x, at(app, kClipLeftEdge)))
+            code |= 1;
+        else if (sreg32(x) > sreg32(at(app, kClipRightEdge)))
+            code |= 2;
     }
-    putByte(app, cpu.edi, reg8(cpu.ebx));
+    putByte(app, corner + kCornerClipCode, code);
 }
 
-void shapeClipCodes(win32::WinApplication* app, x86::CPU& cpu)
-{
-    for (reg32 corner = 0; corner < 4; ++corner)
-        shapeClipCode(app, cpu, kShapeCorners + corner * kCornerBytes);
-}
+constexpr reg32 kMenuViewAngle = 90;
+constexpr reg32 kMenuViewScale = 0x3f800000;   // 1.0f
+constexpr reg32 kPointerWidth = 640, kPointerHeight = 480;
 
-/* 0x4a35d0: the race taken down, back to the menus: their screen mode, the
- * menus' view at 90 and scale 1, the pointer kept to 640 by 480, both
- * buffers cleared to black, sub_495600 for eax nonzero, and the race's
- * own ends (sub_4bc950 on).  The port marks the race over first, as
- * tools/apply_race_state.py did in the generated code. */
-void takeDownRace(win32::WinApplication* app, x86::CPU& cpu)
+/* 0x4a35d0's core: the race taken down, back to the menus: their screen mode, the menus' view at
+ * 90 and scale 1, the pointer kept to 640 by 480, both buffers cleared to black, sub_495600 for
+ * `extra` nonzero, and the race's own ends (sub_4bc950 on).  The port marks the race over first,
+ * as tools/apply_race_state.py did in the generated code.  The registers at each call as the code
+ * has them; eax as the last end leaves it. */
+bool raceTakenDown(App* app, CPU& cpu, reg32 extra)
 {
-    push(app, cpu, cpu.ebx);
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.edx);
-    push(app, cpu, cpu.esi);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    cpu.esi = cpu.eax;
     if (diag::raceDown)
         diag::raceDown(app, "race taken down");
     raceRunning(false);
+    put(app, kInRace, 0);
     cpu.eax = at(app, kMenuScreenMode);
     cpu.edx = 0;
     cpu.ebx = 0;
-    put(app, kInRace, cpu.edx);
     if (!byAddress(app, cpu, kScreenMode))
-        return;
-    cpu.edx = 0x5a;
+        return false;
     cpu.eax = kMenuView;
+    cpu.edx = kMenuViewAngle;
     if (!byAddress(app, cpu, kSetViewAngle))
-        return;
+        return false;
     cpu.eax = kMenuView;
-    cpu.ecx = 0x3f800000;  // 1.0f
+    cpu.ecx = kMenuViewScale;
     if (!byAddress(app, cpu, kSetViewScale))
-        return;
-    cpu.ebx = 0;
-    cpu.edx = 0;
-    put(app, kViewScale, cpu.ecx);
-    put(app, kViewOffset, cpu.ebx);
+        return false;
+    put(app, kViewScale, kMenuViewScale);
+    put(app, kViewOffset, 0);
     cpu.eax = 0;
-    cpu.ecx = 0x1e0;
-    cpu.ebx = 0x280;
-    if (!byAddress(app, cpu, kSetPointerBounds))
-        return;
-    cpu.eax = thrash::kStateClearColour;
     cpu.edx = 0;
-    if (!direct(app, cpu, setRenderState))
-        return;
+    cpu.ebx = kPointerWidth;
+    cpu.ecx = kPointerHeight;
+    if (!guest::direct<0x4352d0, controls::boundPointer>(app, cpu, reg32(0), reg32(0), kPointerWidth, kPointerHeight)
+        || !sendState(app, cpu, thrash::kStateClearColour, 0))
+        return false;
     for (const reg32 buffer : {2u, 1u})
-    {
-        push(app, cpu, buffer);
-        if (!byAddress(app, cpu, at(app, kThrashWindow)) || !direct(app, cpu, clearWithDepth))
-            return;
-    }
-    if (cpu.esi != 0 && !byAddress(app, cpu, kRaceEndExtra))
-        return;
-    for (const reg32 end : kRaceEnds)
-    {
-        if (!byAddress(app, cpu, end))
-            return;
+        if (!thrash(app, cpu, kThrashWindow, {buffer}) || !clearDepth(app, cpu))
+            return false;
+    if (extra != 0 && !byAddress(app, cpu, kRaceEndExtra))
+        return false;
+    const auto after = [&](reg32 end) {
         if (diag::raceDown)
         {
             char where[32];
             std::snprintf(where, sizeof where, "after sub_%x", unsigned(end));
             diag::raceDown(app, where);
         }
+    };
+    for (const reg32 end : kRaceEndsFirst)
+    {
+        if (!byAddress(app, cpu, end))
+            return false;
+        after(end);
     }
-    cpu.ebp = pop(app, cpu);
-    cpu.esi = pop(app, cpu);
-    cpu.edx = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
-    cpu.ebx = pop(app, cpu);
+    if (!guest::direct<0x42dd00, raceload::stopTick>(app, cpu))
+        return false;
+    after(0x42dd00);
+    for (const reg32 end : kRaceEndsThen)
+    {
+        if (!byAddress(app, cpu, end))
+            return false;
+        after(end);
+    }
+    const std::optional<reg32> left = guest::direct<0x41da60, track::letGoOfTrack>(app, cpu);
+    if (!left)
+        return false;
+    cpu.eax = *left;
+    after(0x41da60);
+    return true;
+}
+
+/* 0x4a35d0: raceTakenDown, sub_495600 for eax nonzero. */
+void takeDownRace(App* app, CPU& cpu)
+{
+    const Kept kept(cpu, kEbx | kEcx | kEdx);
+    if (!raceTakenDown(app, cpu, cpu.eax))
+        return;
+    kept.back(cpu);
     cpu.esp += 4;
 }
 
 /* ---- The polygon lists' drawers for voodoo2a ---- */
 
-namespace
-{
-
 constexpr reg32 kDrawLine = 0x4c0b20;          // native_render's line: eax, edx its ends
 constexpr reg32 kDrawQuad = 0x4c12e0;          // native_render's polygon: corners eax, edx, ebx, ecx
 
-/* A kept state sent as the drawers send it: the value pushed from `reg`, set
- * to `value` first, then the state; the value kept at `keptAt`. */
-bool sendKept(win32::WinApplication* app, x86::CPU& cpu, reg32& reg, reg32 value, reg32 state, reg32 keptAt)
+// A polygon list's record: +0 the next, +6 its flags (bit 0 blended), +8.. its corners (vertices),
+// +0x18 its texture, +0x20.. the corners' texture coordinates (two floats each), +0x40.. their
+// colours.  A vertex's +0x10 its colour, +0x18 and +0x1c its texture coordinates.
+constexpr reg32 kRecordNext = 0, kRecordFlags = 6, kRecordCorners = 8, kRecordTexture = 0x18;
+constexpr reg32 kRecordCoordinates = 0x20, kRecordColours = 0x40;
+constexpr reg32 kVertexColour = 0x10, kVertexCoordinates = 0x18;
+
+/* A kept state sent as the drawers send it: kept at `keptAt`, then THRASH_setstate. */
+bool sendKept(App* app, CPU& cpu, reg32 keptAt, reg32 state, reg32 value)
 {
-    reg = value;
-    push(app, cpu, reg);
-    push(app, cpu, state);
-    put(app, keptAt, reg);
-    return byAddress(app, cpu, at(app, kThrashSetState));
+    put(app, keptAt, value);
+    return setState(app, cpu, state, value).has_value();
 }
 
-}  // namespace
-
-/* 0x4347d0: a line of a polygon list (the record in eax, its two ends at +8
- * and +0xc) drawn untextured, blended for bit 0 of its flags (+6); eax the
- * next record. */
-void drawLineRecord(win32::WinApplication* app, x86::CPU& cpu)
+/* native_render's line (0x4c0b20), by address: its ends in eax and edx. */
+bool drawLine(App* app, CPU& cpu, reg32 from, reg32 to)
 {
-    push(app, cpu, cpu.ebx);
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.edx);
-    push(app, cpu, cpu.esi);
-    push(app, cpu, cpu.edi);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    cpu.ebx = cpu.eax;
-    cpu.edx = at(app, kKeptTexture);
-    cpu.edi = at(app, cpu.eax + 0xc);
-    cpu.esi = at(app, cpu.eax + 8);
-    if (cpu.edx != 0 && !sendKept(app, cpu, cpu.ecx, 0, thrash::kStateTexture, kKeptTexture))
+    cpu.eax = from;
+    cpu.edx = to;
+    return byAddress(app, cpu, kDrawLine);
+}
+
+/* 0x4347d0's core: a line of a polygon list (its two ends the record's first two corners) drawn
+ * untextured, blended for bit 0 of its flags. */
+bool lineRecord(App* app, CPU& cpu, reg32 record)
+{
+    const reg32 to = at(app, record + kRecordCorners + 4), from = at(app, record + kRecordCorners);
+    if (at(app, kKeptTexture) != 0 && !sendKept(app, cpu, kKeptTexture, thrash::kStateTexture, 0))
+        return false;
+    const reg32 blend = byte(app, record + kRecordFlags) & 1;
+    if (at(app, kKeptBlend) != blend && !sendKept(app, cpu, kKeptBlend, thrash::kStateBlend, blend))
+        return false;
+    return drawLine(app, cpu, from, to);
+}
+
+/* 0x4347d0: lineRecord for the record in eax; eax the next record. */
+void drawLineRecord(App* app, CPU& cpu)
+{
+    const Kept kept(cpu, kEbx | kEcx | kEdx);
+    const reg32 record = cpu.eax;
+    if (!lineRecord(app, cpu, record))
         return;
-    if (byte(app, cpu.ebx + 6) & 1)
-    {
-        if (at(app, kKeptBlend) != 1 && !sendKept(app, cpu, cpu.edx, 1, thrash::kStateBlend, kKeptBlend))
-            return;
-    }
-    else if (at(app, kKeptBlend) != 0 && !sendKept(app, cpu, cpu.eax, 0, thrash::kStateBlend, kKeptBlend))
-        return;
-    cpu.edx = cpu.edi;
-    cpu.eax = cpu.esi;
-    if (!byAddress(app, cpu, kDrawLine))
-        return;
-    cpu.eax = at(app, cpu.ebx);
-    cpu.ebp = pop(app, cpu);
-    cpu.edi = pop(app, cpu);
-    cpu.esi = pop(app, cpu);
-    cpu.edx = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
-    cpu.ebx = pop(app, cpu);
+    cpu.eax = at(app, record + kRecordNext);
+    kept.back(cpu);
     cpu.esp += 4;
 }
 
-/* 0x433d40: a quad of a polygon list with colours of its own (the record in
- * eax: corners at +8..+0x14, their colours at +0x40.., their texture's
- * coordinates at +0x20.. and the texture at +0x18), drawn unblended through
- * sub_4c12e0; eax the next record. */
-void drawColouredQuadRecord(win32::WinApplication* app, x86::CPU& cpu)
+/* native_render's polygon (0x4c12e0), by address: its four corners in eax, edx, ebx, ecx. */
+bool drawQuad(App* app, CPU& cpu, reg32 first, reg32 second, reg32 third, reg32 fourth)
 {
-    push(app, cpu, cpu.ebx);
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.edx);
-    push(app, cpu, cpu.esi);
-    push(app, cpu, cpu.edi);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    cpu.esi = cpu.eax;
-    if (at(app, kKeptBlend) != 0 && !sendKept(app, cpu, cpu.ecx, 0, thrash::kStateBlend, kKeptBlend))
-        return;
+    cpu.eax = first;
+    cpu.edx = second;
+    cpu.ebx = third;
+    cpu.ecx = fourth;
+    return byAddress(app, cpu, kDrawQuad);
+}
+
+/* 0x433d40's core: a quad of a polygon list with colours of its own, drawn unblended: each
+ * corner's colour, and with a texture its coordinates, copied to its vertex, the texture sent when
+ * it changed (or none when there is none), then native_render's polygon.  Each field read where the
+ * code reads it: a vertex may be the record's own memory. */
+bool colouredQuadRecord(App* app, CPU& cpu, reg32 record)
+{
+    if (at(app, kKeptBlend) != 0 && !sendKept(app, cpu, kKeptBlend, thrash::kStateBlend, 0))
+        return false;
+    const auto vertex = [&](reg32 corner) { return at(app, record + kRecordCorners + 4 * corner); };
     for (reg32 corner = 0; corner < 4; ++corner)
     {
-        cpu.edx = at(app, cpu.esi + 8 + 4 * corner);
-        cpu.eax = at(app, cpu.esi + 0x40 + 4 * corner);
-        put(app, cpu.edx + 0x10, cpu.eax);
+        const reg32 to = vertex(corner);
+        put(app, to + kVertexColour, at(app, record + kRecordColours + 4 * corner));
     }
-    cpu.ebx = at(app, cpu.esi + 0x18);
-    if (cpu.ebx != 0)
+    if (at(app, record + kRecordTexture) != 0)
     {
         for (reg32 corner = 0; corner < 4; ++corner)
             for (reg32 half = 0; half < 2; ++half)
             {
-                cpu.eax = at(app, cpu.esi + 8 + 4 * corner);
-                cpu.edx = at(app, cpu.esi + 0x20 + 8 * corner + 4 * half);
-                put(app, cpu.eax + 0x18 + 4 * half, cpu.edx);
+                const reg32 to = vertex(corner);
+                put(app, to + kVertexCoordinates + 4 * half,
+                    at(app, record + kRecordCoordinates + 8 * corner + 4 * half));
             }
-        cpu.eax = at(app, kKeptTexture);
-        cpu.edi = at(app, cpu.esi + 0x18);
-        if (cpu.eax != cpu.edi && !sendKept(app, cpu, cpu.edi, cpu.edi, thrash::kStateTexture, kKeptTexture))
-            return;
+        const reg32 kept = at(app, kKeptTexture), texture = at(app, record + kRecordTexture);
+        if (kept != texture && !sendKept(app, cpu, kKeptTexture, thrash::kStateTexture, texture))
+            return false;
     }
-    else if (at(app, kKeptTexture) != 0 && !sendKept(app, cpu, cpu.ebx, cpu.ebx, thrash::kStateTexture, kKeptTexture))
+    else if (at(app, kKeptTexture) != 0 && !sendKept(app, cpu, kKeptTexture, thrash::kStateTexture, 0))
+        return false;
+    const reg32 fourth = vertex(3), third = vertex(2), second = vertex(1), first = vertex(0);
+    return drawQuad(app, cpu, first, second, third, fourth);
+}
+
+/* 0x433d40: colouredQuadRecord for the record in eax; eax the next record. */
+void drawColouredQuadRecord(App* app, CPU& cpu)
+{
+    const Kept kept(cpu, kEbx | kEcx | kEdx);
+    const reg32 record = cpu.eax;
+    if (!colouredQuadRecord(app, cpu, record))
         return;
-    cpu.ecx = at(app, cpu.esi + 0x14);
-    cpu.ebx = at(app, cpu.esi + 0x10);
-    cpu.edx = at(app, cpu.esi + 0xc);
-    cpu.eax = at(app, cpu.esi + 8);
-    if (!byAddress(app, cpu, kDrawQuad))
-        return;
-    cpu.eax = at(app, cpu.esi);
-    cpu.ebp = pop(app, cpu);
-    cpu.edi = pop(app, cpu);
-    cpu.esi = pop(app, cpu);
-    cpu.edx = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
-    cpu.ebx = pop(app, cpu);
+    cpu.eax = at(app, record + kRecordNext);
+    kept.back(cpu);
     cpu.esp += 4;
 }
 
-/* 0x49bf60: a mesh of lines gathered in the record at eax (a count of ends,
- * the ends at +4, the pairs' indices at +0x8004) drawn untextured
- * (THRASH_drawlinemesh) and the count set back to 0, when there is one. */
-void flushLineMesh(win32::WinApplication* app, x86::CPU& cpu)
+// A mesh of lines gathered: a count of ends, the ends from +4, the pairs' indices from +0x8004.
+constexpr reg32 kMeshEnds = 4, kMeshPairs = 0x8004;
+
+/* 0x49bf60's core: the mesh of lines gathered at `mesh` drawn untextured (THRASH_drawlinemesh) and
+ * its count set back to 0, when there is one.  eax at the driver's call as the code has it: the
+ * lines' count. */
+bool lineMeshFlushed(App* app, CPU& cpu, reg32 mesh)
 {
-    push(app, cpu, cpu.ebx);
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.edx);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    cpu.ebx = cpu.eax;
-    if (at(app, cpu.eax) != 0)
-    {
-        cpu.eax = thrash::kStateTexture;
-        cpu.edx = 0;
-        if (!direct(app, cpu, setRenderState))
-            return;
-        push(app, cpu, cpu.ebx + 0x8004);
-        push(app, cpu, cpu.ebx + 4);
-        cpu.eax = at(app, cpu.ebx);
-        cpu.edx = reg32(sreg32(cpu.eax) >> 31);
-        cpu.eax = reg32(sreg32(cpu.eax - cpu.edx) >> 1);  // the ends' count halved, towards 0
-        push(app, cpu, cpu.eax);
-        if (!byAddress(app, cpu, at(app, kThrashDrawLineMesh)))
-            return;
-        put(app, cpu.ebx, 0);
-    }
-    cpu.ebp = pop(app, cpu);
-    cpu.edx = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
-    cpu.ebx = pop(app, cpu);
+    if (at(app, mesh) == 0)
+        return true;
+    if (!sendState(app, cpu, thrash::kStateTexture, 0))
+        return false;
+    const reg32 lines = reg32(sreg32(at(app, mesh)) / 2);  // the code's sar of it less its sign: towards 0
+    cpu.eax = lines;
+    if (!thrash(app, cpu, kThrashDrawLineMesh, {lines, mesh + kMeshEnds, mesh + kMeshPairs}))
+        return false;
+    put(app, mesh, 0);
+    return true;
+}
+
+/* 0x49bf60: lineMeshFlushed for the mesh at eax. */
+void flushLineMesh(App* app, CPU& cpu)
+{
+    const Kept kept(cpu, kEbx | kEcx | kEdx);
+    if (!lineMeshFlushed(app, cpu, cpu.eax))
+        return;
+    kept.back(cpu);
     cpu.esp += 4;
 }
 
 /* ---- Textures ---- */
 
 constexpr reg32 kNoTextureFormat = 0x53c5f0;   // the Error's text: the driver takes neither format
-constexpr reg32 kBadTextureFormat = 0x53c610;  // the Error's text: a format updateTexture does not know
 constexpr reg32 kTextureBufferTag = 0x53c60c;  // what the conversion's buffer is allocated as
-constexpr reg32 kAllocate = 0x4e1620;          // eax a tag, edx bytes, ebx 0x10, ecx: the block in eax
-constexpr reg32 kFree = 0x4e1890;              // eax the block
-constexpr reg32 kError = 0x401010;
 
-/* 0x49c5c0: the format the game's 16-bit textures are handed to the driver
- * in: 3 (1555) when THRASH_about's formats (+0x30) take it, else 7 (4444),
- * with an Error first when they take neither. */
-void textureFormatFor(win32::WinApplication* app, x86::CPU& cpu)
+// THRASH_about's record: +0x30 the texture formats it takes, each with its flags (bit 0: taken).
+constexpr reg32 kAboutFormats = 0x30, kFormat1555Flags = 0xc, kFormat4444Flags = 0x1c;
+constexpr reg32 kFormat1555 = 3, kFormat4444 = 7;
+
+/* 0x49c5c0's core: the format the game's 16-bit textures are handed to the driver in: 3 (1555)
+ * when THRASH_about's formats take it, else 7 (4444), with an Error first when they take neither
+ * (eax the formats there, as the code has it).  ecx and edx kept and eax the format, as the code
+ * leaves them. */
+std::optional<reg32> textureFormat(App* app, CPU& cpu)
 {
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.edx);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    if (!byAddress(app, cpu, at(app, kThrashAbout)))
-        return;
-    cpu.eax = at(app, cpu.eax + 0x30);
-    if (byte(app, cpu.eax + 0xc) & 1)
-        cpu.eax = 3;
-    else
+    const Kept kept(cpu, kEcx | kEdx);
+    const std::optional<reg32> about = thrash(app, cpu, kThrashAbout);
+    if (!about)
+        return std::nullopt;
+    const reg32 formats = at(app, *about + kAboutFormats);
+    if (byte(app, formats + kFormat1555Flags) & 1)
     {
-        if (!(byte(app, cpu.eax + 0x1c) & 1))
-        {
-            push(app, cpu, kNoTextureFormat);
-            if (!byAddress(app, cpu, kError))
-                return;
-            cpu.esp += 4;
-        }
-        cpu.eax = 7;
+        cpu.eax = kFormat1555;
+        kept.back(cpu);
+        return kFormat1555;
     }
-    cpu.ebp = pop(app, cpu);
-    cpu.edx = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
-    cpu.esp += 4;
+    cpu.eax = formats;
+    if (!(byte(app, formats + kFormat4444Flags) & 1))
+    {
+        // As deep as the code calls the Error, under its three pushes: it hands vsprintf an
+        // address on the stack.
+        const GuestFrame deep(cpu, 0xc, 0);
+        if (!error(app, cpu, kNoTextureFormat))
+            return std::nullopt;
+    }
+    cpu.eax = kFormat4444;
+    kept.back(cpu);
+    return kFormat4444;
 }
 
-/* 0x49c620: texture eax given the pixels at edx, ebx by ecx of them, 1555:
- * straight (THRASH_tupdate) when the driver takes 1555, else turned into 4444
- * in a buffer of their own first -- the transparent ones 0, the others with
- * their colour's top four bits -- or an Error for a format it does not know. */
-void updateTexture(win32::WinApplication* app, x86::CPU& cpu)
+/* 0x49c5c0: textureFormat. */
+void textureFormatFor(App* app, CPU& cpu)
 {
-    push(app, cpu, cpu.esi);
-    push(app, cpu, cpu.edi);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    cpu.esp -= 0x10;
-    cpu.esi = cpu.eax;
-    cpu.edi = cpu.edx;
-    if (!direct(app, cpu, textureFormatFor))
-        return;
-    if (cpu.eax == 3)
-    {
-        push(app, cpu, 0);
-        push(app, cpu, cpu.edx);
-        push(app, cpu, cpu.esi);
-        if (!byAddress(app, cpu, at(app, kThrashTUpdate)))
-            return;
-    }
-    else if (cpu.eax == 7)
-    {
-        cpu.ebx *= cpu.ecx;
-        cpu.eax = kTextureBufferTag;
-        put(app, cpu.ebp - 0xc, cpu.ebx);           // the pixels' count
-        cpu.edx = cpu.ebx + cpu.ebx;
-        put(app, cpu.ebp - 4, cpu.edi);             // the next one to read
-        cpu.ebx = 0x10;
-        cpu.ecx = 0;
-        if (!byAddress(app, cpu, kAllocate))
-            return;
-        cpu.ebx = cpu.eax;
-        cpu.edx = cpu.eax;
-        while (sreg32(cpu.ecx) < sreg32(at(app, cpu.ebp - 0xc)))
-        {
-            cpu.eax = reg32(sreg32(x86::sreg16(half(app, at(app, cpu.ebp - 4)))));
-            cpu.edi = reg32(sreg32(cpu.eax) >> 0xf);
-            if (cpu.edi == 0)
-                putHalf(app, cpu.edx, 0);
-            else
-            {
-                const reg32 red = reg32(sreg32(cpu.eax) >> 3) & 0xff00;
-                const reg32 greenBlue = reg32(sreg32(cpu.eax) >> 2) & 0xf0f0;
-                put(app, cpu.ebp - 0x10, red);
-                put(app, cpu.ebp - 8, greenBlue);
-                cpu.eax = reg32(sreg32(cpu.eax) >> 1) & 0xf00f;
-                cpu.edi = red | greenBlue | cpu.eax;
-                putHalf(app, cpu.edx, reg16(cpu.edi));
-            }
-            cpu.eax = at(app, cpu.ebp - 4) + 2;
-            cpu.edx += 2;
-            ++cpu.ecx;
-            put(app, cpu.ebp - 4, cpu.eax);
-        }
-        push(app, cpu, 0);
-        push(app, cpu, cpu.ebx);
-        push(app, cpu, cpu.esi);
-        if (!byAddress(app, cpu, at(app, kThrashTUpdate)))
-            return;
-        cpu.eax = cpu.ebx;
-        if (!byAddress(app, cpu, kFree))
-            return;
-    }
-    else
-    {
-        push(app, cpu, kBadTextureFormat);
-        if (!byAddress(app, cpu, kError))
-            return;
+    if (textureFormat(app, cpu))
         cpu.esp += 4;
+}
+
+/* The runtime's allocator (ea::reservememadr, 0x4e1620): eax the tag, edx the bytes, ebx 0x10 --
+ * which it keeps, the code's after it.  The block. */
+std::optional<reg32> allocate(App* app, CPU& cpu, reg32 tag, reg32 bytes)
+{
+    cpu.edx = bytes;
+    cpu.ebx = 0x10;
+    return guest::direct<0x4e1620, ea::reserved>(app, cpu, tag, bytes, reg32(0x10));
+}
+
+/* The runtime's free (ea::purgememadr, 0x4e1890): the block in eax. */
+bool release(App* app, CPU& cpu, reg32 block)
+{
+    return guest::direct<0x4e1890, ea::purgeBlock>(app, cpu, block).has_value();
+}
+
+/* A 1555 pixel as 4444: 0 for a transparent one (bit 15 clear), else each colour's top four bits
+ * and the alpha's.  The code's shifts are of the pixel sign-extended. */
+reg16 pixel4444(sreg32 pixel)
+{
+    if ((pixel >> 15) == 0)
+        return 0;
+    return reg16(reg32(pixel >> 3 & 0xff00) | reg32(pixel >> 2 & 0xf0f0) | reg32(pixel >> 1 & 0xf00f));
+}
+
+/* 0x49c620's core: `texture` given the `width` by `height` 1555 pixels at `pixels`: straight
+ * (THRASH_tupdate) when the driver takes 1555, else turned into 4444 in a block of their own first.
+ * textureFormat gives one of the two only: the code's Error for another format is never reached.
+ * ebx, ecx and edx at the driver's call as the conversion leaves them; eax as the last call
+ * leaves it. */
+bool textureUpdated(App* app, CPU& cpu, reg32 texture, reg32 pixels, reg32 width, reg32 height)
+{
+    std::optional<reg32> format;
+    {
+        const GuestFrame deep(cpu, 0x20, 0);  // the code's pushes, its frame and the call's slot, for the Error's
+        format = textureFormat(app, cpu);
     }
-    cpu.esp = cpu.ebp;
-    cpu.ebp = pop(app, cpu);
-    cpu.edi = pop(app, cpu);
-    cpu.esi = pop(app, cpu);
-    cpu.esp += 4;
+    if (!format)
+        return false;
+    if (*format == kFormat1555)
+        return thrash(app, cpu, kThrashTUpdate, {texture, pixels, 0}).has_value();
+    const reg32 count = width * height;
+    const std::optional<reg32> block = allocate(app, cpu, kTextureBufferTag, count + count);
+    if (!block)
+        return false;
+    reg32 done = 0;
+    for (; sreg32(done) < sreg32(count); ++done)
+        putHalf(app, *block + 2 * done, pixel4444(x86::sreg16(half(app, pixels + 2 * done))));
+    cpu.ebx = *block;
+    cpu.ecx = done;
+    cpu.edx = *block + 2 * done;
+    return thrash(app, cpu, kThrashTUpdate, {texture, *block, 0}) && release(app, cpu, *block);
+}
+
+/* 0x49c620: textureUpdated, texture eax, pixels edx, ebx by ecx of them. */
+void updateTexture(App* app, CPU& cpu)
+{
+    if (textureUpdated(app, cpu, cpu.eax, cpu.edx, cpu.ebx, cpu.ecx))
+        cpu.esp += 4;
 }
 
 constexpr reg32 kMemoryWarnings = 0x4b55f8, kMemoryWarningNames = 0x4b5610;  // six words each
 constexpr reg32 kMemoryWarningFormat = 0x53fde0;
 constexpr reg32 kStandardError = 0x566f72;     // the runtime's stderr
 constexpr reg32 kFprintf = 0x4f4b80;
+constexpr reg32 kDriverDirect3D = 6;
+// THRASH_about's record: +0x70 the texture memory, +0x74 Direct3D's more.
+constexpr reg32 kAboutTextureMemory = 0x70, kAboutMoreMemory = 0x74;
+constexpr sreg32 kEnoughTextureMemory = 0x200000;
 
-/* 0x4b5ea0: for driver type eax (6, Direct3D, counts its +0x74 too), a line
- * to stderr when THRASH_about's texture memory (+0x70) is under 2 MB, with
- * the words of the tables at 0x4b55f8 and 0x4b5610 for edx. */
-void warnTextureMemory(win32::WinApplication* app, x86::CPU& cpu)
+/* 0x4b5ea0's core: for driver type `type` (Direct3D counts THRASH_about's more memory too), a line
+ * to stderr when the texture memory is under 2 MB, with the words of the tables at 0x4b55f8 and
+ * 0x4b5610 for `index` -- copied into the frame first and read there, as deep as the code has them
+ * (an index past them reads what is there).  edx the driver's record, as the code leaves it.  What
+ * eax is left: the memory, or fprintf's answer. */
+std::optional<reg32> textureMemoryWarned(App* app, CPU& cpu, reg32 type, reg32 index)
 {
-    push(app, cpu, cpu.ebx);
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.esi);
-    push(app, cpu, cpu.edi);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    cpu.esp -= 0x30;
-    cpu.esi = cpu.eax;
-    cpu.ebx = cpu.edx;
-    if (!byAddress(app, cpu, at(app, kThrashAbout)))
-        return;
-    cpu.edx = cpu.eax;
-    cpu.eax = at(app, cpu.eax + 0x70);
-    if (cpu.esi == 6)
-        cpu.eax += at(app, cpu.edx + 0x74);
-    if (sreg32(cpu.eax) < 0x200000)
+    const std::optional<reg32> about = thrash(app, cpu, kThrashAbout);
+    if (!about)
+        return std::nullopt;
+    cpu.edx = *about;
+    reg32 memory = at(app, *about + kAboutTextureMemory);
+    if (type == kDriverDirect3D)
+        memory += at(app, *about + kAboutMoreMemory);
+    if (sreg32(memory) >= kEnoughTextureMemory)
+        return memory;
+    const GuestFrame frame(cpu, 0x14, 0x30);
+    for (reg32 i = 0; i < 6; ++i)
     {
-        // rep movsd twice: the two tables into the frame.
-        for (reg32 i = 0; i < 6; ++i)
-        {
-            put(app, cpu.ebp - 0x30 + 4 * i, at(app, kMemoryWarnings + 4 * i));
-            put(app, cpu.ebp - 0x18 + 4 * i, at(app, kMemoryWarningNames + 4 * i));
-        }
-        cpu.ecx = 0;
-        cpu.esi = at(app, cpu.ebp + cpu.ebx * 4 - 0x30);
-        push(app, cpu, cpu.esi);
-        push(app, cpu, cpu.eax);
-        cpu.edi = at(app, cpu.ebp + cpu.ebx * 4 - 0x18);
-        push(app, cpu, cpu.edi);
-        push(app, cpu, kMemoryWarningFormat);
-        push(app, cpu, kStandardError);
-        if (!byAddress(app, cpu, kFprintf))
-            return;
-        cpu.esp += 0x14;
+        put(app, frame - 0x30 + 4 * i, at(app, kMemoryWarnings + 4 * i));
+        put(app, frame - 0x18 + 4 * i, at(app, kMemoryWarningNames + 4 * i));
     }
-    cpu.esp = cpu.ebp;
-    cpu.ebp = pop(app, cpu);
-    cpu.edi = pop(app, cpu);
-    cpu.esi = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
-    cpu.ebx = pop(app, cpu);
+    const reg32 warning = at(app, (frame - 0x30) + index * 4), name = at(app, (frame - 0x18) + index * 4);
+    cpu.eax = memory;
+    if (!guest::call(app, cpu, kFprintf, {kStandardError, kMemoryWarningFormat, name, memory, warning}))
+        return std::nullopt;
+    return cpu.eax;
+}
+
+/* 0x4b5ea0: textureMemoryWarned for driver type eax, index edx. */
+void warnTextureMemory(App* app, CPU& cpu)
+{
+    const Kept kept(cpu, kEbx | kEcx);
+    const std::optional<reg32> left = textureMemoryWarned(app, cpu, cpu.eax, cpu.edx);
+    if (!left)
+        return;
+    cpu.eax = *left;
+    kept.back(cpu);
     cpu.esp += 4;
 }
 
-/* 0x4be570: screen mode eax's width into [ecx] and height into [esp+4] from
- * THRASH_about's modes (+0x40, 0x28 bytes each), 640 by 480 past the last
- * (+0x3c); [edx] and [ebx] set to 0. */
-void modeSize(win32::WinApplication* app, x86::CPU& cpu)
+// THRASH_about's record: +0x3c the last mode, +0x40 the modes (0x28 bytes each: width, height...).
+constexpr reg32 kAboutLastMode = 0x3c, kAboutModes = 0x40, kModeBytes = 0x28;
+
+/* What modeSizeOf found: THRASH_about's record, whether the mode is one of its, and its size. */
+struct ModeSize
 {
-    push(app, cpu, cpu.esi);
-    push(app, cpu, cpu.edi);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    cpu.esp -= 4;
-    cpu.esi = cpu.eax;
-    put(app, cpu.ebp - 4, cpu.edx);
-    cpu.edi = cpu.ebx;
-    cpu.ebx = cpu.ecx;
-    if (!byAddress(app, cpu, at(app, kThrashAbout)))
-        return;
-    cpu.edx = cpu.eax;
-    cpu.eax = at(app, cpu.ebp - 4);
-    put(app, cpu.eax, 0);
-    put(app, cpu.edi, 0);
-    if (sreg32(cpu.esi) > sreg32(at(app, cpu.edx + 0x3c)))
+    reg32 about;
+    bool listed;
+    reg32 width, height;
+};
+
+/* 0x4be570's core: screen mode `mode`'s width into [widthAt] and height into [heightAt] from
+ * THRASH_about's modes, 640 by 480 past the last; [zeroAt] and [alsoZeroAt] set to 0 first. */
+std::optional<ModeSize> modeSizeOf(App* app, CPU& cpu, reg32 mode, reg32 zeroAt, reg32 alsoZeroAt, reg32 widthAt,
+                                   reg32 heightAt)
+{
+    const std::optional<reg32> about = thrash(app, cpu, kThrashAbout);
+    if (!about)
+        return std::nullopt;
+    put(app, zeroAt, 0);
+    put(app, alsoZeroAt, 0);
+    if (sreg32(mode) > sreg32(at(app, *about + kAboutLastMode)))
     {
-        cpu.eax = at(app, cpu.ebp + 0x10);
-        put(app, cpu.ebx, 0x280);
-        put(app, cpu.eax, 0x1e0);
+        put(app, widthAt, kDefaultWidth);
+        put(app, heightAt, kDefaultHeight);
+        return ModeSize{*about, false, kDefaultWidth, kDefaultHeight};
+    }
+    const reg32 width = at(app, at(app, *about + kAboutModes) + mode * kModeBytes);
+    put(app, widthAt, width);
+    const reg32 height = at(app, at(app, *about + kAboutModes) + mode * kModeBytes + 4);
+    put(app, heightAt, height);
+    return ModeSize{*about, true, width, height};
+}
+
+/* 0x4be570: modeSizeOf for mode eax, the zeros at edx and ebx, the width into [ecx], the height into
+ * [esp+4]; the registers as the code leaves them. */
+void modeSize(App* app, CPU& cpu)
+{
+    const reg32 widthAt = cpu.ecx, heightAt = at(app, cpu.esp + 4);
+    const std::optional<ModeSize> size = modeSizeOf(app, cpu, cpu.eax, cpu.edx, cpu.ebx, widthAt, heightAt);
+    if (!size)
+        return;
+    cpu.ebx = widthAt;
+    if (size->listed)
+    {
+        cpu.eax = size->height;
+        cpu.ecx = size->width;
+        cpu.edx = heightAt;
     }
     else
     {
-        cpu.eax = cpu.esi * 5;
-        cpu.ecx = at(app, at(app, cpu.edx + 0x40) + cpu.eax * 8);
-        put(app, cpu.ebx, cpu.ecx);
-        cpu.edx = at(app, cpu.edx + 0x40);
-        cpu.eax = at(app, cpu.edx + cpu.eax * 8 + 4);
-        cpu.edx = at(app, cpu.ebp + 0x10);
-        put(app, cpu.edx, cpu.eax);
+        cpu.eax = heightAt;
+        cpu.edx = size->about;
     }
-    cpu.esp = cpu.ebp;
-    cpu.ebp = pop(app, cpu);
-    cpu.edi = pop(app, cpu);
-    cpu.esi = pop(app, cpu);
     cpu.esp += 4 + 4;
 }
 
@@ -1774,57 +1775,51 @@ constexpr reg32 kTextQuad = 0x561b44;          // four corners of kCornerBytes: 
 constexpr reg32 kTextBoxColour = 0x561b38;
 constexpr reg32 kFontHeights = 0x83f6a0, kFont = 0x840184, kFontScale = 0x84018c;
 
-/* 0x4d1120: a box drawn untextured behind text: at x eax, y edx, [esp+4]
- * wide (a float, times the font's scale) and the font's height (its table at
- * 0x83f6a0 for [0x840184], times the scale) high, in [0x561b38] made opaque. */
-void drawTextBox(win32::WinApplication* app, x86::CPU& cpu)
+/* A float's bits as the float. */
+float floatOf(reg32 bits)
 {
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    cpu.esp -= 8;
-    auto& fpu = cpu.fpu;
-    auto loadFloat = [&](reg32 address) { return x86::Float(app->getMemory<float>(address)); };
-    auto storeFloat = [&](reg32 address, x86::Float value) { app->getMemory<float>(address) = float(value); };
-    auto loadInteger = [&](reg32 address) { return x86::Float(sreg32(at(app, address))); };
-    cpu.ecx = cpu.eax;
-    const x86::Float width = loadFloat(cpu.ebp + 0xc);
-    put(app, cpu.ebp - 4, cpu.edx);
-    cpu.edx = at(app, kFont);
-    const x86::Float scale = loadFloat(kFontScale);
-    const x86::Float scaledWidth = fp::mul(width, scale);
-    const x86::Float height = fp::mul(scale, loadInteger(kFontHeights + cpu.edx * 4));
-    put(app, cpu.ebp - 8, cpu.ecx);
-    cpu.eax = at(app, kTextBoxColour) | 0xff000000;
-    const x86::Float x = loadInteger(cpu.ebp - 8);
-    const x86::Float y = loadInteger(cpu.ebp - 4);
-    storeFloat(kTextQuad, x);
-    storeFloat(kTextQuad + 4, y);
-    cpu.ecx = at(app, kTextQuad);
-    storeFloat(kTextQuad + 0x24, y);
+    float value;
+    std::memcpy(&value, &bits, sizeof value);
+    return value;
+}
+
+/* 0x4d1120's core: a box drawn untextured behind text: at x, y, `width` wide (times the font's
+ * scale) and the font's height (its table at 0x83f6a0 for [0x840184], times the scale) high, in
+ * [0x561b38] made opaque.  The x87's operations as the code does them, each float stored where it
+ * stores one. */
+bool textBox(App* app, CPU& cpu, sreg32 x, sreg32 y, float width)
+{
+    const reg32 font = at(app, kFont);
+    const x86::Float scale = x86::Float(floatAt(app, kFontScale));
+    const x86::Float scaledWidth = fp::mul(x86::Float(width), scale);
+    const x86::Float height = fp::mul(scale, x86::Float(sreg32(at(app, kFontHeights + font * 4))));
+    const reg32 colour = at(app, kTextBoxColour) | 0xff000000;
+    putFloat(app, kTextQuad, float(x86::Float(x)));
+    putFloat(app, kTextQuad + 4, float(x86::Float(y)));
+    const reg32 left = at(app, kTextQuad);
+    putFloat(app, kTextQuad + 0x24, float(x86::Float(y)));
     for (reg32 corner = 3; corner < 4; --corner)
-        put(app, kTextQuad + corner * kCornerBytes + kCornerColour, cpu.eax);
-    const x86::Float top = loadFloat(kTextQuad + 0x24);
-    cpu.edx = 0;
-    cpu.eax = thrash::kStateTexture;
-    put(app, cpu.ebp - 8, cpu.ecx);
-    put(app, kTextQuad + 0x60, cpu.ecx);
-    const x86::Float right = fp::add(scaledWidth, loadFloat(cpu.ebp - 8));
+        put(app, kTextQuad + corner * kCornerBytes + kCornerColour, colour);
+    const x86::Float top = x86::Float(floatAt(app, kTextQuad + 0x24));
+    put(app, kTextQuad + 0x60, left);
+    const x86::Float right = fp::add(scaledWidth, x86::Float(floatOf(left)));
     const x86::Float bottom = fp::add(height, top);
-    storeFloat(kTextQuad + 0x20, right);
-    storeFloat(kTextQuad + 0x44, bottom);
-    cpu.ecx = at(app, kTextQuad + 0x20);
-    put(app, kTextQuad + 0x40, cpu.ecx);
-    storeFloat(kTextQuad + 0x64, bottom);
-    if (!direct(app, cpu, setRenderState))
+    putFloat(app, kTextQuad + 0x20, float(right));
+    putFloat(app, kTextQuad + 0x44, float(bottom));
+    put(app, kTextQuad + 0x40, at(app, kTextQuad + 0x20));
+    putFloat(app, kTextQuad + 0x64, float(bottom));
+    const auto corner = [](reg32 n) { return kTextQuad + n * kCornerBytes; };
+    return sendState(app, cpu, thrash::kStateTexture, 0)
+        && thrash(app, cpu, kThrashDrawQuad, {corner(0), corner(1), corner(2), corner(3)});
+}
+
+/* 0x4d1120: textBox at x eax, y edx, [esp+4] wide. */
+void drawTextBox(App* app, CPU& cpu)
+{
+    const Kept kept(cpu, kEcx);
+    if (!textBox(app, cpu, sreg32(cpu.eax), sreg32(cpu.edx), floatAt(app, cpu.esp + 4)))
         return;
-    for (reg32 corner = 3; corner < 4; --corner)
-        push(app, cpu, kTextQuad + corner * kCornerBytes);
-    if (!byAddress(app, cpu, at(app, kThrashDrawQuad)))
-        return;
-    cpu.esp = cpu.ebp;
-    cpu.ebp = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
+    kept.back(cpu);
     cpu.esp += 4 + 4;
 }
 
@@ -1833,167 +1828,165 @@ void drawTextBox(win32::WinApplication* app, x86::CPU& cpu)
 constexpr reg32 kShapeBufferTag = 0x5495c4;
 constexpr reg32 kShapeToPixels = 0x4d37a0;     // eax the buffer, edx the shape, ebx and [esp+4] where its size goes
 
-/* 0x4d5ed0: texture eax filled from shape edx (ebx by ebx pixels at most):
- * the shape turned into pixels (sub_4d37a0) in a buffer of its own, handed to
- * THRASH_tupdate from its +0x10, and the buffer freed. */
-void shapeIntoTexture(win32::WinApplication* app, x86::CPU& cpu)
+/* port::shapes' shape into pixels (0x4d37a0), by address: eax the buffer, edx the shape, ebx and
+ * [esp+4] where its size goes (ecx as the code has it, which the stand-in logs); esp left as the
+ * callee leaves it, as the code leaves it. */
+bool shapeToPixels(App* app, CPU& cpu, reg32 buffer, reg32 shape, reg32 widthAt, reg32 heightAt)
 {
-    push(app, cpu, cpu.esi);
-    push(app, cpu, cpu.edi);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    cpu.esp -= 0x10;
-    put(app, cpu.ebp - 8, cpu.eax);
-    put(app, cpu.ebp - 4, cpu.edx);
-    cpu.edi = cpu.ebx;
-    put(app, cpu.ebp - 0x10, cpu.ecx);
-    cpu.eax = at(app, cpu.edx) & 0xff;
-    cpu.edx = cpu.edi * cpu.edi;
-    cpu.ebx = 0x10;
-    cpu.edx = (cpu.edx << 2) + 0x14;
-    cpu.eax = kShapeBufferTag;
-    cpu.ecx = cpu.edi;
-    if (!byAddress(app, cpu, kAllocate))
-        return;
-    cpu.esi = cpu.eax;
-    cpu.eax = cpu.ebp - 0x10;
-    cpu.ebx = cpu.ebp - 0xc;
-    push(app, cpu, cpu.eax);
-    cpu.edx = at(app, cpu.ebp - 4);
-    cpu.eax = cpu.esi;
-    if (!byAddress(app, cpu, kShapeToPixels))
-        return;
-    push(app, cpu, 0);
-    cpu.eax = cpu.esi + 0x10;
-    push(app, cpu, cpu.eax);
-    cpu.edx = at(app, cpu.ebp - 8);
-    push(app, cpu, cpu.edx);
-    if (!byAddress(app, cpu, at(app, kThrashTUpdate)))
-        return;
-    cpu.eax = cpu.esi;
-    if (!byAddress(app, cpu, kFree))
-        return;
-    cpu.esp = cpu.ebp;
-    cpu.ebp = pop(app, cpu);
-    cpu.edi = pop(app, cpu);
-    cpu.esi = pop(app, cpu);
-    cpu.esp += 4;
+    cpu.eax = buffer;
+    cpu.edx = shape;
+    cpu.ebx = widthAt;
+    push(app, cpu, heightAt);
+    return byAddress(app, cpu, kShapeToPixels);
+}
+
+/* 0x4d5ed0's core: `texture` filled from `shape` (`size` by `size` pixels at most): the shape turned
+ * into pixels (sub_4d37a0) in a block of its own -- its size into the frame, as deep as the code has
+ * it, the height's slot holding `limit` first -- handed to THRASH_tupdate from its +0x10, and the
+ * block freed.  ebx left the width's slot, as the code leaves it. */
+bool shapeIntoTextureOf(App* app, CPU& cpu, reg32 texture, reg32 shape, reg32 size, reg32 limit)
+{
+    const GuestFrame frame(cpu, 0xc, 0x10);
+    const reg32 heightAt = frame - 0x10, widthAt = frame - 0xc;
+    put(app, heightAt, limit);
+    cpu.ecx = size;
+    const std::optional<reg32> block = allocate(app, cpu, kShapeBufferTag, ((size * size) << 2) + 0x14);
+    if (!block || !shapeToPixels(app, cpu, *block, shape, widthAt, heightAt))
+        return false;
+    cpu.eax = *block + 0x10;
+    cpu.edx = texture;
+    return thrash(app, cpu, kThrashTUpdate, {texture, *block + 0x10, 0}) && release(app, cpu, *block);
+}
+
+/* 0x4d5ed0: shapeIntoTextureOf, texture eax, shape edx, ebx by ebx at most, ecx into the height's
+ * slot. */
+void shapeIntoTexture(App* app, CPU& cpu)
+{
+    if (shapeIntoTextureOf(app, cpu, cpu.eax, cpu.edx, cpu.ebx, cpu.ecx))
+        cpu.esp += 4;
 }
 
 /* ---- The screen's functions, the frame buffer, the driver closed ---- */
 
 constexpr reg32 kScreenFunctions = 0x567dc4;   // five: at exit, set mode, lock, unlock and flip, set up a screen
 constexpr reg32 kLockScreen = 0x517920;
+constexpr reg32 kReleaseAndFlip = 0x517990, kSetVideoMode = 0x517610;
+constexpr reg32 kNoAboutFile = 0x54d714, kNoAboutFunction = 0x54d724, kNoAboutLine = 0xe;
+constexpr reg32 kNoAbout = 0x54d72c;           // the Error's text: the driver has no THRASH_about
 
-/* 0x4f8830: the screen's functions kept for the driver (0x567dc4 on), an
- * Error first when it has no THRASH_about; eax 1. */
-void setScreenFunctions(win32::WinApplication* app, x86::CPU& cpu)
+/* 0x4f8830's core: the screen's functions kept for the driver (0x567dc4 on), an Error first when it
+ * has no THRASH_about -- as deep as the code calls it, under its six pushes: the Error hands
+ * vsprintf an address on the stack. */
+bool screenFunctionsSet(App* app, CPU& cpu)
 {
-    push(app, cpu, cpu.ebx);
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.edx);
-    push(app, cpu, cpu.esi);
-    push(app, cpu, cpu.ebp);
-    cpu.ecx = at(app, kThrashAbout);
-    cpu.edx = 1;
-    if (cpu.ecx == 0)
+    if (at(app, kThrashAbout) == 0)
     {
-        push(app, cpu, cpu.edi);
-        cpu.ebx = 0x54d714;
-        cpu.esi = 0x54d724;
-        cpu.edi = 0xe;
-        push(app, cpu, 0x54d72c);
-        put(app, 0x552190, cpu.ebx);  // native_game's kWhere: the file, the function, the line
-        put(app, 0x552194, cpu.esi);
-        put(app, 0x552198, cpu.edi);
-        if (!byAddress(app, cpu, kError))
-            return;
-        cpu.esp += 4;
-        cpu.edi = pop(app, cpu);
+        put(app, kWhereFile, kNoAboutFile);
+        put(app, kWhereFunction, kNoAboutFunction);
+        put(app, kWhereLine, kNoAboutLine);
+        const GuestFrame deep(cpu, 0x18, 0);
+        if (!error(app, cpu, kNoAbout))
+            return false;
     }
-    cpu.eax = kModeAtExit;
-    cpu.ecx = kLockScreen;
-    cpu.ebx = 0x517990;  // releaseAndFlip
-    cpu.esi = kSetUpScreen;
-    cpu.ebp = 0x517610;  // setVideoMode
-    put(app, kScreenFunctions, cpu.eax);
-    put(app, kScreenFunctions + 8, cpu.ecx);
-    put(app, kScreenFunctions + 0xc, cpu.ebx);
-    put(app, kScreenFunctions + 0x10, cpu.esi);
-    put(app, kScreenFunctions + 4, cpu.ebp);
-    cpu.eax = cpu.edx;
-    cpu.ebp = pop(app, cpu);
-    cpu.esi = pop(app, cpu);
-    cpu.edx = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
-    cpu.ebx = pop(app, cpu);
+    put(app, kScreenFunctions, kModeAtExit);
+    put(app, kScreenFunctions + 8, kLockScreen);
+    put(app, kScreenFunctions + 0xc, kReleaseAndFlip);
+    put(app, kScreenFunctions + 0x10, kSetUpScreen);
+    put(app, kScreenFunctions + 4, kSetVideoMode);
+    return true;
+}
+
+/* 0x4f8830: screenFunctionsSet; eax 1. */
+void setScreenFunctions(App* app, CPU& cpu)
+{
+    const Kept kept(cpu, kEbx | kEcx | kEdx);
+    if (!screenFunctionsSet(app, cpu))
+        return;
+    cpu.eax = 1;
+    kept.back(cpu);
     cpu.esp += 4;
 }
 
-/* 0x517890: the window edx taken and the frame buffer locked
- * (THRASH_lockwindow) for the screen record eax: its pointer (+0x20) and
- * pitch (+0x28) from the lock, which is kept, as is the record.  eax: 1, or
- * 0 when it would not lock. */
-void lockFrameBuffer(win32::WinApplication* app, x86::CPU& cpu)
+// A screen's record: +4 its width, +8 its height, +0x1c its bits per pixel, +0x20 its pixels,
+// +0x28 its pitch.  THRASH_lockwindow's record: +0 the pixels, +4 the pitch, +8 the format, +0xc
+// the width, +0x10 the height.
+constexpr reg32 kScreenWidthAt = 4, kScreenHeightAt = 8, kScreenBitsAt = 0x1c, kScreenPixels = 0x20,
+                kScreenPitch = 0x28;
+constexpr reg32 kLockPixels = 0, kLockPitch = 4, kLockFormat = 8, kLockWidth = 0xc, kLockHeight = 0x10;
+
+/* 0x517890's core: window `window` taken and the frame buffer locked (THRASH_lockwindow) for the
+ * screen record `screen`: its pixels and pitch from the lock, which is kept, as is the record (edx
+ * the pixels, as the code leaves it).  1, or 0 when it would not lock. */
+std::optional<reg32> frameBufferLocked(App* app, CPU& cpu, reg32 screen, reg32 window)
 {
-    push(app, cpu, cpu.ebx);
-    push(app, cpu, cpu.ecx);
-    cpu.ebx = cpu.eax;
-    push(app, cpu, cpu.edx);
-    if (!byAddress(app, cpu, at(app, kThrashWindow)) || !byAddress(app, cpu, at(app, kThrashLockWindow)))
+    if (!thrash(app, cpu, kThrashWindow, {window}))
+        return std::nullopt;
+    const std::optional<reg32> lock = thrash(app, cpu, kThrashLockWindow);
+    if (!lock)
+        return std::nullopt;
+    put(app, kFrameLock, *lock);
+    if (*lock == 0)
+        return 0;
+    cpu.edx = at(app, *lock + kLockPixels);
+    put(app, screen + kScreenPixels, cpu.edx);
+    const reg32 pitch = at(app, *lock + kLockPitch);
+    put(app, kFrameLocked, screen);
+    put(app, screen + kScreenPitch, pitch);
+    return 1;
+}
+
+/* 0x517890: frameBufferLocked for the record eax, window edx. */
+void lockFrameBuffer(App* app, CPU& cpu)
+{
+    const Kept kept(cpu, kEbx | kEcx);
+    const std::optional<reg32> locked = frameBufferLocked(app, cpu, cpu.eax, cpu.edx);
+    if (!locked)
         return;
-    put(app, kFrameLock, cpu.eax);
-    if (cpu.eax != 0)
-    {
-        cpu.edx = at(app, cpu.eax);
-        put(app, cpu.ebx + 0x20, cpu.edx);
-        cpu.eax = at(app, cpu.eax + 4);
-        put(app, kFrameLocked, cpu.ebx);
-        put(app, cpu.ebx + 0x28, cpu.eax);
-        cpu.eax = 1;
-    }
-    cpu.ecx = pop(app, cpu);
-    cpu.ebx = pop(app, cpu);
+    cpu.eax = *locked;
+    kept.back(cpu);
     cpu.esp += 4;
 }
 
 constexpr reg32 kRemoveTask = 0x4e75e0;        // native_snd_stream's removeSystemTask: eax the task
 
-/* 0x524650: the driver closed, when it is open: its idle task taken off the
- * timer, the screen given back (THRASH_restore), the game's window destroyed
- * too for eax nonzero.  eax 0. */
-void closeDriver(win32::WinApplication* app, x86::CPU& cpu)
+/* port::removeSystemTask (0x4e75e0), by address: the task's function in eax. */
+bool removeTask(App* app, CPU& cpu, reg32 function)
 {
-    push(app, cpu, cpu.ebx);
-    cpu.ebx = cpu.eax;
-    cpu.eax = (cpu.eax & ~0xff00u) | reg32(byte(app, kDriverOpen)) << 8;
-    if (byte(app, kDriverOpen) != 0)
-    {
-        if (at(app, kThrashIdle) != 0)
-        {
-            cpu.eax = kDriverIdle;
-            if (!byAddress(app, cpu, kRemoveTask))
-                return;
-        }
-        push(app, cpu, cpu.edx);
-        push(app, cpu, cpu.ecx);
-        if (!byAddress(app, cpu, at(app, kThrashRestore)))
-            return;
-        if (cpu.ebx != 0 && !byAddress(app, cpu, kDestroyWindow))
-            return;
-        cpu.edx &= ~0xff00u;
-        putByte(app, kDriverOpen, 0);
-        cpu.ecx = pop(app, cpu);
-        cpu.edx = pop(app, cpu);
-    }
+    cpu.eax = function;
+    return byAddress(app, cpu, kRemoveTask);
+}
+
+/* 0x524650's core: the driver closed, when it is open: its idle task taken off the timer, the
+ * screen given back (THRASH_restore), the game's window destroyed too for `destroyWindow`; ecx and
+ * edx kept from then on, as the code keeps them. */
+bool driverClosed(App* app, CPU& cpu, bool destroyWindow)
+{
+    if (byte(app, kDriverOpen) == 0)
+        return true;
+    if (at(app, kThrashIdle) != 0 && !removeTask(app, cpu, kDriverIdle))
+        return false;
+    const Kept kept(cpu, kEcx | kEdx);
+    if (!thrash(app, cpu, kThrashRestore) || (destroyWindow && !byAddress(app, cpu, kDestroyWindow)))
+        return false;
+    putByte(app, kDriverOpen, 0);
+    kept.back(cpu);
+    return true;
+}
+
+/* 0x524650: driverClosed, the window destroyed for eax nonzero; eax 0. */
+void closeDriver(App* app, CPU& cpu)
+{
+    const Kept kept(cpu, kEbx);
+    if (!driverClosed(app, cpu, cpu.eax != 0))
+        return;
     cpu.eax = 0;
-    cpu.ebx = pop(app, cpu);
+    kept.back(cpu);
     cpu.esp += 4;
 }
 
-/* 0x524640: closeDriver with the game's window destroyed too: what the game
- * does at its end (openDriver hands it to sub_4f2a78). */
-void closeDriverAtExit(win32::WinApplication* app, x86::CPU& cpu)
+/* 0x524640: closeDriver with the game's window destroyed too: what the game does at its end
+ * (openDriver hands it to sub_4f2a78).  The code runs on into closeDriver with eax 1. */
+void closeDriverAtExit(App* app, CPU& cpu)
 {
     cpu.eax = 1;
     closeDriver(app, cpu);
@@ -2004,6 +1997,7 @@ void closeDriverAtExit(win32::WinApplication* app, x86::CPU& cpu)
 constexpr reg32 kDriverSlot = 0x564a68;        // the slot in use
 constexpr reg32 kDriverSlots = 0x564a70;       // eight of 0x8c bytes: the library, then 34 pointers
 constexpr reg32 kDriverLibrary = 0x564a6c;
+constexpr reg32 kSlotBytes = 0x8c, kSlotWords = 0x23, kSlotCount = 8;
 /* Where each word of a slot goes, after the library: the game's pointers to
  * the driver's functions, in the order the slot keeps them. */
 constexpr reg32 kSlotPointers[] = {
@@ -2014,37 +2008,48 @@ constexpr reg32 kSlotPointers[] = {
     kThrashDrawTriMesh, 0x9ef91c, 0x9ef960, 0x9ef928, kThrashDrawLineMesh, 0x9ef908, 0x9ef910, 0x9ef900, 0x9ef904,
 };
 
-/* 0x517170: the driver of slot eax (0 for one outside 0..7) taken back: its
- * library and its pointers, the slot kept as the one in use.  eax: the
- * slot's last word. */
-void useDriverSlot(win32::WinApplication* app, x86::CPU& cpu)
+/* A slot's index: 0 for one outside 0..7. */
+reg32 slotIndex(reg32 slot)
 {
-    push(app, cpu, cpu.edx);
-    if (sreg32(cpu.eax) >= 8 || sreg32(cpu.eax) < 0)
-        cpu.eax = 0;
-    put(app, kDriverSlot, cpu.eax);
-    const reg32 slot = kDriverSlots + cpu.eax * 0x8c;
-    put(app, kDriverLibrary, at(app, slot));
+    return sreg32(slot) >= sreg32(kSlotCount) || sreg32(slot) < 0 ? 0 : slot;
+}
+
+/* 0x517170's core: the driver of slot `slot` taken back: its library and its pointers, the slot
+ * kept as the one in use.  The slot's last word, which the code leaves in eax. */
+reg32 driverSlotUsed(App* app, reg32 slot)
+{
+    const reg32 index = slotIndex(slot);
+    put(app, kDriverSlot, index);
+    const reg32 words = kDriverSlots + index * kSlotBytes;
+    put(app, kDriverLibrary, at(app, words));
     for (reg32 i = 0; i < sizeof kSlotPointers / sizeof *kSlotPointers; ++i)
-        put(app, kSlotPointers[i], at(app, slot + 4 + 4 * i));
-    cpu.eax = at(app, slot + 0x88);
-    cpu.edx = pop(app, cpu);
+        put(app, kSlotPointers[i], at(app, words + 4 + 4 * i));
+    return at(app, words + kSlotBytes - 4);
+}
+
+/* 0x517170: driverSlotUsed, slot eax. */
+void useDriverSlot(App* app, CPU& cpu)
+{
+    cpu.eax = driverSlotUsed(app, cpu.eax);
     cpu.esp += 4;
 }
 
-/* 0x517370: the driver in use kept in slot eax (0 for one outside 0..7): its
- * library and its pointers.  eax: the slot times 35. */
-void keepDriverSlot(win32::WinApplication* app, x86::CPU& cpu)
+/* 0x517370's core: the driver in use kept in slot `slot`: its library and its pointers.  The slot's
+ * first word's index, which the code leaves in eax. */
+reg32 driverSlotKept(App* app, reg32 slot)
 {
-    push(app, cpu, cpu.edx);
-    if (sreg32(cpu.eax) >= 8 || sreg32(cpu.eax) < 0)
-        cpu.eax = 0;
-    cpu.eax *= 0x23;
-    const reg32 slot = kDriverSlots + cpu.eax * 4;
-    put(app, slot, at(app, kDriverLibrary));
+    const reg32 first = slotIndex(slot) * kSlotWords;
+    const reg32 words = kDriverSlots + first * 4;
+    put(app, words, at(app, kDriverLibrary));
     for (reg32 i = 0; i < sizeof kSlotPointers / sizeof *kSlotPointers; ++i)
-        put(app, slot + 4 + 4 * i, at(app, kSlotPointers[i]));
-    cpu.edx = pop(app, cpu);
+        put(app, words + 4 + 4 * i, at(app, kSlotPointers[i]));
+    return first;
+}
+
+/* 0x517370: driverSlotKept, slot eax. */
+void keepDriverSlot(App* app, CPU& cpu)
+{
+    cpu.eax = driverSlotKept(app, cpu.eax);
     cpu.esp += 4;
 }
 
@@ -2054,120 +2059,116 @@ constexpr reg32 kBitmapScreen = 0x4ed820;      // eax its window, edx..: its siz
 constexpr reg32 kMakeBitmap = 0x508b80;
 constexpr reg32 kDepthCode = 0x5098d0;         // al a depth: the screen record's code for it
 constexpr reg32 kRowBuffer = 0x509a30;         // eax 0, edx a pitch or depth, ebx, ecx rows: a buffer
+constexpr reg32 kBitmapScreenWhich = 0xff;
+constexpr reg32 kScreenMagic = 0x57494e44;     // "DNIW"
+// A screen's record, more of it: +0xc and +0x10 cleared, +0x14 and +0x18 its size again, +0x1d the
+// depth's code, +0x1e which screen, +0x2c and +0x30 its two buffers, +0x34 its window.
+constexpr reg32 kScreenCleared = 0xc, kScreenSizeAgain = 0x14, kScreenDepthCode = 0x1d, kScreenWhich = 0x1e,
+                kScreenRows = 0x2c, kScreenMoreRows = 0x30, kScreenWindow = 0x34;
 
-/* 0x5179d0: screen eax set up in the record at ebx, edx its window: nothing
- * for 0; for 0xff a bitmap of the window's size (sub_4ed820, sub_508b80);
- * otherwise the driver's buffer eax locked once for its pointer, pitch, size
- * and depth (+0x20, +0x28, +4, +8, +0x1c from the lock's format), then the
- * record filled ("DNIW", its size again, which screen, the depth's code,
- * the window) with two buffers of its own (+0x2c, +0x30). */
-void setUpScreen(win32::WinApplication* app, x86::CPU& cpu)
+/* sub_509a30, a buffer of `rows` rows, by address: eax 0, edx a pitch or depth, ebx a kind, ecx the
+ * rows.  The buffer. */
+std::optional<reg32> rowBuffer(App* app, CPU& cpu, reg32 pitch, reg32 kind, reg32 rows)
 {
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.esi);
-    push(app, cpu, cpu.edi);
-    push(app, cpu, cpu.ebp);
-    cpu.esp -= 0x18;
-    const reg32 frame = cpu.esp;
-    auto done = [&]() {
-        cpu.esp += 0x18;
-        cpu.ebp = pop(app, cpu);
-        cpu.edi = pop(app, cpu);
-        cpu.esi = pop(app, cpu);
-        cpu.ecx = pop(app, cpu);
-        cpu.esp += 4;
-    };
-    put(app, frame + 0x14, cpu.eax);
-    cpu.edi = cpu.edx;
-    cpu.esi = cpu.ebx;
-    if (cpu.eax == 0xff)
+    cpu.eax = 0;
+    cpu.edx = pitch;
+    cpu.ebx = kind;
+    cpu.ecx = rows;
+    return game(app, cpu, kRowBuffer);
+}
+
+/* 0x5179d0's core: screen `which` set up in `record`, `window` its window: nothing for 0; for 0xff
+ * a bitmap of the window's size (sub_4ed820 into the frame, as deep as the code has it, then
+ * sub_508b80); otherwise the driver's buffer `which` locked once for its pixels, pitch, size and
+ * depth, then the record filled ("DNIW", its size again, which screen, the depth's code, the
+ * window) with two buffers of its own.  ecx kept, as the code keeps it; the other registers as its
+ * last call has them. */
+bool screenSetUp(App* app, CPU& cpu, reg32 which, reg32 window, reg32 record)
+{
+    const Kept kept(cpu, kEcx);
+    if (which == kBitmapScreenWhich)
     {
-        cpu.eax = frame + 0x10;
-        cpu.ecx = frame + 8;
-        push(app, cpu, cpu.eax);
-        cpu.eax = frame + 0xc;
-        cpu.ebx = frame + 4;
-        push(app, cpu, cpu.eax);
-        cpu.edx = frame;
-        cpu.eax = cpu.edi;
-        if (!byAddress(app, cpu, kBitmapScreen))
-            return;
-        push(app, cpu, cpu.edi);
-        cpu.edi = at(app, frame + 0x10);
-        cpu.ebp = at(app, frame + 8);
-        push(app, cpu, cpu.edi);
-        cpu.ecx = at(app, frame + 0xc);
-        cpu.ebx = at(app, frame + 4);
-        push(app, cpu, cpu.ebp);
-        cpu.edx = at(app, frame);
-        cpu.eax = cpu.esi;
-        if (!byAddress(app, cpu, kMakeBitmap))
-            return;
-        return done();
+        // sub_4ed820's five numbers, in the frame: [edx], [ebx], [ecx] and the two pushed.
+        const GuestFrame frame(cpu, 0x10, 0x18);
+        const reg32 first = frame - 0x18, second = frame - 0x14, third = frame - 0x10, fourth = frame - 0xc,
+                    fifth = frame - 8;
+        cpu.eax = window;
+        cpu.edx = first;
+        cpu.ebx = second;
+        cpu.ecx = third;
+        if (!guest::call(app, cpu, kBitmapScreen, {fourth, fifth}))
+            return false;
+        cpu.eax = record;
+        cpu.edx = at(app, first);
+        cpu.ebx = at(app, second);
+        cpu.ecx = at(app, fourth);
+        if (!guest::call(app, cpu, kMakeBitmap, {at(app, third), at(app, fifth), window}))
+            return false;
+        kept.back(cpu);
+        return true;
     }
-    if (cpu.eax == 0)
-        return done();
-    push(app, cpu, cpu.eax);
-    if (!byAddress(app, cpu, at(app, kThrashWindow)) || !byAddress(app, cpu, at(app, kThrashLockWindow)))
-        return;
-    cpu.ecx = cpu.eax;
-    if (cpu.eax != 0)
+    if (which == 0)
+        return true;
+    if (!thrash(app, cpu, kThrashWindow, {which}))
+        return false;
+    const std::optional<reg32> lock = thrash(app, cpu, kThrashLockWindow);
+    if (!lock)
+        return false;
+    if (*lock != 0)
     {
-        cpu.edx = at(app, cpu.eax);
-        put(app, cpu.ebx + 0x20, cpu.edx);
-        cpu.edx = at(app, cpu.eax + 4);
-        put(app, cpu.ebx + 0x28, cpu.edx);
-        cpu.edx = at(app, cpu.eax + 0xc);
-        put(app, cpu.ebx + 4, cpu.edx);
-        cpu.edx = at(app, cpu.eax + 0x10);
-        put(app, cpu.ebx + 8, cpu.edx);
-        cpu.eax = at(app, cpu.eax + 8) - 2;
-        // The lock's format (jmp [eax*4 + 0x5179a0]): its bits per pixel.
-        switch (cpu.eax)
+        put(app, record + kScreenPixels, at(app, *lock + kLockPixels));
+        put(app, record + kScreenPitch, at(app, *lock + kLockPitch));
+        put(app, record + kScreenWidthAt, at(app, *lock + kLockWidth));
+        put(app, record + kScreenHeightAt, at(app, *lock + kLockHeight));
+        // The lock's format (the code's jump table at 0x5179a0): its bits per pixel.
+        reg8 bits = 0x10;
+        switch (at(app, *lock + kLockFormat) - 2)
         {
-        case 0: putByte(app, cpu.ebx + 0x1c, 8); break;
-        case 1: case 9: putByte(app, cpu.esi + 0x1c, 0xf); break;
-        case 2: putByte(app, cpu.ebx + 0x1c, 0x10); break;
-        case 3: putByte(app, cpu.ebx + 0x1c, 0x18); break;
-        case 4: putByte(app, cpu.ebx + 0x1c, 0x20); break;
-        default: putByte(app, cpu.esi + 0x1c, 0x10); break;
+        case 0: bits = 8; break;
+        case 1: case 9: bits = 0xf; break;
+        case 2: bits = 0x10; break;
+        case 3: bits = 0x18; break;
+        case 4: bits = 0x20; break;
+        default: break;
         }
-        push(app, cpu, cpu.ecx);
-        if (!byAddress(app, cpu, at(app, kThrashUnlockWindow)))
-            return;
+        putByte(app, record + kScreenBitsAt, bits);
+        if (!thrash(app, cpu, kThrashUnlockWindow, {*lock}))
+            return false;
     }
-    push(app, cpu, 0);
-    if (!byAddress(app, cpu, at(app, kThrashWindow)))
-        return;
-    cpu.ebp = byte(app, cpu.esi + 0x1c);
-    if (cpu.ebp == 0xf)
-        cpu.ebp = 0x10;
-    put(app, cpu.esi, 0x57494e44);  // "DNIW"
-    put(app, cpu.esi + 0xc, 0);
-    put(app, cpu.esi + 0x10, 0);
-    put(app, cpu.esi + 0x14, at(app, cpu.esi + 4));
-    put(app, cpu.esi + 0x18, at(app, cpu.esi + 8));
-    putByte(app, cpu.esi + 0x1e, byte(app, frame + 0x14));
-    cpu.eax = byte(app, cpu.esi + 0x1c);
+    if (!thrash(app, cpu, kThrashWindow, {0}))
+        return false;
+    const reg32 depth = byte(app, record + kScreenBitsAt) == 0xf ? 0x10 : byte(app, record + kScreenBitsAt);
+    put(app, record, kScreenMagic);
+    put(app, record + kScreenCleared, 0);
+    put(app, record + kScreenCleared + 4, 0);
+    put(app, record + kScreenSizeAgain, at(app, record + kScreenWidthAt));
+    put(app, record + kScreenSizeAgain + 4, at(app, record + kScreenHeightAt));
+    putByte(app, record + kScreenWhich, reg8(which));
+    cpu.eax = byte(app, record + kScreenBitsAt);
     cpu.ebx = 0;
-    if (!byAddress(app, cpu, kDepthCode))
-        return;
-    cpu.ecx = at(app, cpu.esi + 8);
-    cpu.edx = at(app, cpu.esi + 0x28);
-    putByte(app, cpu.esi + 0x1d, reg8(cpu.eax));
-    cpu.eax = 0;
-    put(app, cpu.esi + 0x34, cpu.edi);
-    if (!byAddress(app, cpu, kRowBuffer))
-        return;
-    cpu.ebx = 3;
-    cpu.edx = cpu.ebp;
-    cpu.ecx = at(app, cpu.esi + 4);
-    put(app, cpu.esi + 0x2c, cpu.eax);
-    cpu.eax = 0;
-    if (!byAddress(app, cpu, kRowBuffer))
-        return;
-    put(app, cpu.esi + 0x30, cpu.eax);
-    done();
+    const std::optional<reg32> code = game(app, cpu, kDepthCode);
+    if (!code)
+        return false;
+    const reg32 height = at(app, record + kScreenHeightAt), pitch = at(app, record + kScreenPitch);
+    putByte(app, record + kScreenDepthCode, reg8(*code));
+    put(app, record + kScreenWindow, window);
+    const std::optional<reg32> rows = rowBuffer(app, cpu, pitch, 0, height);
+    if (!rows)
+        return false;
+    put(app, record + kScreenRows, *rows);
+    const std::optional<reg32> moreRows = rowBuffer(app, cpu, depth, 3, at(app, record + kScreenWidthAt));
+    if (!moreRows)
+        return false;
+    put(app, record + kScreenMoreRows, *moreRows);
+    kept.back(cpu);
+    return true;
+}
+
+/* 0x5179d0: screenSetUp, screen eax in the record at ebx, its window edx. */
+void setUpScreen(App* app, CPU& cpu)
+{
+    if (screenSetUp(app, cpu, cpu.eax, cpu.edx, cpu.ebx))
+        cpu.esp += 4;
 }
 
 }  // namespace graphics
@@ -2183,150 +2184,114 @@ namespace graphics
 /* ---- The Screen Size list ---- */
 
 constexpr reg32 kModeMemory = 0x55fed0;        // the driver's memory for a mode (8 MB on a Voodoo)
+// A mode of THRASH_about's (kModeBytes from its +0x40): +0 its width, +4 its height, +8 its bits,
+// +0x10 its flags (bit 0 available, bit 1 barred), +0x14 its colour buffers, +0x18 its buffers.
+constexpr reg32 kModeWidthAt = 0, kModeHeightAt = 4, kModeBitsAt = 8, kModeFlags = 0x10, kModeColourBuffers = 0x14,
+                kModeBuffersAt = 0x18;
 
-/* THRASH_about's mode `index`: 0x28 bytes from its +0x40. */
-reg32 modeRecord(win32::WinApplication* app, reg32 about, reg32 index)
+/* THRASH_about's mode `index`. */
+reg32 modeRecord(App* app, reg32 about, reg32 index)
 {
-    return index * 0x28 + at(app, about + 0x40);
+    return index * kModeBytes + at(app, about + kAboutModes);
 }
 
-/* 0x4bed90: each of THRASH_about's modes the game can race in handed to the
- * function at eax (eax the mode, edx its width, [esp+4] whether it has three
- * buffers): at least two colour buffers (+0x14), 4:3 -- or what
- * nfs3hp::widescreenMode takes (a port) --, 15 or 16 bits, available and not
- * flagged (+0x10's bits 0 and 1), and two buffers of it within half the
- * driver's memory. */
-void listScreenModes(win32::WinApplication* app, x86::CPU& cpu)
+/* Whether a mode's width and height are 4:3, or what nfs3hp::widescreenMode takes (a port). */
+bool raceShape(reg32 width, reg32 height)
 {
-    push(app, cpu, cpu.ebx);
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.edx);
-    push(app, cpu, cpu.esi);
-    push(app, cpu, cpu.edi);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    cpu.esp -= 0x10;
-    put(app, cpu.ebp - 0xc, cpu.eax);
-    if (!byAddress(app, cpu, at(app, kThrashAbout)))
-        return;
-    cpu.esi = 1;
-    put(app, cpu.ebp - 4, cpu.eax);
-    for (;; ++cpu.esi)
+    return width * 3 == height << 2 || widescreenMode(width, height);
+}
+
+/* Whether a mode's flags say it is available and not barred. */
+bool modeOpen(reg8 flags)
+{
+    return (flags & 1) && !(flags & 2);
+}
+
+/* 0x4bed90's core: each of THRASH_about's modes the game can race in handed to `handler` (eax the
+ * mode, edx its width, [esp+4] whether it has three buffers; ebx and ecx its height and bits, as the
+ * code has them; esp as the handler leaves it): at least two colour buffers, 4:3 or a port's wide
+ * one, 15 or 16 bits, available and not barred, and two buffers of it within half the driver's
+ * memory.  As deep as the code calls it.  eax THRASH_about's record at the end, as the code leaves
+ * it. */
+bool screenModesListed(App* app, CPU& cpu, reg32 handler)
+{
+    const GuestFrame frame(cpu, 0x18, 0x10);
+    const std::optional<reg32> about = thrash(app, cpu, kThrashAbout);
+    if (!about)
+        return false;
+    for (reg32 mode = 1;; ++mode)
     {
-        cpu.eax = at(app, cpu.ebp - 4);
-        if (sreg32(cpu.esi) > sreg32(at(app, cpu.eax + 0x3c)))
-            break;
-        cpu.ecx = at(app, at(app, cpu.ebp - 4) + 0x40);
-        cpu.eax = cpu.esi * 0x28 + cpu.ecx;
-        cpu.edx = at(app, cpu.eax + 0x14);
-        cpu.edi = at(app, cpu.eax);
-        cpu.ebx = at(app, cpu.eax + 4);
-        cpu.ecx = at(app, cpu.eax + 8);
-        cpu.eax = at(app, cpu.eax + 0x10);
-        put(app, cpu.ebp - 8, cpu.eax);
-        if (sreg32(cpu.edx) < 2)
+        cpu.eax = *about;
+        if (sreg32(mode) > sreg32(at(app, *about + kAboutLastMode)))
+            return true;
+        const reg32 record = modeRecord(app, *about, mode);
+        const reg32 buffers = at(app, record + kModeColourBuffers), width = at(app, record + kModeWidthAt),
+                    height = at(app, record + kModeHeightAt), bits = at(app, record + kModeBitsAt);
+        const reg8 flags = reg8(at(app, record + kModeFlags));
+        if (sreg32(buffers) < 2 || !raceShape(width, height) || (bits != 0xf && bits != 0x10) || !modeOpen(flags))
             continue;
-        cpu.edx = cpu.edi * 3;
-        cpu.eax = cpu.ebx * 4;
-        if (cpu.edx != cpu.eax && !widescreenMode(cpu.edi, cpu.ebx))
+        if (sreg32(at(app, kModeMemory)) / 2 < sreg32(width * height * 2))
             continue;
-        if (cpu.ecx != 0xf && cpu.ecx != 0x10)
-            continue;
-        const reg8 flags = byte(app, cpu.ebp - 8);
-        cpu.eax = (cpu.eax & ~0xff00u) | reg32(flags) << 8;
-        if (!(flags & 1) || (flags & 2))
-            continue;
-        cpu.eax = cpu.edi * cpu.ebx * 2;
-        put(app, cpu.ebp - 0x10, cpu.eax);
-        cpu.eax = at(app, kModeMemory);
-        cpu.edx = reg32(sreg32(cpu.eax) >> 31);
-        cpu.eax = reg32(sreg32(cpu.eax - cpu.edx) >> 1);
-        if (sreg32(cpu.eax) < sreg32(at(app, cpu.ebp - 0x10)))
-            continue;
-        cpu.eax = cpu.esi * 0x28;
-        put(app, cpu.ebp - 0x10, cpu.eax);
-        cpu.edx = cpu.eax;
-        cpu.eax = at(app, at(app, cpu.ebp - 4) + 0x40) + cpu.edx;
-        cpu.eax = sreg32(at(app, cpu.eax + 0x18)) >= 2 ? 1 : 0;
-        push(app, cpu, cpu.eax);
-        cpu.edx = cpu.edi;
-        cpu.eax = cpu.esi;
-        if (!byAddress(app, cpu, at(app, cpu.ebp - 0xc)))
-            return;
+        const reg32 triple = sreg32(at(app, modeRecord(app, *about, mode) + kModeBuffersAt)) >= 2 ? 1 : 0;
+        cpu.eax = mode;
+        cpu.edx = width;
+        cpu.ebx = height;
+        cpu.ecx = bits;
+        push(app, cpu, triple);
+        if (!byAddress(app, cpu, handler))
+            return false;
     }
-    cpu.esp = cpu.ebp;
-    cpu.ebp = pop(app, cpu);
-    cpu.edi = pop(app, cpu);
-    cpu.esi = pop(app, cpu);
-    cpu.edx = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
-    cpu.ebx = pop(app, cpu);
+}
+
+/* 0x4bed90: screenModesListed, the handler at eax. */
+void listScreenModes(App* app, CPU& cpu)
+{
+    const Kept kept(cpu, kEbx | kEcx | kEdx);
+    if (!screenModesListed(app, cpu, cpu.eax))
+        return;
+    kept.back(cpu);
     cpu.esp += 4;
 }
 
-/* 0x4bee80: the mode the Screen Size list would have for width eax: of those
- * listScreenModes takes (memory aside), the nearest in width, the first of
- * equals; nfs3hp::dynamicSavedMode for Dynamic Fullscreen's marker (a port).
- * eax: the mode, 1 for none. */
-void findScreenMode(win32::WinApplication* app, x86::CPU& cpu)
+/* 0x4bee80's core: the mode the Screen Size list would have for `width`: of those
+ * screenModesListed takes (memory aside), the nearest in width, the first of equals;
+ * nfs3hp::dynamicSavedMode for Dynamic Fullscreen's marker (a port).  The mode, 1 for none. */
+std::optional<reg32> screenModeFor(App* app, CPU& cpu, reg32 width)
 {
-    push(app, cpu, cpu.ebx);
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.edx);
-    push(app, cpu, cpu.esi);
-    push(app, cpu, cpu.edi);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    cpu.esp -= 0x14;
-    put(app, cpu.ebp - 8, cpu.eax);
-    if (!byAddress(app, cpu, at(app, kThrashAbout)))
-        return;
-    cpu.edx = 1;
-    cpu.esi = cpu.eax;
-    cpu.ebx = 0;
-    for (; sreg32(cpu.edx) <= sreg32(at(app, cpu.esi + 0x3c)); ++cpu.edx)
+    const std::optional<reg32> about = thrash(app, cpu, kThrashAbout);
+    if (!about)
+        return std::nullopt;
+    reg32 found = 0, nearest = 0;
+    for (reg32 mode = 1; sreg32(mode) <= sreg32(at(app, *about + kAboutLastMode)); ++mode)
     {
-        cpu.eax = cpu.edx * 0x28;
-        cpu.ecx = at(app, cpu.esi + 0x40) + cpu.eax;
-        cpu.eax = at(app, cpu.ecx);
-        put(app, cpu.ebp - 4, cpu.eax);
-        cpu.eax = at(app, cpu.ecx + 4);
-        cpu.edi = at(app, cpu.ecx + 0x14);
-        put(app, cpu.ebp - 0x10, cpu.eax);
-        if (sreg32(cpu.edi) < 2)
+        const reg32 record = modeRecord(app, *about, mode);
+        const reg32 modeWidth = at(app, record + kModeWidthAt), modeHeight = at(app, record + kModeHeightAt);
+        if (sreg32(at(app, record + kModeColourBuffers)) < 2 || !raceShape(modeWidth, modeHeight))
             continue;
-        cpu.eax = at(app, cpu.ebp - 4);
-        put(app, cpu.ebp - 0x14, cpu.eax);
-        cpu.edi = cpu.eax * 3;
-        cpu.eax = at(app, cpu.ebp - 0x10) << 2;
-        if (cpu.edi != cpu.eax && !widescreenMode(at(app, cpu.ebp - 4), at(app, cpu.ebp - 0x10)))
+        const reg32 bits = at(app, record + kModeBitsAt);
+        if ((bits != 0xf && bits != 0x10) || !modeOpen(byte(app, modeRecord(app, *about, mode) + kModeFlags)))
             continue;
-        cpu.eax = at(app, cpu.ecx + 8);
-        if (cpu.eax != 0xf && cpu.eax != 0x10)
+        reg32 distance = modeWidth - width;
+        if (sreg32(distance) <= 0)
+            distance = 0 - distance;
+        if (found != 0 && sreg32(distance) >= sreg32(nearest))
             continue;
-        cpu.eax = cpu.edx * 0x28 + at(app, cpu.esi + 0x40);
-        const reg8 flags = byte(app, cpu.eax + 0x10);
-        cpu.ecx = (at(app, cpu.esi + 0x40) & ~0xffu) | flags;
-        if (!(flags & 1) || (flags & 2))
-            continue;
-        cpu.eax = at(app, cpu.ebp - 4) - at(app, cpu.ebp - 8);
-        if (sreg32(cpu.eax) <= 0)
-            cpu.eax = 0 - cpu.eax;
-        cpu.ecx = cpu.eax;
-        if (cpu.ebx != 0 && sreg32(cpu.eax) >= sreg32(at(app, cpu.ebp - 0xc)))
-            continue;
-        cpu.ebx = cpu.edx;
-        put(app, cpu.ebp - 0xc, cpu.ecx);
+        found = mode;
+        nearest = distance;
     }
-    cpu.ebx = dynamicSavedMode(cpu.ebx, at(app, cpu.ebp - 8));
-    cpu.eax = cpu.ebx != 0 ? cpu.ebx : 1;
-    cpu.esp = cpu.ebp;
-    cpu.ebp = pop(app, cpu);
-    cpu.edi = pop(app, cpu);
-    cpu.esi = pop(app, cpu);
-    cpu.edx = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
-    cpu.ebx = pop(app, cpu);
+    found = dynamicSavedMode(found, width);
+    return found != 0 ? found : 1;
+}
+
+/* 0x4bee80: screenModeFor width eax. */
+void findScreenMode(App* app, CPU& cpu)
+{
+    const Kept kept(cpu, kEbx | kEcx | kEdx);
+    const std::optional<reg32> mode = screenModeFor(app, cpu, cpu.eax);
+    if (!mode)
+        return;
+    cpu.eax = *mode;
+    kept.back(cpu);
     cpu.esp += 4;
 }
 
@@ -2335,154 +2300,74 @@ void findScreenMode(win32::WinApplication* app, x86::CPU& cpu)
 constexpr reg32 kBadArtFormat = 0x5495c8;
 constexpr reg32 kFillZero = 0x4e070c;          // eax where, edx bytes
 constexpr reg32 kFillByte = 0x4e0716;          // eax where, edx bytes, bl the byte
+constexpr reg32 kArtSide = 0x20;               // the art's pixels a side
+constexpr reg32 kArtShapeBytes = 0x1014;       // what the pixels are made into
 
-/* 0x4d5f40: a texture eax by eax of the driver's format [edx] (3: 1555,
- * 4: 565, 6: 8888; another an Error) allocated (THRASH_talloc), after its
- * 32 by 32 pixels -- clear, or opaque white for ebx 0 -- were made into a
- * shape and run through sub_4d37a0 with the record at edx; eax the texture. */
-void makeArtTexture(win32::WinApplication* app, x86::CPU& cpu)
+/* 0x4d5f40's core: a texture `size` by `size` of the driver's format [formatAt] (3: 1555, 4: 565,
+ * 6: 8888; another an Error) allocated (THRASH_talloc), after its 32 by 32 pixels -- clear, or opaque
+ * white for `clear` 0 -- were made into a shape and run through sub_4d37a0 with the record at
+ * `formatAt`.  The shape's kind and the clear flag live in the frame, as deep as the code has it:
+ * sub_4d37a0 is handed the flag's slot, and another format leaves the kind as the stack has it.
+ * The registers at each call as the code has them; eax as THRASH_talloc leaves it. */
+bool artTexture(App* app, CPU& cpu, reg32 size, reg32 formatAt, reg32 clear)
 {
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.esi);
-    push(app, cpu, cpu.edi);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    cpu.esp -= 0x18;
-    cpu.edi = cpu.edx;
-    put(app, cpu.ebp - 0x18, cpu.ebx);
-    put(app, cpu.ebp - 0x10, cpu.eax);
-    cpu.eax = at(app, cpu.edi);
-    cpu.edx = 0;
-    if (cpu.eax == 4)
+    const GuestFrame frame(cpu, 0x10, 0x18);
+    const reg32 clearAt = frame - 0x18, kindAt = frame - 4;
+    put(app, clearAt, clear);
+    reg32 bits = 0;
+    switch (at(app, formatAt))
     {
-        put(app, cpu.ebp - 4, 0x78);
-        cpu.edx = 0x10;
+    case 4: put(app, kindAt, 0x78); bits = 0x10; break;
+    case 3: put(app, kindAt, 0x7e); bits = 0x10; break;
+    case 6: put(app, kindAt, 0x7d); bits = 0x20; break;
+    default:
+        if (!error(app, cpu, kBadArtFormat))
+            return false;
+        break;
     }
-    else if (cpu.eax == 3)
-    {
-        cpu.ecx = 0x7e;
-        cpu.edx = 0x10;
-        put(app, cpu.ebp - 4, cpu.ecx);
-    }
-    else if (cpu.eax == 6)
-    {
-        cpu.ebx = 0x7d;
-        cpu.edx = 0x20;
-        put(app, cpu.ebp - 4, cpu.ebx);
-    }
-    else
-    {
-        push(app, cpu, kBadArtFormat);
-        if (!byAddress(app, cpu, kError))
-            return;
-        cpu.esp += 4;
-    }
-    // The bytes of a pixel (edx bits / 8, towards 0) times 32 by 32.
-    cpu.eax = reg32(sreg32(cpu.edx + (sreg32(cpu.edx) < 0 ? 7 : 0)) >> 3) << 0xa;
-    cpu.edx = sreg32(cpu.edx) < 0 ? 0xfffffff8 : 0;
-    put(app, cpu.ebp - 0xc, cpu.eax);
-    cpu.eax += 0x14;
-    cpu.ebx = 0x10;
-    put(app, cpu.ebp - 0x14, cpu.eax);
-    cpu.edx = cpu.eax;
-    cpu.eax = kShapeBufferTag;
-    if (!byAddress(app, cpu, kAllocate))
-        return;
-    cpu.ebx = 0x10;
-    cpu.edx = 0x1014;
-    cpu.ecx = cpu.eax;
-    cpu.esi = cpu.eax;
-    cpu.eax = kShapeBufferTag;
-    if (!byAddress(app, cpu, kAllocate))
-        return;
-    cpu.edx = at(app, cpu.ebp - 0x14);
-    put(app, cpu.ebp - 8, cpu.eax);
-    cpu.eax = cpu.ecx;
+    const reg32 pixelBytes = reg32(sreg32(bits) / 8) << 0xa;
+    const reg32 shapeBytes = pixelBytes + 0x14;
+    const std::optional<reg32> shape = allocate(app, cpu, kShapeBufferTag, shapeBytes);
+    if (!shape)
+        return false;
+    cpu.ecx = *shape;
+    const std::optional<reg32> pixels = allocate(app, cpu, kShapeBufferTag, kArtShapeBytes);
+    if (!pixels)
+        return false;
+    cpu.eax = *shape;
+    cpu.edx = shapeBytes;
     if (!byAddress(app, cpu, kFillZero))
-        return;
-    cpu.edx = at(app, cpu.ebp - 0x18);
-    cpu.eax = cpu.ecx + 0x10;
-    if (cpu.edx == 0)
+        return false;
+    cpu.eax = *shape + 0x10;
+    if (at(app, clearAt) == 0)
     {
         cpu.ebx = 0xff;
-        cpu.edx = at(app, cpu.ebp - 0xc);
+        cpu.edx = pixelBytes;
         if (!byAddress(app, cpu, kFillByte))
-            return;
+            return false;
     }
-    cpu.eax = at(app, cpu.ebp - 4);
-    cpu.ebx = cpu.ebp - 0x18;
-    push(app, cpu, cpu.edi);
-    cpu.edx = cpu.esi;
-    putByte(app, cpu.esi, 0);
-    cpu.eax &= 0xff;
-    cpu.ecx = at(app, cpu.esi) | cpu.eax;
-    putHalf(app, cpu.esi + 4, 0x20);
-    cpu.eax = at(app, cpu.ebp - 8);
-    put(app, cpu.esi, cpu.ecx);
-    cpu.ecx = 0x20;
-    putHalf(app, cpu.esi + 6, 0x20);
-    if (!byAddress(app, cpu, kShapeToPixels))
+    const reg32 kind = at(app, kindAt) & 0xff;
+    putByte(app, *shape, 0);
+    putHalf(app, *shape + 4, kArtSide);
+    put(app, *shape, at(app, *shape) | kind);
+    putHalf(app, *shape + 6, kArtSide);
+    cpu.ecx = kArtSide;
+    if (!shapeToPixels(app, cpu, *pixels, *shape, clearAt, formatAt) || !release(app, cpu, *shape)
+        || !release(app, cpu, *pixels))
+        return false;
+    cpu.ebx = at(app, formatAt);
+    return thrash(app, cpu, kThrashTAlloc, {size, size, cpu.ebx, 0, 0}).has_value();
+}
+
+/* 0x4d5f40: artTexture, eax by eax, the format at edx, clear for ebx nonzero. */
+void makeArtTexture(App* app, CPU& cpu)
+{
+    const Kept kept(cpu, kEcx);
+    if (!artTexture(app, cpu, cpu.eax, cpu.edx, cpu.ebx))
         return;
-    cpu.eax = cpu.esi;
-    if (!byAddress(app, cpu, kFree))
-        return;
-    cpu.eax = at(app, cpu.ebp - 8);
-    if (!byAddress(app, cpu, kFree))
-        return;
-    push(app, cpu, 0);
-    push(app, cpu, 0);
-    cpu.ebx = at(app, cpu.edi);
-    push(app, cpu, cpu.ebx);
-    cpu.esi = at(app, cpu.ebp - 0x10);
-    push(app, cpu, cpu.esi);
-    push(app, cpu, cpu.esi);
-    if (!byAddress(app, cpu, at(app, kThrashTAlloc)))
-        return;
-    cpu.esp = cpu.ebp;
-    cpu.ebp = pop(app, cpu);
-    cpu.edi = pop(app, cpu);
-    cpu.esi = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
+    kept.back(cpu);
     cpu.esp += 4;
 }
-
-/* ---- Strings as the game's inlined strcpy and strlen do them ---- */
-
-namespace
-{
-
-/* The inlined strcpy: from esi to edi two bytes a turn, al the last byte. */
-void copyStringInline(win32::WinApplication* app, x86::CPU& cpu)
-{
-    for (;;)
-    {
-        cpu.al = byte(app, cpu.esi);
-        putByte(app, cpu.edi, cpu.al);
-        if (cpu.al == 0)
-            return;
-        cpu.al = byte(app, cpu.esi + 1);
-        cpu.esi += 2;
-        putByte(app, cpu.edi + 1, cpu.al);
-        cpu.edi += 2;
-        if (cpu.al == 0)
-            return;
-    }
-}
-
-/* repne scasb: es:[edi] on until al, ecx counting down. */
-void scanForAl(win32::WinApplication* app, x86::CPU& cpu)
-{
-    while (cpu.ecx != 0)
-    {
-        const bool found = byte(app, cpu.ees + cpu.edi) == cpu.al;
-        cpu.edi += cpu.flags.df ? reg32(0) - 1 : 1;
-        --cpu.ecx;
-        if (found)
-            break;
-    }
-}
-
-}  // namespace
 
 /* ---- The screen saved to a file (Alt+P) ---- */
 
@@ -2490,117 +2375,112 @@ constexpr reg32 kCaptureTrace = 0x5401c8;
 constexpr reg32 kCaptureFolder = 0x4b6520;     // the folder pictures go in
 constexpr reg32 kCaptureName = 0x5401d8;       // "%s...%d...": the folder, the number
 constexpr reg32 kCaptureNumber = 0x5600f8;
-constexpr reg32 kFileExists = 0x4e0e60;
-constexpr reg32 kPaused = 0x6fd3a0;            // 2: paused
 constexpr reg32 kRedrawPaused = 0x4bc680;
 constexpr reg32 kNewBitmap = 0x4ef190, kSaveBitmap = 0x4eb160;
 constexpr reg32 kModeWidthPixels = 0x7cdae0, kModeHeightPixels = 0x7cdae4, kModeBits = 0x7cdae8;
 
-/* 0x4c4490: the screen saved as a picture -- but in a network race -- under
- * the first number not yet taken in the capture folder: a paused race drawn
- * again first, the front buffer read (THRASH_readrect) into a bitmap of the
- * mode's size, and the bitmap saved and freed. */
-void captureScreen(win32::WinApplication* app, x86::CPU& cpu)
+/* A string copied byte by byte, its 0 too, as the game's inlined strcpy copies it. */
+void copyString(App* app, reg32 to, reg32 from)
 {
-    push(app, cpu, cpu.ebx);
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.edx);
-    push(app, cpu, cpu.esi);
-    push(app, cpu, cpu.edi);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    cpu.esp -= 0x300;
-    const reg32 folder = cpu.ebp - 0x300, name = cpu.ebp - 0x100;
-    auto done = [&]() {
-        cpu.esp = cpu.ebp;
-        cpu.ebp = pop(app, cpu);
-        cpu.edi = pop(app, cpu);
-        cpu.esi = pop(app, cpu);
-        cpu.edx = pop(app, cpu);
-        cpu.ecx = pop(app, cpu);
-        cpu.ebx = pop(app, cpu);
-        cpu.esp += 4;
-    };
-    push(app, cpu, kCaptureTrace);
-    if (!byAddress(app, cpu, kTrace))
-        return;
-    cpu.edx = at(app, kGameMode);
-    cpu.esp += 4;
-    if (sreg32(cpu.edx) >= 2)
-        return done();
-    if (!byAddress(app, cpu, kCaptureFolder))
-        return;
-    cpu.edi = folder;
-    cpu.esi = cpu.eax;
-    push(app, cpu, cpu.edi);
-    copyStringInline(app, cpu);
-    cpu.edi = pop(app, cpu);
-    cpu.edi = folder;
-    cpu.ecx = 0xffffffff;
-    cpu.eax = 0;
-    scanForAl(app, cpu);
-    cpu.ecx = ~cpu.ecx - 1;                      // its length
-    if (cpu.ecx == 0)
-        return done();
-    do
+    for (reg32 i = 0;; ++i)
     {
-        cpu.ecx = at(app, kCaptureNumber) + 1;
-        push(app, cpu, cpu.ecx);
-        push(app, cpu, folder);
-        push(app, cpu, kCaptureName);
-        cpu.eax = name;
-        push(app, cpu, cpu.eax);
-        put(app, kCaptureNumber, cpu.ecx);
-        if (!byAddress(app, cpu, kSprintf))
+        const reg8 c = byte(app, from + i);
+        putByte(app, to + i, c);
+        if (c == 0)
             return;
-        cpu.esp += 0x10;
-        cpu.eax = name;
-        if (!byAddress(app, cpu, kFileExists))
-            return;
-    } while (cpu.eax != 0);
-    cpu.esi = at(app, kPaused);
-    if (cpu.esi == 2)
-    {
-        put(app, kPaused, cpu.eax);
-        if (!byAddress(app, cpu, kRedrawPaused) || !byAddress(app, cpu, at(app, kThrashFlushWindow))
-            || !byAddress(app, cpu, at(app, kThrashPageFlip)))
-            return;
-        put(app, kPaused, cpu.esi);
     }
-    cpu.ecx = 0x10;
-    cpu.ebx = at(app, kModeBits);
-    cpu.edx = at(app, kModeHeightPixels);
+}
+
+/* A string's length, as the game's inlined strlen (repne scasb) counts it. */
+reg32 stringLengthAt(App* app, reg32 from)
+{
+    reg32 length = 0;
+    while (byte(app, from + length) != 0)
+        ++length;
+    return length;
+}
+
+constexpr reg32 kBitmapPrepare = 0x4eada0;     // eax the new bitmap
+constexpr reg32 kBitmapSelect = 0x4ef1b0;      // eax 0
+
+/* 0x4c4490's core: the screen saved as a picture -- but in a network race -- under the first
+ * number not yet taken in the capture folder: a paused race drawn again first, the front buffer
+ * read (THRASH_readrect) into a bitmap of the mode's size, and the bitmap saved and freed.  The
+ * folder and the name in the frame, as deep as the code has them; the registers at each call as the
+ * code has them; eax as the last call leaves it. */
+bool screenCaptured(App* app, CPU& cpu)
+{
+    const GuestFrame frame(cpu, 0x18, 0x300);
+    const reg32 folder = frame - 0x300, name = frame - 0x100;
+    if (!traced(app, cpu, kCaptureTrace))
+        return false;
+    cpu.edx = gameSettings(app).playMode;
+    if (sreg32(cpu.edx) >= 2)
+        return true;
+    const std::optional<reg32> captures = game(app, cpu, kCaptureFolder);
+    if (!captures)
+        return false;
+    copyString(app, folder, *captures);
+    cpu.eax = 0;  // the inlined strlen's al
+    if (stringLengthAt(app, folder) == 0)
+        return true;
+    for (;;)
+    {
+        const reg32 number = at(app, kCaptureNumber) + 1;
+        put(app, kCaptureNumber, number);
+        cpu.eax = name;
+        cpu.ecx = number;
+        if (!guest::call(app, cpu, kSprintf, {name, kCaptureName, folder, number}))
+            return false;
+        const std::optional<bool> exists = guest::direct<0x4e0e60, ea::fileThere>(app, cpu, name);
+        if (!exists)
+            return false;
+        if (!*exists)
+            break;
+    }
+    const reg32 replay = gameSettings(app).replayMode;
+    if (replay == 2)
+    {
+        gameSettings(app).replayMode = 0;
+        if (!byAddress(app, cpu, kRedrawPaused) || !flushFlip(app, cpu))
+            return false;
+        gameSettings(app).replayMode = replay;
+    }
     cpu.eax = at(app, kModeWidthPixels);
-    if (!byAddress(app, cpu, kNewBitmap))
-        return;
-    cpu.ebx = cpu.eax;
-    if (cpu.eax == 0)
-        return done();
-    if (!byAddress(app, cpu, 0x4eada0))
-        return;
-    cpu.eax = 0;
-    if (!byAddress(app, cpu, 0x4ef1b0))
-        return;
-    push(app, cpu, 1);
-    if (!byAddress(app, cpu, at(app, kThrashWindow)))
-        return;
-    cpu.eax = at(app, cpu.ebx + 0x20) + 0x10;
-    push(app, cpu, cpu.eax);
     cpu.edx = at(app, kModeHeightPixels);
-    push(app, cpu, cpu.edx);
+    cpu.ebx = at(app, kModeBits);
+    cpu.ecx = 0x10;
+    const std::optional<reg32> bitmap = game(app, cpu, kNewBitmap);
+    if (!bitmap)
+        return false;
+    cpu.ebx = *bitmap;
+    if (*bitmap == 0)
+        return true;
+    if (!byAddress(app, cpu, kBitmapPrepare))
+        return false;
+    cpu.eax = 0;
+    if (!byAddress(app, cpu, kBitmapSelect) || !thrash(app, cpu, kThrashWindow, {1}))
+        return false;
+    const reg32 pixels = at(app, *bitmap + 0x20) + 0x10;
+    cpu.eax = pixels;
+    cpu.edx = at(app, kModeHeightPixels);
     cpu.ecx = at(app, kModeWidthPixels);
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, 0);
-    push(app, cpu, 0);
-    if (!byAddress(app, cpu, at(app, kThrashReadRect)))
-        return;
+    if (!thrash(app, cpu, kThrashReadRect, {0, 0, cpu.ecx, cpu.edx, pixels}))
+        return false;
     cpu.eax = name;
     if (!byAddress(app, cpu, kSaveBitmap))
+        return false;
+    return letGo(app, cpu, *bitmap);
+}
+
+/* 0x4c4490: screenCaptured. */
+void captureScreen(App* app, CPU& cpu)
+{
+    const Kept kept(cpu, kEbx | kEcx | kEdx);
+    if (!screenCaptured(app, cpu))
         return;
-    cpu.eax = cpu.ebx;
-    if (!byAddress(app, cpu, kLetGo))
-        return;
-    done();
+    kept.back(cpu);
+    cpu.esp += 4;
 }
 
 /* ---- A message across the screen ---- */
@@ -2613,153 +2493,105 @@ constexpr reg32 kFont87 = 0x57;
 constexpr reg32 kFontLineHeight = 0x4d14f0;
 constexpr reg32 kDrawBox = 0x47d1d0;           // eight floats and two words: a box with its border
 constexpr reg32 kBoxColour = 0x7f000000, kBorderColour = 0xff488cfd;
-constexpr reg32 kRaceFrameEnd = 0x434a90;
 
-/* 0x4c5c00: line 0x115 of the game's text (with its ending) in a box in the
- * middle of the view, but while paused: drawn into both buffers, a flip
- * after each. */
-void showWaitMessage(win32::WinApplication* app, x86::CPU& cpu)
+/* port_text's textWidthWithOverhang (0x4d1480), by address: text eax (edx as the code has it); the
+ * width it leaves on the x87's stack, taken off.  nullopt when the game stopped. */
+std::optional<x86::Float> textWidth(App* app, CPU& cpu, reg32 text)
 {
-    push(app, cpu, cpu.ebx);
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.edx);
-    push(app, cpu, cpu.esi);
-    push(app, cpu, cpu.edi);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    cpu.esp -= 0x64;
-    const reg32 ebp = cpu.ebp;
-    auto local = [&](reg32 offset) { return at(app, ebp - offset); };
-    auto setLocal = [&](reg32 offset, reg32 value) { put(app, ebp - offset, value); };
-    auto halved = [](reg32 value) { return reg32(sreg32(value - reg32(sreg32(value) >> 31)) >> 1); };
-    auto& fpu = cpu.fpu;
-    auto done = [&]() {
-        cpu.esp = cpu.ebp;
-        cpu.ebp = pop(app, cpu);
-        cpu.edi = pop(app, cpu);
-        cpu.esi = pop(app, cpu);
-        cpu.edx = pop(app, cpu);
-        cpu.ecx = pop(app, cpu);
-        cpu.ebx = pop(app, cpu);
-        cpu.esp += 4;
-    };
-    cpu.ecx = ebp - 0x18;
-    cpu.ebx = ebp - 8;
-    cpu.edx = ebp - 0x14;
-    cpu.eax = ebp - 0xc;
+    cpu.eax = text;
+    if (!byAddress(app, cpu, kTextWidth))
+        return std::nullopt;
+    return cpu.fpu.pop();
+}
+
+/* sub_47d1d0, a box with its border, by address: its four corners (x, y as floats' bits), whether
+ * filled, its colour; stdcall.  eax, edx, ebx and ecx as the code's pushes leave them. */
+bool drawBox(App* app, CPU& cpu, reg32 left, reg32 top, reg32 right, reg32 bottom, reg32 filled, reg32 colour)
+{
+    cpu.eax = top;
+    cpu.edx = left;
+    cpu.ebx = right;
+    cpu.ecx = top;
+    return guest::call(app, cpu, kDrawBox, {left, top, right, top, right, bottom, left, bottom, filled, colour});
+}
+
+/* 0x4c5c00's core: line 0x115 of the game's text (with its ending) in a box in the middle of the
+ * view, but while paused: drawn into both buffers, a flip after each; then the race's frame ended
+ * (eax as that leaves it).  The view's rectangle and the text in the frame, as deep as the code has
+ * them; the x87's operations as the code does them; the registers at each call as the code has
+ * them. */
+bool waitMessage(App* app, CPU& cpu)
+{
+    const GuestFrame frame(cpu, 0x18, 0x64);
+    const reg32 text = frame - 0x64, viewWidthAt = frame - 8, viewHeightAt = frame - 0x18;
+    cpu.eax = frame - 0xc;
+    cpu.edx = frame - 0x14;
+    cpu.ebx = viewWidthAt;
+    cpu.ecx = viewHeightAt;
     if (!byAddress(app, cpu, kViewRect))
-        return;
-    if (sreg32(at(app, kPaused)) > 1)
-        return done();
-    if (!direct(app, cpu, syncWindow))
-        return;
-    cpu.eax = kMessageLine;
-    cpu.edi = ebp - 0x64;
-    if (!byAddress(app, cpu, kLanguageText))
-        return;
-    cpu.esi = cpu.eax;
-    push(app, cpu, cpu.edi);
-    copyStringInline(app, cpu);
-    cpu.edi = pop(app, cpu);
-    cpu.esi = kMessageEnding;
-    cpu.edi = ebp - 0x64;
-    push(app, cpu, cpu.edi);
-    cpu.ecx = 0xffffffff;
-    cpu.al = 0;
-    scanForAl(app, cpu);
-    --cpu.edi;
-    copyStringInline(app, cpu);
-    cpu.edi = pop(app, cpu);
-    // The text at the view's height over 480.
-    cpu.eax = local(8);
-    setLocal(4, cpu.eax);
-    const x86::Float scale = fp::mul(fp::mul(x86::Float(sreg32(local(4))), x86::Float(app->getMemory<float>(kMessageScale))),
-                                     x86::Float(app->getMemory<float>(kMessageScaleAgain)));
-    cpu.esp -= 4;
-    app->getMemory<float>(cpu.esp) = float(scale);
-    if (!byAddress(app, cpu, kSetTextScale))
-        return;
-    cpu.eax = ebp - 0x64;
-    fpu.count -= 1;                              // fstp st(0): the scale
-    if (!byAddress(app, cpu, kTextWidth) || !byAddress(app, cpu, kChop))
-        return;
-    cpu.eax = kFont87;
-    setLocal(0x1c, reg32(fp::toInteger<sreg32>(fpu.st(0))));
-    fpu.count -= 1;
-    if (!byAddress(app, cpu, kTextHeight))
-        return;
-    cpu.ecx = cpu.eax;
-    cpu.eax = kFont87;
-    if (!byAddress(app, cpu, kFontLineHeight))
-        return;
-    cpu.ecx += cpu.eax;
-    // The text's place: the view's middle less half the text.
-    cpu.ebx = halved(local(8));
-    cpu.esi = cpu.ebx - halved(local(0x1c));
-    setLocal(0x10, halved(local(0x18)));
-    cpu.edx = reg32(sreg32(cpu.ecx) >> 31);
-    cpu.eax = halved(cpu.ecx);
-    cpu.edi = local(0x10) - cpu.eax;
-    // The box: three quarters of the text's width either side, a line up and down.
-    cpu.eax = local(0x1c);
-    setLocal(4, cpu.eax);
-    cpu.eax = cpu.eax * 3;
-    cpu.eax = reg32(sreg32(cpu.eax + (sreg32(cpu.eax) < 0 ? 3 : 0)) >> 2);
-    cpu.edx = cpu.eax;
-    cpu.eax = cpu.ebx - cpu.edx;
-    setLocal(4, cpu.eax);
-    cpu.edx += cpu.ebx;
-    app->getMemory<float>(ebp - 0x2c) = float(x86::Float(sreg32(local(4))));
-    setLocal(4, cpu.edx);
-    app->getMemory<float>(ebp - 0x34) = float(x86::Float(sreg32(local(4))));
-    setLocal(0x3c, local(0x2c));
-    setLocal(0x24, local(0x34));
-    cpu.eax = local(0x10) - cpu.ecx;
-    setLocal(4, cpu.eax);
-    app->getMemory<float>(ebp - 0x20) = float(x86::Float(sreg32(local(4))));
-    setLocal(0x38, local(0x20));
-    cpu.eax = local(0x10) + cpu.ecx;
-    setLocal(4, cpu.eax);
-    app->getMemory<float>(ebp - 0x30) = float(x86::Float(sreg32(local(4))));
-    cpu.eax = local(0x30);
-    push(app, cpu, 2);
-    setLocal(0x28, cpu.eax);
-    if (!byAddress(app, cpu, at(app, kThrashWindow)))
-        return;
-    // A box: its colour and 1, or its border's and 0, and its corners' words.
-    auto box = [&](reg32 colour, reg32 filled) {
-        push(app, cpu, colour);
-        push(app, cpu, filled);
-        for (const reg32 offset : {0x28u, 0x2cu, 0x30u, 0x34u, 0x20u, 0x24u, 0x38u, 0x3cu})
-            push(app, cpu, local(offset));
-        cpu.ecx = local(0x20);
-        cpu.ebx = local(0x24);
-        cpu.eax = local(0x38);
-        cpu.edx = local(0x3c);
+        return false;
+    if (sreg32(gameSettings(app).replayMode) > 1)
         return true;
-    };
+    const Kept synced(cpu, kEcx | kEdx);  // as syncWindow keeps them
+    if (!thrash(app, cpu, kThrashSync, {0}) || !thrash(app, cpu, kThrashWindow, {2}))
+        return false;
+    synced.back(cpu);
+    const std::optional<reg32> line = languageText(app, cpu, kMessageLine);
+    if (!line)
+        return false;
+    copyString(app, text, *line);
+    copyString(app, text + stringLengthAt(app, text), kMessageEnding);
+    // The text at the view's height over 480.
+    const x86::Float scale =
+        fp::mul(fp::mul(x86::Float(sreg32(at(app, viewWidthAt))), x86::Float(floatAt(app, kMessageScale))),
+                x86::Float(floatAt(app, kMessageScaleAgain)));
+    if (!setTextScale(app, cpu, bitsOf(float(scale))))
+        return false;
+    const std::optional<x86::Float> width = textWidth(app, cpu, text);
+    if (!width)
+        return false;
+    const std::optional<sreg32> textWide = chop(app, cpu, *width);
+    if (!textWide)
+        return false;
+    cpu.eax = kFont87;
+    const std::optional<reg32> fontHeight = game(app, cpu, kTextHeight);
+    if (!fontHeight)
+        return false;
+    cpu.ecx = *fontHeight;
+    cpu.eax = kFont87;
+    const std::optional<reg32> lineHeight = game(app, cpu, kFontLineHeight);
+    if (!lineHeight)
+        return false;
+    // Integers as the code works them out: wrapping, halved and quartered towards 0.
+    const auto halved = [](reg32 value) { return reg32(sreg32(value) / 2); };
+    const auto asFloat = [](reg32 value) { return bitsOf(float(x86::Float(sreg32(value)))); };
+    const reg32 high = *fontHeight + *lineHeight;
+    // The text's place: the view's middle less half the text.
+    const reg32 middle = halved(at(app, viewWidthAt)), middleY = halved(at(app, viewHeightAt));
+    const reg32 textLeft = middle - halved(reg32(*textWide)), textTop = middleY - halved(high);
+    // The box: three quarters of the text's width either side, a line up and down.
+    const reg32 reach = reg32(sreg32(reg32(*textWide) * 3) / 4);
+    const reg32 left = asFloat(middle - reach), right = asFloat(reach + middle);
+    const reg32 top = asFloat(middleY - high), bottom = asFloat(middleY + high);
+    if (!thrash(app, cpu, kThrashWindow, {2}))
+        return false;
     for (int pass = 0; pass < 2; ++pass)
-    {
-        if (!box(kBoxColour, 1) || !byAddress(app, cpu, kDrawBox) || !box(kBorderColour, 0))
-            return;
-        if (pass == 1)
-            cpu.ebx = cpu.edi;
-        if (!byAddress(app, cpu, kDrawBox))
-            return;
-        cpu.eax = ebp - 0x64;
-        if (pass == 0)
-            cpu.ebx = cpu.edi;
-        cpu.edx = cpu.esi;
-        if (!byAddress(app, cpu, kDrawText))
-            return;
-        fpu.count -= 1;                          // fstp st(0): the text's width
-        if (!byAddress(app, cpu, kFlushText) || !byAddress(app, cpu, at(app, kThrashFlushWindow))
-            || !byAddress(app, cpu, at(app, kThrashPageFlip)))
-            return;
-    }
-    if (!byAddress(app, cpu, kRaceFrameEnd))
+        if (!drawBox(app, cpu, left, top, right, bottom, 1, kBoxColour)
+            || !drawBox(app, cpu, left, top, right, bottom, 0, kBorderColour)
+            || !drawText(app, cpu, text, textLeft, textTop) || !byAddress(app, cpu, kFlushText)
+            || !flushFlip(app, cpu))
+            return false;
+    return guest::direct<0x434a90, collide::fogColour>(app, cpu);
+}
+
+/* 0x4c5c00: waitMessage. */
+void showWaitMessage(App* app, CPU& cpu)
+{
+    const Kept kept(cpu, kEbx | kEcx | kEdx);
+    if (!waitMessage(app, cpu))
         return;
-    done();
+    kept.back(cpu);
+    cpu.esp += 4;
 }
 
 /* ---- The HUD editor's frame ---- */
@@ -2770,141 +2602,89 @@ constexpr reg32 kFrameMarginX = 0x539ba0, kFrameMarginY = 0x539ba4;
 constexpr reg32 kFrameAll = 0x559ba0, kFrameClippedBoth = 0x559c40;  // the lines' index lists
 constexpr reg32 kFrameClippedLeft = 0x559be0, kFrameClippedRight = 0x559c10;
 
-namespace
+/* fcom and fnstsw's C0, as the code tests it: a below b, or either NaN. */
+bool belowOrUnordered(x86::Float a, x86::Float b)
 {
-
-/* fcomp, fnstsw ax, sahf: the comparison of a with b, ax the status word;
- * true for CF (a below b, or unordered). */
-bool belowAx(x86::CPU& cpu, x86::Float a, x86::Float b)
-{
-    cpu.fpu.compare(a, b);
-    cpu.ax = cpu.fpu.status.word;
-    return cpu.ah & 1;
+    return !(a >= b);
 }
 
-/* And ZF too (a equal to b). */
-bool belowOrEqualAx(x86::CPU& cpu, x86::Float a, x86::Float b)
-{
-    cpu.fpu.compare(a, b);
-    cpu.ax = cpu.fpu.status.word;
-    return cpu.ah & 0x41;
-}
+// A HUD element: +6 its left and +8 its top (words), +0x60 its right and +0x64 its bottom.
+constexpr reg32 kElementLeft = 6, kElementTop = 8, kElementRight = 0x60, kElementBottom = 0x64;
 
-}  // namespace
-
-/* 0x459440: the HUD editor's frame about element eax (its left at +6 and
- * right at +0x60, top at +8 and bottom at +0x64, made room about by the
- * mode's width), drawn as a mesh of lines in colour edx -- the side that is
- * off the screen left out. */
-void hudEditorFrame(win32::WinApplication* app, x86::CPU& cpu)
+/* 0x459440's core: the HUD editor's frame about `element` (made room about by the mode's width),
+ * drawn as a mesh of lines in `colour` -- the side that is off the screen left out.  The x87's
+ * operations as the code does them, each float stored where it stores one; its compares (fcom,
+ * fnstsw) as float compares that give what C0 and C3 give, NaN too.  eax and edx at the driver's
+ * call as the code has them: whether the right side is off, whether the left is. */
+bool editorFrame(App* app, CPU& cpu, reg32 element, reg32 colour)
 {
-    push(app, cpu, cpu.ebx);
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    cpu.esp -= 0x24;
-    const reg32 ebp = cpu.ebp;
-    auto& fpu = cpu.fpu;
-    auto loadFloat = [&](reg32 address) { return x86::Float(app->getMemory<float>(address)); };
-    auto storeFloat = [&](reg32 address, x86::Float value) { app->getMemory<float>(address) = float(value); };
-    auto word16 = [&](reg32 address) { return x86::Float(x86::sreg16(half(app, address))); };
-    auto integer = [&](reg32 address) { return x86::Float(sreg32(at(app, address))); };
-    cpu.ecx = cpu.eax;
+    const auto loadFloat = [&](reg32 address) { return x86::Float(floatAt(app, address)); };
+    const auto word16 = [&](reg32 address) { return x86::Float(x86::sreg16(half(app, address))); };
+    const auto integer = [&](reg32 address) { return x86::Float(sreg32(at(app, address))); };
+    const auto corner = [](reg32 n) { return kFrameMesh + n * kCornerBytes; };
     const x86::Float width = integer(kModeWidth);
     const x86::Float scaledX = fp::mul(width, loadFloat(kFrameScaleX));
     const x86::Float scaledY = fp::mul(width, loadFloat(kFrameScaleY));
     const x86::Float thickness = loadFloat(kFrameThickness);
-    const x86::Float roomX = fp::mul(scaledX, thickness);
-    const x86::Float roomY = fp::mul(thickness, scaledY);
-    const x86::Float right = integer(cpu.eax + 0x60);
-    const x86::Float left = word16(cpu.ecx + 6);
-    cpu.eax = 0;
-    storeFloat(ebp - 0x14, fp::add(left, loadFloat(kFrameMarginX)));
-    storeFloat(ebp - 0x10, fp::add(right, loadFloat(kFrameMarginY)));
-    storeFloat(ebp - 0x1c, roomX);
-    storeFloat(ebp - 0x18, roomY);
-    do
-    {
-        cpu.ebx = cpu.eax << 5;
-        ++cpu.eax;
-        put(app, kFrameMesh + kCornerColour + cpu.ebx, cpu.edx);
-    } while (sreg32(cpu.eax) < 0xc);
+    const float roomX = float(fp::mul(scaledX, thickness));
+    const float roomY = float(fp::mul(thickness, scaledY));
+    const x86::Float right = integer(element + kElementRight);
+    const x86::Float left = word16(element + kElementLeft);
+    const float leftEdge = float(fp::add(left, loadFloat(kFrameMarginX)));
+    const float rightEdge = float(fp::add(right, loadFloat(kFrameMarginY)));
+    for (reg32 n = 0; n < 0xc; ++n)
+        put(app, corner(n) + kCornerColour, colour);
     // The left edge kept on the screen.
-    if (belowAx(cpu, 0.0, loadFloat(ebp - 0x14)))
-    {
-        cpu.eax = at(app, ebp - 0x14);
-        put(app, ebp - 8, cpu.eax);
-    }
-    else
-    {
-        cpu.edx = 0;
-        put(app, ebp - 8, cpu.edx);
-    }
-    const x86::Float rightEdge = loadFloat(ebp - 0x10);
-    const x86::Float frameLeft = word16(cpu.ecx + 6);
-    cpu.eax = at(app, ebp - 8);
-    const x86::Float frameRight = integer(cpu.ecx + 0x60);
-    for (const reg32 corner : {11u, 10u, 1u, 0u})
-        put(app, kFrameMesh + corner * kCornerBytes, cpu.eax);
-    x86::Float room = loadFloat(ebp - 0x1c);
-    storeFloat(kFrameMesh + 0x120, fp::add(frameLeft, room));
-    storeFloat(kFrameMesh + 0x100, fp::sub(frameRight, room));
-    const x86::Float innerLeft = loadFloat(kFrameMesh + 0x120);
-    cpu.eax = at(app, kModeWidth);
-    const x86::Float innerRight = loadFloat(kFrameMesh + 0x100);
-    --cpu.eax;
-    storeFloat(kFrameMesh + 0x40, innerLeft);
-    put(app, ebp - 4, cpu.eax);
-    storeFloat(kFrameMesh + 0x60, innerRight);
-    storeFloat(ebp - 0x20, integer(ebp - 4));
+    const reg32 leftX = belowOrUnordered(0.0, x86::Float(leftEdge)) ? bitsOf(leftEdge) : 0;
+    const x86::Float frameLeft = word16(element + kElementLeft);
+    const x86::Float frameRight = integer(element + kElementRight);
+    for (const reg32 n : {11u, 10u, 1u, 0u})
+        put(app, corner(n), leftX);
+    putFloat(app, corner(9), float(fp::add(frameLeft, x86::Float(roomX))));
+    putFloat(app, corner(8), float(fp::sub(frameRight, x86::Float(roomX))));
+    const x86::Float innerLeft = loadFloat(corner(9)), innerRight = loadFloat(corner(8));
+    putFloat(app, corner(2), float(innerLeft));
+    putFloat(app, corner(3), float(innerRight));
     // The right edge kept on the screen.
-    cpu.eax = belowAx(cpu, rightEdge, loadFloat(ebp - 0x20)) ? at(app, ebp - 0x10) : at(app, ebp - 0x20);
-    put(app, ebp - 0xc, cpu.eax);
-    storeFloat(ebp - 0x24, word16(cpu.ecx + 8));
-    storeFloat(ebp - 4, integer(cpu.ecx + 0x64));
-    cpu.edx = 0;
-    const x86::Float top = loadFloat(ebp - 0x24);
-    const x86::Float bottom = loadFloat(ebp - 4);
-    for (const reg32 corner : {7u, 6u, 5u, 4u})
-        put(app, kFrameMesh + corner * kCornerBytes, cpu.eax);
-    cpu.eax = at(app, ebp - 0x24);
-    room = loadFloat(ebp - 0x18);
-    storeFloat(kFrameMesh + 0xa4, fp::add(top, room));
-    storeFloat(kFrameMesh + 0x164, fp::sub(bottom, room));
-    const x86::Float innerTop = loadFloat(kFrameMesh + 0xa4);
-    const x86::Float innerBottom = loadFloat(kFrameMesh + 0x164);
-    for (const reg32 corner : {0x4u, 0x3u, 0x2u, 0x1u})
-        put(app, kFrameMesh + corner * kCornerBytes + 4, cpu.eax);
-    cpu.eax = at(app, ebp - 4);
-    storeFloat(kFrameMesh + 4, innerTop);
-    for (const reg32 corner : {0xau, 0x9u, 0x8u, 0x7u})
-        put(app, kFrameMesh + corner * kCornerBytes + 4, cpu.eax);
-    cpu.eax = thrash::kStateTexture;
-    storeFloat(kFrameMesh + 0xc4, innerBottom);
-    if (!direct(app, cpu, setRenderState))
-        return;
-    // Which sides are on the screen: the lines of all, or of those.
-    cpu.edx = belowOrEqualAx(cpu, 0.0, loadFloat(ebp - 0x14)) ? 0 : 1;
-    cpu.eax = at(app, kModeWidth) - 1;
-    put(app, ebp - 4, cpu.eax);
-    cpu.eax = belowAx(cpu, integer(ebp - 4), loadFloat(ebp - 0x10)) ? 1 : 0;
-    cpu.ecx = cpu.eax;
-    reg32 lines, count;
-    if (cpu.edx == 0 && cpu.eax == 0)
-        lines = kFrameAll, count = 8;
-    else if (cpu.edx != 0 && cpu.ecx != 0)
+    const float lastX = float(x86::Float(sreg32(at(app, kModeWidth) - 1)));
+    const reg32 rightX =
+        belowOrUnordered(x86::Float(rightEdge), x86::Float(lastX)) ? bitsOf(rightEdge) : bitsOf(lastX);
+    const float top = float(word16(element + kElementTop));
+    const float bottom = float(integer(element + kElementBottom));
+    for (const reg32 n : {7u, 6u, 5u, 4u})
+        put(app, corner(n), rightX);
+    putFloat(app, corner(5) + 4, float(fp::add(x86::Float(top), x86::Float(roomY))));
+    putFloat(app, corner(11) + 4, float(fp::sub(x86::Float(bottom), x86::Float(roomY))));
+    const x86::Float innerTop = loadFloat(corner(5) + 4), innerBottom = loadFloat(corner(11) + 4);
+    for (const reg32 n : {4u, 3u, 2u, 1u})
+        put(app, corner(n) + 4, bitsOf(top));
+    putFloat(app, corner(0) + 4, float(innerTop));
+    for (const reg32 n : {10u, 9u, 8u, 7u})
+        put(app, corner(n) + 4, bitsOf(bottom));
+    putFloat(app, corner(6) + 4, float(innerBottom));
+    if (!sendState(app, cpu, thrash::kStateTexture, 0))
+        return false;
+    // Which sides are off the screen: the lines of all, or of those on it.
+    const bool leftOff = x86::Float(0.0) > x86::Float(leftEdge);  // C0 and C3 clear: above, not NaN
+    const bool rightOff =
+        belowOrUnordered(x86::Float(sreg32(at(app, kModeWidth) - 1)), x86::Float(rightEdge));
+    reg32 lines = kFrameAll, count = 8;
+    if (leftOff && rightOff)
         lines = kFrameClippedBoth, count = 4;
-    else
-        lines = cpu.edx != 0 ? kFrameClippedLeft : kFrameClippedRight, count = 6;
-    push(app, cpu, lines);
-    push(app, cpu, kFrameMesh);
-    push(app, cpu, count);
-    if (!byAddress(app, cpu, at(app, kThrashDrawLineMesh)))
+    else if (leftOff || rightOff)
+        lines = leftOff ? kFrameClippedLeft : kFrameClippedRight, count = 6;
+    cpu.eax = rightOff ? 1 : 0;
+    cpu.edx = leftOff ? 1 : 0;
+    return thrash(app, cpu, kThrashDrawLineMesh, {count, kFrameMesh, lines}).has_value();
+}
+
+/* 0x459440: editorFrame about element eax, colour edx. */
+void hudEditorFrame(App* app, CPU& cpu)
+{
+    const Kept kept(cpu, kEbx | kEcx);
+    if (!editorFrame(app, cpu, cpu.eax, cpu.edx))
         return;
-    cpu.esp = cpu.ebp;
-    cpu.ebp = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
-    cpu.ebx = pop(app, cpu);
+    kept.back(cpu);
     cpu.esp += 4;
 }
 
@@ -2942,170 +2722,129 @@ void racePrecision(win32::WinApplication* app, x86::CPU& cpu)
     cpu.fpu.setControl(half(app, kRaceControl));
 }
 
-/* The inlined strlen of the string at edi (ecx its length, edi past its end). */
-void stringLength(win32::WinApplication* app, x86::CPU& cpu)
-{
-    cpu.ecx = 0xffffffff;
-    cpu.eax = 0;
-    scanForAl(app, cpu);
-    cpu.ecx = ~cpu.ecx - 1;
-}
-
 }  // namespace
 
-constexpr reg32 kLoadingRace = 0x6fd4f4, kRaceRecords = 0x6fd540;   // 0x6c bytes a race
 constexpr reg32 kLoadingPictures = 0x57126b, kPictureChoices = 0x552938;
 constexpr reg32 kLoadingPath = 0x7a3134;
-constexpr reg32 kLoadingFlags = 0x6fd4fc, kLoadingCar = 0x6fd4ac;
 constexpr reg32 kLoadingScreen = 0x494cb0;     // native_render's loadingScreen: eax the picture
 
-/* 0x494fa0: the loading screen put up as a race loads (but with it turned
- * off): the race's track's picture -- one of its several in turn, or the
- * car's when there is none or [0x6fd4fc] asks for it -- loaded and shown in
- * both buffers; the textures let go of, and the race's x87 precision set. */
-void showLoadingScreen(win32::WinApplication* app, x86::CPU& cpu)
+constexpr reg32 kPictureCount = 0x43bcb0;      // eax a car: how many pictures its track has
+constexpr reg32 kAppendBackslash = 0x4529a0;   // port::menus' path ended with a backslash: eax the path
+constexpr reg32 kLoadQfs = 0x4956f0;           // frontend::loadQfs: eax the name, edx 0x10
+constexpr reg32 kBitmapShape = 0x4ef1e0;       // eax a .qfs, edx a shape's name
+constexpr reg32 kTrackPictureName = 0x53be00, kCarPictureName = 0x53be10, kLoadingShapeName = 0x53be20;
+constexpr reg32 kTrackNameBytes = 0x10;
+// The race's entries: a player's 0x6c bytes (its car among them).
+constexpr reg32 kEntryBytes = 0x6c;
+
+/* port::menus' backslash after a path (0x4529a0), by address: the path in eax. */
+bool appendBackslash(App* app, CPU& cpu, reg32 path)
 {
-    push(app, cpu, cpu.ebx);
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.edx);
-    push(app, cpu, cpu.esi);
-    push(app, cpu, cpu.edi);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    cpu.esp -= 0x114;
-    cpu.ebp -= 0x192;
-    const reg32 ebp = cpu.ebp;
-    const reg32 name = ebp + 0x7e, track = ebp + 0x17e;
-    auto done = [&]() {
-        cpu.esp = cpu.ebp + 0x192;
-        cpu.ebp = pop(app, cpu);
-        cpu.edi = pop(app, cpu);
-        cpu.esi = pop(app, cpu);
-        cpu.edx = pop(app, cpu);
-        cpu.ecx = pop(app, cpu);
-        cpu.ebx = pop(app, cpu);
-        cpu.esp += 4;
-    };
+    cpu.eax = path;
+    return byAddress(app, cpu, kAppendBackslash);
+}
+
+/* sprintf onto the end of the string at `text`, as the code finds it (its inlined strlen). */
+bool appendFormatted(App* app, CPU& cpu, reg32 text, reg32 format, reg32 first, reg32 second)
+{
+    cpu.eax = text + stringLengthAt(app, text);
+    return guest::call(app, cpu, kSprintf, {cpu.eax, format, first, second});
+}
+
+/* 0x494fa0's core: the loading screen put up as a race loads (but with it turned off): the race's
+ * track's picture -- one of its several in turn, or the car's when there is none or [0x6fd4fc] asks
+ * for it -- loaded and shown in both buffers; the textures let go of, and the race's x87 precision
+ * set (eax as that leaves it).  The track's name and the picture's in the frame, as deep as the
+ * code has them; the registers at each call as the code has them. */
+bool loadingScreenShown(App* app, CPU& cpu)
+{
     if (at(app, kLoadingOff) != 0)
-        return done();
+        return true;
+    const GuestFrame frame(cpu, 0x18, 0x114);
+    const reg32 name = frame - 0x114, track = frame - 0x14;
     menuPrecision(app, cpu);
-    cpu.edx = at(app, kLoadingRace);
-    cpu.eax = cpu.edx * 0xc;
-    cpu.edx = at(app, cpu.eax + cpu.eax * 8 + kRaceRecords);
-    cpu.ecx = 0x10;
-    cpu.eax = cpu.edx;
-    cpu.edi = track;
-    if (!byAddress(app, cpu, 0x439520))
-        return;
-    // Its track's name: rep movsd, rep movsb.
-    cpu.esi = cpu.eax;
-    push(app, cpu, cpu.edi);
-    cpu.eax = cpu.ecx;
-    for (cpu.ecx >>= 2; cpu.ecx != 0; --cpu.ecx)
-        movsd(app, cpu);
-    cpu.cl = cpu.al & 3;
-    for (; cpu.ecx != 0; --cpu.ecx)
-    {
-        putByte(app, cpu.ees + cpu.edi, byte(app, cpu.esi));
-        const reg32 step = cpu.flags.df ? reg32(0) - 1 : 1;
-        cpu.edi += step;
-        cpu.esi += step;
-    }
-    cpu.edi = pop(app, cpu);
-    cpu.eax = track;
-    cpu.esi = kLoadingPath;
-    if (!byAddress(app, cpu, 0x439660))
-        return;
-    cpu.ebx = cpu.eax;
-    cpu.eax = cpu.edx;
-    cpu.edi = name;
-    if (!byAddress(app, cpu, 0x43bcb0))
-        return;
-    cpu.ecx = cpu.eax;
-    push(app, cpu, cpu.edi);
-    copyStringInline(app, cpu);
-    cpu.edi = pop(app, cpu);
-    cpu.eax = name;
-    if (!byAddress(app, cpu, 0x4529a0))
-        return;
-    // Which of the track's pictures: the next in turn, by its count (ecx).
-    cpu.al = byte(app, kLoadingPictures);
-    putByte(app, ebp + 0x18e, cpu.al);
-    cpu.eax = byte(app, ebp + 0x18e);
-    cpu.edx = byte(app, cpu.eax + kPictureChoices);
-    cpu.eax = cpu.edx;
-    {
-        const x86::sreg64 n = x86::sreg64(sreg32(cpu.eax));
-        const sreg32 d = sreg32(cpu.ecx);
-        cpu.eax = reg32(n / d);
-        cpu.edx = reg32(n % d);
-    }
-    push(app, cpu, cpu.edx);
-    cpu.al = byte(app, ebp + 0x18e);
-    push(app, cpu, cpu.ebx);
-    ++cpu.al;
-    push(app, cpu, 0x53be00);
-    cpu.edi = name;
-    putByte(app, kLoadingPictures, cpu.al);
-    stringLength(app, cpu);
-    cpu.eax = name + cpu.ecx;
-    push(app, cpu, cpu.eax);
-    if (!byAddress(app, cpu, kSprintf))
-        return;
-    cpu.esp += 0x10;
-    cpu.eax = name;
-    if (!byAddress(app, cpu, kFileExists))
-        return;
-    if (cpu.eax == 0 || (byte(app, kLoadingFlags) & 2))
+    const reg32 car = gameSettings(app).entryAt(gameSettings(app).localPlayer * kEntryBytes).car;
+    cpu.edx = car;  // as the code has it on, the car's track's name (load::idOf) keeping it
+    const std::optional<reg32> trackName = guest::direct<0x439520, load::idOf>(app, cpu, car);
+    if (!trackName)
+        return false;
+    // Its track's name: rep movsd, rep movsb, ecx counted down.
+    for (reg32 i = 0; i < kTrackNameBytes; i += 4)
+        put(app, track + i, at(app, *trackName + i));
+    cpu.ecx = 0;
+    const reg32 id = guest::direct<0x439660, load::numberOf>(app, cpu, track);
+    if (cpu.terminate)
+        return false;
+    cpu.ebx = id;
+    cpu.eax = car;
+    const std::optional<reg32> pictures = game(app, cpu, kPictureCount);
+    if (!pictures)
+        return false;
+    cpu.ecx = *pictures;
+    copyString(app, name, kLoadingPath);
+    if (!appendBackslash(app, cpu, name))
+        return false;
+    // Which of the track's pictures: the next in turn, by their count.
+    const reg8 turn = byte(app, kLoadingPictures);
+    const sreg32 choice = byte(app, kPictureChoices + turn);
+    const reg32 which = reg32(sreg32(choice % sreg32(*pictures)));
+    putByte(app, kLoadingPictures, reg8(turn + 1));
+    if (!appendFormatted(app, cpu, name, kTrackPictureName, id, which))
+        return false;
+    const std::optional<bool> exists = guest::direct<0x4e0e60, ea::fileThere>(app, cpu, name);
+    if (!exists)
+        return false;
+    if (!*exists || (std::uint8_t(gameSettings(app).raceFlags) & 2))
     {
         // The car's picture instead.
-        cpu.esi = kLoadingPath;
-        cpu.edi = name;
-        push(app, cpu, cpu.edi);
-        copyStringInline(app, cpu);
-        cpu.edi = pop(app, cpu);
-        cpu.eax = name;
-        if (!byAddress(app, cpu, 0x4529a0))
-            return;
-        push(app, cpu, 0);
-        cpu.ecx = at(app, kLoadingCar);
-        push(app, cpu, cpu.ecx);
-        push(app, cpu, 0x53be10);
-        cpu.edi = name;
-        stringLength(app, cpu);
-        cpu.eax = name + cpu.ecx;
-        push(app, cpu, cpu.eax);
-        if (!byAddress(app, cpu, kSprintf))
-            return;
-        cpu.esp += 0x10;
+        copyString(app, name, kLoadingPath);
+        if (!appendBackslash(app, cpu, name))
+            return false;
+        cpu.ecx = gameSettings(app).track;
+        if (!appendFormatted(app, cpu, name, kCarPictureName, cpu.ecx, 0))
+            return false;
     }
     cpu.edx = 0x10;
     cpu.eax = name;
-    if (!byAddress(app, cpu, 0x4956f0))
-        return;
-    cpu.edx = 0x53be20;
-    cpu.ecx = cpu.eax;
-    if (!byAddress(app, cpu, 0x4ef1e0))
-        return;
-    cpu.edx = cpu.eax;
+    const std::optional<reg32> qfs = game(app, cpu, kLoadQfs);
+    if (!qfs)
+        return false;
+    cpu.edx = kLoadingShapeName;
+    cpu.ecx = *qfs;
+    const std::optional<reg32> shape = game(app, cpu, kBitmapShape);
+    if (!shape)
+        return false;
+    cpu.edx = *shape;
     for (int buffer = 0; buffer < 2; ++buffer)
     {
-        if (!direct(app, cpu, takeWindowAndClear))
-            return;
-        cpu.eax = cpu.edx;
-        if (!byAddress(app, cpu, kLoadingScreen) || !direct(app, cpu, flipAndWaitFrames))
-            return;
+        if (!windowTakenAndCleared(app, cpu))
+            return false;
+        cpu.eax = *shape;
+        if (!byAddress(app, cpu, kLoadingScreen))
+            return false;
+        const Kept kept(cpu, kEcx | kEdx);  // as flipAndWaitFrames keeps them
+        const std::optional<reg32> until = flipAndWait(app, cpu);
+        if (!until)
+            return false;
+        cpu.eax = *until;
+        kept.back(cpu);
     }
-    if (cpu.ecx != 0)
-    {
-        cpu.eax = cpu.ecx;
-        if (!byAddress(app, cpu, kFree))
-            return;
-    }
-    if (!byAddress(app, cpu, at(app, kThrashTReset)))
-        return;
+    if (*qfs != 0 && !release(app, cpu, *qfs))
+        return false;
+    if (!thrash(app, cpu, kThrashTReset))
+        return false;
     racePrecision(app, cpu);
-    done();
+    return true;
+}
+
+/* 0x494fa0: loadingScreenShown. */
+void showLoadingScreen(App* app, CPU& cpu)
+{
+    const Kept kept(cpu, kEbx | kEcx | kEdx);
+    if (!loadingScreenShown(app, cpu))
+        return;
+    kept.back(cpu);
+    cpu.esp += 4;
 }
 
 constexpr reg32 kLoadingBar = 0x55e4c4;        // four corners of kCornerBytes
@@ -3115,118 +2854,88 @@ constexpr reg32 kLoadingBarEnd = 0x53be40, kLoadingBarHeight = 0x53be44;
 constexpr reg32 kRunSystemTasks = 0x4e7630;    // native_snd_stream's runSystemTasks
 constexpr reg32 kBarColours = 0x495190;        // eax the bar's corners
 
-/* 0x495230: the loading bar at [esp+4] per cent (101 past 100) drawn after
- * the loading text, in both buffers, while the loading text is up; the
- * system's tasks run first.  The menus' x87 precision while it draws, the
- * race's after.  stdcall's 4 bytes. */
-void drawLoadingProgress(win32::WinApplication* app, x86::CPU& cpu)
+constexpr reg32 kBarTop = 0x43e08000, kBarBottom = 0x43ea8000;  // 449.0f and 469.0f, on a 480 line screen
+constexpr reg32 kBarFull = 0x42ca0000;          // 101.0f
+
+/* native_render's polygon (0x4c12e0) for the loading bar, by address: its corners in eax, edx,
+ * ebx, ecx. */
+bool drawBar(App* app, CPU& cpu)
 {
-    push(app, cpu, cpu.ebx);
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.edx);
-    push(app, cpu, cpu.esi);
-    push(app, cpu, cpu.edi);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    cpu.esp -= 0xc;
-    const reg32 ebp = cpu.ebp;
-    auto& fpu = cpu.fpu;
-    auto floatAt = [&](reg32 address) { return x86::Float(app->getMemory<float>(address)); };
-    auto setFloat = [&](reg32 address, x86::Float value) { app->getMemory<float>(address) = float(value); };
+    return drawQuad(app, cpu, kLoadingBar, kLoadingBar + kCornerBytes, kLoadingBar + 2 * kCornerBytes,
+                    kLoadingBar + 3 * kCornerBytes);
+}
+
+/* 0x495230's core: the loading bar at `perCentAt` per cent (101 past 100, written back there, then
+ * the bar's share) drawn after the loading text, in both buffers, while the loading text is up; the
+ * system's tasks run first.  The menus' x87 precision while it draws, the race's after (eax as
+ * that leaves it).  The x87's operations as the code does them, each float stored where it stores
+ * one; its compare (fcom, fnstsw) a float compare that gives what C0 gives, NaN too. */
+bool loadingProgress(App* app, CPU& cpu, reg32 perCentAt)
+{
     cpu.eax = 0;
     if (!byAddress(app, cpu, kRunSystemTasks))
+        return false;
+    if (at(app, kLoadingTextShown) == 0)
+        return true;
+    if (!thrash(app, cpu, kThrashSync, {0}) || !thrash(app, cpu, kThrashWindow, {2}))
+        return false;
+    menuPrecision(app, cpu);
+    if (!belowOrUnordered(x86::Float(floatAt(app, perCentAt)), x86::Float(app->getMemory<double>(kLoadingAll))))
+        put(app, perCentAt, kBarFull);
+    const x86::Float scaled =
+        fp::mul(x86::Float(floatAt(app, perCentAt)), x86::Float(app->getMemory<double>(kLoadingPerCent)));
+    const x86::Float left = x86::Float(floatAt(app, kLoadingTextX));
+    const x86::Float room = fp::sub(x86::Float(floatAt(app, kLoadingBarEnd)), left);
+    putFloat(app, perCentAt, float(scaled));
+    const x86::Float width = fp::mul(room, x86::Float(floatAt(app, perCentAt)));
+    const x86::Float height =
+        fp::mul(x86::Float(floatAt(app, perCentAt)), x86::Float(floatAt(app, kLoadingBarHeight)));
+    const auto corner = [](reg32 n) { return kLoadingBar + n * kCornerBytes; };
+    putFloat(app, corner(0), float(left));
+    putFloat(app, corner(3), float(left));
+    put(app, corner(0) + 4, kBarTop);
+    put(app, corner(1) + 4, kBarTop);
+    put(app, corner(2) + 4, kBarBottom);
+    put(app, corner(3) + 4, kBarBottom);
+    const std::optional<sreg32> shade = chop(app, cpu, height);
+    if (!shade)
+        return false;
+    putFloat(app, corner(1), float(fp::add(left, width)));
+    const reg32 colour = (reg32(*shade) << 0x10) - 0x1000000;
+    const x86::Float right = x86::Float(floatAt(app, corner(1)));
+    put(app, corner(1) + kCornerColour, colour);
+    put(app, corner(2) + kCornerColour, colour);
+    putFloat(app, corner(2), float(right));
+    // sub_495190 with the bar's corners in eax, edx, ebx and ecx, as the code has them.
+    cpu.eax = corner(0);
+    cpu.edx = corner(1);
+    cpu.ebx = corner(2);
+    cpu.ecx = corner(3);
+    if (!byAddress(app, cpu, kBarColours))
+        return false;
+    for (reg32 n = 0; n < 4; ++n)
+        putClipCode(app, corner(n));
+    if (!sendState(app, cpu, thrash::kStateTexture, 0))
+        return false;
+    // Softtria's shading on for the bar, and off again.
+    const auto shaded = [&](reg32 value) {
+        return !(byte(app, kDriverFlags) & kDriverSofttria) || sendState(app, cpu, thrash::kStateShade, value);
+    };
+    for (int buffer = 0; buffer < 2; ++buffer)
+        if ((buffer == 1 && !thrash(app, cpu, kThrashSync, {0})) || !shaded(1) || !drawBar(app, cpu) || !shaded(0)
+            || !flushFlip(app, cpu))
+            return false;
+    racePrecision(app, cpu);
+    return true;
+}
+
+/* 0x495230: loadingProgress at [esp+4] per cent; stdcall's 4 bytes. */
+void drawLoadingProgress(App* app, CPU& cpu)
+{
+    const Kept kept(cpu, kEbx | kEcx | kEdx);
+    if (!loadingProgress(app, cpu, cpu.esp + 4))
         return;
-    if (at(app, kLoadingTextShown) != 0)
-    {
-        push(app, cpu, 0);
-        if (!byAddress(app, cpu, at(app, kThrashSync)))
-            return;
-        push(app, cpu, 2);
-        if (!byAddress(app, cpu, at(app, kThrashWindow)))
-            return;
-        menuPrecision(app, cpu);
-        if (!belowAx(cpu, floatAt(ebp + 0x1c), x86::Float(app->getMemory<double>(kLoadingAll))))
-            put(app, ebp + 0x1c, 0x42ca0000);  // 101.0f
-        const x86::Float perCent = floatAt(ebp + 0x1c);
-        const x86::Float scaled = fp::mul(perCent, x86::Float(app->getMemory<double>(kLoadingPerCent)));
-        const x86::Float left = floatAt(kLoadingTextX);
-        const x86::Float room = fp::sub(floatAt(kLoadingBarEnd), left);
-        setFloat(ebp + 0x1c, scaled);
-        const x86::Float width = fp::mul(room, floatAt(ebp + 0x1c));
-        const x86::Float height = fp::mul(floatAt(ebp + 0x1c), floatAt(kLoadingBarHeight));
-        cpu.ebx = 0x43e08000;                    // 449.0f, the bar's top
-        cpu.edi = 0x43ea8000;                    // 469.0f, its bottom
-        cpu.ecx = kLoadingBar + 3 * kCornerBytes;
-        cpu.edx = kLoadingBar + kCornerBytes;
-        cpu.esi = kLoadingBar;
-        setFloat(kLoadingBar, left);
-        setFloat(kLoadingBar + 3 * kCornerBytes, left);
-        put(app, kLoadingBar + 4, cpu.ebx);
-        put(app, kLoadingBar + kCornerBytes + 4, cpu.ebx);
-        put(app, kLoadingBar + 2 * kCornerBytes + 4, cpu.edi);
-        put(app, kLoadingBar + 3 * kCornerBytes + 4, cpu.edi);
-        cpu.ebx = kLoadingBar + 2 * kCornerBytes;
-        cpu.edi = kLoadingBar + 0x14;
-        fpu.count += 3;
-        fpu.st(0) = height;
-        fpu.st(1) = width;
-        fpu.st(2) = left;
-        if (!byAddress(app, cpu, kChop))
-            return;
-        put(app, ebp - 4, reg32(fp::toInteger<sreg32>(fpu.st(0))));
-        cpu.eax = at(app, ebp - 4);
-        const x86::Float right = fp::add(fpu.st(2), fpu.st(1));
-        cpu.eax <<= 0x10;
-        setFloat(kLoadingBar + kCornerBytes, right);
-        cpu.eax -= 0x1000000;
-        const x86::Float rightAgain = floatAt(kLoadingBar + kCornerBytes);
-        put(app, kLoadingBar + kCornerBytes + kCornerColour, cpu.eax);
-        put(app, kLoadingBar + 2 * kCornerBytes + kCornerColour, cpu.eax);
-        cpu.eax = kLoadingBar;
-        setFloat(kLoadingBar + 2 * kCornerBytes, rightAgain);
-        fpu.count -= 3;
-        if (!byAddress(app, cpu, kBarColours))
-            return;
-        for (reg32 corner = 0; corner < 4; ++corner)
-            shapeClipCode(app, cpu, kLoadingBar + corner * kCornerBytes);
-        cpu.eax = thrash::kStateTexture;
-        cpu.edx = 0;
-        if (!direct(app, cpu, setRenderState))
-            return;
-        auto shaded = [&](reg32 value) {
-            if (!(byte(app, kDriverFlags) & kDriverSofttria))
-                return true;
-            cpu.edx = value;
-            cpu.eax = thrash::kStateShade;
-            return direct(app, cpu, setRenderState);
-        };
-        for (int buffer = 0; buffer < 2; ++buffer)
-        {
-            if (buffer == 1)
-            {
-                push(app, cpu, 0);
-                if (!byAddress(app, cpu, at(app, kThrashSync)))
-                    return;
-            }
-            if (!shaded(1))
-                return;
-            cpu.ecx = kLoadingBar + 3 * kCornerBytes;
-            cpu.ebx = kLoadingBar + 2 * kCornerBytes;
-            cpu.edx = kLoadingBar + kCornerBytes;
-            cpu.eax = kLoadingBar;
-            if (!byAddress(app, cpu, kDrawPolygon) || !shaded(0)
-                || !byAddress(app, cpu, at(app, kThrashFlushWindow)) || !byAddress(app, cpu, at(app, kThrashPageFlip)))
-                return;
-        }
-        racePrecision(app, cpu);
-    }
-    cpu.esp = cpu.ebp;
-    cpu.ebp = pop(app, cpu);
-    cpu.edi = pop(app, cpu);
-    cpu.esi = pop(app, cpu);
-    cpu.edx = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
-    cpu.ebx = pop(app, cpu);
+    kept.back(cpu);
     cpu.esp += 4 + 4;
 }
 
@@ -3292,14 +3001,10 @@ void gameMain(win32::WinApplication* app, x86::CPU& cpu)
         cpu.ecx = 6;
         cpu.edi = ebp - 0x38;
         cpu.esi = 0x4a3050;
-        push(app, cpu, 0x30);
         for (; cpu.ecx != 0; --cpu.ecx)
             movsd(app, cpu);
-        push(app, cpu, 0x53ce54);
         cpu.esi = local(0x38);
-        push(app, cpu, cpu.esi);
-        push(app, cpu, cpu.ebx);
-        if (!byAddress(app, cpu, at(app, cpu.ecs + kMessageBoxImport)))
+        if (!guest::windows<kMessageBoxImport, &win32::user32::MessageBoxA>(app, cpu, cpu.ebx, cpu.esi, 0x53ce54, 0x30))
             return;
         return leave();
     }
@@ -3334,8 +3039,7 @@ void gameMain(win32::WinApplication* app, x86::CPU& cpu)
         return;
     if (cpu.eax == 0)
         return leave();
-    push(app, cpu, 2);
-    if (!byAddress(app, cpu, at(app, cpu.ecs + kSetErrorModeImport)))
+    if (!guest::windows<kSetErrorModeImport, &win32::kernel32::SetErrorMode>(app, cpu, 2))
         return;
     cpu.ah = 0;
     putByte(app, ebp - 0x44, cpu.ah);
@@ -3345,10 +3049,9 @@ void gameMain(win32::WinApplication* app, x86::CPU& cpu)
     putByte(app, ebp - 4, reg8(byte(app, ebp - 4) + 1));
     putByte(app, ebp - 0x44, 0xff);
     cpu.edi = 1;
-    push(app, cpu, 2);
     cpu.bl = 1;
     put(app, kDebugOutput, cpu.edi);
-    if (!byAddress(app, cpu, at(app, cpu.ecs + kSetErrorModeImport)))
+    if (!guest::windows<kSetErrorModeImport, &win32::kernel32::SetErrorMode>(app, cpu, 2))
         return;
     putByte(app, ebp - 0x44, cpu.bl);
     // The two ways of starting straight into a race: the menus' settings.
@@ -3485,7 +3188,7 @@ void gameMain(win32::WinApplication* app, x86::CPU& cpu)
         word(0x5551a0, cpu.ecx);
         word(0x5551a2, cpu.eax);
         word(0x5551a4, cpu.eax);
-        cpu.eax = at(app, 0x6fbb4c);
+        cpu.eax = gameSettings(app).language;
         cpu.esi = 0x49bfb0;
         if (!call(0x4d1750))
             return;
@@ -3598,11 +3301,61 @@ void gameMain(win32::WinApplication* app, x86::CPU& cpu)
 /* ---- The cabin's instruments ---- */
 
 constexpr reg32 kCabinTextures = 0x7922fc;     // sub_4d4ae0's: the cabin's textures, 0 for none
-constexpr reg32 kCabinFlags = 0x55eb2e;        // bit 0x20: no cabin
-constexpr reg32 kCabinGauges = 0x792030;       // twelve words of eight bytes, from the file
-constexpr reg32 kCabinNeedle = 0x792040;       // a needle's pivot, its zero and its full scale: x, y each
-constexpr reg32 kCabinOtherNeedle = 0x792068;
-constexpr reg32 kCabinDigits = 0x55d6a4, kCabinDigitsX = 0x55d69c, kCabinDigitsY = 0x55d6a0;
+constexpr reg32 kCabinFlags = 0x55eb2e;        // a byte
+constexpr reg8 kNoCabin = 0x20;                // kCabinFlags': no cabin view
+constexpr reg32 kDriverDirect3d = 0x40;        // kDriverFlags' bit for Direct3D
+
+// THRASH_about's record as the cabin reads it: +0x70 the texture memory's bytes; +0x74 a word read
+// both as flags (bit 0: 2 MB will do, bit 15: any will do) and, on Direct3D, as more bytes to add;
+// the texture widths it takes from +0x10 to +0x14, the heights from +0x1c to +0x20.
+constexpr reg32 kAboutTextureBytes = 0x70, kAboutMoreBytes = 0x74, kAboutAnyWillDo = 0x75;
+constexpr reg32 kAboutWidestLeast = 0x10, kAboutWidestMost = 0x14;
+constexpr reg32 kAboutHighestLeast = 0x1c, kAboutHighestMost = 0x20;
+constexpr sreg32 kCabinArtSide = 0x100;        // the dash's art: 256 by 256
+constexpr sreg32 kCabinBytes = 0x400000, kCabinBytesWithFlag = 0x200000;
+
+// The car's dash: "%s%s\car.viv" of the cars' folder and the car's name, its chunk "dash.qfs".
+constexpr reg32 kCarModel = 0x220, kCarModelNumber = 0x14;
+constexpr reg32 kCabinArchiveName = 0x53b6dc, kCarsFolder = 0x7a28b4;
+constexpr reg32 kLoadAlignment = 0x10;
+constexpr reg32 kDashChunk = 0x53b6ec;
+constexpr reg32 kDashTag = 0x53b6f8;           // what the dash's block is allocated as ("")
+constexpr reg32 kUnpackAlignment = 0x10;
+
+// The dash's shapes: its textures (sub_4d4ae0, from "0000" to "0001", records of 0x2c from
+// 0x791d70, +4 the texture), and the gear's eight pictures (sub_4d4080: "geaR", "geaN", "gea1" to
+// "gea6", eight bytes apart, records of 0x2c from 0x791c10).
+constexpr reg32 kShapeTextures = 0x4d4ae0;     // eax the shapes, edx and ebx two names, ecx the records; the format and an address on the stack
+constexpr reg32 kDashFirstShape = 0x53b704, kDashLastShape = 0x53b6fc;
+constexpr reg32 kDashTextures = 0x791d70;
+constexpr reg32 kShapeRecordBytes = 0x2c, kShapeRecordTexture = 4;
+constexpr reg32 kRecordData = 0x4f2460;        // eax a record: what it holds
+constexpr reg32 kShapeCount = 0x4ea654;        // eax the shapes: how many
+constexpr reg32 kShapeTexture = 0x4d4080;      // eax the shapes, edx a name, ebx 0x20, ecx the record; 3 on the stack
+constexpr reg32 kGearShapeNames = 0x53b70c, kGearShapeNameBytes = 8;
+constexpr reg32 kGearTextures = 0x791c10;
+constexpr reg32 kGearPictures = 8, kGearTextureSide = 0x20, kGearTextureKind = 3;
+constexpr reg32 kFindShape = 0x4ef1e0;         // eax the shapes, edx a name: the shape
+constexpr reg32 kShapePlace = 0xc;             // a shape's place: two 12-bit signed numbers
+constexpr reg32 kCabinGear = 0x55d6a4;         // whether the gear's pictures are loaded
+constexpr reg32 kCabinGearX = 0x55d69c, kCabinGearY = 0x55d6a0;
+
+// The gauges' twelve words of eight bytes, from the dash: the first the gauges' art's place (x and y
+// as 8.8 in the dash's textures), then the two needles.
+constexpr reg32 kCabinGauges = 0x792030, kCabinGaugesBytes = 0x60;
+constexpr reg32 kGaugesTexture = 0x7922e4;     // the dash's texture they are in
+constexpr reg32 kGaugesU = 0x7922d8, kGaugesV = 0x7922d4;
+constexpr reg32 kTexel = 0x53b75c;             // 1/256, a float
+constexpr reg32 kHalfTexel = 0x53b764;         // 1/512, a double
+
+// A needle's words: its pivot, its scale's two values (+0xc: the speedometer's in km/h, else mph)
+// and the dial's points they are at, x and y each.
+constexpr reg32 kNeedlePivotX = 0, kNeedlePivotY = 4, kNeedleKmh = 0xc;
+constexpr reg32 kNeedleLow = 0x10, kNeedleHigh = 0x14;
+constexpr reg32 kNeedleLowX = 0x18, kNeedleLowY = 0x1c, kNeedleHighX = 0x20, kNeedleHighY = 0x24;
+constexpr reg32 kCabinNeedle = 0x792040;       // the speedometer's
+constexpr reg32 kCabinOtherNeedle = 0x792068;  // the other's, its scale as it is
+constexpr reg32 kKmhToMetres = 0x53b74c, kMphToMetres = 0x53b750;  // 1/3.6 and 0.44704, floats
 constexpr reg32 kNeedleShown = 0x7922d0, kOtherNeedleShown = 0x7922e8;
 constexpr reg32 kAtan2 = 0x4ea9c0, kSquareRoot = 0x4ea920;  // a float on the stack each, onto the x87's stack
 constexpr reg32 kOneDown = 0x53b754;           // -1.0f
@@ -3611,398 +3364,432 @@ constexpr reg32 kHalfOfIt = 0x53b758;          // 0.5f
 namespace
 {
 
-/* An angle in turns brought into (0, 1]: one added while it is below 0, and
- * [kOneDown] while its bits are above 1.0's. */
-void angleIntoTurn(win32::WinApplication* app, x86::CPU& cpu, reg32 at)
+// Where a needle's results go: turns a unit, its turn at 0 and its length.
+struct NeedleSet
 {
-    while (!belowOrEqualAx(cpu, 0.0, x86::Float(app->getMemory<float>(at))))
-        app->getMemory<float>(at) = float(fp::add(1.0, x86::Float(app->getMemory<float>(at))));
+    reg32 slope, start, length;
+};
+constexpr NeedleSet kNeedleSet = {0x7922e0, 0x7922f4, 0x7922dc};
+constexpr NeedleSet kOtherNeedleSet = {0x7922ec, 0x7922f0, 0x7922f8};
+
+/* carstate::targetOfCamera (0x422bd0) of player 0: the player's car record. */
+std::optional<reg32> playerCar(App* app, CPU& cpu)
+{
+    const reg32 car = guest::direct<0x422bd0, carstate::targetOfCamera>(app, cpu, reg32(0));
+    if (cpu.terminate)
+        return std::nullopt;
+    return car;
 }
 
-void angleNotPastTurn(win32::WinApplication* app, x86::CPU& cpu, reg32 at)
+/* load::folderOf (0x4392b0): the name of car `number`'s folder. */
+std::optional<reg32> carFolderName(App* app, CPU& cpu, reg32 number)
 {
-    while (sreg32(guest::at(app, at)) > 0x3f800000)
-        app->getMemory<float>(at) = float(fp::add(x86::Float(app->getMemory<float>(at)),
-                                                      x86::Float(app->getMemory<float>(kOneDown))));
+    return guest::direct<0x4392b0, load::folderOf>(app, cpu, number);
+}
+
+/* ea::loadQuietly (0x4e0fe0): the file `name` loaded into a block of its own, 0 for none (edx
+ * the alignment, which it keeps: the code's after it). */
+std::optional<reg32> loadedQuietly(App* app, CPU& cpu, reg32 name)
+{
+    cpu.edx = kLoadAlignment;
+    return guest::direct<0x4e0fe0, ea::loadQuietly>(app, cpu, name, kLoadAlignment);
+}
+
+/* load::findEntry (0x4ea040): chunk `chunk` (its name) found in the archive at `archive`, its offset
+ * written at `offsetAt` and another word at `otherAt`; nonzero when found.  ebx and ecx as it
+ * leaves them, edx the chunk as the code hands it. */
+std::optional<reg32> chunkFound(App* app, CPU& cpu, reg32 archive, reg32 chunk, reg32 offsetAt, reg32 otherAt)
+{
+    cpu.edx = chunk;
+    const std::optional<load::BigEntry> found =
+        guest::direct<0x4ea040, load::findEntry>(app, cpu, archive, chunk, reg32(0), offsetAt, otherAt);
+    if (!found)
+        return std::nullopt;
+    cpu.ebx = found->entry;
+    cpu.ecx = found->last;
+    return found->name;
+}
+
+/* ea::packedSizeChecked (0x4f2710): the packed chunk at `chunk`'s bytes unpacked (ecx the chunk
+ * too, as the code has it there and on to the unpacking; ebx 0x10). */
+std::optional<reg32> unpackedBytes(App* app, CPU& cpu, reg32 chunk)
+{
+    cpu.ecx = chunk;
+    cpu.ebx = kUnpackAlignment;
+    return guest::direct<0x4f2710, ea::packedSizeChecked>(app, cpu, chunk);
+}
+
+/* ea::unpackChecked (0x4f2620): the packed chunk at `chunk` unpacked into `block` (edx it, as the
+ * code hands it). */
+bool unpacked(App* app, CPU& cpu, reg32 chunk, reg32 block)
+{
+    cpu.edx = block;
+    return guest::direct<0x4f2620, ea::unpackChecked>(app, cpu, chunk, block).has_value();
+}
+
+/* sub_4d4ae0 by address: the dash's textures from its `shapes`, in `format`, into kDashTextures'
+ * records; a record written at `recordAt`.  The textures, 0 for none. */
+std::optional<reg32> dashTextures(App* app, CPU& cpu, reg32 shapes, reg32 format, reg32 recordAt)
+{
+    cpu.ecx = kDashTextures;
+    cpu.ebx = kDashLastShape;
+    cpu.edx = kDashFirstShape;
+    cpu.eax = shapes;
+    if (!guest::call(app, cpu, kShapeTextures, {format, recordAt}))
+        return std::nullopt;
+    return cpu.eax;
+}
+
+/* sub_4f2460 by address: what the record at `record` holds. */
+std::optional<reg32> recordData(App* app, CPU& cpu, reg32 record)
+{
+    cpu.eax = record;
+    return game(app, cpu, kRecordData);
+}
+
+/* sub_4ea654 by address: how many shapes `shapes` has. */
+std::optional<reg32> shapeCount(App* app, CPU& cpu, reg32 shapes)
+{
+    cpu.eax = shapes;
+    return game(app, cpu, kShapeCount);
+}
+
+/* sub_4d4080 by address: the shape named at `name` of `shapes` made a texture into `record`. */
+bool shapeTexture(App* app, CPU& cpu, reg32 shapes, reg32 name, reg32 record)
+{
+    cpu.ecx = record;
+    cpu.ebx = kGearTextureSide;
+    cpu.edx = name;
+    cpu.eax = shapes;
+    return guest::call(app, cpu, kShapeTexture, {kGearTextureKind});
+}
+
+/* sub_4ef1e0 by address: the shape named at `name` of `shapes`. */
+std::optional<reg32> shapeNamed(App* app, CPU& cpu, reg32 shapes, reg32 name)
+{
+    cpu.edx = name;
+    cpu.eax = shapes;
+    return game(app, cpu, kFindShape);
+}
+
+/* sub_4ea9c0 by address (stdcall): the angle of (x, y) in turns, taken off the x87's stack as the
+ * float the code stores it as. */
+std::optional<float> angleOf(App* app, CPU& cpu, float y, float x)
+{
+    if (!guest::call(app, cpu, kAtan2, {bitsOf(y), bitsOf(x)}))
+        return std::nullopt;
+    const float angle = float(cpu.fpu.st(0));
+    cpu.fpu.count -= 1;
+    return angle;
+}
+
+/* sub_4ea920 by address (stdcall): the square root of `value`, taken off the x87's stack as it is. */
+std::optional<x86::Float> rootOf(App* app, CPU& cpu, float value)
+{
+    if (!guest::call(app, cpu, kSquareRoot, {bitsOf(value)}))
+        return std::nullopt;
+    const x86::Float root = cpu.fpu.st(0);
+    cpu.fpu.count -= 1;
+    return root;
+}
+
+/* An integer as the float fild and fstp make of it. */
+float floatOfInteger(sreg32 value)
+{
+    return float(x86::Float(value));
+}
+
+/* Whether the driver's texture memory and sizes take the dash's art: more than 4 MB (2 MB, or any,
+ * by +0x74's flags; Direct3D's two words together first), and 256 within the widths and the heights
+ * it takes.  On Direct3D's way ebx and ecx as the code leaves them: the two words, and their sum. */
+bool cabinArtTaken(App* app, CPU& cpu, reg32 about, reg8 driver)
+{
+    bool enough = (driver & kDriverSoftware) || (byte(app, about + kAboutAnyWillDo) & 0x80);
+    if (!enough && (driver & kDriverDirect3d))
+    {
+        cpu.ebx = at(app, about + kAboutTextureBytes);
+        cpu.ecx = at(app, about + kAboutMoreBytes) + cpu.ebx;
+        enough = sreg32(cpu.ecx) > kCabinBytes;
+    }
+    if (!enough)
+        enough = ((byte(app, about + kAboutMoreBytes) & 1) && sreg32(at(app, about + kAboutTextureBytes)) > kCabinBytesWithFlag)
+                 || sreg32(at(app, about + kAboutTextureBytes)) > kCabinBytes;
+    return enough && sreg32(at(app, about + kAboutWidestLeast)) <= kCabinArtSide
+           && sreg32(at(app, about + kAboutWidestMost)) >= kCabinArtSide
+           && sreg32(at(app, about + kAboutHighestLeast)) <= kCabinArtSide
+           && sreg32(at(app, about + kAboutHighestMost)) >= kCabinArtSide;
+}
+
+/* The gear's pictures, for a dash of more than two shapes: the eight textures (kCabinGear set
+ * before the first), and the place of the first (its shape's 12-bit x and y) as floats; else
+ * kCabinGear 0. */
+bool gearLoaded(App* app, CPU& cpu, reg32 shapes)
+{
+    const std::optional<reg32> count = shapeCount(app, cpu, shapes);
+    if (!count)
+        return false;
+    if (sreg32(*count) <= 2)
+    {
+        put(app, kCabinGear, 0);
+        return true;
+    }
+    for (reg32 gear = 0; gear < kGearPictures; ++gear)
+    {
+        if (gear == 0)
+            put(app, kCabinGear, 1);
+        if (!shapeTexture(app, cpu, shapes, kGearShapeNames + kGearShapeNameBytes * gear,
+                          kGearTextures + kShapeRecordBytes * gear))
+            return false;
+    }
+    const std::optional<reg32> shape = shapeNamed(app, cpu, shapes, kGearShapeNames);
+    if (!shape)
+        return false;
+    const reg32 place = at(app, *shape + kShapePlace);
+    putFloat(app, kCabinGearX, floatOfInteger(sreg32(place << 20) >> 20));
+    putFloat(app, kCabinGearY, floatOfInteger(sreg32(place << 4) >> 20));
+    return true;
+}
+
+/* Whether a needle moves: its two points differ.  1 or 0. */
+reg32 needleShown(App* app, reg32 needle)
+{
+    return at(app, needle + kNeedleLowX) != at(app, needle + kNeedleHighX)
+                   || at(app, needle + kNeedleLowY) != at(app, needle + kNeedleHighY)
+               ? 1
+               : 0;
+}
+
+/* One added to an angle in turns while it is below 0: fldz and fcom's "above", which a C++ compare
+ * gives on every value, NaN (never) and -0 (equal) too. */
+float upFromBelow(float turn)
+{
+    while (0.0f > turn)
+        turn = float(fp::add(1.0, turn));
+    return turn;
+}
+
+/* [kOneDown] added while its bits are above 1.0's as integers -- the code's compare, kept: it loops
+ * on a NaN or an infinity of the plus sign as the code does. */
+float downFromAbove(App* app, float turn)
+{
+    while (sreg32(bitsOf(turn)) > 0x3f800000)
+        turn = float(fp::add(turn, x86::Float(floatAt(app, kOneDown))));
+    return turn;
+}
+
+/* The pivot to one of a needle's points, x or y: the integers' difference. */
+sreg32 fromPivot(App* app, reg32 needle, reg32 point, reg32 pivot)
+{
+    return sreg32(at(app, needle + point) - at(app, needle + pivot));
+}
+
+struct NeedleTurns
+{
+    float low, high;
+};
+
+/* A needle's angles at its two points (atan2 of each against the pivot, the low's first), each
+ * brought into [0, 1]. */
+std::optional<NeedleTurns> needleTurns(App* app, CPU& cpu, reg32 needle)
+{
+    const float lowX = floatOfInteger(fromPivot(app, needle, kNeedleLowX, kNeedlePivotX));
+    const float lowY = floatOfInteger(fromPivot(app, needle, kNeedleLowY, kNeedlePivotY));
+    const std::optional<float> low = angleOf(app, cpu, lowY, lowX);
+    if (!low)
+        return std::nullopt;
+    const float highX = floatOfInteger(fromPivot(app, needle, kNeedleHighX, kNeedlePivotX));
+    const float highY = floatOfInteger(fromPivot(app, needle, kNeedleHighY, kNeedlePivotY));
+    const std::optional<float> high = angleOf(app, cpu, highY, highX);
+    if (!high)
+        return std::nullopt;
+    NeedleTurns turns = {upFromBelow(*low), upFromBelow(*high)};
+    turns.low = downFromAbove(app, turns.low);
+    turns.high = downFromAbove(app, turns.high);
+    return turns;
+}
+
+/* A needle set from its scale's values `low` and `high` and its turns there: the high's turn put
+ * past the low's the way the scale runs (fcom's CF: below, or either NaN), then the turns a unit,
+ * the turn at 0 and its length, the mean of the pivot's distances to its two points.  The x87's
+ * operations as the code does them, each float stored where it stores one. */
+bool needleSet(App* app, CPU& cpu, reg32 needle, NeedleTurns turns, float low, float high, const NeedleSet& set)
+{
+    if (belowOrUnordered(low, high))
+    {
+        if (belowOrUnordered(turns.high, turns.low))
+            turns.high = float(fp::add(1.0, turns.high));
+    }
+    else if (belowOrUnordered(turns.low, turns.high))
+        turns.low = float(fp::add(1.0, turns.low));
+    const x86::Float turn = fp::sub(turns.high, turns.low);
+    const x86::Float span = fp::sub(high, low);
+    const x86::Float perUnit = fp::div(turn, span);
+    const x86::Float lowX = x86::Float(fromPivot(app, needle, kNeedleLowX, kNeedlePivotX));
+    const x86::Float lowXSquared = fp::mul(lowX, lowX);
+    const x86::Float lowY = x86::Float(fromPivot(app, needle, kNeedleLowY, kNeedlePivotY));
+    const x86::Float lowYSquared = fp::mul(lowY, lowY);
+    const float slope = float(perUnit);
+    putFloat(app, set.slope, slope);
+    const x86::Float atHigh = fp::mul(high, slope);
+    const float highX = floatOfInteger(fromPivot(app, needle, kNeedleHighX, kNeedlePivotX));
+    const float lowSquared = float(fp::add(lowXSquared, lowYSquared));
+    const float highY = floatOfInteger(fromPivot(app, needle, kNeedleHighY, kNeedlePivotY));
+    putFloat(app, set.start, float(fp::sub(turns.high, atHigh)));
+    const std::optional<x86::Float> lowLength = rootOf(app, cpu, lowSquared);
+    if (!lowLength)
+        return false;
+    const float highSquared = float(fp::add(fp::mul(highX, highX), fp::mul(highY, highY)));
+    const float lowLengthStored = float(*lowLength);
+    const std::optional<x86::Float> highLength = rootOf(app, cpu, highSquared);
+    if (!highLength)
+        return false;
+    putFloat(app, set.length,
+             float(fp::mul(fp::add(*highLength, lowLengthStored), x86::Float(floatAt(app, kHalfOfIt)))));
+    return true;
+}
+
+/* The two needles, each when it moves: the speedometer's, its scale in km/h or mph made metres a
+ * second (before its turns), and the other's, its scale as it is (after). */
+bool needlesSet(App* app, CPU& cpu)
+{
+    const reg32 shown = needleShown(app, kCabinNeedle);
+    put(app, kNeedleShown, shown);
+    if (shown != 0)
+    {
+        const x86::Float toMetres =
+            floatAt(app, at(app, kCabinNeedle + kNeedleKmh) != 0 ? kKmhToMetres : kMphToMetres);
+        const float high = float(fp::mul(x86::Float(sreg32(at(app, kCabinNeedle + kNeedleHigh))), toMetres));
+        const float low = float(fp::mul(toMetres, x86::Float(sreg32(at(app, kCabinNeedle + kNeedleLow)))));
+        const std::optional<NeedleTurns> turns = needleTurns(app, cpu, kCabinNeedle);
+        if (!turns || !needleSet(app, cpu, kCabinNeedle, *turns, low, high, kNeedleSet))
+            return false;
+    }
+    const reg32 otherShown = needleShown(app, kCabinOtherNeedle);
+    put(app, kOtherNeedleShown, otherShown);
+    if (otherShown != 0)
+    {
+        const std::optional<NeedleTurns> turns = needleTurns(app, cpu, kCabinOtherNeedle);
+        if (!turns)
+            return false;
+        const float high = floatOfInteger(sreg32(at(app, kCabinOtherNeedle + kNeedleHigh)));
+        const float low = floatOfInteger(sreg32(at(app, kCabinOtherNeedle + kNeedleLow)));
+        if (!needleSet(app, cpu, kCabinOtherNeedle, *turns, low, high, kOtherNeedleSet))
+            return false;
+    }
+    return true;
+}
+
+/* The gauges' art: its texture and its place in it (the first two words, 8.8: the whole and the
+ * fraction as the compiler's division by 256 makes them, as idiv's, toward zero), half a texel in.
+ * The y's whole, what the code leaves in eax. */
+reg32 gaugesPlaced(App* app)
+{
+    const sreg32 x = sreg32(at(app, kCabinGauges)), y = sreg32(at(app, kCabinGauges + 4));
+    const reg32 texture = reg32(x / 0x100) * 2 + reg32(y / 0x100);
+    put(app, kGaugesTexture, at(app, kDashTextures + kShapeRecordTexture + kShapeRecordBytes * texture));
+    const x86::Float texel = floatAt(app, kTexel);
+    const x86::Float u = fp::mul(x86::Float(x % 0x100), texel);
+    const x86::Float v = fp::mul(texel, x86::Float(y % 0x100));
+    const x86::Float halfTexel = x86::Float(app->getMemory<double>(kHalfTexel));
+    putFloat(app, kGaugesU, float(fp::add(u, halfTexel)));
+    putFloat(app, kGaugesV, float(fp::add(halfTexel, v)));
+    return reg32(y / 0x100);
 }
 
 }  // namespace
 
-/* 0x488a80: the cabin's instruments loaded for the car (its file, 0x53b6dc
- * with the car's name, chunk 0x53b6ec unpacked): its textures (sub_4d4ae0,
- * 1555 on softtria, 4444 otherwise), the gauges' twelve words, the digits'
- * place if it has them; and for each of its two needles that moves, the
- * turn between its zero and its full scale (atan2 of each against the
- * pivot, both into one turn and the full past the zero), the length of the
- * needle (the mean of the two distances) and where it starts.  Only where
- * the driver's texture memory and sizes take the cabin's art, and not in a
- * network race. */
-void loadCabinInstruments(win32::WinApplication* app, x86::CPU& cpu)
+/* 0x488a80's core: the cabin's instruments loaded for the car -- but with no cabin, in a network
+ * race, or where the driver's texture memory and sizes do not take its art: the dash's chunk
+ * unpacked from the car's archive, its textures (1555 on softtria, 4444 otherwise), the gauges'
+ * twelve words, the gear's pictures if it has them; each needle that moves set; and the gauges'
+ * art placed when either does.  The archive's name and the two words sub_4ea040 and sub_4d4ae0
+ * write in the frame, as deep as the code has it; the registers at each call as the code has them.
+ * eax as the code leaves it: THRASH_about's, the last call's, 0 with neither needle, else the
+ * gauges' y's whole. */
+bool cabinInstrumentsLoaded(App* app, CPU& cpu)
 {
-    push(app, cpu, cpu.ebx);
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.edx);
-    push(app, cpu, cpu.esi);
-    push(app, cpu, cpu.edi);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    cpu.esp -= 0x144;
-    const reg32 ebp = cpu.ebp;
-    auto& fpu = cpu.fpu;
-    auto local = [&](reg32 offset) { return at(app, ebp - offset); };
-    auto setLocal = [&](reg32 offset, reg32 value) { put(app, ebp - offset, value); };
-    auto floatAt = [&](reg32 address) { return x86::Float(app->getMemory<float>(address)); };
-    auto setFloat = [&](reg32 address, x86::Float value) { app->getMemory<float>(address) = float(value); };
-    auto done = [&]() {
-        cpu.esp = cpu.ebp;
-        cpu.ebp = pop(app, cpu);
-        cpu.edi = pop(app, cpu);
-        cpu.esi = pop(app, cpu);
-        cpu.edx = pop(app, cpu);
-        cpu.ecx = pop(app, cpu);
-        cpu.ebx = pop(app, cpu);
-        cpu.esp += 4;
-    };
-    // [ebp-4] set and fild'ed into a float pushed for a call.
-    auto pushInteger = [&](reg32 value) {
-        setLocal(4, value);
-        cpu.esp -= 4;
-        app->getMemory<float>(cpu.esp) = float(x86::Float(sreg32(local(4))));
-    };
-    if (!byAddress(app, cpu, at(app, kThrashAbout)))
-        return;
-    cpu.edx = 0;
-    put(app, kCabinTextures, cpu.edx);
-    cpu.dl = byte(app, kCabinFlags);
-    cpu.esi = cpu.eax;
-    if ((cpu.dl & 0x20) || at(app, kGameMode) == 1)
-        return done();
-    cpu.dh = byte(app, kDriverFlags);
-    // The texture memory the cabin's art wants: more than 4 MB (2 MB on one
-    // TMU), or Direct3D's both TMUs together.
-    bool enough = (cpu.dh & 6) || (byte(app, cpu.eax + 0x75) & 0x80);
-    if (!enough && (cpu.dh & 0x40))
-    {
-        cpu.ebx = at(app, cpu.eax + 0x70);
-        cpu.ecx = at(app, cpu.eax + 0x74) + cpu.ebx;
-        enough = sreg32(cpu.ecx) > 0x400000;
-    }
-    if (!enough)
-        enough = ((byte(app, cpu.eax + 0x74) & 1) && sreg32(at(app, cpu.eax + 0x70)) > 0x200000)
-                 || sreg32(at(app, cpu.eax + 0x70)) > 0x400000;
-    if (!enough || sreg32(at(app, cpu.eax + 0x10)) > 0x100 || sreg32(at(app, cpu.eax + 0x14)) < 0x100
-        || sreg32(at(app, cpu.eax + 0x1c)) > 0x100 || sreg32(at(app, cpu.eax + 0x20)) < 0x100)
-        return done();
-    // The car's cabin file.
-    cpu.eax = 0;
-    if (!byAddress(app, cpu, 0x422bd0))
-        return;
-    cpu.eax = at(app, at(app, cpu.eax + 0x220) + 0x14);
-    if (!byAddress(app, cpu, 0x4392b0))
-        return;
-    push(app, cpu, cpu.eax);
-    push(app, cpu, 0x7a28b4);
-    push(app, cpu, 0x53b6dc);
-    cpu.eax = ebp - 0x144;
-    push(app, cpu, cpu.eax);
-    if (!byAddress(app, cpu, kSprintf))
-        return;
-    cpu.esp += 0x10;
-    cpu.eax = ebp - 0x144;
-    if (!byAddress(app, cpu, kFileExists))
-        return;
-    if (cpu.eax == 0)
-        return done();
-    cpu.edx = 0x10;
-    cpu.eax = ebp - 0x144;
-    if (!byAddress(app, cpu, 0x4e0fe0))
-        return;
-    cpu.esi = cpu.eax;
-    if (cpu.eax == 0)
-        return done();
-    cpu.eax = ebp - 0x34;
-    cpu.ecx = ebp - 0x38;
-    cpu.edx = 0x53b6ec;
-    push(app, cpu, cpu.eax);
-    cpu.ebx = 0;
-    cpu.eax = cpu.esi;
-    if (!byAddress(app, cpu, 0x4ea040))
-        return;
-    if (cpu.eax == 0)
-    {
-        cpu.eax = cpu.esi;
-        if (!byAddress(app, cpu, kFree))
-            return;
-        return done();
-    }
-    cpu.ecx = local(0x38) + cpu.esi;
-    cpu.eax = cpu.ecx;
-    cpu.ebx = 0x10;
-    if (!byAddress(app, cpu, 0x4f2710))
-        return;
-    cpu.edx = cpu.eax;
-    cpu.eax = 0x53b6f8;
-    if (!byAddress(app, cpu, kAllocate))
-        return;
-    cpu.edi = cpu.eax;
-    setLocal(0x14, cpu.eax);
-    if (cpu.eax == 0)
-    {
-        cpu.eax = cpu.esi;
-        if (!byAddress(app, cpu, kFree))
-            return;
-        return done();
-    }
-    cpu.edx = cpu.eax;
-    cpu.eax = cpu.ecx;
-    if (!byAddress(app, cpu, 0x4f2620))
-        return;
-    cpu.eax = cpu.esi;
-    if (!byAddress(app, cpu, kFree))
-        return;
-    // Its textures, and the gauges' words.
-    cpu.eax = ebp - 0x40;
-    push(app, cpu, cpu.eax);
-    cpu.ecx = 0x791d70;
-    cpu.ebx = 0x53b6fc;
-    push(app, cpu, (byte(app, kDriverFlags) & kDriverSofttria) ? 3 : 7);
-    cpu.edx = 0x53b704;
-    cpu.eax = cpu.edi;
-    if (!byAddress(app, cpu, 0x4d4ae0))
-        return;
-    put(app, kCabinTextures, cpu.eax);
-    cpu.eax = local(0x40);
-    if (!byAddress(app, cpu, 0x4f2460))
-        return;
-    cpu.ecx = cpu.eax;
-    for (cpu.eax = 0; sreg32(cpu.eax) < 0xc;)
-    {
-        cpu.esi = cpu.eax * 8;
-        cpu.edx = cpu.ecx + cpu.esi;
-        cpu.edi = cpu.esi + kCabinGauges;
-        cpu.esi = cpu.edx;
-        ++cpu.eax;
-        movsd(app, cpu);
-        movsd(app, cpu);
-    }
-    // The digits, for a cabin with more than two pictures.
-    cpu.eax = local(0x14);
-    if (!byAddress(app, cpu, 0x4ea654))
-        return;
-    if (sreg32(cpu.eax) <= 2)
-    {
-        cpu.eax = 0;
-        put(app, kCabinDigits, cpu.eax);
-    }
-    else
-    {
-        cpu.edi = 1;
-        for (reg32 digit = 0; digit < 8; ++digit)
-        {
-            push(app, cpu, 3);
-            cpu.ecx = 0x791c10 + 0x2c * digit;
-            cpu.ebx = 0x20;
-            cpu.edx = 0x53b70c + 8 * digit;
-            cpu.eax = local(0x14);
-            if (digit == 0)
-                put(app, kCabinDigits, cpu.edi);
-            if (!byAddress(app, cpu, 0x4d4080))
-                return;
-        }
-        cpu.edx = 0x53b70c;
-        cpu.eax = local(0x14);
-        if (!byAddress(app, cpu, 0x4ef1e0))
-            return;
-        setLocal(0x40, cpu.eax);
-        // Its place: two 12-bit signed numbers in the picture's +0xc.
-        cpu.edx = reg32(sreg32(at(app, cpu.eax + 0xc) << 20) >> 20);
-        cpu.eax = reg32(sreg32(at(app, cpu.eax + 0xc) << 4) >> 20);
-        setLocal(4, cpu.edx);
-        const x86::Float x = x86::Float(sreg32(local(4)));
-        setLocal(4, cpu.eax);
-        setFloat(kCabinDigitsX, x);
-        setFloat(kCabinDigitsY, x86::Float(sreg32(local(4))));
-    }
-    cpu.eax = local(0x14);
-    if (!byAddress(app, cpu, kFree))
-        return;
-    // The needles: each one's turn, length and start, when it moves.
-    struct Needle
-    {
-        reg32 points, shown, slope, start, length;
-    };
-    auto needle = [&](const Needle& n, bool first) {
-        // Whether its zero and its full scale differ.
-        if (first)
-        {
-            cpu.eax = at(app, n.points + 0x18);
-            if (cpu.eax != at(app, n.points + 0x20))
-                cpu.eax = 1;
-            else
-            {
-                cpu.ecx = at(app, n.points + 0x24);
-                cpu.eax = at(app, n.points + 0x1c);
-                cpu.eax = cpu.eax != cpu.ecx ? 1 : cpu.eax ^ cpu.ecx;
-            }
-        }
-        else
-        {
-            cpu.esi = at(app, n.points + 0x20);
-            if (cpu.esi != at(app, n.points + 0x18))
-                cpu.eax = 1;
-            else
-            {
-                cpu.edi = at(app, n.points + 0x24);
-                cpu.eax = at(app, n.points + 0x1c);
-                cpu.eax = cpu.eax != cpu.edi ? 1 : cpu.eax ^ cpu.edi;
-            }
-        }
-        put(app, n.shown, cpu.eax);
-        if (cpu.eax == 0)
-            return true;
-        // The first needle's scale: the picture's size by a factor of two kinds.
-        const reg32 slope = first ? 0x1c : 0x10, other = first ? 0x24 : 0x28;
-        const reg32 low = first ? 0x18 : 0x10, high = first ? 8 : 0xc;
-        if (first)
-        {
-            const x86::Float factor = floatAt(at(app, 0x79204c) != 0 ? 0x53b74c : 0x53b750);
-            fpu.count += 1;
-            fpu.st(0) = factor;
-            const x86::Float scaled = fp::mul(x86::Float(sreg32(at(app, 0x792054))), fpu.st(0));
-            const x86::Float scaledOther = fp::mul(fpu.st(0), x86::Float(sreg32(at(app, 0x792050))));
-            setFloat(ebp - 0x1c, scaled);
-            setFloat(ebp - 0x24, scaledOther);
-        }
-        else
-        {
-            const x86::Float a = x86::Float(sreg32(at(app, 0x79207c)));
-            const x86::Float b = x86::Float(sreg32(at(app, 0x792078)));
-            setFloat(ebp - 0x28, b);
-            setFloat(ebp - 0x20, a);
-        }
-        // atan2 of the zero, then of the full scale, against the pivot.
-        cpu.eax = at(app, n.points + 0x18);
-        (first ? cpu.esi : cpu.edx) = at(app, n.points);
-        cpu.eax -= at(app, n.points);
-        pushInteger(cpu.eax);
-        cpu.eax = at(app, n.points + 0x1c);
-        (first ? cpu.edi : cpu.ecx) = at(app, n.points + 4);
-        cpu.eax -= at(app, n.points + 4);
-        pushInteger(cpu.eax);
-        if (first)
-            fpu.count -= 1;                      // fstp st(0): the factor
-        if (!byAddress(app, cpu, kAtan2))
-            return false;
-        cpu.eax = at(app, n.points + 0x20);
-        (first ? cpu.edx : cpu.ebx) = at(app, n.points);
-        cpu.eax -= at(app, n.points);
-        pushInteger(cpu.eax);
-        cpu.eax = at(app, n.points + 0x24);
-        (first ? cpu.ecx : cpu.esi) = at(app, n.points + 4);
-        cpu.eax -= at(app, n.points + 4);
-        pushInteger(cpu.eax);
-        setFloat(ebp - low, fpu.st(0));
-        fpu.count -= 1;
-        if (!byAddress(app, cpu, kAtan2))
-            return false;
-        setFloat(ebp - high, fpu.st(0));
-        fpu.count -= 1;
-        angleIntoTurn(app, cpu, ebp - low);
-        angleIntoTurn(app, cpu, ebp - high);
-        angleNotPastTurn(app, cpu, ebp - low);
-        angleNotPastTurn(app, cpu, ebp - high);
-        // The full scale past the zero, the way the picture's scale runs.
-        const reg32 from = first ? 0x24 : 0x28, to = first ? 0x1c : 0x20;
-        if (belowAx(cpu, floatAt(ebp - from), floatAt(ebp - to)))
-        {
-            if (belowAx(cpu, floatAt(ebp - high), floatAt(ebp - low)))
-                setFloat(ebp - high, fp::add(1.0, floatAt(ebp - high)));
-        }
-        else if (belowAx(cpu, floatAt(ebp - low), floatAt(ebp - high)))
-            setFloat(ebp - low, fp::add(1.0, floatAt(ebp - low)));
-        // The slope, the start, and the two distances.
-        const x86::Float highTurn = floatAt(ebp - high);
-        const x86::Float turn = fp::sub(highTurn, floatAt(ebp - low));
-        const x86::Float scaleTo = floatAt(ebp - to);
-        const x86::Float scaleSpan = fp::sub(scaleTo, floatAt(ebp - from));
-        const x86::Float perUnit = fp::div(turn, scaleSpan);
-        cpu.eax = at(app, n.points + 0x18);
-        reg32& pivotX = first ? cpu.edi : cpu.ecx;
-        reg32& pivotY = first ? cpu.edx : cpu.ebx;
-        pivotX = at(app, n.points);
-        cpu.eax -= pivotX;
-        pivotY = at(app, n.points + 4);
-        setLocal(4, cpu.eax);
-        cpu.eax = at(app, n.points + 0x1c);
-        const x86::Float dx = x86::Float(sreg32(local(4)));
-        cpu.eax -= pivotY;
-        setLocal(4, cpu.eax);
-        const x86::Float dx2 = fp::mul(dx, dx);
-        const x86::Float dy = x86::Float(sreg32(local(4)));
-        cpu.eax = at(app, n.points + 0x20);
-        const x86::Float dy2 = fp::mul(dy, dy);
-        cpu.eax -= pivotX;
-        setFloat(n.slope, perUnit);
-        const x86::Float offset = fp::mul(scaleTo, floatAt(n.slope));
-        setLocal(4, cpu.eax);
-        cpu.esp -= 4;
-        const x86::Float fullX = x86::Float(sreg32(local(4)));
-        cpu.eax = at(app, n.points + 0x24);
-        setFloat(ebp - 0x2c, fullX);
-        cpu.eax -= pivotY;
-        const x86::Float zeroSquared = fp::add(dx2, dy2);
-        setLocal(4, cpu.eax);
-        app->getMemory<float>(cpu.esp) = float(zeroSquared);
-        const x86::Float fullY = x86::Float(sreg32(local(4)));
-        setFloat(n.start, fp::sub(highTurn, offset));
-        setFloat(ebp - 0x3c, fullY);
-        if (!byAddress(app, cpu, kSquareRoot))
-            return false;
-        const x86::Float fullSquared =
-            fp::add(fp::mul(floatAt(ebp - 0x2c), floatAt(ebp - 0x2c)), fp::mul(floatAt(ebp - 0x3c), floatAt(ebp - 0x3c)));
-        cpu.esp -= 4;
-        app->getMemory<float>(cpu.esp) = float(fullSquared);
-        setFloat(ebp - 4, fpu.st(0));
-        fpu.count -= 1;
-        if (!byAddress(app, cpu, kSquareRoot))
-            return false;
-        setFloat(n.length, fp::mul(fp::add(fpu.st(0), floatAt(ebp - 4)), floatAt(kHalfOfIt)));
-        fpu.count -= 1;
+    const GuestFrame frame(cpu, 0x18, 0x144);
+    const reg32 archiveName = frame - 0x144, otherAt = frame - 0x34, offsetAt = frame - 0x38;
+    const reg32 recordAt = frame - 0x40;
+    const std::optional<reg32> about = thrash(app, cpu, kThrashAbout);
+    if (!about)
+        return false;
+    put(app, kCabinTextures, 0);
+    const reg8 cabin = byte(app, kCabinFlags);
+    if ((cabin & kNoCabin) || gameSettings(app).playMode == 1)
         return true;
-    };
-    if (!needle({kCabinNeedle, kNeedleShown, 0x7922e0, 0x7922f4, 0x7922dc}, true)
-        || !needle({kCabinOtherNeedle, kOtherNeedleShown, 0x7922ec, 0x7922f0, 0x7922f8}, false))
-        return;
+    const reg8 driver = byte(app, kDriverFlags);
+    cpu.edx = cabin | reg32(driver) << 8;  // the two bytes, as the code has edx at the next calls
+    if (!cabinArtTaken(app, cpu, *about, driver))
+        return true;
+    const std::optional<reg32> car = playerCar(app, cpu);
+    if (!car)
+        return false;
+    const std::optional<reg32> carName = carFolderName(app, cpu, at(app, at(app, *car + kCarModel) + kCarModelNumber));
+    if (!carName)
+        return false;
+    cpu.eax = archiveName;
+    if (!guest::call(app, cpu, kSprintf, {archiveName, kCabinArchiveName, kCarsFolder, *carName}))
+        return false;
+    const std::optional<bool> exists = guest::direct<0x4e0e60, ea::fileThere>(app, cpu, archiveName);
+    if (!exists)
+        return false;
+    if (!*exists)
+        return true;
+    const std::optional<reg32> archive = loadedQuietly(app, cpu, archiveName);
+    if (!archive)
+        return false;
+    if (*archive == 0)
+        return true;
+    const std::optional<reg32> found = chunkFound(app, cpu, *archive, kDashChunk, offsetAt, otherAt);
+    if (!found)
+        return false;
+    if (*found == 0)
+        return release(app, cpu, *archive);
+    const reg32 chunk = at(app, offsetAt) + *archive;
+    const std::optional<reg32> bytes = unpackedBytes(app, cpu, chunk);
+    if (!bytes)
+        return false;
+    const std::optional<reg32> shapes = allocate(app, cpu, kDashTag, *bytes);
+    if (!shapes)
+        return false;
+    if (*shapes == 0)
+        return release(app, cpu, *archive);
+    if (!unpacked(app, cpu, chunk, *shapes) || !release(app, cpu, *archive))
+        return false;
+    // Its textures, and the gauges' words.
+    const reg32 format = (byte(app, kDriverFlags) & kDriverSofttria) ? kFormat1555 : kFormat4444;
+    const std::optional<reg32> textures = dashTextures(app, cpu, *shapes, format, recordAt);
+    if (!textures)
+        return false;
+    put(app, kCabinTextures, *textures);
+    const std::optional<reg32> gauges = recordData(app, cpu, at(app, recordAt));
+    if (!gauges)
+        return false;
+    // The code's movsd's, two a gauge, the direction flag clear as Watcom's code has it.
+    for (reg32 offset = 0; offset < kCabinGaugesBytes; offset += 4)
+        put(app, kCabinGauges + offset, at(app, *gauges + offset));
+    cpu.ecx = *gauges;  // as the copy leaves them at the next call
+    cpu.edx = *gauges + kCabinGaugesBytes - 8;
+    if (!gearLoaded(app, cpu, *shapes) || !release(app, cpu, *shapes) || !needlesSet(app, cpu))
+        return false;
     if (at(app, kNeedleShown) == 0 && at(app, kOtherNeedleShown) == 0)
-        return done();
-    // The gauges' first two words, as 8.8: their texture and their place.
-    auto towardsZero256 = [](reg32 value) { return reg32(sreg32(value + (sreg32(value) < 0 ? 0xff : 0)) >> 8); };
-    cpu.eax = towardsZero256(at(app, kCabinGauges));
-    cpu.edx = sreg32(at(app, kCabinGauges)) < 0 ? 0xffffff00 : 0;
-    cpu.ecx = cpu.eax * 2;
-    cpu.eax = towardsZero256(at(app, kCabinGauges + 4));
-    cpu.edx = sreg32(at(app, kCabinGauges + 4)) < 0 ? 0xffffff00 : 0;
-    cpu.ecx += cpu.eax;
-    cpu.eax = cpu.ecx * 0xb;
-    cpu.eax = at(app, 0x791d74 + cpu.eax * 4);
-    put(app, 0x7922e4, cpu.eax);
-    auto divide256 = [&](reg32 value) {
-        const x86::sreg64 n = x86::sreg64(sreg32(value));
-        cpu.eax = reg32(n / 0x100);
-        cpu.edx = reg32(n % 0x100);
-    };
-    cpu.ecx = 0x100;
-    divide256(at(app, kCabinGauges));
-    setLocal(4, cpu.edx);
-    divide256(at(app, kCabinGauges + 4));
-    const x86::Float unit = floatAt(0x53b75c);
-    const x86::Float u = fp::mul(x86::Float(sreg32(local(4))), unit);
-    setLocal(4, cpu.edx);
-    const x86::Float v = fp::mul(unit, x86::Float(sreg32(local(4))));
-    const x86::Float bias = x86::Float(app->getMemory<double>(0x53b764));
-    setFloat(0x7922d8, fp::add(u, bias));
-    setFloat(0x7922d4, fp::add(bias, v));
-    done();
+    {
+        cpu.eax = 0;  // the other needle's flag
+        return true;
+    }
+    cpu.eax = gaugesPlaced(app);
+    return true;
+}
+
+/* 0x488a80: cabinInstrumentsLoaded; every register but eax as the caller had it. */
+void loadCabinInstruments(App* app, CPU& cpu)
+{
+    const Kept kept(cpu, kEbx | kEcx | kEdx | kEsi | kEdi);
+    if (!cabinInstrumentsLoaded(app, cpu))
+        return;
+    kept.back(cpu);
+    cpu.esp += 4;
 }
 
 /* ---- A message in the HUD ---- */
@@ -4012,105 +3799,81 @@ constexpr reg32 kHudBoxTexture = 0x749a38, kHudFlashTexture = 0x8b4844;
 constexpr reg32 kHudTextScale = 0x791b50;
 constexpr reg32 kHalf = 0x53b5e8, kHalfAgain = 0x53b5ec;  // 0.5f each
 
-/* 0x482940: player eax's message box in the HUD, text edx: its three quads
- * (textured with [0x749a38]), the text centred in it in white at the HUD's
- * scale, then the flashing bar over it (one of two quads by the clock's
- * half second, blended, [0x8b4844]). */
-void hudMessageBox(win32::WinApplication* app, x86::CPU& cpu)
+/* setSoftwareBlendColour as the code calls it: colour eax, ebx, ecx and edx kept. */
+bool blendColourKept(App* app, CPU& cpu, reg32 colour)
 {
-    push(app, cpu, cpu.ebx);
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.esi);
-    push(app, cpu, cpu.edi);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    cpu.esp -= 0x10;
-    auto& fpu = cpu.fpu;
-    auto loadFloat = [&](reg32 address) { return x86::Float(app->getMemory<float>(address)); };
-    auto quad = [&](reg32 first) {
-        for (reg32 corner = 3; corner < 4; --corner)
-        {
-            cpu.eax = first + corner * kCornerBytes;
-            push(app, cpu, cpu.eax);
-        }
-        return byAddress(app, cpu, at(app, kThrashDrawQuad));
+    const Kept kept(cpu, kEbx | kEcx | kEdx);
+    cpu.eax = colour;
+    if (!softwareBlendColour(app, cpu, colour))
+        return false;
+    kept.back(cpu);
+    return true;
+}
+
+// A player's HUD box: three quads, then the flashing bar's two (kCornerBytes a corner, four a quad).
+constexpr reg32 kHudBoxBytes = 0x280, kHudQuadBytes = 0x80, kHudBarFirst = 0x180, kHudBarSecond = 0x200;
+constexpr reg32 kHudTextFont = 0x44;
+constexpr reg32 kWhite = 0xffffffff;
+
+/* 0x482940's core: player `player`'s message box in the HUD, `text` in it: its three quads (textured
+ * with [0x749a38]), the text centred in it in white at the HUD's scale, then the flashing bar over
+ * it (one of two quads by the clock's half second, blended, [0x8b4844]).  The x87's operations as
+ * the code does them, each float stored where it stores one; the registers at each call as the code
+ * has them.  eax as the last state's answer leaves it. */
+bool messageBox(App* app, CPU& cpu, reg32 player, reg32 text)
+{
+    const reg32 box = kHudBoxes + player * kHudBoxBytes;
+    const auto quad = [&](reg32 first) {
+        cpu.eax = first;
+        return thrash(app, cpu, kThrashDrawQuad,
+                      {first, first + kCornerBytes, first + 2 * kCornerBytes, first + 3 * kCornerBytes})
+            .has_value();
     };
-    cpu.edi = cpu.edx;
-    cpu.esi = kHudBoxes + cpu.eax * 0x280;
-    cpu.edx = at(app, kHudBoxTexture);
-    cpu.eax = thrash::kStateTexture;
-    if (!direct(app, cpu, setRenderState) || !quad(cpu.esi) || !quad(cpu.esi + 0x80) || !quad(cpu.esi + 0x100))
-        return;
-    push(app, cpu, at(app, kHudTextScale));
-    if (!byAddress(app, cpu, kSetTextScale))
-        return;
-    // fild the mode's width, fstp st(0) the scale, fstp it as a float.
-    cpu.edx = 0xffffffff;
-    app->getMemory<float>(cpu.ebp - 8) = float(x86::Float(sreg32(at(app, kModeWidth))));
-    cpu.eax = cpu.edi;
-    put(app, kTextColour, cpu.edx);
-    fpu.count -= 1;
-    if (!byAddress(app, cpu, kTextWidth))
-        return;
+    if (!sendState(app, cpu, thrash::kStateTexture, at(app, kHudBoxTexture)) || !quad(box)
+        || !quad(box + kHudQuadBytes) || !quad(box + 2 * kHudQuadBytes)
+        || !setTextScale(app, cpu, at(app, kHudTextScale)))
+        return false;
+    const float modeWidth = float(x86::Float(sreg32(at(app, kModeWidth))));
+    put(app, kTextColour, kWhite);
+    cpu.edx = kWhite;
+    const std::optional<x86::Float> width = textWidth(app, cpu, text);
+    if (!width)
+        return false;
     // The text's left: the box's middle less half its width (chopped).
-    const x86::Float left = fp::mul(fp::sub(loadFloat(cpu.ebp - 8), fpu.st(0)), loadFloat(kHalf));
-    const x86::Float boxHeight = fp::sub(loadFloat(cpu.esi + 0x44), loadFloat(cpu.esi + 4));
-    cpu.eax = 0x44;
-    app->getMemory<float>(cpu.ebp - 8) = float(boxHeight);
-    fpu.st(0) = left;
-    if (!byAddress(app, cpu, kChop))
-        return;
-    put(app, cpu.ebp - 0xc, reg32(fp::toInteger<sreg32>(fpu.st(0))));
-    fpu.count -= 1;
-    if (!byAddress(app, cpu, kTextHeight))
-        return;
+    const x86::Float left = fp::mul(fp::sub(x86::Float(modeWidth), *width), x86::Float(floatAt(app, kHalf)));
+    const float boxHeight =
+        float(fp::sub(x86::Float(floatAt(app, box + 0x44)), x86::Float(floatAt(app, box + 4))));
+    cpu.eax = kHudTextFont;
+    const std::optional<sreg32> x = chop(app, cpu, left);
+    if (!x)
+        return false;
+    const std::optional<reg32> textHeight = game(app, cpu, kTextHeight);
+    if (!textHeight)
+        return false;
     // Its top: the box's top and half of what its height leaves.
-    put(app, cpu.ebp - 4, cpu.eax);
-    const x86::Float spare = fp::sub(loadFloat(cpu.ebp - 8), x86::Float(sreg32(at(app, cpu.ebp - 4))));
-    const x86::Float halfSpare = fp::mul(spare, loadFloat(kHalfAgain));
-    cpu.edx = at(app, cpu.ebp - 0xc);
-    const x86::Float top = fp::add(halfSpare, loadFloat(cpu.esi + 4));
-    cpu.eax = cpu.edi;
-    fpu.count += 1;
-    fpu.st(0) = top;
-    if (!byAddress(app, cpu, kChop))
+    const x86::Float spare = fp::sub(x86::Float(boxHeight), x86::Float(sreg32(*textHeight)));
+    const x86::Float top =
+        fp::add(fp::mul(spare, x86::Float(floatAt(app, kHalfAgain))), x86::Float(floatAt(app, box + 4)));
+    cpu.edx = reg32(*x);
+    cpu.eax = text;
+    const std::optional<sreg32> y = chop(app, cpu, top);
+    if (!y || !drawText(app, cpu, text, reg32(*x), reg32(*y)) || !byAddress(app, cpu, kFlushText)
+        || !sendState(app, cpu, thrash::kStateBlend, 1)
+        || !sendState(app, cpu, thrash::kStateTexture, at(app, kHudFlashTexture)))
+        return false;
+    const reg32 bar = box + (sreg32(at(app, kTicks) & 0x3f) < 0x20 ? kHudBarFirst : kHudBarSecond);
+    if ((byte(app, kDriverFlags) & kDriverSofttria) && !blendColourKept(app, cpu, at(app, bar + kCornerColour)))
+        return false;
+    return quad(bar) && sendState(app, cpu, thrash::kStateBlend, 0);
+}
+
+/* 0x482940: messageBox for player eax, text edx. */
+void hudMessageBox(App* app, CPU& cpu)
+{
+    const Kept kept(cpu, kEbx | kEcx);
+    if (!messageBox(app, cpu, cpu.eax, cpu.edx))
         return;
-    put(app, cpu.ebp - 0x10, reg32(fp::toInteger<sreg32>(fpu.st(0))));
-    cpu.ebx = at(app, cpu.ebp - 0x10);
-    fpu.count -= 1;
-    if (!byAddress(app, cpu, kDrawText))
-        return;
-    fpu.count -= 1;                              // fstp st(0): the text's width
-    if (!byAddress(app, cpu, kFlushText))
-        return;
-    cpu.edx = 1;
-    cpu.eax = thrash::kStateBlend;
-    if (!direct(app, cpu, setRenderState))
-        return;
-    cpu.eax = thrash::kStateTexture;
-    cpu.edx = at(app, kHudFlashTexture);
-    if (!direct(app, cpu, setRenderState))
-        return;
-    cpu.eax = at(app, kTicks) & 0x3f;
-    const reg32 bar = sreg32(cpu.eax) < 0x20 ? 0x180 : 0x200;
-    if (byte(app, kDriverFlags) & kDriverSofttria)
-    {
-        cpu.eax = at(app, cpu.esi + bar + 0x10);
-        if (!direct(app, cpu, setSoftwareBlendColour))
-            return;
-    }
-    if (!quad(cpu.esi + bar))
-        return;
-    cpu.eax = thrash::kStateBlend;
-    cpu.edx = 0;
-    if (!direct(app, cpu, setRenderState))
-        return;
-    cpu.esp = cpu.ebp;
-    cpu.ebp = pop(app, cpu);
-    cpu.edi = pop(app, cpu);
-    cpu.esi = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
-    cpu.ebx = pop(app, cpu);
+    kept.back(cpu);
     cpu.esp += 4;
 }
 
@@ -4121,177 +3884,152 @@ constexpr reg32 kTimes = 0x7a3cf0;             // what each stage took, the last
 constexpr reg32 kKeepTime = 0x4bc030;          // eax the view, edx kTimes
 constexpr reg32 kStartTime = 0x4bc000;         // eax 1, esi where the time goes
 constexpr reg32 kSoftwareRaceView = 0x7a3a60;  // 0: the software renderers' order
-constexpr reg32 kWideScreenFlag = 0x6fbc44, kWideScreenMode = 0x6fd4c8;
 constexpr reg32 kRaceHudOff = 0x7d36a0, kRaceViewPaused = 0x7a3d10, kRaceCountdown = 0x7a3d18;
 constexpr reg32 kRaceFrameSteps[] = {0x4dece0, 0x4dedf0, 0x4cc600};
 
-/* 0x4bc160: a frame of the race's view, eax which pass (0 the main one, 1
- * the mirror, others neither): the frame's lists set up, the window cleared
- * on the software renderers, the sky (sub_4782e0), the view (sub_41b9b0),
- * the effects, the cars, the smoke and the rest, each stage timed (sub_4bc030
- * with what sub_4bc000 or the stage gave back, through esi as Watcom returns
- * a record); then the HUD for the main pass (sub_482b00) or the mirror's
- * frame (sub_484030), and the countdown. */
-void raceFrame(win32::WinApplication* app, x86::CPU& cpu)
+/* 0x4bc160's core: a frame of the race's view for `pass` (0 the main one, 1 the mirror, others
+ * neither): the frame's lists set up, the window cleared on the software renderers, the sky
+ * (sub_4782e0), the view (sub_41b9b0), the effects, the cars, the smoke and the rest, each stage
+ * timed (sub_4bc030 with what sub_4bc000 or the stage gave back); then the HUD for the main pass
+ * (sub_482b00) or the mirror's frame (sub_484030), and the countdown.  A stage gives its time back
+ * as Watcom returns a record: into the frame at esi, as deep as the code has it.  The registers at
+ * each call as the code has them (ebx the pass throughout, edi and esi as its copies leave them);
+ * eax as the last call leaves it. */
+bool raceFrameDrawn(App* app, CPU& cpu, reg32 pass)
 {
-    push(app, cpu, cpu.ebx);
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.edx);
-    push(app, cpu, cpu.esi);
-    push(app, cpu, cpu.edi);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    cpu.esp -= 0x50;
-    const reg32 ebp = cpu.ebp;
-    auto call = [&](reg32 target) { return byAddress(app, cpu, target); };
-    auto callWith = [&](reg32 eax, reg32 target) {
-        cpu.eax = eax;
+    const GuestFrame frame(cpu, 0x18, 0x50);
+    cpu.ebx = pass;
+    const auto call = [&](reg32 target) { return byAddress(app, cpu, target); };
+    const auto callWith = [&](reg32 value, reg32 target) {
+        cpu.eax = value;
         return byAddress(app, cpu, target);
     };
-    // The time a stage gave back at esi copied to kTimes and kept.
-    auto keep = [&](reg32 from) {
-        cpu.esi = from;
+    // A stage of the view's, its time given back at `record`.
+    const auto stage = [&](reg32 target, reg32 record) {
+        cpu.eax = kRaceView;
+        cpu.esi = record;
+        return call(target);
+    };
+    // The time a stage gave back copied to kTimes (two movsd) and kept.
+    const auto keep = [&](reg32 record) {
         cpu.edx = kTimes;
         cpu.eax = kRaceView;
-        movsd(app, cpu);
-        movsd(app, cpu);
+        put(app, kTimes, at(app, record));
+        put(app, kTimes + 4, at(app, record + 4));
+        cpu.esi = record + 8;
+        cpu.edi = kTimes + 8;
         return call(kKeepTime);
     };
     // A stage timed by sub_4bc000 after it.
-    auto timed = [&](reg32 from) {
+    const auto timed = [&](reg32 record) {
         cpu.eax = 1;
         cpu.edi = kTimes;
-        return call(kStartTime) && keep(from);
+        return call(kStartTime) && keep(record);
     };
-    // The pass's layers (sub_431c40, sub_431c30) for the main pass.
-    auto layers = [&](reg32 first, reg32 second) {
-        if (cpu.ebx != 0)
-            return true;
-        return callWith(first, 0x431c40) && callWith(second, 0x431c30);
+    // The main pass's layers (native_collide's, which do nothing), eax `layer` as the code has it.
+    const auto firstLayer = [&](reg32 layer) {
+        cpu.eax = layer;
+        guest::direct<0x431c40, collide::firstLayerNothing>(app, cpu, layer);
+        return !cpu.terminate;
     };
-    cpu.ebx = cpu.eax;
-    if (cpu.eax == 0 && !call(0x431c30))
-        return;
-    if (!call(0x4318c0) || !callWith(1, 0x4c7750) || !call(0x4c75f0) || !call(0x4c73e0))
-        return;
-    if (cpu.ebx == 0 && (byte(app, kDriverFlags) & kDriverSoftware)
-        && !byAddress(app, cpu, at(app, kThrashClearWindow)))
-        return;
-    if (byte(app, kDriverFlags) & kDriverSofttria)
+    const auto secondLayer = [&](reg32 layer) {
+        cpu.eax = layer;
+        guest::direct<0x431c30, collide::secondLayerNothing>(app, cpu, layer);
+        return !cpu.terminate;
+    };
+    const auto layers = [&](reg32 first, reg32 second) {
+        return pass != 0 || (firstLayer(first) && secondLayer(second));
+    };
+    const auto softtria = [&]() { return (byte(app, kDriverFlags) & kDriverSofttria) != 0; };
+    if (pass == 0 && !secondLayer(cpu.eax))
+        return false;
+    guest::direct<0x4318c0, collide::forgetStates>(app, cpu);
+    if (cpu.terminate || !callWith(1, 0x4c7750) || !call(0x4c75f0) || !call(0x4c73e0))
+        return false;
+    if (pass == 0 && (byte(app, kDriverFlags) & kDriverSoftware) && !thrash(app, cpu, kThrashClearWindow))
+        return false;
+    const reg32 sky = softtria() ? frame - 0x50 : frame - 0x48;
+    if (softtria())
     {
-        cpu.edx = 1;
-        cpu.eax = thrash::kStateShade;
-        cpu.esi = ebp - 0x50;
-        if (!direct(app, cpu, setRenderState))
-            return;
-        cpu.eax = kRaceView;
-        cpu.edi = kTimes;
-        if (!call(0x4782e0) || !keep(ebp - 0x50))
-            return;
+        cpu.esi = sky;
+        if (!sendState(app, cpu, thrash::kStateShade, 1))
+            return false;
     }
-    else
+    cpu.edi = kTimes;
+    if (!stage(0x4782e0, sky) || !keep(sky) || !layers(0, 1))
+        return false;
+    if (softtria())
     {
-        cpu.eax = kRaceView;
-        cpu.esi = ebp - 0x48;
-        cpu.edi = kTimes;
-        if (!call(0x4782e0) || !keep(ebp - 0x48))
-            return;
-    }
-    if (!layers(0, 1))
-        return;
-    if (byte(app, kDriverFlags) & kDriverSofttria)
-    {
-        cpu.edx = at(app, kWideScreenFlag);
-        if (cpu.edx != 0 || at(app, kWideScreenMode) == 1)
-            cpu.edx = 1;
-        cpu.eax = thrash::kStateShade;
-        if (!direct(app, cpu, setRenderState))
-            return;
+        const reg32 detail = gameSettings(app).detailFlag104;
+        if (!sendState(app, cpu, thrash::kStateShade, detail != 0 || gameSettings(app).night == 1 ? 1 : detail))
+            return false;
     }
     reg32 last;
     if (at(app, kSoftwareRaceView) == 0)
     {
-        if (!callWith(kRaceView, 0x41b9b0) || !layers(1, 2) || !callWith(kRaceView, 0x4c6f00))
-            return;
-        cpu.eax = kRaceView;
-        cpu.esi = ebp - 0x40;
-        if (!call(0x4bbba0))
-            return;
-        cpu.eax = kRaceView;
+        if (!callWith(kRaceView, 0x41b9b0) || !layers(1, 2) || !callWith(kRaceView, 0x4c6f00)
+            || !stage(0x4bbba0, frame - 0x40))
+            return false;
         cpu.edi = kTimes;
-        if (!call(0x4cc5c0) || !call(0x4c7580))
-            return;
-        last = ebp - 0x40;
+        if (!callWith(kRaceView, 0x4cc5c0) || !call(0x4c7580))
+            return false;
+        last = frame - 0x40;
     }
     else
     {
-        cpu.eax = kRaceView;
-        cpu.esi = ebp - 0x38;
-        if (!call(0x41b9b0) || !timed(ebp - 0x38) || !layers(1, 2))
-            return;
-        cpu.eax = kRaceView;
-        cpu.esi = ebp - 0x30;
-        if (!call(0x4c6f00) || !timed(ebp - 0x30))
-            return;
-        cpu.eax = kRaceView;
-        cpu.esi = ebp - 0x28;
-        if (!call(0x4bbba0) || !timed(ebp - 0x28))
-            return;
-        cpu.eax = kRaceView;
-        cpu.esi = ebp - 0x20;
+        if (!stage(0x41b9b0, frame - 0x38) || !timed(frame - 0x38) || !layers(1, 2)
+            || !stage(0x4c6f00, frame - 0x30) || !timed(frame - 0x30) || !stage(0x4bbba0, frame - 0x28)
+            || !timed(frame - 0x28))
+            return false;
         cpu.edi = kTimes;
-        if (!call(0x4cc5c0) || !call(0x4c76e0))
-            return;
-        last = ebp - 0x20;
+        if (!stage(0x4cc5c0, frame - 0x20) || !call(0x4c76e0))
+            return false;
+        last = frame - 0x20;
     }
     if (!keep(last))
-        return;
+        return false;
     for (reg32 step = 0; step < 3; ++step)
     {
-        const reg32 from = ebp - 0x18 + 8 * step;
-        cpu.eax = kRaceView;
-        cpu.esi = from;
+        const reg32 record = frame - 0x18 + 8 * step;
         cpu.edi = kTimes;
-        if (!call(kRaceFrameSteps[step]) || !keep(from))
-            return;
+        if (!stage(kRaceFrameSteps[step], record) || !keep(record))
+            return false;
     }
     bool hud = true;
-    if (cpu.ebx == 0)
+    if (pass == 0)
     {
-        if (!callWith(kModeRect, kSetViewScale) || !call(kTwoDStates) || !callWith(kRaceView, 0x482b00))
-            return;
+        if (!callWith(kModeRect, kSetViewScale) || !guest::direct<0x431aa0, collide::textStates>(app, cpu)
+            || !callWith(kRaceView, 0x482b00))
+            return false;
     }
-    else if (cpu.ebx == 1)
+    else if (pass == 1)
     {
-        if (!callWith(kRaceView, 0x4bc100) || !call(kTwoDStates) || !call(0x484030))
-            return;
+        if (!callWith(kRaceView, 0x4bc100) || !guest::direct<0x431aa0, collide::textStates>(app, cpu)
+            || !call(0x484030))
+            return false;
     }
     else
         hud = false;
-    if (hud && (!call(0x431b40) || !callWith(kRaceView, 0x4bc130)))
-        return;
-    if (cpu.ebx == 0)
+    if (hud && (!guest::direct<0x431b40, collide::hudStates>(app, cpu) || !callWith(kRaceView, 0x4bc130)))
+        return false;
+    if (pass == 0)
     {
         if (at(app, kRaceHudOff) == 0 && at(app, kRaceViewPaused) == 0
             && !callWith(at(app, kRaceCountdown), 0x482620))
-            return;
-        if (!callWith(2, 0x431c40))
-            return;
+            return false;
+        if (!firstLayer(2))
+            return false;
     }
-    if (byte(app, kDriverFlags) & kDriverSofttria)
-    {
-        cpu.eax = thrash::kStateShade;
-        cpu.edx = 0;
-        if (!direct(app, cpu, setRenderState))
-            return;
-    }
-    cpu.esp = cpu.ebp;
-    cpu.ebp = pop(app, cpu);
-    cpu.edi = pop(app, cpu);
-    cpu.esi = pop(app, cpu);
-    cpu.edx = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
-    cpu.ebx = pop(app, cpu);
+    return !softtria() || sendState(app, cpu, thrash::kStateShade, 0);
+}
+
+/* 0x4bc160: raceFrameDrawn for pass eax. */
+void raceFrame(App* app, CPU& cpu)
+{
+    const Kept kept(cpu, kEbx | kEcx | kEdx | kEsi | kEdi);
+    if (!raceFrameDrawn(app, cpu, cpu.eax))
+        return;
+    kept.back(cpu);
     cpu.esp += 4;
 }
 
@@ -4301,51 +4039,44 @@ constexpr reg32 kReciprocalsMade = 0x564ed0;
 constexpr reg32 kReciprocals = 0x9ef990;       // 1024 words: 2^32 / (n * 4) + 1, the first 0
 constexpr reg32 kDivide64 = 0x503760;          // native_snd_strm's div64: (low, high, divisor), stdcall
 
-/* 0x4eb3c0: the table of reciprocals made, once: for n from 1 to 1023, the
- * 64-bit 1:0 divided by 4n, plus 1. */
-void makeReciprocals(win32::WinApplication* app, x86::CPU& cpu)
+/* port::div64 (0x503760), by address: (low, high, divisor) on the stack, stdcall.  The quotient. */
+std::optional<reg32> divide64(App* app, CPU& cpu, reg32 low, reg32 high, reg32 divisor)
 {
-    push(app, cpu, cpu.edx);
-    push(app, cpu, cpu.edi);
-    push(app, cpu, cpu.ebp);
-    cpu.esp -= 8;
-    cpu.edx = at(app, kReciprocalsMade);
-    if (cpu.edx == 0)
+    if (!guest::call(app, cpu, kDivide64, {low, high, divisor}))
+        return std::nullopt;
+    return cpu.eax;
+}
+
+/* 0x4eb3c0's core: the table of reciprocals made, once: for n from 1 to 1023, the 64-bit 1:0
+ * divided by 4n, plus 1.  The registers at each division as the code has them: edx its count, a
+ * step on, eax the last entry. */
+bool reciprocalsMade(App* app, CPU& cpu)
+{
+    if (at(app, kReciprocalsMade) != 0)
+        return true;
+    put(app, kReciprocals, 0);
+    for (reg32 divisor = 4; divisor != 0x1000; divisor += 4)
     {
-        push(app, cpu, cpu.ebx);
-        cpu.ebx = 1;
-        put(app, kReciprocals, cpu.edx);
-        put(app, cpu.esp + 4, cpu.edx);
-        cpu.edx = 4;
-        put(app, cpu.esp + 8, cpu.ebx);
-        cpu.ebp = at(app, cpu.esp + 4);
-        cpu.edi = at(app, cpu.esp + 8);
-        cpu.ebx = pop(app, cpu);
-        do
-        {
-            push(app, cpu, cpu.edx);
-            push(app, cpu, cpu.edi);
-            push(app, cpu, cpu.ebp);
-            cpu.edx += 4;
-            if (!byAddress(app, cpu, kDivide64))
-                return;
-            put(app, cpu.edx + kReciprocals - 4, cpu.eax + 1);
-            ++cpu.eax;
-        } while (cpu.edx != 0x1000);
-        put(app, kReciprocalsMade, at(app, kReciprocalsMade) + 1);
+        cpu.edx = divisor + 4;
+        const std::optional<reg32> quotient = divide64(app, cpu, 0, 1, divisor);
+        if (!quotient)
+            return false;
+        put(app, kReciprocals + divisor, *quotient + 1);
+        cpu.eax = *quotient + 1;
     }
-    cpu.esp += 8;
-    cpu.ebp = pop(app, cpu);
-    cpu.edi = pop(app, cpu);
-    cpu.edx = pop(app, cpu);
+    put(app, kReciprocalsMade, at(app, kReciprocalsMade) + 1);
+    return true;
+}
+
+/* 0x4eb3c0: reciprocalsMade. */
+void makeReciprocals(App* app, CPU& cpu)
+{
+    const Kept kept(cpu, kEdx);
+    if (!reciprocalsMade(app, cpu))
+        return;
+    kept.back(cpu);
     cpu.esp += 4;
 }
-
-void copyFloat(win32::WinApplication* app, reg32 to, reg32 from)
-{
-    app->getMemory<float>(to) = float(x86::Float(app->getMemory<float>(from)));
-}
-
 
 }  // namespace graphics
 }  // namespace nfs3hp

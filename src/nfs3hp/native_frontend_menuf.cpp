@@ -1,8 +1,32 @@
+#include "native_frontend_menuf.h"
+#include "game_settings.h"
 #include "native_frontend.h"
+#include "native_frontend_menua.h"
+#include "native_controls_input.h"
+#include "native_frontend_connect.h"
+#include "native_frontend_eab.h"
+#include "native_frontend_glue.h"
+#include "native_frontend_hudr.h"
+#include "native_frontend_hudz.h"
+#include "native_frontend_loada.h"
+#include "native_frontend_loop.h"
+#include "native_frontend_menuc.h"
+#include "native_frontend_neta.h"
+#include "native_frontend_rendb.h"
+#include "native_frontend_screen.h"
+#include "native_frontend_wata.h"
+#include "native_frontend_wina.h"
+#include "native_graphics.h"
+#include "native_windows.h"
+#include "port_buttons.h"
+#include "port_loop.h"
+#include "port_shapes.h"
 #include <nfs3hp.h>
+#include <winapi/user32.h>
 #include <cstdint>
 #include <cstring>
 #include <iterator>
+#include <optional>
 
 /* The last of the menus' generated functions, decompiled:
  *
@@ -19,7 +43,13 @@
  * and kBottom, and in its layout record's 640 by 480 units at kPlaced..., the
  * four int16 the record keeps.  Drawing an element and judging its place stay
  * with the rest of the editor: sub_45a120, sub_45ab30, sub_459db0 and
- * sub_459fe0 are called where they are. */
+ * sub_459fe0 are called where they are.
+ *
+ * Plan step 5: each function a typed core in frontend::menuf (native_frontend_menuf.h), in a
+ * frame of its own where the game's function has one (fe::Frame: what it calls runs at the stack
+ * addresses it did), and an adapter under the game's name for the calls by address.  A core of
+ * the menu files, the port's or a typed library's is called as C++ (guest::direct, fe::direct);
+ * the rest of the game by address, and so is a call whose registers the code goes on with. */
 namespace nfs3hp
 {
 
@@ -78,7 +108,6 @@ constexpr reg32 kGripBottomRight = 0xa0a;
 
 constexpr reg32 kPointerX = 0x55e5e4, kPointerY = 0x55e5e8;     // on the 640 by 480 screen
 constexpr reg32 kModeWidth = 0x7cdac8, kModeHeight = 0x7cdacc;  // the race's mode, in pixels
-constexpr reg32 kPlayers = 0x6fd3b0;        // 1 in split screen
 constexpr reg32 kLastGoodPlace = 0x677e08;  // the 8 bytes at kPlacedTop, when last it could stand there
 constexpr reg32 kRoomTop = 0x677e10;        // what the keys have to move it in, down the screen, in pixels
 constexpr reg32 kRoomBottom = 0x677e14;
@@ -100,16 +129,7 @@ constexpr reg32 kRecordHighUnits = 0x539c7c;
 // The game's functions.
 constexpr reg32 kGetAsyncKeyState = 0x534738;  // the import's slot: stdcall, the top bit of the 16 the key held
 constexpr std::uint32_t kVkShift = 0x10, kVkControl = 0x11;
-constexpr reg32 kJudgePlace = 0x459db0;     // eax an element: whether it may stand there
-constexpr reg32 kPutBack = 0x459fe0;        // eax an element, edx the place to go back to if not
-constexpr reg32 kDrag = 0x45a120;           // eax an element: the mouse's drag of it
-constexpr reg32 kDrawContents = 0x45ab30;   // eax an element: what the race draws for it
-constexpr reg32 kElementIsFramed = 0x47bc20;  // eax an element's number: ten of them
 constexpr reg32 kDrawFrame = 0x459440;      // eax an element, edx a colour
-constexpr reg32 kSetPointer = 0x49bfc0;     // eax, edx: x, y
-constexpr reg32 kFreePointer = 0x49c0e0;    // eax 0: the mouse has the pointer again
-constexpr reg32 kCurrentMenu = 0x44aeb0;
-constexpr reg32 kPointAtSelected = 0x449ea0;  // eax a screen
 
 constexpr std::uint32_t kFrameGood = 0x7fffffff, kFrameBad = 0xffff0000;
 
@@ -164,11 +184,14 @@ Float distanceFromEdge(const Guest& guest, reg32 pointer, reg32 mode, reg32 perU
     return belowOrUnordered(0.0, value) ? value : -value;
 }
 
+}  // namespace
+
 /* sub_45b940: the grip the pointer has on the element under it -- none unless
  * it is one of the two that resize -- kept in the element, and the resize
  * cursor to show.  While it is held the grip stays what it was. */
-reg32 pickResizeCursor(Guest& guest, reg32 element)
+x86::reg32 frontend::menuf::pickResizeCursor(App* app, CPU& cpu, reg32 element)
 {
+    Guest guest(app, cpu);
     if (guest.word(element + kDragged) == 0 && guest.word(element + kHeld) == 0)
     {
         guest.setDword(element + kGrip, kGripWhole);
@@ -203,17 +226,19 @@ reg32 pickResizeCursor(Guest& guest, reg32 element)
 /* sub_45bcb0: an element, each frame of the editor: its drag when it is asked
  * for, what the race draws for it, measured by the port, and, on those that
  * have one, the frame about that, red where it may not stand. */
-reg32 drawElement(win32::WinApplication* app, Guest& guest, reg32 element, reg32 dragging)
+x86::reg32 frontend::menuf::drawElement(App* app, CPU& cpu, reg32 element, reg32 dragging)
 {
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 16);
     constexpr std::int32_t kAlsoFramed[] = { 20, 13, 15, 6 };
     if (dragging != 0)
-        guest.call(kDrag, fe::args({ element }));
+        fe::direct<0x45a120, frontend::wata::hudEditorDrag>(app, cpu, element);
     hudEditorDraw(app, element, true);
-    guest.call(kDrawContents, fe::args({ element }));
+    fe::direct<0x45ab30, frontend::hudr::drawElement>(app, cpu, element);
     hudEditorDraw(app, element, false);
     const std::int32_t own = sdword(guest, element + kElementNumber) % kElements;
     guest.leaveEdx(reg32(own));
-    bool framed = guest.call(kElementIsFramed, fe::args({ reg32(own) })) != 0;
+    bool framed = fe::direct<0x47bc20, frontend::rendb::kindIsText>(app, cpu, reg32(own)) != 0;
     for (const std::int32_t also : kAlsoFramed)
         framed = framed || own == also;
     if (framed)
@@ -225,6 +250,9 @@ reg32 drawElement(win32::WinApplication* app, Guest& guest, reg32 element, reg32
     }
     return 0;
 }
+
+namespace
+{
 
 /* One way across the element: what the keys do across the screen and what they
  * do down it are the same code with these. */
@@ -253,7 +281,10 @@ constexpr Axis kDown{ kTop, kBottom, kPlacedTop, kPlacedHeight, kModeHeight, kHi
 class ElementStroke
 {
 public:
-    ElementStroke(Guest& guest, reg32 element, std::int32_t step) : m_guest(guest), m_element(element), m_step(step) {}
+    ElementStroke(Guest& guest, x86::CPU& cpu, reg32 element, std::int32_t step)
+        : m_guest(guest), m_cpu(cpu), m_element(element), m_step(step)
+    {
+    }
 
     void moveBack(const Axis& axis)
     {
@@ -425,7 +456,7 @@ private:
     /* sub_459db0's answer kept, and while it says yes the place remembered. */
     void judgePlace()
     {
-        const reg32 good = m_guest.call(kJudgePlace, fe::args({ m_element }));
+        const reg32 good = fe::direct<0x459db0, frontend::hudz::elementMoved>(m_guest.app(), m_cpu, m_element);
         m_guest.setDword(m_element + kPlaceGood, good);
         if (good != 0)
         {
@@ -437,15 +468,16 @@ private:
     void judgeAndPointAtMenu()
     {
         judgePlace();
-        const reg32 menu = m_guest.call(kCurrentMenu);
-        m_guest.call(kPointAtSelected, fe::args({ menu }));
+        const reg32 menu = fe::direct<0x44aeb0, port::loop::currentMenuOf>(m_guest.app(), m_cpu);
+        fe::direct<0x449ea0, port::loop::pointAtSelectedOf>(m_guest.app(), m_cpu, m_cpu.esp - 4, menu);
     }
 
     /* The pointer goes with the edge. */
     void pointerTo(const Axis& axis, std::int32_t place)
     {
         m_guest.setDword(axis.pointer, reg32(place));
-        m_guest.call(kSetPointer, fe::args({ m_guest.dword(kPointerX), m_guest.dword(kPointerY) }));
+        fe::direct<0x49bfc0, frontend::screen::setPointer>(m_guest.app(), m_cpu, m_guest.dword(kPointerX),
+                                                           m_guest.dword(kPointerY));
     }
 
     void pointerToEnd(const Axis& axis)
@@ -454,17 +486,29 @@ private:
     }
 
     Guest& m_guest;
+    x86::CPU& m_cpu;
     reg32 m_element;
     std::int32_t m_step;
 };
 
+/* A function of Windows', its words handed: the port's own, called as C++ (native_windows.h); in
+ * the check through its import's slot.  Terminated when the game stopped in it, as Guest::call. */
+template <reg32 Slot, auto Function, typename... Words>
+reg32 windows(Guest& guest, x86::CPU& cpu, Words... words)
+{
+    const std::optional<reg32> eax = guest::windows<Slot, Function>(guest.app(), cpu, words...);
+    if (!eax)
+        throw fe::Terminated();
+    return *eax;
+}
+
 /* Shift and an arrow take hold of the whole element, to move it; Ctrl and an
  * arrow, on those that resize, of its edge on that side, the pointer going
  * there. */
-void takeHold(Guest& guest, reg32 element, std::int32_t own, std::uint16_t key)
+void takeHold(Guest& guest, x86::CPU& cpu, reg32 element, std::int32_t own, std::uint16_t key)
 {
     const auto down = [&](std::uint32_t virtualKey) {
-        return (guest.call(guest.dword(kGetAsyncKeyState), fe::args({}, { virtualKey })) & 0x8000) != 0;
+        return (windows<kGetAsyncKeyState, &win32::user32::GetAsyncKeyState>(guest, cpu, virtualKey) & 0x8000) != 0;
     };
     const auto hold = [&](reg32 grip) {
         guest.setWord(element + kHeld, 1);
@@ -473,7 +517,8 @@ void takeHold(Guest& guest, reg32 element, std::int32_t own, std::uint16_t key)
     };
     const auto pointerTo = [&](reg32 pointer, std::int32_t place) {
         guest.setDword(pointer, reg32(place));
-        guest.call(kSetPointer, fe::args({ guest.dword(kPointerX), guest.dword(kPointerY) }));
+        fe::direct<0x49bfc0, frontend::screen::setPointer>(guest.app(), cpu, guest.dword(kPointerX),
+                                                           guest.dword(kPointerY));
     };
     if (down(kVkShift) && (key == kKeyLeft || key == kKeyRight || key == kKeyUp || key == kKeyDown))
     {
@@ -512,29 +557,33 @@ void takeHold(Guest& guest, reg32 element, std::int32_t own, std::uint16_t key)
 void setRoom(Guest& guest, reg32 element)
 {
     const std::int32_t height = sdword(guest, kModeHeight);
-    if (guest.dword(kPlayers) == 1 && sdword(guest, element + kElementNumber) <= kElements)
+    if (gameSettings(guest).playMode == 1 && sdword(guest, element + kElementNumber) <= kElements)
     {
         guest.setDword(kRoomTop, 0);
         guest.setDword(kRoomBottom, reg32(height / 2));
     }
     else
     {
-        guest.setDword(kRoomTop, guest.dword(kPlayers) == 1 ? reg32(height / 2 + 1) : 0);
+        guest.setDword(kRoomTop, gameSettings(guest).playMode == 1 ? reg32(height / 2 + 1) : 0);
         guest.setDword(kRoomBottom, reg32(height));
     }
 }
 
+}  // namespace
+
 /* sub_45bd20: an element's keys: taken hold of, then the arrows a stroke at a
  * time, by what the keys have hold of; Enter lets go, puts it back where it
  * last could stand and gives the pointer back. */
-reg32 elementKey(Guest& guest, reg32 element, std::uint16_t key)
+x86::reg32 frontend::menuf::elementKey(App* app, CPU& cpu, reg32 element, reg32, std::uint16_t key)
 {
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 16 + 0x20);
     const std::int32_t own = sdword(guest, element + kElementNumber) % kElements;
     guest.leaveEbx(element);
     guest.leaveEdx(reg32(own));
     if (guest.word(element + kHeld) == 0)
     {
-        takeHold(guest, element, own, key);
+        takeHold(guest, cpu, element, own, key);
         if (guest.word(element + kHeld) == 0)
             return 0;
         setRoom(guest, element);
@@ -546,14 +595,14 @@ reg32 elementKey(Guest& guest, reg32 element, std::uint16_t key)
     {
         guest.setByte(element + kFlags, std::uint8_t(guest.byte(element + kFlags) & ~kWithKeys));
         guest.setWord(element + kHeld, 0);
-        guest.call(kPutBack, fe::args({ element, kLastGoodPlace }));
-        guest.call(kFreePointer, fe::args({ 0 }));
-        const reg32 menu = guest.call(kCurrentMenu);
-        guest.call(kPointAtSelected, fe::args({ menu }));
+        fe::direct<0x459fe0, frontend::wata::hudEditorDrop>(app, cpu, element, kLastGoodPlace);
+        fe::direct<0x49c0e0, connect::setPointer>(app, cpu, 0);  // the mouse has the pointer again
+        const reg32 menu = fe::direct<0x44aeb0, port::loop::currentMenuOf>(app, cpu);
+        fe::direct<0x449ea0, port::loop::pointAtSelectedOf>(app, cpu, cpu.esp - 4, menu);
         return kKeySpent;
     }
 
-    ElementStroke stroke(guest, element, width / kStrokesAcross);
+    ElementStroke stroke(guest, cpu, element, width / kStrokesAcross);
     switch (guest.dword(element + kGrip))
     {
     case kGripWhole:
@@ -610,8 +659,10 @@ reg32 elementKey(Guest& guest, reg32 element, std::uint16_t key)
 
 /* sub_45c9d0: where an element stands in pixels, to its layout record's 640
  * by 480 rectangle.  eax stays the element. */
-reg32 elementToRecord(Guest& guest, reg32 element)
+x86::reg32 frontend::menuf::elementToRecord(App* app, CPU& cpu, reg32 element)
 {
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 12 + 0xc);
     X87 x87(guest);
     const Float wide = doubleAt(guest, kRecordWideUnits), high = doubleAt(guest, kRecordHighUnits);
     const Float perWide = fp::div(1.0, integer(sdword(guest, kModeWidth)));
@@ -626,12 +677,14 @@ reg32 elementToRecord(Guest& guest, reg32 element)
     return element;
 }
 
+namespace
+{
+
 /* ---------------------------------------------------------------------------
  * The front end's start
  * ------------------------------------------------------------------------- */
 
 constexpr reg32 kFirstTime = 0x55b03c;         // the game has just started: the title, the settings
-constexpr reg32 kMoviesOff = 0x6fbb54;
 constexpr reg32 kLoadingOff = 0x55e88c;
 constexpr reg32 kMenuBits1 = 0x55eb2d;         // byte
 constexpr std::uint8_t kNoTitleMovie = 0x08;
@@ -639,17 +692,13 @@ constexpr reg32 kAttractMovie = 0x55e54c;      // the attract movies played
 constexpr reg32 kConfigMadeAfresh = 0x67900c;  // no settings file: a new player
 constexpr reg32 kButtonHandler = 0x56446c;
 constexpr reg32 kGameButtonHandler = 0x49bfb0;
-constexpr reg32 kChosenCheats = 0x6fd4fc, kChosenTrackJump = 0x6fd500;
 constexpr reg32 kOnlyWrittenA = 0x559428, kOnlyWrittenB = 0x55942c;  // nothing reads these by address
-constexpr reg32 kReplaying = 0x6fd3a0, kCanSave = 0x6fd3ac;
-constexpr reg32 kCars = 0x6fd3bc, kCarsBytes = 0x50;
-constexpr reg32 kOpponents = 0x6fd40c, kOpponentsBytes = 0x62;
+constexpr reg32 kCarsBytes = 0x50;
+constexpr reg32 kOpponentsBytes = 0x62;
 constexpr reg32 kNetworkAsked = 0x7a1fa0;      // a string: not empty, a network game to start at once
 constexpr reg32 kNetworkWays = 0x7a1ffc;
 constexpr reg32 kNetworkConnected = 0x7a22e0;
 constexpr reg32 kConnectionLost = 0x7a22dc;    // int16
-constexpr reg32 kStartTicks = 0x6fd3b4;
-constexpr reg32 kChosenHeight = 0x6fbc18;
 
 // The screens the menu loop goes through first (setup's next), as char*[3] in
 // the code segment, copied to the frame as the original's locals are: by how
@@ -661,56 +710,44 @@ constexpr GuestString kTitleMovie{ 0x53b048, "titleav.mad" };
 constexpr GuestString kSetup{ 0x53afb8, "setup" };
 constexpr GuestString kStartStrings[] = { kTitleMovie, kSetup };
 
-constexpr reg32 kDropMarkedCars = 0x43b390;
-constexpr reg32 kSkipIntroCompare = 0x473010;
-constexpr reg32 kPlayMovie = 0x4960e0;
-constexpr reg32 kResetAttractTimer = 0x4961e0;
-constexpr reg32 kMenusEnter = 0x473020;
-constexpr reg32 kTitleWait = 0x472fc0;
 constexpr reg32 kDetailSettings = 0x472d10;
-constexpr reg32 kNoteDigitalControls = 0x43c040;
 constexpr reg32 kSaveConfig = 0x472820;
 constexpr reg32 kFlushKeys = 0x4f0240;
 constexpr reg32 kFillZero = 0x4e070c;
-constexpr reg32 kClearLoadFlag = 0x477c00;
-constexpr reg32 kNetworkFollow = 0x49ede0;
-constexpr reg32 kNetworkStartMany = 0x49e220;  // 0: it failed
-constexpr reg32 kNetworkStartOne = 0x49e2e0;   // 0: it failed
-constexpr reg32 kMenusLeave = 0x473080;
-constexpr reg32 kTickCount = 0x4b56d0;
-constexpr reg32 kFindScreenMode = 0x4bee80;
-constexpr reg32 kModesChooseByWidth = 0x4483a0;
-constexpr reg32 kMenuLoop = 0x44b230;          // eax the screen, edx the screens next
 constexpr reg32 kNetworkFailed = 10;           // to the state machine
+
+}  // namespace
 
 /* sub_4730d0: the front end's start: the title movie and picture the first
  * time, a new player's settings chosen, the phone's laid over them and saved,
  * the race's choices forgotten, and the menu loop.  What the state machine does
  * next is what it hands back. */
-reg32 frontEndStart(win32::WinApplication* app, Guest& guest)
+x86::reg32 frontend::menuf::frontEndStart(App* app, CPU& cpu)
 {
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 24 + 0x24);
     const reg32 lists = guest.frame();
     for (reg32 at = 0; at < 3 * kNextScreensBytes; at += 4)
         guest.setDword(lists + at, guest.dword(kNextScreens + at));
 
-    guest.call(kDropMarkedCars);
+    fe::direct<0x43b390, frontend::loada::removeKeptCars>(app, cpu);
     guest.setDword(kButtonHandler, kGameButtonHandler);
-    guest.setDword(kChosenCheats, 0);
-    guest.setDword(kChosenTrackJump, 0);
+    gameSettings(guest).raceFlags = 0;
+    gameSettings(guest).cheatTrack = 0;
     guest.setDword(kOnlyWrittenA, 0);
     guest.setDword(kOnlyWrittenB, 0);
-    guest.call(kSkipIntroCompare);
-    if (guest.dword(kMoviesOff) == 0 && guest.dword(kLoadingOff) == 0 && (guest.byte(kMenuBits1) & kNoTitleMovie) == 0
+    fe::direct<0x473010, menuc::skipIntroCompare>(app, cpu);
+    if (gameSettings(guest).installIsRemote == 0 && guest.dword(kLoadingOff) == 0 && (guest.byte(kMenuBits1) & kNoTitleMovie) == 0
         && guest.dword(kFirstTime) != 0)
     {
-        guest.call(kPlayMovie, fe::args({ kTitleMovie.address }));
-        guest.call(kResetAttractTimer);
+        fe::direct<0x4960e0, glue::playMovie>(app, cpu, kTitleMovie.address);
+        fe::direct<0x4961e0, glue::resetAttractTimer>(app, cpu);
         guest.setDword(kAttractMovie, 1);
     }
-    guest.call(kMenusEnter);
+    fe::direct<0x473020, menuc::menusEnter>(app, cpu);
     if (guest.dword(kFirstTime) != 0 && guest.dword(kLoadingOff) == 0)
     {
-        guest.call(kTitleWait);
+        fe::direct<0x472fc0, menuc::titleWait>(app, cpu);
         if (guest.dword(kConfigMadeAfresh) != 0)
         {
             guest.setDword(kConfigMadeAfresh, 0);
@@ -719,22 +756,22 @@ reg32 frontEndStart(win32::WinApplication* app, Guest& guest)
             // up the new bindings and saves them, as it does leaving the front end.
             if (firstSettings(app))
             {
-                guest.call(kNoteDigitalControls);
+                fe::direct<0x43c040, glue::noteDigitalControls>(app, cpu);
                 guest.call(kSaveConfig);
             }
         }
     }
     guest.call(kFlushKeys);
-    guest.setDword(kReplaying, 0);
-    guest.setDword(kCanSave, 0);
-    guest.call(kFillZero, fe::args({ kCars, kCarsBytes }));
-    guest.call(kFillZero, fe::args({ kOpponents, kOpponentsBytes }));
-    guest.call(kClearLoadFlag);
+    gameSettings(guest).replayMode = 0;
+    gameSettings(guest).lastTickRaced = 0;
+    guest.call(kFillZero, fe::args({ SETTINGS_ADDRESS(knockout), kCarsBytes }));
+    guest.call(kFillZero, fe::args({ SETTINGS_ADDRESS(tournament), kOpponentsBytes }));
+    fe::direct<0x477c00, menuc::clearLoadFlag>(app, cpu);
 
     reg32 next = 0;
     if (guest.dword(kFirstTime) == 0)
     {
-        const reg32 players = guest.dword(kPlayers);
+        const reg32 players = gameSettings(guest).playMode;
         if (players == 0)
             next = lists + kNextOfMain;
         else if (players == 1)
@@ -743,27 +780,33 @@ reg32 frontEndStart(win32::WinApplication* app, Guest& guest)
         {
             if (guest.dword(kNetworkConnected) != 0 && guest.word(kConnectionLost) == 0)
                 next = lists + kNextOfNetwork;
-            guest.call(kNetworkFollow);
+            fe::direct<0x49ede0, frontend::neta::lobbyOpen>(app, cpu);
         }
     }
     else if (guest.length(kNetworkAsked) != 0)
     {
         next = lists + kNextOfNetwork;
-        if (guest.call(std::int32_t(guest.dword(kNetworkWays)) > 1 ? kNetworkStartMany : kNetworkStartOne) == 0)
+        const reg32 started = std::int32_t(guest.dword(kNetworkWays)) > 1
+                                  ? fe::direct<0x49e220, frontend::neta::joinRaceNet>(app, cpu)
+                                  : fe::direct<0x49e2e0, frontend::neta::hostRaceNet>(app, cpu);
+        if (started == 0)
         {
-            guest.call(kMenusLeave);
+            fe::direct<0x473080, menuc::menusLeave>(app, cpu);
             return kNetworkFailed;
         }
     }
 
     guest.setDword(kFirstTime, 0);
-    guest.setDword(kStartTicks, guest.call(kTickCount));
-    guest.call(kFindScreenMode, fe::args({ guest.dword(kChosenHeight) }));
-    guest.call(kModesChooseByWidth);
-    const reg32 answer = guest.call(kMenuLoop, fe::args({ kSetup.address, next }));
-    guest.call(kMenusLeave);
+    gameSettings(guest).raceSeed = fe::direct<0x4b56d0, frontend::wina::tickCount>(app, cpu);
+    const reg32 found = *fe::direct<0x4bee80, graphics::screenModeFor>(app, cpu, gameSettings(guest).screenWidth);
+    guest::direct<0x4483a0, menua::chooseModeOfWidth>(app, cpu, found);  // the width in eax as sub_4bee80 leaves it
+    const reg32 answer = reg32(*fe::direct<0x44b230, port::loop::menuLoopOf>(app, cpu, cpu.esp - 4, kSetup.address, next));
+    fe::direct<0x473080, menuc::menusLeave>(app, cpu);
     return answer;
 }
+
+namespace
+{
 
 /* ---------------------------------------------------------------------------
  * A screen's effects
@@ -771,7 +814,6 @@ reg32 frontEndStart(win32::WinApplication* app, Guest& guest)
 
 constexpr reg32 kBandColour = 0x7a1b8c;
 constexpr reg32 kDefaultBandColour = 0xff4060a0;
-constexpr reg32 kTrack = 0x6fd4ac;
 constexpr reg32 kTrackColours = 0x55eae0;      // by track
 constexpr reg32 kTrackArtNames = 0x559620;     // char*, by track
 constexpr reg32 kTrackArtFolder = 0x7a31b4;
@@ -796,14 +838,12 @@ constexpr GuestString kArtFormat{ 0x53cf18, "%s%s" };
 constexpr GuestString kEffectsStrings[] = { kLocation, kTrackInfo, kRecords, kCar1, kCar2, kNoName,
                                             kTrackArtFormat, kBackShape, kArtFormat };
 
-constexpr reg32 kMenuCurrentName = 0x44ae00;
 constexpr reg32 kStrcmp = 0x4ee310;
-constexpr reg32 kCarBandColour = 0x4a46f0;     // eax 1 or 2: by that player's car
 constexpr reg32 kSprintf = 0x4df690;
-constexpr reg32 kLoadShapes = 0x44ac90;        // eax a path
-constexpr reg32 kFindShape = 0x4ef1e0;         // eax the file, edx a name
 constexpr reg32 kLocateShape = 0x4ef270;       // eax the file, edx a name
 constexpr reg32 kShapeTexture = 0x4d6390;      // eax a shape, edx the old texture
+
+}  // namespace
 
 /* sub_4a4a10: an effects item as its screen opens.  The band behind the lists
  * takes its colour -- by the track on the track's screens, by the car on the
@@ -811,10 +851,12 @@ constexpr reg32 kShapeTexture = 0x4d6390;      // eax a shape, edx the old textu
  * trkinfo the track's own picture, otherwise its shape, from its own art or the
  * screen's.  The band starts tall, once.  What is left in eax is as the
  * generated function leaves it: the last call's answer. */
-reg32 startScreenEffects(Guest& guest, reg32 item, reg32 keepArt)
+x86::reg32 frontend::menuf::startScreenEffects(App* app, CPU& cpu, reg32 item, reg32 keepArt)
 {
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 20 + 0x54);
     guest.leaveEbx(item);  // what sub_44ac90 hands on
-    const reg32 name = guest.call(kMenuCurrentName);
+    const reg32 name = fe::direct<0x44ae00, loop::currentMenuName>(app, cpu);
     reg32 left = name;
     const reg32 shown = name != 0 ? name : kNoName.address;
     guest.setDword(kBandColour, kDefaultBandColour);
@@ -824,13 +866,14 @@ reg32 startScreenEffects(Guest& guest, reg32 item, reg32 keepArt)
         return left == 0;
     };
     const auto bandByCar = [&](reg32 player) {
-        left = guest.call(kCarBandColour, fe::args({ player }));
+        cpu.eax = player;  // the game's code hands it the player, which it compares and does not use
+        left = fe::direct<0x4a46f0, frontend::wata::carBadgeColour>(app, cpu);
         guest.setDword(kBandColour, left);
     };
     if (name != 0)
     {
         if (is(kLocation) || is(kTrackInfo) || is(kRecords))
-            guest.setDword(kBandColour, guest.dword(kTrackColours + 4 * guest.dword(kTrack)));
+            guest.setDword(kBandColour, guest.dword(kTrackColours + 4 * gameSettings(guest).track));
         if (is(kCar1))
             bandByCar(1);
         if (is(kCar2))
@@ -844,17 +887,18 @@ reg32 startScreenEffects(Guest& guest, reg32 item, reg32 keepArt)
         reg32 shape = 0;
         if (is(kTrackInfo))
         {
-            const reg32 trackArt = guest.dword(kTrackArtNames + 4 * guest.dword(kTrack));
+            const reg32 trackArt = guest.dword(kTrackArtNames + 4 * gameSettings(guest).track);
             guest.call(kSprintf, fe::args({}, { path, kTrackArtFormat.address, kTrackArtFolder, trackArt }));
-            const reg32 art = guest.call(kLoadShapes, fe::args({ path, kBackShape.address }));
-            shape = left = guest.call(kFindShape, fe::args({ art, kBackShape.address }));
+            // The item in ebx handed on (the game's code has the shape's name in edx too, which it does not read).
+            const reg32 art = reg32(*fe::direct<0x44ac90, port::buttons::shapesLoaded>(app, cpu, cpu.esp - 4, path, cpu.ebx));
+            shape = left = fe::direct<0x4ef1e0, frontend::eab::shapeFileFind>(app, cpu, art, kBackShape.address);
         }
         else if (file != 0)
         {
             guest.call(kSprintf, fe::args({}, { path, kArtFormat.address, kMenuArtFolder, file }));
-            left = guest.call(kLoadShapes, fe::args({ path }));
+            left = reg32(*fe::direct<0x44ac90, port::buttons::shapesLoaded>(app, cpu, cpu.esp - 4, path, cpu.ebx));
             if (shapeName != 0)
-                shape = left = guest.call(kFindShape, fe::args({ left, shapeName }));
+                shape = left = fe::direct<0x4ef1e0, frontend::eab::shapeFileFind>(app, cpu, left, shapeName);
         }
         else if (shapeName != 0)
             shape = left = guest.call(kLocateShape, fe::args({ guest.dword(kMenuShapeFile), shapeName }));
@@ -862,6 +906,7 @@ reg32 startScreenEffects(Guest& guest, reg32 item, reg32 keepArt)
             left = 0;
         if (shape != 0)
         {
+            // By address: what it leaves in edx, the function leaves.
             left = guest.call(kShapeTexture, fe::args({ shape, 0 }));
             guest.setWord(item + kItemTexture, std::uint16_t(left));
         }
@@ -876,84 +921,102 @@ reg32 startScreenEffects(Guest& guest, reg32 item, reg32 keepArt)
     return left;
 }
 
+namespace
+{
+
 /* ---------------------------------------------------------------------------
  * The small ones
  * ------------------------------------------------------------------------- */
 
 constexpr reg32 kLabelsOn = 0x55fe3c;
 constexpr reg32 kRaceMouseButtons = 0x7a3d00, kRaceMouseX = 0x7a3cf8, kRaceMouseY = 0x7a3cfc;
-constexpr reg32 kReadMouse = 0x435310;         // into [eax] the buttons, [edx] x, [ebx] y, [ecx] the wheel, where not 0
-constexpr reg32 kRacePauseAgain = 0x44ba30;
 
-}
-
-void frontend::hudElementPickCursor(win32::WinApplication* app, x86::CPU& cpu)
-{
-    static fe::Site site{ "sub_45b940", 0, 24 + 0x104, nullptr, 0 };
-    const reg32 element = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest& guest) { return pickResizeCursor(guest, element); });
-}
-
-void frontend::hudElementDraw(win32::WinApplication* app, x86::CPU& cpu)
-{
-    static fe::Site site{ "sub_45bcb0", 0, 16, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEsi };
-    const reg32 element = cpu.eax, dragging = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest& guest) { return drawElement(app, guest, element, dragging); });
-}
-
-void frontend::hudElementKey(win32::WinApplication* app, x86::CPU& cpu)
-{
-    static fe::Site site{ "sub_45bd20", 0, 16 + 0x20, nullptr, 0, fe::kRestoreEcx | fe::kRestoreEsi | fe::kRestoreEdi };
-    const reg32 element = cpu.eax;
-    const std::uint16_t key = std::uint16_t(cpu.ebx);
-    fe::runWhole(app, cpu, site, [&](Guest& guest) { return elementKey(guest, element, key); });
-}
-
-void frontend::hudElementToRecord(win32::WinApplication* app, x86::CPU& cpu)
-{
-    static fe::Site site{ "sub_45c9d0", 0, 12 + 0xc, nullptr, 0, fe::kRestoreEcx | fe::kRestoreEdx };
-    const reg32 element = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest& guest) { return elementToRecord(guest, element); });
-}
-
-void frontend::frontEndFirstStart(win32::WinApplication* app, x86::CPU& cpu)
-{
-    static fe::Site site{ "sub_4730d0", 0, 24 + 0x24, kStartStrings, std::size(kStartStrings) };
-    fe::runWhole(app, cpu, site, [&](Guest& guest) { return frontEndStart(app, guest); });
-}
+}  // namespace
 
 /* sub_478000: one of the things a race's end calls (native_graphics.cpp's
  * kRaceEnds), empty. */
-void frontend::raceEndEmpty(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::menuf::raceEndEmpty(App*, CPU& cpu)
 {
-    static fe::Site site{ "sub_478000", 0, 4, nullptr, 0, 0 };
-    fe::runWhole(app, cpu, site, [](Guest& guest) { return guest.eax(); });
-}
-
-void frontend::effectsScreenStart(win32::WinApplication* app, x86::CPU& cpu)
-{
-    static fe::Site site{ "sub_4a4a10", 0, 20 + 0x54, kEffectsStrings, std::size(kEffectsStrings),
-                          fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEsi | fe::kRestoreEdi };
-    const reg32 item = cpu.eax, keepArt = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest& guest) { return startScreenEffects(guest, item, keepArt); });
+    return cpu.eax;
 }
 
 /* sub_4bc530: the race's mouse read afresh as a pause ends, what it did in the
  * menus forgotten. */
-void frontend::pauseResetRaceMouse(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 frontend::menuf::resetRaceMouse(App* app, CPU& cpu)
 {
-    static fe::Site site{ "sub_4bc530", 0, 16, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEdx };
-    fe::runWhole(app, cpu, site, [](Guest& guest) {
-        guest.setDword(kLabelsOn, 0);
-        return guest.call(kReadMouse, fe::args({ kRaceMouseButtons, kRaceMouseX, kRaceMouseY, 0 }));
-    });
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 16);
+    guest.setDword(kLabelsOn, 0);
+    return *fe::direct<0x435310, controls::mouseRead>(app, cpu, kRaceMouseButtons, kRaceMouseX, kRaceMouseY, 0);
 }
 
 /* sub_4bc660: a race's view pass, pausing again: the pause menu (sub_44ba30). */
+x86::reg32 frontend::menuf::pauseMenuAgain(App* app, CPU& cpu)
+{
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 4);
+    return guest::direct<0x44ba30, menua::racePauseMenuAgain>(app, cpu);
+}
+
+void frontend::hudElementPickCursor(win32::WinApplication* app, x86::CPU& cpu)
+{
+    static fe::Site site{ "sub_45b940", 0, 0, nullptr, 0 };
+    const reg32 element = cpu.eax;
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menuf::pickResizeCursor(app, cpu, element); });
+}
+
+void frontend::hudElementDraw(win32::WinApplication* app, x86::CPU& cpu)
+{
+    static fe::Site site{ "sub_45bcb0", 0, 0, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEsi };
+    const reg32 element = cpu.eax, dragging = cpu.edx;
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menuf::drawElement(app, cpu, element, dragging); });
+}
+
+void frontend::hudElementKey(win32::WinApplication* app, x86::CPU& cpu)
+{
+    static fe::Site site{ "sub_45bd20", 0, 0, nullptr, 0, fe::kRestoreEcx | fe::kRestoreEsi | fe::kRestoreEdi };
+    const reg32 element = cpu.eax, menu = cpu.edx;
+    const std::uint16_t key = std::uint16_t(cpu.ebx);
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menuf::elementKey(app, cpu, element, menu, key); });
+}
+
+void frontend::hudElementToRecord(win32::WinApplication* app, x86::CPU& cpu)
+{
+    static fe::Site site{ "sub_45c9d0", 0, 0, nullptr, 0, fe::kRestoreEcx | fe::kRestoreEdx };
+    const reg32 element = cpu.eax;
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menuf::elementToRecord(app, cpu, element); });
+}
+
+void frontend::frontEndFirstStart(win32::WinApplication* app, x86::CPU& cpu)
+{
+    static fe::Site site{ "sub_4730d0", 0, 0, kStartStrings, std::size(kStartStrings) };
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menuf::frontEndStart(app, cpu); });
+}
+
+void frontend::raceEndEmpty(win32::WinApplication* app, x86::CPU& cpu)
+{
+    static fe::Site site{ "sub_478000", 0, 0, nullptr, 0, 0 };
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menuf::raceEndEmpty(app, cpu); });
+}
+
+void frontend::effectsScreenStart(win32::WinApplication* app, x86::CPU& cpu)
+{
+    static fe::Site site{ "sub_4a4a10", 0, 0, kEffectsStrings, std::size(kEffectsStrings),
+                          fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEsi | fe::kRestoreEdi };
+    const reg32 item = cpu.eax, keepArt = cpu.edx;
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menuf::startScreenEffects(app, cpu, item, keepArt); });
+}
+
+void frontend::pauseResetRaceMouse(win32::WinApplication* app, x86::CPU& cpu)
+{
+    static fe::Site site{ "sub_4bc530", 0, 0, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEdx };
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menuf::resetRaceMouse(app, cpu); });
+}
+
 void frontend::pauseMenuAgain(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_4bc660", 0, 4, nullptr, 0, 0 };
-    fe::runWhole(app, cpu, site, [](Guest& guest) { return guest.call(kRacePauseAgain); });
+    static fe::Site site{ "sub_4bc660", 0, 0, nullptr, 0, 0 };
+    fe::runWhole(app, cpu, site, [&](Guest&) { return menuf::pauseMenuAgain(app, cpu); });
 }
 
 }

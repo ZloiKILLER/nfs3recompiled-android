@@ -34,4 +34,9 @@ inline void SDL_Log(const char* format, ...)
     va_end(args);
     std::fputc('\n', stdout);
 }
+
+/* What lib/renderer.h (under DirectDraw's classes, which the menus' natives call as C++) takes. */
+typedef int SDL_SpinLock;
+inline void SDL_LockSpinlock(SDL_SpinLock*) {}
+inline void SDL_UnlockSpinlock(SDL_SpinLock*) {}
 #endif

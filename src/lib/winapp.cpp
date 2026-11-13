@@ -236,6 +236,13 @@ void WinApplication::registerMethod(x86::reg32 pointer, Method method)
     }
 }
 
+void WinApplication::replaceMethod(x86::reg32 pointer, Method method)
+{
+    NFS2_ASSERT(m_methods.find(pointer-0x400000) != m_methods.end());
+    m_methods.erase(pointer-0x400000);
+    registerMethod(pointer, std::move(method));
+}
+
 void WinApplication::dynamicCallElsewhere(x86::reg32 address, x86::CPU& cpu)
 {
     std::unordered_map<x86::reg32, Method>::const_iterator it = m_methods.find(address - 0x400000);

@@ -1,7 +1,23 @@
+#include "game_settings.h"
+#include "native_aiplan.h"
+#include "native_carstate.h"
+#include "native_collide.h"
+#include "native_ea_memory.h"
+#include "native_ea_support.h"
+#include "native_ea_threads.h"
 #include "native_guest.h"
+#include "native_track.h"
+#include "native_trackdata.h"
+#include "native_vertices.h"
+#include "native_windows.h"
 #include "port_thrash.h"
+#include <winapi/kernel32.h>
+#include <winapi/shell32.h>
 
 #include <cstdint>
+#include <cstring>
+#include <initializer_list>
+#include <optional>
 #include <utility>
 
 /* The track: its geometry read from the .frd file into an arena of its own,
@@ -24,7 +40,8 @@
  * is at 0x5dd070.
  *
  * A view: 0x54 bytes each from 0x5dd0e0, four of them, [0x5dd830] the one
- * being drawn -- +0 the block it is in, +0x30 the distance the world ends at,
+ * being drawn -- +0 -1 as they start over, +4 the block it is in, +0x30 the
+ * distance the world ends at,
  * +0x34 the distance blocks are drawn to, +0x40/+0x44 the two distances the
  * track's model gets coarser at; the camera (eax of the drawing) its kind at
  * +0 (1 the rear-view mirror's pass), its place at +8, its matrix at +0x44,
@@ -34,18 +51,29 @@
  * ([0x5dd078], moved on as it goes) into blocks taken from the arena: 0x310000
  * bytes at [0x552dfc], [0x552e00] of them used.
  *
- * Written as their code is: each push and pop to the guest's stack, each call
- * with the return address's slot, the frames' locals in the guest's memory,
- * the registers as the code leaves them, the x87's arithmetic through
- * x86::FPU as the code's (its stack kept in locals where the code's is, as
- * the generated code keeps it), the safepoint at each loop's head the
- * generated code has.  Every other function of the game's, and Windows'
- * through its imports, is called by address.
+ * Each is a typed function under a name of its own, with an adapter under
+ * the game's name for the callers still on registers and the dispatch: it
+ * leaves the registers, the x87's stack and its control word as the game's
+ * code does (a core hands back what the code leaves where a caller can see
+ * it).  The other typed files' functions are called as C++ (guest::direct,
+ * their headers), what the code reads in a register after one made from
+ * what it gives back or from what the code hands it there, which the call
+ * keeps -- by address where the code reads what it leaves that it does not
+ * give back.  Every other function of the game's, and Windows' through its
+ * imports, is called by address, handed the registers the code hands it,
+ * its frames on the guest's stack as deep as the code's where a callee is
+ * handed their places; the x87's operations are fp's, in the game's order, a
+ * float kept where the game stores one; the safepoint at each loop's head
+ * the generated code has.  A core calls this file's cores as C++, the
+ * return address's slot (and the stack's words) emulated where its frame is
+ * handed on.  Where the code leaves in a register what its last calls left
+ * there (the drawing's ebx, ecx, edx), a core hands that back too (Leftovers):
+ * no caller reads it, the check compares it.
  *
  * The port's changes these functions carry: the alpha intensity's scaling on
  * this driver too (tools/apply_alpha_intensity.py, projectedTriangle) and the
  * rear-view mirror drawn as the main view (tools/apply_mirror_detail.py,
- * modelByDistance, headlightsOnObjects, drawTrack), through
+ * modelByDistance, headlightsOnPoints, drawTrackBlocks), through
  * nfs3hp::mirrorAsMain as the generated code had them. */
 namespace nfs3hp
 {
@@ -75,6 +103,11 @@ using i32 = std::int32_t;
 constexpr reg32 kBlocks = 0x571370, kBlockSize = 0x5c0, kLastBlock = 0x5dd83c;
 constexpr reg32 kViews = 0x5dd0e0, kView = 0x5dd830, kTrackObjects = 0x5dd070;
 constexpr reg32 kViewSerial = 0x5dd0d8, kViewSerialHigh = 0x5dd0dc;
+// A view's size and its block (+4); the pass being drawn, 1 the rear-view mirror's.
+constexpr reg32 kViewSize = 0x54, kViewBlock = 4, kPassKind = 0x7a3d14, kMirrorPass = 1;
+// A view's +0: -1 as the views start over; an object's state still (its first byte).
+constexpr reg32 kViewStart = 0;
+constexpr reg8 kStateStill = 0xff;
 // The .frd's reading: where the file is read from, the arena and its use.
 constexpr reg32 kFrdAt = 0x5dd078, kArena = 0x552dfc, kArenaUsed = 0x552e00, kArenaSize = 0x310000;
 // The lights and sound sources of the .frd, their count; the kinds' records.
@@ -85,18 +118,15 @@ constexpr reg32 kTint = 0x55d148, kDriverBits = 0x7a3a58;
 // The shading's distances: near, far, the light's reach, 1 / (far - near).
 constexpr reg32 kShadeNear = 0x552e04, kShadeFar = 0x552e08, kShadeReach = 0x552e0c, kShadeScale = 0x552e10;
 // Alpha intensity (0..1) and the headlights' polygon's texture.
-constexpr reg32 kAlphaIntensity = 0x6fbc38, kHeadlightTexture = 0x8b4814;
+constexpr reg32 kHeadlightTexture = 0x8b4814;
 // The race: split screen, the network's, the track's number; the loading stopped.
-constexpr reg32 kSplitScreen = 0x6fd4c8, kNetworkRace = 0x6fd4cc, kTrackNumber = 0x6fd4ac;
 constexpr reg32 kLoadStopped = 0x55e88c;
 // The cars (the headlights): their count and pointers.
 constexpr reg32 kCarCount = 0x5efd9c, kCars = 0x5efac8;
 // The objects' animation states, 3 bytes each.
-constexpr reg32 kObjectStates = 0x5dd230;
+constexpr reg32 kObjectStates = 0x5dd230, kObjectStateSize = 3;
 // The models by distance: 3 records of 12 bytes.
 constexpr reg32 kModels = 0x552e20;
-// View Distance (0 Full .. 3 Close).
-constexpr reg32 kViewDistance = 0x6fbc28;
 // The .col file, its records, the track's textures and their handle.
 constexpr reg32 kColFile = 0x552e18, kColVertices = 0x552e14, kColObjects = 0x5dd844, kColLights = 0x5dd840;
 constexpr reg32 kTexturesFile = 0x5dd850, kTexturesCount = 0x5dd854, kTexturesLeft = 0x5dd85c, kTexturesAll = 0x5dd860;
@@ -111,40 +141,14 @@ constexpr reg32 kOpen = 0x536c30, kNoName = 0x536c60, kNoName2 = 0x536d10;
 constexpr reg32 kHeadlightsBox = 0x41a880, kHeadlightsPoint = 0x41a8a4;  // data among the code
 // What is called by address.
 constexpr reg32 kGetModuleHandleA = 0x53454c, kShellExecuteA = 0x534480;
-constexpr reg32 kAllocate = 0x4e1620, kFree = 0x4e1890, kMemmove = 0x4ea4f0, kFileExists = 0x4e0e60;
+constexpr reg32 kAllocate = 0x4e1620, kMemmove = 0x4ea4f0;
 constexpr reg32 kTopUp = 0x4a33d0;
 
-void push(App* app, CPU& cpu, reg32 value)
-{
-    cpu.esp -= 4;
-    put(app, cpu.esp, value);
-}
-
-reg32 pop(App* app, CPU& cpu)
-{
-    const reg32 value = at(app, cpu.esp);
-    cpu.esp += 4;
-    return value;
-}
-
-/* A call as the code makes it: the return address's slot, and esp as the
- * callee leaves it.  False when the game stopped in it. */
-bool direct(App* app, CPU& cpu, void (*function)(App*, CPU&))
-{
-    cpu.esp -= 4;
-    function(app, cpu);
-    return !cpu.terminate;
-}
-
-bool byAddress(App* app, CPU& cpu, reg32 target)
-{
-    cpu.esp -= 4;
-    app->dynamic_call(target, cpu);
-    return !cpu.terminate;
-}
-
-/* A loop's safepoint, as the generated code has one at each loop's head. */
-void safepoint(App* app, CPU& cpu)
+/* A loop's safepoint, as the generated code has one at each loop's head: the
+ * guest's context handed over when another thread (the sound's timer, its
+ * mixer) has waited for it.  The only thing a core without callees takes the
+ * CPU for. */
+void safepoint(App* app, const CPU& cpu)
 {
     if (app->contextWanted())
         app->yieldContext(cpu);
@@ -175,79 +179,6 @@ void putF32(App* app, reg32 address, const Float& value)
     app->getMemory<float>(address) = float(value);
 }
 
-void putF64(App* app, reg32 address, const Float& value)
-{
-    app->getMemory<double>(address) = double(value);
-}
-
-/* movsd: a dword from [esi] to [edi], both moved on. */
-void movsd(App* app, CPU& cpu)
-{
-    put(app, cpu.edi, at(app, cpu.esi));
-    cpu.esi += 4;
-    cpu.edi += 4;
-}
-
-/* The code's cdq; idiv by: edx:eax divided, as x86 does. */
-void idiv(CPU& cpu, reg32 by)
-{
-    const i32 n = i32(cpu.eax);
-    cpu.eax = by == 0xffffffff ? 0u - cpu.eax : reg32(n / i32(by));
-    cpu.edx = by == 0xffffffff ? 0 : reg32(n % i32(by));
-}
-
-/* The code's signed shift towards 0 -- mov edx, eax; sar edx, 31; shl edx,
- * k; sbb eax, edx; sar eax, k -- of eax; edx as it leaves it. */
-void towardZero(CPU& cpu, unsigned k)
-{
-    const bool negative = i32(cpu.eax) < 0;
-    cpu.edx = negative ? 0xffffffffu << k : 0;
-    cpu.eax = reg32(i32(cpu.eax - cpu.edx - (negative ? 1 : 0)) >> k);
-}
-
-/* fcom(p); fnstsw ax; sahf: st(0) compared with m, the x87's status word in
- * ax; what sahf makes of it -- CF (C0) below, ZF (C3) equal, both for an
- * unordered pair. */
-struct Compared
-{
-    bool below, equal;
-    bool belowOrEqual() const { return below || equal; }
-    bool above() const { return !below && !equal; }
-};
-
-Compared compare(CPU& cpu, const Float& st0, const Float& m)
-{
-    cpu.fpu.compare(st0, m);
-    cpu.ax = cpu.fpu.status.word;
-    return {(cpu.ah & 1) != 0, (cpu.ah & 0x40) != 0};
-}
-
-/* The code's colour scaled by the 16.16 factor in ecx (0x10000 and up taken
- * as 0xffff): ecx's high byte of it, eax's four channels two at a time -- ebx
- * the odd ones, edx the high half of the second mul. */
-void scaleColour(CPU& cpu)
-{
-    if (sreg32(cpu.ecx) >= 0x10000)
-        cpu.ecx = 0xffff;
-    cpu.ecx >>= 8;
-    cpu.ebx = cpu.eax;
-    cpu.ecx &= 0xff;
-    cpu.ebx &= 0xff00ff00;
-    cpu.ebx >>= 8;
-    cpu.eax &= 0xff00ff;
-    std::uint64_t product = std::uint64_t(cpu.eax) * cpu.ecx;
-    cpu.eax = reg32(product);
-    cpu.edx = reg32(product >> 32);
-    std::swap(cpu.eax, cpu.ebx);
-    product = std::uint64_t(cpu.eax) * cpu.ecx;
-    cpu.eax = reg32(product);
-    cpu.edx = reg32(product >> 32);
-    cpu.ebx >>= 8;
-    cpu.eax &= 0xff00ff00;
-    cpu.ebx &= 0xff00ff;
-    cpu.eax |= cpu.ebx;
-}
-
 /* The block of number `index`: kBlocks + index * 0x5c0, as the code works it
  * out (lea, sub, shl 3, sub, shl 6). */
 reg32 blockOffset(reg32 index)
@@ -255,12 +186,12 @@ reg32 blockOffset(reg32 index)
     return index * kBlockSize;
 }
 
-/* The code's vector at eax turned by the 3 by 3 matrix at edx into ebx: each
- * row's products summed in its order; eax left past the vector. */
-void rotate(App* app, CPU& cpu)
+/* The vector at `vector` turned by the 3 by 3 matrix at `matrix` into `to`:
+ * each row's products summed in the code's order (the turn every view takes
+ * of a place, inline in the code). */
+void turnVector(App* app, reg32 vector, reg32 matrix, reg32 to)
 {
-    x86::FPU& fpu = cpu.fpu;
-    const reg32 v = cpu.eax, m = cpu.edx;
+    const reg32 v = vector, m = matrix;
     const Float a = fp::mul(f32(app, v), f32(app, m));
     const Float b = fp::mul(f32(app, v), f32(app, m + 4));
     const Float c = fp::mul(f32(app, v), f32(app, m + 8));
@@ -272,16 +203,147 @@ void rotate(App* app, CPU& cpu)
     const Float h = fp::mul(f32(app, v + 8), f32(app, m + 0x1c));
     const Float i = fp::mul(f32(app, v + 8), f32(app, m + 0x20));
     const Float rx = fp::add(x, g), ry = fp::add(y, h), rz = fp::add(z, i);
-    cpu.eax = v + 0xc;
-    putF32(app, cpu.ebx, rx);
-    putF32(app, cpu.ebx + 4, ry);
-    putF32(app, cpu.ebx + 8, rz);
+    putF32(app, to, rx);
+    putF32(app, to + 4, ry);
+    putF32(app, to + 8, rz);
 }
+
+/* A float's bits, and the float of bits, as the code moves them through a
+ * register. */
+reg32 bitsOf(float value)
+{
+    reg32 bits;
+    std::memcpy(&bits, &value, sizeof bits);
+    return bits;
+}
+
+Float floatOf(reg32 bits)
+{
+    float value;
+    std::memcpy(&value, &bits, sizeof value);
+    return Float(value);
+}
+
+/* Room on the guest's stack for what a callee is handed the address of: the
+ * code's frame (`pushed` bytes of registers under esp on entry, then
+ * `bytes`), esp under it while the core runs and back after. */
+class GuestFrame
+{
+public:
+    GuestFrame(CPU& cpu, reg32 pushed, reg32 bytes) : cpu_(cpu), esp_(cpu.esp), base_(cpu.esp - pushed)
+    {
+        cpu.esp = base_ - bytes;
+    }
+    ~GuestFrame() { cpu_.esp = esp_; }
+    reg32 operator-(reg32 offset) const { return base_ - offset; }
+    reg32 operator+(reg32 offset) const { return base_ + offset; }
+
+private:
+    CPU& cpu_;
+    const reg32 esp_, base_;
+};
 
 /* cmp al, ah; ja; mov al, ah: the larger of two bytes. */
 reg8 larger(reg8 a, reg8 b)
 {
     return a > b ? a : b;
+}
+
+// The registers a function's code saves (pushes and pops); ebp each of them does.
+constexpr reg32 kSaveEbx = 1, kSaveEcx = 2, kSaveEdx = 4, kSaveEsi = 8, kSaveEdi = 0x10;
+
+/* The registers a function's code saves and restores, and ebp, as they were
+ * on entry whatever its callees leave; the others left as the code and its
+ * callees leave them. */
+class Kept
+{
+public:
+    Kept(CPU& cpu, reg32 saved)
+        : cpu_(cpu), saved_(saved), ebx_(cpu.ebx), ecx_(cpu.ecx), edx_(cpu.edx), esi_(cpu.esi), edi_(cpu.edi),
+          ebp_(cpu.ebp)
+    {
+    }
+    ~Kept()
+    {
+        if (saved_ & kSaveEbx)
+            cpu_.ebx = ebx_;
+        if (saved_ & kSaveEcx)
+            cpu_.ecx = ecx_;
+        if (saved_ & kSaveEdx)
+            cpu_.edx = edx_;
+        if (saved_ & kSaveEsi)
+            cpu_.esi = esi_;
+        if (saved_ & kSaveEdi)
+            cpu_.edi = edi_;
+        cpu_.ebp = ebp_;
+    }
+
+private:
+    CPU& cpu_;
+    const reg32 saved_, ebx_, ecx_, edx_, esi_, edi_, ebp_;
+};
+
+/* A call by address as the code makes it, the registers it is handed set:
+ * `words` pushed below esp (the first the lowest), the return address's slot,
+ * esp back after it.  eax back; nullopt when the game stopped. */
+std::optional<reg32> call(App* app, CPU& cpu, reg32 target, std::initializer_list<reg32> words = {})
+{
+    if (!guest::call(app, cpu, target, words))
+        return std::nullopt;
+    return cpu.eax;
+}
+
+// Other files' functions the track's call by address (Watcom's, unless said).
+constexpr reg32 kViewDistances = 0x41d620;    // render::viewDistances: the view's distances for camera eax
+constexpr reg32 kLoadFrd = 0x419c20;          // loader::frd: the .frd read into the track's blocks
+constexpr reg32 kClearCameras = 0x40f230;     // load::clearTrackCameras
+
+/* The sound's stream topped up (0x4a33d0), as the track's long loops do it.
+ * False when the game stopped. */
+bool topUp(App* app, CPU& cpu)
+{
+    return guest::call(app, cpu, kTopUp);
+}
+
+/* `bytes` bytes of the game's heap (0x4e1620), `name` the string it is
+ * known by, no flags; their address (in eax too). */
+std::optional<reg32> allocate(App* app, CPU& cpu, reg32 name, reg32 bytes)
+{
+    const std::optional<reg32> block = guest::direct<0x4e1620, ea::reserved>(app, cpu, name, bytes, 0);
+    if (block)
+        cpu.eax = *block;
+    return block;
+}
+
+/* allocate by address (ebx 0), for a caller whose code leaves what the heap
+ * leaves in edx (ea::reserved gives back only the address). */
+std::optional<reg32> allocateLeaving(App* app, CPU& cpu, reg32 name, reg32 bytes)
+{
+    cpu.eax = name;
+    cpu.edx = bytes;
+    cpu.ebx = 0;
+    return call(app, cpu, kAllocate);
+}
+
+/* The heap's block at `block` given back (0x4e1890); what that gives back,
+ * in eax too. */
+std::optional<reg32> freeBlock(App* app, CPU& cpu, reg32 block)
+{
+    const std::optional<reg32> freed = guest::direct<0x4e1890, ea::purgeBlock>(app, cpu, block);
+    if (freed)
+        cpu.eax = *freed;
+    return freed;
+}
+
+/* The game's memmove (0x4ea4f0): `bytes` from `from` to `to`.  By address:
+ * the .frd's readers leave what it leaves in eax and edx (ea::moveMemory
+ * gives back only whether the game went on). */
+bool memmove(App* app, CPU& cpu, reg32 to, reg32 from, reg32 bytes)
+{
+    cpu.eax = from;
+    cpu.edx = to;
+    cpu.ebx = bytes;
+    return guest::call(app, cpu, kMemmove);
 }
 
 }  // namespace
@@ -342,3909 +404,3196 @@ void resetViewsOuter(App* app, CPU& cpu);
 void resetViews(App* app, CPU& cpu);
 void blockInView(App* app, CPU& cpu);
 
-/* 0x418cc0: the file or address at eax opened (ShellExecuteA's "open", shown
- * normally).  1. */
+// The typed cores a core calls before they are defined.
+bool readFrd(App* app, CPU& cpu, reg32 to, reg32 bytes);
+std::optional<reg32> takeFromArena(App* app, reg32 bytes);
+bool freeTheArena(App* app, CPU& cpu);
+bool startViewsOver(App* app, CPU& cpu);
+bool freeCollisionFile(App* app, CPU& cpu);
+reg32 chooseView(App* app, reg32 index);
+reg32 scaledColour(reg32 colour, reg32 factor);
+bool turnOfAngles(App* app, CPU& cpu, reg32 first, reg32 second, reg32 third, reg32 into);
+bool turnOfPitchYaw(App* app, CPU& cpu, reg32 pitch, reg32 yaw, reg32 into);
+std::optional<bool> blockDrawn(App* app, CPU& cpu, reg32 camera, reg32 index);
+
+/* 0x418cc0's: the file or address at `file` opened -- ShellExecuteA's
+ * "open", shown normally (1), for this module (GetModuleHandleA(0)).  False
+ * when the game stopped. */
+bool openWithShell(App* app, CPU& cpu, reg32 file)
+{
+    constexpr reg32 kShowNormal = 1;
+    const std::optional<reg32> module =
+        guest::windows<kGetModuleHandleA, &win32::kernel32::GetModuleHandleA>(app, cpu, 0);
+    return module
+           && guest::windows<kShellExecuteA, &win32::shell32::ShellExecuteA>(app, cpu, *module, kOpen, file, 0, 0,
+                                                                             kShowNormal);
+}
+
+/* 0x418cc0: openWithShell of eax; 1. */
 void shellOpen(App* app, CPU& cpu)
 {
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.edx);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    push(app, cpu, 1);
-    push(app, cpu, 0);
-    push(app, cpu, 0);
-    push(app, cpu, cpu.eax);
-    push(app, cpu, kOpen);
-    push(app, cpu, 0);
-    if (!byAddress(app, cpu, at(app, kGetModuleHandleA)))
-        return;
-    push(app, cpu, cpu.eax);
-    if (!byAddress(app, cpu, at(app, kShellExecuteA)))
+    const Kept kept(cpu, kSaveEcx | kSaveEdx);
+    if (!openWithShell(app, cpu, cpu.eax))
         return;
     cpu.eax = 1;
-    cpu.ebp = pop(app, cpu);
-    cpu.edx = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
     cpu.esp += 4;
 }
 
-/* 0x419660: the eax colours at edx (ARGB) tinted -- red, green and blue each
- * to its percent of the tint ([0x55d148], [0x55d14c], [0x55d150]), alpha
- * kept. */
+// A colour's alpha (ARGB); the tint's percents of red, green and blue (kTint, +4, +8).
+constexpr reg32 kAlpha = 0xff000000, kTintRed = 0, kTintGreen = 4, kTintBlue = 8;
+
+/* A colour's channel `shift` bits up taken to `percent` per cent, as the code
+ * works it out: the byte times the percent, divided by 100 signed. */
+reg32 tintedChannel(reg32 colour, unsigned shift, reg32 percent)
+{
+    return reg32(i32(((colour >> shift) & 0xff) * percent) / 100);
+}
+
+/* The colours a run of `count` does, as the code leaves the count in eax. */
+reg32 coloursDone(reg32 count)
+{
+    return sreg32(count) > 0 ? count : 0;
+}
+
+/* 0x419660's: the `count` colours at `colours` (ARGB) tinted -- red, green
+ * and blue each to its percent of the tint, alpha kept.  The last one's
+ * green, as the code leaves it in edx (0 where there is none). */
+reg32 tintColourRun(App* app, const CPU& cpu, reg32 count, reg32 colours)
+{
+    reg32 green = 0;
+    for (reg32 done = 0;; ++done)
+    {
+        safepoint(app, cpu);
+        if (sreg32(done) >= sreg32(count))
+            break;
+        const reg32 place = colours + done * 4, colour = at(app, place);
+        const reg32 red = tintedChannel(colour, 16, at(app, kTint + kTintRed));
+        green = tintedChannel(colour, 8, at(app, kTint + kTintGreen)) << 8;
+        const reg32 blue = tintedChannel(colour, 0, at(app, kTint + kTintBlue));
+        put(app, place, (red << 16) | (colour & kAlpha) | green | blue);
+    }
+    return green;
+}
+
+/* 0x419660: tintColourRun of eax colours at edx; eax the colours done. */
 void tintColours(App* app, CPU& cpu)
 {
-    push(app, cpu, cpu.ebx);
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.esi);
-    push(app, cpu, cpu.edi);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    cpu.esp -= 0xc;
-    const reg32 count = cpu.ebp - 8, done = cpu.ebp - 4, alpha = cpu.ebp - 0xc;
-    put(app, count, cpu.eax);
-    cpu.ecx = cpu.edx;
-    cpu.edx = 0;
-    put(app, done, cpu.edx);
-    for (;;)
-    {
-        safepoint(app, cpu);
-        cpu.eax = at(app, done);
-        if (sreg32(cpu.eax) >= sreg32(at(app, count)))
-            break;
-        cpu.ebx = reg32(sreg32(at(app, cpu.ecx)) >> 0x10);
-        cpu.edx = at(app, kTint);
-        cpu.ebx &= 0xff;
-        cpu.edx = cpu.edx * cpu.ebx;
-        cpu.eax = at(app, cpu.ecx) & 0xff000000;
-        put(app, alpha, cpu.eax);
-        cpu.ebx = 0x64;
-        cpu.eax = cpu.edx;
-        idiv(cpu, cpu.ebx);
-        cpu.edi = reg32(sreg32(at(app, cpu.ecx)) >> 8) & 0xff;
-        cpu.edx = at(app, kTint + 4) * cpu.edi;
-        cpu.ebx = cpu.eax;
-        cpu.edi = 0x64;
-        cpu.eax = cpu.edx;
-        idiv(cpu, cpu.edi);
-        cpu.esi = at(app, cpu.ecx) & 0xff;
-        cpu.edx = at(app, kTint + 8) * cpu.esi;
-        cpu.edi = cpu.eax;
-        cpu.esi = 0x64;
-        cpu.eax = cpu.edx;
-        idiv(cpu, cpu.esi);
-        cpu.esi = cpu.eax;
-        cpu.eax = cpu.ebx;
-        cpu.edx = at(app, alpha);
-        cpu.eax <<= 0x10;
-        cpu.eax |= cpu.edx;
-        cpu.edx = cpu.edi;
-        cpu.ecx += 4;
-        cpu.edx <<= 8;
-        cpu.ebx = at(app, done);
-        cpu.eax |= cpu.edx;
-        ++cpu.ebx;
-        cpu.eax |= cpu.esi;
-        put(app, done, cpu.ebx);
-        put(app, cpu.ecx - 4, cpu.eax);
-    }
-    cpu.esp = cpu.ebp;
-    cpu.ebp = pop(app, cpu);
-    cpu.edi = pop(app, cpu);
-    cpu.esi = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
-    cpu.ebx = pop(app, cpu);
+    const reg32 count = cpu.eax;
+    cpu.edx = tintColourRun(app, cpu, count, cpu.edx);
+    cpu.eax = coloursDone(count);
     cpu.esp += 4;
 }
 
-/* 0x419720: the colours of each object of the list at eax tinted (its count,
- * then the objects, 0x34 bytes each: +0x20 the vertices' count, +0x28 their
- * colours). */
+// An object list: its count, then its objects, 0x34 bytes each: +0x18 its extra data's size, +0x1c the
+// data, +0x20 its vertices' count, +0x24 its vertices (12 bytes each), +0x28 their colours, +0x2c its
+// polygons' count, +0x30 its polygons (14 bytes each).
+constexpr reg32 kListCount = 0, kListObjects = 4, kObjectSize = 0x34, kObjectExtraSize = 0x18, kObjectExtra = 0x1c,
+                kObjectVertexCount = 0x20, kObjectVertices = 0x24, kObjectColours = 0x28, kObjectPolygonCount = 0x2c,
+                kObjectPolygons = 0x30, kVertexSize = 12, kColourSize = 4, kPolygonSize = 14;
+// A block's own vertices' count (+0x58) and colours (+0x74); the lists of objects tinted with it.
+constexpr reg32 kBlockVertexCount = 0x58, kBlockColours = 0x74;
+constexpr reg32 kBlockLists[] = {0x564, 0x56c, 0x574};
+
+/* 0x419720's: the colours of each object of the list at `list` tinted.  What
+ * the code leaves in eax: the last object's colours done, or the list where
+ * it has none. */
+reg32 tintObjects(App* app, const CPU& cpu, reg32 list)
+{
+    reg32 left = list, object = at(app, list + kListObjects);
+    for (reg32 remaining = at(app, list + kListCount);; object += kObjectSize)
+    {
+        safepoint(app, cpu);
+        if (remaining-- == 0)
+            break;
+        const reg32 count = at(app, object + kObjectVertexCount);
+        tintColourRun(app, cpu, count, at(app, object + kObjectColours));
+        left = coloursDone(count);
+    }
+    return left;
+}
+
+/* 0x419720: tintObjects of eax. */
 void tintObjectList(App* app, CPU& cpu)
 {
-    push(app, cpu, cpu.ebx);
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.edx);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    cpu.ecx = at(app, cpu.eax + 4);
-    cpu.ebx = at(app, cpu.eax);
-    for (;;)
-    {
-        safepoint(app, cpu);
-        --cpu.ebx;
-        if (cpu.ebx == 0xffffffff)
-            break;
-        cpu.edx = at(app, cpu.ecx + 0x28);
-        cpu.eax = at(app, cpu.ecx + 0x20);
-        if (!direct(app, cpu, tintColours))
-            return;
-        cpu.ecx += 0x34;
-    }
-    cpu.ebp = pop(app, cpu);
-    cpu.edx = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
-    cpu.ebx = pop(app, cpu);
+    cpu.eax = tintObjects(app, cpu, cpu.eax);
     cpu.esp += 4;
 }
 
-/* 0x419750: the whole track's colours tinted: the track's objects, then each
- * block's three lists of objects and its own vertices. */
+/* 0x419750's: the whole track's colours tinted: the track's objects, then
+ * each block's three lists of objects and its own vertices.  What the code
+ * leaves in eax: the last block's colours done (the track objects' where
+ * there is no block). */
+reg32 tintTrackColours(App* app, const CPU& cpu)
+{
+    reg32 left = tintObjects(app, cpu, kTrackObjects);
+    for (reg32 index = 0;; ++index)
+    {
+        safepoint(app, cpu);
+        if (sreg32(index) > sreg32(at(app, kLastBlock)))
+            break;
+        const reg32 block = kBlocks + blockOffset(index);
+        for (const reg32 list : kBlockLists)
+            tintObjects(app, cpu, block + list);
+        const reg32 count = at(app, block + kBlockVertexCount);
+        tintColourRun(app, cpu, count, at(app, block + kBlockColours));
+        left = coloursDone(count);
+    }
+    return left;
+}
+
+/* 0x419750: tintTrackColours. */
 void tintTrack(App* app, CPU& cpu)
 {
-    push(app, cpu, cpu.ebx);
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.edx);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    cpu.eax = kTrackObjects;
-    if (!direct(app, cpu, tintObjectList))
-        return;
-    cpu.ecx = 0;
-    for (;;)
-    {
-        safepoint(app, cpu);
-        if (sreg32(cpu.ecx) > sreg32(at(app, kLastBlock)))
-            break;
-        cpu.eax = blockOffset(cpu.ecx);
-        cpu.edx = kBlocks + cpu.eax;
-        for (const reg32 list : {0x564u, 0x56cu, 0x574u})
-        {
-            cpu.eax = cpu.edx + list;
-            if (!direct(app, cpu, tintObjectList))
-                return;
-        }
-        cpu.eax = at(app, cpu.edx + 0x74);
-        cpu.ebx = at(app, cpu.edx + 0x58);
-        cpu.edx = cpu.eax;
-        cpu.eax = cpu.ebx;
-        ++cpu.ecx;
-        if (!direct(app, cpu, tintColours))
-            return;
-    }
-    cpu.ebp = pop(app, cpu);
-    cpu.edx = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
-    cpu.ebx = pop(app, cpu);
+    cpu.eax = tintTrackColours(app, cpu);
     cpu.esp += 4;
 }
 
-/* 0x4197c0: the eax colours at edx made grey -- the mean of red, green and
- * blue in each, alpha opaque. */
+/* 0x4197c0's: the `count` colours at `colours` made grey -- the mean of
+ * red, green and blue in each, alpha opaque.  The last one, as the code
+ * leaves it in eax; nullopt where there is none. */
+std::optional<reg32> greyColourRun(App* app, const CPU& cpu, reg32 count, reg32 colours)
+{
+    std::optional<reg32> last;
+    for (reg32 done = 0;; ++done)
+    {
+        safepoint(app, cpu);
+        if (sreg32(done) >= sreg32(count))
+            break;
+        const reg32 place = colours + done * 4, colour = at(app, place);
+        const reg32 mean = reg32(i32(((colour >> 16) & 0xff) + ((colour >> 8) & 0xff) + (colour & 0xff)) / 3);
+        last = mean | (mean << 8) | (mean << 16) | kAlpha;
+        put(app, place, *last);
+    }
+    return last;
+}
+
+/* What greyColours leaves in eax: the last colour, or the count where none. */
+reg32 greyLeft(reg32 count, const std::optional<reg32>& last)
+{
+    return last ? *last : count;
+}
+
+/* 0x4197c0: greyColourRun of eax colours at edx; eax the last, edx all of it
+ * but its blue, as the code leaves them (both as they were where none). */
 void greyColours(App* app, CPU& cpu)
 {
-    push(app, cpu, cpu.ebx);
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.esi);
-    push(app, cpu, cpu.edi);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    cpu.esp -= 8;
-    const reg32 green = cpu.ebp - 8, high = cpu.ebp - 4;
-    cpu.esi = cpu.eax;
-    cpu.ecx = cpu.edx;
-    cpu.ebx = 0;
-    for (;;)
+    if (const std::optional<reg32> last = greyColourRun(app, cpu, cpu.eax, cpu.edx))
     {
-        safepoint(app, cpu);
-        if (sreg32(cpu.ebx) >= sreg32(cpu.esi))
-            break;
-        cpu.edx = reg32(sreg32(at(app, cpu.ecx)) >> 8) & 0xff;
-        cpu.eax = reg32(sreg32(at(app, cpu.ecx)) >> 0x10) & 0xff;
-        put(app, green, cpu.edx);
-        cpu.edx = at(app, cpu.ecx) & 0xff;
-        cpu.edi = at(app, green);
-        cpu.eax += cpu.edi;
-        cpu.edx += cpu.eax;
-        cpu.edi = 3;
-        cpu.eax = cpu.edx;
-        idiv(cpu, cpu.edi);
-        cpu.edx = (cpu.eax << 0x10) | 0xff000000;
-        put(app, high, cpu.edx);
-        cpu.edx = cpu.eax;
-        cpu.edi = at(app, high);
-        cpu.edx <<= 8;
-        cpu.edx |= cpu.edi;
-        cpu.ecx += 4;
-        cpu.eax |= cpu.edx;
-        ++cpu.ebx;
-        put(app, cpu.ecx - 4, cpu.eax);
+        cpu.eax = *last;
+        cpu.edx = *last & 0xffffff00;
     }
-    cpu.esp = cpu.ebp;
-    cpu.ebp = pop(app, cpu);
-    cpu.edi = pop(app, cpu);
-    cpu.esi = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
-    cpu.ebx = pop(app, cpu);
     cpu.esp += 4;
 }
 
-/* 0x419840: the colours of each object of the list at eax made grey. */
+/* 0x419840's: the colours of each object of the list at `list` made grey.
+ * What the code leaves in eax: the last object's greyLeft, or the list where
+ * it has none. */
+reg32 greyObjects(App* app, const CPU& cpu, reg32 list)
+{
+    reg32 left = list, object = at(app, list + kListObjects);
+    for (reg32 remaining = at(app, list + kListCount);; object += kObjectSize)
+    {
+        safepoint(app, cpu);
+        if (remaining-- == 0)
+            break;
+        const reg32 count = at(app, object + kObjectVertexCount);
+        left = greyLeft(count, greyColourRun(app, cpu, count, at(app, object + kObjectColours)));
+    }
+    return left;
+}
+
+/* 0x419840: greyObjects of eax. */
 void greyObjectList(App* app, CPU& cpu)
 {
-    push(app, cpu, cpu.ebx);
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.edx);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    cpu.ecx = at(app, cpu.eax + 4);
-    cpu.ebx = at(app, cpu.eax);
-    for (;;)
-    {
-        safepoint(app, cpu);
-        --cpu.ebx;
-        if (cpu.ebx == 0xffffffff)
-            break;
-        cpu.edx = at(app, cpu.ecx + 0x28);
-        cpu.eax = at(app, cpu.ecx + 0x20);
-        if (!direct(app, cpu, greyColours))
-            return;
-        cpu.ecx += 0x34;
-    }
-    cpu.ebp = pop(app, cpu);
-    cpu.edx = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
-    cpu.ebx = pop(app, cpu);
+    cpu.eax = greyObjects(app, cpu, cpu.eax);
     cpu.esp += 4;
 }
 
-/* 0x419870: the whole track's colours made grey, as tintTrack goes. */
+/* 0x419870's: the whole track's colours made grey, as tintTrackColours goes.
+ * What the code leaves in eax, as there. */
+reg32 greyTrackColours(App* app, const CPU& cpu)
+{
+    reg32 left = greyObjects(app, cpu, kTrackObjects);
+    for (reg32 index = 0;; ++index)
+    {
+        safepoint(app, cpu);
+        if (sreg32(index) > sreg32(at(app, kLastBlock)))
+            break;
+        const reg32 block = kBlocks + blockOffset(index);
+        for (const reg32 list : kBlockLists)
+            greyObjects(app, cpu, block + list);
+        const reg32 count = at(app, block + kBlockVertexCount);
+        left = greyLeft(count, greyColourRun(app, cpu, count, at(app, block + kBlockColours)));
+    }
+    return left;
+}
+
+/* 0x419870: greyTrackColours. */
 void greyTrack(App* app, CPU& cpu)
 {
-    push(app, cpu, cpu.ebx);
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.edx);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    cpu.eax = kTrackObjects;
-    if (!direct(app, cpu, greyObjectList))
-        return;
-    cpu.ecx = 0;
-    for (;;)
-    {
-        safepoint(app, cpu);
-        if (sreg32(cpu.ecx) > sreg32(at(app, kLastBlock)))
-            break;
-        cpu.eax = blockOffset(cpu.ecx);
-        cpu.edx = kBlocks + cpu.eax;
-        for (const reg32 list : {0x564u, 0x56cu, 0x574u})
-        {
-            cpu.eax = cpu.edx + list;
-            if (!direct(app, cpu, greyObjectList))
-                return;
-        }
-        cpu.eax = at(app, cpu.edx + 0x74);
-        cpu.ebx = at(app, cpu.edx + 0x58);
-        cpu.edx = cpu.eax;
-        cpu.eax = cpu.ebx;
-        ++cpu.ecx;
-        if (!direct(app, cpu, greyColours))
-            return;
-    }
-    cpu.ebp = pop(app, cpu);
-    cpu.edx = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
-    cpu.ebx = pop(app, cpu);
+    cpu.eax = greyTrackColours(app, cpu);
     cpu.esp += 4;
 }
 
-/* 0x4198e0: a list of objects read from the .frd into eax -- its count, then
- * 0x34 bytes each, from the arena, with what each points at: its extra data
- * (+0x18 bytes at +0x1c), its vertices (12 bytes each), their colours (4) and
- * its polygons (14). */
+/* 0x4198e0's: a list of objects read from the .frd into `list` -- its count,
+ * then 0x34 bytes each, from the arena, with what each points at: its extra
+ * data, its vertices, their colours and its polygons.  Each field's place
+ * worked out afresh from the list, as the code does.  What the code leaves
+ * in eax: the last read's (the memmove's), or what the arena gave where
+ * there is no object; nullopt when the game stopped. */
+std::optional<reg32> readObjects(App* app, CPU& cpu, reg32 list)
+{
+    if (!readFrd(app, cpu, list + kListCount, 4))
+        return std::nullopt;
+    reg32 left = takeFromArena(app, at(app, list + kListCount) * kObjectSize).value_or(0);
+    put(app, list + kListObjects, left);
+    struct Field
+    {
+        reg32 offset, bytes;
+    };
+    // Its first five fields: 4, 4, 4, 12 and 4 bytes.
+    static const Field kFirstFields[] = {{0, 4}, {4, 4}, {8, 4}, {0xc, 0xc}, {kObjectExtraSize, 4}};
+    for (reg32 index = 0;; ++index)
+    {
+        safepoint(app, cpu);
+        if (sreg32(index) >= sreg32(at(app, list + kListCount)))
+            break;
+        const auto place = [&](reg32 offset) { return at(app, list + kListObjects) + index * kObjectSize + offset; };
+        // `bytes` of the arena taken, to the field at `offset`.
+        const auto takeInto = [&](reg32 offset, reg32 bytes) {
+            const reg32 taken = takeFromArena(app, bytes).value_or(0);
+            put(app, place(offset), taken);
+        };
+        for (const Field& field : kFirstFields)
+            if (!readFrd(app, cpu, place(field.offset), field.bytes))
+                return std::nullopt;
+        const reg32 object = place(0), extraSize = at(app, object + kObjectExtraSize);
+        if (extraSize == 0)
+            put(app, object + kObjectExtra, 0);
+        else
+        {
+            takeInto(kObjectExtra, extraSize);
+            if (!readFrd(app, cpu, at(app, place(kObjectExtra)), at(app, place(kObjectExtraSize))))
+                return std::nullopt;
+        }
+        if (!readFrd(app, cpu, place(kObjectVertexCount), 4))
+            return std::nullopt;
+        takeInto(kObjectVertices, at(app, place(kObjectVertexCount)) * kVertexSize);
+        const reg32 vertices = place(0);
+        if (!readFrd(app, cpu, at(app, vertices + kObjectVertices), at(app, vertices + kObjectVertexCount) * kVertexSize))
+            return std::nullopt;
+        takeInto(kObjectColours, at(app, place(kObjectVertexCount)) * kColourSize);
+        if (!readFrd(app, cpu, at(app, place(kObjectColours)), at(app, place(kObjectVertexCount)) * kColourSize))
+            return std::nullopt;
+        if (!readFrd(app, cpu, place(kObjectPolygonCount), 4))
+            return std::nullopt;
+        takeInto(kObjectPolygons, at(app, place(kObjectPolygonCount)) * kPolygonSize);
+        const reg32 last = place(0);
+        if (!readFrd(app, cpu, at(app, last + kObjectPolygons), at(app, last + kObjectPolygonCount) * kPolygonSize))
+            return std::nullopt;
+        left = cpu.eax;
+    }
+    return left;
+}
+
+/* 0x4198e0: readObjects into eax. */
 void readObjectList(App* app, CPU& cpu)
 {
-    push(app, cpu, cpu.ebx);
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.edx);
-    push(app, cpu, cpu.esi);
-    push(app, cpu, cpu.edi);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    cpu.esp -= 4;
-    const reg32 count = cpu.ebp - 4;
-    // An object's place in the list: esi * 0x34, as the code works it out.
-    const auto objectOffset = [&] { return cpu.esi * 0x34; };
-    cpu.ecx = cpu.eax;
-    cpu.edx = 4;
-    if (!direct(app, cpu, frdRead))
+    const Kept kept(cpu, kSaveEbx | kSaveEcx | kSaveEdx | kSaveEsi | kSaveEdi);
+    const std::optional<reg32> left = readObjects(app, cpu, cpu.eax);
+    if (!left)
         return;
-    cpu.edx = at(app, cpu.ecx);
-    cpu.eax = cpu.edx * 0x34;
-    cpu.edx = 0;
-    cpu.esi = 0;
-    if (!direct(app, cpu, arenaTake))
-        return;
-    put(app, cpu.ecx + 4, cpu.eax);
-    for (;;)
-    {
-        safepoint(app, cpu);
-        if (sreg32(cpu.esi) >= sreg32(at(app, cpu.ecx)))
-            break;
-        cpu.ebx = objectOffset();
-        // Its first five fields: 4, 4, 4, 12 and 4 bytes.
-        const reg32 fields[][2] = {{0, 4}, {4, 4}, {8, 4}, {0xc, 0xc}, {0x18, 4}};
-        for (const auto& field : fields)
-        {
-            cpu.eax = at(app, cpu.ecx + 4) + cpu.ebx;
-            cpu.edx = field[1];
-            cpu.eax += field[0];
-            if (!direct(app, cpu, frdRead))
-                return;
-        }
-        cpu.eax = at(app, cpu.ecx + 4) + cpu.ebx;
-        cpu.edi = at(app, cpu.eax + 0x18);
-        if (cpu.edi == 0)
-        {
-            put(app, cpu.eax + 0x1c, cpu.edi);
-        }
-        else
-        {
-            cpu.eax = cpu.edi;
-            cpu.edx = 0;
-            if (!direct(app, cpu, arenaTake))
-                return;
-            cpu.edx = at(app, cpu.ecx + 4);
-            put(app, cpu.edx + cpu.ebx + 0x1c, cpu.eax);
-            cpu.eax = at(app, cpu.ecx + 4);
-            cpu.edx = at(app, cpu.ebx + cpu.eax + 0x18);
-            cpu.eax = at(app, cpu.ebx + cpu.eax + 0x1c);
-            if (!direct(app, cpu, frdRead))
-                return;
-        }
-        cpu.ebx = objectOffset();
-        cpu.eax = at(app, cpu.ecx + 4) + cpu.ebx;
-        cpu.edx = 4;
-        cpu.eax += 0x20;
-        if (!direct(app, cpu, frdRead))
-            return;
-        // The vertices.
-        cpu.eax = at(app, cpu.ecx + 4);
-        cpu.edx = at(app, cpu.ebx + cpu.eax + 0x20);
-        cpu.eax = cpu.edx * 12;
-        cpu.edx = 0;
-        if (!direct(app, cpu, arenaTake))
-            return;
-        cpu.edx = at(app, cpu.ecx + 4);
-        put(app, cpu.edx + cpu.ebx + 0x24, cpu.eax);
-        cpu.eax = at(app, cpu.ecx + 4);
-        cpu.edx = cpu.eax + cpu.ebx;
-        cpu.eax = at(app, cpu.edx + 0x20);
-        put(app, count, cpu.eax);
-        cpu.edi = at(app, count);
-        cpu.eax = ((cpu.eax << 2) - cpu.edi) << 2;
-        cpu.edi = at(app, cpu.edx + 0x24);
-        cpu.edx = cpu.eax;
-        cpu.eax = cpu.edi;
-        if (!direct(app, cpu, frdRead))
-            return;
-        // Their colours.
-        cpu.eax = at(app, cpu.ecx + 4);
-        cpu.eax = at(app, cpu.ebx + cpu.eax + 0x20);
-        cpu.edx = 0;
-        cpu.eax <<= 2;
-        if (!direct(app, cpu, arenaTake))
-            return;
-        cpu.edx = at(app, cpu.ecx + 4);
-        put(app, cpu.edx + cpu.ebx + 0x28, cpu.eax);
-        cpu.eax = at(app, cpu.ecx + 4);
-        cpu.edx = at(app, cpu.ebx + cpu.eax + 0x20) << 2;
-        cpu.eax = at(app, cpu.ebx + cpu.eax + 0x28);
-        if (!direct(app, cpu, frdRead))
-            return;
-        // The polygons.
-        cpu.eax = at(app, cpu.ecx + 4) + cpu.ebx;
-        cpu.edx = 4;
-        cpu.eax += 0x2c;
-        if (!direct(app, cpu, frdRead))
-            return;
-        cpu.eax = at(app, cpu.ecx + 4);
-        cpu.eax = at(app, cpu.ebx + cpu.eax + 0x2c);
-        cpu.eax += cpu.eax;
-        cpu.edx = cpu.eax;
-        cpu.eax = (cpu.eax << 3) - cpu.edx;
-        cpu.edx = 0;
-        if (!direct(app, cpu, arenaTake))
-            return;
-        cpu.edx = at(app, cpu.ecx + 4);
-        put(app, cpu.edx + cpu.ebx + 0x30, cpu.eax);
-        cpu.eax = at(app, cpu.ecx + 4);
-        cpu.ebx += cpu.eax;
-        cpu.eax = at(app, cpu.ebx + 0x2c);
-        cpu.eax += cpu.eax;
-        cpu.edx = cpu.eax;
-        cpu.eax = (cpu.eax << 3) - cpu.edx;
-        cpu.ebx = at(app, cpu.ebx + 0x30);
-        cpu.edx = cpu.eax;
-        cpu.eax = cpu.ebx;
-        ++cpu.esi;
-        if (!direct(app, cpu, frdRead))
-            return;
-    }
-    cpu.esp = cpu.ebp;
-    cpu.ebp = pop(app, cpu);
-    cpu.edi = pop(app, cpu);
-    cpu.esi = pop(app, cpu);
-    cpu.edx = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
-    cpu.ebx = pop(app, cpu);
+    cpu.eax = *left;
     cpu.esp += 4;
 }
 
-/* 0x419ab0: the track's lights and sound sources read from the .frd (their
- * count to 0x552df8, then 0x2f bytes each into the arena, at [0x552df4]),
- * each given the record of its kind -- +0x2b's high word the kind, from the
- * table at 0x8b41a0 where +0x2c is set, else from the track's at
- * [0x5dd858], 0x2c bytes a kind. */
+// A light or sound source of the .frd: 0x2f bytes, +4 its kind's record, +0x2b's high word its kind,
+// +0x2c set where the kind is the game's (kLightKinds: a record's address each), else the track's
+// (kTrackKinds: 0x2c bytes each); a kind's record +4 what the light is given.
+constexpr reg32 kLightSize = 0x2f, kLightKindRecord = 4, kLightKindWord = 0x2b, kLightGameKind = 0x2c,
+                kTrackKindSize = 0x2c, kKindRecord = 4;
+
+/* 0x419ab0's: the track's lights and sound sources read from the .frd
+ * (their count, then each into the arena), each given the record of its
+ * kind.  What the code leaves in eax: the last one's record, or what the
+ * arena gave where there is none; nullopt when the game stopped. */
+std::optional<reg32> readTrackLights(App* app, CPU& cpu)
+{
+    if (!readFrd(app, cpu, kLightCount, 4))
+        return std::nullopt;
+    reg32 left = takeFromArena(app, at(app, kLightCount) * kLightSize).value_or(0);
+    put(app, kLights, left);
+    for (reg32 index = 0;; ++index)
+    {
+        safepoint(app, cpu);
+        if (sreg32(index) >= sreg32(at(app, kLightCount)))
+            break;
+        if (!readFrd(app, cpu, at(app, kLights) + index * kLightSize, kLightSize))
+            return std::nullopt;
+        const reg32 light = at(app, kLights) + index * kLightSize;
+        const reg32 kind = reg32(sreg32(at(app, light + kLightKindWord)) >> 16);
+        if (byte(app, light + kLightGameKind) != 0)
+            left = at(app, at(app, kLightKinds + kind * 4) + kKindRecord);
+        else
+            left = at(app, kind * kTrackKindSize + at(app, kTrackKinds) + kKindRecord);
+        put(app, light + kLightKindRecord, left);
+    }
+    return left;
+}
+
+/* 0x419ab0: readTrackLights. */
 void readLights(App* app, CPU& cpu)
 {
-    push(app, cpu, cpu.ebx);
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.edx);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    cpu.edx = 4;
-    cpu.eax = kLightCount;
-    if (!direct(app, cpu, frdRead))
+    const Kept kept(cpu, kSaveEbx | kSaveEcx | kSaveEdx);
+    const std::optional<reg32> left = readTrackLights(app, cpu);
+    if (!left)
         return;
-    cpu.edx = at(app, kLightCount);
-    cpu.eax = cpu.edx * 0x2f;
-    cpu.edx = 0;
-    cpu.ecx = 0;
-    if (!direct(app, cpu, arenaTake))
-        return;
-    put(app, kLights, cpu.eax);
-    for (;;)
-    {
-        safepoint(app, cpu);
-        if (sreg32(cpu.ecx) >= sreg32(at(app, kLightCount)))
-            break;
-        cpu.ebx = cpu.ecx * 0x2f;
-        cpu.eax = at(app, kLights);
-        cpu.edx = 0x2f;
-        cpu.eax += cpu.ebx;
-        if (!direct(app, cpu, frdRead))
-            return;
-        cpu.eax = at(app, kLights);
-        cpu.edx = cpu.eax + cpu.ebx;
-        cpu.ebx = at(app, cpu.edx + 0x2b);
-        cpu.ah = byte(app, cpu.edx + 0x2c);
-        cpu.ebx = reg32(sreg32(cpu.ebx) >> 0x10);
-        if (cpu.ah != 0)
-        {
-            cpu.eax = at(app, cpu.ebx * 4 + kLightKinds);
-            cpu.eax = at(app, cpu.eax + 4);
-        }
-        else
-        {
-            cpu.eax = cpu.ebx * 11;
-            cpu.ebx = cpu.eax * 4;
-            cpu.eax = at(app, kTrackKinds);
-            cpu.eax = at(app, cpu.ebx + cpu.eax + 4);
-        }
-        put(app, cpu.edx + 4, cpu.eax);
-        ++cpu.ecx;
-    }
-    cpu.ebp = pop(app, cpu);
-    cpu.edx = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
-    cpu.ebx = pop(app, cpu);
+    cpu.eax = *left;
     cpu.esp += 4;
 }
 
-/* 0x419b60: the arena allocated (0x310000 bytes, unnamed) and none of it
- * used. */
+/* 0x419b60's: the arena allocated (0x310000 bytes, unnamed) and none of it
+ * used.  Its address, as the code leaves it in eax; nullopt when the game
+ * stopped. */
+std::optional<reg32> startArena(App* app, CPU& cpu)
+{
+    put(app, kArenaUsed, 0);
+    const std::optional<reg32> arena = allocate(app, cpu, kNoName, kArenaSize);
+    if (arena)
+        put(app, kArena, *arena);
+    return arena;
+}
+
+/* 0x419b60: startArena. */
 void newArena(App* app, CPU& cpu)
 {
-    push(app, cpu, cpu.ebx);
-    push(app, cpu, cpu.edx);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    cpu.eax = kNoName;
-    cpu.edx = 0;
-    cpu.ebx = 0;
-    put(app, kArenaUsed, cpu.edx);
-    cpu.edx = kArenaSize;
-    if (!byAddress(app, cpu, kAllocate))
+    const Kept kept(cpu, kSaveEbx | kSaveEdx);
+    if (!startArena(app, cpu))
         return;
-    put(app, kArena, cpu.eax);
-    cpu.ebp = pop(app, cpu);
-    cpu.edx = pop(app, cpu);
-    cpu.ebx = pop(app, cpu);
     cpu.esp += 4;
 }
 
-/* 0x419b90: the arena freed, if there is one, and forgotten. */
+/* 0x419b90's: the arena freed, if there is one, and forgotten.  eax as the
+ * free leaves it; false when the game stopped. */
+bool freeTheArena(App* app, CPU& cpu)
+{
+    const reg32 arena = at(app, kArena);
+    if (arena == 0)
+        return true;
+    if (!freeBlock(app, cpu, arena))
+        return false;
+    put(app, kArena, 0);
+    put(app, kArenaUsed, 0);
+    return true;
+}
+
+/* 0x419b90: freeTheArena. */
 void freeArena(App* app, CPU& cpu)
 {
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.edx);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    cpu.edx = at(app, kArena);
-    if (cpu.edx != 0)
-    {
-        cpu.eax = cpu.edx;
-        cpu.ecx = 0;
-        if (!byAddress(app, cpu, kFree))
-            return;
-        put(app, kArena, cpu.ecx);
-        put(app, kArenaUsed, cpu.ecx);
-    }
-    cpu.ebp = pop(app, cpu);
-    cpu.edx = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
+    const Kept kept(cpu, kSaveEcx | kSaveEdx);
+    if (!freeTheArena(app, cpu))
+        return;
     cpu.esp += 4;
 }
 
-/* 0x419bc0: eax bytes of the arena, or 0 where they would take it past its
- * size (the use then as it was). */
+/* 0x419bc0's: `bytes` of the arena, the use moved past them; nullopt where
+ * they would take it past its size (the use stored as it was). */
+std::optional<reg32> takeFromArena(App* app, reg32 bytes)
+{
+    const reg32 used = at(app, kArenaUsed), after = bytes + used;
+    if (sreg32(after) > sreg32(kArenaSize))
+    {
+        put(app, kArenaUsed, used);
+        return std::nullopt;
+    }
+    const reg32 taken = at(app, kArena) + used;
+    put(app, kArenaUsed, after);
+    return taken;
+}
+
+/* 0x419bc0: takeFromArena of eax bytes: eax what is taken, or 0; edx it too
+ * where there is room, as the code leaves it. */
 void arenaTake(App* app, CPU& cpu)
 {
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    cpu.ecx = at(app, kArenaUsed);
-    cpu.eax += cpu.ecx;
-    if (sreg32(cpu.eax) > sreg32(kArenaSize))
-    {
-        cpu.eax = 0;
-    }
-    else
-    {
-        cpu.edx = at(app, kArena) + cpu.ecx;
-        cpu.ecx = cpu.eax;
-        cpu.eax = cpu.edx;
-    }
-    put(app, kArenaUsed, cpu.ecx);
-    cpu.ebp = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
+    const std::optional<reg32> taken = takeFromArena(app, cpu.eax);
+    cpu.eax = taken.value_or(0);
+    if (taken)
+        cpu.edx = *taken;
     cpu.esp += 4;
 }
 
-/* 0x419bf0: edx bytes of the .frd moved to eax (the game's memmove), the
- * reading moved on past them. */
+/* 0x419bf0's: `bytes` of the .frd moved to `to` (the game's memmove), the
+ * reading moved on past them.  False when the game stopped. */
+bool readFrd(App* app, CPU& cpu, reg32 to, reg32 bytes)
+{
+    if (!memmove(app, cpu, to, at(app, kFrdAt), bytes))
+        return false;
+    put(app, kFrdAt, at(app, kFrdAt) + bytes);
+    return true;
+}
+
+/* 0x419bf0: readFrd of edx bytes to eax; eax and edx as the memmove leaves
+ * them. */
 void frdRead(App* app, CPU& cpu)
 {
-    push(app, cpu, cpu.ebx);
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.esi);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    cpu.ecx = cpu.edx;
-    cpu.esi = at(app, kFrdAt);
-    cpu.ebx = cpu.edx;
-    cpu.edx = cpu.eax;
-    cpu.eax = cpu.esi;
-    if (!byAddress(app, cpu, kMemmove))
+    const Kept kept(cpu, kSaveEbx | kSaveEcx | kSaveEsi);
+    if (!readFrd(app, cpu, cpu.eax, cpu.edx))
         return;
-    put(app, kFrdAt, at(app, kFrdAt) + cpu.ecx);
-    cpu.ebp = pop(app, cpu);
-    cpu.esi = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
-    cpu.ebx = pop(app, cpu);
     cpu.esp += 4;
 }
 
-/* 0x41a100: the track's geometry loaded (0x419c20, the .frd read), its
- * colours tinted and, on a driver that wants it (bit 2 of [0x7a3a58]),
- * made grey. */
+// The driver's bit (kDriverBits) of a grey track.
+constexpr reg8 kDriverGrey = 2;
+
+/* 0x41a100's: the track's geometry loaded (the .frd read), its colours
+ * tinted and, on a driver that wants it, made grey.  What the code leaves in
+ * eax (tintTrackColours' or greyTrackColours'); nullopt when the game
+ * stopped. */
+std::optional<reg32> loadTrackGeometry(App* app, CPU& cpu)
+{
+    if (!guest::call(app, cpu, kLoadFrd))
+        return std::nullopt;
+    reg32 left = tintTrackColours(app, cpu);
+    if ((byte(app, kDriverBits) & kDriverGrey) != 0)
+        left = greyTrackColours(app, cpu);
+    return left;
+}
+
+/* 0x41a100: loadTrackGeometry. */
 void loadGeometry(App* app, CPU& cpu)
 {
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    if (!byAddress(app, cpu, 0x419c20) || !direct(app, cpu, tintTrack))
+    const std::optional<reg32> left = loadTrackGeometry(app, cpu);
+    if (!left)
         return;
-    if ((byte(app, kDriverBits) & 2) != 0 && !direct(app, cpu, greyTrack))
-        return;
-    cpu.ebp = pop(app, cpu);
+    cpu.eax = *left;
     cpu.esp += 4;
 }
 
-/* 0x41a120 (stdcall, 0x54 bytes): a triangle of the projected headlights'
- * pass as a polygon record at [eax] (0xa0 bytes: the header, then its three
- * corners of 0x20 bytes at +0x20, +0x40, +0x60), [eax] moved past it -- the
- * corners the stack's three of 0x1c bytes, each's colour scaled by alpha
- * intensity below 1.  Not where all three corners are off the screen on one
- * side (+0x14 of the vertex each points at), nor where none is bright enough
- * (the colours' alpha below 8).  1 for a record, else 0.
+/* What the code's colour scaling leaves in ebx: the even channels scaled
+ * (scaledColour's first mul, shifted down). */
+reg32 evenScaled(reg32 colour, reg32 factor)
+{
+    if (sreg32(factor) >= 0x10000)
+        factor = 0xffff;
+    return (((colour & 0xff00ff) * ((factor >> 8) & 0xff)) >> 8) & 0xff00ff;
+}
+
+// A polygon record of the headlights' pass: 0xa0 bytes -- +0 the next's place, +4 its kind (a word, 1),
+// +6 a word (0x13), +8.. its three corners' places, +0x18 its texture, its corners of 0x20 bytes from
+// +0x20 (each +0xc the stack's corner's first word, +0x10 its colour, +0x18 and +0x1c its +0xc and
+// +0x10).  A corner on the stack: 0x1c bytes, +8 its vertex (+0x14 its screen's outcode).
+constexpr reg32 kTriangleSize = 0xa0, kTriangleCorner = 0x20, kStackCornerSize = 0x1c, kCornerVertex = 8,
+                kVertexOutcode = 0x14, kCornerColour = 0x14;
+constexpr reg32 kAlphaToFactor = 0x536c6c;  // a double: alpha intensity to a 16.16 factor
+constexpr reg32 kLeastAlpha = 8;
+
+/* What projectedTriangle leaves in eax, ebx and edx. */
+struct TriangleLeft
+{
+    reg32 drawn;     // 1 for a record, else 0
+    reg32 scaled;    // the last outcode's byte, or the last colour's even channels scaled (ebx)
+    reg32 pointing;  // the outcodes' and, the third corner's place, or the records' slot (edx)
+};
+
+/* 0x41a120's: a triangle of the projected headlights' pass as a polygon
+ * record at [records], [records] moved past it -- the corners the three at
+ * `corners` (0x1c bytes each, on the stack), each's colour scaled by alpha
+ * intensity below 1 (where they lie).  Not where all three corners are off
+ * the screen on one side, nor where none is bright enough (the colours'
+ * alpha below 8).
  *
  * The port's change (tools/apply_alpha_intensity.py): the scaling on this
  * driver too, not only where [0x7a3a58] says Direct3D (bit 0x40). */
-void projectedTriangle(App* app, CPU& cpu)
+TriangleLeft headlightTriangle(App* app, reg32 records, reg32 corners)
 {
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.esi);
-    push(app, cpu, cpu.edi);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    cpu.esp -= 0x18;
-    const reg32 first = cpu.ebp - 8, second = cpu.ebp - 4, third = cpu.ebp - 0xc, records = cpu.ebp - 0x10;
-    const reg32 intensity = cpu.ebp - 0x18;
-    // The corners on the stack: +0 its first word, +8 its vertex, +0xc and
-    // +0x10 two words, +0x14 its colour.
-    const reg32 corners[] = {cpu.ebp + 0x14, cpu.ebp + 0x30, cpu.ebp + 0x4c};
-    const auto leave = [&] {
-        cpu.esp = cpu.ebp;
-        cpu.ebp = pop(app, cpu);
-        cpu.edi = pop(app, cpu);
-        cpu.esi = pop(app, cpu);
-        cpu.ecx = pop(app, cpu);
-        cpu.esp += 4 + 0x54;
-    };
-    put(app, records, cpu.eax);
-    cpu.eax = at(app, cpu.eax);
-    cpu.edx = cpu.eax + 0x20;
-    put(app, first, cpu.edx);
-    cpu.edx = cpu.eax + 0x40;
-    put(app, second, cpu.edx);
-    cpu.edx = cpu.eax + 0x60;
-    put(app, third, cpu.edx);
-    cpu.edx = at(app, corners[0] + 8);
-    cpu.ebx = byte(app, cpu.edx + 0x14);
-    cpu.edx = at(app, corners[1] + 8);
-    cpu.dl = byte(app, cpu.edx + 0x14);
-    cpu.edx &= 0xff;
-    cpu.edx &= cpu.ebx;
-    cpu.ebx = at(app, corners[2] + 8);
-    cpu.bl = byte(app, cpu.ebx + 0x14);
-    cpu.ebx &= 0xff;
-    if ((cpu.edx & cpu.ebx) != 0)
-    {
-        cpu.eax = 0;
-        return leave();
-    }
-    putHalf(app, cpu.eax + 4, 1);
-    put(app, cpu.eax + 0x18, kHeadlightTexture);
-    cpu.edx = cpu.eax + 0xa0;
-    putHalf(app, cpu.eax + 6, 0x13);
-    put(app, cpu.eax, cpu.edx);
-    cpu.edx = at(app, first);
-    cpu.ecx = 8;
-    put(app, cpu.eax + 8, cpu.edx);
-    cpu.edx = at(app, second);
-    cpu.edi = at(app, first);
-    put(app, cpu.eax + 0xc, cpu.edx);
-    cpu.edx = at(app, third);
-    cpu.esi = at(app, corners[0] + 8);
-    put(app, cpu.eax + 0x10, cpu.edx);
+    const auto corner = [&](reg32 k) { return corners + k * kStackCornerSize; };
+    const auto outcode = [&](reg32 k) { return reg32(byte(app, at(app, corner(k) + kCornerVertex) + kVertexOutcode)); };
+    const reg32 record = at(app, records);
+    const reg32 places[] = {record + kTriangleCorner, record + 2 * kTriangleCorner, record + 3 * kTriangleCorner};
+    const reg32 both = outcode(1) & outcode(0), third = outcode(2);
+    if ((both & third) != 0)
+        return {0, third, both};
+    putHalf(app, record + 4, 1);
+    put(app, record + 0x18, kHeadlightTexture);
+    putHalf(app, record + 6, 0x13);
+    put(app, record, record + kTriangleSize);
+    put(app, record + 8, places[0]);
+    put(app, record + 0xc, places[1]);
+    put(app, record + 0x10, places[2]);
     // rep movsd: each corner's vertex, 8 dwords, into the record's corner.
-    const auto copyVertex = [&] {
-        for (; cpu.ecx != 0; --cpu.ecx)
-            movsd(app, cpu);
-    };
-    copyVertex();
-    cpu.ecx = 8;
-    cpu.edi = at(app, second);
-    cpu.esi = at(app, corners[1] + 8);
-    copyVertex();
-    cpu.ecx = 8;
-    cpu.esi = at(app, corners[2] + 8);
-    cpu.edi = cpu.edx;
-    cpu.ah = byte(app, kDriverBits);
-    copyVertex();
-    // Port: test ah, 0x40 taken as set -- the scaling on this driver too.
-    putF64(app, intensity, f32(app, kAlphaIntensity));
-    if (!compare(cpu, Float(1.0), f64(app, intensity)).belowOrEqual())
+    for (reg32 k = 0; k < 3; ++k)
+        for (reg32 i = 0; i < 0x20; i += 4)
+            put(app, places[k] + i, at(app, at(app, corner(k) + kCornerVertex) + i));
+    TriangleLeft left = {0, third, places[2]};
+    // Port: test ah, 0x40 taken as set -- the scaling on this driver too.  An x87 compare of the
+    // intensity stored as a double (a NaN not scaled).
+    const Float intensity = Float(double(Float(gameSettings(app).alphaIntensity)));
+    if (Float(1.0) > intensity)
     {
-        const Float scaled = fp::mul(f64(app, intensity), f64(app, 0x536c6c));
-        cpu.esp -= 4;
-        put(app, cpu.esp, reg32(fp::toInteger<sreg32>(scaled)));
-        cpu.eax = pop(app, cpu);
-        cpu.esi = cpu.eax;
-        for (const reg32 corner : corners)
+        const reg32 factor = reg32(fp::toInteger<sreg32>(fp::mul(intensity, f64(app, kAlphaToFactor))));
+        for (reg32 k = 0; k < 3; ++k)
         {
-            cpu.eax = at(app, corner + 0x14);
-            cpu.ecx = cpu.esi;
-            scaleColour(cpu);
-            put(app, corner + 0x14, cpu.eax);
+            const reg32 colour = at(app, corner(k) + kCornerColour);
+            left.scaled = evenScaled(colour, factor);
+            put(app, corner(k) + kCornerColour, scaledColour(colour, factor));
         }
     }
-    // Each record's corner: the stack's corner's first word at +0xc, its
-    // +0xc and +0x10 at +0x18 and +0x1c, its colour at +0x10.
-    const reg32 targets[] = {first, second, third};
-    for (int k = 0; k < 3; ++k)
+    for (reg32 k = 0; k < 3; ++k)
     {
-        cpu.edx = at(app, targets[k]);
-        cpu.eax = at(app, corners[k]);
-        put(app, cpu.edx + 0xc, cpu.eax);
-        cpu.eax = at(app, corners[k] + 0xc);
-        put(app, cpu.edx + 0x18, cpu.eax);
-        cpu.eax = at(app, corners[k] + 0x10);
-        put(app, cpu.edx + 0x1c, cpu.eax);
-        cpu.eax = at(app, corners[k] + 0x14);
-        put(app, cpu.edx + 0x10, cpu.eax);
+        put(app, places[k] + 0xc, at(app, corner(k)));
+        put(app, places[k] + 0x18, at(app, corner(k) + 0xc));
+        put(app, places[k] + 0x1c, at(app, corner(k) + 0x10));
+        put(app, places[k] + 0x10, at(app, corner(k) + kCornerColour));
     }
-    cpu.eax = at(app, first);
-    cpu.edx = at(app, second);
-    cpu.eax = at(app, cpu.eax + 0x10);
-    cpu.ecx = at(app, cpu.edx + 0x10);
-    cpu.edx = at(app, third);
-    cpu.eax |= cpu.ecx;
-    cpu.eax |= at(app, cpu.edx + 0x10);
-    cpu.eax >>= 0x18;
-    if (cpu.eax < 8)
-    {
-        cpu.eax = 0;
-        return leave();
-    }
-    cpu.edx = at(app, records);
-    cpu.esi = at(app, cpu.edx) + 0xa0;
-    cpu.eax = 1;
-    put(app, cpu.edx, cpu.esi);
-    leave();
+    const reg32 alpha = (at(app, places[0] + 0x10) | at(app, places[1] + 0x10) | at(app, places[2] + 0x10)) >> 0x18;
+    if (alpha < kLeastAlpha)
+        return left;
+    put(app, records, at(app, records) + kTriangleSize);
+    return {1, left.scaled, records};
 }
 
-/* 0x41a3e0 (stdcall, 5 words): the colour [esp+0x10] of a track vertex
- * darkened, to [[esp+0x14]] and eax -- by how far off the view's middle it
- * is (|x| and |y| over its depth [esp+0xc], each clamped to 1, their sum times
- * 0x536c74 off 1) and, beyond the near distance, by its depth over the
- * shading's range (setShadeDistances). */
+/* 0x41a120 (stdcall, 0x54 bytes): headlightTriangle into [eax] of the
+ * stack's three corners. */
+void projectedTriangle(App* app, CPU& cpu)
+{
+    const TriangleLeft left = headlightTriangle(app, cpu.eax, cpu.esp + 4);
+    cpu.eax = left.drawn;
+    cpu.ebx = left.scaled;
+    cpu.edx = left.pointing;
+    cpu.esp += 4 + 0x54;
+}
+
+/* A float's size as the code takes it, by its bits: only a value under 0
+ * negated, anything else (a NaN too) kept to the bit. */
+reg32 sizeBits(reg32 bits)
+{
+    return Float(0.0) > floatOf(bits) ? bitsOf(float(-floatOf(bits))) : bits;
+}
+
+/* A size at most 1, as the code clamps it: 0 under 0 (an x87 compare), else
+ * its bits against 1's as an int (a NaN with its sign set kept). */
+reg32 clampedBits(reg32 bits)
+{
+    constexpr reg32 kOne = 0x3f800000;
+    if (Float(0.0) > floatOf(bits))
+        return 0;
+    return sreg32(bits) > sreg32(kOne) ? kOne : bits;
+}
+
+/* The colour scaled by the 16.16 factor (0x10000 and up taken as 0xffff):
+ * the factor's high byte times each channel, two at a time, as the code's
+ * two muls do. */
+reg32 scaledColour(reg32 colour, reg32 factor)
+{
+    if (sreg32(factor) >= 0x10000)
+        factor = 0xffff;
+    const reg32 by = (factor >> 8) & 0xff;
+    const reg32 even = (colour & 0xff00ff) * by, odd = ((colour & 0xff00ff00) >> 8) * by;
+    return (odd & 0xff00ff00) | ((even >> 8) & 0xff00ff);
+}
+
+constexpr reg32 kOffMiddleScale = 0x536c74;  // a float: how much off the view's middle darkens
+constexpr reg32 kShadeToFactor = 0x536c7c;   // a double: the shade to a 16.16 factor
+
+/* 0x41a3e0's: the colour of a track vertex darkened, to [to] -- by how far
+ * off the view's middle it is (|x| and |y|, `xBits` and `yBits` as the code
+ * has them, over its depth, each clamped to 1, their sum times 0x536c74 off
+ * 1) and, beyond the near distance, by its depth over the shading's range
+ * (shadeDistances).  The colour, as the code leaves it in eax. */
+reg32 shadeTrackVertex(App* app, reg32 xBits, reg32 yBits, float depth, reg32 colour, reg32 to)
+{
+    const float inverse = float(fp::div(Float(1.0), Float(depth)));
+    float shade = 1.0f;
+    const reg32 absX = sizeBits(xBits), absY = sizeBits(yBits);
+    const float across = float(fp::mul(floatOf(absX), Float(inverse)));
+    const float up = float(fp::mul(Float(inverse), floatOf(absY)));
+    // An x87 compare: beyond the near distance only where ordered and over.
+    if (Float(depth) > f32(app, kShadeNear))
+    {
+        const Float beyond = fp::mul(fp::sub(Float(depth), f32(app, kShadeNear)), f32(app, kShadeScale));
+        shade = float(fp::sub(Float(1.0), beyond));
+    }
+    const Float sum = fp::add(floatOf(clampedBits(bitsOf(across))), floatOf(clampedBits(bitsOf(up))));
+    const Float off = fp::mul(sum, f32(app, kOffMiddleScale));
+    const Float darkened = fp::mul(fp::sub(Float(1.0), off), Float(shade));
+    const Float factor = fp::mul(darkened, f64(app, kShadeToFactor));
+    const reg32 shaded = scaledColour(colour, reg32(fp::toInteger<sreg32>(factor)));
+    put(app, to, shaded);
+    return shaded;
+}
+
+/* 0x41a3e0 (stdcall, 5 words): shadeTrackVertex of x, y, the depth, the
+ * colour and where to of the stack's words. */
 void shadeVertex(App* app, CPU& cpu)
 {
-    x86::FPU& fpu = cpu.fpu;
-    push(app, cpu, cpu.ebx);
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.edx);
-    push(app, cpu, cpu.esi);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    cpu.esp -= 0x30;
-    const reg32 x = cpu.ebp + 0x18, y = cpu.ebp + 0x1c, depth = cpu.ebp + 0x20, colour = cpu.ebp + 0x24;
-    const reg32 to = cpu.ebp + 0x28;
-    const reg32 shade = cpu.ebp - 8, across = cpu.ebp - 4, up = cpu.ebp - 0xc, absY = cpu.ebp - 0x10;
-    const reg32 absX = cpu.ebp - 0x1c, inverse = cpu.ebp - 0x28, acrossClamped = cpu.ebp - 0x14;
-    const reg32 acrossSum = cpu.ebp - 0x2c, upClamped = cpu.ebp - 0x18;
-    cpu.edx = at(app, colour);
-    const Float reciprocal = fp::div(Float(1.0), f32(app, depth));
-    cpu.ecx = 0x3f800000;
-    put(app, shade, cpu.ecx);
-    putF32(app, inverse, reciprocal);
-    if (!compare(cpu, Float(0.0), f32(app, x)).belowOrEqual())
-    {
-        putF32(app, absX, -f32(app, x));
-    }
-    else
-    {
-        cpu.eax = at(app, x);
-        put(app, absX, cpu.eax);
-    }
-    cpu.eax = at(app, absX);
-    put(app, across, cpu.eax);
-    if (!compare(cpu, Float(0.0), f32(app, y)).belowOrEqual())
-    {
-        putF32(app, absY, -f32(app, y));
-    }
-    else
-    {
-        cpu.eax = at(app, y);
-        put(app, absY, cpu.eax);
-    }
-    const Float t = f32(app, inverse);
-    const Float a = fp::mul(f32(app, across), t);
-    const Float b = fp::mul(t, f32(app, absY));
-    const Float d = f32(app, depth);
-    putF32(app, across, a);
-    putF32(app, up, b);
-    if (!compare(cpu, d, f32(app, kShadeNear)).belowOrEqual())
-    {
-        const Float beyond = fp::mul(fp::sub(f32(app, depth), f32(app, kShadeNear)), f32(app, kShadeScale));
-        putF32(app, shade, fp::sub(Float(1.0), beyond));
-    }
-    if (!compare(cpu, Float(0.0), f32(app, across)).belowOrEqual())
-    {
-        cpu.ebx = 0;
-        put(app, acrossClamped, cpu.ebx);
-    }
-    else
-    {
-        cpu.esi = at(app, across);
-        put(app, cpu.ebp - 0x24, sreg32(cpu.esi) > 0x3f800000 ? 0x3f800000 : cpu.esi);
-        cpu.eax = at(app, cpu.ebp - 0x24);
-        put(app, acrossClamped, cpu.eax);
-    }
-    cpu.eax = at(app, acrossClamped);
-    put(app, acrossSum, cpu.eax);
-    if (!compare(cpu, Float(0.0), f32(app, up)).belowOrEqual())
-    {
-        cpu.eax = 0;
-    }
-    else
-    {
-        cpu.ecx = at(app, up);
-        put(app, cpu.ebp - 0x20, sreg32(cpu.ecx) > 0x3f800000 ? 0x3f800000 : cpu.ecx);
-        cpu.eax = at(app, cpu.ebp - 0x20);
-    }
-    put(app, upClamped, cpu.eax);
-    const Float sum = fp::add(f32(app, acrossSum), f32(app, upClamped));
-    const Float off = fp::mul(sum, f32(app, 0x536c74));
-    const Float darkened = fp::mul(fp::sub(Float(1.0), off), f32(app, shade));
-    putF32(app, shade, darkened);
-    const Float factor = fp::mul(darkened, f64(app, 0x536c7c));
-    cpu.esp -= 4;
-    put(app, cpu.esp, reg32(fp::toInteger<sreg32>(factor)));
-    cpu.eax = pop(app, cpu);
-    cpu.ecx = cpu.eax;
-    cpu.eax = cpu.edx;
-    scaleColour(cpu);
-    cpu.edx = at(app, to);
-    put(app, cpu.edx, cpu.eax);
-    cpu.esp = cpu.ebp;
-    cpu.ebp = pop(app, cpu);
-    cpu.esi = pop(app, cpu);
-    cpu.edx = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
-    cpu.ebx = pop(app, cpu);
+    const reg32 words = cpu.esp;
+    cpu.eax = shadeTrackVertex(app, at(app, words + 4), at(app, words + 8), app->getMemory<float>(words + 0xc),
+                               at(app, words + 0x10), at(app, words + 0x14));
     cpu.esp += 4 + 0x14;
 }
 
-/* 0x41a800 (stdcall, 2 words): the shading's distances for the camera at eax
- * scaled by [esp+4]: its near (+0x68) and far (+0x6c) ones, the far at least
- * 1 past the near; the light's reach (+0x64); 1 / (far - near). */
-void setShadeDistances(App* app, CPU& cpu)
+// A camera: its kind (+0, 1 the mirror's pass), its place (+8), its view box (+0x38), its matrix (+0x44);
+// the shading's: the light's reach (+0x64), the near and far distances (+0x68, +0x6c).
+constexpr reg32 kCameraKind = 0, kCameraNode = 4, kCameraPlace = 8, kCameraBox = 0x38, kCameraMatrix = 0x44,
+                kCameraReach = 0x64, kCameraNear = 0x68, kCameraFar = 0x6c;
+
+/* 0x41a800's: the shading's distances for the camera at `camera` scaled by
+ * `scale`: its near and far ones, the far at least 1 past the near; the
+ * light's reach; 1 / (far - near).  The far one as stored (its bits, as the
+ * code leaves them in eax). */
+reg32 shadeDistances(App* app, reg32 camera, float scale)
 {
-    x86::FPU& fpu = cpu.fpu;
-    push(app, cpu, cpu.edx);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    cpu.esp -= 8;
-    const reg32 scale = cpu.ebp + 0xc, nearPlusOne = cpu.ebp - 4, farthest = cpu.ebp - 8;
-    const Float s = f32(app, scale);
-    const Float nearDistance = fp::mul(f32(app, cpu.eax + 0x68), s);
-    const Float farDistance = fp::mul(s, f32(app, cpu.eax + 0x6c));
-    cpu.edx = at(app, cpu.eax + 0x64);
-    put(app, kShadeReach, cpu.edx);
+    const Float s = Float(scale);
+    const Float nearDistance = fp::mul(f32(app, camera + kCameraNear), s);
+    const Float farDistance = fp::mul(s, f32(app, camera + kCameraFar));
+    put(app, kShadeReach, at(app, camera + kCameraReach));
     putF32(app, kShadeNear, nearDistance);
     putF32(app, kShadeFar, farDistance);
-    const Float plusOne = fp::add(Float(1.0), f32(app, kShadeNear));
-    const Float stored = f32(app, kShadeFar);
-    putF32(app, nearPlusOne, plusOne);
-    if (!compare(cpu, stored, f32(app, nearPlusOne)).belowOrEqual())
-        cpu.eax = at(app, kShadeFar);
-    else
-        cpu.eax = at(app, nearPlusOne);
-    put(app, farthest, cpu.eax);
-    const Float range = fp::sub(f32(app, farthest), f32(app, kShadeNear));
-    const Float inverse = fp::div(Float(1.0), range);
-    cpu.eax = at(app, farthest);
-    put(app, kShadeFar, cpu.eax);
+    const float nearPlusOne = float(fp::add(Float(1.0), f32(app, kShadeNear)));
+    // An x87 compare: the far one kept only where it is over (a NaN either side takes the near's).
+    const reg32 farthest = f32(app, kShadeFar) > Float(nearPlusOne) ? at(app, kShadeFar) : bitsOf(nearPlusOne);
+    const Float inverse = fp::div(Float(1.0), fp::sub(floatOf(farthest), f32(app, kShadeNear)));
+    put(app, kShadeFar, farthest);
     putF32(app, kShadeScale, inverse);
-    cpu.esp = cpu.ebp;
-    cpu.ebp = pop(app, cpu);
-    cpu.edx = pop(app, cpu);
+    return farthest;
+}
+
+/* 0x41a800 (stdcall, 2 words): shadeDistances for the camera eax by
+ * [esp+4]. */
+void setShadeDistances(App* app, CPU& cpu)
+{
+    cpu.eax = shadeDistances(app, cpu.eax, app->getMemory<float>(cpu.esp + 4));
     cpu.esp += 4 + 8;
 }
 
-/* 0x41a8d0 (stdcall, 2 words): the point at ebx taken into the camera eax's
- * view -- less its place, turned by its matrix -- and the object's vertices
- * (edx, ecx, the stack's words) into view from it (0x4dbef0). */
+constexpr reg32 kObjectVerticesList = 0x4dbef0;  // vertices::objectVerticesList
+constexpr reg32 kMultiplyMatrices = 0x4e0280;    // vertices::multiplyMatrices: eax by edx into ebx
+
+/* An object's vertices to the screen (vertices::objectVerticesList): turned
+ * by the matrix at `matrix`, moved by the vector at `move`, `count` of them
+ * at `vertices`, their colours at `colours`, the screen's records out to
+ * `records`.  False when the game stopped. */
+bool objectVerticesList(App* app, CPU& cpu, reg32 matrix, reg32 move, reg32 count, reg32 vertices, reg32 colours,
+                        reg32 records)
+{
+    cpu.eax = matrix;
+    cpu.edx = move;
+    cpu.ebx = count;
+    cpu.ecx = vertices;
+    return guest::call(app, cpu, kObjectVerticesList, {colours, records});
+}
+
+/* The place at `point` less the camera's, turned by its matrix: the view's
+ * move into the frame's `into` (12 bytes), `apart` its 12 bytes before. */
+void pointIntoView(App* app, reg32 camera, reg32 point, reg32 apart, reg32 into)
+{
+    putF32(app, apart, fp::sub(f32(app, point), f32(app, camera + kCameraPlace)));
+    putF32(app, apart + 4, fp::sub(f32(app, point + 4), f32(app, camera + kCameraPlace + 4)));
+    putF32(app, apart + 8, fp::sub(f32(app, point + 8), f32(app, camera + kCameraPlace + 8)));
+    turnVector(app, apart, camera + kCameraMatrix, into);
+}
+
+/* 0x41a8d0's: the point at `point` taken into the camera's view and the
+ * object's vertices into view from it (objectVerticesList), the frame as
+ * deep as the code's (the callee is handed its move).  False when the game
+ * stopped. */
+bool viewVertices(App* app, CPU& cpu, reg32 camera, reg32 point, reg32 count, reg32 vertices, reg32 colours,
+                  reg32 records)
+{
+    const GuestFrame frame(cpu, 0xc, 0x18);
+    const reg32 apart = frame - 0x18, move = frame - 0xc;
+    pointIntoView(app, camera, point, apart, move);
+    return objectVerticesList(app, cpu, camera + kCameraMatrix, move, count, vertices, colours, records);
+}
+
+/* 0x41a8d0 (stdcall, 2 words): viewVertices for the camera eax, the point
+ * ebx, edx vertices at ecx, the colours and records the stack's words; the
+ * registers as objectVerticesList leaves them. */
 void viewObjectVertices(App* app, CPU& cpu)
 {
-    x86::FPU& fpu = cpu.fpu;
-    push(app, cpu, cpu.esi);
-    push(app, cpu, cpu.edi);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    cpu.esp -= 0x18;
-    cpu.edi = cpu.edx;
-    putF32(app, cpu.ebp - 0x18, fp::sub(f32(app, cpu.ebx), f32(app, cpu.eax + 8)));
-    cpu.esi = cpu.eax + 0x44;
-    putF32(app, cpu.ebp - 0x14, fp::sub(f32(app, cpu.ebx + 4), f32(app, cpu.eax + 0xc)));
-    cpu.edx = cpu.esi;
-    const Float z = fp::sub(f32(app, cpu.ebx + 8), f32(app, cpu.eax + 0x10));
-    cpu.ebx = cpu.ebp - 0xc;
-    cpu.eax = cpu.ebp - 0x18;
-    putF32(app, cpu.ebp - 0x10, z);
-    rotate(app, cpu);
-    cpu.edx = at(app, cpu.ebp + 0x14);
-    push(app, cpu, cpu.edx);
-    cpu.ebx = at(app, cpu.ebp + 0x10);
-    cpu.eax = cpu.esi;
-    push(app, cpu, cpu.ebx);
-    cpu.edx = cpu.ebp - 0xc;
-    cpu.ebx = cpu.edi;
-    if (!byAddress(app, cpu, 0x4dbef0))
+    const Kept kept(cpu, kSaveEsi | kSaveEdi);
+    if (!viewVertices(app, cpu, cpu.eax, cpu.ebx, cpu.edx, cpu.ecx, at(app, cpu.esp + 4), at(app, cpu.esp + 8)))
         return;
-    cpu.esp = cpu.ebp;
-    cpu.ebp = pop(app, cpu);
-    cpu.edi = pop(app, cpu);
-    cpu.esi = pop(app, cpu);
     cpu.esp += 4 + 8;
 }
 
-/* 0x41a9b0 (stdcall, 3 words): viewObjectVertices for an object turned by
- * its own matrix (edx): the point at ecx into the camera eax's view, the
- * object's matrix times the camera's (0x4e0280), then its vertices (ebx, the
- * stack's words) into view (0x4dbef0). */
+/* 0x41a9b0's: viewVertices for an object turned by its own matrix at
+ * `turn`: the point into the camera's view, the object's matrix times the
+ * camera's, then its vertices into view.  False when the game stopped. */
+bool viewTurnedVertices(App* app, CPU& cpu, reg32 camera, reg32 turn, reg32 point, reg32 count, reg32 vertices,
+                        reg32 colours, reg32 records)
+{
+    const GuestFrame frame(cpu, 0xc, 0x3c);
+    const reg32 apart = frame - 0x18, move = frame - 0xc, matrix = frame - 0x3c;
+    pointIntoView(app, camera, point, apart, move);
+    guest::direct<0x4e0280, vertices::multiplyMatrix>(app, cpu, turn, camera + kCameraMatrix, matrix);
+    if (cpu.terminate)
+        return false;
+    return objectVerticesList(app, cpu, matrix, move, count, vertices, colours, records);
+}
+
+/* 0x41a9b0 (stdcall, 3 words): viewTurnedVertices for the camera eax, the
+ * matrix edx, the point ecx, ebx vertices at the stack's first word, the
+ * colours and records its next two. */
 void viewTurnedObjectVertices(App* app, CPU& cpu)
 {
-    x86::FPU& fpu = cpu.fpu;
-    push(app, cpu, cpu.esi);
-    push(app, cpu, cpu.edi);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    cpu.esp -= 0x3c;
-    cpu.edi = cpu.edx;
-    cpu.esi = cpu.ebx;
-    putF32(app, cpu.ebp - 0x18, fp::sub(f32(app, cpu.ecx), f32(app, cpu.eax + 8)));
-    putF32(app, cpu.ebp - 0x14, fp::sub(f32(app, cpu.ecx + 4), f32(app, cpu.eax + 0xc)));
-    cpu.ebx = cpu.ebp - 0xc;
-    const Float z = fp::sub(f32(app, cpu.ecx + 8), f32(app, cpu.eax + 0x10));
-    cpu.ecx = cpu.eax + 0x44;
-    cpu.edx = cpu.ecx;
-    cpu.eax = cpu.ebp - 0x18;
-    putF32(app, cpu.ebp - 0x10, z);
-    rotate(app, cpu);
-    cpu.ebx = cpu.ebp - 0x3c;
-    cpu.edx = cpu.ecx;
-    cpu.eax = cpu.edi;
-    if (!byAddress(app, cpu, 0x4e0280))
+    const Kept kept(cpu, kSaveEsi | kSaveEdi);
+    if (!viewTurnedVertices(app, cpu, cpu.eax, cpu.edx, cpu.ecx, cpu.ebx, at(app, cpu.esp + 4), at(app, cpu.esp + 8),
+                            at(app, cpu.esp + 0xc)))
         return;
-    cpu.edx = at(app, cpu.ebp + 0x18);
-    cpu.ecx = at(app, cpu.ebp + 0x14);
-    push(app, cpu, cpu.edx);
-    cpu.eax = cpu.ebp - 0x3c;
-    cpu.ebx = cpu.esi;
-    push(app, cpu, cpu.ecx);
-    cpu.edx = cpu.ebp - 0xc;
-    cpu.ecx = at(app, cpu.ebp + 0x10);
-    if (!byAddress(app, cpu, 0x4dbef0))
-        return;
-    cpu.esp = cpu.ebp;
-    cpu.ebp = pop(app, cpu);
-    cpu.edi = pop(app, cpu);
-    cpu.esi = pop(app, cpu);
     cpu.esp += 4 + 0xc;
 }
 
-/* 0x41aa60 (stdcall, 1 word): which of the track's models (0 the coarsest, 2
- * the detailed one) to draw at the square of a distance [esp+4] for the
- * camera at eax: past the view's +0x44, 0; past its +0x40, 1; else 2.  The
- * mirror's pass always 0 -- the port's change (tools/apply_mirror_detail.py):
- * asked through nfs3hp::mirrorAsMain, which answers as the main view would
- * with the mirror drawn in full. */
+// The view's distances the track's model gets coarser at: the middle one's (+0x40) and the coarsest's (+0x44).
+constexpr reg32 kViewMiddleFrom = 0x40, kViewCoarsestFrom = 0x44;
+
+/* 0x41aa60's: which of the track's models (0 the coarsest, 2 the detailed
+ * one) to draw at the square `squared` of a distance for the camera at
+ * `camera`: past the view's coarsest distance, 0; past its middle one, 1;
+ * else 2 -- x87 compares, a NaN counting as past.  The mirror's pass always
+ * 0 -- the port's change (tools/apply_mirror_detail.py): asked through
+ * nfs3hp::mirrorAsMain, which answers as the main view would with the mirror
+ * drawn in full. */
+reg32 modelAt(App* app, reg32 camera, float squared)
+{
+    if (mirrorAsMain(at(app, camera + kCameraKind)) == kMirrorPass)
+        return 0;
+    const reg32 view = at(app, kView);
+    const Float coarsest = f32(app, view + kViewCoarsestFrom);
+    if (!(fp::mul(coarsest, coarsest) >= Float(squared)))
+        return 0;
+    const Float middle = f32(app, view + kViewMiddleFrom);
+    if (!(fp::mul(middle, middle) >= Float(squared)))
+        return 1;
+    return 2;
+}
+
+/* 0x41aa60 (stdcall, 1 word): modelAt for the camera eax at [esp+4]. */
 void modelByDistance(App* app, CPU& cpu)
 {
-    x86::FPU& fpu = cpu.fpu;
-    push(app, cpu, cpu.edx);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    const reg32 distance = cpu.ebp + 0xc;
-    const auto leave = [&](reg32 result) {
-        cpu.eax = result;
-        cpu.ebp = pop(app, cpu);
-        cpu.edx = pop(app, cpu);
-        cpu.esp += 4 + 4;
-    };
-    if (mirrorAsMain(at(app, cpu.eax)) == 1)
-        return leave(0);
-    cpu.edx = at(app, kView);
-    const Float coarse = f32(app, cpu.edx + 0x44);
-    if (compare(cpu, fp::mul(coarse, coarse), f32(app, distance)).below)
-        return leave(0);
-    const Float middle = f32(app, cpu.edx + 0x40);
-    if (compare(cpu, fp::mul(middle, middle), f32(app, distance)).below)
-        return leave(1);
-    leave(2);
-}
-
-/* 0x41aaf0: the view's distances worked out for the camera eax (0x41d620),
- * view edx selected, and the block the camera is in (0x4217e0 of its +4) its
- * block, 8 to a group (+0xc, the group before it kept at +0x18 and +0x14
- * cleared to -1 where it changed; +0x10). */
-void viewOnBlock(App* app, CPU& cpu)
-{
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    cpu.ecx = cpu.eax;
-    if (!byAddress(app, cpu, 0x41d620))
-        return;
-    cpu.eax = cpu.edx;
-    if (!direct(app, cpu, selectView))
-        return;
-    cpu.eax = at(app, cpu.ecx + 4);
-    if (!byAddress(app, cpu, 0x4217e0))
-        return;
-    cpu.edx = cpu.eax;
-    cpu.eax = at(app, kView);
-    cpu.ecx = at(app, cpu.eax + 0xc);
-    put(app, cpu.eax + 4, cpu.edx);
-    cpu.edx = reg32(sreg32(cpu.edx) >> 3);
-    if (cpu.edx != cpu.ecx)
-    {
-        put(app, cpu.eax + 0xc, cpu.edx);
-        cpu.edx = at(app, cpu.eax + 0x14);
-        put(app, cpu.eax + 0x14, 0xffffffff);
-        put(app, cpu.eax + 0x18, cpu.edx);
-    }
-    cpu.eax = at(app, kView);
-    cpu.edx = reg32(sreg32(at(app, cpu.eax + 4)) >> 3);
-    put(app, cpu.eax + 0x10, cpu.edx);
-    cpu.ebp = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
-    cpu.esp += 4;
-}
-
-/* 0x41ab40 (stdcall, 1 word): the headlights' light on the polygons of the
- * object list ecx of block ebx: the [esp+4] vertices (0x1c bytes each, as
- * 0x41a550 leaves them) of each polygon's four corners that are lit (+4 and
- * +6 words 0) raise their vertex's colour bytes (+0x10..+0x12 of the vertex
- * at +8) to theirs (+0x14..+0x16, +0x18..+0x1a) -- not a polygon past the
- * world's end ([0x5dd830]'s +0x30) or off the screen on one side. */
-void lightObjectPolygons(App* app, CPU& cpu)
-{
-    push(app, cpu, cpu.esi);
-    push(app, cpu, cpu.edi);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    cpu.esp -= 0x14;
-    const reg32 count = cpu.ebp - 0x10, polygon = cpu.ebp - 0xc, done = cpu.ebp - 4, vertex = cpu.ebp - 8;
-    const reg32 flags = cpu.ebp - 0x14, vertices = cpu.ebp + 0x10;
-    // mov P, [V + 8]; mov al, [V + from]; mov ah, [P + to]; cmp al, ah; ja;
-    // mov al, ah; mov S, [V + 8]; mov [S + to], al.
-    const auto raiseByAl = [&](reg32 v, reg32& p, reg32& s, reg32 from, reg32 to) {
-        p = at(app, v + 8);
-        cpu.al = byte(app, v + from);
-        cpu.ah = byte(app, p + to);
-        cpu.al = larger(cpu.al, cpu.ah);
-        s = at(app, v + 8);
-        putByte(app, s + to, cpu.al);
-    };
-    // mov eax, [V + 8]; mov dl, [V + from]; mov X, [eax + to]; cmp dl, X;
-    // jbe: mov al, X, else mov al, dl; mov edx, [V + 8]; mov [edx + to], al.
-    const auto raiseByDl = [&](reg32 v, reg8& x, reg32 from, reg32 to) {
-        cpu.eax = at(app, v + 8);
-        cpu.dl = byte(app, v + from);
-        x = byte(app, cpu.eax + to);
-        cpu.al = cpu.dl > x ? cpu.dl : x;
-        cpu.edx = at(app, v + 8);
-        putByte(app, cpu.edx + to, cpu.al);
-    };
-    cpu.eax = cpu.ebx;
-    cpu.edx = blockOffset(cpu.ebx);
-    cpu.eax = cpu.ecx * 4;
-    cpu.edx += kBlocks;
-    cpu.eax += cpu.edx;
-    cpu.edx = at(app, cpu.eax + 0x2c);
-    put(app, polygon, cpu.edx);
-    cpu.eax = at(app, cpu.eax);
-    cpu.edx = 0;
-    put(app, count, cpu.eax);
-    put(app, done, cpu.edx);
-    for (;;)
-    {
-        safepoint(app, cpu);
-        cpu.eax = at(app, done);
-        if (sreg32(cpu.eax) >= sreg32(at(app, count)))
-            break;
-        // The corners' vertices: the polygon's words at +0, +2, +4, +6, 0x1c
-        // bytes a vertex.
-        cpu.edx = reg32(sreg32(std::int16_t(half(app, at(app, polygon)))));
-        cpu.edx <<= 2;
-        cpu.eax = cpu.edx;
-        cpu.edx <<= 3;
-        cpu.esi = at(app, vertices);
-        cpu.edx -= cpu.eax;
-        cpu.esi += cpu.edx;
-        cpu.edx = at(app, polygon);
-        cpu.ebx = at(app, vertices);
-        cpu.edx = at(app, cpu.edx);
-        cpu.ecx = at(app, polygon);
-        cpu.edx = reg32(sreg32(cpu.edx) >> 0x10);
-        cpu.ecx = at(app, cpu.ecx + 2);
-        cpu.edx <<= 2;
-        cpu.ecx = reg32(sreg32(cpu.ecx) >> 0x10);
-        cpu.eax = cpu.edx;
-        cpu.edx <<= 3;
-        cpu.ecx <<= 2;
-        cpu.edx -= cpu.eax;
-        cpu.eax = cpu.ecx;
-        cpu.ecx <<= 3;
-        cpu.edi = cpu.ebx;
-        cpu.ecx -= cpu.eax;
-        cpu.edx += cpu.ebx;
-        cpu.ecx += cpu.ebx;
-        cpu.ebx = at(app, polygon);
-        cpu.ebx = reg32(sreg32(at(app, cpu.ebx + 4)) >> 0x10);
-        cpu.ebx <<= 2;
-        cpu.eax = cpu.ebx;
-        cpu.ebx <<= 3;
-        cpu.ebx -= cpu.eax;
-        cpu.ebx += cpu.edi;
-        cpu.eax = at(app, cpu.esi + 8);
-        put(app, vertex, cpu.eax);
-        cpu.edi = at(app, vertex);
-        cpu.eax = at(app, kView);
-        const bool beyond = compare(cpu, f32(app, cpu.edi + 8), f32(app, cpu.eax + 0x30)).above();
-        if (!beyond)
-        {
-            cpu.eax = byte(app, cpu.edi + 0x14);
-            put(app, flags, cpu.eax);
-            cpu.eax = at(app, cpu.edx + 8);
-            cpu.al = byte(app, cpu.eax + 0x14);
-            cpu.edi = at(app, flags);
-            cpu.eax &= 0xff;
-            cpu.edi &= cpu.eax;
-            cpu.eax = at(app, cpu.ecx + 8);
-            cpu.al = byte(app, cpu.eax + 0x14);
-            cpu.eax &= 0xff;
-            cpu.edi &= cpu.eax;
-            cpu.eax = at(app, cpu.ebx + 8);
-            cpu.al = byte(app, cpu.eax + 0x14);
-            cpu.eax &= 0xff;
-        }
-        if (!beyond && (cpu.eax & cpu.edi) == 0)
-        {
-            // The corners lit by the first light (+4), then by the second (+6).
-            if (half(app, cpu.esi + 4) == 0)
-                for (const reg32 k : {2u, 1u, 0u})
-                    raiseByAl(cpu.esi, cpu.edi, cpu.edi, 0x14 + k, 0x10 + k);
-            if (half(app, cpu.edx + 4) == 0)
-                for (const reg32 k : {2u, 1u, 0u})
-                    raiseByAl(cpu.edx, cpu.edi, cpu.edi, 0x14 + k, 0x10 + k);
-            if (half(app, cpu.ecx + 4) == 0)
-                for (const reg32 k : {2u, 1u, 0u})
-                    raiseByAl(cpu.ecx, cpu.edi, cpu.edi, 0x14 + k, 0x10 + k);
-            if (half(app, cpu.ebx + 4) == 0)
-                for (const reg32 k : {2u, 1u, 0u})
-                    raiseByAl(cpu.ebx, cpu.edi, cpu.edi, 0x14 + k, 0x10 + k);
-            if (half(app, cpu.esi + 6) == 0)
-            {
-                raiseByAl(cpu.esi, cpu.edi, cpu.edi, 0x1a, 0x12);
-                raiseByAl(cpu.esi, cpu.edi, cpu.edi, 0x19, 0x11);
-                raiseByAl(cpu.esi, cpu.edi, cpu.esi, 0x18, 0x10);
-            }
-            if (half(app, cpu.edx + 6) == 0)
-            {
-                raiseByAl(cpu.edx, cpu.esi, cpu.esi, 0x1a, 0x12);
-                raiseByAl(cpu.edx, cpu.esi, cpu.esi, 0x19, 0x11);
-                raiseByAl(cpu.edx, cpu.esi, cpu.edx, 0x18, 0x10);
-            }
-            if (half(app, cpu.ecx + 6) == 0)
-            {
-                raiseByDl(cpu.ecx, cpu.dh, 0x1a, 0x12);
-                raiseByDl(cpu.ecx, cpu.dh, 0x19, 0x11);
-                raiseByDl(cpu.ecx, cpu.dh, 0x18, 0x10);
-            }
-            if (half(app, cpu.ebx + 6) == 0)
-            {
-                raiseByDl(cpu.ebx, cpu.cl, 0x1a, 0x12);
-                raiseByDl(cpu.ebx, cpu.ch, 0x19, 0x11);
-                raiseByDl(cpu.ebx, cpu.dh, 0x18, 0x10);
-            }
-        }
-        put(app, polygon, at(app, polygon) + 0xe);
-        put(app, done, at(app, done) + 1);
-    }
-    cpu.esp = cpu.ebp;
-    cpu.ebp = pop(app, cpu);
-    cpu.edi = pop(app, cpu);
-    cpu.esi = pop(app, cpu);
+    cpu.eax = modelAt(app, cpu.eax, app->getMemory<float>(cpu.esp + 4));
     cpu.esp += 4 + 4;
 }
 
-/* 0x41b8c0: the list eax (its first and last record), if not empty, put
- * between two state records of the drawing's (0x10 bytes from Render_GetTm,
- * kind 5, 0xd, the first +0xc 0 and the last 1): the drawing's state reset
- * (0x4bbf20), each record made a list of its own (0x4bbe90) and the lists
- * joined (0x4bbec0). */
+// A view's groups of 8 blocks: +0xc the one its block is in, +0x10 the same of +4 once moved there; +0x14
+// cleared to -1 where the group changed, what it held kept at +0x18.
+constexpr reg32 kViewGroup = 0xc, kViewGroupNow = 0x10, kViewGroupMark = 0x14, kViewGroupMarkBefore = 0x18;
+
+/* The block of the camera's node (carstate::cameraNode); nullopt when the
+ * game stopped. */
+std::optional<reg32> cameraNode(App* app, CPU& cpu, reg32 node)
+{
+    const reg32 block = guest::direct<0x4217e0, carstate::nodeOfCamera>(app, cpu, node);
+    if (cpu.terminate)
+        return std::nullopt;
+    return block;
+}
+
+/* 0x41aaf0's: the view's distances worked out, view `index` the one drawn,
+ * and the block the camera is in its block, 8 to a group.  The group, as the
+ * code leaves it in edx; nullopt when the game stopped. */
+std::optional<reg32> viewOnCameraBlock(App* app, CPU& cpu, reg32 camera, reg32 index)
+{
+    if (!guest::call(app, cpu, kViewDistances))
+        return std::nullopt;
+    chooseView(app, index);
+    const std::optional<reg32> block = cameraNode(app, cpu, at(app, camera + kCameraNode));
+    if (!block)
+        return std::nullopt;
+    const reg32 view = at(app, kView), group = reg32(sreg32(*block) >> 3), before = at(app, view + kViewGroup);
+    put(app, view + kViewBlock, *block);
+    if (group != before)
+    {
+        put(app, view + kViewGroup, group);
+        const reg32 mark = at(app, view + kViewGroupMark);
+        put(app, view + kViewGroupMark, 0xffffffff);
+        put(app, view + kViewGroupMarkBefore, mark);
+    }
+    const reg32 drawn = at(app, kView), now = reg32(sreg32(at(app, drawn + kViewBlock)) >> 3);
+    put(app, drawn + kViewGroupNow, now);
+    return now;
+}
+
+/* 0x41aaf0: viewOnCameraBlock for the camera eax and view edx; eax the view
+ * drawn, edx its group. */
+void viewOnBlock(App* app, CPU& cpu)
+{
+    const Kept kept(cpu, kSaveEcx);
+    const std::optional<reg32> group = viewOnCameraBlock(app, cpu, cpu.eax, cpu.edx);
+    if (!group)
+        return;
+    cpu.eax = at(app, kView);
+    cpu.edx = *group;
+    cpu.esp += 4;
+}
+
+// A block's polygon groups by list: the count at +4 * list, the polygons at +0x2c + 4 * list; a polygon
+// its four corners' numbers (words at +0, +2, +4, +6).  A lit corner (0x1c bytes, as 0x41a550 leaves it):
+// +4 and +6 words 0 where the first and second light reach it, +8 its vertex, +0x14.. and +0x18.. the two
+// lights' colour bytes; a vertex: +8 its depth, +0x10.. its colour bytes, +0x14 its screen's outcode.
+constexpr reg32 kGroupPolygons = 0x2c, kLitCornerSize = 0x1c, kViewWorldEnd = 0x30;
+
+/* What lightObjectPolygons leaves in eax, ebx, ecx and edx. */
+struct LitLeft
+{
+    reg32 done;    // the polygons gone through
+    reg32 fourth;  // the last polygon's fourth corner (ebx)
+    reg32 third;   // its third, its low bytes the fourth's vertex's before the second light (ecx)
+    reg32 second;  // its second, or the last vertex the second light raised (edx)
+};
+
+/* A lit corner's vertex's colour byte `to` raised to the corner's byte
+ * `from` where that is larger.  The byte before, as read. */
+reg8 raiseColour(App* app, reg32 corner, reg32 from, reg32 to)
+{
+    const reg8 own = byte(app, corner + from), before = byte(app, at(app, corner + 8) + to);
+    putByte(app, at(app, corner + 8) + to, larger(own, before));
+    return before;
+}
+
+/* 0x41ab40's: the headlights' light on the polygons of group `list` of
+ * block `block`: the lit corners at `corners` of each polygon's four that
+ * the first and then the second light reach raise their vertex's colour
+ * bytes to theirs -- not a polygon past the world's end (an x87 compare, a
+ * NaN not past) or off the screen on one side. */
+LitLeft lightPolygons(App* app, const CPU& cpu, reg32 block, reg32 list, reg32 corners)
+{
+    const reg32 group = kBlocks + blockOffset(block) + list * 4, count = at(app, group);
+    reg32 polygon = at(app, group + kGroupPolygons);
+    LitLeft left = {0, block, list, 0};
+    for (;; ++left.done, polygon += kPolygonSize)
+    {
+        safepoint(app, cpu);
+        if (sreg32(left.done) >= sreg32(count))
+            break;
+        const auto corner = [&](reg32 word) {
+            return corners + reg32(sreg32(std::int16_t(half(app, polygon + word)))) * kLitCornerSize;
+        };
+        const reg32 first = corner(0), second = corner(2), third = corner(4), fourth = corner(6);
+        left.fourth = fourth;
+        left.third = third;
+        left.second = second;
+        const reg32 vertex = at(app, first + 8);
+        if (f32(app, vertex + 8) > f32(app, at(app, kView) + kViewWorldEnd))
+            continue;
+        const auto outcode = [&](reg32 c) { return reg32(byte(app, at(app, c + 8) + kVertexOutcode)); };
+        if ((outcode(fourth) & (reg32(byte(app, vertex + kVertexOutcode)) & outcode(second) & outcode(third))) != 0)
+            continue;
+        for (const reg32 c : {first, second, third, fourth})
+            if (half(app, c + 4) == 0)
+                for (const reg32 k : {2u, 1u, 0u})
+                    raiseColour(app, c, 0x14 + k, 0x10 + k);
+        if (half(app, first + 6) == 0)
+            for (const reg32 k : {2u, 1u, 0u})
+                raiseColour(app, first, 0x18 + k, 0x10 + k);
+        if (half(app, second + 6) == 0)
+        {
+            for (const reg32 k : {2u, 1u, 0u})
+                raiseColour(app, second, 0x18 + k, 0x10 + k);
+            left.second = at(app, second + 8);
+        }
+        if (half(app, third + 6) == 0)
+        {
+            for (const reg32 k : {2u, 1u, 0u})
+                raiseColour(app, third, 0x18 + k, 0x10 + k);
+            left.second = at(app, third + 8);
+        }
+        if (half(app, fourth + 6) == 0)
+        {
+            const reg8 low = raiseColour(app, fourth, 0x1a, 0x12), high = raiseColour(app, fourth, 0x19, 0x11);
+            raiseColour(app, fourth, 0x18, 0x10);
+            left.third = (third & 0xffff0000) | reg32(high) << 8 | low;
+            left.second = at(app, fourth + 8);
+        }
+    }
+    return left;
+}
+
+/* 0x41ab40 (stdcall, 1 word): lightPolygons of block ebx's group ecx, the
+ * corners at [esp+4]. */
+void lightObjectPolygons(App* app, CPU& cpu)
+{
+    const LitLeft left = lightPolygons(app, cpu, cpu.ebx, cpu.ecx, at(app, cpu.esp + 4));
+    cpu.eax = left.done;
+    cpu.ebx = left.fourth;
+    cpu.ecx = left.third;
+    cpu.edx = left.second;
+    cpu.esp += 4 + 4;
+}
+
+constexpr reg32 kStateReset = 0x4bbf20;   // the drawing's state reset
+constexpr reg32 kRoom = 0x4bbde0;         // Render_GetTm's room: edx bytes, their place to [eax]; 0 none
+constexpr reg32 kListOfOne = 0x4bbe90;    // the record eax a list of its own, its pair (first, last) to [esi]
+constexpr reg32 kListsJoined = 0x4bbec0;  // the two lists of the stack's pairs joined, the pair to [esi] (stdcall)
+// A state record of the drawing's: 0x10 bytes, +0 0, +4 its kind (a word, 5), +8 0xd, +0xc the last's 1.
+constexpr reg32 kStateRecordSize = 0x10;
+
+/* A state record of the drawing's at [record], where Render_GetTm gave room
+ * for one: kind 5, 0xd, `last`.  False when the game stopped. */
+bool stateRecord(App* app, CPU& cpu, reg32 record, reg32 last)
+{
+    cpu.eax = record;
+    cpu.edx = kStateRecordSize;
+    const std::optional<reg32> room = call(app, cpu, kRoom);
+    if (!room)
+        return false;
+    if (*room != 0)
+    {
+        putHalf(app, at(app, record) + 4, 5);
+        put(app, at(app, record), 0);
+        put(app, at(app, record) + 8, 0xd);
+        put(app, at(app, record) + 0xc, last);
+    }
+    return true;
+}
+
+/* The state record at [record] made a list of its own into `pair`, and the
+ * lists `first` then `second` (pairs of first and last) joined into the
+ * list's pair at `list`.  False when the game stopped. */
+bool joinRecord(App* app, CPU& cpu, reg32 record, reg32 pair, reg32 list, bool recordFirst, reg32 joined)
+{
+    const reg32 listFirst = at(app, list), listLast = at(app, list + 4);
+    cpu.eax = at(app, record);
+    cpu.esi = pair;
+    if (!guest::call(app, cpu, kListOfOne))
+        return false;
+    cpu.esi = joined;
+    const reg32 pairFirst = at(app, pair), pairLast = at(app, pair + 4);
+    if (!guest::call(app, cpu, kListsJoined,
+                     recordFirst ? std::initializer_list<reg32>{pairFirst, pairLast, listFirst, listLast}
+                                 : std::initializer_list<reg32>{listFirst, listLast, pairFirst, pairLast}))
+        return false;
+    put(app, list, at(app, joined));
+    put(app, list + 4, at(app, joined + 4));
+    return true;
+}
+
+/* 0x41b8c0's: the list at `list` (its first and last record), if not
+ * empty, put between two state records of the drawing's (0x10 bytes from
+ * Render_GetTm, kind 5, 0xd, the first +0xc 0 and the last 1): the drawing's
+ * state reset, each record made a list of its own and the lists joined.  The
+ * frame as deep as the code's (its places are handed on).  False when the
+ * game stopped. */
+bool bracketOrdered(App* app, CPU& cpu, reg32 list)
+{
+    if (at(app, list) == 0)
+        return true;
+    const GuestFrame frame(cpu, 0x18, 0x24);
+    const reg32 record = frame - 4;
+    return guest::call(app, cpu, kStateReset) && stateRecord(app, cpu, record, 0)
+           && joinRecord(app, cpu, record, frame - 0x14, list, true, frame - 0x24)
+           && stateRecord(app, cpu, record, 1) && joinRecord(app, cpu, record, frame - 0xc, list, false, frame - 0x1c);
+}
+
+/* 0x41b8c0: bracketOrdered of eax; eax as the last join leaves it. */
 void bracketList(App* app, CPU& cpu)
 {
-    push(app, cpu, cpu.ebx);
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.edx);
-    push(app, cpu, cpu.esi);
-    push(app, cpu, cpu.edi);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    cpu.esp -= 0x24;
-    const reg32 record = cpu.ebp - 4;
-    // A state record, where Render_GetTm gave one: kind 5, 0xd, `last`.
-    const auto stateRecord = [&](reg32 last) {
-        cpu.eax = at(app, record);
-        putHalf(app, cpu.eax + 4, 5);
-        cpu.eax = at(app, record);
-        put(app, cpu.eax, 0);
-        cpu.eax = at(app, record);
-        put(app, cpu.eax + 8, 0xd);
-        cpu.eax = at(app, record);
-        put(app, cpu.eax + 0xc, last);
-    };
-    cpu.ecx = cpu.eax;
-    if (at(app, cpu.eax) != 0)
-    {
-        if (!byAddress(app, cpu, 0x4bbf20))
-            return;
-        cpu.edx = 0x10;
-        cpu.eax = record;
-        if (!byAddress(app, cpu, 0x4bbde0))
-            return;
-        if (cpu.eax != 0)
-            stateRecord(0);
-        cpu.ebx = at(app, cpu.ecx + 4);
-        push(app, cpu, cpu.ebx);
-        cpu.esi = at(app, cpu.ecx);
-        push(app, cpu, cpu.esi);
-        cpu.eax = at(app, record);
-        cpu.esi = cpu.ebp - 0x14;
-        if (!byAddress(app, cpu, 0x4bbe90))
-            return;
-        cpu.edi = at(app, cpu.ebp - 0x10);
-        push(app, cpu, cpu.edi);
-        cpu.eax = at(app, cpu.ebp - 0x14);
-        push(app, cpu, cpu.eax);
-        cpu.esi = cpu.ebp - 0x24;
-        if (!byAddress(app, cpu, 0x4bbec0))
-            return;
-        cpu.edi = cpu.ecx;
-        cpu.esi = cpu.ebp - 0x24;
-        cpu.edx = 0x10;
-        cpu.eax = record;
-        movsd(app, cpu);
-        movsd(app, cpu);
-        if (!byAddress(app, cpu, 0x4bbde0))
-            return;
-        if (cpu.eax != 0)
-            stateRecord(1);
-        cpu.eax = at(app, record);
-        cpu.esi = cpu.ebp - 0xc;
-        if (!byAddress(app, cpu, 0x4bbe90))
-            return;
-        cpu.edx = at(app, cpu.ebp - 8);
-        push(app, cpu, cpu.edx);
-        cpu.ebx = at(app, cpu.ebp - 0xc);
-        push(app, cpu, cpu.ebx);
-        cpu.esi = at(app, cpu.ecx + 4);
-        push(app, cpu, cpu.esi);
-        cpu.edi = at(app, cpu.ecx);
-        push(app, cpu, cpu.edi);
-        cpu.esi = cpu.ebp - 0x1c;
-        if (!byAddress(app, cpu, 0x4bbec0))
-            return;
-        cpu.esi = cpu.ebp - 0x1c;
-        cpu.edi = cpu.ecx;
-        movsd(app, cpu);
-        movsd(app, cpu);
-    }
-    cpu.esp = cpu.ebp;
-    cpu.ebp = pop(app, cpu);
-    cpu.edi = pop(app, cpu);
-    cpu.esi = pop(app, cpu);
-    cpu.edx = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
-    cpu.ebx = pop(app, cpu);
+    const Kept kept(cpu, kSaveEbx | kSaveEcx | kSaveEdx | kSaveEsi | kSaveEdi);
+    if (!bracketOrdered(app, cpu, cpu.eax))
+        return;
     cpu.esp += 4;
 }
 
-/* 0x41bb50: the ambient sounds around the camera at eax (none in the
- * mirror's pass): the view on its block (viewOnBlock), each sound source of
- * the block's neighbours (+0xb4, 300 words, -1 none; a block's +0x5b0 its
- * sources' count, +0x5b4 them) heard (ambientSource); none heard, the
- * ambient slot stopped (0x416f60: 0x12, or 0x20 for the second player). */
+// A block's neighbours drawn with it (+0xb4: 300, a word read every 4 bytes, -1 none) and its sound
+// sources (+0x5b0 their count, +0x5b4 them).
+constexpr reg32 kBlockNeighbours = 0xb4, kNeighbourCount = 300, kBlockSourceCount = 0x5b0, kBlockSources = 0x5b4;
+constexpr reg32 kSlotStopped = 0x416f60;  // the sound slot eax stopped (port_sound_effects.cpp)
+constexpr reg32 kAmbientSlot = 0x12, kAmbientSlotSecond = 0x20;
+// The second player's camera (+4 not 0).
+constexpr reg32 kCameraPlayer = 4;
+
+std::optional<reg32> heardSources(App* app, CPU& cpu, reg32 camera, reg32 sources, reg32 heard);
+
+/* 0x41bb50's: the ambient sounds around the camera (none in the mirror's
+ * pass): the view on its block, the sound sources of each of the block's
+ * neighbours heard; none heard, the ambient slot stopped (0x12, or 0x20 for
+ * the second player).  What the code leaves in eax: the slot's stopping's,
+ * else what the last neighbour left (its sources' heard, its block's offset,
+ * or its place where there is none); the camera in the mirror's pass.
+ * nullopt when the game stopped. */
+std::optional<reg32> ambientAround(App* app, CPU& cpu, reg32 camera)
+{
+    if (at(app, camera + kCameraKind) != 0)
+        return camera;
+    if (!viewOnCameraBlock(app, cpu, camera, at(app, camera + kCameraNode)))
+        return std::nullopt;
+    const GuestFrame frame(cpu, 0x18, 4);  // as deep as the code's: hearSource hands its own frame on
+    const reg32 neighbours = kBlocks + blockOffset(at(app, at(app, kView) + kViewGroupNow)) + kBlockNeighbours;
+    reg32 heard = 0, left = 0;
+    for (reg32 index = 0; index < kNeighbourCount; ++index)
+    {
+        safepoint(app, cpu);
+        left = neighbours + index * 4;
+        const reg16 neighbour = half(app, left);
+        if (neighbour == 0xffff)
+            continue;
+        safepoint(app, cpu);
+        left = blockOffset(reg32(sreg32(std::int16_t(neighbour))));
+        if (at(app, kBlocks + left + kBlockSourceCount) == 0)
+            continue;
+        std::optional<reg32> some;
+        {
+            const GuestFrame slot(cpu, 4, 0);  // the call's return address
+            some = heardSources(app, cpu, camera, at(app, kBlocks + left + kBlockSources), heard);
+        }
+        if (!some)
+            return std::nullopt;
+        left = *some;
+        heard |= left;
+    }
+    if (heard != 0)
+        return left;
+    cpu.eax = at(app, camera + kCameraPlayer) == 0 ? kAmbientSlot : kAmbientSlotSecond;
+    return call(app, cpu, kSlotStopped);
+}
+
+/* 0x41bb50: ambientAround the camera eax. */
 void ambientSounds(App* app, CPU& cpu)
 {
-    push(app, cpu, cpu.ebx);
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.edx);
-    push(app, cpu, cpu.esi);
-    push(app, cpu, cpu.edi);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    cpu.esp -= 4;
-    const reg32 neighbours = cpu.ebp - 4;
-    cpu.ecx = cpu.eax;
-    if (at(app, cpu.eax) == 0)
-    {
-        cpu.edx = at(app, cpu.eax + 4);
-        if (!direct(app, cpu, viewOnBlock))
-            return;
-        cpu.eax = at(app, kView);
-        cpu.edx = at(app, cpu.eax + 0x10);
-        cpu.eax = blockOffset(cpu.edx) + kBlocks;
-        cpu.esi = 0;
-        cpu.eax += 0xb4;
-        cpu.edi = 0;
-        put(app, neighbours, cpu.eax);
-        for (;;)
-        {
-            safepoint(app, cpu);
-            cpu.ebx = at(app, neighbours);
-            cpu.eax = cpu.edi * 4 + cpu.ebx;
-            cpu.dx = half(app, cpu.eax);
-            if (cpu.dx != 0xffff)
-            {
-                safepoint(app, cpu);
-                cpu.edx = reg32(sreg32(std::int16_t(cpu.dx)));
-                if (cpu.edx != 0xffffffff)
-                {
-                    cpu.eax = blockOffset(cpu.edx);
-                    if (at(app, cpu.eax + kBlocks + 0x5b0) != 0)
-                    {
-                        cpu.ebx = cpu.esi;
-                        cpu.edx = at(app, cpu.eax + kBlocks + 0x5b4);
-                        cpu.eax = cpu.ecx;
-                        if (!direct(app, cpu, ambientSource))
-                            return;
-                        cpu.esi |= cpu.eax;
-                    }
-                }
-            }
-            ++cpu.edi;
-            if (sreg32(cpu.edi) >= 0x12c)
-                break;
-        }
-        if (cpu.esi == 0)
-        {
-            cpu.eax = at(app, cpu.ecx + 4) == 0 ? 0x12 : 0x20;
-            if (!byAddress(app, cpu, 0x416f60))
-                return;
-        }
-    }
-    cpu.esp = cpu.ebp;
-    cpu.ebp = pop(app, cpu);
-    cpu.edi = pop(app, cpu);
-    cpu.esi = pop(app, cpu);
-    cpu.edx = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
-    cpu.ebx = pop(app, cpu);
+    const Kept kept(cpu, kSaveEbx | kSaveEcx | kSaveEdx | kSaveEsi | kSaveEdi);
+    const std::optional<reg32> left = ambientAround(app, cpu, cpu.eax);
+    if (!left)
+        return;
+    cpu.eax = *left;
     cpu.esp += 4;
 }
 
-/* 0x41bc20: whether the track's ambient sounds play: not in a split-screen
- * or network race but on track 0. */
+/* 0x41bc20's: whether the track's ambient sounds play: not in a split-screen
+ * or network race but on track 0 (the settings' fields so named). */
+bool ambientPlays(App* app)
+{
+    const auto& settings = gameSettings(app);
+    return !((settings.weather != 0 || settings.night != 0) && settings.track == 0);
+}
+
+/* 0x41bc20: ambientPlays, 1 or 0. */
 void ambientWanted(App* app, CPU& cpu)
 {
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    cpu.eax = 1;
-    if ((at(app, kNetworkRace) != 0 || at(app, kSplitScreen) != 0) && at(app, kTrackNumber) == 0)
-        cpu.eax = 0;
-    cpu.ebp = pop(app, cpu);
+    cpu.eax = ambientPlays(app) ? 1 : 0;
     cpu.esp += 4;
 }
 
-/* 0x41bc50: whether the light at eax shines away from the camera edx: its
- * place (+0x4c) taken into the camera's view (0x4e0430) and its depth there
- * against the light's own -(+0x6c).  1 behind. */
+// A light of the track's: its place (+0x4c) and its reach (+0x6c).
+constexpr reg32 kLightPlace = 0x4c, kLightReach = 0x6c;
+
+/* 0x41bc50's: whether the light at `light` shines away from the camera:
+ * its place taken into the camera's view (into the frame, as deep as the
+ * code's) and its depth there against the light's own -(+0x6c) -- an x87
+ * compare, so a NaN either side is not behind.  nullopt when the game
+ * stopped. */
+std::optional<bool> lightBehind(App* app, CPU& cpu, reg32 light, reg32 camera)
+{
+    const GuestFrame frame(cpu, 0x10, 0xc);
+    const reg32 inView = frame - 0xc;
+    cpu.edx = light + kLightPlace;  // as the code hands it, which the call keeps: what pointBehindView leaves
+    guest::direct<0x4e0430, vertices::transformPointList>(app, cpu, 1, light + kLightPlace, camera + kCameraMatrix,
+                                                          camera + kCameraBox, inView);
+    if (cpu.terminate)
+        return std::nullopt;
+    return Float(-f32(app, light + kLightReach)) > f32(app, inView + 8);
+}
+
+/* 0x41bc50: lightBehind for the light eax and the camera edx, 1 behind. */
 void pointBehindView(App* app, CPU& cpu)
 {
-    push(app, cpu, cpu.ebx);
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.esi);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    cpu.esp -= 0xc;
-    cpu.esi = cpu.eax;
-    cpu.eax = cpu.ebp - 0xc;
-    cpu.ecx = cpu.edx + 0x38;
-    push(app, cpu, cpu.eax);
-    cpu.ebx = cpu.edx + 0x44;
-    cpu.eax = 1;
-    cpu.edx = cpu.esi + 0x4c;
-    if (!byAddress(app, cpu, 0x4e0430))
+    const Kept kept(cpu, kSaveEbx | kSaveEcx | kSaveEsi);
+    const std::optional<bool> behind = lightBehind(app, cpu, cpu.eax, cpu.edx);
+    if (!behind)
         return;
-    cpu.eax = compare(cpu, -f32(app, cpu.esi + 0x6c), f32(app, cpu.ebp - 4)).belowOrEqual() ? 0 : 1;
-    cpu.esp = cpu.ebp;
-    cpu.ebp = pop(app, cpu);
-    cpu.esi = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
-    cpu.ebx = pop(app, cpu);
+    cpu.eax = *behind ? 1 : 0;
     cpu.esp += 4;
 }
 
-/* 0x41bc90: whether the box of four corners at edx is out of a light's cone:
- * each corner turned by the matrix at ebx and moved by ecx, its depth's sign
- * kept off 0, projected onto the screen (0x56009c..) with the screen's
- * outcode, and |x| times the light's spread (0x4227e0, at most 1) against
- * |depth|.  1 where every corner is beside the cone and all are off the
- * screen on one side. */
+// carstate::zoomOfView (0x4227e0): the light's spread, as the x87's stack has it.
+// The screen's projection (scales x, y; centres x, y) and its bounds: the depth's (1 / z), y's top and
+// bottom, x's left and right.
+constexpr reg32 kScreenScaleX = 0x56009c, kScreenScaleY = 0x5600a0, kScreenMiddleX = 0x5600a4,
+                kScreenMiddleY = 0x5600a8;
+constexpr reg32 kScreenDepth = 0x7d34f8, kScreenTop = 0x7d3504, kScreenBottom = 0x7d3500, kScreenLeft = 0x7d34fc,
+                kScreenRight = 0x7d350c;
+constexpr reg32 kOutBehind = 0x10, kOutAbove = 8, kOutBelow = 4, kOutLeft = 1, kOutRight = 2;
+constexpr reg32 kDepthOffZero = 0x37800080;  // the depth a corner at 0 is given, as bits
+
+/* What litBoxOutside leaves in eax, ebx, ecx and edx. */
+struct ConeLeft
+{
+    reg32 outside;  // 1 out of the cone
+    reg32 outcode;  // the last corner's outcode (ebx)
+    reg32 last;     // that outcode's byte where every corner is beside the cone, else 4 (ecx)
+    reg32 bound;    // the last corner's depth's bits where it is behind, else the screen's right (edx)
+};
+
+/* An int of a float's bits against a bound, as the code compares them: its
+ * sign set, or signed under. */
+bool underBits(reg32 bits, reg32 bound)
+{
+    return (bits & 0x80000000) != 0 || sreg32(bits) < sreg32(bound);
+}
+
+/* 0x41bc90's: whether the box of four corners at `box` is out of the light
+ * `light`'s cone: each corner turned by the matrix at `matrix` and moved by
+ * the vector at `origin`, its depth kept off 0, projected onto the screen
+ * with the screen's outcode, and |x| times the light's spread (at most 1)
+ * against |depth|.  Out where every corner is beside the cone (x87
+ * compares, a NaN not beside) and all are off the screen on one side.
+ * nullopt when the game stopped. */
+std::optional<ConeLeft> boxOutOfCone(App* app, CPU& cpu, reg32 light, reg32 box, reg32 matrix, reg32 origin)
+{
+    const Float value = guest::direct<0x4227e0, carstate::zoomOfView>(app, cpu, light);
+    if (cpu.terminate)
+        return std::nullopt;
+    // An x87 compare: over 1, or a NaN, is 1.
+    const float spread = Float(1.0) < value || value != value ? 1.0f : float(value);
+    reg32 sideX[4], sideZ[4];
+    reg8 outcodes[4];
+    ConeLeft left = {0, 0, 4, 0};
+    for (reg32 index = 0; index < 4; ++index)
+    {
+        // The corner in view: x, y, z as the code stores them (into its frame).
+        const Float a = fp::mul(f32(app, box + index * 12), f32(app, matrix));
+        const Float b = fp::mul(f32(app, box + index * 12), f32(app, matrix + 4));
+        const Float c = fp::mul(f32(app, box + index * 12), f32(app, matrix + 8));
+        const Float d = fp::mul(f32(app, box + index * 12 + 4), f32(app, matrix + 0xc));
+        const Float e = fp::mul(f32(app, box + index * 12 + 4), f32(app, matrix + 0x10));
+        const Float f = fp::mul(f32(app, box + index * 12 + 4), f32(app, matrix + 0x14));
+        const Float x0 = fp::add(a, d), y0 = fp::add(b, e), z0 = fp::add(c, f);
+        const Float g = fp::mul(f32(app, box + index * 12 + 8), f32(app, matrix + 0x18));
+        const Float h = fp::mul(f32(app, box + index * 12 + 8), f32(app, matrix + 0x1c));
+        const Float i = fp::mul(f32(app, box + index * 12 + 8), f32(app, matrix + 0x20));
+        const float turnedX = float(fp::add(x0, g)), turnedY = float(fp::add(y0, h)), turnedZ = float(fp::add(z0, i));
+        const float x = float(fp::add(f32(app, origin), Float(turnedX)));
+        const float y = float(fp::add(f32(app, origin + 4), Float(turnedY)));
+        reg32 zBits = bitsOf(float(fp::add(f32(app, origin + 8), Float(turnedZ))));
+        if ((zBits & 0x7fffffff) == 0)
+            zBits = kDepthOffZero;
+        const float inverse = float(fp::div(Float(1.0), floatOf(zBits)));
+        const Float p = fp::mul(f32(app, kScreenScaleX), Float(inverse));
+        const Float q = fp::mul(f32(app, kScreenScaleY), Float(inverse));
+        const Float qy = fp::mul(q, Float(y));
+        const Float px = fp::mul(p, Float(x));
+        const reg32 screenX = bitsOf(float(fp::add(px, f32(app, kScreenMiddleX))));
+        const reg32 screenY = bitsOf(float(fp::add(qy, f32(app, kScreenMiddleY))));
+        // The outcode: behind the near plane; else above, below, left, right of the screen.
+        reg32 outcode = 0;
+        if ((bitsOf(inverse) & 0x80000000) != 0 || sreg32(bitsOf(inverse)) >= sreg32(at(app, kScreenDepth)))
+        {
+            outcode = kOutBehind;
+            left.bound = zBits;
+        }
+        else
+        {
+            if (underBits(screenY, at(app, kScreenTop)))
+                outcode |= kOutAbove;
+            else if (sreg32(screenY) > sreg32(at(app, kScreenBottom)))
+                outcode |= kOutBelow;
+            if (underBits(screenX, at(app, kScreenLeft)))
+                outcode |= kOutLeft;
+            else if (sreg32(screenX) > sreg32(at(app, kScreenRight)))
+                outcode |= kOutRight;
+            left.bound = at(app, kScreenRight);
+        }
+        outcodes[index] = reg8(outcode);
+        left.outcode = outcode;
+        // |z|, and |x| times the spread.
+        sideZ[index] = Float(0.0) > floatOf(zBits) ? bitsOf(float(-floatOf(zBits))) : zBits;
+        const reg32 xBits = bitsOf(x);
+        const reg32 absX = Float(0.0) > Float(x) ? bitsOf(float(-Float(x))) : xBits;
+        sideX[index] = bitsOf(float(fp::mul(floatOf(absX), Float(spread))));
+    }
+    for (reg32 index = 0; index < 4; ++index)
+        if (!(floatOf(sideX[index]) > floatOf(sideZ[index])))
+            return left;
+    left.last = outcodes[3];
+    left.outside = (outcodes[0] & outcodes[1] & outcodes[2] & outcodes[3]) != 0 ? 1 : 0;
+    return left;
+}
+
+/* 0x41bc90: boxOutOfCone for the light eax, the box edx, the matrix ebx and
+ * the move ecx. */
 void litBoxOutside(App* app, CPU& cpu)
 {
-    x86::FPU& fpu = cpu.fpu;
-    push(app, cpu, cpu.esi);
-    push(app, cpu, cpu.edi);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    cpu.esp -= 0xd4;
-    cpu.ebp -= 0x82;
-    const reg32 e = cpu.ebp;
-    const reg32 corners = e + 0x6e, matrix = e + 0x5e, origin = e + 0x76, spread = e + 0x72, index = e + 0x7e;
-    const reg32 row = e + 0x7a, depth = e + 0x62, absX = e + 0x6a, inverse = e + 0x66;
-    // Each corner in view (x, y, z) from e + 0x2e, 12 bytes each; projected
-    // (x, y, z, 1 / z, ..., +0x14 the outcode) from e - 0x52, 0x20 each.
-    const reg32 points = e + 0x2e, projected = e - 0x52;
-    put(app, corners, cpu.edx);
-    put(app, matrix, cpu.ebx);
-    put(app, origin, cpu.ecx);
-    if (!byAddress(app, cpu, 0x4227e0))
+    const std::optional<ConeLeft> left = boxOutOfCone(app, cpu, cpu.eax, cpu.edx, cpu.ebx, cpu.ecx);
+    if (!left)
         return;
-    const Float value = fpu.st(0);
-    putF32(app, spread, value);
-    const bool below = compare(cpu, Float(1.0), value).below;
-    fpu.count -= 1;
-    if (below)
-        put(app, spread, 0x3f800000);
-    cpu.ecx = 0;
-    put(app, index, cpu.ecx);
-    for (;;)
-    {
-        cpu.eax = at(app, index);
-        cpu.ecx = cpu.eax * 12;
-        cpu.ebx = points;
-        cpu.edx = at(app, matrix);
-        cpu.eax = at(app, corners);
-        cpu.ebx += cpu.ecx;
-        cpu.eax += cpu.ecx;
-        rotate(app, cpu);
-        cpu.eax = at(app, origin);
-        for (const reg32 k : {0u, 4u, 8u})
-            putF32(app, cpu.ecx + points + k, fp::add(f32(app, cpu.eax + k), f32(app, cpu.ecx + points + k)));
-        cpu.esi = at(app, cpu.ecx + points + 8);
-        if ((cpu.esi & 0x7fffffff) == 0)
-            put(app, cpu.ecx + points + 8, 0x37800080);
-        cpu.eax = at(app, index);
-        cpu.ecx = cpu.eax * 12;
-        const Float w = fp::div(Float(1.0), f32(app, cpu.ecx + points + 8));
-        put(app, row, cpu.ecx);
-        cpu.eax <<= 5;
-        cpu.edx = at(app, row);
-        cpu.ecx = projected;
-        putF32(app, inverse, w);
-        cpu.esi = cpu.ecx + cpu.eax;
-        cpu.eax = points;
-        cpu.ecx = inverse;
-        cpu.ebx = cpu.esi;
-        cpu.eax += cpu.edx;
-        cpu.edi = cpu.esi + 0x14;
-        const Float p = fp::mul(f32(app, 0x56009c), f32(app, cpu.ecx));
-        const Float q = fp::mul(f32(app, 0x5600a0), f32(app, cpu.ecx));
-        cpu.edx = at(app, cpu.ecx);
-        const Float qy = fp::mul(q, f32(app, cpu.eax + 4));
-        put(app, cpu.ebx + 0xc, cpu.edx);
-        const Float px = fp::mul(p, f32(app, cpu.eax));
-        cpu.edx = at(app, cpu.eax + 8);
-        const Float sx = fp::add(px, f32(app, 0x5600a4));
-        const Float sy = fp::add(qy, f32(app, 0x5600a8));
-        putF32(app, cpu.ebx, sx);
-        put(app, cpu.ebx + 8, cpu.edx);
-        putF32(app, cpu.ebx + 4, sy);
-        // The outcode: 0x10 behind the near plane; else 8 above, 4 below, 1
-        // left, 2 right of the screen ([0x7d34f8..0x7d350c]).
-        cpu.eax = at(app, cpu.esi + 0xc);
-        cpu.ecx = at(app, 0x7d34f8);
-        if ((cpu.eax & 0x80000000) != 0 || sreg32(cpu.eax) >= sreg32(cpu.ecx))
-        {
-            cpu.ebx = 0x10;
-        }
-        else
-        {
-            cpu.eax = at(app, cpu.esi + 4);
-            cpu.ebx = 0;
-            cpu.ecx = at(app, 0x7d3504);
-            cpu.edx = at(app, 0x7d3500);
-            if ((cpu.eax & 0x80000000) != 0 || sreg32(cpu.eax) < sreg32(cpu.ecx))
-                cpu.ebx |= 8;
-            else if (sreg32(cpu.eax) > sreg32(cpu.edx))
-                cpu.ebx |= 4;
-            cpu.eax = at(app, cpu.esi);
-            cpu.ecx = at(app, 0x7d34fc);
-            cpu.edx = at(app, 0x7d350c);
-            if ((cpu.eax & 0x80000000) != 0 || sreg32(cpu.eax) < sreg32(cpu.ecx))
-                cpu.ebx |= 1;
-            else if (sreg32(cpu.eax) > sreg32(cpu.edx))
-                cpu.ebx |= 2;
-        }
-        putByte(app, cpu.edi, cpu.bl);
-        // |z| and |x| times the spread kept for the corner.
-        cpu.eax = at(app, row);
-        if (!compare(cpu, Float(0.0), f32(app, cpu.eax + points + 8)).belowOrEqual())
-        {
-            cpu.eax = at(app, row);
-            putF32(app, depth, -f32(app, cpu.eax + points + 8));
-        }
-        else
-        {
-            safepoint(app, cpu);
-            cpu.eax = at(app, row);
-            cpu.eax = at(app, cpu.eax + points + 8);
-            put(app, depth, cpu.eax);
-        }
-        safepoint(app, cpu);
-        cpu.eax = at(app, index);
-        cpu.ecx = cpu.eax * 12;
-        cpu.eax = at(app, depth);
-        put(app, cpu.ecx + points + 8, cpu.eax);
-        if (!compare(cpu, Float(0.0), f32(app, cpu.ecx + points)).belowOrEqual())
-        {
-            putF32(app, absX, -f32(app, cpu.ecx + points));
-        }
-        else
-        {
-            cpu.eax = at(app, cpu.ecx + points);
-            put(app, absX, cpu.eax);
-        }
-        const Float x = f32(app, absX);
-        cpu.eax = at(app, index);
-        const Float spreadX = fp::mul(x, f32(app, spread));
-        cpu.ecx = cpu.eax * 3;
-        putF32(app, e + cpu.ecx * 4 + 0x2e, spreadX);
-        cpu.ecx = cpu.eax + 1;
-        put(app, index, cpu.ecx);
-        if (sreg32(at(app, index)) >= 4)
-            break;
-    }
-    if (compare(cpu, f32(app, points), f32(app, points + 8)).above()
-        && compare(cpu, f32(app, points + 0xc), f32(app, points + 0x14)).above()
-        && compare(cpu, f32(app, points + 0x18), f32(app, points + 0x20)).above()
-        && compare(cpu, f32(app, points + 0x24), f32(app, points + 0x2c)).above())
-    {
-        cpu.ecx = byte(app, projected + 0x34);
-        cpu.eax = byte(app, projected + 0x14);
-        cpu.eax &= cpu.ecx;
-        cpu.ecx = byte(app, projected + 0x54);
-        cpu.eax &= cpu.ecx;
-        cpu.ecx = byte(app, projected + 0x74);
-        cpu.eax = (cpu.eax & cpu.ecx) != 0 ? 1 : 0;
-    }
-    else
-    {
-        cpu.eax = 0;
-    }
-    cpu.esp = e + 0x82;
-    cpu.ebp = pop(app, cpu);
-    cpu.edi = pop(app, cpu);
-    cpu.esi = pop(app, cpu);
+    cpu.eax = left->outside;
+    cpu.ebx = left->outcode;
+    cpu.ecx = left->last;
+    cpu.edx = left->bound;
     cpu.esp += 4;
 }
 
-/* 0x41c1a0: a view's buckets of polygons handed to the drawing: the six
- * lists of the track's (heads ebx, tails edx) into the buckets at ecx (an
+constexpr reg32 kListEmptied = 0x4bbe70;  // an empty list's pair to [esi]
+constexpr reg32 kSortInto = 0x4c7790;     // the list from eax sorted into the frame's bucket [esp+4] (stdcall)
+constexpr reg32 kAddOrdered = 0x4c7940;   // the list of the pair [esp+4], [esp+8] added to [esp+0xc] (stdcall)
+constexpr reg32 kGather = 0x4c79a0;       // the buckets at edi gathered (eax 0) into the pair at esi
+constexpr reg32 kGatherFrame = 0x4c7750;  // the frame's buckets gathered (eax 0) into the pair at esi
+constexpr reg32 kDrawView = 0x4bc060;     // the view eax drawn (stdcall, [esp+4] 0)
+constexpr reg32 kTrackLists = 6;
+// The buckets (8 bytes each, a list's pair): the four opaque ones sorted into the frame's, the ordered
+// one at +0x28 bracketed, it and +0x20 added to the ordered bucket.
+constexpr reg32 kBucketsOrdered = 0x28, kBucketsSecond = 0x20;
+
+/* The pair (8 bytes) at `from` copied to `to`, as the code's two movsd. */
+void copyPair(App* app, reg32 from, reg32 to)
+{
+    put(app, to, at(app, from));
+    put(app, to + 4, at(app, from + 4));
+}
+
+/* An empty list's pair made at `pair` (in the frame) and copied to `to`.
+ * False when the game stopped. */
+bool emptyPairTo(App* app, CPU& cpu, reg32 pair, reg32 to)
+{
+    cpu.esi = pair;
+    if (!guest::call(app, cpu, kListEmptied))
+        return false;
+    copyPair(app, pair, to);
+    return true;
+}
+
+/* 0x41c1a0's: a view's buckets of polygons handed to the drawing: the six
+ * lists of the track's (`heads`, `tails`) into the buckets at `buckets` (an
  * empty one where a list is), the four opaque buckets sorted into the
- * frame's (0x4c7790), the ordered ones bracketed (bracketList) and added
- * (0x4c7940), all gathered (0x4c79a0, 0x4c7750), the buckets emptied
- * (0x4bbe70) and the view eax drawn (0x4bc060). */
+ * frame's, the ordered ones bracketed (bracketOrdered) and added, all
+ * gathered, the buckets emptied and the view drawn.  The frame as deep as
+ * the code's (its pairs are handed on), each callee handed the registers the
+ * code hands it.  False when the game stopped. */
+bool drawBuckets(App* app, CPU& cpu, reg32 view, reg32 tails, reg32 heads, reg32 buckets)
+{
+    const GuestFrame frame(cpu, 0xc, 0x4c);
+    const reg32 gathered = frame - 0x4c, empty = frame - 0x34;
+    cpu.esi = gathered;
+    if (!guest::call(app, cpu, kListEmptied))
+        return false;
+    for (reg32 list = 0; list < kTrackLists; ++list)
+    {
+        const reg32 head = at(app, heads + list * 4), to = buckets + list * 8;
+        if (head == 0)
+        {
+            safepoint(app, cpu);
+            if (!emptyPairTo(app, cpu, empty, to))
+                return false;
+        }
+        else
+        {
+            put(app, to, head);
+            const reg32 tail = at(app, tails + list * 4);
+            put(app, tail, 0);
+            put(app, to + 4, at(app, tails + list * 4));
+        }
+        safepoint(app, cpu);
+        put(app, heads + list * 4, 0);
+        put(app, tails + list * 4, 0);
+    }
+    static const reg32 kOpaque[][2] = {{0, kBucketOpaque}, {8, kBucketA}, {0x18, kBucketB}, {0x10, kBucketC}};
+    for (const auto& bucket : kOpaque)
+    {
+        cpu.eax = at(app, buckets + bucket[0]);
+        if (!guest::call(app, cpu, kSortInto, {at(app, bucket[1])}))
+            return false;
+    }
+    {
+        // bracketList's, as its code keeps the registers.
+        const Kept kept(cpu, kSaveEbx | kSaveEcx | kSaveEdx | kSaveEsi | kSaveEdi);
+        const GuestFrame slot(cpu, 4, 0);
+        if (!bracketOrdered(app, cpu, buckets + kBucketsOrdered))
+            return false;
+    }
+    cpu.eax = at(app, buckets + kBucketsOrdered + 4);
+    cpu.edx = at(app, buckets + kBucketsOrdered);
+    if (!guest::call(app, cpu, kAddOrdered, {cpu.edx, cpu.eax, at(app, kBucketOrdered)}))
+        return false;
+    cpu.ebx = at(app, buckets + kBucketsSecond + 4);
+    cpu.esi = at(app, buckets + kBucketsSecond);
+    if (!guest::call(app, cpu, kAddOrdered, {cpu.esi, cpu.ebx, at(app, kBucketOrdered)}))
+        return false;
+    cpu.esi = gathered;
+    cpu.eax = 0;
+    cpu.edi = buckets;
+    if (!guest::call(app, cpu, kGather))
+        return false;
+    cpu.eax = 0;
+    cpu.esi = frame - 0x44;
+    if (!guest::call(app, cpu, kGatherFrame) || !emptyPairTo(app, cpu, frame - 0x44, buckets))
+        return false;
+    // The other buckets emptied: their frame's empty list copied in.
+    static const reg32 kEmptied[][2] = {{0x3c, 8}, {0x14, 0x18}, {0x2c, 0x10}, {0x24, 0x20}};
+    for (const auto& bucket : kEmptied)
+        if (!emptyPairTo(app, cpu, frame - bucket[0], buckets + bucket[1]))
+            return false;
+    cpu.edx = gathered;
+    if (!emptyPairTo(app, cpu, frame - 0x1c, buckets + kBucketsOrdered))
+        return false;
+    cpu.eax = view;
+    return guest::call(app, cpu, kDrawView, {0});
+}
+
+/* 0x41c1a0: drawBuckets of the view eax, the lists' tails edx and heads ebx,
+ * into the buckets at ecx; the registers as the drawing leaves them. */
 void flushBuckets(App* app, CPU& cpu)
 {
-    push(app, cpu, cpu.esi);
-    push(app, cpu, cpu.edi);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    cpu.esp -= 0x4c;
-    const reg32 view = cpu.ebp - 0xc, tails = cpu.ebp - 8, offset = cpu.ebp - 4;
-    put(app, view, cpu.eax);
-    put(app, tails, cpu.edx);
-    cpu.esi = cpu.ebp - 0x4c;
-    if (!byAddress(app, cpu, 0x4bbe70))
+    const Kept kept(cpu, kSaveEsi | kSaveEdi);
+    if (!drawBuckets(app, cpu, cpu.eax, cpu.edx, cpu.ebx, cpu.ecx))
         return;
-    cpu.edx = 0;
-    for (;;)
-    {
-        cpu.eax = cpu.edx * 4;
-        put(app, offset, cpu.eax);
-        cpu.eax += cpu.ebx;
-        cpu.edi = cpu.edx * 8;
-        cpu.esi = at(app, cpu.eax);
-        cpu.edi += cpu.ecx;
-        if (cpu.esi == 0)
-        {
-            safepoint(app, cpu);
-            cpu.esi = cpu.ebp - 0x34;
-            if (!byAddress(app, cpu, 0x4bbe70))
-                return;
-            cpu.esi = cpu.ebp - 0x34;
-            movsd(app, cpu);
-            movsd(app, cpu);
-        }
-        else
-        {
-            cpu.eax = at(app, tails);
-            put(app, cpu.edi, cpu.esi);
-            cpu.eax += at(app, offset);
-            cpu.esi = at(app, cpu.eax);
-            put(app, cpu.esi, 0);
-            cpu.eax = at(app, cpu.eax);
-            put(app, cpu.edi + 4, cpu.eax);
-        }
-        safepoint(app, cpu);
-        cpu.eax = cpu.edx * 4;
-        cpu.edi = at(app, tails);
-        cpu.esi = cpu.ebx + cpu.eax;
-        cpu.eax += cpu.edi;
-        put(app, cpu.esi, 0);
-        ++cpu.edx;
-        put(app, cpu.eax, 0);
-        if (sreg32(cpu.edx) >= 6)
-            break;
-    }
-    const reg32 opaque[][2] = {{0, kBucketOpaque}, {8, kBucketA}, {0x18, kBucketB}, {0x10, kBucketC}};
-    for (const auto& bucket : opaque)
-    {
-        cpu.eax = at(app, cpu.ecx + bucket[0]);
-        push(app, cpu, at(app, bucket[1]));
-        if (!byAddress(app, cpu, 0x4c7790))
-            return;
-    }
-    cpu.eax = cpu.ecx + 0x28;
-    if (!direct(app, cpu, bracketList))
-        return;
-    cpu.eax = at(app, cpu.ecx + 0x2c);
-    push(app, cpu, at(app, kBucketOrdered));
-    push(app, cpu, cpu.eax);
-    cpu.edx = at(app, cpu.ecx + 0x28);
-    push(app, cpu, cpu.edx);
-    if (!byAddress(app, cpu, 0x4c7940))
-        return;
-    cpu.ebx = at(app, cpu.ecx + 0x24);
-    push(app, cpu, at(app, kBucketOrdered));
-    push(app, cpu, cpu.ebx);
-    cpu.esi = at(app, cpu.ecx + 0x20);
-    push(app, cpu, cpu.esi);
-    if (!byAddress(app, cpu, 0x4c7940))
-        return;
-    cpu.esi = cpu.ebp - 0x4c;
-    cpu.eax = 0;
-    cpu.edi = cpu.ecx;
-    if (!byAddress(app, cpu, 0x4c79a0))
-        return;
-    cpu.eax = 0;
-    cpu.esi = cpu.ebp - 0x44;
-    if (!byAddress(app, cpu, 0x4c7750) || !byAddress(app, cpu, 0x4bbe70))
-        return;
-    cpu.esi = cpu.ebp - 0x44;
-    movsd(app, cpu);
-    movsd(app, cpu);
-    // The other buckets emptied: their frame's empty list copied in.
-    const reg32 empties[][2] = {{0x3c, 8}, {0x14, 0x18}, {0x2c, 0x10}, {0x24, 0x20}};
-    for (const auto& bucket : empties)
-    {
-        cpu.esi = cpu.ebp - bucket[0];
-        if (!byAddress(app, cpu, 0x4bbe70))
-            return;
-        cpu.esi = cpu.ebp - bucket[0];
-        cpu.edi = cpu.ecx + bucket[1];
-        movsd(app, cpu);
-        movsd(app, cpu);
-    }
-    cpu.esi = cpu.ebp - 0x1c;
-    cpu.edx = cpu.ebp - 0x4c;
-    if (!byAddress(app, cpu, 0x4bbe70))
-        return;
-    cpu.esi = cpu.ebp - 0x1c;
-    cpu.edi = cpu.ecx + 0x28;
-    push(app, cpu, 0);
-    cpu.eax = at(app, view);
-    movsd(app, cpu);
-    movsd(app, cpu);
-    if (!byAddress(app, cpu, 0x4bc060))
-        return;
-    cpu.esp = cpu.ebp;
-    cpu.ebp = pop(app, cpu);
-    cpu.edi = pop(app, cpu);
-    cpu.esi = pop(app, cpu);
     cpu.esp += 4;
 }
 
-/* 0x41c310 (stdcall, 3 words): the headlights' light on the eax points at
- * ecx (12 bytes each) of an object in the camera [esp+8]'s view: for each car
- * near enough (its place within the square root of 0x536cb4 of the point at
- * ebx; not a car that is hidden, wrecked or without lights), each of its two
- * lights (+0x734 with its box at +0x75c, where +0x200 has bit 0x20; +0x660
- * with its box at +0x688) that faces the points and whose cone reaches them:
- * each point taken through the matrix edx (0x4e0430), lit as a track vertex
- * (0x41a550) and the vertex [esp+4] + 0x20 * n raised to the lit colour.  A
- * box or a point of 0 is the game's own (the code's data at 0x41a880 and
- * 0x41a8a4).  None in the mirror's pass, nor outside a split-screen race --
- * the port's change (tools/apply_mirror_detail.py): the mirror's asked
- * through nfs3hp::mirrorAsMain, as the main view would have it. */
+// A car's flags (+0x200: 0x40 hidden, 0x20 its first light on), wrecked (+0x88), its lights on (+0x89),
+// its place (+0x98); its two lights (+0x734, +0x660), each with its turn at +0x28 and its place at +0x58.
+constexpr reg32 kCarFlags = 0x200, kCarWrecked = 0x88, kCarLightsOn = 0x89, kCarPlace = 0x98;
+constexpr reg8 kCarHidden = 0x40, kCarFirstLightOn = 0x20;
+constexpr reg32 kFirstLight = 0x734, kSecondLight = 0x660, kLightTurn = 0x28, kLightAt = 0x58;
+// The squares of the distances the headlights reach objects and blocks within (doubles), and the second
+// light's dimming for each car's lit before (a float).
+constexpr reg32 kObjectsLitWithin = 0x536cb4, kBlocksLitWithin = 0x536cbc, kDimmedPerCar = 0x536cc4;
+// A block's vertices (+0x70), its centre (+0x78) and its box of four corners (+0x84); the view's reach of
+// a block (+0x34).
+constexpr reg32 kBlockVertices = 0x70, kBlockCentre = 0x78, kBlockBox = 0x84, kViewReach = 0x34;
+// A block's animated objects (+0x5a4): 20 bytes each, +0xe its state's number (a word), +0x13 how it
+// moves (2 when hit, 3 it falls); a state's bytes: its path (0xff still, 0xfe turning), its angle, 0.
+constexpr reg32 kBlockAnimated = 0x5a4, kAnimatedSize = 20, kAnimatedState = 0xe, kAnimatedMoves = 0x13;
+constexpr reg8 kMovesWhenHit = 2, kFalls = 3, kStateTurning = 0xfe;
+// The lists of a view's polygons, six of them (a word each, heads and tails apart): the sixth the ordered
+// one, the headlights' polygons'.
+constexpr reg32 kOrderedList = 5 * 4;
+constexpr reg32 kBoxOutside = 0x41bf30;     // vertices::boxOutside: the box at edx out of the camera eax's view
+constexpr reg32 kTrackVertices = 0x41a550;  // vertices::trackVertices: edx vertices lit by the light eax (stdcall)
+constexpr reg32 kLitGroup = 0x41ae90;       // a block's polygon group drawn lit (stdcall, 3 words)
+
+/* What a function's code leaves in ebx, ecx and edx where they are not a
+ * result but what its last calls and loads left there: no caller of the
+ * game's reads them, the check compares them.  `took` copies them as a callee
+ * by address leaves them. */
+struct Leftovers
+{
+    reg32 ebx, ecx, edx;
+    void took(const CPU& cpu)
+    {
+        ebx = cpu.ebx;
+        ecx = cpu.ecx;
+        edx = cpu.edx;
+    }
+};
+
+/* `word` with its byte `index` (0 the low one) `value`: a byte register loaded
+ * (bl, bh, cl, ch, dl). */
+reg32 withByte(reg32 word, unsigned index, reg8 value)
+{
+    const unsigned shift = 8 * index;
+    return (word & ~(reg32(0xff) << shift)) | reg32(value) << shift;
+}
+
+/* lightBehind (pointBehindView's) from a core: its return address's slot, as
+ * the code's frame is handed on; edx as it leaves it (transformPoints') into
+ * `left`, ebx and ecx it keeps.  nullopt when the game stopped. */
+std::optional<bool> lightAway(App* app, CPU& cpu, reg32 light, reg32 camera, Leftovers& left)
+{
+    const GuestFrame slot(cpu, 4, 0);
+    const std::optional<bool> behind = lightBehind(app, cpu, light, camera);
+    left.edx = cpu.edx;
+    return behind;
+}
+
+/* boxOutOfCone (litBoxOutside's) of the camera, the box and the light's turn
+ * and place: the box out of the light's cone; what it leaves in ebx, ecx and
+ * edx into `left`.  nullopt when the game stopped. */
+std::optional<bool> boxUnlit(App* app, CPU& cpu, reg32 camera, reg32 box, reg32 light, Leftovers& left)
+{
+    const std::optional<ConeLeft> cone = boxOutOfCone(app, cpu, camera, box, light + kLightTurn, light + kLightAt);
+    if (!cone)
+        return std::nullopt;
+    left = {cone->outcode, cone->last, cone->bound};
+    return cone->outside != 0;
+}
+
+/* vertices::boxOutside (0x41bf30) of the camera, the box and the light's turn
+ * and place; what it leaves in ebx, ecx and edx into `left`.  nullopt when
+ * the game stopped. */
+std::optional<bool> boxOutsideLight(App* app, CPU& cpu, reg32 camera, reg32 box, reg32 light, Leftovers& left)
+{
+    cpu.eax = camera;
+    cpu.edx = box;
+    cpu.ebx = light + kLightTurn;
+    cpu.ecx = light + kLightAt;
+    const std::optional<reg32> outside = call(app, cpu, kBoxOutside);
+    if (!outside)
+        return std::nullopt;
+    left.took(cpu);
+    return *outside != 0;
+}
+
+/* vertices::trackVertices (0x41a550): `count` vertices at `vertices` lit by
+ * the light into the records at `records` (0x1c bytes each), their screen's
+ * records at `screen`; what it leaves in ebx, ecx and edx into `left`.  False
+ * when the game stopped. */
+bool lightVertices(App* app, CPU& cpu, reg32 light, reg32 count, reg32 vertices, reg32 records, reg32 screen,
+                   Leftovers& left)
+{
+    cpu.eax = light;
+    cpu.edx = count;
+    cpu.ebx = vertices;
+    cpu.ecx = records;
+    if (!guest::call(app, cpu, kTrackVertices, {screen}))
+        return false;
+    left.took(cpu);
+    return true;
+}
+
+/* An object's points headlightsOnObjects lights: `count` of them at `points`
+ * (12 bytes each), taken into view by the matrix at `matrix` and the point at
+ * `point`, their screen's records at `vertices` (0x20 bytes each). */
+struct LitPoints
+{
+    reg32 count, matrix, point, points, vertices;
+};
+
+/* 0x41c310's for one light: each point taken into view (transformPoints) into
+ * `inView`, lit (trackVertices) into the record at `lit`, and its screen
+ * record's colour bytes raised to the record's where the light reaches it
+ * (its +4, +6 words 0): the first light's both colours, the second's first.
+ * The bytes read before are what the code leaves in bh, cl, ch (the first
+ * light's first colour), bl, bh (its second) and cl, ch (the second light's),
+ * edx the record's +4 or the vertex raised last: into `left`.  False when
+ * the game stopped. */
+bool lightPoints(App* app, CPU& cpu, const LitPoints& points, reg32 light, reg32 lit, reg32 inView, bool first,
+                 Leftovers& left)
+{
+    for (reg32 n = 0;; ++n)
+    {
+        safepoint(app, cpu);
+        if (sreg32(n) >= sreg32(points.count))
+            return true;
+        guest::direct<0x4e0430, vertices::transformPointList>(app, cpu, 1, points.points + n * kVertexSize,
+                                                              points.matrix, points.point, inView);
+        if (cpu.terminate || !lightVertices(app, cpu, light, 1, inView, lit, points.vertices + (n << 5), left))
+            return false;
+        const reg32 reach = at(app, lit + 4);
+        if (first)
+        {
+            left.edx = reach;
+            if ((reach & 0xffff) == 0)
+            {
+                left.ebx = withByte(left.ebx, 1, raiseColour(app, lit, 0x16, 0x12));
+                left.ecx = withByte(left.ecx, 0, raiseColour(app, lit, 0x15, 0x11));
+                left.ecx = withByte(left.ecx, 1, raiseColour(app, lit, 0x14, 0x10));
+                left.edx = at(app, lit + kCornerVertex);
+            }
+            if (half(app, lit + 6) == 0)
+            {
+                raiseColour(app, lit, 0x1a, 0x12);  // read into ah, which no exit leaves
+                left.ebx = withByte(left.ebx, 0, raiseColour(app, lit, 0x19, 0x11));
+                left.ebx = withByte(left.ebx, 1, raiseColour(app, lit, 0x18, 0x10));
+                left.edx = at(app, lit + kCornerVertex);
+            }
+        }
+        else
+        {
+            left.ecx = reach;
+            if ((reach & 0xffff) == 0)
+            {
+                left.ecx = withByte(left.ecx, 0, raiseColour(app, lit, 0x16, 0x12));
+                left.ecx = withByte(left.ecx, 1, raiseColour(app, lit, 0x15, 0x11));
+                raiseColour(app, lit, 0x14, 0x10);  // into ah
+                left.edx = at(app, lit + kCornerVertex);
+            }
+        }
+    }
+}
+
+/* What headlightsOnObjects leaves in eax, ebx, ecx and edx. */
+struct HeadlightsLeft
+{
+    reg32 cars;      // the cars gone through, or the camera where no headlights shine (eax)
+    Leftovers left;  // the point and the matrix handed in, ecx 0 past the code's copying; then the last light's
+};
+
+/* 0x41c310's: the headlights' light on an object's points in the camera's
+ * view, the object of block `block`: for each car near enough (its place
+ * within the square root of 0x536cb4 of the point; not a car that is hidden,
+ * wrecked or without lights), each of its two lights (+0x734, where +0x200
+ * has bit 0x20; +0x660) that faces the points and whose cone reaches the
+ * block's box, the shading's distances its own and its points lit
+ * (lightPoints).  A matrix or a point of 0 is the game's own (the code's data
+ * at 0x41a880 and 0x41a8a4, copied into the frame).  None in the mirror's
+ * pass, nor outside a split-screen race -- the port's change
+ * (tools/apply_mirror_detail.py): the mirror's asked through
+ * nfs3hp::mirrorAsMain, as the main view would have it.  The frame as deep as
+ * the code's (its places are handed on); nullopt when the game stopped. */
+std::optional<HeadlightsLeft> headlightsOnPoints(App* app, CPU& cpu, LitPoints points, reg32 camera, reg32 block)
+{
+    const GuestFrame frame(cpu, 0xc, 0xa0);
+    const reg32 ownMatrix = frame - 0xa0, firstLit = frame - 0x7c, secondLit = frame - 0x60;
+    const reg32 firstInView = frame - 0x38, secondInView = frame - 0x2c, ownPoint = frame - 0x20;
+    HeadlightsLeft left = {camera, {points.point, 0, points.matrix}};
+    for (reg32 word = 0; word < 9; ++word)
+        put(app, ownMatrix + 4 * word, at(app, kHeadlightsBox + 4 * word));
+    for (reg32 word = 0; word < 3; ++word)
+        put(app, ownPoint + 4 * word, at(app, kHeadlightsPoint + 4 * word));
+    if (mirrorAsMain(at(app, camera + kCameraKind)) == kMirrorPass || gameSettings(app).night == 0)
+        return left;
+    if (points.matrix == 0)
+        points.matrix = ownMatrix;
+    if (points.point == 0)
+        points.point = ownPoint;
+    reg32 car = 0;
+    for (;; ++car)
+    {
+        safepoint(app, cpu);
+        if (sreg32(car) >= sreg32(at(app, kCarCount)))
+            break;
+        const reg32 carAt = at(app, kCars + car * 4);
+        if ((byte(app, carAt + kCarFlags) & kCarHidden) != 0 || byte(app, carAt + kCarWrecked) != 0
+            || byte(app, carAt + kCarLightsOn) == 0)
+            continue;
+        const Float dz = fp::sub(f32(app, carAt + kCarPlace + 8), f32(app, points.point + 8));
+        const Float dx = fp::sub(f32(app, carAt + kCarPlace), f32(app, points.point));
+        const Float squared = fp::add(fp::mul(dz, dz), fp::mul(dx, dx));
+        // An x87 compare: a NaN is near.
+        if (squared > f64(app, kObjectsLitWithin))
+            continue;
+        const reg32 firstLight = carAt + kFirstLight;
+        if ((byte(app, carAt + kCarFlags) & kCarFirstLightOn) != 0 && at(app, firstLight) != 0)
+        {
+            const std::optional<bool> behind = lightAway(app, cpu, firstLight, camera, left.left);
+            if (!behind)
+                return std::nullopt;
+            if (!*behind)
+            {
+                const std::optional<bool> unlit = boxUnlit(app, cpu, camera, block + kBlockBox, firstLight, left.left);
+                if (!unlit)
+                    return std::nullopt;
+                if (!*unlit)
+                {
+                    left.left.ebx = camera;  // pushed from ebx for setShadeDistances
+                    shadeDistances(app, firstLight, 1.0f);
+                    if (!lightPoints(app, cpu, points, firstLight, firstLit, firstInView, true, left.left))
+                        return std::nullopt;
+                }
+            }
+        }
+        const reg32 secondLight = carAt + kSecondLight;
+        if (at(app, secondLight) == 0)
+            continue;
+        const std::optional<bool> behind = lightAway(app, cpu, secondLight, camera, left.left);
+        if (!behind)
+            return std::nullopt;
+        if (*behind)
+            continue;
+        const std::optional<bool> outside = boxOutsideLight(app, cpu, camera, block + kBlockBox, secondLight, left.left);
+        if (!outside)
+            return std::nullopt;
+        if (*outside)
+            continue;
+        left.left.ebx = camera;  // pushed from ebx for setShadeDistances
+        shadeDistances(app, secondLight, 1.0f);
+        if (!lightPoints(app, cpu, points, secondLight, secondLit, secondInView, false, left.left))
+            return std::nullopt;
+    }
+    left.cars = car;
+    return left;
+}
+
+/* 0x41c310 (stdcall, 3 words): headlightsOnPoints of the eax points at ecx,
+ * their screen's records [esp+4], by the matrix edx and the point ebx, for
+ * the camera [esp+8] and the block [esp+0xc]. */
 void headlightsOnObjects(App* app, CPU& cpu)
 {
-    x86::FPU& fpu = cpu.fpu;
-    push(app, cpu, cpu.esi);
-    push(app, cpu, cpu.edi);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    cpu.esp -= 0xa0;
-    cpu.ebp -= 0x76;
-    const reg32 e = cpu.ebp;
-    const reg32 count = e + 0x66, matrix = e + 0x6e, point = e + 0x72, points = e + 0x62, car = e + 0x6a;
-    const reg32 vertices = e + 0x86, camera = e + 0x8a, view = e + 0x8e;
-    const reg32 ownMatrix = e - 0x2a, ownPoint = e + 0x56, carPlace = e + 0x32;
-    // Each light's lit vertex (0x41a550's record of 0x1c bytes) and the point
-    // it is made from.
-    const reg32 firstLit = e - 6, firstPoint = e + 0x3e, secondLit = e + 0x16, secondPoint = e + 0x4a;
-    // mov edx, [V + 8]; mov al, [V + from]; mov X, [edx + to]; cmp al, X; ja;
-    // mov al, X; mov edx, [V + 8]; mov [edx + to], al.
-    const auto raise = [&](reg32 v, reg8& x, reg32 from, reg32 to) {
-        cpu.edx = at(app, v + 8);
-        cpu.al = byte(app, v + from);
-        x = byte(app, cpu.edx + to);
-        cpu.al = larger(cpu.al, x);
-        cpu.edx = at(app, v + 8);
-        putByte(app, cpu.edx + to, cpu.al);
-    };
-    // One light's points: each into view, lit, and its vertex raised.
-    const auto lightPoints = [&](reg32 lightAt, reg32 lit, reg32 from, bool first) {
-        for (;;)
-        {
-            safepoint(app, cpu);
-            if (sreg32(cpu.edi) >= sreg32(at(app, count)))
-                return true;
-            cpu.eax = from;
-            push(app, cpu, cpu.eax);
-            cpu.eax = cpu.edi * 12;
-            cpu.edx = at(app, points);
-            cpu.ecx = at(app, point);
-            cpu.ebx = at(app, matrix);
-            cpu.edx += cpu.eax;
-            cpu.eax = 1;
-            if (!byAddress(app, cpu, 0x4e0430))
-                return false;
-            cpu.eax = cpu.edi << 5;
-            cpu.edx = at(app, vertices);
-            cpu.ecx = lit;
-            cpu.eax += cpu.edx;
-            cpu.ebx = from;
-            push(app, cpu, cpu.eax);
-            cpu.edx = 1;
-            cpu.eax = cpu.esi + lightAt;
-            if (!byAddress(app, cpu, 0x41a550))
-                return false;
-            if (first)
-            {
-                cpu.edx = at(app, lit + 4);
-                if (cpu.dx == 0)
-                {
-                    raise(lit, cpu.bh, 0x16, 0x12);
-                    raise(lit, cpu.cl, 0x15, 0x11);
-                    raise(lit, cpu.ch, 0x14, 0x10);
-                }
-                if (half(app, lit + 6) == 0)
-                {
-                    raise(lit, cpu.ah, 0x1a, 0x12);
-                    raise(lit, cpu.bl, 0x19, 0x11);
-                    raise(lit, cpu.bh, 0x18, 0x10);
-                }
-            }
-            else
-            {
-                cpu.ecx = at(app, lit + 4);
-                if (cpu.cx == 0)
-                {
-                    raise(lit, cpu.cl, 0x16, 0x12);
-                    raise(lit, cpu.ch, 0x15, 0x11);
-                    raise(lit, cpu.ah, 0x14, 0x10);
-                }
-            }
-            ++cpu.edi;
-        }
-    };
-    put(app, count, cpu.eax);
-    put(app, matrix, cpu.edx);
-    put(app, point, cpu.ebx);
-    put(app, points, cpu.ecx);
-    cpu.ecx = 9;
-    cpu.edi = ownMatrix;
-    cpu.esi = kHeadlightsBox;
-    for (; cpu.ecx != 0; --cpu.ecx)
-        movsd(app, cpu);
-    cpu.edi = ownPoint;
-    cpu.esi = kHeadlightsPoint;
-    cpu.eax = at(app, camera);
-    movsd(app, cpu);
-    movsd(app, cpu);
-    movsd(app, cpu);
-    if (mirrorAsMain(at(app, cpu.eax)) != 1 && at(app, kSplitScreen) != 0)
-    {
-        if (at(app, matrix) == 0)
-        {
-            cpu.eax = ownMatrix;
-            put(app, matrix, cpu.eax);
-        }
-        if (at(app, point) == 0)
-        {
-            cpu.eax = ownPoint;
-            put(app, point, cpu.eax);
-        }
-        cpu.edi = 0;
-        put(app, car, cpu.edi);
-        for (;;)
-        {
-            safepoint(app, cpu);
-            cpu.eax = at(app, car);
-            if (sreg32(cpu.eax) >= sreg32(at(app, kCarCount)))
-                break;
-            cpu.esi = at(app, cpu.eax * 4 + kCars);
-            cpu.ah = byte(app, cpu.esi + 0x200);
-            if ((cpu.ah & 0x40) == 0 && byte(app, cpu.esi + 0x88) == 0 && byte(app, cpu.esi + 0x89) != 0)
-            {
-                cpu.eax = at(app, cpu.esi + 0x98);
-                put(app, carPlace, cpu.eax);
-                cpu.eax = at(app, cpu.esi + 0x9c);
-                put(app, carPlace + 4, cpu.eax);
-                cpu.eax = at(app, cpu.esi + 0xa0);
-                put(app, carPlace + 8, cpu.eax);
-                cpu.eax = at(app, point);
-                const Float dz = fp::sub(f32(app, carPlace + 8), f32(app, cpu.eax + 8));
-                const Float dx = fp::sub(f32(app, carPlace), f32(app, cpu.eax));
-                const Float d = fp::add(fp::mul(dz, dz), fp::mul(dx, dx));
-                if (!compare(cpu, d, f64(app, 0x536cb4)).above())
-                {
-                    bool second = true;
-                    if ((byte(app, cpu.esi + 0x200) & 0x20) != 0 && at(app, cpu.esi + 0x734) != 0)
-                    {
-                        cpu.edi = cpu.esi + 0x734;
-                        cpu.edx = at(app, camera);
-                        cpu.eax = cpu.edi;
-                        if (!direct(app, cpu, pointBehindView))
-                            return;
-                        if (cpu.eax == 0)
-                        {
-                            cpu.edx = at(app, view);
-                            cpu.ecx = cpu.esi + 0x78c;
-                            cpu.eax = at(app, camera);
-                            cpu.ebx = cpu.esi + 0x75c;
-                            cpu.edx += 0x84;
-                            if (!direct(app, cpu, litBoxOutside))
-                                return;
-                            if (cpu.eax == 0)
-                            {
-                                cpu.ebx = at(app, camera);
-                                push(app, cpu, cpu.ebx);
-                                cpu.eax = cpu.edi;
-                                push(app, cpu, 0x3f800000);
-                                cpu.edi = 0;
-                                if (!direct(app, cpu, setShadeDistances) || !lightPoints(0x734, firstLit, firstPoint, true))
-                                    return;
-                            }
-                        }
-                    }
-                    if (second && at(app, cpu.esi + 0x660) != 0)
-                    {
-                        cpu.edi = cpu.esi + 0x660;
-                        cpu.edx = at(app, camera);
-                        cpu.eax = cpu.edi;
-                        if (!direct(app, cpu, pointBehindView))
-                            return;
-                        if (cpu.eax == 0)
-                        {
-                            cpu.edx = at(app, view);
-                            cpu.ecx = cpu.esi + 0x6b8;
-                            cpu.eax = at(app, camera);
-                            cpu.ebx = cpu.esi + 0x688;
-                            cpu.edx += 0x84;
-                            if (!byAddress(app, cpu, 0x41bf30))
-                                return;
-                            if (cpu.eax == 0)
-                            {
-                                cpu.ebx = at(app, camera);
-                                push(app, cpu, cpu.ebx);
-                                cpu.eax = cpu.edi;
-                                push(app, cpu, 0x3f800000);
-                                cpu.edi = 0;
-                                if (!direct(app, cpu, setShadeDistances)
-                                    || !lightPoints(0x660, secondLit, secondPoint, false))
-                                    return;
-                            }
-                        }
-                    }
-                }
-            }
-            put(app, car, at(app, car) + 1);
-        }
-    }
-    cpu.esp = e + 0x76;
-    cpu.ebp = pop(app, cpu);
-    cpu.edi = pop(app, cpu);
-    cpu.esi = pop(app, cpu);
+    const Kept kept(cpu, kSaveEsi | kSaveEdi);
+    const LitPoints points = {cpu.eax, cpu.edx, cpu.ebx, cpu.ecx, at(app, cpu.esp + 4)};
+    const std::optional<HeadlightsLeft> left =
+        headlightsOnPoints(app, cpu, points, at(app, cpu.esp + 8), at(app, cpu.esp + 0xc));
+    if (!left)
+        return;
+    cpu.eax = left->cars;
+    cpu.ebx = left->left.ebx;
+    cpu.ecx = left->left.ecx;
+    cpu.edx = left->left.edx;
     cpu.esp += 4 + 0xc;
 }
 
-/* 0x41c670 (stdcall, 4 words): the headlights' light on block ebx's road:
- * room for edx lit vertices taken from Render_GetTm; for each car near the
- * block's centre (within the square root of 0x536cbc; not hidden, wrecked or
- * without lights) and each of its lights facing the camera eax whose cone
- * reaches the block: the block's vertices (+0x70, ecx of them) lit for it
- * (setShadeDistances, 0x41a550) -- the second light dimmer for each car
- * before it -- and its polygon groups (the first light's raising the lists'
- * vertices, lightObjectPolygons; the second's drawn, 0x41ae90) for the
- * models [esp+0x10] and +1, 7, 8, 9 (and 6 for model 4).  The polygons drawn;
- * 0 in the mirror's pass, nor outside a split-screen race. */
-void headlightsOnBlock(App* app, CPU& cpu)
+/* A block's polygon group drawn lit (0x41ae90): group `group` of block
+ * `index` for the camera by the light, its corners the lit records at `lit`,
+ * into the ordered list (of `tails` and `heads`); the polygons drawn, and what
+ * it leaves in ebx, ecx and edx into `left`.  nullopt when the game stopped. */
+std::optional<reg32> drawLitGroup(App* app, CPU& cpu, reg32 camera, reg32 light, reg32 index, reg32 group, reg32 lit,
+                                  reg32 tails, reg32 heads, Leftovers& left)
 {
-    x86::FPU& fpu = cpu.fpu;
-    push(app, cpu, cpu.esi);
-    push(app, cpu, cpu.edi);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    cpu.esp -= 0x40;
-    const reg32 vertexCount = cpu.ebp - 0x28, pointCount = cpu.ebp - 0x2c, drawn = cpu.ebp - 0xc;
-    const reg32 lit = cpu.ebp - 0x30, car = cpu.ebp - 0x20, lightsSeen = cpu.ebp - 0x24, carAt = cpu.ebp - 8;
-    const reg32 carPlace = cpu.ebp - 0x40, firstLight = cpu.ebp - 0x14, secondLight = cpu.ebp - 0x10;
-    const reg32 dim = cpu.ebp - 0x34, order = cpu.ebp - 4, aheadHeads = cpu.ebp - 0x1c, aheadTails = cpu.ebp - 0x18;
-    const reg32 heads = cpu.ebp + 0x10, tails = cpu.ebp + 0x14, view = cpu.ebp + 0x18, model = cpu.ebp + 0x1c;
-    const auto leave = [&] {
-        cpu.esp = cpu.ebp;
-        cpu.ebp = pop(app, cpu);
-        cpu.edi = pop(app, cpu);
-        cpu.esi = pop(app, cpu);
-        cpu.esp += 4 + 0x10;
-    };
-    cpu.esi = cpu.eax;
-    put(app, vertexCount, cpu.edx);
-    cpu.edi = cpu.ebx;
-    put(app, pointCount, cpu.ecx);
-    cpu.edx = 0;
-    cpu.ecx = at(app, cpu.eax);
-    put(app, drawn, cpu.edx);
-    if (cpu.ecx == 1)
-    {
-        cpu.eax = 0;
-        return leave();
-    }
-    if (at(app, kSplitScreen) != 0)
-    {
-        cpu.eax = at(app, vertexCount) << 2;
-        cpu.edx = cpu.eax;
-        cpu.eax = (cpu.eax << 3) - cpu.edx;
-        cpu.edx = cpu.eax;
-        cpu.eax = lit;
-        if (!byAddress(app, cpu, 0x4bbde0))
-            return;
-        cpu.eax = at(app, lit);
-        if (cpu.eax != 0)
-        {
-            cpu.edx = 0;
-            put(app, car, cpu.edx);
-            put(app, lightsSeen, cpu.edx);
-            for (;;)
-            {
-                safepoint(app, cpu);
-                cpu.eax = at(app, car);
-                if (sreg32(cpu.eax) >= sreg32(at(app, kCarCount)))
-                    break;
-                cpu.eax = at(app, cpu.eax * 4 + kCars);
-                put(app, carAt, cpu.eax);
-                cpu.dl = byte(app, cpu.eax + 0x200);
-                if ((cpu.dl & 0x40) == 0 && byte(app, cpu.eax + 0x88) == 0 && byte(app, cpu.eax + 0x89) != 0)
-                {
-                    cpu.edx = at(app, at(app, carAt) + 0x98);
-                    cpu.eax = cpu.edi * 4;
-                    put(app, carPlace, cpu.edx);
-                    cpu.edx = at(app, at(app, carAt) + 0x9c);
-                    cpu.eax -= cpu.edi;
-                    cpu.eax <<= 3;
-                    put(app, carPlace + 4, cpu.edx);
-                    cpu.edx = at(app, at(app, carAt) + 0xa0);
-                    cpu.eax -= cpu.edi;
-                    cpu.eax <<= 6;
-                    put(app, carPlace + 8, cpu.edx);
-                    cpu.eax += kBlocks;
-                    const Float dz = fp::sub(f32(app, carPlace + 8), f32(app, cpu.eax + 0x80));
-                    const Float dx = fp::sub(f32(app, carPlace), f32(app, cpu.eax + 0x78));
-                    const Float d = fp::add(fp::mul(dz, dz), fp::mul(dx, dx));
-                    if (!compare(cpu, d, f64(app, 0x536cbc)).above())
-                    {
-                        cpu.eax = at(app, carAt);
-                        if ((byte(app, cpu.eax + 0x200) & 0x20) != 0 && at(app, cpu.eax + 0x734) != 0)
-                        {
-                            cpu.eax += 0x734;
-                            cpu.edx = cpu.esi;
-                            put(app, firstLight, cpu.eax);
-                            if (!direct(app, cpu, pointBehindView))
-                                return;
-                            if (cpu.eax == 0)
-                            {
-                                cpu.ecx = at(app, carAt);
-                                cpu.ebx = at(app, carAt);
-                                cpu.edx = at(app, view);
-                                cpu.eax = cpu.esi;
-                                cpu.ecx += 0x78c;
-                                cpu.ebx += 0x75c;
-                                cpu.edx += 0x84;
-                                if (!direct(app, cpu, litBoxOutside))
-                                    return;
-                            }
-                            if (cpu.eax == 0)
-                            {
-                                cpu.eax = at(app, firstLight);
-                                push(app, cpu, cpu.esi);
-                                cpu.ecx = at(app, pointCount);
-                                cpu.ebx = at(app, view);
-                                push(app, cpu, 0x3f800000);
-                                cpu.edx = at(app, vertexCount);
-                                if (!direct(app, cpu, setShadeDistances))
-                                    return;
-                                cpu.eax = at(app, firstLight);
-                                push(app, cpu, cpu.ecx);
-                                cpu.ebx = at(app, cpu.ebx + 0x70);
-                                cpu.ecx = at(app, lit);
-                                if (!byAddress(app, cpu, 0x41a550))
-                                    return;
-                                // The lists' vertices raised: models +0, +1, 7, 8, 9.
-                                cpu.ebx = at(app, lit);
-                                cpu.ecx = at(app, model);
-                                cpu.edx = at(app, firstLight);
-                                push(app, cpu, cpu.ebx);
-                                cpu.eax = cpu.esi;
-                                cpu.ebx = cpu.edi;
-                                if (!direct(app, cpu, lightObjectPolygons))
-                                    return;
-                                cpu.eax = at(app, lit);
-                                cpu.ecx = at(app, model);
-                                cpu.edx = at(app, firstLight);
-                                cpu.ebx = cpu.edi;
-                                push(app, cpu, cpu.eax);
-                                ++cpu.ecx;
-                                cpu.eax = cpu.esi;
-                                if (!direct(app, cpu, lightObjectPolygons))
-                                    return;
-                                cpu.edx = at(app, lit);
-                                cpu.ecx = 7;
-                                cpu.ebx = cpu.edi;
-                                push(app, cpu, cpu.edx);
-                                cpu.eax = cpu.esi;
-                                cpu.edx = at(app, firstLight);
-                                if (!direct(app, cpu, lightObjectPolygons))
-                                    return;
-                                cpu.ecx = at(app, lit);
-                                cpu.edx = at(app, firstLight);
-                                cpu.ebx = cpu.edi;
-                                push(app, cpu, cpu.ecx);
-                                cpu.eax = cpu.esi;
-                                cpu.ecx = 8;
-                                if (!direct(app, cpu, lightObjectPolygons))
-                                    return;
-                                cpu.ebx = at(app, lit);
-                                cpu.ecx = 9;
-                                cpu.edx = at(app, firstLight);
-                                push(app, cpu, cpu.ebx);
-                                cpu.eax = cpu.esi;
-                                cpu.ebx = cpu.edi;
-                                if (!direct(app, cpu, lightObjectPolygons))
-                                    return;
-                            }
-                        }
-                        cpu.eax = at(app, carAt);
-                        if (at(app, cpu.eax + 0x660) != 0)
-                        {
-                            cpu.eax += 0x660;
-                            cpu.edx = cpu.esi;
-                            put(app, secondLight, cpu.eax);
-                            if (!direct(app, cpu, pointBehindView))
-                                return;
-                            if (cpu.eax == 0)
-                            {
-                                cpu.ecx = at(app, carAt);
-                                cpu.ebx = at(app, carAt);
-                                cpu.edx = at(app, view);
-                                cpu.eax = cpu.esi;
-                                cpu.ecx += 0x6b8;
-                                cpu.ebx += 0x688;
-                                cpu.edx += 0x84;
-                                if (!byAddress(app, cpu, 0x41bf30))
-                                    return;
-                            }
-                            if (cpu.eax == 0)
-                            {
-                                cpu.eax = at(app, lightsSeen);
-                                put(app, order, cpu.eax);
-                                const Float share = fp::div(Float(sreg32(at(app, order))), Float(sreg32(at(app, kCarCount))));
-                                const Float scaled = fp::mul(share, f32(app, 0x536cc4));
-                                cpu.ecx = at(app, pointCount);
-                                cpu.ebx = at(app, view);
-                                push(app, cpu, cpu.esi);
-                                const Float dimmed = fp::sub(Float(1.0), scaled);
-                                cpu.eax = at(app, secondLight);
-                                putF32(app, dim, dimmed);
-                                push(app, cpu, at(app, dim));
-                                cpu.edx = at(app, vertexCount);
-                                if (!direct(app, cpu, setShadeDistances))
-                                    return;
-                                cpu.eax = at(app, secondLight);
-                                push(app, cpu, cpu.ecx);
-                                cpu.ebx = at(app, cpu.ebx + 0x70);
-                                cpu.ecx = at(app, lit);
-                                if (!byAddress(app, cpu, 0x41a550))
-                                    return;
-                                // The polygon groups drawn lit: models +0, +1, 7, 8, 9.
-                                cpu.eax = at(app, tails) + 0x14;
-                                put(app, aheadHeads, cpu.eax);
-                                push(app, cpu, cpu.eax);
-                                cpu.eax = at(app, heads);
-                                cpu.edx = at(app, lit);
-                                cpu.eax += 0x14;
-                                cpu.ecx = at(app, model);
-                                push(app, cpu, cpu.eax);
-                                cpu.ebx = cpu.edi;
-                                put(app, aheadTails, cpu.eax);
-                                push(app, cpu, cpu.edx);
-                                cpu.eax = cpu.esi;
-                                cpu.edx = at(app, secondLight);
-                                if (!byAddress(app, cpu, 0x41ae90))
-                                    return;
-                                for (const reg32 next : {0u, 7u, 8u})
-                                {
-                                    cpu.ecx = at(app, drawn);
-                                    cpu.ebx = at(app, aheadHeads);
-                                    cpu.edx = at(app, lit);
-                                    push(app, cpu, cpu.ebx);
-                                    cpu.ecx += cpu.eax;
-                                    cpu.eax = at(app, aheadTails);
-                                    put(app, drawn, cpu.ecx);
-                                    push(app, cpu, cpu.eax);
-                                    cpu.ebx = cpu.edi;
-                                    if (next == 0)
-                                    {
-                                        cpu.ecx = at(app, model);
-                                        push(app, cpu, cpu.edx);
-                                        ++cpu.ecx;
-                                    }
-                                    else
-                                    {
-                                        cpu.ecx = next;
-                                        push(app, cpu, cpu.edx);
-                                    }
-                                    cpu.eax = cpu.esi;
-                                    cpu.edx = at(app, secondLight);
-                                    if (!byAddress(app, cpu, 0x41ae90))
-                                        return;
-                                }
-                                put(app, drawn, at(app, drawn) + cpu.eax);
-                                cpu.ebx = at(app, aheadHeads);
-                                push(app, cpu, cpu.ebx);
-                                cpu.eax = at(app, aheadTails);
-                                cpu.edx = at(app, lit);
-                                push(app, cpu, cpu.eax);
-                                cpu.ecx = 9;
-                                cpu.ebx = cpu.edi;
-                                push(app, cpu, cpu.edx);
-                                cpu.eax = cpu.esi;
-                                cpu.edx = at(app, secondLight);
-                                if (!byAddress(app, cpu, 0x41ae90))
-                                    return;
-                                cpu.ecx = at(app, drawn);
-                                cpu.ecx += cpu.eax;
-                                cpu.ebx = at(app, model);
-                                put(app, drawn, cpu.ecx);
-                                if (cpu.ebx == 4)
-                                {
-                                    cpu.eax = at(app, aheadHeads);
-                                    push(app, cpu, cpu.eax);
-                                    cpu.edx = at(app, aheadTails);
-                                    cpu.ecx = at(app, lit);
-                                    push(app, cpu, cpu.edx);
-                                    cpu.ebx = cpu.edi;
-                                    cpu.eax = cpu.esi;
-                                    push(app, cpu, cpu.ecx);
-                                    cpu.edx = at(app, secondLight);
-                                    cpu.ecx = 6;
-                                    if (!byAddress(app, cpu, 0x41ae90))
-                                        return;
-                                    put(app, drawn, at(app, drawn) + cpu.eax);
-                                }
-                                put(app, lightsSeen, at(app, lightsSeen) + 1);
-                            }
-                        }
-                    }
-                }
-                put(app, car, at(app, car) + 1);
-            }
-        }
-    }
-    cpu.eax = at(app, drawn);
-    leave();
+    cpu.eax = camera;
+    cpu.edx = light;
+    cpu.ebx = index;
+    cpu.ecx = group;
+    const std::optional<reg32> drawn = call(app, cpu, kLitGroup, {lit, tails + kOrderedList, heads + kOrderedList});
+    if (drawn)
+        left.took(cpu);
+    return drawn;
 }
 
-/* 0x41c9f0: block edx's lights (+0x5b8 of them at +0x5bc, 0x10 bytes each:
- * three words and a half-word) glowing for the camera eax (0x491190). */
-void blockLights(App* app, CPU& cpu)
+/* What headlightsOnBlock leaves in eax, ebx, ecx and edx. */
+struct RoadLitLeft
 {
-    push(app, cpu, cpu.ebx);
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.esi);
-    push(app, cpu, cpu.edi);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    cpu.ecx = cpu.eax;
-    cpu.eax = blockOffset(cpu.edx);
-    cpu.ebx = at(app, cpu.eax + kBlocks + 0x5b8);
-    cpu.edx = at(app, cpu.eax + kBlocks + 0x5bc);
-    for (;;)
+    reg32 drawn;     // the polygons drawn (eax)
+    Leftovers left;  // the block's number, the camera's kind and 0 where nothing is lit; then the last light's
+};
+
+/* 0x41c670's: the headlights' light on block `index`'s road (`block` its
+ * record) for the camera: room for `count` lit records taken from
+ * Render_GetTm; for each car near the block's centre (within the square root
+ * of 0x536cbc; not hidden, wrecked or without lights) and each of its lights
+ * facing the camera whose cone reaches the block: the block's vertices lit
+ * for it (setShadeDistances, trackVertices; their screen's records at
+ * `screen`) -- the second light dimmer for each car's lit before -- and its
+ * polygon groups `model`, +1, 7, 8, 9 (and 6 for model 4): the first light's
+ * raising the corners' colours (lightPolygons), the second's drawn
+ * (drawLitGroup) into the ordered list of `tails` and `heads`.  None in the
+ * mirror's pass (its kind, not asked through mirrorAsMain), nor outside a
+ * split-screen race.  The frame as deep as the code's (the room's place is
+ * handed on); nullopt when the game stopped. */
+std::optional<RoadLitLeft> headlightsOnRoad(App* app, CPU& cpu, reg32 camera, reg32 count, reg32 index, reg32 screen,
+                                            reg32 tails, reg32 heads, reg32 block, reg32 model)
+{
+    const GuestFrame frame(cpu, 0xc, 0x40);
+    const reg32 litAt = frame - 0x30;
+    const reg32 kind = at(app, camera + kCameraKind);
+    // ebx the block's number as handed in, ecx the kind tested, edx the 0 the count starts from.
+    RoadLitLeft left = {0, {index, kind, 0}};
+    if (kind == kMirrorPass || gameSettings(app).night == 0)
+        return left;
+    cpu.eax = litAt;
+    cpu.edx = count * kLitCornerSize;
+    // ebx and ecx as the code has them here, for a callee that keeps them.
+    cpu.ebx = left.left.ebx;
+    cpu.ecx = left.left.ecx;
+    if (!guest::call(app, cpu, kRoom))
+        return std::nullopt;
+    left.left.took(cpu);
+    const reg32 lit = at(app, litAt);
+    if (lit == 0)
+        return left;
+    left.left.edx = 0;  // the cars' and the lights' counts start from it
+    const reg32 centre = kBlocks + blockOffset(index) + kBlockCentre;
+    reg32 lightsLit = 0;
+    for (reg32 car = 0;; ++car)
     {
         safepoint(app, cpu);
-        --cpu.ebx;
-        if (cpu.ebx == 0xffffffff)
+        if (sreg32(car) >= sreg32(at(app, kCarCount)))
             break;
-        cpu.eax = half(app, cpu.edx + 0xc);
-        push(app, cpu, cpu.eax);
-        cpu.esi = at(app, cpu.edx + 8);
-        push(app, cpu, cpu.esi);
-        cpu.edi = at(app, cpu.edx + 4);
-        push(app, cpu, cpu.edi);
-        cpu.eax = at(app, cpu.edx);
-        push(app, cpu, cpu.eax);
-        cpu.eax = cpu.ecx;
-        cpu.edx += 0x10;
-        if (!byAddress(app, cpu, 0x491190))
-            return;
+        const reg32 carAt = at(app, kCars + car * 4);
+        const reg8 flags = byte(app, carAt + kCarFlags);
+        left.left.edx = withByte(left.left.edx, 0, flags);  // tested in dl
+        if ((flags & kCarHidden) != 0 || byte(app, carAt + kCarWrecked) != 0 || byte(app, carAt + kCarLightsOn) == 0)
+            continue;
+        left.left.edx = at(app, carAt + kCarPlace + 8);  // the place copied through edx, its last word
+        const Float dz = fp::sub(f32(app, carAt + kCarPlace + 8), f32(app, centre + 8));
+        const Float dx = fp::sub(f32(app, carAt + kCarPlace), f32(app, centre));
+        const Float squared = fp::add(fp::mul(dz, dz), fp::mul(dx, dx));
+        // An x87 compare: a NaN is near.
+        if (squared > f64(app, kBlocksLitWithin))
+            continue;
+        const reg32 firstLight = carAt + kFirstLight;
+        if ((byte(app, carAt + kCarFlags) & kCarFirstLightOn) != 0 && at(app, firstLight) != 0)
+        {
+            const std::optional<bool> behind = lightAway(app, cpu, firstLight, camera, left.left);
+            if (!behind)
+                return std::nullopt;
+            std::optional<bool> unlit = true;
+            if (!*behind)
+                unlit = boxUnlit(app, cpu, camera, block + kBlockBox, firstLight, left.left);
+            if (!unlit)
+                return std::nullopt;
+            if (!*unlit)
+            {
+                shadeDistances(app, firstLight, 1.0f);
+                if (!lightVertices(app, cpu, firstLight, count, at(app, block + kBlockVertices), lit, screen,
+                                   left.left))
+                    return std::nullopt;
+                for (const reg32 group : {model, model + 1, 7u, 8u, 9u})
+                {
+                    const LitLeft raised = lightPolygons(app, cpu, index, group, lit);
+                    left.left = {raised.fourth, raised.third, raised.second};
+                }
+            }
+        }
+        const reg32 secondLight = carAt + kSecondLight;
+        if (at(app, secondLight) == 0)
+            continue;
+        const std::optional<bool> behind = lightAway(app, cpu, secondLight, camera, left.left);
+        if (!behind)
+            return std::nullopt;
+        if (*behind)
+            continue;
+        const std::optional<bool> outside = boxOutsideLight(app, cpu, camera, block + kBlockBox, secondLight, left.left);
+        if (!outside)
+            return std::nullopt;
+        if (*outside)
+            continue;
+        const Float share = fp::div(Float(sreg32(lightsLit)), Float(sreg32(at(app, kCarCount))));
+        const Float scaled = fp::mul(share, f32(app, kDimmedPerCar));
+        shadeDistances(app, secondLight, float(fp::sub(Float(1.0), scaled)));
+        if (!lightVertices(app, cpu, secondLight, count, at(app, block + kBlockVertices), lit, screen, left.left))
+            return std::nullopt;
+        for (const reg32 group : {model, model + 1, 7u, 8u, 9u})
+        {
+            const std::optional<reg32> drawn =
+                drawLitGroup(app, cpu, camera, secondLight, index, group, lit, tails, heads, left.left);
+            if (!drawn)
+                return std::nullopt;
+            left.drawn += *drawn;
+        }
+        // The model tested from ebx, the count added up in ecx.
+        left.left.ebx = model;
+        left.left.ecx = left.drawn;
+        if (model == 4)
+        {
+            const std::optional<reg32> drawn =
+                drawLitGroup(app, cpu, camera, secondLight, index, 6, lit, tails, heads, left.left);
+            if (!drawn)
+                return std::nullopt;
+            left.drawn += *drawn;
+        }
+        ++lightsLit;
     }
-    cpu.ebp = pop(app, cpu);
-    cpu.edi = pop(app, cpu);
-    cpu.esi = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
-    cpu.ebx = pop(app, cpu);
+    return left;
+}
+
+/* 0x41c670 (stdcall, 4 words): headlightsOnRoad for the camera eax, edx lit
+ * records, block ebx and its screen's records ecx, the lists' tails [esp+4]
+ * and heads [esp+8], the block [esp+0xc] and the model [esp+0x10]. */
+void headlightsOnBlock(App* app, CPU& cpu)
+{
+    const Kept kept(cpu, kSaveEsi | kSaveEdi);
+    const std::optional<RoadLitLeft> left =
+        headlightsOnRoad(app, cpu, cpu.eax, cpu.edx, cpu.ebx, cpu.ecx, at(app, cpu.esp + 4), at(app, cpu.esp + 8),
+                         at(app, cpu.esp + 0xc), at(app, cpu.esp + 0x10));
+    if (!left)
+        return;
+    cpu.eax = left->drawn;
+    cpu.ebx = left->left.ebx;
+    cpu.ecx = left->left.ecx;
+    cpu.edx = left->left.edx;
+    cpu.esp += 4 + 0x10;
+}
+
+// A block's lights: their count (+0x5b8) and records (+0x5bc), 0x10 bytes each -- three words and a half-word.
+constexpr reg32 kBlockLightCount = 0x5b8, kBlockLights = 0x5bc, kBlockLightSize = 0x10;
+constexpr reg32 kGlow = 0x491190;  // render::glow (stdcall, 4 words): a light glowing for the camera eax
+
+/* What blockLights leaves in eax and edx. */
+struct LightsLeft
+{
+    reg32 result, past;
+};
+
+/* 0x41c9f0's: block `index`'s lights glowing for the camera.  What the code
+ * leaves: the last glow's eax (the block's offset where there is no light)
+ * and the place past the lights; nullopt when the game stopped. */
+std::optional<LightsLeft> glowBlockLights(App* app, CPU& cpu, reg32 camera, reg32 index)
+{
+    const reg32 block = kBlocks + blockOffset(index);
+    LightsLeft left = {blockOffset(index), at(app, block + kBlockLights)};
+    for (reg32 remaining = at(app, block + kBlockLightCount);; left.past += kBlockLightSize)
+    {
+        safepoint(app, cpu);
+        if (remaining-- == 0)
+            break;
+        const reg32 light = left.past;
+        cpu.eax = camera;
+        const std::optional<reg32> glowed =
+            call(app, cpu, kGlow, {at(app, light), at(app, light + 4), at(app, light + 8), half(app, light + 0xc)});
+        if (!glowed)
+            return std::nullopt;
+        left.result = *glowed;
+    }
+    return left;
+}
+
+/* 0x41c9f0: glowBlockLights for the camera eax and block edx. */
+void blockLights(App* app, CPU& cpu)
+{
+    const Kept kept(cpu, kSaveEbx | kSaveEcx | kSaveEsi | kSaveEdi);
+    const std::optional<LightsLeft> left = glowBlockLights(app, cpu, cpu.eax, cpu.edx);
+    if (!left)
+        return;
+    cpu.eax = left->result;
+    cpu.edx = left->past;
     cpu.esp += 4;
 }
 
-/* 0x41ca40 (stdcall, 3 words): the objects of the list [esp+8] (block ecx's,
- * or the track's) drawn for the camera eax, into the ordered list whose last
- * record is at [edx] (its first at [ebx] while it is empty) -- an animated
- * one (kind 4) at its state's place and turn (the states at 0x5dd230: 0xff
- * still, 0xfe turning, else a path's step, 0x40f940 .. 0x41d510), a car's
- * (kind 3, where [esp+0xc]) moved and turned as the car is and drawn only
- * where its block is in view, any other where it stands: its vertices into
- * view and lit (headlightsOnObjects), its polygons as records (0x41b640)
- * appended to the list.  The polygons drawn; [edx] the list's last record. */
-void drawObjectList(App* app, CPU& cpu)
+// An object's kind (+0: 4 animated, 3 a car's, else fixed), its number among its block's animated ones
+// (+4), the angle its turn takes (+8), its place (+0xc) and its car's (+0x1c).
+constexpr reg32 kObjectKind = 0, kObjectNumber = 4, kObjectAngle = 8, kObjectPlace = 0xc, kObjectCarAt = 0x1c;
+constexpr reg32 kAnimatedKind = 4, kCarKind = 3;
+// A screen's record, of a vertex or a polygon: 0x20 bytes.
+constexpr reg32 kRecordSize = 0x20;
+constexpr reg32 kBlockListsEnd = 0x536cc8;  // a float: the world's end handed with a block's lists (-1)
+constexpr reg32 kPoseTime = 0x7d3684;       // what an animated car's pose is taken at
+constexpr reg32 kRoomNext = 0x4bbe40;       // Render_GetTm's next: edx bytes at [eax], their place to [eax]
+constexpr reg32 kObjectRecords = 0x41b640;      // vertices::objectRecords (stdcall, 1 word): the polygons' records
+
+/* A byte sign-extended, as movsx does. */
+reg32 signedByte(reg8 value)
 {
-    push(app, cpu, cpu.esi);
-    push(app, cpu, cpu.edi);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    cpu.esp -= 0x68;
-    const reg32 lastAt = cpu.ebp - 0x18, firstAt = cpu.ebp - 0x20, blockIndex = cpu.ebp - 0x1c;
-    const reg32 block = cpu.ebp - 8, last = cpu.ebp - 0x38, drawn = cpu.ebp - 0x14, left = cpu.ebp - 0x10;
-    const reg32 vertices = cpu.ebp - 0x30, records = cpu.ebp - 0x34, state = cpu.ebp - 4, place = cpu.ebp - 0xc;
-    const reg32 turn = cpu.ebp - 0x68, offset = cpu.ebp - 0x44, steps = cpu.ebp - 0x2c, length = cpu.ebp - 0x28;
-    const reg32 height = cpu.ebp - 0x24;
-    const reg32 scale = cpu.ebp + 0x10, list = cpu.ebp + 0x14, cars = cpu.ebp + 0x18;
-    cpu.edi = cpu.eax;
-    put(app, lastAt, cpu.edx);
-    put(app, firstAt, cpu.ebx);
-    put(app, blockIndex, cpu.ecx);
-    cpu.ecx = at(app, list);
-    cpu.edx = at(app, blockIndex);
-    cpu.eax = blockOffset(cpu.edx);
-    cpu.edx = kBlocks + cpu.eax;
-    cpu.eax = at(app, lastAt);
-    put(app, block, cpu.edx);
-    cpu.eax = at(app, cpu.eax);
-    cpu.edx = 0;
-    put(app, last, cpu.eax);
-    put(app, drawn, cpu.edx);
-    cpu.eax = at(app, cpu.ecx);
-    cpu.esi = at(app, cpu.ecx + 4);
-    put(app, left, cpu.eax);
-    // The object drawn: its vertices into view and lit by the headlights,
-    // with the registers each way to it leaves.
-    const auto light = [&] {
-        return direct(app, cpu, headlightsOnObjects);
+    return reg32(sreg32(std::int8_t(value)));
+}
+
+/* The code's cdq; idiv: `n` divided by `by`, toward 0 (-1's overflow as x86
+ * leaves it). */
+reg32 quotient(reg32 n, reg32 by)
+{
+    return by == 0xffffffff ? 0u - n : reg32(i32(n) / i32(by));
+}
+
+/* What drawObjectList leaves in eax and ebx (ecx the count run out, -1; edx
+ * the tail's slot handed in). */
+struct ObjectsLeft
+{
+    reg32 drawn;    // the polygons drawn (eax)
+    reg32 scratch;  // the head's slot handed in; then as the last object's last call or load leaves it (ebx)
+};
+
+/* 0x41ca40's: the objects of the list at `list` (block `index`'s, or the
+ * track's) drawn for the camera into the list whose last record's slot is at
+ * `tail` (its first's at `head` while it is empty) -- an animated one (kind
+ * 4) at its state's place and turn (the states at 0x5dd230: 0xff still, 0xfe
+ * turning, else a path's step: one past the path's end stops it, turning
+ * from now on, and the same object is gone through again), a car's (kind 3,
+ * where `cars`) posed as the car is and drawn only where its block is in view
+ * (but for a list with the world's end of a block's, -1), any other where it
+ * stands: its vertices into view and lit (headlightsOnPoints), its polygons
+ * as records (objectRecords) appended to the list.  The frame as deep as the
+ * code's (its places are handed on); nullopt when the game stopped. */
+std::optional<ObjectsLeft> drawObjects(App* app, CPU& cpu, reg32 camera, reg32 tail, reg32 head, reg32 index,
+                                       reg32 worldEnd, reg32 list, reg32 cars)
+{
+    const GuestFrame frame(cpu, 0xc, 0x68);
+    const reg32 turn = frame - 0x68, place = frame - 0x44, lastAt = frame - 0x38, records = frame - 0x34;
+    const reg32 vertices = frame - 0x30, steps = frame - 0x2c, length = frame - 0x28;
+    const reg32 block = kBlocks + blockOffset(index);
+    put(app, lastAt, at(app, tail));
+    ObjectsLeft left = {0, head};
+    reg32 object = at(app, list + kListObjects);
+    const auto field = [&](reg32 offset) { return at(app, object + offset); };
+    // A call by address, its ebx back as the callee leaves it.
+    const auto keeping = [&](reg32 target, std::initializer_list<reg32> words) {
+        const std::optional<reg32> result = call(app, cpu, target, words);
+        if (result)
+            left.scratch = cpu.ebx;
+        return result;
     };
-    // mov eax, [state]; mov dh, [eax]; cmp dh, 0xfe.
-    const auto turning = [&] {
-        cpu.eax = at(app, state);
-        cpu.dh = byte(app, cpu.eax);
-        return cpu.dh == 0xfe;
+    // Render_GetTm's room or next (`target`): `bytes` at [place]; ebx the code's, for a callee that keeps it.
+    const auto room = [&](reg32 target, reg32 place, reg32 bytes) {
+        cpu.eax = place;
+        cpu.edx = bytes;
+        cpu.ebx = left.scratch;
+        return keeping(target, {});
     };
-    for (;;)
+    // The object's vertices into view, turned by the matrix `matrix` and moved to the point `point`.
+    const auto turnedIntoView = [&](reg32 matrix, reg32 point) {
+        const GuestFrame slot(cpu, 4 + 0xc, 0);
+        if (!viewTurnedVertices(app, cpu, camera, matrix, point, field(kObjectVertexCount), field(kObjectVertices),
+                                field(kObjectColours), at(app, vertices)))
+            return false;
+        left.scratch = cpu.ebx;
+        return true;
+    };
+    // The headlights on the object's vertices, by the matrix `matrix` and the point `point`.
+    const auto lit = [&](reg32 matrix, reg32 point) {
+        const GuestFrame slot(cpu, 4 + 0xc, 0);
+        const LitPoints points = {field(kObjectVertexCount), matrix, point, field(kObjectVertices), at(app, vertices)};
+        const std::optional<HeadlightsLeft> lights = headlightsOnPoints(app, cpu, points, camera, block);
+        if (lights)
+            left.scratch = lights->left.ebx;
+        return lights.has_value();
+    };
+    for (reg32 remaining = at(app, list + kListCount);;)
     {
         safepoint(app, cpu);
-        cpu.ecx = at(app, left) - 1;
-        put(app, left, cpu.ecx);
-        if (cpu.ecx == 0xffffffff)
+        if (remaining-- == 0)
             break;
-        cpu.eax = at(app, cpu.esi);
-        if (cpu.eax == 4)
+        const reg32 kind = field(kObjectKind);
+        if (kind == kAnimatedKind)
         {
-            // Animated: room for its vertices, its state.
-            cpu.edx = at(app, cpu.esi + 0x20) << 5;
-            cpu.eax = vertices;
-            if (!byAddress(app, cpu, 0x4bbde0))
-                return;
-            cpu.edx = at(app, blockIndex);
-            cpu.eax = blockOffset(cpu.edx);
-            cpu.edx = at(app, cpu.esi + 4);
-            cpu.ecx = at(app, cpu.eax + kBlocks + 0x5a4);
-            cpu.eax = cpu.edx * 5;
-            cpu.edx = half(app, cpu.ecx + cpu.eax * 4 + 0xe);
-            cpu.eax = cpu.edx * 3;
-            cpu.edx = kObjectStates + cpu.eax;
-            cpu.eax = cpu.esi + 0xc;
-            put(app, state, cpu.edx);
-            put(app, place, cpu.eax);
-            cpu.dl = byte(app, cpu.edx);
-            if (cpu.dl == 0xff)
+            if (!room(kRoom, vertices, field(kObjectVertexCount) << 5))
+                return std::nullopt;
+            const reg32 animated = at(app, block + kBlockAnimated) + field(kObjectNumber) * kAnimatedSize;
+            const reg32 state = kObjectStates + half(app, animated + kAnimatedState) * kObjectStateSize;
+            const reg32 objectPlace = object + kObjectPlace;
+            const reg8 now = byte(app, state);
+            if (now == kStateStill)
             {
-                // Still: where it stands.
-                cpu.edx = at(app, vertices);
-                cpu.ebx = cpu.eax;
-                push(app, cpu, cpu.edx);
-                cpu.ecx = at(app, cpu.esi + 0x28);
-                cpu.eax = cpu.edi;
-                push(app, cpu, cpu.ecx);
-                cpu.edx = at(app, cpu.esi + 0x20);
-                cpu.ecx = at(app, cpu.esi + 0x24);
-                if (!direct(app, cpu, viewObjectVertices))
-                    return;
-                cpu.ebx = at(app, block);
-                push(app, cpu, cpu.ebx);
-                cpu.eax = at(app, vertices);
-                push(app, cpu, cpu.edi);
-                cpu.ecx = at(app, cpu.esi + 0x24);
-                cpu.edx = 0;
-                push(app, cpu, cpu.eax);
-                cpu.ebx = at(app, place);
-                cpu.eax = at(app, cpu.esi + 0x20);
-                if (!light())
-                    return;
+                {
+                    const GuestFrame slot(cpu, 4 + 8, 0);
+                    if (!viewVertices(app, cpu, camera, objectPlace, field(kObjectVertexCount),
+                                      field(kObjectVertices), field(kObjectColours), at(app, vertices)))
+                        return std::nullopt;
+                }
+                left.scratch = cpu.ebx;
+                if (!lit(0, objectPlace))
+                    return std::nullopt;
             }
-            else if (turning())
+            else if (now == kStateTurning)
             {
-                // Turning: by the state's two angles.
-                cpu.edx = at(app, state);
-                cpu.al = byte(app, cpu.esi + 8);
-                cpu.ebx = turn;
-                putByte(app, cpu.edx + 2, cpu.al);
-                cpu.eax = at(app, state);
-                cpu.edx = reg32(sreg32(std::int8_t(byte(app, cpu.edx + 1))));
-                cpu.eax = reg32(sreg32(std::int8_t(byte(app, cpu.eax + 2))));
-                cpu.edx <<= 8;
-                cpu.eax <<= 8;
-                if (!direct(app, cpu, turnFromPitchYaw))
-                    return;
-                cpu.edx = at(app, vertices);
-                push(app, cpu, cpu.edx);
-                cpu.ecx = at(app, cpu.esi + 0x28);
-                cpu.eax = cpu.edi;
-                push(app, cpu, cpu.ecx);
-                cpu.ebx = at(app, cpu.esi + 0x24);
-                cpu.edx = turn;
-                push(app, cpu, cpu.ebx);
-                cpu.ecx = at(app, place);
-                cpu.ebx = at(app, cpu.esi + 0x20);
-                if (!direct(app, cpu, viewTurnedObjectVertices))
-                    return;
-                cpu.eax = at(app, block);
-                push(app, cpu, cpu.eax);
-                cpu.edx = at(app, vertices);
-                push(app, cpu, cpu.edi);
-                cpu.ebx = at(app, place);
-                cpu.ecx = at(app, cpu.esi + 0x24);
-                push(app, cpu, cpu.edx);
-                cpu.eax = at(app, cpu.esi + 0x20);
-                cpu.edx = turn;
-                if (!light())
-                    return;
+                putByte(app, state + 2, byte(app, object + kObjectAngle));
+                {
+                    const GuestFrame slot(cpu, 4, 0);
+                    if (!turnOfPitchYaw(app, cpu, signedByte(byte(app, state + 2)) << 8,
+                                        signedByte(byte(app, state + 1)) << 8, turn))
+                        return std::nullopt;
+                }
+                left.scratch = cpu.ebx;
+                if (!turnedIntoView(turn, objectPlace) || !lit(turn, objectPlace))
+                    return std::nullopt;
             }
             else
             {
-                // On a path: its step's place and turn, or none -- then still
-                // from now on (0xfe), not drawn.
-                cpu.ebx = turn;
-                cpu.eax = reg32(sreg32(std::int8_t(cpu.dh)));
-                cpu.edx = offset;
-                if (!byAddress(app, cpu, 0x40f940))
-                    return;
-                if (cpu.eax != 1)
+                // ebx as each call is handed it, which it keeps: the object's scratch.
+                const std::optional<reg32> stepped =
+                    guest::direct<0x40f940, aiplan::stepAnimation>(app, cpu, signedByte(now), place, turn);
+                if (!stepped)
+                    return std::nullopt;
+                left.scratch = turn;
+                if (*stepped != 1)
                 {
-                    cpu.eax = at(app, state);
-                    cpu.eax = reg32(sreg32(std::int8_t(byte(app, cpu.eax))));
-                    if (!byAddress(app, cpu, 0x40f460))
-                        return;
-                    cpu.eax = at(app, state);
-                    putByte(app, cpu.eax, 0xfe);
-                    continue;
+                    guest::direct<0x40f460, aiplan::endAnimation>(app, cpu, signedByte(byte(app, state)));
+                    if (cpu.terminate)
+                        return std::nullopt;
+                    putByte(app, state, kStateTurning);
+                    continue;  // the same object again: the code does not move on
                 }
-                cpu.edx = at(app, state);
-                cpu.ecx = offset;
-                cpu.al = byte(app, cpu.esi + 8);
-                cpu.ebx = at(app, place);
-                putByte(app, cpu.edx + 2, cpu.al);
-                cpu.edx = offset;
-                cpu.eax = 1;
-                if (!byAddress(app, cpu, 0x4dffb0))
-                    return;
-                cpu.eax = at(app, state);
-                cpu.ebx = length;
-                cpu.edx = steps;
-                cpu.eax = reg32(sreg32(std::int8_t(byte(app, cpu.eax))));
-                if (!byAddress(app, cpu, 0x40f800))
-                    return;
-                cpu.eax = at(app, state);
-                cpu.edx = at(app, steps);
-                cpu.eax = reg32(sreg32(std::int8_t(byte(app, cpu.eax + 2))));
-                cpu.ecx = at(app, length);
-                cpu.eax <<= 8;
-                cpu.edx <<= 0x10;
-                put(app, height, cpu.eax);
-                cpu.eax = cpu.edx;
-                idiv(cpu, cpu.ecx);
-                cpu.ebx = at(app, state);
-                cpu.ebx = reg32(sreg32(std::int8_t(byte(app, cpu.ebx + 1))));
-                cpu.ebx <<= 8;
-                cpu.ecx = turn;
-                cpu.edx = at(app, height);
-                if (!direct(app, cpu, turnFromAngles))
-                    return;
-                cpu.ebx = at(app, vertices);
-                push(app, cpu, cpu.ebx);
-                cpu.eax = at(app, cpu.esi + 0x28);
-                cpu.ecx = offset;
-                push(app, cpu, cpu.eax);
-                cpu.edx = at(app, cpu.esi + 0x24);
-                cpu.ebx = at(app, cpu.esi + 0x20);
-                push(app, cpu, cpu.edx);
-                cpu.eax = cpu.edi;
-                cpu.edx = turn;
-                if (!direct(app, cpu, viewTurnedObjectVertices))
-                    return;
-                cpu.ecx = at(app, block);
-                push(app, cpu, cpu.ecx);
-                cpu.ebx = at(app, vertices);
-                push(app, cpu, cpu.edi);
-                cpu.edx = turn;
-                cpu.eax = at(app, cpu.esi + 0x20);
-                push(app, cpu, cpu.ebx);
-                cpu.ecx = at(app, cpu.esi + 0x24);
-                cpu.ebx = offset;
-                if (!light())
-                    return;
+                putByte(app, state + 2, byte(app, object + kObjectAngle));
+                guest::direct<0x4dffb0, vertices::offsetVectorList<true>>(app, cpu, 1, place, objectPlace, place);
+                if (cpu.terminate)
+                    return std::nullopt;
+                guest::direct<0x40f800, aiplan::animationSpans>(app, cpu, signedByte(byte(app, state)), steps, length);
+                if (cpu.terminate)
+                    return std::nullopt;
+                left.scratch = length;
+                const reg32 height = signedByte(byte(app, state + 2)) << 8;
+                const reg32 along = quotient(at(app, steps) << 16, at(app, length));
+                {
+                    const GuestFrame slot(cpu, 4, 0);
+                    if (!turnOfAngles(app, cpu, along, signedByte(byte(app, state + 1)) << 8, height, turn))
+                        return std::nullopt;
+                }
+                left.scratch = cpu.ebx;
+                if (!turnedIntoView(turn, place) || !lit(turn, place))
+                    return std::nullopt;
             }
         }
-        else if (cpu.eax == 3)
+        else if (kind == kCarKind)
         {
-            // A car's: only where cars are drawn, as the car stands.
-            if (at(app, cars) == 0)
+            if (cars == 0)
             {
-                cpu.esi += 0x34;
+                object += kObjectSize;
                 continue;
             }
-            cpu.eax = turn;
-            cpu.ecx = offset;
-            cpu.edx = 1;
-            push(app, cpu, cpu.eax);
-            cpu.ebx = at(app, 0x7d3684);
-            cpu.eax = at(app, cpu.esi + 0x1c);
-            if (!byAddress(app, cpu, 0x40f4b0))
-                return;
-            cpu.edx = at(app, cpu.esi + 0x20) << 5;
-            cpu.eax = vertices;
-            if (!byAddress(app, cpu, 0x4bbde0))
-                return;
-            cpu.ecx = at(app, vertices);
-            push(app, cpu, cpu.ecx);
-            cpu.ebx = at(app, cpu.esi + 0x28);
-            cpu.edx = turn;
-            push(app, cpu, cpu.ebx);
-            cpu.eax = at(app, cpu.esi + 0x24);
-            cpu.ecx = offset;
-            push(app, cpu, cpu.eax);
-            cpu.ebx = at(app, cpu.esi + 0x20);
-            cpu.eax = cpu.edi;
-            if (!direct(app, cpu, viewTurnedObjectVertices))
-                return;
-            cpu.edx = at(app, block);
-            push(app, cpu, cpu.edx);
-            cpu.ecx = at(app, vertices);
-            push(app, cpu, cpu.edi);
-            cpu.ebx = offset;
-            cpu.eax = at(app, cpu.esi + 0x20);
-            push(app, cpu, cpu.ecx);
-            cpu.edx = turn;
-            cpu.ecx = at(app, cpu.esi + 0x24);
-            if (!light())
-                return;
-            if (!compare(cpu, f32(app, scale), f32(app, 0x536cc8)).equal)
+            // ebx as the pose is handed it, which it keeps: the object's scratch.
+            if (!guest::direct<0x40f4b0, aiplan::poseAt>(app, cpu, field(kObjectCarAt), 1, i32(at(app, kPoseTime)), place,
+                                                         turn))
+                return std::nullopt;
+            left.scratch = at(app, kPoseTime);
+            if (!room(kRoom, vertices, field(kObjectVertexCount) << 5) || !turnedIntoView(turn, place)
+                || !lit(turn, place))
+                return std::nullopt;
+            // An x87 compare: ZF for equal or unordered -- the car's block looked up only for a list drawn to
+            // an end other than a block's.
+            const Float end = floatOf(worldEnd), blocksEnd = f32(app, kBlockListsEnd);
+            if (end < blocksEnd || end > blocksEnd)
             {
-                cpu.eax = offset;
-                if (!byAddress(app, cpu, 0x41e0f0))
-                    return;
-                cpu.edx = reg32(sreg32(cpu.eax) >> 3);
-                cpu.eax = cpu.edi;
-                if (!direct(app, cpu, blockInView))
-                    return;
-                if (cpu.eax == 0)
+                const reg32 nearest = guest::direct<0x41e0f0, vertices::nearestBlockTo>(app, cpu, place);
+                if (cpu.terminate)
+                    return std::nullopt;
+                cpu.eax = nearest;
+                // blockInView's: it keeps ebx.
+                const std::optional<bool> inView = blockDrawn(app, cpu, camera, reg32(sreg32(nearest) >> 3));
+                if (!inView)
+                    return std::nullopt;
+                if (!*inView)
                 {
-                    cpu.esi += 0x34;
+                    object += kObjectSize;
                     continue;
                 }
             }
         }
         else
         {
-            // Fixed: where it stands, coloured.
-            cpu.edx = at(app, cpu.esi + 0x20) << 5;
-            cpu.eax = vertices;
-            if (!byAddress(app, cpu, 0x4bbde0))
-                return;
-            cpu.ebx = at(app, vertices);
-            cpu.eax = cpu.edi;
-            cpu.ecx = at(app, cpu.esi + 0x28);
-            push(app, cpu, cpu.ebx);
-            cpu.edx = at(app, cpu.esi + 0x20);
-            cpu.ebx = at(app, cpu.esi + 0x24);
-            if (!byAddress(app, cpu, 0x41a970))
-                return;
-            cpu.eax = at(app, block);
-            push(app, cpu, cpu.eax);
-            cpu.edx = at(app, vertices);
-            push(app, cpu, cpu.edi);
-            cpu.ecx = at(app, cpu.esi + 0x24);
-            cpu.ebx = 0;
-            push(app, cpu, cpu.edx);
-            cpu.eax = at(app, cpu.esi + 0x20);
-            cpu.edx = 0;
-            if (!light())
-                return;
+            if (!room(kRoom, vertices, field(kObjectVertexCount) << 5))
+                return std::nullopt;
+            guest::direct<0x41a970, vertices::colouredVerticesOf>(app, cpu, camera, field(kObjectVertexCount),
+                                                                  field(kObjectVertices), field(kObjectColours),
+                                                                  at(app, vertices));
+            if (cpu.terminate)
+                return std::nullopt;
+            left.scratch = field(kObjectVertices);  // ebx as it is handed it, which it keeps
+            if (!lit(0, 0))
+                return std::nullopt;
         }
         // Its polygons as records, appended to the list.
-        cpu.edx = at(app, cpu.esi + 0x2c) << 5;
-        cpu.eax = records;
-        if (!byAddress(app, cpu, 0x4bbe40))
-            return;
-        if (cpu.eax == 0)
+        const std::optional<reg32> roomFor = room(kRoomNext, records, field(kObjectPolygonCount) << 5);
+        if (!roomFor)
+            return std::nullopt;
+        if (*roomFor == 0)
         {
-            cpu.esi += 0x34;
+            object += kObjectSize;
             continue;
         }
-        cpu.ecx = at(app, vertices);
-        cpu.eax = cpu.edi;
-        cpu.ebx = at(app, cpu.esi + 0x30);
-        push(app, cpu, cpu.ecx);
-        cpu.edx = at(app, cpu.esi + 0x2c);
+        cpu.eax = camera;
+        cpu.edx = field(kObjectPolygonCount);
+        cpu.ebx = field(kObjectPolygons);
         cpu.ecx = at(app, records);
-        if (!byAddress(app, cpu, 0x41b640))
-            return;
-        if (cpu.eax != 0)
+        const std::optional<reg32> made = keeping(kObjectRecords, {at(app, vertices)});
+        if (!made)
+            return std::nullopt;
+        if (*made != 0)
         {
-            cpu.edx = cpu.eax << 5;
-            cpu.eax = records;
-            if (!byAddress(app, cpu, 0x4bbde0))
-                return;
-            cpu.ebx = at(app, last);
-            if (cpu.ebx == 0)
-            {
-                cpu.edx = at(app, firstAt);
-                cpu.eax = at(app, records);
-                put(app, cpu.edx, cpu.eax);
-            }
-            else
-            {
-                cpu.eax = at(app, records);
-                put(app, cpu.ebx, cpu.eax);
-            }
-            cpu.edx = 0x20;
-            cpu.eax = last;
-            if (!byAddress(app, cpu, 0x4bbe40))
-                return;
-            put(app, last, at(app, last) - 0x20);
+            if (!room(kRoom, records, *made << 5))
+                return std::nullopt;
+            const reg32 last = at(app, lastAt);
+            left.scratch = last;  // tested from ebx
+            put(app, last == 0 ? head : last, at(app, records));
+            if (!room(kRoomNext, lastAt, kRecordSize))
+                return std::nullopt;
+            put(app, lastAt, at(app, lastAt) - kRecordSize);
         }
-        cpu.edx = at(app, drawn) + at(app, cpu.esi + 0x2c);
-        cpu.esi += 0x34;
-        put(app, drawn, cpu.edx);
+        left.drawn += field(kObjectPolygonCount);
+        object += kObjectSize;
     }
-    cpu.edx = at(app, lastAt);
-    cpu.eax = at(app, last);
-    put(app, cpu.edx, cpu.eax);
-    cpu.eax = at(app, drawn);
-    cpu.esp = cpu.ebp;
-    cpu.ebp = pop(app, cpu);
-    cpu.edi = pop(app, cpu);
-    cpu.esi = pop(app, cpu);
+    put(app, tail, at(app, lastAt));
+    return left;
+}
+
+/* 0x41ca40 (stdcall, 3 words): drawObjects for the camera eax, the list
+ * [esp+8] of block ecx drawn to the world's end [esp+4] (a float, -1 for a
+ * block's), into the list of the tail's slot edx and the head's ebx, cars
+ * where [esp+0xc]. */
+void drawObjectList(App* app, CPU& cpu)
+{
+    const Kept kept(cpu, kSaveEsi | kSaveEdi);
+    const reg32 tail = cpu.edx;
+    const std::optional<ObjectsLeft> left = drawObjects(app, cpu, cpu.eax, tail, cpu.ebx, cpu.ecx,
+                                                        at(app, cpu.esp + 4), at(app, cpu.esp + 8),
+                                                        at(app, cpu.esp + 0xc));
+    if (!left)
+        return;
+    cpu.eax = left->drawn;
+    cpu.ebx = left->scratch;
+    cpu.ecx = 0xffffffff;
+    cpu.edx = tail;
     cpu.esp += 4 + 0xc;
 }
 
-/* 0x41cdc0: the track drawn for the camera eax, its polygons into the
- * buckets at ebx: each block of the list at edx (the view's 300 blocks, -1
- * none) within the view's reach and in view -- its model by distance (its
- * own, or the next block's for a block of the list's second half; the
- * mirror's always the coarsest, the port's change through
- * nfs3hp::mirrorAsMain), its vertices into view (0x41a970), its polygon
- * groups (0x41b300, models 0..9 as the model's record at 0x552e20 says, a
- * tenth outside split screen and network races), the headlights on it
- * (headlightsOnBlock), its lights (blockLights) and its object lists
- * (drawObjectList) -- the buckets flushed (flushBuckets) whenever the
- * polygons pass the model's most.  Then the track's own objects, where there
- * are lights ([0x5dd840]); the six lists into the buckets; two counters
- * handed on (0x431c20). */
-void drawTrack(App* app, CPU& cpu)
+constexpr reg32 kTrackRecords = 0x41b300;      // vertices::trackRecords (stdcall, 2 words): a block's group's records
+constexpr reg32 kPassLayerNothing = 0x431c20;  // collide::passLayerNothing: eax for the layer edx
+// A block's models' vertex counts (+0x5c, a word each), its lists of objects (+0x564, 8 bytes each); a
+// model's record (12 bytes): the block's word of it, the model, the most polygons before a flush.
+constexpr reg32 kBlockModelVertices = 0x5c, kBlockObjectLists = 0x564, kModelSize = 12, kModelOf = 4,
+                kModelMostPolygons = 8;
+constexpr reg32 kNoBlock = 0xffffffff, kNoModel = 0xffffffff;
+constexpr reg32 kMinusOne = 0xbf800000;  // -1 as a float: the world's end a block's lists are drawn to
+
+/* 0x41cdc0's: the track drawn for the camera, its polygons into the buckets
+ * at `buckets`: each block of the list at `list` (the view's, up to the last
+ * block: a word of the block, -1 none, and a word of its model, -1 by its
+ * distance) within the view's reach (an x87 compare, a NaN out of it) and in
+ * view -- its model (the mirror's always the coarsest, the port's change
+ * through nfs3hp::mirrorAsMain; the next block's asked for too and not
+ * taken), its vertices into view (objectVerticesColoured), its polygon groups
+ * (trackRecords, models as the model's record at 0x552e20 says, a tenth
+ * outside split screen and network races), the headlights on it
+ * (headlightsOnRoad), its lights (glowBlockLights) and its object lists
+ * (drawObjects) into the six lists -- the buckets flushed (drawBuckets)
+ * whenever the polygons pass the model's most.  Then the track's own objects,
+ * where it has lights ([0x5dd840]); the six lists into the buckets; the
+ * collisions' two layers handed 0 (0x431c20, the frame's two words the code
+ * never sets past their 0).  The frame as deep as the code's (the lists are
+ * handed on); the registers but ecx, esi, edi as the last of those calls
+ * leaves them, ebx handed to them as the last list leaves it.  False when the
+ * game stopped. */
+bool drawTrackBlocks(App* app, CPU& cpu, reg32 camera, reg32 list, reg32 buckets)
 {
-    x86::FPU& fpu = cpu.fpu;
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.esi);
-    push(app, cpu, cpu.edi);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    cpu.esp -= 0x70;
-    const reg32 list = cpu.ebp - 0x2c, buckets = cpu.ebp - 0x28, drawn = cpu.ebp - 4, entry = cpu.ebp - 0x14;
-    const reg32 first = cpu.ebp - 0x34, second = cpu.ebp - 0x30, at_ = cpu.ebp - 0x24, distance = cpu.ebp - 0x20;
-    const reg32 modelAt = cpu.ebp - 0x1c, model = cpu.ebp - 0x10, block = cpu.ebp - 0xc, groups = cpu.ebp - 0x18;
-    const reg32 vertices = cpu.ebp - 0x38, blockAt = cpu.ebp - 8;
-    // The six lists' heads and tails.
-    const reg32 heads = cpu.ebp - 0x70, tails = cpu.ebp - 0x58;
-    // The polygon groups of model ebx into lists `head` and `tail`: the
-    // polygons drawn added up.
-    const auto groupsOf = [&](reg32 head, reg32 tail) {
-        cpu.eax = head;
-        push(app, cpu, cpu.eax);
-        cpu.eax = tail;
-        push(app, cpu, cpu.eax);
-        cpu.edx = cpu.edi;
-        cpu.eax = cpu.esi;
-        if (!byAddress(app, cpu, 0x41b300))
-            return false;
-        return true;
+    const GuestFrame frame(cpu, 0x10, 0x70);
+    const reg32 heads = frame - 0x70, tails = frame - 0x58, empty = frame - 0x40, vertices = frame - 0x38;
+    // A block's group of polygons into the lists `k` bytes in.
+    const auto groupInto = [&](reg32 index, reg32 group, reg32 screen, reg32 k) {
+        cpu.eax = camera;
+        cpu.edx = index;
+        cpu.ebx = group;
+        cpu.ecx = screen;
+        return call(app, cpu, kTrackRecords, {tails + k, heads + k});
     };
-    cpu.esi = cpu.eax;
-    put(app, list, cpu.edx);
-    put(app, buckets, cpu.ebx);
-    cpu.edx = 0;
-    cpu.eax = 0;
-    put(app, drawn, cpu.edx);
-    ++cpu.eax;
-    cpu.ecx = 0;
-    put(app, cpu.ebp + cpu.eax * 4 - 0x74, cpu.ecx);
-    put(app, cpu.ebp + cpu.eax * 4 - 0x5c, cpu.ecx);
-    while (sreg32(cpu.eax) < 6)
+    // A list of objects into the lists `k` bytes in; the polygons drawn.
+    const auto objectsInto = [&](reg32 index, reg32 worldEnd, reg32 objects, reg32 cars, reg32 k) {
+        const GuestFrame slot(cpu, 4 + 0xc, 0);
+        const std::optional<ObjectsLeft> left =
+            drawObjects(app, cpu, camera, tails + k, heads + k, index, worldEnd, objects, cars);
+        return left ? std::optional<reg32>(left->drawn) : std::nullopt;
+    };
+    for (reg32 k = 0; k < kTrackLists * 4; k += 4)
     {
         safepoint(app, cpu);
-        ++cpu.eax;
-        cpu.ecx = 0;
-        put(app, cpu.ebp + cpu.eax * 4 - 0x74, cpu.ecx);
-        put(app, cpu.ebp + cpu.eax * 4 - 0x5c, cpu.ecx);
+        put(app, heads + k, 0);
+        put(app, tails + k, 0);
     }
-    cpu.ebx = 0;
-    put(app, first, cpu.ebx);
-    put(app, entry, cpu.ebx);
-    put(app, second, cpu.ebx);
-    for (;; put(app, entry, at(app, entry) + 1))
+    reg32 drawn = 0;
+    for (reg32 entry = 0;; ++entry)
     {
         safepoint(app, cpu);
-        cpu.eax = at(app, entry);
-        if (sreg32(cpu.eax) > sreg32(at(app, kLastBlock)))
+        if (sreg32(entry) > sreg32(at(app, kLastBlock)))
             break;
-        cpu.edx = at(app, list);
-        cpu.eax <<= 2;
-        cpu.edx += cpu.eax;
-        put(app, at_, cpu.edx);
-        cpu.edi = reg32(sreg32(std::int16_t(half(app, cpu.edx))));
-        if (cpu.edi == 0xffffffff)
+        const reg32 slotAt = list + entry * 4;
+        const reg32 index = reg32(sreg32(std::int16_t(half(app, slotAt))));
+        if (index == kNoBlock)
             continue;
-        // Within the view's reach.
-        cpu.eax = blockOffset(cpu.edi);
-        cpu.edx = kBlocks + cpu.eax;
-        cpu.eax = cpu.edx + 0x78;
-        const Float dz = fp::sub(f32(app, cpu.esi + 0x10), f32(app, cpu.eax + 8));
-        const Float dx = fp::sub(f32(app, cpu.esi + 8), f32(app, cpu.eax));
-        cpu.eax = at(app, kView);
-        const Float d = fp::add(fp::mul(dz, dz), fp::mul(dx, dx));
-        const Float reach = fp::mul(f32(app, cpu.eax + 0x34), f32(app, cpu.eax + 0x34));
-        putF32(app, distance, d);
-        if (compare(cpu, reach, f32(app, distance)).below)
+        // Within the view's reach (the square stored as a float).
+        const reg32 block = kBlocks + blockOffset(index);
+        const Float dz = fp::sub(f32(app, camera + kCameraPlace + 8), f32(app, block + kBlockCentre + 8));
+        const Float dx = fp::sub(f32(app, camera + kCameraPlace), f32(app, block + kBlockCentre));
+        const reg32 view = at(app, kView);
+        const Float squared = fp::add(fp::mul(dz, dz), fp::mul(dx, dx));
+        const Float reach = fp::mul(f32(app, view + kViewReach), f32(app, view + kViewReach));
+        const float distance = float(squared);
+        if (!(reach >= Float(distance)))
             continue;
         // In view.
-        cpu.ecx = cpu.esi + 0x38;
-        cpu.ebx = cpu.esi + 0x44;
-        cpu.edx += 0x84;
-        cpu.eax = cpu.esi;
-        if (!byAddress(app, cpu, 0x41bf30))
-            return;
-        if (cpu.eax != 0)
+        cpu.eax = camera;
+        cpu.edx = block + kBlockBox;
+        cpu.ebx = camera + kCameraMatrix;
+        cpu.ecx = camera + kCameraBox;
+        const std::optional<reg32> outside = call(app, cpu, kBoxOutside);
+        if (!outside)
+            return false;
+        if (*outside != 0)
             continue;
-        // Its model: by its own distance for the list's first half.
-        cpu.eax = reg32(sreg32(at(app, at(app, at_))) >> 0x10);
-        if (cpu.eax == 0xffffffff)
-        {
-            cpu.eax = cpu.esi;
-            push(app, cpu, at(app, distance));
-            if (!direct(app, cpu, modelByDistance))
-                return;
-        }
-        // Port: the mirror's pass asked through mirrorAsMain.
-        if (mirrorAsMain(at(app, cpu.esi)) == 1)
-            cpu.eax = 0;
-        cpu.edx = cpu.eax;
-        cpu.eax = ((cpu.eax << 2) - cpu.edx) << 2;
-        cpu.edx = kModels + cpu.eax;
-        cpu.ebx = at(app, kLastBlock);
-        put(app, modelAt, cpu.edx);
-        cpu.eax = at(app, cpu.edx + 4);
-        cpu.edx = cpu.edi + 1;
-        put(app, model, cpu.eax);
-        if (sreg32(cpu.edx) > sreg32(cpu.ebx))
-            cpu.edx = 0;
-        // The next block's distance, its model asked for and not taken.
-        cpu.eax = blockOffset(cpu.edx) + kBlocks;
-        const Float nz = fp::sub(f32(app, cpu.esi + 0x10), f32(app, cpu.eax + 0x80));
-        const Float nx = fp::sub(f32(app, cpu.esi + 8), f32(app, cpu.eax + 0x78));
-        cpu.esp -= 4;
-        const Float next = fp::add(fp::mul(nz, nz), fp::mul(nx, nx));
-        cpu.eax = cpu.esi;
-        putF32(app, cpu.esp, next);
-        if (!direct(app, cpu, modelByDistance))
-            return;
+        // Its model: by its own distance where the list has none.
+        reg32 level = reg32(sreg32(at(app, slotAt)) >> 16);
+        if (level == kNoModel)
+            level = modelAt(app, camera, distance);
+        if (mirrorAsMain(at(app, camera + kCameraKind)) == kMirrorPass)
+            level = 0;
+        const reg32 record = kModels + level * kModelSize, model = at(app, record + kModelOf);
+        reg32 nextIndex = index + 1;
+        if (sreg32(nextIndex) > sreg32(at(app, kLastBlock)))
+            nextIndex = 0;
+        const reg32 next = kBlocks + blockOffset(nextIndex) + kBlockCentre;
+        const Float nz = fp::sub(f32(app, camera + kCameraPlace + 8), f32(app, next + 8));
+        const Float nx = fp::sub(f32(app, camera + kCameraPlace), f32(app, next));
+        modelAt(app, camera, float(fp::add(fp::mul(nz, nz), fp::mul(nx, nx))));  // asked for, not taken
         // Its vertices into view.
-        cpu.eax = blockOffset(cpu.edi);
-        cpu.edx = kBlocks + cpu.eax;
-        cpu.eax = at(app, at(app, modelAt)) << 2;
-        cpu.eax += cpu.edx;
-        cpu.eax = at(app, cpu.eax + 0x5c);
-        put(app, block, cpu.edx);
-        put(app, groups, cpu.eax);
-        cpu.edx = cpu.eax;
+        const reg32 count = at(app, block + kBlockModelVertices + at(app, record) * 4);
         cpu.eax = vertices;
-        cpu.edx <<= 5;
-        if (!byAddress(app, cpu, 0x4bbde0))
-            return;
-        cpu.ecx = at(app, vertices);
-        if (cpu.ecx == 0)
+        cpu.edx = count << 5;
+        if (!guest::call(app, cpu, kRoom))
+            return false;
+        const reg32 screen = at(app, vertices);
+        if (screen == 0)
             continue;
-        cpu.eax = at(app, block);
-        cpu.edx = at(app, groups);
-        push(app, cpu, cpu.ecx);
-        cpu.ecx = at(app, cpu.eax + 0x74);
-        cpu.ebx = at(app, cpu.eax + 0x70);
-        cpu.eax = cpu.esi;
-        if (!byAddress(app, cpu, 0x41a970))
-            return;
-        // Its polygon groups: the model's, the next, 7, 8, 9.
-        cpu.eax = heads;
-        cpu.ecx = at(app, vertices);
-        push(app, cpu, cpu.eax);
-        cpu.eax = tails;
-        cpu.ebx = at(app, model);
-        push(app, cpu, cpu.eax);
-        cpu.edx = cpu.edi;
-        cpu.eax = cpu.esi;
-        if (!byAddress(app, cpu, 0x41b300))
-            return;
-        cpu.edx = at(app, drawn);
-        cpu.ebx = at(app, model);
-        cpu.ecx = at(app, vertices);
-        cpu.edx += cpu.eax;
-        cpu.eax = heads + 4;
-        ++cpu.ebx;
-        push(app, cpu, cpu.eax);
-        cpu.eax = tails + 4;
-        put(app, drawn, cpu.edx);
-        push(app, cpu, cpu.eax);
-        cpu.edx = cpu.edi;
-        cpu.eax = cpu.esi;
-        if (!byAddress(app, cpu, 0x41b300))
-            return;
-        cpu.ecx = at(app, drawn);
-        cpu.ebx = 7;
-        cpu.ecx += cpu.eax;
-        cpu.eax = heads + 4;
-        cpu.edx = cpu.edi;
-        push(app, cpu, cpu.eax);
-        cpu.eax = tails + 4;
-        put(app, drawn, cpu.ecx);
-        push(app, cpu, cpu.eax);
-        cpu.ecx = at(app, vertices);
-        cpu.eax = cpu.esi;
-        if (!byAddress(app, cpu, 0x41b300))
-            return;
-        cpu.ebx = at(app, drawn);
-        cpu.ecx = at(app, vertices);
-        cpu.ebx += cpu.eax;
-        cpu.eax = heads + 0xc;
-        cpu.edx = cpu.edi;
-        push(app, cpu, cpu.eax);
-        cpu.eax = tails + 0xc;
-        put(app, drawn, cpu.ebx);
-        push(app, cpu, cpu.eax);
-        cpu.ebx = 8;
-        cpu.eax = cpu.esi;
-        if (!byAddress(app, cpu, 0x41b300))
-            return;
-        cpu.edx = at(app, drawn);
-        cpu.ecx = at(app, vertices);
-        cpu.edx += cpu.eax;
-        cpu.eax = heads + 8;
-        cpu.ebx = 9;
-        push(app, cpu, cpu.eax);
-        cpu.eax = tails + 8;
-        put(app, drawn, cpu.edx);
-        push(app, cpu, cpu.eax);
-        cpu.edx = cpu.edi;
-        cpu.eax = cpu.esi;
-        if (!byAddress(app, cpu, 0x41b300))
-            return;
-        put(app, drawn, at(app, drawn) + cpu.eax);
-        if (at(app, kSplitScreen) == 0 && at(app, kNetworkRace) == 0)
+        guest::direct<0x41a970, vertices::colouredVerticesOf>(app, cpu, camera, count, at(app, block + kBlockVertices),
+                                                              at(app, block + kBlockColours), screen);
+        if (cpu.terminate)
+            return false;
+        // Its polygon groups: the model's, the next, 7, 8, 9, into the lists 0, 1, 1, 3, 2.
+        const reg32 groups[][2] = {{model, 0}, {model + 1, 4}, {7, 4}, {8, 0xc}, {9, 8}};
+        for (const auto& group : groups)
         {
-            cpu.ecx = at(app, vertices);
-            cpu.ebx = 0xa;
-            if (!groupsOf(heads, tails))
-                return;
-            put(app, drawn, at(app, drawn) + cpu.eax);
+            const std::optional<reg32> added = groupInto(index, group[0], screen, group[1]);
+            if (!added)
+                return false;
+            drawn += *added;
         }
-        if (at(app, model) == 4)
+        if (gameSettings(app).night == 0 && gameSettings(app).weather == 0)
         {
-            cpu.ecx = at(app, vertices);
-            cpu.ebx = 6;
-            if (!groupsOf(heads + 0x10, tails + 0x10))
-                return;
-            put(app, drawn, at(app, drawn) + cpu.eax);
+            const std::optional<reg32> added = groupInto(index, 0xa, screen, 0);
+            if (!added)
+                return false;
+            drawn += *added;
         }
-        // The headlights on it.
-        cpu.eax = at(app, model);
-        push(app, cpu, cpu.eax);
-        cpu.edx = at(app, block);
-        push(app, cpu, cpu.edx);
-        cpu.eax = heads;
-        cpu.ecx = at(app, vertices);
-        push(app, cpu, cpu.eax);
-        cpu.eax = tails;
-        cpu.ebx = cpu.edi;
-        push(app, cpu, cpu.eax);
-        cpu.edx = at(app, groups);
-        cpu.eax = cpu.esi;
-        if (!direct(app, cpu, headlightsOnBlock))
-            return;
-        cpu.ecx = at(app, drawn);
-        cpu.ecx += cpu.eax;
-        cpu.eax = blockOffset(cpu.edi);
-        cpu.edx = kBlocks + cpu.eax;
-        put(app, drawn, cpu.ecx);
-        put(app, blockAt, cpu.edx);
-        cpu.ebx = at(app, cpu.edx + 0x5b8);
-        if (cpu.ebx != 0)
+        if (model == 4)
         {
-            cpu.edx = cpu.edi;
-            cpu.eax = cpu.esi;
-            if (!direct(app, cpu, blockLights))
-                return;
+            const std::optional<reg32> added = groupInto(index, 6, screen, 0x10);
+            if (!added)
+                return false;
+            drawn += *added;
         }
-        // Its object lists: three, a fourth outside split screen and network
-        // races.
-        push(app, cpu, 1);
-        cpu.eax = at(app, blockAt);
-        cpu.ebx = heads + 4;
-        cpu.eax += 0x564;
-        cpu.edx = tails + 4;
-        push(app, cpu, cpu.eax);
-        cpu.ecx = cpu.edi;
-        cpu.eax = cpu.esi;
-        push(app, cpu, 0xbf800000);
-        if (!direct(app, cpu, drawObjectList))
-            return;
-        cpu.edx = at(app, drawn);
-        push(app, cpu, 1);
-        cpu.ebx = heads + 0xc;
-        cpu.edx += cpu.eax;
-        cpu.eax = at(app, blockAt);
-        cpu.ecx = cpu.edi;
-        cpu.eax += 0x56c;
-        put(app, drawn, cpu.edx);
-        push(app, cpu, cpu.eax);
-        cpu.edx = tails + 0xc;
-        cpu.eax = cpu.esi;
-        push(app, cpu, 0xbf800000);
-        if (!direct(app, cpu, drawObjectList))
-            return;
-        cpu.ecx = at(app, drawn);
-        push(app, cpu, 1);
-        cpu.ebx = heads + 8;
-        cpu.ecx += cpu.eax;
-        cpu.eax = at(app, blockAt);
-        cpu.edx = tails + 8;
-        cpu.eax += 0x574;
-        put(app, drawn, cpu.ecx);
-        push(app, cpu, cpu.eax);
-        cpu.ecx = cpu.edi;
-        cpu.eax = cpu.esi;
-        push(app, cpu, 0xbf800000);
-        if (!direct(app, cpu, drawObjectList))
-            return;
-        cpu.ebx = at(app, drawn);
-        cpu.ebx += cpu.eax;
-        cpu.eax = at(app, kSplitScreen);
-        put(app, drawn, cpu.ebx);
-        if (cpu.eax == 0 && at(app, kNetworkRace) == 0)
+        // The headlights on it, its lights.
         {
-            push(app, cpu, 1);
-            cpu.eax = at(app, blockAt);
-            cpu.ebx = heads;
-            cpu.eax += 0x57c;
-            cpu.edx = tails;
-            push(app, cpu, cpu.eax);
-            cpu.ecx = cpu.edi;
-            cpu.eax = cpu.esi;
-            push(app, cpu, 0xbf800000);
-            if (!direct(app, cpu, drawObjectList))
-                return;
-            put(app, drawn, at(app, drawn) + cpu.eax);
+            const GuestFrame slot(cpu, 4 + 0x10, 0);
+            const std::optional<RoadLitLeft> lit =
+                headlightsOnRoad(app, cpu, camera, count, index, screen, tails, heads, block, model);
+            if (!lit)
+                return false;
+            drawn += lit->drawn;
+        }
+        if (at(app, block + kBlockLightCount) != 0 && !glowBlockLights(app, cpu, camera, index))
+            return false;
+        // Its object lists: three into the lists 1, 3, 2; a fourth into 0 outside split screen and
+        // network races.
+        const reg32 objectLists[][2] = {{0, 4}, {8, 0xc}, {0x10, 8}};
+        for (const auto& objects : objectLists)
+        {
+            const std::optional<reg32> added =
+                objectsInto(index, kMinusOne, block + kBlockObjectLists + objects[0], 1, objects[1]);
+            if (!added)
+                return false;
+            drawn += *added;
+        }
+        if (gameSettings(app).night == 0 && gameSettings(app).weather == 0)
+        {
+            const std::optional<reg32> added = objectsInto(index, kMinusOne, block + kBlockObjectLists + 0x18, 1, 0);
+            if (!added)
+                return false;
+            drawn += *added;
         }
         // The buckets flushed past the model's most.
-        cpu.edx = at(app, modelAt);
-        cpu.eax = at(app, drawn);
-        if (sreg32(cpu.eax) > sreg32(at(app, cpu.edx + 8)) && at(app, kWorldsDrawn) != 0)
+        if (sreg32(drawn) > sreg32(at(app, record + kModelMostPolygons)) && at(app, kWorldsDrawn) != 0)
         {
-            cpu.ecx = at(app, buckets);
-            cpu.ebx = heads;
-            cpu.edx = tails;
-            cpu.eax = cpu.esi;
-            if (!direct(app, cpu, flushBuckets))
-                return;
-            cpu.eax = 0;
-            put(app, drawn, cpu.eax);
+            const GuestFrame slot(cpu, 4, 0);
+            if (!drawBuckets(app, cpu, camera, tails, heads, buckets))
+                return false;
+            drawn = 0;
         }
     }
     // The track's own objects, where it has lights.
     if (at(app, kColLights) != 0)
     {
-        if (!direct(app, cpu, ambientWanted))
-            return;
-        push(app, cpu, cpu.eax);
-        cpu.ebx = heads + 8;
-        push(app, cpu, kTrackObjects);
-        cpu.eax = at(app, kView);
-        cpu.edx = tails + 8;
-        cpu.ecx = 0;
-        push(app, cpu, at(app, cpu.eax + 0x30));
-        cpu.eax = cpu.esi;
-        if (!direct(app, cpu, drawObjectList))
-            return;
+        const reg32 cars = ambientPlays(app) ? 1 : 0;
+        if (!objectsInto(0, at(app, at(app, kView) + kViewWorldEnd), kTrackObjects, cars, 8))
+            return false;
     }
-    // The six lists into the buckets: a list's first and last, or an empty
-    // list's.
-    for (cpu.edx = 0;; )
+    // The six lists into the buckets: a list's first and last, or an empty list's.  What the code leaves
+    // in ebx: the last list's head read, as kListEmptied leaves it where it is 0, else its tail.
+    reg32 scratch = 0;
+    for (reg32 k = 0; k < kTrackLists; ++k)
     {
         safepoint(app, cpu);
-        cpu.eax = cpu.edx * 4;
-        cpu.edi = at(app, buckets);
-        cpu.ebx = cpu.edx * 8;
-        cpu.edi += cpu.ebx;
-        cpu.ebx = at(app, cpu.eax + heads);
-        if (cpu.ebx == 0)
+        const reg32 bucket = buckets + k * 8, head = at(app, heads + k * 4);
+        if (head == 0)
         {
-            cpu.esi = cpu.ebp - 0x40;
-            if (!byAddress(app, cpu, 0x4bbe70))
-                return;
-            cpu.esi = cpu.ebp - 0x40;
-            movsd(app, cpu);
-            movsd(app, cpu);
+            cpu.esi = empty;
+            cpu.ebx = head;
+            if (!guest::call(app, cpu, kListEmptied))
+                return false;
+            scratch = cpu.ebx;
+            copyPair(app, empty, bucket);
         }
         else
         {
-            put(app, cpu.edi, cpu.ebx);
-            cpu.ebx = at(app, cpu.eax + tails);
-            put(app, cpu.ebx, 0);
-            cpu.eax = at(app, cpu.eax + tails);
-            put(app, cpu.edi + 4, cpu.eax);
+            put(app, bucket, head);
+            const reg32 tail = at(app, tails + k * 4);
+            put(app, tail, 0);
+            put(app, bucket + 4, at(app, tails + k * 4));
+            scratch = tail;
         }
-        ++cpu.edx;
-        if (sreg32(cpu.edx) >= 6)
-            break;
     }
-    cpu.edx = 1;
-    cpu.eax = at(app, first);
-    if (!byAddress(app, cpu, 0x431c20))
-        return;
+    cpu.ebx = scratch;  // handed on to the layers' calls, as the code has it
+    guest::direct<0x431c20, collide::layerNothing>(app, cpu, 0, 1);
+    if (cpu.terminate)
+        return false;
+    // The second by address: what it leaves is what drawTrack leaves.
+    cpu.eax = 0;
     cpu.edx = 2;
-    cpu.eax = at(app, second);
-    if (!byAddress(app, cpu, 0x431c20))
+    return guest::call(app, cpu, kPassLayerNothing);
+}
+
+/* 0x41cdc0: drawTrackBlocks for the camera eax, the list edx, the buckets
+ * ebx. */
+void drawTrack(App* app, CPU& cpu)
+{
+    const Kept kept(cpu, kSaveEcx | kSaveEsi | kSaveEdi);
+    if (!drawTrackBlocks(app, cpu, cpu.eax, cpu.edx, cpu.ebx))
         return;
-    cpu.esp = cpu.ebp;
-    cpu.ebp = pop(app, cpu);
-    cpu.edi = pop(app, cpu);
-    cpu.esi = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
     cpu.esp += 4;
 }
 
-/* 0x41d210: sound source edx heard from the camera eax: its distance and
- * side from the camera's place (0x412620) made a volume (0x10000 over the
- * distance's square, at most 0x7f) and a pan (0x4185e0); a source of kind 1
- * (+0xe) played in the ambient slot 0x13 at a random half-second of its own
- * (the frame counter's eighths against [0x552e44], drawn anew), else, the
- * first heard (ebx 0), in slot 0x12.  ebx, or 1 for the first played. */
+constexpr reg32 kSourceDistance = 0x412620;  // the distance from the place eax to the source edx; across, side to [ebx]
+constexpr reg32 kSidePan = 0x4185e0;         // the pan of across eax and side edx (port_sound_effects.cpp)
+constexpr reg32 kEffectInSlot = 0x416fc0;    // slot eax plays sound edx (stdcall: volume, pan, pitch)
+constexpr reg32 kRandom = 0x4e0d88;          // a random number
+// A sound source: its sound (+0xc, a word) and its kind (+0xe: 1 played at a random half-second).
+constexpr reg32 kSourceSound = 0xc, kSourceKind = 0xe;
+constexpr reg16 kSourceRandom = 1;
+constexpr reg32 kLoudest = 0x7f, kPanMiddle = 0x40, kRandomSlot = 0x13, kEffectRate = 0x10000, kPitchBelow = 0x10;
+
+/* An int shifted right `k` towards 0, as the code's sar after the sign's
+ * bias does it. */
+reg32 shiftedTowardZero(reg32 value, unsigned k)
+{
+    const reg32 bias = i32(value) < 0 ? (1u << k) - 1 : 0;
+    return reg32(i32(value + bias) >> k);
+}
+
+/* What ambientSource leaves in eax, and in ebx and edx where nothing
+ * played (they are the play's otherwise). */
+struct HeardLeft
+{
+    reg32 heard;                // 1 where this one played the ambient slot, else as it came
+    std::optional<reg32> pan;   // the pan (ebx)
+    std::optional<reg32> last;  // [0x552e44], or the kind's word over what the pan left (edx)
+};
+
+/* 0x41d210's: the sound source `source` heard from the camera: its distance
+ * and side from the camera's place (into the frame, as deep as the code's)
+ * made a volume (0x10000 over the distance's square, at most 0x7f) and a
+ * pan; a source of kind 1 played in the ambient slot 0x13 at a random
+ * half-second of its own (the frame counter's eighths against [0x552e44],
+ * drawn anew), else, the first heard (`heard` 0), in slot 0x12 -- at
+ * [the view's +0] less 0x10.  nullopt when the game stopped. */
+std::optional<HeardLeft> hearSource(App* app, CPU& cpu, reg32 camera, reg32 source, reg32 heard)
+{
+    const GuestFrame frame(cpu, 0x10, 8);
+    const reg32 across = frame - 8, side = frame - 4;
+    cpu.eax = camera + kCameraPlace;
+    cpu.edx = source;
+    cpu.ebx = across;
+    const std::optional<reg32> distance = call(app, cpu, kSourceDistance);
+    if (!distance)
+        return std::nullopt;
+    const reg32 far = reg32(i32(*distance) >> 0xc), squared = reg32(i32(far * far) >> 0xa);
+    reg32 volume = kLoudest;
+    if (squared != 0)
+    {
+        const i32 loudness = i32(0x10000) / i32(squared);
+        volume = loudness >= i32(kLoudest) ? kLoudest : reg32(loudness);
+    }
+    cpu.eax = shiftedTowardZero(at(app, across), 0xa) + kPanMiddle;
+    cpu.edx = at(app, side);
+    const std::optional<reg32> pan = call(app, cpu, kSidePan);
+    if (!pan)
+        return std::nullopt;
+    const reg16 kind = half(app, source + kSourceKind);
+    reg32 slot = kAmbientSlot;
+    if (kind == kSourceRandom)
+    {
+        const reg32 eighth = (at(app, kFrameCounter) & 0x3f) >> 3, last = at(app, kAmbientLast);
+        if (eighth != last)
+            return HeardLeft{heard, pan, last};
+        slot = kRandomSlot;
+    }
+    else if (heard != 0)
+        return HeardLeft{heard, pan, (cpu.edx & 0xffff0000) | kind};
+    const reg32 pitch = at(app, at(app, kView) + kViewStart) - kPitchBelow;
+    cpu.eax = slot;
+    cpu.edx = half(app, source + kSourceSound);
+    cpu.ebx = kPanMiddle;
+    cpu.ecx = kEffectRate;
+    if (!guest::call(app, cpu, kEffectInSlot, {volume, *pan, pitch}))
+        return std::nullopt;
+    if (slot == kAmbientSlot)
+        return HeardLeft{1, std::nullopt, std::nullopt};
+    const std::optional<reg32> drawn = call(app, cpu, kRandom);
+    if (!drawn)
+        return std::nullopt;
+    put(app, kAmbientLast, *drawn & 7);
+    return HeardLeft{heard, std::nullopt, std::nullopt};
+}
+
+/* 0x41d210: hearSource for the camera eax, the source edx, heard ebx. */
 void ambientSource(App* app, CPU& cpu)
 {
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.esi);
-    push(app, cpu, cpu.edi);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    cpu.esp -= 8;
-    const reg32 across = cpu.ebp - 8, side = cpu.ebp - 4;
-    // The ambient slot's sound: slot eax, volume edi, pan ebx, the player's
-    // pitch.
-    const auto play = [&] {
-        return byAddress(app, cpu, 0x416fc0);
-    };
-    cpu.ecx = cpu.edx;
-    cpu.esi = cpu.ebx;
-    cpu.ebx = across;
-    cpu.eax += 8;
-    if (!byAddress(app, cpu, 0x412620))
+    const Kept kept(cpu, kSaveEcx | kSaveEsi | kSaveEdi);
+    const std::optional<HeardLeft> left = hearSource(app, cpu, cpu.eax, cpu.edx, cpu.ebx);
+    if (!left)
         return;
-    cpu.ebx = cpu.eax;
-    cpu.ebx = reg32(sreg32(cpu.ebx) >> 0xc);
-    cpu.ebx = cpu.ebx * cpu.ebx;
-    cpu.ebx = reg32(sreg32(cpu.ebx) >> 0xa);
-    if (cpu.ebx == 0)
-    {
-        cpu.edi = 0x7f;
-    }
-    else
-    {
-        cpu.eax = 0x10000;
-        idiv(cpu, cpu.ebx);
-        if (sreg32(cpu.eax) >= 0x7f)
-            cpu.eax = 0x7f;
-        cpu.edi = cpu.eax;
-    }
-    cpu.eax = at(app, across);
-    towardZero(cpu, 0xa);
-    cpu.edx = at(app, side);
-    cpu.eax += 0x40;
-    if (!byAddress(app, cpu, 0x4185e0))
-        return;
-    cpu.ebx = cpu.eax;
-    cpu.dx = half(app, cpu.ecx + 0xe);
-    if (cpu.dx == 1)
-    {
-        cpu.edx = at(app, kFrameCounter) & 0x3f;
-        cpu.eax = cpu.edx;
-        towardZero(cpu, 3);
-        cpu.edx = at(app, kAmbientLast);
-        if (cpu.eax == cpu.edx)
-        {
-            cpu.eax = at(app, at(app, kView)) - 0x10;
-            cpu.edx = 0;
-            push(app, cpu, cpu.eax);
-            cpu.dx = half(app, cpu.ecx + 0xc);
-            push(app, cpu, cpu.ebx);
-            cpu.ecx = 0x10000;
-            push(app, cpu, cpu.edi);
-            cpu.eax = 0x13;
-            cpu.ebx = 0x40;
-            if (!play() || !byAddress(app, cpu, 0x4e0d88))
-                return;
-            cpu.eax &= 7;
-            put(app, kAmbientLast, cpu.eax);
-        }
-    }
-    else if (cpu.esi == 0)
-    {
-        cpu.eax = at(app, at(app, kView)) - 0x10;
-        push(app, cpu, cpu.eax);
-        cpu.edx = cpu.eax;
-        push(app, cpu, cpu.ebx);
-        cpu.edx ^= cpu.eax;
-        cpu.ebx = 0x40;
-        cpu.eax = 0x12;
-        push(app, cpu, cpu.edi);
-        cpu.dx = half(app, cpu.ecx + 0xc);
-        cpu.ecx = 0x10000;
-        cpu.esi = 1;
-        if (!play())
-            return;
-    }
-    cpu.eax = cpu.esi;
-    cpu.esp = cpu.ebp;
-    cpu.ebp = pop(app, cpu);
-    cpu.edi = pop(app, cpu);
-    cpu.esi = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
+    cpu.eax = left->heard;
+    if (left->pan)
+        cpu.ebx = *left->pan;
+    if (left->last)
+        cpu.edx = *left->last;
     cpu.esp += 4;
 }
 
-/* 0x41d310: view eax (0x54 bytes each from 0x5dd0e0) the one drawn
- * ([0x5dd830]) -- in the mirror's pass ([0x7a3d14] 1) given the first view's
- * block.  eax the view's offset. */
+/* The heard of the sources at `sources` (hearSource), for ambientAround. */
+std::optional<reg32> heardSources(App* app, CPU& cpu, reg32 camera, reg32 sources, reg32 heard)
+{
+    const std::optional<HeardLeft> left = hearSource(app, cpu, camera, sources, heard);
+    if (!left)
+        return std::nullopt;
+    return left->heard;
+}
+
+/* 0x41d310's: view `index` the one drawn ([0x5dd830]) -- in the mirror's pass
+ * given the first view's block.  The view's offset, as the code leaves it in
+ * eax. */
+reg32 chooseView(App* app, reg32 index)
+{
+    const reg32 offset = index * kViewSize, view = kViews + offset;
+    if (at(app, kPassKind) == kMirrorPass)
+        put(app, view + kViewBlock, at(app, kViews + kViewBlock));
+    put(app, kView, view);
+    return offset;
+}
+
+/* 0x41d310: chooseView of eax. */
 void selectView(App* app, CPU& cpu)
 {
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.edx);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    cpu.edx = cpu.eax;
-    cpu.eax = ((((cpu.eax << 2) + cpu.edx) << 2) + cpu.edx) << 2;
-    cpu.ecx = kViews;
-    cpu.edx = at(app, 0x7a3d14);
-    cpu.ecx += cpu.eax;
-    if (cpu.edx == 1)
-    {
-        cpu.edx = at(app, kViews + 4);
-        put(app, cpu.ecx + 4, cpu.edx);
-    }
-    put(app, kView, cpu.ecx);
-    cpu.ebp = pop(app, cpu);
-    cpu.edx = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
+    cpu.eax = chooseView(app, cpu.eax);
     cpu.esp += 4;
 }
 
-/* 0x41d350: object edx of the car eax's block set moving: the car's speed
- * (|+0xa4| + |+0xac|) against its threshold (0, or 0xb for a car with +0x200
- * bit 2 clear).  An object that moves when hit (+0x13 2) and still (state
- * 0xff): fast enough, set on a path (0x40f3b0: 2, or 3 at 25 and up) -- its
- * angle from the car's move (0x4ea570) and the path started (0x40f430) --
- * or turning (0xfe) where there is none; -1.  Too slow, 1; one moving
- * already, 0; one that falls (3), 2; any other 1. */
+constexpr reg32 kAngleOf = 0x4ea570;           // the angle of the vector x eax, z edx (16-bit turns)
+constexpr reg32 kSpeedToAngle = 0x536ccc;      // a double: a speed to the angle's units
+// A car: its block (+0xc), its speed's x and z (+0xa4, +0xac), its flags (+0x200; 2 the threshold 0).
+constexpr reg32 kCarBlock = 0xc, kCarSpeedX = 0xa4, kCarSpeedZ = 0xac;
+constexpr reg8 kCarAnyThreshold = 2;
+constexpr reg32 kSlowThreshold = 0xb, kFastSpeed = 0x19, kPathSlow = 2, kPathFast = 3, kPathMode = 2;
+
+/* An x87 fabs as the code takes it here: a value at most 0 negated (0 to
+ * -0), a NaN kept to the bit. */
+reg32 negatedUnlessOver(reg32 bits)
+{
+    return Float(0.0) >= floatOf(bits) ? bitsOf(float(-floatOf(bits))) : bits;
+}
+
+/* 0x41d350's: object `index` of the car's block set moving: the car's speed
+ * (|x| + |z| of its speed) against its threshold (0, or 0xb for a car
+ * without flag 2).  An object that moves when hit and is still: fast enough,
+ * set on a path (2, or 3 at 25 and up) -- its angle from the car's move and
+ * the path started -- or turning where there is none; -1.  Too slow, 1; one
+ * moving already, 0; one that falls, 2; any other 1.  nullopt when the game
+ * stopped. */
+std::optional<MovedLeft> setObjectMoving(App* app, CPU& cpu, reg32 car, reg32 index)
+{
+    const reg32 objects = at(app, at(app, car + kCarBlock) + kBlockAnimated);
+    const reg32 threshold = (byte(app, car + kCarFlags) & kCarAnyThreshold) != 0 ? 0 : kSlowThreshold;
+    const reg32 absX = negatedUnlessOver(at(app, car + kCarSpeedX));
+    const reg32 absZ = negatedUnlessOver(at(app, car + kCarSpeedZ));
+    const reg32 speed = reg32(fp::toInteger<sreg32>(fp::add(floatOf(absX), floatOf(absZ))));
+    const reg32 object = objects + index * kAnimatedSize;
+    const reg32 stateNumber = half(app, object + kAnimatedState), state = kObjectStates + stateNumber * 3;
+    const reg8 moves = byte(app, object + kAnimatedMoves);
+    if (moves != kMovesWhenHit)
+        return MovedLeft{moves == kFalls ? 2u : 1u, object};
+    if (byte(app, state) != kStateStill)
+        return MovedLeft{0, object};
+    if (sreg32(speed) < sreg32(threshold))
+        return MovedLeft{1, object};
+    const reg32 path =
+        guest::direct<0x40f3b0, aiplan::playAnimation>(app, cpu, sreg32(speed) < sreg32(kFastSpeed) ? kPathSlow : kPathFast);
+    if (cpu.terminate)
+        return std::nullopt;
+    const reg32 movedNumber = half(app, object + kAnimatedState);
+    putByte(app, movedNumber * 3 + kObjectStates, reg8(path));
+    if (std::int8_t(byte(app, state)) < 0)
+    {
+        putByte(app, state, kStateTurning);
+        return MovedLeft{0xffffffff, (movedNumber & 0xffffff00) | (path & 0xff)};
+    }
+    const reg32 z = reg32(sreg32(reg32(fp::toInteger<sreg32>(fp::mul(f32(app, car + kCarSpeedZ), f64(app, kSpeedToAngle))))) >> 8);
+    const reg32 x = reg32(sreg32(reg32(fp::toInteger<sreg32>(fp::mul(f32(app, car + kCarSpeedX), f64(app, kSpeedToAngle))))) >> 8);
+    cpu.eax = x;
+    cpu.edx = z;
+    const std::optional<reg32> angle = call(app, cpu, kAngleOf);
+    if (!angle)
+        return std::nullopt;
+    const reg8 turn = reg8(sreg32(*angle) >> 8);
+    putByte(app, state + 1, turn);
+    const reg32 number = half(app, object + kAnimatedState);
+    cpu.edx = kPathMode;  // as the code hands it, which the call keeps: what objectAnimation leaves
+    guest::direct<0x40f430, aiplan::setAnimation>(app, cpu, reg32(sreg32(at(app, number * 3 + kObjectStates - 3)) >> 0x18),
+                                                  kPathMode, 0, reg32(sreg32(std::int8_t(turn))));
+    if (cpu.terminate)
+        return std::nullopt;
+    putByte(app, state + 2, 0);
+    return MovedLeft{0xffffffff, std::nullopt};
+}
+
+/* 0x41d350: setObjectMoving of the car eax's object edx. */
 void objectAnimation(App* app, CPU& cpu)
 {
-    x86::FPU& fpu = cpu.fpu;
-    push(app, cpu, cpu.ebx);
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.esi);
-    push(app, cpu, cpu.edi);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    cpu.esp -= 0x14;
-    const reg32 objects = cpu.ebp - 0x14, threshold = cpu.ebp - 0xc, absX = cpu.ebp - 8, absZ = cpu.ebp - 4;
-    const reg32 kind = cpu.ebp - 0x10;
-    const auto leave = [&](reg32 result) {
-        cpu.eax = result;
-        cpu.esp = cpu.ebp;
-        cpu.ebp = pop(app, cpu);
-        cpu.edi = pop(app, cpu);
-        cpu.esi = pop(app, cpu);
-        cpu.ecx = pop(app, cpu);
-        cpu.ebx = pop(app, cpu);
-        cpu.esp += 4;
-    };
-    cpu.ecx = cpu.eax;
-    cpu.edi = cpu.edx;
-    cpu.eax += 0xc;
-    cpu.eax = at(app, cpu.eax);
-    cpu.eax = at(app, cpu.eax + 0x5a4);
-    put(app, objects, cpu.eax);
-    if ((byte(app, cpu.ecx + 0x200) & 2) != 0)
-    {
-        cpu.edx = 0;
-        put(app, threshold, cpu.edx);
-    }
-    else
-    {
-        put(app, threshold, 0xb);
-    }
-    if (!compare(cpu, Float(0.0), f32(app, cpu.ecx + 0xa4)).below)
-    {
-        putF32(app, absX, -f32(app, cpu.ecx + 0xa4));
-    }
-    else
-    {
-        cpu.eax = at(app, cpu.ecx + 0xa4);
-        put(app, absX, cpu.eax);
-    }
-    if (!compare(cpu, Float(0.0), f32(app, cpu.ecx + 0xac)).below)
-    {
-        putF32(app, absZ, -f32(app, cpu.ecx + 0xac));
-    }
-    else
-    {
-        cpu.eax = at(app, cpu.ecx + 0xac);
-        put(app, absZ, cpu.eax);
-    }
-    const Float speed = fp::add(f32(app, absX), f32(app, absZ));
-    cpu.esp -= 4;
-    put(app, cpu.esp, reg32(fp::toInteger<sreg32>(speed)));
-    cpu.eax = pop(app, cpu);
-    cpu.ebx = cpu.eax;
-    cpu.eax = cpu.edi * 5;
-    cpu.edx = at(app, objects);
-    cpu.eax <<= 2;
-    cpu.edx += cpu.eax;
-    cpu.eax = half(app, cpu.edx + 0xe);
-    put(app, kind, cpu.eax);
-    cpu.esi = at(app, kind);
-    cpu.eax <<= 2;
-    cpu.eax -= cpu.esi;
-    cpu.esi = kObjectStates;
-    cpu.esi += cpu.eax;
-    cpu.eax = 0;
-    if (byte(app, cpu.edx + 0x13) != 2)
-        return leave(byte(app, cpu.edx + 0x13) == 3 ? 2 : 1);
-    if (byte(app, cpu.esi) != 0xff)
-        return leave(cpu.eax);
-    if (sreg32(cpu.ebx) < sreg32(at(app, threshold)))
-        return leave(1);
-    cpu.eax = sreg32(cpu.ebx) < 0x19 ? 2 : 3;
-    if (!byAddress(app, cpu, 0x40f3b0))
+    const Kept kept(cpu, kSaveEbx | kSaveEcx | kSaveEsi | kSaveEdi);
+    const std::optional<MovedLeft> left = setObjectMoving(app, cpu, cpu.eax, cpu.edx);
+    if (!left)
         return;
-    put(app, kind, cpu.eax);
-    cpu.eax = cpu.edi * 5;
-    cpu.ebx = at(app, objects);
-    cpu.eax <<= 2;
-    cpu.ebx += cpu.eax;
-    cpu.edx = half(app, cpu.ebx + 0xe);
-    cpu.eax = cpu.edx * 3;
-    cpu.dl = byte(app, kind);
-    putByte(app, cpu.eax + kObjectStates, cpu.dl);
-    if (std::int8_t(byte(app, cpu.esi)) < 0)
-    {
-        putByte(app, cpu.esi, 0xfe);
-        return leave(0xffffffff);
-    }
-    const Float z = fp::mul(f32(app, cpu.ecx + 0xac), f64(app, 0x536ccc));
-    cpu.esp -= 4;
-    put(app, cpu.esp, reg32(fp::toInteger<sreg32>(z)));
-    cpu.eax = pop(app, cpu);
-    const Float x = f32(app, cpu.ecx + 0xa4);
-    cpu.edx = cpu.eax;
-    const Float xs = fp::mul(x, f64(app, 0x536ccc));
-    cpu.edx = reg32(sreg32(cpu.edx) >> 8);
-    cpu.esp -= 4;
-    put(app, cpu.esp, reg32(fp::toInteger<sreg32>(xs)));
-    cpu.eax = pop(app, cpu);
-    cpu.eax = reg32(sreg32(cpu.eax) >> 8);
-    if (!byAddress(app, cpu, 0x4ea570))
-        return;
-    cpu.eax = reg32(sreg32(cpu.eax) >> 8);
-    cpu.edx = 0;
-    putByte(app, cpu.esi + 1, cpu.al);
-    cpu.dx = half(app, cpu.ebx + 0xe);
-    cpu.ecx = reg32(sreg32(std::int8_t(cpu.al)));
-    cpu.eax = cpu.edx * 3;
-    cpu.ebx = 0;
-    cpu.eax = at(app, cpu.eax + kObjectStates - 3);
-    cpu.edx = 2;
-    cpu.eax = reg32(sreg32(cpu.eax) >> 0x18);
-    if (!byAddress(app, cpu, 0x40f430))
-        return;
-    putByte(app, cpu.esi + 2, 0);
-    leave(0xffffffff);
+    cpu.eax = left->result;
+    if (left->record)
+        cpu.edx = *left->record;
+    cpu.esp += 4;
 }
 
-/* 0x41d510: the turn matrix at ecx of the angles eax, ebx and edx (16-bit
- * turns, scaled by 0x536cd4): a turn about y by the first's share of the
- * third (0x4dfde0), one about y by ebx itself into edx (0x4dfde0), the two
- * multiplied (0x4e0280) and the result by ebx's into ecx. */
+constexpr reg32 kAnglesScale = 0x536cd4, kPitchYawScale = 0x536cdc;  // doubles: a 16-bit turn's radians
+
+/* The turn about y by the float of those bits into the matrix at `matrix`
+ * (ea::rotateAboutY, 0x4dfde0, stdcall): the float in the word the code
+ * pushes, the callee handed its address.  False when the game stopped. */
+bool turnAboutY(App* app, CPU& cpu, reg32 matrix, reg32 angleBits)
+{
+    const GuestFrame pushed(cpu, 0, 4);
+    put(app, pushed - 4, angleBits);
+    return guest::direct<0x4dfde0, ea::rotateAboutY>(app, cpu, matrix, pushed - 4).has_value();
+}
+
+/* 0x41d510's: the turn matrix at `into` of the angles `first`, `second`
+ * and `third` (16-bit turns, scaled by 0x536cd4): a turn about y by
+ * -first's * (1 - second's) - second's * third's, one about y by the second
+ * itself (unscaled, as the code has it) into the frame, the two multiplied
+ * and the result by the second's into `into` -- each of them handed what the
+ * code hands it (`third` in edx to the first turn, `into` to the second).
+ * The frames as deep as the code's.  False when the game stopped. */
+bool turnOfAngles(App* app, CPU& cpu, reg32 first, reg32 second, reg32 third, reg32 into)
+{
+    const GuestFrame frame(cpu, 4, 0x84);
+    const reg32 e = frame - 0x82;
+    const reg32 yawTurn = e + 0x22, product = e + 0x46, secondTurn = e - 2;
+    const Float k = f64(app, kAnglesScale);
+    const Float secondScaled = fp::mul(Float(sreg32(second)), k);
+    const Float firstScaled = fp::mul(Float(sreg32(first)), k);
+    const Float yawShare = fp::mul(-secondScaled, fp::sub(Float(1.0), firstScaled));
+    const Float pitchShare = fp::mul(firstScaled, -fp::mul(k, Float(sreg32(third))));
+    const float angle = float(fp::add(pitchShare, yawShare));
+    cpu.ebx = product;
+    cpu.edx = third;
+    if (!turnAboutY(app, cpu, yawTurn, bitsOf(angle)))
+        return false;
+    cpu.edx = into;
+    if (!turnAboutY(app, cpu, secondTurn, bitsOf(float(Float(sreg32(second))))))
+        return false;
+    guest::direct<0x4e0280, vertices::multiplyMatrix>(app, cpu, yawTurn, into, product);
+    if (cpu.terminate)
+        return false;
+    // The last by address: the registers as it leaves them are what turnFromAngles leaves.
+    cpu.edx = secondTurn;
+    cpu.eax = product;
+    cpu.ebx = into;
+    return guest::call(app, cpu, kMultiplyMatrices);
+}
+
+/* 0x41d510: turnOfAngles of eax, ebx and edx into ecx; the registers as
+ * the last multiply leaves them. */
 void turnFromAngles(App* app, CPU& cpu)
 {
-    x86::FPU& fpu = cpu.fpu;
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    cpu.esp -= 0x84;
-    cpu.ebp -= 0x82;
-    const reg32 e = cpu.ebp;
-    const reg32 b = e + 0x7a, a = e + 0x7e;
-    put(app, b, cpu.ebx);
-    put(app, a, cpu.eax);
-    const Float k = f64(app, 0x536cd4);
-    const Float bk = fp::mul(Float(sreg32(at(app, b))), k);
-    const Float ak = fp::mul(Float(sreg32(at(app, a))), k);
-    put(app, b, cpu.edx);
-    const Float minusBk = -bk;
-    const Float rest = fp::sub(Float(1.0), ak);
-    const Float yawShare = fp::mul(minusBk, rest);
-    const Float ck = fp::mul(k, Float(sreg32(at(app, b))));
-    const Float minusCk = -ck;
-    const Float pitchShare = fp::mul(ak, minusCk);
-    cpu.esp -= 4;
-    put(app, a, cpu.ebx);
-    const Float angle = fp::add(pitchShare, yawShare);
-    cpu.eax = e + 0x22;
-    putF32(app, cpu.esp, angle);
-    cpu.ebx = e + 0x46;
-    if (!byAddress(app, cpu, 0x4dfde0))
+    if (!turnOfAngles(app, cpu, cpu.eax, cpu.ebx, cpu.edx, cpu.ecx))
         return;
-    const Float second = Float(sreg32(at(app, a)));
-    cpu.esp -= 4;
-    cpu.eax = e - 2;
-    putF32(app, cpu.esp, second);
-    cpu.edx = cpu.ecx;
-    if (!byAddress(app, cpu, 0x4dfde0))
-        return;
-    cpu.eax = e + 0x22;
-    if (!byAddress(app, cpu, 0x4e0280))
-        return;
-    cpu.edx = e - 2;
-    cpu.eax = e + 0x46;
-    cpu.ebx = cpu.ecx;
-    if (!byAddress(app, cpu, 0x4e0280))
-        return;
-    cpu.esp = e + 0x82;
-    cpu.ebp = pop(app, cpu);
     cpu.esp += 4;
 }
 
-/* 0x41d5a0: the turn matrix at ebx of a pitch eax and a yaw edx (16-bit
- * turns, scaled by 0x536cdc): a turn about x by a quarter (0x4dfd80), about
- * y by the pitch turned back and by the yaw (0x4dfde0), all multiplied
- * (0x4e0280) into ebx. */
+/* 0x41d5a0's: the turn matrix at `into` of a pitch and a yaw (16-bit turns,
+ * scaled by 0x536cdc): a turn about x by a quarter into `into`, about y by
+ * the pitch turned back and by the yaw (into the frame, as deep as the
+ * code's), all multiplied into `into`.  False when the game stopped. */
+bool turnOfPitchYaw(App* app, CPU& cpu, reg32 pitch, reg32 yaw, reg32 into)
+{
+    constexpr reg32 kQuarter = 0x3e800000;  // 0.25 as a float
+    const GuestFrame frame(cpu, 8, 0x7c);
+    const reg32 pitchTurn = frame - 0x58, yawTurn = frame - 0x7c, product = frame - 0x34;
+    const Float k = f64(app, kPitchYawScale);
+    const float pitchAngle = float(fp::mul(Float(sreg32(pitch)), k));
+    const float yawAngle = float(fp::mul(k, Float(sreg32(yaw))));
+    {
+        const GuestFrame pushed(cpu, 0, 4);
+        put(app, pushed - 4, kQuarter);
+        if (!guest::direct<0x4dfd80, ea::rotateAboutX>(app, cpu, into, pushed - 4))
+            return false;
+    }
+    cpu.edx = into;
+    if (!turnAboutY(app, cpu, pitchTurn, bitsOf(float(-Float(pitchAngle)))))
+        return false;
+    cpu.ebx = product;
+    if (!turnAboutY(app, cpu, yawTurn, bitsOf(yawAngle)))
+        return false;
+    guest::direct<0x4e0280, vertices::multiplyMatrix>(app, cpu, pitchTurn, into, product);
+    if (cpu.terminate)
+        return false;
+    // The last by address: the registers as it leaves them are what turnFromPitchYaw leaves.
+    cpu.edx = yawTurn;
+    cpu.eax = product;
+    cpu.ebx = into;
+    return guest::call(app, cpu, kMultiplyMatrices);
+}
+
+/* 0x41d5a0: turnOfPitchYaw of eax and edx into ebx. */
 void turnFromPitchYaw(App* app, CPU& cpu)
 {
-    x86::FPU& fpu = cpu.fpu;
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    cpu.esp -= 0x7c;
-    const reg32 pitch = cpu.ebp - 8, yaw = cpu.ebp - 4, pitchAngle = cpu.ebp - 0xc, yawAngle = cpu.ebp - 0x10;
-    cpu.ecx = cpu.ebx;
-    put(app, pitch, cpu.eax);
-    put(app, yaw, cpu.edx);
-    const Float k = f64(app, 0x536cdc);
-    const Float p = fp::mul(Float(sreg32(at(app, pitch))), k);
-    const Float y = fp::mul(k, Float(sreg32(at(app, yaw))));
-    push(app, cpu, 0x3e800000);
-    cpu.eax = cpu.ebx;
-    putF32(app, pitchAngle, p);
-    putF32(app, yawAngle, y);
-    if (!byAddress(app, cpu, 0x4dfd80))
+    if (!turnOfPitchYaw(app, cpu, cpu.eax, cpu.edx, cpu.ebx))
         return;
-    const Float back = -f32(app, pitchAngle);
-    cpu.esp -= 4;
-    cpu.eax = cpu.ebp - 0x58;
-    putF32(app, cpu.esp, back);
-    cpu.edx = cpu.ecx;
-    if (!byAddress(app, cpu, 0x4dfde0))
-        return;
-    push(app, cpu, at(app, yawAngle));
-    cpu.eax = cpu.ebp - 0x7c;
-    cpu.ebx = cpu.ebp - 0x34;
-    if (!byAddress(app, cpu, 0x4dfde0))
-        return;
-    cpu.eax = cpu.ebp - 0x58;
-    if (!byAddress(app, cpu, 0x4e0280))
-        return;
-    cpu.edx = cpu.ebp - 0x7c;
-    cpu.eax = cpu.ebp - 0x34;
-    cpu.ebx = cpu.ecx;
-    if (!byAddress(app, cpu, 0x4e0280))
-        return;
-    cpu.esp = cpu.ebp;
-    cpu.ebp = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
     cpu.esp += 4;
 }
 
-/* 0x41d610: View Distance set to eax. */
+/* 0x41d610's: View Distance set (0 Full .. 3 Close). */
+void chooseViewDistance(App* app, reg32 distance)
+{
+    gameSettings(app).viewDistance = distance;
+}
+
+/* 0x41d610: chooseViewDistance of eax. */
 void setViewDistance(App* app, CPU& cpu)
 {
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    put(app, kViewDistance, cpu.eax);
-    cpu.ebp = pop(app, cpu);
+    chooseViewDistance(app, cpu.eax);
     cpu.esp += 4;
 }
 
-/* 0x41d870: View Distance the next of its four (the pause menu's item), and
- * the views' distances worked out again (0x41d620). */
+constexpr reg32 kViewDistanceCount = 4;
+
+/* 0x41d870's: View Distance the next of its four (the pause menu's item) --
+ * the next stored, then it wrapped round -- and the views' distances worked
+ * out again, handed the division's quotient and remainder in eax and edx as
+ * the code leaves them (eax comes back as it went on some of its paths).
+ * False when the game stopped. */
+bool viewDistanceOnward(App* app, CPU& cpu)
+{
+    const reg32 next = gameSettings(app).viewDistance + 1;
+    gameSettings(app).viewDistance = next;
+    gameSettings(app).viewDistance = reg32(i32(next) % i32(kViewDistanceCount));
+    cpu.eax = reg32(i32(next) / i32(kViewDistanceCount));
+    cpu.edx = gameSettings(app).viewDistance;
+    return guest::call(app, cpu, kViewDistances);
+}
+
+/* 0x41d870: viewDistanceOnward; eax as the views' distances leave it. */
 void nextViewDistance(App* app, CPU& cpu)
 {
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.edx);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    cpu.edx = at(app, kViewDistance) + 1;
-    cpu.ecx = 4;
-    put(app, kViewDistance, cpu.edx);
-    cpu.eax = cpu.edx;
-    idiv(cpu, cpu.ecx);
-    put(app, kViewDistance, cpu.edx);
-    if (!byAddress(app, cpu, 0x41d620))
+    const Kept kept(cpu, kSaveEcx | kSaveEdx);
+    if (!viewDistanceOnward(app, cpu))
         return;
-    cpu.ebp = pop(app, cpu);
-    cpu.edx = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
     cpu.esp += 4;
 }
 
-/* 0x41d900: on the drivers of types 7 and 8 ([0x7a3a58] bits 0x180) the
- * models' most polygons -1 (the buckets flushed after every block) and each
- * block's +0x18 cleared, but the last's. */
+// The models by distance (kModels): 3 records of 12 bytes, +8 the most polygons drawn of one (-1 no limit).
+constexpr reg32 kNoLimit = 0xffffffff;
+// The drivers of types 7 and 8 (kDriverBits).
+constexpr reg16 kDriversUnlimited = 0x180;
+// A block's +0x18, cleared where the models have no limit (not read in this file).
+constexpr reg32 kBlockField18 = 0x18;
+
+/* 0x41d900's: on the drivers of types 7 and 8 the models' most polygons -1
+ * (the buckets flushed after every block) and each block's +0x18 cleared,
+ * but the last's.  The last block cleared, as the code leaves it in eax;
+ * nullopt where none was. */
+std::optional<reg32> unlimitedModels(App* app, const CPU& cpu)
+{
+    if ((half(app, kDriverBits) & kDriversUnlimited) == 0)
+        return std::nullopt;
+    put(app, kModels + kModelSize + kModelMostPolygons, kNoLimit);
+    put(app, kModels + 2 * kModelSize + kModelMostPolygons, kNoLimit);
+    put(app, kModels + kModelMostPolygons, kNoLimit);
+    std::optional<reg32> last;
+    for (reg32 index = 0;; ++index)
+    {
+        safepoint(app, cpu);
+        if (sreg32(index) >= sreg32(at(app, kLastBlock)))
+            break;
+        last = kBlocks + blockOffset(index);
+        put(app, *last + kBlockField18, 0);
+    }
+    return last;
+}
+
+/* 0x41d900: unlimitedModels; eax the last block cleared, else as it was. */
 void modelsUnlimited(App* app, CPU& cpu)
 {
-    push(app, cpu, cpu.edx);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    if ((half(app, kDriverBits) & 0x180) != 0)
-    {
-        cpu.edx = 0xffffffff;
-        put(app, kModels + 0x14, cpu.edx);
-        put(app, kModels + 0x20, cpu.edx);
-        put(app, kModels + 8, cpu.edx);
-        for (cpu.edx = 0;;)
-        {
-            safepoint(app, cpu);
-            if (sreg32(cpu.edx) >= sreg32(at(app, kLastBlock)))
-                break;
-            cpu.eax = blockOffset(cpu.edx) + kBlocks;
-            ++cpu.edx;
-            put(app, cpu.eax + 0x18, 0);
-        }
-    }
-    cpu.ebp = pop(app, cpu);
-    cpu.edx = pop(app, cpu);
+    if (const std::optional<reg32> last = unlimitedModels(app, cpu))
+        cpu.eax = *last;
     cpu.esp += 4;
 }
 
-/* 0x41da40: the block at [eax] freed, if there is one, and [eax] 0. */
+/* 0x41da40's: the heap's block at [slot] freed, if there is one, and [slot]
+ * 0.  eax as the code leaves it: the free's, or the slot where there was
+ * none; nullopt when the game stopped. */
+std::optional<reg32> freeAtSlot(App* app, CPU& cpu, reg32 slot)
+{
+    const reg32 block = at(app, slot);
+    if (block == 0)
+        return slot;
+    const std::optional<reg32> left = freeBlock(app, cpu, block);
+    if (!left)
+        return std::nullopt;
+    put(app, slot, 0);
+    return left;
+}
+
+/* 0x41da40: freeAtSlot of eax. */
 void freeAt(App* app, CPU& cpu)
 {
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.edx);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    cpu.edx = cpu.eax;
-    cpu.ecx = at(app, cpu.eax);
-    if (cpu.ecx != 0)
-    {
-        cpu.eax = cpu.ecx;
-        if (!byAddress(app, cpu, kFree))
-            return;
-        put(app, cpu.edx, 0);
-    }
-    cpu.ebp = pop(app, cpu);
-    cpu.edx = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
+    const Kept kept(cpu, kSaveEcx | kSaveEdx);
+    const std::optional<reg32> left = freeAtSlot(app, cpu, cpu.eax);
+    if (!left)
+        return;
+    cpu.eax = *left;
     cpu.esp += 4;
 }
 
-/* 0x41da60: the track let go of at the race's end: the arena, the textures'
- * file, the track's lights (0x41e3b0), the views, the .col file, the paths
- * (0x40f330) and the kinds' records. */
+// Set by render (0x1234) as the track is drawn, 0 once it is let go of.
+constexpr reg32 kTrackMark = 0x5dd834;
+
+/* 0x41da60's: the track let go of at the race's end: the arena, the
+ * textures' file, the track's nodes, the views, the .col file, the paths and
+ * the kinds' records.  eax as the code leaves it (the kinds' freeAtSlot's);
+ * nullopt when the game stopped. */
+std::optional<reg32> letGoOfTrack(App* app, CPU& cpu)
+{
+    put(app, kTrackMark, 0);
+    if (!freeTheArena(app, cpu))
+        return std::nullopt;
+    if (at(app, kTexturesFile) != 0 && !freeAtSlot(app, cpu, kTexturesFile))
+        return std::nullopt;
+    if (!guest::direct<0x41e3b0, trackdata::closeTrack>(app, cpu) || !startViewsOver(app, cpu)
+        || !freeCollisionFile(app, cpu) || !guest::direct<0x40f330, aiplan::freePaths>(app, cpu))
+        return std::nullopt;
+    return freeAtSlot(app, cpu, kTrackKinds);
+}
+
+/* 0x41da60: letGoOfTrack. */
 void unloadTrack(App* app, CPU& cpu)
 {
-    push(app, cpu, cpu.edx);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    cpu.edx = 0;
-    put(app, 0x5dd834, cpu.edx);
-    if (!direct(app, cpu, freeArena))
+    const Kept kept(cpu, kSaveEdx);
+    const std::optional<reg32> left = letGoOfTrack(app, cpu);
+    if (!left)
         return;
-    if (at(app, kTexturesFile) != 0)
-    {
-        cpu.eax = kTexturesFile;
-        if (!direct(app, cpu, freeAt))
-            return;
-    }
-    if (!byAddress(app, cpu, 0x41e3b0) || !direct(app, cpu, resetViewsOuter) || !direct(app, cpu, freeCollisions)
-        || !byAddress(app, cpu, 0x40f330) || !direct(app, cpu, freeTrackKinds))
-        return;
-    cpu.ebp = pop(app, cpu);
-    cpu.edx = pop(app, cpu);
+    cpu.eax = *left;
     cpu.esp += 4;
 }
 
-/* 0x41daa0: the pool at eax of edx records (36 bytes each, allocated,
- * unnamed): none taken (-1), +0x18 and +0xc 0. */
+// A pool's record: +0 the record taken (-1 none), +0xc, +0x10 its records, +0x18; 36 bytes a record.
+constexpr reg32 kPoolTaken = 0, kPoolC = 0xc, kPoolRecords = 0x10, kPool18 = 0x18, kPoolRecordSize = 36;
+constexpr reg32 kObjectPoolRecords = 0x800;
+
+/* 0x41daa0's: the pool at `pool` of `count` records (allocated, unnamed):
+ * none taken, +0x18 and +0xc 0.  Its records' address, as the code leaves it
+ * in eax; nullopt when the game stopped. */
+std::optional<reg32> startPool(App* app, CPU& cpu, reg32 pool, reg32 count)
+{
+    put(app, pool + kPoolTaken, 0xffffffff);
+    put(app, pool + kPool18, 0);
+    const std::optional<reg32> records = allocateLeaving(app, cpu, kNoName2, count * kPoolRecordSize);
+    if (!records)
+        return std::nullopt;
+    put(app, pool + kPoolC, 0);
+    put(app, pool + kPoolRecords, *records);
+    return records;
+}
+
+/* 0x41daa0: startPool of eax, edx records; edx the bytes, as the heap
+ * leaves it. */
 void newPool(App* app, CPU& cpu)
 {
-    push(app, cpu, cpu.ebx);
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    cpu.ecx = cpu.eax;
-    put(app, cpu.eax, 0xffffffff);
-    put(app, cpu.eax + 0x18, 0);
-    cpu.eax = cpu.edx * 8;
-    cpu.ebx = 0;
-    cpu.edx += cpu.eax;
-    cpu.eax = kNoName2;
-    cpu.edx <<= 2;
-    if (!byAddress(app, cpu, kAllocate))
+    const Kept kept(cpu, kSaveEbx | kSaveEcx);
+    if (!startPool(app, cpu, cpu.eax, cpu.edx))
         return;
-    put(app, cpu.ecx + 0xc, 0);
-    put(app, cpu.ecx + 0x10, cpu.eax);
-    cpu.ebp = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
-    cpu.ebx = pop(app, cpu);
     cpu.esp += 4;
 }
 
-/* 0x41dae0: the objects' pool at 0x5dd848, 0x800 records. */
+/* 0x41dae0's: startPool of the objects' pool, kObjectPoolRecords records.  Its records' address,
+ * as the code leaves it in eax; nullopt when the game stopped. */
+std::optional<reg32> startObjectPool(App* app, CPU& cpu)
+{
+    return startPool(app, cpu, kObjectPool, kObjectPoolRecords);
+}
+
+/* 0x41dae0: startObjectPool. */
 void newObjectPool(App* app, CPU& cpu)
 {
-    push(app, cpu, cpu.edx);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    cpu.edx = 0x800;
-    cpu.eax = kObjectPool;
-    if (!direct(app, cpu, newPool))
+    const Kept kept(cpu, kSaveEbx | kSaveEcx | kSaveEdx);
+    if (!startObjectPool(app, cpu))
         return;
-    cpu.ebp = pop(app, cpu);
-    cpu.edx = pop(app, cpu);
     cpu.esp += 4;
 }
 
-/* 0x41db00: the track's kinds' records freed ([0x5dd858]). */
+/* 0x41db00: freeAtSlot of the track's kinds' records. */
 void freeTrackKinds(App* app, CPU& cpu)
 {
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    cpu.eax = kTrackKinds;
-    if (!direct(app, cpu, freeAt))
+    const Kept kept(cpu, kSaveEcx | kSaveEdx);
+    const std::optional<reg32> left = freeAtSlot(app, cpu, kTrackKinds);
+    if (!left)
         return;
-    cpu.ebp = pop(app, cpu);
+    cpu.eax = *left;
     cpu.esp += 4;
 }
 
-/* 0x41db10: the textures of the .qfs at eax taken by the driver, each into
- * its record at edx (0x2c bytes apart) -- a grey driver's one way
- * (0x4d41a0), else the other (0x4d4080, at 128; the port's 512) -- the loading bar moved on from 43
- * per cent by its share of 15 (0x536d1c) a texture (0x495230), until the
- * loading stops ([0x55e88c]). */
+constexpr reg32 kQfsTextures = 0x4ea654;      // the textures' count of the .qfs at eax
+constexpr reg32 kQfsTexture = 0x4ea658;       // texture edx of the .qfs at eax, 0 none
+constexpr reg32 kTakeGreyTexture = 0x4d41a0;  // a grey driver's: texture eax into the record at edx
+constexpr reg32 kTakeTexture = 0x4d4080;      // texture edx into the record at ecx, ebx a side at most, [esp+4] 3
+// The loading bar at the float [esp+4] per cent (stdcall; graphics::loadingProgress): by address, the
+// registers it leaves being what loadTextures leaves where the loading stopped.
+constexpr reg32 kLoadingBar = 0x495230;
+constexpr reg32 kHandOnRecords = 0x478b70;    // the textures' records at eax handed on
+constexpr reg32 kTexturesShare = 0x536d1c;    // a float: the loading bar's share of the textures, 15
+constexpr reg32 kTextureRecordSize = 0x2c;
+constexpr float kTexturesFrom = 43.0f, kTexturesStep = 15.0f;  // the loading bar's per cent, and a step
+
+/* The textures' count of the .qfs at `file`; nullopt when the game
+ * stopped. */
+std::optional<reg32> qfsTextures(App* app, CPU& cpu, reg32 file)
+{
+    cpu.eax = file;
+    return call(app, cpu, kQfsTextures);
+}
+
+/* What loadTextures leaves in the registers its code does not save. */
+struct TexturesLeft
+{
+    bool stopped;  // the loading stopped (else each texture gone through)
+    reg32 count;   // the textures' count, as last asked
+    reg32 index;   // the texture the loop stood at
+    reg32 stop;    // [0x55e88c] as last read, 15's bits before
+    bool sized;    // a texture taken the ordinary way (ebx handed its side)
+};
+
+/* 0x41db10's: the textures of the .qfs at `file` taken by the driver, each
+ * into its record from `records` (0x2c bytes apart) -- a grey driver's one
+ * way, else the other (at 128; the port's 512) -- the loading bar moved on
+ * from 43 per cent by its share of 15 a texture, until the loading stops.
+ * nullopt when the game stopped. */
+std::optional<TexturesLeft> takeQfsTextures(App* app, CPU& cpu, reg32 file, reg32 records)
+{
+    const std::optional<reg32> count = qfsTextures(app, cpu, file);
+    if (!count)
+        return std::nullopt;
+    float step = kTexturesStep, progress = kTexturesFrom;
+    if (*count != 0)
+        step = float(fp::div(f32(app, kTexturesShare), Float(sreg32(*count))));
+    TexturesLeft left = {false, 0, 0, bitsOf(kTexturesStep), false};
+    for (reg32 record = records;; ++left.index)
+    {
+        safepoint(app, cpu);
+        const std::optional<reg32> textures = qfsTextures(app, cpu, file);
+        if (!textures)
+            return std::nullopt;
+        left.count = *textures;
+        if (sreg32(left.count) <= sreg32(left.index))
+            return left;
+        if (!topUp(app, cpu))
+            return std::nullopt;
+        cpu.eax = file;
+        cpu.edx = left.index;
+        const std::optional<reg32> texture = call(app, cpu, kQfsTexture);
+        if (!texture)
+            return std::nullopt;
+        if (*texture == 0)
+            continue;
+        if ((byte(app, kDriverBits) & kDriverGrey) != 0)
+        {
+            cpu.eax = *texture;
+            cpu.edx = record;
+            if (!guest::call(app, cpu, kTakeGreyTexture))
+                return std::nullopt;
+        }
+        else
+        {
+            constexpr reg32 kTakeKind = 3;
+            // port: each texture at its own size up to 512, not 128 (port_thrash.h)
+            cpu.eax = 0;
+            cpu.edx = *texture;
+            cpu.ebx = port::driver::kMaxTextureSide;
+            cpu.ecx = record;
+            left.sized = true;
+            if (!guest::call(app, cpu, kTakeTexture, {kTakeKind}))
+                return std::nullopt;
+        }
+        progress = float(fp::add(Float(progress), Float(step)));
+        if (!guest::call(app, cpu, kLoadingBar, {bitsOf(progress)}))
+            return std::nullopt;
+        left.stop = at(app, kLoadStopped);
+        record += kTextureRecordSize;
+        if (left.stop != 0)
+        {
+            left.stopped = true;
+            return left;
+        }
+    }
+}
+
+/* 0x41db10: takeQfsTextures of the file eax into the records at edx; the
+ * registers as the code leaves them (the loading bar's, where the loading
+ * stopped). */
 void loadTextures(App* app, CPU& cpu)
 {
-    x86::FPU& fpu = cpu.fpu;
-    push(app, cpu, cpu.esi);
-    push(app, cpu, cpu.edi);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    cpu.esp -= 0x10;
-    const reg32 step = cpu.ebp - 0x10, progress = cpu.ebp - 0xc, index = cpu.ebp - 8, count = cpu.ebp - 4;
-    cpu.esi = cpu.eax;
-    if (!byAddress(app, cpu, 0x4ea654))
+    const Kept kept(cpu, kSaveEsi | kSaveEdi);
+    const std::optional<TexturesLeft> left = takeQfsTextures(app, cpu, cpu.eax, cpu.edx);
+    if (!left)
         return;
-    cpu.ecx = 0x41700000;
-    cpu.edi = cpu.edx;
-    cpu.edx = 0x422c0000;
-    put(app, step, cpu.ecx);
-    put(app, progress, cpu.edx);
-    if (cpu.eax != 0)
+    if (!left->sized)
+        cpu.ebx = 0;
+    cpu.ecx = left->stop;
+    if (!left->stopped)
     {
-        put(app, count, cpu.eax);
-        putF32(app, step, fp::div(f32(app, 0x536d1c), Float(sreg32(at(app, count)))));
+        cpu.eax = left->count;
+        cpu.edx = left->index;
     }
-    cpu.ebx = 0;
-    put(app, index, cpu.ebx);
-    for (;; put(app, index, at(app, index) + 1))
-    {
-        safepoint(app, cpu);
-        cpu.eax = cpu.esi;
-        cpu.edx = at(app, index);
-        if (!byAddress(app, cpu, 0x4ea654))
-            return;
-        if (sreg32(cpu.eax) <= sreg32(cpu.edx))
-            break;
-        if (!byAddress(app, cpu, kTopUp))
-            return;
-        cpu.eax = cpu.esi;
-        if (!byAddress(app, cpu, 0x4ea658))
-            return;
-        if (cpu.eax == 0)
-            continue;
-        if ((byte(app, kDriverBits) & 2) != 0)
-        {
-            cpu.edx = cpu.edi;
-            if (!byAddress(app, cpu, 0x4d41a0))
-                return;
-        }
-        else
-        {
-            push(app, cpu, 3);
-            // port: each texture at its own size up to 512, not 128 (port_thrash.h)
-            cpu.ebx = port::driver::kMaxTextureSide;
-            cpu.ecx = cpu.edi;
-            cpu.edx = cpu.eax;
-            cpu.eax = 0;
-            if (!byAddress(app, cpu, 0x4d4080))
-                return;
-        }
-        putF32(app, progress, fp::add(f32(app, progress), f32(app, step)));
-        push(app, cpu, at(app, progress));
-        if (!byAddress(app, cpu, 0x495230))
-            return;
-        cpu.ecx = at(app, kLoadStopped);
-        cpu.edi += 0x2c;
-        if (cpu.ecx != 0)
-            break;
-    }
-    cpu.esp = cpu.ebp;
-    cpu.ebp = pop(app, cpu);
-    cpu.edi = pop(app, cpu);
-    cpu.esi = pop(app, cpu);
     cpu.esp += 4;
 }
 
-/* 0x41dc60: the opened textures taken by the driver (loadTextures, into the
- * records at [0x5dd858]; their count to 0x5dd854, 0x5dd85c and 0x5dd860) and
- * the file let go of; the records handed on (0x478b70). */
-void takeTextures(App* app, CPU& cpu)
+/* 0x41dc60's: the opened textures taken by the driver (takeQfsTextures, into
+ * the track's kinds' records; their count to 0x5dd854, 0x5dd85c and
+ * 0x5dd860) and the file let go of; the records handed on.  eax as that
+ * leaves it; nullopt when the game stopped. */
+std::optional<reg32> takeTrackTextures(App* app, CPU& cpu)
 {
-    push(app, cpu, cpu.ebx);
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.edx);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    cpu.edx = at(app, kTexturesFile);
-    if (cpu.edx != 0)
+    if (at(app, kTexturesFile) != 0)
     {
-        cpu.eax = cpu.edx;
-        if (!byAddress(app, cpu, 0x4ea654))
-            return;
-        cpu.ecx = 0;
-        cpu.ebx = 0;
-        cpu.edx = at(app, kTrackKinds);
-        put(app, kTexturesCount, cpu.eax);
-        cpu.eax = at(app, kTexturesFile);
-        if (!direct(app, cpu, loadTextures))
-            return;
-        cpu.eax = at(app, kTexturesCount);
-        put(app, kTexturesLeft, cpu.eax);
-        put(app, kTexturesAll, cpu.eax);
-        cpu.eax = kTexturesFile;
-        cpu.ecx = 0;
-        if (!direct(app, cpu, freeAt))
-            return;
-        put(app, kTexturesFile, cpu.ecx);
+        const std::optional<reg32> count = qfsTextures(app, cpu, at(app, kTexturesFile));
+        if (!count)
+            return std::nullopt;
+        const reg32 records = at(app, kTrackKinds);
+        put(app, kTexturesCount, *count);
+        if (!takeQfsTextures(app, cpu, at(app, kTexturesFile), records))
+            return std::nullopt;
+        const reg32 taken = at(app, kTexturesCount);
+        put(app, kTexturesLeft, taken);
+        put(app, kTexturesAll, taken);
+        if (!freeAtSlot(app, cpu, kTexturesFile))
+            return std::nullopt;
+        put(app, kTexturesFile, 0);
     }
     cpu.eax = at(app, kTrackKinds);
-    if (!byAddress(app, cpu, 0x478b70))
+    return call(app, cpu, kHandOnRecords);
+}
+
+/* 0x41dc60: takeTrackTextures. */
+void takeTextures(App* app, CPU& cpu)
+{
+    const Kept kept(cpu, kSaveEbx | kSaveEcx | kSaveEdx);
+    if (!takeTrackTextures(app, cpu))
         return;
-    cpu.ebp = pop(app, cpu);
-    cpu.edx = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
-    cpu.ebx = pop(app, cpu);
     cpu.esp += 4;
 }
 
-/* 0x41dcc0: the track's .col file named eax loaded, if it is there (0x431320,
- * at least 0x16800 bytes of the game's memory for it, 0x552e18), and its
- * chunks gone through: the vertices (kind 2: their bytes +6 and +7 given 1
- * and 0x1f where 0), the lights (7, 0x5dd840), the objects (8, 0x5dd844),
- * each object of kind 0xf (0x41e370); the file closed (0x4313b0). */
-void loadCollisions(App* app, CPU& cpu)
+// The .col file closed (collide::closeColl, Watcom's, the file at eax).
+constexpr reg32 kColClose = 0x4313b0;
+constexpr reg32 kColLeast = 0x16800;       // the least of the game's memory the .col is given
+// A chunk: +4 its kind (a word: 2 the vertices, 7 the lights, 8 the objects, 0xf the track's nodes),
+// its records from +8; a vertex of it 8 bytes, +6 and +7 given 1 and 0x1f where 0.
+constexpr reg16 kChunkVertices = 2, kChunkLights = 7, kChunkObjects = 8, kChunkNodes = 0xf;
+constexpr reg32 kChunkKind = 4, kChunkRecords = 8, kChunkCount = 6, kColVertexSize = 8;
+
+/* 0x41dcc0's: the track's .col file named `name` loaded, if it is there --
+ * at least 0x16800 bytes of the game's memory for it (0x552e18) -- and its
+ * chunks gone through: the vertices (their bytes +6 and +7 given 1 and 0x1f
+ * where 0), the lights (0x5dd840), the objects (0x5dd844), each chunk of the
+ * track's nodes opened; the file closed.  Each callee handed the registers
+ * the code hands it.  False when the game stopped. */
+bool loadCollisionFile(App* app, CPU& cpu, reg32 name)
 {
-    push(app, cpu, cpu.ebx);
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.edx);
-    push(app, cpu, cpu.esi);
-    push(app, cpu, cpu.edi);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    cpu.esp -= 4;
-    const reg32 chunks = cpu.ebp - 4;
-    cpu.edx = cpu.eax;
-    cpu.ecx = 0;
-    put(app, kColObjects, cpu.ecx);
-    put(app, kColLights, cpu.ecx);
-    if (!byAddress(app, cpu, kFileExists))
-        return;
-    if (cpu.eax != 0)
+    const GuestFrame frame(cpu, 0x18, 4);  // as deep as the code's: the .col's functions' own frames log their places
+    put(app, kColObjects, 0);
+    put(app, kColLights, 0);
+    const std::optional<bool> exists = guest::direct<0x4e0e60, ea::fileThere>(app, cpu, name);
+    if (!exists)
+        return false;
+    if (!*exists)
     {
-        cpu.eax = cpu.edx;
-        if (!byAddress(app, cpu, 0x431320))
-            return;
-        cpu.ebx = 0;
-        cpu.edx = cpu.eax;
-        cpu.ecx = cpu.eax;
-        if (!byAddress(app, cpu, 0x4313d0))
-            return;
-        if (sreg32(cpu.eax) > 0x16800)
-        {
-            cpu.eax = cpu.edx;
-            if (!byAddress(app, cpu, 0x4313d0))
-                return;
-            cpu.edx = cpu.eax;
-        }
-        else
-        {
-            cpu.edx = 0x16800;
-        }
-        cpu.eax = kNoName2;
-        if (!byAddress(app, cpu, kAllocate))
-            return;
-        put(app, kColFile, cpu.eax);
-        cpu.edx = cpu.eax;
-        cpu.eax = cpu.ecx;
-        if (!byAddress(app, cpu, 0x4313e0))
-            return;
-        if (cpu.eax != 0)
-        {
-            cpu.eax = cpu.ecx;
-            if (!byAddress(app, cpu, 0x431410))
-                return;
-            cpu.ebx = 0;
-            put(app, chunks, cpu.eax);
-            for (; sreg32(cpu.ebx) < sreg32(at(app, chunks)); ++cpu.ebx)
-            {
-                safepoint(app, cpu);
-                cpu.eax = at(app, kColFile);
-                cpu.edx = cpu.ebx;
-                if (!byAddress(app, cpu, 0x431420))
-                    return;
-                cpu.edx = cpu.eax;
-                cpu.edi = cpu.eax;
-                if (!byAddress(app, cpu, kTopUp))
-                    return;
-                cpu.ax = half(app, cpu.edx + 4);
-                if (cpu.ax < 7)
-                {
-                    if (cpu.ax != 2)
-                        continue;
-                    // The vertices: 8 bytes each after the chunk's head.
-                    cpu.edx += 8;
-                    cpu.eax = 0;
-                    put(app, kColVertices, cpu.edx);
-                    for (;;)
-                    {
-                        safepoint(app, cpu);
-                        cpu.edx = half(app, cpu.edi + 6);
-                        if (sreg32(cpu.eax) >= sreg32(cpu.edx))
-                            break;
-                        cpu.esi = at(app, kColVertices);
-                        cpu.edx = cpu.eax * 8 + cpu.esi;
-                        if (byte(app, cpu.edx + 7) == 0)
-                            putByte(app, cpu.edx + 7, 0x1f);
-                        cpu.esi = at(app, kColVertices);
-                        cpu.edx = cpu.eax * 8 + cpu.esi;
-                        if (byte(app, cpu.edx + 6) == 0)
-                            putByte(app, cpu.edx + 6, 1);
-                        ++cpu.eax;
-                    }
-                }
-                else if (cpu.ax == 7)
-                {
-                    put(app, kColLights, cpu.edx);
-                }
-                else if (cpu.ax <= 8)
-                {
-                    put(app, kColObjects, cpu.edx);
-                }
-                else if (cpu.ax == 0xf)
-                {
-                    cpu.eax = cpu.edx;
-                    if (!byAddress(app, cpu, 0x41e370))
-                        return;
-                }
-            }
-        }
-        cpu.eax = cpu.ecx;
-        if (!byAddress(app, cpu, 0x4313b0))
-            return;
+        cpu.eax = 0;  // what the check leaves, which loadCollisions leaves
+        return true;
     }
-    cpu.esp = cpu.ebp;
-    cpu.ebp = pop(app, cpu);
-    cpu.edi = pop(app, cpu);
-    cpu.esi = pop(app, cpu);
-    cpu.edx = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
-    cpu.ebx = pop(app, cpu);
-    cpu.esp += 4;
-}
-
-/* 0x41de10: the .col file's memory freed, if there is some. */
-void freeCollisions(App* app, CPU& cpu)
-{
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    if (at(app, kColFile) != 0)
+    const std::optional<reg32> file = guest::direct<0x431320, collide::openColl>(app, cpu, name);
+    if (!file)
+        return false;
+    cpu.edx = *file;
+    cpu.ebx = 0;
+    cpu.ecx = *file;
+    reg32 size = guest::direct<0x4313d0, collide::collSize>(app, cpu);
+    if (cpu.terminate)
+        return false;
+    if (sreg32(size) > sreg32(kColLeast))
     {
-        cpu.eax = kColFile;
-        cpu.ecx = 0;
-        if (!direct(app, cpu, freeAt))
-            return;
-        put(app, kColFile, cpu.ecx);
-    }
-    cpu.ebp = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
-    cpu.esp += 4;
-}
-
-/* 0x41de40: the 0x200 objects' states still (0xff, 0, 0), the sound's stream
- * topped up for each (0x4a33d0). */
-void clearObjectStates(App* app, CPU& cpu)
-{
-    push(app, cpu, cpu.ebx);
-    push(app, cpu, cpu.edx);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    cpu.edx = 0;
-    do
-    {
-        safepoint(app, cpu);
-        if (!byAddress(app, cpu, kTopUp))
-            return;
-        cpu.eax = cpu.edx * 3;
-        putByte(app, cpu.eax + kObjectStates, 0xff);
-        cpu.bh = 0;
-        putByte(app, cpu.eax + kObjectStates + 1, cpu.bh);
-        ++cpu.edx;
-        putByte(app, cpu.eax + kObjectStates + 2, cpu.bh);
-    } while (sreg32(cpu.edx) < 0x200);
-    cpu.ebp = pop(app, cpu);
-    cpu.edx = pop(app, cpu);
-    cpu.ebx = pop(app, cpu);
-    cpu.esp += 4;
-}
-
-/* 0x41de80: the views as a race starts: the objects still, the first view
- * selected and the paths reset (0x40f230). */
-void resetTrackViews(App* app, CPU& cpu)
-{
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    if (!direct(app, cpu, clearObjectStates))
-        return;
-    cpu.eax = 0;
-    if (!direct(app, cpu, selectView) || !byAddress(app, cpu, 0x40f230))
-        return;
-    cpu.ebp = pop(app, cpu);
-    cpu.esp += 4;
-}
-
-/* 0x41dea0: resetViews. */
-void resetViewsOuter(App* app, CPU& cpu)
-{
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    if (!direct(app, cpu, resetViews))
-        return;
-    cpu.ebp = pop(app, cpu);
-    cpu.esp += 4;
-}
-
-/* 0x41deb0: the views' serial started over (0x1234, 0) and the four views on
- * no block (-1), the sound's stream topped up for each. */
-void resetViews(App* app, CPU& cpu)
-{
-    push(app, cpu, cpu.ebx);
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.edx);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    cpu.edx = 0x1234;
-    cpu.ecx = 0;
-    put(app, kViewSerial, cpu.edx);
-    put(app, kViewSerialHigh, cpu.ecx);
-    cpu.edx = 0;
-    do
-    {
-        safepoint(app, cpu);
-        if (!byAddress(app, cpu, kTopUp))
-            return;
-        cpu.eax = cpu.edx * 21;
-        cpu.ebx = 0xffffffff;
-        ++cpu.edx;
-        put(app, cpu.eax * 4 + kViews, cpu.ebx);
-    } while (sreg32(cpu.edx) < 4);
-    cpu.ebp = pop(app, cpu);
-    cpu.edx = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
-    cpu.ebx = pop(app, cpu);
-    cpu.esp += 4;
-}
-
-/* 0x41e070: whether block edx is drawn for the camera eax: in view (its box,
- * 0x41bf30) and within the view's reach of its centre.  1 where it is. */
-void blockInView(App* app, CPU& cpu)
-{
-    x86::FPU& fpu = cpu.fpu;
-    push(app, cpu, cpu.ebx);
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.esi);
-    push(app, cpu, cpu.edi);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    cpu.esp -= 4;
-    cpu.esi = cpu.eax;
-    cpu.ecx = cpu.eax + 0x38;
-    cpu.ebx = cpu.eax + 0x44;
-    cpu.eax = blockOffset(cpu.edx);
-    cpu.edi = kBlocks + cpu.eax;
-    cpu.edx = cpu.edi + 0x84;
-    cpu.eax = cpu.esi;
-    if (!byAddress(app, cpu, 0x41bf30))
-        return;
-    if (cpu.eax != 0)
-    {
-        cpu.eax = 0;
+        size = guest::direct<0x4313d0, collide::collSize>(app, cpu);
+        if (cpu.terminate)
+            return false;
     }
     else
+        size = kColLeast;
+    const std::optional<reg32> memory = allocate(app, cpu, kNoName2, size);
+    if (!memory)
+        return false;
+    put(app, kColFile, *memory);
+    // The read gives back 1, which the code tests.
+    if (!guest::direct<0x4313e0, collide::readColl>(app, cpu, *file, *memory))
+        return false;
     {
-        cpu.eax = cpu.edi + 0x78;
-        const Float dz = fp::sub(f32(app, cpu.esi + 0x10), f32(app, cpu.eax + 8));
-        const Float dx = fp::sub(f32(app, cpu.esi + 8), f32(app, cpu.eax));
-        cpu.eax = at(app, kView);
-        const Float reach = f32(app, cpu.eax + 0x34);
-        const Float d = fp::add(fp::mul(dz, dz), fp::mul(dx, dx));
-        cpu.eax = compare(cpu, fp::mul(reach, reach), d).below ? 0 : 1;
+        const reg32 chunks = guest::direct<0x431410, collide::collCount>(app, cpu);
+        if (cpu.terminate)
+            return false;
+        for (reg32 index = 0; sreg32(index) < sreg32(chunks); ++index)
+        {
+            safepoint(app, cpu);
+            const reg32 chunk = guest::direct<0x431420, collide::collChunkAt>(app, cpu, at(app, kColFile), index);
+            if (cpu.terminate)
+                return false;
+            cpu.eax = chunk;
+            cpu.edx = chunk;
+            if (!topUp(app, cpu))
+                return false;
+            const reg16 kind = half(app, chunk + kChunkKind);
+            if (kind < kChunkLights)
+            {
+                if (kind != kChunkVertices)
+                    continue;
+                put(app, kColVertices, chunk + kChunkRecords);
+                for (reg32 vertex = 0;; ++vertex)
+                {
+                    safepoint(app, cpu);
+                    if (sreg32(vertex) >= sreg32(reg32(half(app, chunk + kChunkCount))))
+                        break;
+                    if (byte(app, at(app, kColVertices) + vertex * kColVertexSize + 7) == 0)
+                        putByte(app, at(app, kColVertices) + vertex * kColVertexSize + 7, 0x1f);
+                    if (byte(app, at(app, kColVertices) + vertex * kColVertexSize + 6) == 0)
+                        putByte(app, at(app, kColVertices) + vertex * kColVertexSize + 6, 1);
+                }
+            }
+            else if (kind == kChunkLights)
+                put(app, kColLights, chunk);
+            else if (kind <= kChunkObjects)
+                put(app, kColObjects, chunk);
+            else if (kind == kChunkNodes && !guest::direct<0x41e370, trackdata::openTrack>(app, cpu, chunk))
+                return false;
+        }
     }
-    cpu.esp = cpu.ebp;
-    cpu.ebp = pop(app, cpu);
-    cpu.edi = pop(app, cpu);
-    cpu.esi = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
-    cpu.ebx = pop(app, cpu);
+    // The closing by address: what it leaves in eax is what loadCollisions leaves.
+    cpu.eax = *file;
+    return guest::call(app, cpu, kColClose);
+}
+
+/* 0x41dcc0: loadCollisionFile of eax; eax as the closing leaves it (0 where
+ * there is no file). */
+void loadCollisions(App* app, CPU& cpu)
+{
+    const Kept kept(cpu, kSaveEbx | kSaveEcx | kSaveEdx | kSaveEsi | kSaveEdi);
+    if (!loadCollisionFile(app, cpu, cpu.eax))
+        return;
+    cpu.esp += 4;
+}
+
+/* 0x41de10's: the .col file's memory freed, if there is some, and [0x552e18]
+ * 0 (freeAtSlot has done it already).  eax as the free leaves it; false when
+ * the game stopped. */
+bool freeCollisionFile(App* app, CPU& cpu)
+{
+    if (at(app, kColFile) == 0)
+        return true;
+    if (!freeAtSlot(app, cpu, kColFile))
+        return false;
+    put(app, kColFile, 0);
+    return true;
+}
+
+/* 0x41de10: freeCollisionFile. */
+void freeCollisions(App* app, CPU& cpu)
+{
+    const Kept kept(cpu, kSaveEcx | kSaveEdx);
+    if (!freeCollisionFile(app, cpu))
+        return;
+    cpu.esp += 4;
+}
+
+// The objects' animation states (kObjectStates): 0x200 of 3 bytes, still as 0xff, 0, 0.
+constexpr reg32 kObjectStateCount = 0x200;
+
+/* 0x41de40's: the objects' states all still, the sound's stream topped up
+ * before each.  False when the game stopped. */
+bool stillObjects(App* app, CPU& cpu)
+{
+    for (reg32 index = 0; index < kObjectStateCount; ++index)
+    {
+        safepoint(app, cpu);
+        if (!topUp(app, cpu))
+            return false;
+        const reg32 state = kObjectStates + index * kObjectStateSize;
+        putByte(app, state, kStateStill);
+        putByte(app, state + 1, 0);
+        putByte(app, state + 2, 0);
+    }
+    return true;
+}
+
+/* 0x41de40: stillObjects; eax the last state's offset, as the code leaves it. */
+void clearObjectStates(App* app, CPU& cpu)
+{
+    const Kept kept(cpu, kSaveEbx | kSaveEdx);
+    if (!stillObjects(app, cpu))
+        return;
+    cpu.eax = (kObjectStateCount - 1) * kObjectStateSize;
+    cpu.esp += 4;
+}
+
+/* 0x41de80's: the views as a race starts: the objects still, the first view
+ * the one drawn and the cameras cleared (eax 0, as chooseView leaves it).
+ * False when the game stopped. */
+bool startTrackViews(App* app, CPU& cpu)
+{
+    if (!stillObjects(app, cpu))
+        return false;
+    cpu.eax = chooseView(app, 0);
+    return guest::call(app, cpu, kClearCameras);
+}
+
+/* 0x41de80: startTrackViews; eax as the cameras' clearing leaves it. */
+void resetTrackViews(App* app, CPU& cpu)
+{
+    if (!startTrackViews(app, cpu))
+        return;
+    cpu.esp += 4;
+}
+
+// The views (kViews): +0 -1 as they start over (kNoBlock); the serial they start at.
+constexpr reg32 kViewCount = 4, kSerialStart = 0x1234;
+
+/* 0x41deb0's: the views' serial started over and the four views on no block,
+ * the sound's stream topped up before each.  False when the game stopped. */
+bool startViewsOver(App* app, CPU& cpu)
+{
+    put(app, kViewSerial, kSerialStart);
+    put(app, kViewSerialHigh, 0);
+    for (reg32 view = 0; view < kViewCount; ++view)
+    {
+        safepoint(app, cpu);
+        if (!topUp(app, cpu))
+            return false;
+        put(app, kViews + view * kViewSize + kViewStart, kNoBlock);
+    }
+    return true;
+}
+
+/* 0x41dea0: startViewsOver (0x41deb0's own); eax the last view's offset in
+ * dwords, as the code leaves it. */
+void resetViewsOuter(App* app, CPU& cpu)
+{
+    const Kept kept(cpu, kSaveEbx | kSaveEcx | kSaveEdx);
+    if (!startViewsOver(app, cpu))
+        return;
+    cpu.eax = (kViewCount - 1) * (kViewSize / 4);
+    cpu.esp += 4;
+}
+
+/* 0x41deb0: startViewsOver; eax as resetViewsOuter leaves it. */
+void resetViews(App* app, CPU& cpu)
+{
+    const Kept kept(cpu, kSaveEbx | kSaveEcx | kSaveEdx);
+    if (!startViewsOver(app, cpu))
+        return;
+    cpu.eax = (kViewCount - 1) * (kViewSize / 4);
+    cpu.esp += 4;
+}
+
+
+/* 0x41e070's: whether block `index` is drawn for the camera: in view (its
+ * box) and within the view's reach of its centre, across the ground (x and
+ * z) -- an x87 compare, a NaN counting as out of reach.  nullopt when the
+ * game stopped. */
+std::optional<bool> blockDrawn(App* app, CPU& cpu, reg32 camera, reg32 index)
+{
+    const reg32 block = kBlocks + blockOffset(index);
+    cpu.eax = camera;
+    cpu.edx = block + kBlockBox;
+    cpu.ebx = camera + kCameraMatrix;
+    cpu.ecx = camera + kCameraBox;
+    const std::optional<reg32> outside = call(app, cpu, kBoxOutside);
+    if (!outside)
+        return std::nullopt;
+    if (*outside != 0)
+        return false;
+    const reg32 centre = block + kBlockCentre;
+    const Float dz = fp::sub(f32(app, camera + kCameraPlace + 8), f32(app, centre + 8));
+    const Float dx = fp::sub(f32(app, camera + kCameraPlace), f32(app, centre));
+    const Float reach = f32(app, at(app, kView) + kViewReach);
+    const Float squared = fp::add(fp::mul(dz, dz), fp::mul(dx, dx));
+    return fp::mul(reach, reach) >= squared;
+}
+
+/* 0x41e070: blockDrawn for the camera eax and block edx, 1 where it is. */
+void blockInView(App* app, CPU& cpu)
+{
+    const Kept kept(cpu, kSaveEbx | kSaveEcx | kSaveEsi | kSaveEdi);
+    const std::optional<bool> drawn = blockDrawn(app, cpu, cpu.eax, cpu.edx);
+    if (!drawn)
+        return;
+    cpu.eax = *drawn ? 1 : 0;
     cpu.esp += 4;
 }
 

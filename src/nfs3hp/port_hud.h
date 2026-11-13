@@ -1,6 +1,7 @@
 #ifndef NFS3HP_PORT_HUD_H
 #define NFS3HP_PORT_HUD_H
 
+#include "native_guest.h"
 #include "port.h"
 
 /* The race HUD, rewritten as the port's own, without the x87 (port.h says
@@ -58,8 +59,34 @@ void boxQuadsSet(App* app, CPU& cpu);            // 0x487a30
 void markersSet(App* app, CPU& cpu);             // 0x48b5f0
 void mapPointsDrawn(App* app, CPU& cpu);         // 0x48d4c0
 
+/* The typed core the menus call as C++ (guest::direct), and how the game's code calls it by address (ByAddress
+ * below, for the checks' stand-ins); nullopt when the game stopped in a call.  Its `esp` is the frame base its
+ * adapter hands it: the game's esp on entry, at the return address.  A caller through guest::direct passes
+ * cpu.esp - 4 - 4 * N, N the stack words the game's call pushes: the esp the adapter hands it, so the core's
+ * frame lies where the game's does; by address the call makes it. */
+
+// The game's 0x4844c0: the HUD's pane of group in.eax set up for a frame, in.edx, in.ebx and in.ecx handed on as
+// the caller's registers to what it calls; esp the frame base.
+Result hudPaneSetOf(App* app, CPU& cpu, reg32 esp, const Args& in);
+
 }  // namespace hud
 }  // namespace port
+
+namespace guest
+{
+
+// `in` in eax, edx, ebx and ecx; eax back.
+template <>
+struct ByAddress<port::hud::hudPaneSetOf>
+{
+    template <x86::reg32 Address>
+    static port::Result call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32, const port::Args& in)
+    {
+        return watcomEax(app, cpu, Address, {in.eax, in.edx, in.ebx, in.ecx});
+    }
+};
+
+}  // namespace guest
 }  // namespace nfs3hp
 
 #endif

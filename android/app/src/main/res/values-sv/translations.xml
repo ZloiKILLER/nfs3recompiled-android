@@ -31,13 +31,6 @@
  <string name="touch_settings">Pekkontroller</string>
  <string name="screen_settings">Skärm</string>
  <string name="display_settings">Skärm</string>
- <string name="screen_adjustment">Bildinställning</string>
- <string name="brightness_label">Ljusstyrka</string>
- <string name="contrast_label">Kontrast</string>
- <string name="adjust_hint">Exemplen visar resultatet. Gäller nästa gång spelet startar.</string>
- <string name="adjust_reset">Återställ</string>
- <string name="sample_dark">Natt</string>
- <string name="sample_bright">Dag</string>
  <string name="back_to_launcher">Tillbaka</string>
  <string name="switch_data">Aktivera</string>
  <string name="data_change">Ändra…</string>
@@ -71,7 +64,6 @@
  <string name="orientation_landscape_reverse">Låst — liggande, omvänt</string>
  <string name="fps_30">30 FPS</string>
  <string name="fps_60">60 FPS</string>
- <string name="gamma_label">Gamma</string>
  <string name="fps_cap_label">Bildfrekvens</string>
  <string name="fps_error">Ange ett heltal från 1 till 240</string>
  <string name="save">Spara</string>
@@ -156,6 +148,8 @@
  <string name="faq_mapping"><b>Handkontroller</b>\nSpelet ser alltid två handkontroller: handkontroll 1 är spelare 1 tillsammans med pekkontrollerna, handkontroll 2 är spelare 2. Välj under Kontroller → Handkontroller vilken kontroll som är vilken genom att trycka på en knapp på den, ställ in vad varje knapp gör och tryck sedan en gång på Handkontroll PÅ. Det skriver in motsvarande styrning i spelets inställningar och säkerhetskopierar den gamla filen. Vänster spak styr, avtryckarna gasar och bromsar. En handkontroll har två uppsättningar knappar, precis som pekkontrollerna har två layouter: loppets, som du ställer in här, och en fast för menyer och repriser, där Cross / A bekräftar, Circle / B går tillbaka och styrkorset flyttar markeringen. För att spela med tangentbord skriver du i stället Spelets standard.</string>
  <string name="faq_lights"><b>Ljus och tillbaka till banan</b>\n☼ skickar L. ↻ skickar R för att komma tillbaka till banan. Tangenterna kan ändras under Kontroller → Pek → Tangenter.</string>
  <string name="faq_screen_data"><b>Skärm och speldata</b>\nLiggande låser spelet horisontellt; Automatisk tillåter rotation. FPS-gränsen begränsar bildfrekvensen; ett lägre värde minskar arbetet per sekund. «Speldata» hanterar importer och visar vilken uppsättning som är aktiv. «Spela» blir tillgängligt när en uppsättning är klar.</string>
+ <string name="faq_picture"><b>Ljusstyrka, kontrast och gamma</b>\nDe ställs in i själva spelet: Options → Graphics → Advanced Settings eller Graphics i pausmenyn under ett race. Bilden ändras direkt medan du drar i reglaget. Done behåller värdena, Cancel återställer de tidigare. Inställningarna gäller race, menyer och filmer.</string>
+ <string name="faq_network"><b>Nätverksrace</b>\nÖppna Connect Players på spelets första skärm. Local WiFi hittar själv race mellan telefoner i samma wifi-nätverk. Network (TCP) ansluter till alla som känner till värdens adress, även en dator med originalspelet eller Modern Patch. Under dem visas telefonens adress (Your IP) och TCP Port: ett tryck växlar mellan 9803 (Modern Patch) och 1030 (originalspelet). Alla spelare i ett TCP-race måste använda samma port.</string>
  <string name="gamepad_buttons">Knappar</string>
  <string name="gamepad_buttons_title">Knappar på handkontroll %1$d</string>
  <string name="gamepad_buttons_hint">Vad varje knapp på den här kontrollen gör när du kör. Vänster spak styr, höger avtryckare gasar och vänster bromsar. I menyer och repriser är knapparna fasta och behöver inte ställas in: Cross / A och Options / Menu bekräftar, Circle / B och Create / View går tillbaka, styrkorset flyttar markeringen. Knapparnas åtgärder når spelet så snart styrningen för handkontroller har skrivits in i det.</string>
@@ -191,12 +185,5 @@
  <string name="force_feedback_phone_note">Telefonen spelar krockar, landningar och växlingar, motorn på höga varv och skarpa kurvor.</string>
  <string name="force_feedback_gamepad_note">Handkontroll 1 spelar spelets effekter som de är. Styrkan ställs in i spelet: Options → Controllers → Force Feedback.</string>
  <string name="editor_snap_grid">Fäst mot rutnät</string>
- <string name="network_title">Nätverk</string>
- <string name="network_address">Enhetens adress i nätverket: %1$s</string>
- <string name="network_no_address">Ingen nätverksanslutning</string>
- <string name="network_port_label">TCP/IP-port</string>
- <string name="network_port_modern">9803 · Modern Patch</string>
- <string name="network_port_original">1030 · originalspelet</string>
- <string name="network_hint">IPX hittar själv lopp i det här wifi-nätverket. TCP/IP ansluter till alla som känner värdens adress, även en PC med originalspelet eller Modern Patch. Alla spelare använder samma port.</string>
  <string name="fps_unlimited">Obegränsat</string>
 </resources>

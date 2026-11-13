@@ -77,7 +77,8 @@ Result unloadDriver(App* app, CPU& cpu, reg32 esp)
     {
         Args a = residue(cpu);
         a.edx = module;
-        if (!callGame(app, cpu, esp - 3 * 4, app->getMemory<reg32>(kFreeLibrary), a, {module}))
+        reg32 freed;
+        if (!callWindows<kFreeLibrary, &win32::kernel32::FreeLibrary>(app, cpu, esp - 3 * 4, a, freed, module))
             return {};
     }
     kDriverModule.set(app, 0);
@@ -99,8 +100,8 @@ Result leaveAllLocks(App* app, CPU& cpu, reg32 esp, reg32 eax)
     while (int8_t(kEntered(app)) > 0)
     {
         kEntered.set(app, uint8_t(kEntered(app) - 1));
-        if (!callGame(app, cpu, esp - 2 * 4, app->getMemory<reg32>(kLeaveCriticalSection),
-                      {eax, kLock(app), cpu.ebx, cpu.ecx}, {kLock(app)}, eax))
+        if (!callWindows<kLeaveCriticalSection, &win32::kernel32::LeaveCriticalSection>(
+                app, cpu, esp - 2 * 4, {eax, kLock(app), cpu.ebx, cpu.ecx}, eax, kLock(app)))
             return {};
     }
     return int32_t(eax);

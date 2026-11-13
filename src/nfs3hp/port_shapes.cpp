@@ -912,6 +912,8 @@ Result drawTileQuad(App* app, CPU& cpu, reg32 esp)
     return int32_t(r);
 }
 
+}  // namespace
+
 /* 0x4d6390: the menus' art shape `shape` cut into tiles of 32 pixels and
  * each made a texture and filled: the shape turned into pixels first, 8888
  * as 4444, 565 as 1555, 1555 as it is, palettised through its own palette.
@@ -1083,6 +1085,9 @@ Result texturesLetGo(App* app, CPU& cpu, reg32 esp)
     putDword(app, kArtTexturesUsed, 0);
     return 0x30;
 }
+
+namespace
+{
 
 /* 0x4d66f0: record `record`'s width and height into the words at
  * `widthAt` and `heightAt` -- 0 for one outside the 100.  What the code
@@ -1499,11 +1504,18 @@ void drawArtShape(App* app, CPU& cpu)
     e.finish(cpu, drawArt(app, cpu, e.esp, int32_t(e.eax), int32_t(e.edx), int32_t(e.ebx), e.ecx));
 }
 
+/* 0x4d7990's: art record `record` drawn at x, y, opaque -- 0x4d7160's with
+ * its frame 0xc bytes further down. */
+Result drawShapeOf(App* app, CPU& cpu, reg32 esp, int32_t record, int32_t x, int32_t y)
+{
+    return drawArt(app, cpu, esp - 0xc, record, x, y, 0xffffffff);
+}
+
 /* 0x4d7990: art record eax drawn at edx, ebx, opaque. */
 void drawShape(App* app, CPU& cpu)
 {
     const Entry e(cpu);
-    e.finish(cpu, drawArt(app, cpu, e.esp - 0xc, int32_t(e.eax), int32_t(e.edx), int32_t(e.ebx), 0xffffffff));
+    e.finish(cpu, drawShapeOf(app, cpu, e.esp, int32_t(e.eax), int32_t(e.edx), int32_t(e.ebx)));
 }
 
 }  // namespace shapes

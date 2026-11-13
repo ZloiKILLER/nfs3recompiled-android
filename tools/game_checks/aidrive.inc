@@ -92,10 +92,11 @@ case kAidSeldom:
 {0x404c80, "the race's leader", kWatcom, 1, 0, kEax, -1, 0, kNothing},
 // The track's slices as the AI walks them (another part's of the AI): a
 // slice a few on (eax the car, edx how many; edx left), one by the car's
-// pace (ret 0xc), the gap of two (edx left), a slice's speed and two
-// slices' curve onto the x87's stack.
+// pace (eax the car, ret 0xc: aiplan::nodesAheadBySpeed reads no other
+// register), the gap of two (edx left), a slice's speed and two slices'
+// curve onto the x87's stack.
 {0x40e160, "a slice a few on", kWatcom, 2, 0, kEax | kEdx, -1, 0, kAidSlice},
-{0x40e1b0, "a slice by the pace", kStdcall, 4, 3, kEax, -1, 0, kAidSlice},
+{0x40e1b0, "a slice by the pace", kStdcall, 1, 3, kEax, -1, 0, kAidSlice},
 {0x40e120, "the gap of two slices", kWatcom, 2, 0, kEax | kEdx, -1, 0, kAidGap},
 {0x40ed40, "a slice's speed", kWatcom, 1, 0, 0, -1, 0, kAidFloat},
 {0x40ef70, "two slices' curve", kWatcom, 2, 0, kEax, -1, 0, kAidFloat},
@@ -106,13 +107,14 @@ case kAidSeldom:
 {0x4070c0, "an opponent's heading", kWatcom, 1, 0, kEax, -1, 0, kAidHeading},
 // Says the cops' and the cars' code goes by: a pursuit's end (0x401500,
 // 0x401fb0), whether a car is off its way (0x40f110), 0x404610's kind, a
-// car's turn to skip (0x4be1a0), traffic's life (0x40eed0).
+// car's turn to skip (0x4be1a0), traffic's life (0x40eed0: no register logged, for
+// aiplan::trackTuningDistance reads none and the extra cars' code calls it as C++).
 {0x401500, "a pursuit's say", kWatcom, 1, 0, kEax, -1, 0, kAidChoice},
 {0x401fb0, "a bust's end", kWatcom, 1, 0, kEax, -1, 0, kAidChoice},
 {0x40f110, "off its way", kWatcom, 1, 0, kEax, -1, 0, kAidChoice},
 {0x404610, "a car's kind of AI", kWatcom, 1, 0, kEax, -1, 0, kAidChoice},
 {0x4be1a0, "a car's turn skipped", kWatcom, 2, 0, kEax, -1, 0, kAidSeldom},
-{0x40eed0, "traffic's life", kWatcom, 1, 0, kEax, -1, 0, kAidChoice},
+{0x40eed0, "traffic's life", kWatcom, 0, 0, kEax, -1, 0, kAidChoice},
 // The racestart's car put back on the road and the trackdata's place on
 // the track found again (native whole, held against their code on their
 // own): stood in for -- they walk the whole track's data.

@@ -4,18 +4,7 @@
 namespace nfs3hp
 {
 
-/* align: skip  */
-void Application::sub_401000(WinApplication* app, x86::CPU& cpu)
-{
-  NFS2_USE(cpu);
-  NFS2_USE(app);
-L_0x00401000:
-    if (app->contextWanted()) app->yieldContext(cpu); /* safepoint */
-    // 00401000  cc                     -int3 
-    NFS2_ASSERT(false);
-    // 00401001  ebfd                   -jmp 0x401000
-    goto L_0x00401000;
-}
+/* sub_401000: native, nfs3hp::pieces::stub_0x401000 */
 
 /* sub_401010: native, nfs3hp::Error */
 

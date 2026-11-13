@@ -67,6 +67,8 @@ final class DebugOptions
         // Every car at every physics step, to compare two builds by a replay (tools/replay_compare.py).
         new Option("replay_trace", false, "Every car at every physics step, to logs/trace-*.bin",
             "NFS_REPLAY_TRACE", "1"),
+        new Option("replay_fast", false, "The game's time 8 times as fast, no frame cap (for checking replays)",
+            "NFS_TIME_SCALE", "8", "NFS_FPS_CAP", "0"),
         // The race summary's Performance page left empty: the timings from the car to the results.
         new Option("perf_trace", false, "Missing performance data logging [PERF] [PERFTIME]",
             "NFS_PERF_TRACE", "1"),
@@ -81,10 +83,7 @@ final class DebugOptions
     /* The natives against the generated code, and the experiments. */
     static final Option[] CODE = {
         new Option("natives", true, "Car specs native (off: generated code)", "NFS_NATIVES", "0"),
-        // Listed before native_check, which sets the same variable and wins.
-        new Option("load_check", false, "Check the loading natives [NATIVE]", "NFS_NATIVE_CHECK", "load"),
         new Option("native_check", false, "Check every checked native [NATIVE]", "NFS_NATIVE_CHECK", "1"),
-        new Option("mad_check", false, "Check the movie decoder [MAD]", "NFS_MAD_CHECK", "1"),
     };
 
     static final Option[] PICTURE = {

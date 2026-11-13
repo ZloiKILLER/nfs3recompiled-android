@@ -29,10 +29,12 @@
  *
  * See run.sh. */
 #include "nfs3hp.h"
+#include "native_guest.h"
 #include <lib/memmap.h>
 #include <lib/thread.h>
 #include <SDL3/SDL.h>
 #include <algorithm>
+#include <cstdarg>
 #include <atomic>
 #include <chrono>
 #include <thread>
@@ -54,13 +56,33 @@ void assertLog(const char* file, int line, const char* expr)
 }
 }
 
-/* What src/lib/cpu.cpp wants of SDL. */
+/* What src/lib/cpu.cpp wants of SDL, and native_vertices.cpp's traces and logs (as
+ * tools/game_checks/vertices/vcheck.cpp has them): no file written. */
 extern "C"
 {
 Uint64 SDL_GetPerformanceCounter(void) { return 0; }
 Uint64 SDL_GetPerformanceFrequency(void) { return 1; }
 const char* SDL_getenv(const char* name) { return std::getenv(name); }
 int SDL_strcmp(const char* a, const char* b) { return std::strcmp(a, b); }
+void SDL_Log(SDL_PRINTF_FORMAT_STRING const char* fmt, ...)
+{
+    va_list ap;
+    va_start(ap, fmt);
+    std::vprintf(fmt, ap);
+    va_end(ap);
+    std::printf("\n");
+}
+int SDL_snprintf(SDL_OUT_Z_CAP(maxlen) char* text, size_t maxlen, SDL_PRINTF_FORMAT_STRING const char* fmt, ...)
+{
+    va_list ap;
+    va_start(ap, fmt);
+    const int n = std::vsnprintf(text, maxlen, fmt, ap);
+    va_end(ap);
+    return n;
+}
+SDL_IOStream* SDL_IOFromFile(const char*, const char*) { return nullptr; }
+size_t SDL_WriteIO(SDL_IOStream*, const void*, size_t) { return 0; }
+bool SDL_FlushIO(SDL_IOStream*) { return true; }
 }
 
 struct GameSegment
@@ -73,8 +95,24 @@ extern const unsigned kGameSegmentCount;
 
 namespace nfs3hp
 {
-/* native_vertices.cpp's [COMM] trace, which Error calls first: nothing here. */
-void commMessageTrace(win32::WinApplication*, x86::CPU&) {}
+/* nfs3hp_main.cpp's car scale in the mirror (native_vertices.cpp's carDetail): as it is. */
+double mirrorCarScale(double scale) { return scale; }
+/* The port's hooks native_render.cpp calls, as tools/game_checks/render/rcheck.cpp has them (no
+ * native of render's is tested here: they are only linked, for the natives that call them as C++). */
+void widescreenHudRect(win32::WinApplication* app, x86::reg32 slot) { app->getMemory<x86::reg32>(slot) += 3; }
+void hudTablePanel(win32::WinApplication* app, x86::reg32 player, bool otherLayout)
+{
+    app->getMemory<x86::reg32>(0x7a3d18) += player + otherLayout;
+}
+x86::reg32 cabinRect(win32::WinApplication* app, x86::reg32 field) { return app->getMemory<x86::reg32>(0x7cdac8) / (field + 1); }
+bool fullCarDetail() { return false; }
+void loadingScreenFit(win32::WinApplication* app, x86::CPU&, bool on) { app->getMemory<x86::reg32>(0x7a3d1c) += on; }
+bool dynamicFullscreenMode(x86::reg32 mode) { return mode == 16; }
+bool dynamicFullscreenRefresh(win32::WinApplication* app) { return app->getMemory<x86::reg32>(0x7a3d20) & 1; }
+x86::reg32 viewDistanceReduced(win32::WinApplication*, x86::reg32 reduced) { return reduced; }
+x86::reg32 splitFarDistance(win32::WinApplication*, x86::reg32 distance) { return distance; }
+x86::reg32 fullFarDistance(win32::WinApplication*, x86::reg32 distance) { return distance; }
+void mirrorFollowsMain(win32::WinApplication* app) { app->getMemory<x86::reg32>(0x7a3d10) += 1; }
 /* nfs3hp_main.cpp's mark of a race, which takeDownRace clears: nothing here. */
 void raceRunning(bool) {}
 /* nfs3hp_main.cpp's hooks into the race music (tools/apply_music_stream.py):
@@ -511,8 +549,11 @@ const StandIn kGameFunctions[] = {
     {0x4d37a0, "shapeToPixels", kWatcom, 4, 1, kEax, -1, 0, kNothing},
     // What the graphics' natives call that hands back a string or a record they read.
     {0x4b6520, "capture folder", kWatcom, 4, 0, kEax, -1, 0, kString},
-    {0x439520, "track name", kWatcom, 4, 0, kEax, -1, 0, kRecord},
-    {0x422bd0, "car record", kWatcom, 4, 0, kEax, -1, 0, kRecord},
+    // One register each: load::idOf and carstate::targetOfCamera read only eax
+    // (native_load_cardb.h, native_carstate.h), and the natives call them as C++ (guest::direct),
+    // the rest of their registers their own.
+    {0x439520, "track name", kWatcom, 1, 0, kEax, -1, 0, kRecord},
+    {0x422bd0, "car record", kWatcom, 1, 0, kEax, -1, 0, kRecord},
     {0x4f2460, "chunk", kWatcom, 4, 0, kEax, -1, 0, kRecord},
     {0x4ef1e0, "picture", kWatcom, 4, 0, kEax, -1, 0, kRecord},
     {0x4ef190, "new bitmap", kWatcom, 4, 0, kEax, -1, 0, kRecord},
@@ -912,6 +953,22 @@ struct Tested
 const Tested kTested[] = {
 #include "game_tested.inc"
 };
+
+/* Each tested function's register arguments -- how many of eax, edx, ebx, ecx its code reads on
+ * entry (generate.py, entry_regs.py).  Under Watcom's convention they are the caller's no longer:
+ * a caller compiled by Watcom never reads them after the call, so the check does not compare what
+ * the function leaves there, whatever its promise row says (the row may say more). */
+const struct { x86::reg32 address; unsigned count; } kArguments[] = {
+#include "game_arguments.inc"
+};
+
+unsigned argumentsOf(x86::reg32 address)
+{
+    for (const auto& a : kArguments)
+        if (a.address == address)
+            return a.count;
+    return 0;
+}
 
 /* What the runtime's heap is to a function's cases. */
 enum HeapUse
@@ -2145,6 +2202,7 @@ WinApplication::~WinApplication() {}
 int WinApplication::s_traceApi = 0;
 bool WinApplication::readTraceApi() { return false; }
 void WinApplication::traceCall(const Method&, x86::reg32) {}
+void WinApplication::traceNewCalls() {}
 void WinApplication::yieldContext(const x86::CPU&) {}
 void WinApplication::lockContext(const x86::CPU&) {}
 void WinApplication::unlockContext(const x86::CPU&) {}
@@ -2214,6 +2272,30 @@ void MemMap::usedRanges(std::vector<std::pair<x86::reg32, x86::reg32>>& ranges)
 }
 
 }  // namespace win32
+
+/* native_guest.h's: whether the native side's call of `address` by address goes to a stand-in, as
+ * dynamicCallElsewhere sends it -- where it does, a native's guest::direct call goes there by
+ * address too; where it would run a native, the native's direct call runs that one's typed
+ * function itself. */
+bool nfs3hp::guest::standsIn(x86::reg32 address)
+{
+    if (address == 0)
+        return true;
+    if (win32::g_testedPort)
+        for (const Tested& t : kTested)
+            if (t.address == address && std::strncmp(t.name, "port::", 6) == 0)
+            {
+                bool both = false;
+                for (const x86::reg32 s : win32::kStoodInBoth)
+                    both = both || s == address;
+                if (!both)
+                    return false;
+            }
+    for (const StandIn& s : kGameFunctions)
+        if (s.address == address)
+            return true;
+    return false;
+}
 
 #define TEXT_HOOKS
 #include "text.inc"
@@ -5790,8 +5872,9 @@ bool compareRuns(const Tested& t, CheckApp& g, CheckApp& n, const x86::CPU& gene
          * register as the caller had it -- what the game's callers read (the
          * sound module's callers were checked for it). */
         const bool port = std::string(p.name).compare(0, 6, "port::") == 0;
-        const bool kept[] = {false, (!p.watcom || p.arguments < 2) && !port, (!p.watcom || p.arguments < 3) && !port,
-                             p.watcom && p.arguments < 4 && !port};  // eax, edx, ebx, ecx as handed over
+        const unsigned arguments = p.watcom ? std::max(p.arguments, argumentsOf(t.address)) : p.arguments;
+        const bool kept[] = {false, (!p.watcom || arguments < 2) && !port, (!p.watcom || arguments < 3) && !port,
+                             p.watcom && arguments < 4 && !port};  // eax, edx, ebx, ecx as handed over
         const struct { const char* name; x86::reg32 g, n; bool compared; } registers[] = {
             {"eax", generatedCpu.eax, nativeCpu.eax, p.result}, {"ebx", generatedCpu.ebx, nativeCpu.ebx, kept[2]},
             {"ecx", generatedCpu.ecx, nativeCpu.ecx, kept[3]}, {"edx", generatedCpu.edx, nativeCpu.edx, kept[1] && p.watcom},

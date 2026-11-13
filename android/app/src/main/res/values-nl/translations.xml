@@ -31,13 +31,6 @@
  <string name="touch_settings">Touchbediening</string>
  <string name="screen_settings">Scherm</string>
  <string name="display_settings">Beeld</string>
- <string name="screen_adjustment">Beeldinstelling</string>
- <string name="brightness_label">Helderheid</string>
- <string name="contrast_label">Contrast</string>
- <string name="adjust_hint">De voorbeelden tonen het resultaat. Werkt bij de volgende start van het spel.</string>
- <string name="adjust_reset">Herstellen</string>
- <string name="sample_dark">Nacht</string>
- <string name="sample_bright">Dag</string>
  <string name="back_to_launcher">Terug</string>
  <string name="switch_data">Activeren</string>
  <string name="data_change">Wijzigen…</string>
@@ -71,7 +64,6 @@
  <string name="orientation_landscape_reverse">Vast — liggend, omgedraaid</string>
  <string name="fps_30">30 FPS</string>
  <string name="fps_60">60 FPS</string>
- <string name="gamma_label">Gamma</string>
  <string name="fps_cap_label">Beeldsnelheid</string>
  <string name="fps_error">Voer een geheel getal van 1 tot 240 in</string>
  <string name="save">Opslaan</string>
@@ -156,6 +148,8 @@
  <string name="faq_mapping"><b>Gamepads</b>\nHet spel ziet altijd twee gamepads: gamepad 1 is speler 1 samen met de touchbediening, gamepad 2 is speler 2. Kies bij Bediening → Gamepads welke pad welke is door er een knop op in te drukken, stel in wat elke knop doet en druk daarna eenmalig op Gamepad AAN. Dat schrijft de bijpassende bediening naar de spelinstellingen en maakt een back-up van het oude bestand. De linkerstick stuurt, de triggers geven gas en remmen. Een pad heeft twee knoppensets, net zoals de touchbediening twee indelingen heeft: die van de race, die je hier instelt, en een vaste voor de menu\'s en herhalingen, waarin Cross / A bevestigt, Circle / B teruggaat en het kruis de selectie verplaatst. Wil je met een toetsenbord spelen, schrijf dan Standaard van het spel.</string>
  <string name="faq_lights"><b>Licht en terug naar de baan</b>\n☼ stuurt L. ↻ stuurt R om terug te keren naar de baan. De toetsen kun je wijzigen bij Bediening → Touch → Toetsen.</string>
  <string name="faq_screen_data"><b>Scherm en spelgegevens</b>\nLiggend vergrendelt het spel horizontaal; Automatisch staat draaien toe. De FPS-limiet beperkt de beeldsnelheid; een lagere waarde vermindert het werk per seconde. «Spelgegevens» beheert de imports en toont welke set actief is. Spelen wordt beschikbaar zodra een set klaar is.</string>
+ <string name="faq_picture"><b>Helderheid, contrast en gamma</b>\nDeze stel je in het spel zelf in: Options → Graphics → Advanced Settings of Graphics in het pauzemenu tijdens een race. Het beeld verandert meteen terwijl je de schuif beweegt. Done bewaart de waarden, Cancel zet de vorige terug. De instellingen gelden voor races, menu’s en filmpjes.</string>
+ <string name="faq_network"><b>Netwerkraces</b>\nOpen Connect Players op het eerste scherm van het spel. Local WiFi vindt zelf races tussen telefoons op hetzelfde wifinetwerk. Network (TCP) verbindt met iedereen die het adres van de host kent, ook met een pc met het originele spel of de Modern Patch. Daaronder staan het adres van deze telefoon (Your IP) en TCP Port: een tik wisselt tussen 9803 (Modern Patch) en 1030 (origineel spel). Alle spelers van een TCP-race hebben dezelfde poort nodig.</string>
  <string name="gamepad_buttons">Knoppen</string>
  <string name="gamepad_buttons_title">Knoppen van gamepad %1$d</string>
  <string name="gamepad_buttons_hint">Wat elke knop van dit pad doet tijdens het rijden. De linkerstick stuurt, de rechtertrigger geeft gas en de linker remt. In de menu\'s en in herhalingen liggen de knoppen vast en valt er niets in te stellen: Cross / A en Options / Menu bevestigen, Circle / B en Create / View gaan terug, het kruis verplaatst de selectie. De knopacties bereiken het spel zodra de gamepadbediening erin is geschreven.</string>
@@ -191,12 +185,5 @@
  <string name="force_feedback_phone_note">De telefoon speelt botsingen, landingen en schakelen, de motor bij hoge toeren en scherpe bochten.</string>
  <string name="force_feedback_gamepad_note">Gamepad 1 speelt de effecten van het spel zoals ze zijn. De sterkte stel je in het spel in: Options → Controllers → Force Feedback.</string>
  <string name="editor_snap_grid">Uitlijnen op raster</string>
- <string name="network_title">Netwerk</string>
- <string name="network_address">Adres van dit apparaat in het netwerk: %1$s</string>
- <string name="network_no_address">Geen netwerkverbinding</string>
- <string name="network_port_label">TCP/IP-poort</string>
- <string name="network_port_modern">9803 · Modern Patch</string>
- <string name="network_port_original">1030 · origineel spel</string>
- <string name="network_hint">IPX vindt zelf races op deze wifi. TCP/IP verbindt met iedereen die het adres van de host kent, ook met een pc met het originele spel of de Modern Patch. Alle spelers gebruiken dezelfde poort.</string>
  <string name="fps_unlimited">Onbeperkt</string>
 </resources>

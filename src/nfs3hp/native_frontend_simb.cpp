@@ -1,4 +1,13 @@
+#include "native_frontend_simb.h"
+#include "game_settings.h"
+#include "native_ea_threads.h"
 #include "native_frontend.h"
+#include "native_frontend_sima.h"
+#include "native_frontend_simc.h"
+#include "native_frontend_simd.h"
+#include "native_raceload.h"
+#include "native_trackdata.h"
+#include "native_vertices.h"
 #include <nfs3hp.h>
 #include <cstdint>
 #include <cstring>
@@ -26,7 +35,13 @@
  * keeps a NaN's bits as a load through the x87 would not.
  *
  * The car's state stays in guest memory.  What is handed to the game by address
- * lives in the frame, where the generated function had it. */
+ * lives in the frame, where the generated function had it.
+ *
+ * Plan step 5: each function a typed core in frontend::simb (native_frontend_simb.h), in
+ * a frame of its own (fe::Frame: what it calls runs at the stack addresses it did), and an
+ * adapter under the game's name for the calls by address.  A core of the simulation's files
+ * calls another as C++ (guest::direct), and the typed cores of other files too (fe::direct);
+ * the rest of the game still by address. */
 #if defined(__clang__)
 #pragma clang fp contract(off)
 #else
@@ -46,43 +61,20 @@ using x86::reg32;
 using x86::sreg32;
 
 // The game's functions, by address.
-constexpr reg32 kResetPosition = 0x41e940;     // eax a node, edx a track position
-constexpr reg32 kUpdatePosition = 0x41f6e0;    // eax a point in 16.16, edx a track position, ebx 1
-constexpr reg32 kPositionFrame = 0x420230;     // eax a track position, edx its frame in 16.16, esi a point in 16.16
-constexpr reg32 kPositionSurface = 0x4207e0;   // eax a track position, edx 1: its surface
-constexpr reg32 kInTunnel = 0x420bf0;          // the stack a point and a node
 constexpr reg32 kStartIdleShake = 0x4296c0;    // eax a car
-constexpr reg32 kHitWall = 0x42ee10;           // eax a car, edx a point, ebx the wall's normal, ecx a point on it
-constexpr reg32 kBoxHitsWall = 0x42efe0;       // eax a car, edx a normal, ebx a point, the stack a float
-constexpr reg32 kNormalise = 0x4972f0;         // eax a vector; its length on the x87
-constexpr reg32 kMayRest = 0x49fde0;           // eax a car
-constexpr reg32 kRoadUnder = 0x49ffa0;         // eax a car, edx whether it faces back
 constexpr reg32 kRoadRise = 0x4a0440;          // eax a car; on the x87
-constexpr reg32 kNodeFlags = 0x4a08c0;         // eax a car
 constexpr reg32 kFrameFromRoad = 0x4a0980;     // eax a car, edx whether it faces back
 constexpr reg32 kLastFrameFromRoad = 0x4a0a10; // likewise
 constexpr reg32 kFollowFrame = 0x4a0f30;       // eax a car, edx the road's up, the stack how upright it is
 constexpr reg32 kEaseFrame = 0x4a1090;         // eax a car
-constexpr reg32 kProbeWalls = 0x4a1210;        // eax a car
 constexpr reg32 kClampSpin = 0x4a20c0;         // eax a car
 constexpr reg32 kSpinStep = 0x4a2e20;          // eax a car, edx the steps a second
-constexpr reg32 kBlendFrames = 0x4b7680;       // eax a frame, edx another, the stack the share and the result
-constexpr reg32 kXRotation = 0x4dfd80;         // eax a matrix, the stack the angle
-constexpr reg32 kYRotation = 0x4dfde0;
-constexpr reg32 kZRotation = 0x4dfe40;
-constexpr reg32 kAddVectors = 0x4dffb0;        // eax the count, edx and ebx the sides, ecx the result
-constexpr reg32 kSubtractVectors = 0x4e0000;   // likewise
-constexpr reg32 kScaleVectors = 0x4e0050;      // eax the count, edx them, the stack the factor and the result
-constexpr reg32 kTranspose = 0x4e0110;         // eax a matrix, edx the result
+constexpr reg32 kZRotation = 0x4dfe40;         // eax a matrix, the stack the angle
 constexpr reg32 kDot = 0x4e01f0;               // eax and edx vectors; on the x87
-constexpr reg32 kMultiplyMatrices = 0x4e0280;  // eax and edx the sides, ebx the result
-constexpr reg32 kTransformPoints = 0x4e0430;   // eax the count, edx them, ebx a matrix, ecx a shift, the stack the result
 
 // The game's numbers.
 constexpr reg32 kNodes = 0x5dd948;             // the road's nodes, kNodeBytes each
 constexpr reg32 kRoofHeights = 0x552e54;       // floats, by node
-constexpr reg32 kPlayers = 0x6fd3b0;
-constexpr reg32 kRaceKind = 0x6fd3b8;
 constexpr reg32 kClimbLimit = 0x5efdd8;
 constexpr reg32 kBounceLimit = 0x5efddc;
 
@@ -212,7 +204,7 @@ std::uint16_t fcom(reg32& eax, Float a, Float b)
     return word;
 }
 
-Float load(const Guest& guest, reg32 address)
+Float loadFloat(const Guest& guest, reg32 address)
 {
     return Float(guest.floatAt(address));
 }
@@ -273,27 +265,58 @@ Float nodePart(const Guest& guest, reg32 node, reg32 part)
     return Float(sreg32(std::int8_t(guest.byte(node + part))) * 512);
 }
 
-/* sub_4e01f0: the result off the x87, in the x87's width. */
-Float dotOf(Guest& guest, reg32 a, reg32 b)
+/* sub_4e01f0: the result in the x87's width. */
+Float dotOf(x86::CPU& cpu, Guest& guest, reg32 a, reg32 b)
 {
-    guest.call(kDot, args({ a, b }));
-    return guest.fpu().take();
+    return Float(fe::direct<0x4e01f0, vertices::dotProduct>(guest.app(), cpu, a, b));
 }
+
+/* A float of those bits, as the stack hands it on. */
+float floatWithBits(reg32 bits)
+{
+    float value;
+    std::memcpy(&value, &bits, sizeof value);
+    return value;
+}
+
+/* A word the code pushes for a callee that takes the address of it (stdcall): put where the push
+ * puts it, below esp, and esp below it while this lives, so the callee's frame lies where the
+ * game's does.  In tools/frontend_checks the call goes by address and pushes it itself, at the
+ * same place: there esp stays. */
+class Pushed
+{
+public:
+    Pushed(Guest& guest, x86::CPU& cpu, reg32 word) : m_cpu(cpu), m_esp(cpu.esp)
+    {
+        guest.setDword(m_esp - 4, word);
+#ifndef NFS_FRONTEND_CHECKS
+        cpu.esp -= 4;
+#endif
+    }
+    ~Pushed() { m_cpu.esp = m_esp; }
+    Pushed(const Pushed&) = delete;
+    Pushed& operator=(const Pushed&) = delete;
+    reg32 address() const { return m_esp - 4; }
+
+private:
+    x86::CPU& m_cpu;
+    const reg32 m_esp;
+};
 
 /* The vector times the matrix, as Watcom expands it, a row added at a time: every
  * read before any write, so `out` may be the vector or the matrix. */
 void vectorByMatrix(Guest& guest, reg32 vector, reg32 matrix, reg32 out)
 {
-    const Float x = load(guest, vector), y = load(guest, vector + 4), z = load(guest, vector + 8);
-    Float resultX = fp::mul(x, load(guest, matrix));
-    Float resultY = fp::mul(x, load(guest, matrix + 4));
-    Float resultZ = fp::mul(x, load(guest, matrix + 8));
-    resultX = fp::add(resultX, fp::mul(y, load(guest, matrix + 0xc)));
-    resultY = fp::add(resultY, fp::mul(y, load(guest, matrix + 0x10)));
-    resultZ = fp::add(resultZ, fp::mul(y, load(guest, matrix + 0x14)));
-    resultX = fp::add(resultX, fp::mul(z, load(guest, matrix + 0x18)));
-    resultY = fp::add(resultY, fp::mul(z, load(guest, matrix + 0x1c)));
-    resultZ = fp::add(resultZ, fp::mul(z, load(guest, matrix + 0x20)));
+    const Float x = loadFloat(guest, vector), y = loadFloat(guest, vector + 4), z = loadFloat(guest, vector + 8);
+    Float resultX = fp::mul(x, loadFloat(guest, matrix));
+    Float resultY = fp::mul(x, loadFloat(guest, matrix + 4));
+    Float resultZ = fp::mul(x, loadFloat(guest, matrix + 8));
+    resultX = fp::add(resultX, fp::mul(y, loadFloat(guest, matrix + 0xc)));
+    resultY = fp::add(resultY, fp::mul(y, loadFloat(guest, matrix + 0x10)));
+    resultZ = fp::add(resultZ, fp::mul(y, loadFloat(guest, matrix + 0x14)));
+    resultX = fp::add(resultX, fp::mul(z, loadFloat(guest, matrix + 0x18)));
+    resultY = fp::add(resultY, fp::mul(z, loadFloat(guest, matrix + 0x1c)));
+    resultZ = fp::add(resultZ, fp::mul(z, loadFloat(guest, matrix + 0x20)));
     store(guest, out, resultX);
     store(guest, out + 4, resultY);
     store(guest, out + 8, resultZ);
@@ -313,18 +336,22 @@ reg32 magnitudeNotAboveNegated(Float value, reg32 bits)
     return jb(fp::compare(0.0, value)) ? bits : bitsOf(-value);
 }
 
+}  // namespace
+
 /* sub_4a0aa0: the car put on a node of the road: eax the car, edx the node, ebx its
  * offset from the node in 16.16, in the road's frame, ecx whether it faces back.
  * Its track position reset, the road's frame taken from the node, its point from the
  * offset, then what is under it. */
-reg32 placeOnRoad(Guest& guest, reg32 car, reg32 node, reg32 offset, reg32 facesBack)
+x86::reg32 frontend::simb::placeOnRoad(App* app, CPU& cpu, reg32 car, reg32 node, reg32 offset, reg32 facesBack)
 {
+    Guest guest(app, cpu);
+    const fe::Frame locals(guest, cpu, 0x54);
     constexpr reg32 kInverse = 0x00, kInverseUp = 0x0c, kInverseForward = 0x18, kOffset = 0x24;
     const reg32 frame = guest.frame();
     const reg32 position = car + kTrackPosition;
     // In ebx all through, and left there.
     guest.leaveEbx(position);
-    guest.call(kResetPosition, args({ node, position }));
+    fe::direct<0x41e940, trackdata::resetPlace>(app, cpu, node, position);
 
     const reg32 nodeOffset = node * kNodeBytes;
     const reg32 row = guest.dword(kNodes) + nodeOffset;
@@ -340,26 +367,25 @@ reg32 placeOnRoad(Guest& guest, reg32 car, reg32 node, reg32 offset, reg32 faces
     store(guest, car + kRoadForward + 4, fp::mul(fromFixed, nodePart(guest, row, kNodeForward + 1)));
     store(guest, car + kRoadForward + 8, fp::mul(nodePart(guest, row, kNodeForward + 2), fromFixed));
     for (const reg32 axis : { kRoadFrame, kRoadUp, kRoadForward })
-    {
-        guest.call(kNormalise, args({ car + axis }));
-        guest.fpu().take();
-    }
-    guest.call(kTranspose, args({ car + kRoadFrame, frame + kInverse }));
+        fe::direct<0x4972f0, vertices::normaliseVector>(app, cpu, car + axis);
+    guest::direct<0x4e0110, frontend::simd::transpose>(app, cpu, car + kRoadFrame, frame + kInverse);
 
     store(guest, frame + kOffset, fp::mul(integerAt(guest, offset), fromFixed));
     store(guest, frame + kOffset + 4, fp::mul(integerAt(guest, offset + 4), fromFixed));
     store(guest, frame + kOffset + 8, fp::mul(integerAt(guest, offset + 8), fromFixed));
     guest.setDword(car + kAcross, guest.dword(frame + kOffset));
-    const float shiftX = float(dotOf(guest, frame + kOffset, frame + kInverse));
-    const float shiftY = float(dotOf(guest, frame + kOffset, frame + kInverseUp));
-    const float shiftZ = float(dotOf(guest, frame + kOffset, frame + kInverseForward));
+    const float shiftX = float(dotOf(cpu, guest, frame + kOffset, frame + kInverse));
+    const float shiftY = float(dotOf(cpu, guest, frame + kOffset, frame + kInverseUp));
+    const float shiftZ = float(dotOf(cpu, guest, frame + kOffset, frame + kInverseForward));
     const reg32 nodePoint = guest.dword(kNodes) + nodeOffset;
     store(guest, car + kPlace, fp::add(fp::mul(integerAt(guest, nodePoint), fromFixed), Float(shiftX)));
     store(guest, car + kPlaceY, fp::add(fp::mul(integerAt(guest, nodePoint + 4), fromFixed), Float(shiftY)));
     store(guest, car + kPlaceZ, fp::add(fp::mul(integerAt(guest, nodePoint + 8), fromFixed), Float(shiftZ)));
 
-    guest.call(kNodeFlags, args({ car }));
-    guest.call(kRoadUnder, args({ car, facesBack }));
+    guest::direct<0x4a08c0, frontend::sima::carTrackEnvironment>(app, cpu, car);
+    // Handed whether it faces back in edx too, which it does not read: there as the code has it.
+    guest.leaveEdx(facesBack);
+    guest::direct<0x49ffa0, frontend::sima::carTrackFrame>(app, cpu, car);
     guest.call(kFrameFromRoad, args({ car, facesBack }));
     guest.call(kLastFrameFromRoad, args({ car, facesBack }));
 
@@ -367,9 +393,15 @@ reg32 placeOnRoad(Guest& guest, reg32 car, reg32 node, reg32 offset, reg32 faces
     guest.call(kRoadRise, args({ car }));
     const Float rise = guest.fpu().take();
     guest.setDword(car + kClearance, 0);
-    store(guest, car + kPlaceY, fp::sub(load(guest, car + kPlaceY), rise));
+    store(guest, car + kPlaceY, fp::sub(loadFloat(guest, car + kPlaceY), rise));
 
-    const reg32 surface = guest.byte(car + kDetached) == 0 ? guest.call(kPositionSurface, args({ position, 1 })) : 1;
+    reg32 surface = 1;
+    if (guest.byte(car + kDetached) == 0)
+    {
+        // The 1 it is handed in edx stays there after it, and this function leaves edx as it is.
+        guest.leaveEdx(1);
+        surface = fe::direct<0x4207e0, trackdata::placeSurface>(app, cpu, position, 1);
+    }
     guest.setDword(car + kSurfaceWhole, surface);
     guest.setDword(car + kSurface, surface & kSurfaceMask);
     return surface & kSurfaceMask;
@@ -378,8 +410,10 @@ reg32 placeOnRoad(Guest& guest, reg32 car, reg32 node, reg32 offset, reg32 faces
 /* sub_4a1210: eight points round the car's box looked up on the track; each on a
  * polygon with a surface, and on the far side of the polygon by its normal, is a hit
  * for sub_42ee10 to make of it.  1 when one of them hit. */
-reg32 probeWalls(Guest& guest, reg32 car)
+x86::reg32 frontend::simb::probeWalls(App* app, CPU& cpu, reg32 car)
 {
+    Guest guest(app, cpu);
+    const fe::Frame locals(guest, cpu, 0x13c);
     constexpr reg32 kPosition = 0x00, kPoints = 0x78, kPolygonPoint = 0xd8, kFixed = 0xe4, kToPoint = 0xf0, kNormal = 0xfc;
     constexpr reg32 kPointBytes = 12;
     const reg32 frame = guest.frame();
@@ -388,9 +422,9 @@ reg32 probeWalls(Guest& guest, reg32 car)
     const reg32 widthBits = guest.dword(car + kHalfWidth);
     const reg32 heightBits = guest.dword(car + kHalfHeight);
     const reg32 lengthBits = guest.dword(car + kHalfLength);
-    const Float width = load(guest, car + kHalfWidth);
-    const Float height = load(guest, car + kHalfHeight);
-    const Float length = load(guest, car + kHalfLength);
+    const Float width = loadFloat(guest, car + kHalfWidth);
+    const Float height = loadFloat(guest, car + kHalfHeight);
+    const Float length = loadFloat(guest, car + kHalfLength);
     const Float shareWide = doubleAt(guest, kProbeShareWide);
     const Float shareHigh = doubleAt(guest, kProbeShareHigh);
     const Float shareLong = doubleAt(guest, kProbeShareLong);
@@ -432,12 +466,12 @@ reg32 probeWalls(Guest& guest, reg32 car)
     {
         copyDwords(guest, position, car + kTrackPosition, kPositionDwords);
         const reg32 at = point(i);
-        guest.call(kTransformPoints, args({ 1, at, car + kFrame, car + kPlace }, { at }));
+        fe::direct<0x4e0430, vertices::transformPointList>(app, cpu, 1, at, car + kFrame, car + kPlace, at);
         for (reg32 axis = 0; axis < 3; ++axis)
-            guest.setDword(fixed + 4 * axis, reg32(fp::toInteger<sreg32>(fp::mul(load(guest, at + 4 * axis), toFixed))));
+            guest.setDword(fixed + 4 * axis, reg32(fp::toInteger<sreg32>(fp::mul(loadFloat(guest, at + 4 * axis), toFixed))));
         copyDwords(guest, position + kPositionPoint, fixed, 3);
-        guest.call(kUpdatePosition, args({ fixed, position, 1 }));
-        const reg32 surface = guest.call(kPositionSurface, args({ position, 1 })) & kSurfaceMask;
+        fe::direct<0x41f6e0, trackdata::bringPlace>(app, cpu, fixed, position, 1);
+        const reg32 surface = fe::direct<0x4207e0, trackdata::placeSurface>(app, cpu, position, 1) & kSurfaceMask;
         if (guest.dword(position + kPositionOnRoad) == 0 || guest.dword(position + kPositionPolygon) == 0)
             continue;
         if (guest.dword(position + kPositionOff) != 0 || surface == 0 || surface == kSurfaceProbesPass)
@@ -454,16 +488,16 @@ reg32 probeWalls(Guest& guest, reg32 car)
         const Float onPolygonX = fp::mul(integerAt(guest, position + kPositionOnPolygon), fromFixed);
         const Float onPolygonY = fp::mul(integerAt(guest, position + kPositionOnPolygon + 4), fromFixed);
         const Float onPolygonZ = fp::mul(fromFixed, integerAt(guest, position + kPositionOnPolygon + 8));
-        const Float pointX = load(guest, at), pointY = load(guest, at + 4), pointZ = load(guest, at + 8);
+        const Float pointX = loadFloat(guest, at), pointY = loadFloat(guest, at + 4), pointZ = loadFloat(guest, at + 8);
         store(guest, polygonPoint, onPolygonX);
-        store(guest, toPoint, fp::sub(pointX, load(guest, polygonPoint)));
+        store(guest, toPoint, fp::sub(pointX, loadFloat(guest, polygonPoint)));
         store(guest, polygonPoint + 4, onPolygonY);
         store(guest, polygonPoint + 8, onPolygonZ);
-        store(guest, toPoint + 4, fp::sub(pointY, load(guest, polygonPoint + 4)));
-        store(guest, toPoint + 8, fp::sub(pointZ, load(guest, polygonPoint + 8)));
-        if (jbe(fp::compare(0.0, dotOf(guest, toPoint, normal))))
+        store(guest, toPoint + 4, fp::sub(pointY, loadFloat(guest, polygonPoint + 4)));
+        store(guest, toPoint + 8, fp::sub(pointZ, loadFloat(guest, polygonPoint + 8)));
+        if (jbe(fp::compare(0.0, dotOf(cpu, guest, toPoint, normal))))
             continue;
-        if (guest.call(kHitWall, args({ car, at, normal, polygonPoint })) != 0)
+        if (*fe::direct<0x42ee10, raceload::hit>(app, cpu, car, at, normal, polygonPoint))
             hit = 1;
     }
     return hit;
@@ -477,8 +511,10 @@ reg32 probeWalls(Guest& guest, reg32 car)
  * through it, past a limit, stopped.  Then its spin, to bring its up to `wanted`, the
  * three floats it is called with, or to the road's when it has met it: nothing when
  * upright and nearly there.  Its stack arguments are written over, as the game does. */
-reg32 predictContact(Guest& guest, reg32 car, reg32 wanted)
+x86::reg32 frontend::simb::predictContact(App* app, CPU& cpu, reg32 car, reg32 wanted)
 {
+    Guest guest(app, cpu);
+    const fe::Frame locals(guest, cpu, 0x1e4);
     constexpr reg32 kPosition = 0x00, kInverse = 0x78, kFrameAhead = 0x9c, kFrameAheadUp = 0xa8, kRoadCopy = 0xc0,
                     kRoadCopyUp = 0xcc, kFixedFrame = 0xe4, kScaledRight = 0x108, kUpAhead = 0x114, kOnRoad = 0x120,
                     kDirection = 0x12c, kFixedOther = 0x138, kPutBack = 0x144, kAhead = 0x150, kBoxOffset = 0x15c,
@@ -487,45 +523,45 @@ reg32 predictContact(Guest& guest, reg32 car, reg32 wanted)
     const reg32 roadCopy = frame + kRoadCopy;
     copyDwords(guest, roadCopy, car + kRoadFrame, kMatrixDwords);
     copyDwords(guest, frame + kDirection, car + kVelocity, 3);
-    guest.call(kNormalise, args({ frame + kDirection }));
-    guest.fpu().take();
+    fe::direct<0x4972f0, vertices::normaliseVector>(app, cpu, frame + kDirection);
 
     // The bottom of the box, as far out as the direction of its speed lies.
-    guest.call(kScaleVectors, args({ 1, car + kFrame }, { guest.dword(car + kHalfWidth), frame + kScaledRight }));
-    guest.call(kScaleVectors, args({ 1, car + kForward }, { guest.dword(car + kHalfLength), frame + kScaledForward }));
+    fe::direct<0x4e0050, vertices::scaleVectorsBy>(app, cpu, 1, car + kFrame, floatWithBits(guest.dword(car + kHalfWidth)),
+                                                    frame + kScaledRight);
+    fe::direct<0x4e0050, vertices::scaleVectorsBy>(app, cpu, 1, car + kForward, floatWithBits(guest.dword(car + kHalfLength)),
+                                                    frame + kScaledForward);
     const reg32 boxOffset = frame + kBoxOffset;
-    store(guest, boxOffset, dotOf(guest, frame + kDirection, frame + kScaledRight));
-    store(guest, boxOffset + 4, -load(guest, car + kHalfHeight));
-    store(guest, boxOffset + 8, dotOf(guest, frame + kDirection, frame + kScaledForward));
+    store(guest, boxOffset, dotOf(cpu, guest, frame + kDirection, frame + kScaledRight));
+    store(guest, boxOffset + 4, -loadFloat(guest, car + kHalfHeight));
+    store(guest, boxOffset + 8, dotOf(cpu, guest, frame + kDirection, frame + kScaledForward));
     vectorByMatrix(guest, boxOffset, car + kFrame, boxOffset);
 
     // That point, a thirty-second of its speed on.
     const Float step = floatConstant(guest, kThirtySecond);
     const reg32 ahead = frame + kAhead;
-    const Float aheadX = fp::add(load(guest, car + kPlace), load(guest, boxOffset));
-    store(guest, ahead, fp::add(aheadX, fp::mul(load(guest, car + kVelocity), step)));
-    const Float aheadY = fp::add(load(guest, car + kPlaceY), load(guest, boxOffset + 4));
-    store(guest, ahead + 4, fp::add(aheadY, fp::mul(load(guest, car + kVelocityY), step)));
-    const Float aheadZ = fp::add(load(guest, car + kPlaceZ), load(guest, boxOffset + 8));
-    store(guest, ahead + 8, fp::add(fp::mul(step, load(guest, car + kVelocityZ)), aheadZ));
+    const Float aheadX = fp::add(loadFloat(guest, car + kPlace), loadFloat(guest, boxOffset));
+    store(guest, ahead, fp::add(aheadX, fp::mul(loadFloat(guest, car + kVelocity), step)));
+    const Float aheadY = fp::add(loadFloat(guest, car + kPlaceY), loadFloat(guest, boxOffset + 4));
+    store(guest, ahead + 4, fp::add(aheadY, fp::mul(loadFloat(guest, car + kVelocityY), step)));
+    const Float aheadZ = fp::add(loadFloat(guest, car + kPlaceZ), loadFloat(guest, boxOffset + 8));
+    store(guest, ahead + 8, fp::add(fp::mul(step, loadFloat(guest, car + kVelocityZ)), aheadZ));
 
     const reg32 position = frame + kPosition;
     const reg32 fixed = frame + kFixed;
     copyDwords(guest, position, car + kTrackPosition, kPositionDwords);
     const Float toFixed = doubleAt(guest, kToFixedAhead);
     for (reg32 axis = 0; axis < 3; ++axis)
-        guest.setDword(fixed + 4 * axis, reg32(fp::toInteger<sreg32>(fp::mul(load(guest, ahead + 4 * axis), toFixed))));
+        guest.setDword(fixed + 4 * axis, reg32(fp::toInteger<sreg32>(fp::mul(loadFloat(guest, ahead + 4 * axis), toFixed))));
     copyDwords(guest, position + kPositionPoint, fixed, 3);
-    guest.call(kUpdatePosition, args({ fixed, position, 1 }));
-    const reg32 surface = guest.call(kPositionSurface, args({ position, 1 })) & kSurfaceMask;
+    fe::direct<0x41f6e0, trackdata::bringPlace>(app, cpu, fixed, position, 1);
+    const reg32 surface = fe::direct<0x4207e0, trackdata::placeSurface>(app, cpu, position, 1) & kSurfaceMask;
 
     if (guest.dword(position + kPositionOnRoad) != 0 && guest.dword(position + kPositionPolygon) != 0
         && guest.word(position + kPositionShoulder) != 0 && surface != 0 && surface != kSurfaceProbesPass
         && guest.dword(position + kPositionOff) == 0)
     {
         // The road's frame there.
-        guest.setEsi(frame + kFixedOther);
-        guest.call(kPositionFrame, args({ position, frame + kFixedFrame }));
+        fe::direct<0x420230, trackdata::takeFrame>(app, cpu, position, frame + kFixedFrame, frame + kFixedOther);
         const Float fromFixed = doubleAt(guest, kFromFixedFrame);
         for (reg32 i = 0; i < kMatrixDwords; ++i)
             store(guest, frame + kFrameAhead + 4 * i, fp::mul(integerAt(guest, frame + kFixedFrame + 4 * i), fromFixed));
@@ -533,47 +569,48 @@ reg32 predictContact(Guest& guest, reg32 car, reg32 wanted)
         copyDwords(guest, upAhead, frame + kFrameAheadUp, 3);
 
         // How unlike the up it has, and whether it is going into it.
-        const reg32 differenceBits = bitsOf(fp::sub(load(guest, wanted + 4), load(guest, upAhead + 4)));
+        const reg32 differenceBits = bitsOf(fp::sub(loadFloat(guest, wanted + 4), loadFloat(guest, upAhead + 4)));
         const float closeness = float(fp::sub(1.0, fromBits(magnitudeBelowNegated(fromBits(differenceBits), differenceBits))));
-        const float into = float(dotOf(guest, car + kVelocity, upAhead));
-        if (jb(fp::compare(Float(closeness), load(guest, kClimbLimit))) && !jbe(fp::compare(0.0, Float(into)))
-            && !jbe(fp::compare(load(guest, wanted + 4), load(guest, upAhead + 4))))
+        const float into = float(dotOf(cpu, guest, car + kVelocity, upAhead));
+        if (jb(fp::compare(Float(closeness), loadFloat(guest, kClimbLimit))) && !jbe(fp::compare(0.0, Float(into)))
+            && !jbe(fp::compare(loadFloat(guest, wanted + 4), loadFloat(guest, upAhead + 4))))
         {
             guest.setDword(upAhead + 4, 0);
-            guest.call(kNormalise, args({ upAhead }));
-            guest.fpu().take();
-            const reg32 reach = bitsOf(fp::mul(load(guest, car + kSpeed), floatConstant(guest, kThirtySecond)));
-            guest.call(kBoxHitsWall, args({ car, upAhead, ahead }, { reach }));
+            fe::direct<0x4972f0, vertices::normaliseVector>(app, cpu, upAhead);
+            const reg32 reach = bitsOf(fp::mul(loadFloat(guest, car + kSpeed), floatConstant(guest, kThirtySecond)));
+            const Pushed pushed(guest, cpu, reach);
+            fe::direct<0x42efe0, raceload::boxHits>(app, cpu, car, upAhead, ahead, pushed.address());
         }
         else
         {
-            guest.call(kBlendFrames, args({ car + kRoadFrame, frame + kFrameAhead }, { kPlusHalf, roadCopy }));
+            guest::direct<0x4b7680, frontend::simc::matrixSlerp>(app, cpu, car + kRoadFrame, frame + kFrameAhead, kPlusHalf,
+                                                                  roadCopy);
         }
     }
 
-    if (!jb(fp::compare(0.0, load(guest, car + kClearance))))
+    if (!jb(fp::compare(0.0, loadFloat(guest, car + kClearance))))
     {
         const reg32 putBack = frame + kPutBack;
         copyDwords(guest, wanted, frame + kRoadCopyUp, 3);
-        guest.call(kScaleVectors, args({ 1, wanted }, { bitsOf(-load(guest, car + kClearance)), putBack }));
-        guest.call(kAddVectors, args({ 1, car + kPlace, putBack, car + kPlace }));
+        fe::direct<0x4e0050, vertices::scaleVectorsBy>(app, cpu, 1, wanted, floatWithBits(bitsOf(-loadFloat(guest, car + kClearance))), putBack);
+        fe::direct<0x4dffb0, vertices::offsetVectorList<true>>(app, cpu, 1, car + kPlace, putBack, car + kPlace);
         guest.setDword(car + kClearance, 0);
-        guest.call(kTranspose, args({ roadCopy, frame + kInverse }));
+        guest::direct<0x4e0110, frontend::simd::transpose>(app, cpu, roadCopy, frame + kInverse);
         const reg32 onRoad = frame + kOnRoad;
         vectorByMatrix(guest, car + kVelocity, frame + kInverse, onRoad);
-        if (jb(fp::compare(load(guest, onRoad + 4), load(guest, kBounceLimit))))
+        if (jb(fp::compare(loadFloat(guest, onRoad + 4), loadFloat(guest, kBounceLimit))))
             guest.setDword(onRoad + 4, 0);
         vectorByMatrix(guest, onRoad, roadCopy, car + kVelocity);
     }
 
     // Its up, or upside down its down, against the one wanted.
-    const Float sign = fromBits(jb(fp::compare(0.0, load(guest, car + kUpright))) ? kPlusOne : kMinusOne);
-    const reg32 aboutZBits = bitsOf(fp::sub(fp::mul(sign, load(guest, car + kUp)), load(guest, wanted)));
-    const reg32 aboutXBits = bitsOf(fp::sub(load(guest, wanted + 8), fp::mul(sign, load(guest, car + kUpZ))));
+    const Float sign = fromBits(jb(fp::compare(0.0, loadFloat(guest, car + kUpright))) ? kPlusOne : kMinusOne);
+    const reg32 aboutZBits = bitsOf(fp::sub(fp::mul(sign, loadFloat(guest, car + kUp)), loadFloat(guest, wanted)));
+    const reg32 aboutXBits = bitsOf(fp::sub(loadFloat(guest, wanted + 8), fp::mul(sign, loadFloat(guest, car + kUpZ))));
     const Float aboutZ = fromBits(aboutZBits);
     const Float aboutX = fromBits(aboutXBits);
 
-    const Float upright = fromBits(magnitudeBelowNegated(load(guest, car + kUpright), guest.dword(car + kUpright)));
+    const Float upright = fromBits(magnitudeBelowNegated(loadFloat(guest, car + kUpright), guest.dword(car + kUpright)));
     if (!jbe(fp::compare(upright, floatConstant(guest, kTiltUpright))))
     {
         const Float edge = doubleAt(guest, kTiltEdge);
@@ -606,14 +643,16 @@ reg32 predictContact(Guest& guest, reg32 car, reg32 wanted)
  * lone player's race, its tuning ask), and the hit's sound and place set.  Then a car
  * no longer going into it: hardly turning and allowed to rest (sub_49fde0), on the
  * road, it starts the idle shake (sub_4296c0); else, upright, a kick from its spin. */
-reg32 reactToSurface(Guest& guest, reg32 car, reg32 normal)
+x86::reg32 frontend::simb::reactToSurface(App* app, CPU& cpu, reg32 car, reg32 normal)
 {
+    Guest guest(app, cpu);
+    const fe::Frame locals(guest, cpu, 0x98);
     constexpr reg32 kInverse = 0x00, kOnRoad = 0x24, kScaledForward = 0x30, kScaledUp = 0x3c;
     const reg32 frame = guest.frame();
-    const float into = float(dotOf(guest, car + kVelocity, normal));
-    if (!jbe(fp::compare(0.0, Float(into))) && guest.call(kProbeWalls, args({ car })) != 0)
+    const float into = float(dotOf(cpu, guest, car + kVelocity, normal));
+    if (!jbe(fp::compare(0.0, Float(into))) && guest::direct<0x4a1210, probeWalls>(app, cpu, car) != 0)
     {
-        const Float upright = load(guest, car + kUpright);
+        const Float upright = loadFloat(guest, car + kUpright);
         guest.setDword(car + kClearance, 0);
         if (!jbe(fp::compare(upright, doubleAt(guest, kBounceUpright))))
         {
@@ -622,22 +661,23 @@ reg32 reactToSurface(Guest& guest, reg32 car, reg32 normal)
             {
                 // The share of its speed that stays.
                 const Float share = doubleAt(guest, kBounceShare);
-                const reg32 race = guest.dword(kRaceKind);
-                const float tuned = sreg32(guest.dword(kPlayers)) <= 1 && race != 1 && race != 2
-                    ? float(fp::mul(fp::mul(load(guest, guest.dword(car + kTuning) + kTuningBounce), share),
-                                    load(guest, data + kDataBounce)))
-                    : float(fp::mul(load(guest, data + kDataBounce), share));
+                const reg32 race = gameSettings(guest).raceType;
+                const float tuned = sreg32(gameSettings(guest).playMode) <= 1 && race != 1 && race != 2
+                    ? float(fp::mul(fp::mul(loadFloat(guest, guest.dword(car + kTuning) + kTuningBounce), share),
+                                    loadFloat(guest, data + kDataBounce)))
+                    : float(fp::mul(loadFloat(guest, data + kDataBounce), share));
                 const Float wide = Float(tuned);
                 const Float amount = !jbe(fp::compare(0.0, wide)) ? 0.0
                     : !jbe(fp::compare(wide, doubleAt(guest, kBounceMost))) ? 0.2 : wide;
                 const reg32 stays = bitsOf(fp::add(amount, doubleAt(guest, kBounceBase)));
 
                 const reg32 onRoad = frame + kOnRoad;
-                guest.call(kTranspose, args({ car + kRoadFrame, frame + kInverse }));
+                guest::direct<0x4e0110, frontend::simd::transpose>(app, cpu, car + kRoadFrame, frame + kInverse);
                 vectorByMatrix(guest, car + kVelocity, frame + kInverse, onRoad);
-                store(guest, onRoad + 4, fp::mul(load(guest, onRoad + 4), fromBits(stays)));
+                store(guest, onRoad + 4, fp::mul(loadFloat(guest, onRoad + 4), fromBits(stays)));
                 vectorByMatrix(guest, onRoad, car + kRoadFrame, car + kVelocity);
-                guest.call(kScaleVectors, args({ 1, car + kSpinX }, { stays, car + kSpinX }));
+                fe::direct<0x4e0050, vertices::scaleVectorsBy>(app, cpu, 1, car + kSpinX, floatWithBits(stays),
+                                                                car + kSpinX);
             }
 
             const reg32 hit = magnitudeBelowNegated(Float(into), bitsOf(Float(into)));
@@ -647,23 +687,28 @@ reg32 reactToSurface(Guest& guest, reg32 car, reg32 normal)
             store(guest, car + kSoundLevel, level);
             // The hit's place: three quarters to the back and to the bottom of its box.
             const Float boxShare = doubleAt(guest, kBoxShare);
-            const reg32 byHeight = bitsOf(fp::mul(load(guest, car + kHalfHeight), boxShare));
-            guest.call(kScaleVectors, args({ 1, car + kUp }, { byHeight, frame + kScaledUp }));
-            const reg32 byLength = bitsOf(fp::mul(load(guest, car + kHalfLength), boxShare));
-            guest.call(kScaleVectors, args({ 1, car + kForward }, { byLength, frame + kScaledForward }));
-            guest.call(kSubtractVectors, args({ 1, car + kPlace, frame + kScaledForward, car + kHitPoint }));
-            guest.call(kSubtractVectors, args({ 1, car + kHitPoint, frame + kScaledUp, car + kHitPoint }));
+            const reg32 byHeight = bitsOf(fp::mul(loadFloat(guest, car + kHalfHeight), boxShare));
+            fe::direct<0x4e0050, vertices::scaleVectorsBy>(app, cpu, 1, car + kUp, floatWithBits(byHeight), frame + kScaledUp);
+            const reg32 byLength = bitsOf(fp::mul(loadFloat(guest, car + kHalfLength), boxShare));
+            fe::direct<0x4e0050, vertices::scaleVectorsBy>(app, cpu, 1, car + kForward, floatWithBits(byLength),
+                                                            frame + kScaledForward);
+            fe::direct<0x4e0000, vertices::offsetVectorList<false>>(app, cpu, 1, car + kPlace, frame + kScaledForward,
+                                                                     car + kHitPoint);
+            fe::direct<0x4e0000, vertices::offsetVectorList<false>>(app, cpu, 1, car + kHitPoint, frame + kScaledUp,
+                                                                     car + kHitPoint);
         }
     }
 
-    const Float resting = dotOf(guest, car + kVelocity, normal);
+    // By address: what it leaves in eax goes on below.
+    guest.call(kDot, args({ car + kVelocity, normal }));
+    const Float resting = guest.fpu().take();
     reg32 eax = guest.eax();
-    if (!jb(fcom(eax, resting, load(guest, kBounceLimit))))
+    if (!jb(fcom(eax, resting, loadFloat(guest, kBounceLimit))))
         return eax;
 
     const Float restSpin = floatConstant(guest, kRestSpin);
     const auto spinIsSmall = [&](reg32 axis) {
-        const Float value = load(guest, car + axis);
+        const Float value = loadFloat(guest, car + axis);
         reg32 magnitude;
         if (jbe(fcom(eax, 0.0, value)))
         {
@@ -678,8 +723,8 @@ reg32 reactToSurface(Guest& guest, reg32 car, reg32 normal)
     };
     if (spinIsSmall(kSpinX) && spinIsSmall(kSpinY) && spinIsSmall(kSpinZ))
     {
-        eax = guest.call(kMayRest, args({ car }));
-        if (eax != 0 && !jb(fcom(eax, 0.0, load(guest, car + kClearance))))
+        eax = guest::direct<0x49fde0, frontend::sima::carTiltedOver>(app, cpu, car);
+        if (eax != 0 && !jb(fcom(eax, 0.0, loadFloat(guest, car + kClearance))))
         {
             guest.setWord(car + kContacts, 0);
             return guest.call(kStartIdleShake, args({ car }));
@@ -688,7 +733,7 @@ reg32 reactToSurface(Guest& guest, reg32 car, reg32 normal)
     if (sreg32(guest.dword(car + kUpright)) > kKickUprightBits)
     {
         const Float toKick = doubleAt(guest, kSpinToKick);
-        const Float spinY = load(guest, car + kSpinY);
+        const Float spinY = loadFloat(guest, car + kSpinY);
         store(guest, car + kKickY, fp::mul(spinY, toKick));
         store(guest, car + kKickX, fp::mul(toKick, spinY));
     }
@@ -698,13 +743,14 @@ reg32 reactToSurface(Guest& guest, reg32 car, reg32 normal)
 /* sub_4a21a0: a car in a tunnel (sub_420bf0) that has reached its node's roof: its
  * box against the road's point, moved up by that height, facing down, and the spin
  * that gives it clamped (sub_4a20c0). */
-reg32 hitTunnelRoof(Guest& guest, reg32 car)
+x86::reg32 frontend::simb::hitTunnelRoof(App* app, CPU& cpu, reg32 car)
 {
+    Guest guest(app, cpu);
+    const fe::Frame locals(guest, cpu, 0x34);
     constexpr reg32 kPoint = 0x00, kDown = 0x0c;
     const reg32 frame = guest.frame();
     const reg32 node = guest.dword(car + kCurrentNode);
-    reg32 eax = guest.call(kInTunnel, args({}, { guest.dword(car + kPlace), guest.dword(car + kPlaceY),
-                                                 guest.dword(car + kPlaceZ), node }));
+    reg32 eax = *fe::direct<0x420bf0, trackdata::placeInTunnel>(app, cpu, car + kPlace, node);
     if (eax == 0)
         return eax;
     eax = guest.dword(guest.dword(kRoofHeights) + node * 4);
@@ -712,12 +758,15 @@ reg32 hitTunnelRoof(Guest& guest, reg32 car)
     const reg32 down = frame + kDown;
     for (reg32 axis = 0; axis < 3; ++axis)
         guest.setDword(down + 4 * axis, guest.dword(car + kRoadUp + 4 * axis) ^ 0x80000000u);
-    if (!jb(fcom(eax, fp::add(load(guest, car + kRoadHeight), roof), load(guest, car + kPlaceY))))
+    if (!jb(fcom(eax, fp::add(loadFloat(guest, car + kRoadHeight), roof), loadFloat(guest, car + kPlaceY))))
         return eax;
     const reg32 point = frame + kPoint;
     copyDwords(guest, point, car + kRoadPoint, 3);
-    store(guest, point + 4, fp::add(load(guest, point + 4), roof));
-    guest.call(kBoxHitsWall, args({ car, down, point }, { 0 }));
+    store(guest, point + 4, fp::add(loadFloat(guest, point + 4), roof));
+    {
+        const Pushed pushed(guest, cpu, 0);
+        fe::direct<0x42efe0, raceload::boxHits>(app, cpu, car, down, point, pushed.address());
+    }
     return guest.call(kClampSpin, args({ car }));
 }
 
@@ -726,7 +775,13 @@ reg32 hitTunnelRoof(Guest& guest, reg32 car)
  * doubled unless its flags say.  With its wheels on something, it then loses speed in
  * the world's x and z, by the square of each, the more the more its axes lie along
  * that one. */
-reg32 downforceAndDrag(Guest& guest, reg32 car)
+namespace
+{
+
+/* Its body, a function of its own as it was before the core: fp:: is the host's arithmetic, which
+ * of two NaNs keeps the one the compiler happens to put first, and laid out inside the core the
+ * check's case 503 of 1000 (two NaNs of opposite signs) came out the other way round. */
+reg32 downforceAndDragIn(win32::WinApplication* app, x86::CPU& cpu, Guest& guest, reg32 car)
 {
     constexpr reg32 kInverse = 0x00, kOnCar = 0x24;
     const reg32 frame = guest.frame();
@@ -736,18 +791,18 @@ reg32 downforceAndDrag(Guest& guest, reg32 car)
         return eax;
 
     if (!(guest.byte(car + kFlags) & kFlagsNoDownforce)
-        && !jbe(fcom(eax, load(guest, car + kUpright), doubleAt(guest, kDownforceUpright)))
+        && !jbe(fcom(eax, loadFloat(guest, car + kUpright), doubleAt(guest, kDownforceUpright)))
         && sreg32(guest.dword(car + kSpeed)) > kDownforceSpeedBits)
     {
         reg32 downforce = guest.dword(data + kDataDownforce);
-        const float forward = float(dotOf(guest, car + kVelocity, car + kForward));
+        const float forward = float(dotOf(cpu, guest, car + kVelocity, car + kForward));
         if (!(guest.byte(car + kFlags) & kFlagsDownforceOnce))
             downforce = bitsOf(fp::mul(fromBits(downforce), doubleAt(guest, kDownforceDoubled)));
         const reg32 onCar = frame + kOnCar;
-        guest.call(kTranspose, args({ car + kFrame, frame + kInverse }));
+        guest::direct<0x4e0110, frontend::simd::transpose>(app, cpu, car + kFrame, frame + kInverse);
         vectorByMatrix(guest, car + kVelocity, frame + kInverse, onCar);
         if (jb(fp::compare(0.0, Float(forward))))
-            store(guest, onCar + 4, fp::sub(load(guest, onCar + 4), fp::mul(fromBits(downforce), Float(forward))));
+            store(guest, onCar + 4, fp::sub(loadFloat(guest, onCar + 4), fp::mul(fromBits(downforce), Float(forward))));
         vectorByMatrix(guest, onCar, car + kFrame, car + kVelocity);
         eax = onCar + 0xc;
     }
@@ -755,18 +810,18 @@ reg32 downforceAndDrag(Guest& guest, reg32 car)
     if (guest.word(car + kContacts) == 0)
         return eax;
 
-    const Float velocityX = load(guest, car + kVelocity);
-    const Float velocityZ = load(guest, car + kVelocityZ);
+    const Float velocityX = loadFloat(guest, car + kVelocity);
+    const Float velocityZ = loadFloat(guest, car + kVelocityZ);
     const Float ofUp = fromBits(kDragOfUp);
     const Float ofRight = fromBits(kDragOfRight);
     const Float ofForward = fromBits(guest.byte(car + kFlags) & kFlagsNoDownforce ? kDragOfForwardNoDownforce : kDragOfForward);
     const auto part = [&](reg32 offset) {
-        return fromBits(magnitudeBelowNegated(load(guest, car + offset), guest.dword(car + offset)));
+        return fromBits(magnitudeBelowNegated(loadFloat(guest, car + offset), guest.dword(car + offset)));
     };
     const Float rightX = part(kFrame), rightZ = part(kFrame + 8);
     const Float upX = part(kUp), upZ = part(kUp + 8);
     const Float forwardX = part(kForward);
-    const reg32 forwardZBits = magnitudeBelowNegated(load(guest, car + kForward + 8), guest.dword(car + kForward + 8));
+    const reg32 forwardZBits = magnitudeBelowNegated(loadFloat(guest, car + kForward + 8), guest.dword(car + kForward + 8));
     const Float forwardZ = fromBits(forwardZBits);
     const Float dragX = fp::add(fp::add(fp::mul(ofUp, upX), fp::mul(ofRight, rightX)), fp::mul(ofForward, forwardX));
     const Float dragZ = fp::add(fp::add(fp::mul(ofUp, upZ), fp::mul(ofRight, rightZ)), fp::mul(ofForward, forwardZ));
@@ -779,35 +834,46 @@ reg32 downforceAndDrag(Guest& guest, reg32 car)
     // Against the speed, what eax has left of it as the code goes.
     eax = forwardZBits;
     reg32 changeX = lossX;
-    if (jb(fcom(eax, 0.0, load(guest, car + kVelocity))))
+    if (jb(fcom(eax, 0.0, loadFloat(guest, car + kVelocity))))
         changeX = bitsOf(-fromBits(lossX));
     else
         eax = lossX;
-    store(guest, car + kVelocity, fp::add(load(guest, car + kVelocity), fromBits(changeX)));
+    store(guest, car + kVelocity, fp::add(loadFloat(guest, car + kVelocity), fromBits(changeX)));
     reg32 changeZ = lossZ;
-    if (jb(fcom(eax, 0.0, load(guest, car + kVelocityZ))))
+    if (jb(fcom(eax, 0.0, loadFloat(guest, car + kVelocityZ))))
         changeZ = bitsOf(-fromBits(lossZ));
     else
         eax = lossZ;
-    store(guest, car + kVelocityZ, fp::add(load(guest, car + kVelocityZ), fromBits(changeZ)));
+    store(guest, car + kVelocityZ, fp::add(loadFloat(guest, car + kVelocityZ), fromBits(changeZ)));
     return eax;
+}
+
+}  // namespace
+
+x86::reg32 frontend::simb::downforceAndDrag(App* app, CPU& cpu, reg32 car)
+{
+    Guest guest(app, cpu);
+    const fe::Frame locals(guest, cpu, 0xd0);
+    return downforceAndDragIn(app, cpu, guest, car);
 }
 
 /* sub_4a2690: an active car's numbers as it stands on the road: its axes along the
  * road's up, its frame following (sub_4a0f30, sub_4a1090), and how far across the road
  * it is.  The vector that takes for the road's right is all of one byte of the node,
  * its first, where sub_4a0aa0 takes three: so the game has it. */
-reg32 settle(Guest& guest, reg32 car)
+x86::reg32 frontend::simb::settle(App* app, CPU& cpu, reg32 car)
 {
+    Guest guest(app, cpu);
+    const fe::Frame locals(guest, cpu, 0x50);
     constexpr reg32 kRoadUpCopy = 0x00, kFromNode = 0x0c, kNodePoint = 0x18, kNodeSide = 0x24;
     if (guest.byte(car + kActive) == 0 || guest.byte(car + kDetached) != 0)
         return car;
     const reg32 frame = guest.frame();
     const reg32 up = frame + kRoadUpCopy;
     copyDwords(guest, up, car + kRoadUp, 3);
-    store(guest, car + kRightAgainstRoad, dotOf(guest, car + kFrame, up));
-    store(guest, car + kUpright, dotOf(guest, car + kUp, up));
-    store(guest, car + kForwardAgainstRoad, dotOf(guest, car + kForward, up));
+    store(guest, car + kRightAgainstRoad, dotOf(cpu, guest, car + kFrame, up));
+    store(guest, car + kUpright, dotOf(cpu, guest, car + kUp, up));
+    store(guest, car + kForwardAgainstRoad, dotOf(cpu, guest, car + kForward, up));
     guest.call(kFollowFrame, args({ car, up }, { guest.dword(car + kUpright) }));
     guest.call(kEaseFrame, args({ car }));
 
@@ -816,20 +882,23 @@ reg32 settle(Guest& guest, reg32 car)
     store(guest, frame + kNodePoint, fp::mul(integerAt(guest, point), fromFixed));
     store(guest, frame + kNodePoint + 4, fp::mul(integerAt(guest, point + 4), fromFixed));
     store(guest, frame + kNodePoint + 8, fp::mul(integerAt(guest, point + 8), fromFixed));
-    guest.call(kSubtractVectors, args({ 1, car + kPlace, frame + kNodePoint, frame + kFromNode }));
+    fe::direct<0x4e0000, vertices::offsetVectorList<false>>(app, cpu, 1, car + kPlace, frame + kNodePoint,
+                                                             frame + kFromNode);
 
     const Float side = nodePart(guest, guest.dword(kNodes) + guest.dword(car + kCurrentNode) * kNodeBytes, kNodeRight);
     store(guest, frame + kNodeSide, fp::mul(side, fromFixed));
     store(guest, frame + kNodeSide + 4, fp::mul(side, fromFixed));
     store(guest, frame + kNodeSide + 8, fp::mul(fromFixed, side));
-    store(guest, car + kAcross, dotOf(guest, frame + kFromNode, frame + kNodeSide));
+    store(guest, car + kAcross, dotOf(cpu, guest, frame + kFromNode, frame + kNodeSide));
     return car;
 }
 
 /* sub_4a2bc0: how far across the road the car is at its node: its point from the
  * node's, along the road's right.  The answer stays on the x87. */
-reg32 offsetAcross(Guest& guest, reg32 car)
+x86::reg32 frontend::simb::offsetAcross(App* app, CPU& cpu, reg32 car)
 {
+    Guest guest(app, cpu);
+    const fe::Frame locals(guest, cpu, 0x44);
     constexpr reg32 kFromNode = 0x00, kNodePoint = 0x18;
     const reg32 frame = guest.frame();
     const reg32 point = guest.dword(kNodes) + guest.dword(car + kCurrentNode) * kNodeBytes;
@@ -837,31 +906,39 @@ reg32 offsetAcross(Guest& guest, reg32 car)
     store(guest, frame + kNodePoint, fp::mul(integerAt(guest, point), fromFixed));
     store(guest, frame + kNodePoint + 4, fp::mul(integerAt(guest, point + 4), fromFixed));
     store(guest, frame + kNodePoint + 8, fp::mul(fromFixed, integerAt(guest, point + 8)));
-    guest.call(kSubtractVectors, args({ 1, car + kPlace, frame + kNodePoint, frame + kFromNode }));
+    fe::direct<0x4e0000, vertices::offsetVectorList<false>>(app, cpu, 1, car + kPlace, frame + kNodePoint,
+                                                             frame + kFromNode);
+    // By address: what it leaves in eax is this function's.
     return guest.call(kDot, args({ car + kRoadFrame, frame + kFromNode }));
 }
 
 /* sub_4a2cc0: a turn by three angles, the stack's first three, as one matrix at `out`,
  * their magnitudes added to the float the fourth points at; 1 when one of them is not
  * nothing.  The turn about y is worked out in any case. */
-reg32 turnMatrix(Guest& guest, reg32 out, reg32 stackArguments)
+x86::reg32 frontend::simb::turnMatrix(App* app, CPU& cpu, reg32 out, reg32 angleX, reg32 angleY, reg32 angleZ,
+                                       reg32 total)
 {
+    Guest guest(app, cpu);
+    const fe::Frame locals(guest, cpu, 0xc4);
     constexpr reg32 kYOnly = 0x00, kZOnly = 0x24, kYAndX = 0x48, kXOnly = 0x6c;
     const reg32 frame = guest.frame();
-    const reg32 angleX = guest.dword(stackArguments), angleY = guest.dword(stackArguments + 4),
-                angleZ = guest.dword(stackArguments + 8);
-    const reg32 total = guest.dword(stackArguments + 12);
     const Float x = fromBits(magnitudeNotAboveNegated(fromBits(angleX), angleX));
     const Float y = fromBits(magnitudeNotAboveNegated(fromBits(angleY), angleY));
     const Float z = fromBits(magnitudeNotAboveNegated(fromBits(angleZ), angleZ));
-    store(guest, total, fp::add(fp::add(fp::add(x, y), z), load(guest, total)));
+    store(guest, total, fp::add(fp::add(fp::add(x, y), z), loadFloat(guest, total)));
 
-    guest.call(kYRotation, args({ frame + kYOnly }, { angleY }));
+    {
+        const Pushed pushed(guest, cpu, angleY);
+        fe::direct<0x4dfde0, ea::rotateAboutY>(app, cpu, frame + kYOnly, pushed.address());
+    }
     reg32 turned = jb(fp::compare(0.0, y)) ? 1 : 0;
     if (jb(fp::compare(0.0, x)))
     {
-        guest.call(kXRotation, args({ frame + kXOnly }, { angleX }));
-        guest.call(kMultiplyMatrices, args({ frame + kXOnly, frame + kYOnly, frame + kYAndX }));
+        {
+            const Pushed pushed(guest, cpu, angleX);
+            fe::direct<0x4dfd80, ea::rotateAboutX>(app, cpu, frame + kXOnly, pushed.address());
+        }
+        fe::direct<0x4e0280, vertices::multiplyMatrix>(app, cpu, frame + kXOnly, frame + kYOnly, frame + kYAndX);
         turned = 1;
     }
     else
@@ -871,7 +948,7 @@ reg32 turnMatrix(Guest& guest, reg32 out, reg32 stackArguments)
     if (jb(fp::compare(0.0, z)))
     {
         guest.call(kZRotation, args({ frame + kZOnly }, { angleZ }));
-        guest.call(kMultiplyMatrices, args({ frame + kYAndX, frame + kZOnly, out }));
+        fe::direct<0x4e0280, vertices::multiplyMatrix>(app, cpu, frame + kYAndX, frame + kZOnly, out);
         turned = 1;
     }
     else
@@ -881,6 +958,25 @@ reg32 turnMatrix(Guest& guest, reg32 out, reg32 stackArguments)
     return turned;
 }
 
+/* sub_4a2f10 and sub_4a2f30: what a car's +0x614 points at: a thirty-second of its
+ * spin put on its frame, and a sixty-fourth (sub_4a2e20). */
+x86::reg32 frontend::simb::spinThirtySecond(App* app, CPU& cpu, reg32 car)
+{
+    Guest guest(app, cpu);
+    const fe::Frame locals(guest, cpu, 8);
+    return guest.call(kSpinStep, args({ car, 0x20 }));
+}
+
+x86::reg32 frontend::simb::spinSixtyFourth(App* app, CPU& cpu, reg32 car)
+{
+    Guest guest(app, cpu);
+    const fe::Frame locals(guest, cpu, 8);
+    return guest.call(kSpinStep, args({ car, 0x40 }));
+}
+
+namespace
+{
+
 // The registers each function pushes, of those a stand-in restores.
 constexpr std::uint8_t kKeepsEsiEdi = fe::kRestoreEsi | fe::kRestoreEdi;
 constexpr std::uint8_t kKeepsAllButEdx = fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEsi | fe::kRestoreEdi;
@@ -889,81 +985,82 @@ constexpr std::uint8_t kKeepsAllButEdx = fe::kRestoreEbx | fe::kRestoreEcx | fe:
 
 void frontend::simTrackPlaceOnRoad(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_4a0aa0", 0, 0x54, nullptr, 0, kKeepsEsiEdi };
+    static fe::Site site{ "sub_4a0aa0", 0, 0, nullptr, 0, kKeepsEsiEdi };
     const reg32 car = cpu.eax, node = cpu.edx, offset = cpu.ebx, facesBack = cpu.ecx;
-    fe::runWhole(app, cpu, site, [&](Guest& guest) { return placeOnRoad(guest, car, node, offset, facesBack); });
+    fe::runWhole(app, cpu, site, [&](Guest&) { return simb::placeOnRoad(app, cpu, car, node, offset, facesBack); });
 }
 
 void frontend::simTrackProbeWalls(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_4a1210", 0, 0x13c, nullptr, 0 };
+    static fe::Site site{ "sub_4a1210", 0, 0, nullptr, 0 };
     const reg32 car = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest& guest) { return probeWalls(guest, car); });
+    fe::runWhole(app, cpu, site, [&](Guest&) { return simb::probeWalls(app, cpu, car); });
 }
 
 void frontend::simTrackPredictContact(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_4a1610", 12, 0x1e4, nullptr, 0 };
+    static fe::Site site{ "sub_4a1610", 12, 0, nullptr, 0 };
     const reg32 car = cpu.eax, wanted = cpu.esp + 4;
-    fe::runWhole(app, cpu, site, [&](Guest& guest) { return predictContact(guest, car, wanted); });
+    fe::runWhole(app, cpu, site, [&](Guest&) { return simb::predictContact(app, cpu, car, wanted); });
 }
 
 void frontend::simTrackReactToSurface(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_4a1ce0", 0, 0x98, nullptr, 0, kKeepsAllButEdx };
+    static fe::Site site{ "sub_4a1ce0", 0, 0, nullptr, 0, kKeepsAllButEdx };
     const reg32 car = cpu.eax, normal = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest& guest) { return reactToSurface(guest, car, normal); });
+    fe::runWhole(app, cpu, site, [&](Guest&) { return simb::reactToSurface(app, cpu, car, normal); });
 }
 
 void frontend::simTrackTunnelRoof(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_4a21a0", 0, 0x34, nullptr, 0 };
+    static fe::Site site{ "sub_4a21a0", 0, 0, nullptr, 0 };
     const reg32 car = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest& guest) { return hitTunnelRoof(guest, car); });
+    fe::runWhole(app, cpu, site, [&](Guest&) { return simb::hitTunnelRoof(app, cpu, car); });
 }
 
 void frontend::simTrackDownforceAndDrag(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_4a2260", 0, 0xd0, nullptr, 0 };
+    static fe::Site site{ "sub_4a2260", 0, 0, nullptr, 0 };
     const reg32 car = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest& guest) { return downforceAndDrag(guest, car); });
+    fe::runWhole(app, cpu, site, [&](Guest&) { return simb::downforceAndDrag(app, cpu, car); });
 }
 
 void frontend::simTrackSettle(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_4a2690", 0, 0x50, nullptr, 0 };
+    static fe::Site site{ "sub_4a2690", 0, 0, nullptr, 0 };
     const reg32 car = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest& guest) { return settle(guest, car); });
+    fe::runWhole(app, cpu, site, [&](Guest&) { return simb::settle(app, cpu, car); });
 }
 
 void frontend::simTrackOffsetAcross(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_4a2bc0", 0, 0x44, nullptr, 0 };
+    static fe::Site site{ "sub_4a2bc0", 0, 0, nullptr, 0 };
     const reg32 car = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest& guest) { return offsetAcross(guest, car); });
+    fe::runWhole(app, cpu, site, [&](Guest&) { return simb::offsetAcross(app, cpu, car); });
 }
 
 void frontend::simTrackTurnMatrix(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_4a2cc0", 16, 0xc4, nullptr, 0 };
-    const reg32 out = cpu.eax, stackArguments = cpu.esp + 4;
-    fe::runWhole(app, cpu, site, [&](Guest& guest) { return turnMatrix(guest, out, stackArguments); });
+    static fe::Site site{ "sub_4a2cc0", 16, 0, nullptr, 0 };
+    const reg32 out = cpu.eax;
+    const reg32 angleX = guest::at(app, cpu.esp + 4), angleY = guest::at(app, cpu.esp + 8);
+    const reg32 angleZ = guest::at(app, cpu.esp + 12), total = guest::at(app, cpu.esp + 16);
+    fe::runWhole(app, cpu, site,
+                 [&](Guest&) { return simb::turnMatrix(app, cpu, out, angleX, angleY, angleZ, total); });
 }
 
-/* sub_4a2f10 and sub_4a2f30: what a car's +0x614 points at: a thirty-second of its
- * spin put on its frame, and a sixty-fourth (sub_4a2e20). */
 void frontend::simTrackSpinThirtySecond(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_4a2f10", 0, 8, nullptr, 0, fe::kRestoreEdx };
+    static fe::Site site{ "sub_4a2f10", 0, 0, nullptr, 0, fe::kRestoreEdx };
     const reg32 car = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest& guest) { return guest.call(kSpinStep, args({ car, 0x20 })); });
+    fe::runWhole(app, cpu, site, [&](Guest&) { return simb::spinThirtySecond(app, cpu, car); });
 }
 
 void frontend::simTrackSpinSixtyFourth(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_4a2f30", 0, 8, nullptr, 0, fe::kRestoreEdx };
+    static fe::Site site{ "sub_4a2f30", 0, 0, nullptr, 0, fe::kRestoreEdx };
     const reg32 car = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest& guest) { return guest.call(kSpinStep, args({ car, 0x40 })); });
+    fe::runWhole(app, cpu, site, [&](Guest&) { return simb::spinSixtyFourth(app, cpu, car); });
 }
 
 }

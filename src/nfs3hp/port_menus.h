@@ -1,6 +1,7 @@
 #ifndef NFS3HP_PORT_MENUS_H
 #define NFS3HP_PORT_MENUS_H
 
+#include "native_guest.h"
 #include "port.h"
 
 /* The menu files and the screens they make, rewritten (port.h says how;
@@ -42,8 +43,49 @@ void checkMenuFiles(App* app, CPU& cpu);    // 0x449960
 void callOnLoad(App* app, CPU& cpu);        // 0x449990
 void appendBackslash(App* app, CPU& cpu);   // 0x4529a0
 
+/* The typed cores the menus call as C++ (guest::direct), and how the game's code calls each by address
+ * (ByAddress below, for the checks' stand-ins).  A Result is nullopt when the game stopped in a call.  A core's
+ * `esp` is the frame base its adapter hands it: the game's esp on entry, at the return address.  A caller
+ * through guest::direct passes cpu.esp - 4 - 4 * N, N the stack words the game's call pushes: the esp the
+ * adapter hands it, so the core's frame lies where the game's does; by address the call makes it. */
+
+// The game's 0x4429c0: whether the codelink at `codelink` names the name at `name` (`ebx` handed on); esp the frame base.
+Result codelinkMatched(App* app, CPU& cpu, reg32 esp, reg32 codelink, reg32 name, reg32 ebx);
+// The game's 0x449510: the screen named at `name` loaded, every screen let go first with `reset`; in.ebx and in.ecx
+// handed on as the caller's (in.eax and in.edx unread); esp the frame base.
+Result menusLoaded(App* app, CPU& cpu, reg32 esp, reg32 name, reg32 reset, const Args& in);
+
 }  // namespace menus
 }  // namespace port
+
+namespace guest
+{
+
+// The codelink in eax, the name in edx, `ebx` in ebx; the answer in eax.
+template <>
+struct ByAddress<port::menus::codelinkMatched>
+{
+    template <x86::reg32 Address>
+    static port::Result call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32, x86::reg32 codelink,
+                             x86::reg32 name, x86::reg32 ebx)
+    {
+        return watcomEax(app, cpu, Address, {codelink, name, ebx});
+    }
+};
+
+// The name in eax, `reset` in edx, in.ebx and in.ecx in ebx and ecx; eax back.
+template <>
+struct ByAddress<port::menus::menusLoaded>
+{
+    template <x86::reg32 Address>
+    static port::Result call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32, x86::reg32 name,
+                             x86::reg32 reset, const port::Args& in)
+    {
+        return watcomEax(app, cpu, Address, {name, reset, in.ebx, in.ecx});
+    }
+};
+
+}  // namespace guest
 }  // namespace nfs3hp
 
 #endif

@@ -129,8 +129,8 @@ case kLoadSavesCompare:
 {"load::bigHeaderLength", true, true, 0},
 {"load::findBigEntry", true, true, 2},
 {"load::locateBigEntry", true, true, 2},
-{"load::savefileadr", true, true, 0},
-{"load::savefileadrQuietly", true, true, 0},
+{"load::savefileadr", true, true, 3},
+{"load::savefileadrQuietly", true, true, 3},
 {"load::fixedSine", true, true, 0},
 {"load::fixedCosine", true, true, 0},
 #elif defined(LOAD_ARGUMENTS)
@@ -310,10 +310,11 @@ bool makeLoadSavesArguments(CheckApp& g, const std::string& name, x86::CPU& cpu,
         cpu.edx = aSavesName(g, kSavesNames, extensions, 3);
         // Byte 0 of the memory a name with no '.' clears: as the cases before left it.
         g.getMemory<x86::reg8>(0) = x86::reg8(random32());
-        // "*.%s" printed into 0x20 bytes of the frame: sprintf's stand-in
-        // prints up to 0x4f, which would write over the list's record's
-        // address and the count after it.  The case's seed picked for one
-        // that prints fewer than 0x18 -- the calls before it as they go:
+        // "*.%s" printed into the frame's 0xc bytes below where the code
+        // keeps the names' end ("*.rp3" in the game): sprintf's stand-in
+        // prints up to 0x4f, which would write over it, the list's record's
+        // address and the count.  The case's seed picked for one that
+        // prints fewer than 0xc -- the calls before it as they go:
         // the block freed or not, the list's first entry or not, the
         // directory had (no Error) and set.
         const bool freed = g.word(kSavesList + 0x70) != 0;
@@ -325,7 +326,7 @@ bool makeLoadSavesArguments(CheckApp& g, const std::string& name, x86::CPU& cpu,
             };
             x86::reg32 call = (freed ? 1 : 0) + 1 + (first ? 3 : 0) + 1;
             const bool fine = r(call + 1, standInFor(0x534500)) % 9 != 0 && r(call + 2, standInFor(0x5345d4)) % 5 != 0
-                              && r(call + 3, 0x4df690) % 0x50 < 0x18;
+                              && r(call + 3, 0x4df690) % 0x50 < 0xc;
             if (fine)
                 break;
             g_seed = mix(g_seed + 1);
@@ -358,6 +359,13 @@ bool makeLoadSavesArguments(CheckApp& g, const std::string& name, x86::CPU& cpu,
         // 0x4cf040's stand-in keeps eax now and then: none on mostly.
         if (chance(75))
             cpu.eax = 0;
+        // "replay.rp3" printed into the frame's 0x3c bytes: sprintf's stand-in
+        // prints up to 0x4f, which would write over the registers the code
+        // keeps above them.  The case's seed picked for one that prints fewer
+        // than 0x3c -- sprintf the second call, after 0x4cf040's.
+        while (x86::reg32(mix(g_seed ^ (std::uint64_t(2) << 32) ^ 0x4df690)) % 0x50 >= 0x3c)
+            g_seed = mix(g_seed + 1);
+        g.word(0xd0fffc) = x86::reg32(g_seed);
     }
     else if (name == "fileWriteTime")
     {

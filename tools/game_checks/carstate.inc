@@ -16,9 +16,40 @@
 {0x648000, 0x658000},
 #elif defined(CARSTATE_EFFECTS)
 kCameraFlag,     // a yes or no: 0 a third of the time, else a small number
+kCameraPlane,    // 0x496a50: a car's plane's frame from its points at eax, 9 floats into [edx]
+kCameraDots,     // 0x4e0210: eax dot products of the vectors at edx with the one at ebx, into [ecx]
+kCameraTurn,     // 0x4ea680, 0x4ea820: the matrix at eax turned by an angle, 9 floats into the second word
+kCameraCross,    // 0x4e0160, 0x4e01a0: the cross product of the vectors at eax and edx, 3 floats into [ebx]
 #elif defined(CARSTATE_EFFECT_CASES)
 case kCameraFlag:
     result = r % 3 == 0 ? 0 : 1 + (r >> 8) % 5;
+    break;
+case kCameraDots:
+case kCameraTurn:
+case kCameraCross:
+{
+    // Into memory the case has, as the real ones write: a matrix's nine floats, or a dot product
+    // each, near 1 now and then (the cameras compare their sizes with 0.98).
+    const x86::reg32 to = s.effect == kCameraDots ? words[3] : words[2];
+    const x86::reg32 count = s.effect == kCameraDots ? (words[0] < 4 ? words[0] : 4) : s.effect == kCameraCross ? 3 : 9;
+    for (x86::reg32 i = 0; i < count && to + 4 * i < kMemory - 4; ++i)
+    {
+        const x86::reg32 bits = random(id + 0x40 + i);
+        const float f = bits % 5 == 0 ? (bits % 2 ? 1.0f : -0.99f) : float(x86::sreg32(bits % 2001) - 1000) / 1000.0f;
+        x86::reg32 b;
+        std::memcpy(&b, &f, 4);
+        word(to + 4 * i) = b;
+    }
+    break;
+}
+case kCameraPlane:
+    for (x86::reg32 i = 0; i < 9; ++i)
+    {
+        const float f = float(x86::sreg32(random(id + 0x40 + i) % 4001) - 2000) / 100.0f;
+        x86::reg32 b;
+        std::memcpy(&b, &f, 4);
+        word(words[1] + 4 * i) = b;
+    }
     break;
 #elif defined(CARSTATE_GAME_FUNCTIONS)
 // {address, "name", convention, registers, words, clobbers, through, deref, effect},
@@ -34,14 +65,26 @@ case kCameraFlag:
 // racestart.inc's), inTunnel (0x420bf0, trackdata.inc's), the dot product
 // and the square root (0x4e01f0, 0x4ea920, handling.inc's; the cases set its
 // mark for its small dot products).
-{0x41e420, "trackdata::followNode", kWatcom, 3, 0, kEax, 0, 3, kNothing},
+// followNode reads the point in eax and the place in edx alone: the code's ebx (1, for
+// updatePosition after it) is no argument of its, and native_carstate.cpp's call as C++
+// (guest::direct) hands none.
+{0x41e420, "trackdata::followNode", kWatcom, 2, 0, kEax, 0, 3, kNothing},
 {0x41f6e0, "trackdata::updatePosition", kWatcom, 3, 0, kEax, 0, 3, kNothing},
 {0x41e990, "a place on the track", kWatcom, 2, 0, kEax, 0, 3, kCameraFlag},
 {0x4965b0, "the distance to a car", kWatcom, 2, 0, kEax, 0, 3, kFloatBack},
-{0x4968a0, "a plane's height", kStdcall, 1, 6, kEax, 0, 12, kFloatBack},  // the plane's 12 floats at eax
+{0x4968a0, "a plane's height", kStdcall, 1, 6, kEax, 0, 9, kFloatBack},  // the plane's frame, 9 floats at eax
+// The frame of the car's plane the height is taken in, from its points (12 floats at eax) into [edx]: written,
+// as the real one does, where nothing would leave the frame's garbage for the height to read.
+{0x496a50, "a car's plane", kWatcom, 2, 0, kEax, 0, 9, kCameraPlane},
+// The dot products a camera's forward is measured with (into the frame the camera reads them
+// from), and the head's and the roll's turns (matrices into the frame a product reads): written
+// as the real ones do, where nothing would leave the frame's garbage to be read.
+{0x4e0210, "dot products", kWatcom, 4, 0, kEax, 1, 3, kCameraDots},
+{0x4ea680, "a matrix turned about y", kStdcall, 1, 2, kEax, 0, 9, kCameraTurn},
+{0x4ea820, "a matrix turned about x", kStdcall, 1, 2, kEax, 0, 9, kCameraTurn},
 // A cross product normalized and a cross product (their first vector logged).
-{0x4e01a0, "a cross product normalized", kWatcom, 3, 0, kEax, 0, 3, kNothing},
-{0x4e0160, "a cross product", kWatcom, 3, 0, kEax, 0, 3, kNothing},
+{0x4e01a0, "a cross product normalized", kWatcom, 3, 0, kEax, 0, 3, kCameraCross},
+{0x4e0160, "a cross product", kWatcom, 3, 0, kEax, 0, 3, kCameraCross},
 // This file's own that the sound's natives call by address (the race's tick
 // and the cop radio the player's view, the crash the camera's mode): stood in
 // for them as before they were native -- generate.py's rows of then -- since
@@ -232,7 +275,14 @@ void makeCameraWorld(CheckApp& g)
         g.word(car + 0x2c4) = chance(30) ? 3 : below(5);
         g.word(car + 0x4e8) = camBetween(-5.0f, 5.0f);
         g.word(car + 0x5a4) = camBetween(0.0f, 120.0f);
-        g.word(car + 0x7c0) = chance(10) ? camFloat() : camBetween(-10.0f, 200.0f);
+        /* The speed, under the last of pickChaseNode's bands (0x8c0000 at 0x536e04's scale): past it the
+         * code reads its own saved registers as bands, which no car's speed reaches. */
+        {
+            const x86::reg32 odd = camFloat();
+            float speed;
+            std::memcpy(&speed, &odd, 4);
+            g.word(car + 0x7c0) = chance(10) && !(speed >= 140.0f) ? odd : camBetween(-10.0f, 140.0f);
+        }
         g.word(car + 0x920) = camBetween(-1.0f, 1.0f);
         g.word(car + 0x924) = camBetween(-1.0f, 1.0f);
         g.word(car + 0x9a8) = below(4);

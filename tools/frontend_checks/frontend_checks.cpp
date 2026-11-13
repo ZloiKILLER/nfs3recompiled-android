@@ -26,6 +26,7 @@
 #include <algorithm>
 #include <nfs3hp.h>
 #include <native_frontend.h>
+#include <native_guest.h>
 #include <cstdio>
 #include <cstring>
 #include <fstream>
@@ -52,6 +53,7 @@ constexpr x86::reg32 kStack = 0xff0000;
 
 x86::reg8* g_memory = nullptr;
 std::map<x86::reg32, win32::MethodPtr> g_methods;
+std::map<x86::reg32, win32::MethodPtr> g_generatedMethods;  // as they were before any world
 
 x86::reg32 word32(x86::reg32 at)
 {
@@ -211,13 +213,14 @@ struct Spec
 /* An item's handler as its screen shows it: no code of the game's, a stand-in. */
 constexpr x86::reg32 kShowHandler = 0x7e0100;
 
-const std::map<x86::reg32, Spec> kSpecs = {
+const std::map<x86::reg32, Spec> kSpecs = [] {
+    std::map<x86::reg32, Spec> specs = {
     // What sub_439ce0 calls: it runs as itself here, by name, from sub_4270c0.
-    { 0x438ad0, { EAX | EDX, 0, 0, 0, Kind::Plain } },
+    { 0x438ad0, { EAX | EDX, 0, 0, EDX, Kind::Plain } },
     { 0x439990, { EAX, 0, 0, 0, Kind::Plain } },
     { 0x442a40, { EAX | EDX, 0, 0, EDX, Kind::FindItem } },
     { 0x4429c0, { EAX | EDX, 0, 0, EDX, Kind::Bool } },
-    { 0x461270, { EAX | EBX | EDX, 0, 0, EBX | EDX, Kind::KeyHandler } },
+    { 0x461270, { EAX | EBX, 0, 0, EBX | EDX, Kind::KeyHandler } },
     { 0x4624a0, { EAX | EBX | EDX, 0, 0, EBX | EDX, Kind::KeyHandler } },
     { 0x463ff0, { EAX | EBX | EDX, 0, 0, EBX | EDX, Kind::KeyHandler } },
     { 0x46c950, { EAX, 2, 8, 0, Kind::Plain } },
@@ -250,11 +253,11 @@ const std::map<x86::reg32, Spec> kSpecs = {
     { 0x4438b0, { 0, 0, 0, 0, Kind::Bool } },
     { 0x44aeb0, { 0, 0, 0, 0, Kind::Plain } },
     { 0x44a4f0, { EAX, 0, 0, 0, Kind::Plain } },
-    { 0x4d9120, { 0, 0, 0, EBX | EDI | ESI, Kind::Plain } },
+    { 0x4d9120, { 0, 0, 0, 0, Kind::Plain } },
     { 0x4d9140, { 0, 0, 0, EBX | EDI | ESI, Kind::Plain } },
     { 0x4109d0, { 0, 0, 0, EBX, Kind::Plain } },
     { 0x410aa0, { 0, 0, 0, EBX | EDI | ESI, Kind::Plain } },
-    { 0x410b20, { 0, 0, 0, EDI, Kind::Plain } },
+    { 0x410b20, { 0, 0, 0, 0, Kind::Plain } },
     { 0x40feb0, { 0, 0, 0, EBX | EDI | EDX | ESI, Kind::Plain } },
     { 0x40fcf0, { EAX | EDX, 0, 0, 0, Kind::Plain } },
     { 0x4136e0, { 0, 0, 0, 0, Kind::Plain } },
@@ -277,7 +280,7 @@ const std::map<x86::reg32, Spec> kSpecs = {
     { 0x439790, { EAX | EDX, 0, 0, 0, Kind::Plain } },
     { 0x4397d0, { EAX | EBX | EDX, 0, 0, EDX, Kind::Plain } },
     { 0x456a20, { EAX, 0, 0, 0, Kind::Plain } },
-    { 0x4530c0, { EAX, 0, 0, EDI, Kind::Bool } },
+    { 0x4530c0, { EAX, 0, 0, 0, Kind::Bool } },
     { 0x4396b0, { EAX, 0, 0, 0, Kind::Bool } },
     { 0x439ce0, { 0, 0, 0, 0, Kind::Bool } },
     { 0x439a50, { EAX, 0, 0, 0, Kind::Bool } },
@@ -291,7 +294,7 @@ const std::map<x86::reg32, Spec> kSpecs = {
     { 0x4c9240, { EAX, 0, 0, 0, Kind::Bool, true } },
     { 0x4c95f0, { EAX | EBX | EDX, 0, 0, EDX, Kind::Plain } },
     { 0x4c9490, { 0, 0, 0, ESI, Kind::Plain } },
-    { 0x4e8c1c, { EAX, 0, 0, EDI, Kind::Plain } },
+    { 0x4e8c1c, { EAX, 0, 0, 0, Kind::Plain } },
     { 0x4e1890, { EAX, 0, 0, 0, Kind::Plain } },
     // The main menu's.
     { 0x452020, { EAX | EDX, 0, 0, EDX, Kind::Plain, true } },
@@ -314,11 +317,16 @@ const std::map<x86::reg32, Spec> kSpecs = {
     { 0x444a80, { EAX | EBX | ECX | EDX, 1, 4, EBX | ECX | EDX, Kind::Plain } },
     { 0x49bfc0, { EAX | EDX, 0, 0, EDX, Kind::Plain } },
     { 0x443860, { EAX | EDX, 0, 0, 0, Kind::Bool, true } },
-    { 0x4e0640, { EAX | EBX | EDX, 0, 0, 0, Kind::Memset } },
-    { 0x4e0e30, { EAX | EBX | EDX, 0, 0, 0, Kind::Strncpy } },
+    { 0x4e0640, { EAX | EBX | EDX, 0, 0, EDX, Kind::Memset } },
+    { 0x4e0e30, { EAX | EBX | EDX, 0, 0, EBX | EDX, Kind::Strncpy } },
     { 0x440970, { 0, 0, 0, 0, Kind::Plain } },
     { kShowHandler, { EAX | EDX, 0, 0, 0, Kind::Plain } },
-};
+    };
+    // This group's own stand-ins, read off nfs3.exe (groups/<group>_specs.inc, written by
+    // specs_from_exe.py); a row above wins, as emplace leaves it.
+#include "group_specs.inc"
+    return specs;
+}();
 
 x86::reg32* reg(x86::CPU& cpu, std::uint8_t r)
 {
@@ -702,6 +710,14 @@ void mkdir(win32::WinApplication* app, x86::CPU& cpu)
 const x86::reg32 kStandInElsewhere[] = { 0x442a40, 0x44a660, 0x4446c0 };
 x86::reg32 g_testing = 0;
 
+/* guest::direct (native_guest.h) from a function tested here goes by address, always, as its call
+ * by address did: whether that lands on a stand-in or on the code itself is dynamicCallElsewhere's
+ * to say, below, as for every other call the functions tested make. */
+bool nfs3hp::guest::standsIn(x86::reg32)
+{
+    return true;
+}
+
 namespace win32
 {
 
@@ -731,9 +747,14 @@ void WinApplication::yieldContext(const x86::CPU&) {}
 void WinApplication::dynamicCallElsewhere(x86::reg32 address, x86::CPU& cpu)
 {
     auto method = g_methods.find(address);
+    /* A stand-in this group's world has put in the table (a row that is not the generated
+     * code's) comes before another group's being stood in for: it answers as the cases need. */
+    auto generated = g_generatedMethods.find(address);
+    const bool hooked = method != g_methods.end()
+        && (generated == g_generatedMethods.end() || generated->second != method->second);
     const bool elsewhere = address != g_testing
         && (std::find(std::begin(kStandInElsewhere), std::end(kStandInElsewhere), address) != std::end(kStandInElsewhere)
-            || nfs3hp::hasStandIn(address));
+            || (!hooked && nfs3hp::hasStandIn(address)));
     if (method == g_methods.end() || elsewhere)
     {
         nfs3hp::mock(this, cpu, address);
@@ -761,6 +782,7 @@ Application::Application(const char* appName)
 #include "build/mocks.inc.generated"
         {0x4dfd56, &watcom::CHP},
     };
+    g_generatedMethods = g_methods;
 }
 
 }

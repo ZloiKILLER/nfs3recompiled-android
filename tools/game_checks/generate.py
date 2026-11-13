@@ -39,6 +39,7 @@ import disassemble_nfs3hp as nfs3hp  # noqa: E402
 # stand-ins make up a key and _matherr's say.  Each with the natives that
 # call it as they do, in the tests of their own.
 STOOD_IN = {
+    0x4f1c30: (0x4a8a99,),  # floor: engineTorque's own is std::floor, on what it has held to 0..40
     0x4df674: (0x4df690,),  # vsprintf: sprintf's
     0x4df690: (),
     0x4ff014: (0x4f4b80,),  # vfprintf: fprintf's
@@ -488,9 +489,10 @@ def main():
     # The menus' screens are frontend_checks' (tools/frontend_checks).
     # Not held against their code: the sound and graphics code's dead stubs (they only stop
     # the game), and the mix and a channel's ramp, whose native mixer was held
-    # against the game's mix by mix on the phone (0.77's snd_check).
+    # against the game's mix by mix on the phone (0.77's snd_check).  Nor the movies
+    # (native_movie.cpp, decomp/mad on the GPU), which only the phone can show.
     natives = {address: name for address, name in nfs3hp.GAME_NATIVES.items()
-               if address not in nfs3hp.MENU_NATIVES and not name.startswith(("snd::dead_", "graphics::dead_", "dead::", "removed::"))
+               if address not in nfs3hp.MENU_NATIVES and not name.startswith(("snd::dead_", "graphics::dead_", "dead::", "pieces::", "imports::", "removed::", "movie::", "loader::"))
                and name not in ("port::mixerServe", "port::mixerRamp")}
     # native_render.cpp's are tools/game_checks/render's: here, as before they
     # were native whole, stand-ins for the natives that call them.
@@ -605,6 +607,13 @@ def main():
         for address in called:
             h.write("    static void sub_%x(WinApplication* app, x86::CPU& cpu);\n" % address)
         h.write("};\n\n}\n\n#endif\n")
+    # Each tested function's register arguments, by its own code (entry_regs.py): what Watcom's
+    # convention leaves the caller no longer, which the check does not compare after it.
+    from entry_regs import Reader as ArgumentReader
+    argument_reader = ArgumentReader()
+    with open(out / "game_arguments.inc", "w") as f:
+        for address in sorted(natives):
+            f.write("{0x%x, %d},\n" % (address, argument_reader.register_arguments(address)))
     with open(out / "game_tested.inc", "w") as f:
         for address, name in sorted(natives.items()):
             f.write('{0x%x, "%s", &nfs3hp::Application::sub_%x, &nfs3hp::%s},\n' % (address, name, address, name))

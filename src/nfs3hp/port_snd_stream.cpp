@@ -1,4 +1,5 @@
 #include "port_snd_stream.h"
+#include "port_snd_stream_calls.h"
 
 #include <lib/thread.h>
 
@@ -297,8 +298,9 @@ Result topUp(App* app, CPU& cpu, reg32 esp, reg32 argument)
     if (kTopupFunction(app) != 0)
     {
         // The load's lock taken with the lock pushed from edi.
-        if (other && !callGame(app, cpu, esp - 6 * 4, app->getMemory<reg32>(kEnterCriticalSection), residue(cpu),
-                               {kLoadLock(app)}, eax))
+        if (other
+            && !callWindows<kEnterCriticalSection, &win32::kernel32::EnterCriticalSection>(
+                app, cpu, esp - 6 * 4, residue(cpu), eax, kLoadLock(app)))
             return {};
         kToppedUp.set(app, 0);
         cpu.ebp = 0;

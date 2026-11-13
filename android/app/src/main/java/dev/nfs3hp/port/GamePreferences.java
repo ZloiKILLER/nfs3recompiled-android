@@ -38,13 +38,11 @@ final class GamePreferences
     static final String ORIENTATION = "screen_orientation";
     static final String FPS_CAP = "fps_cap";
     /* Display gamma as a percentage: 100 leaves the picture exactly as the game
-     * drew it, higher lifts the dark end.  Stored as an int because that is
-     * what a SeekBar deals in. */
+     * drew it, higher lifts the dark end. */
     static final String GAMMA = "display_gamma";
-    /* Brightness and contrast join gamma on the Screen adjustment screen and
-     * are applied in the same final blit.  Percentages for the same reason
-     * gamma is one -- a SeekBar deals in ints -- with 100 meaning "leave the
-     * picture as the game drew it" for all three. */
+    /* Brightness and contrast join gamma in the same final blit, all three set
+     * on the game's own graphics screens (port_display.cpp) and kept here.
+     * Percentages, with 100 meaning "leave the picture as the game drew it". */
     static final String BRIGHTNESS = "display_brightness";
     static final String CONTRAST = "display_contrast";
     /* Off, touching the screen does nothing in the game: no on-screen controls
@@ -105,10 +103,10 @@ final class GamePreferences
     static final String[] GAMEPAD_DIGITAL = { "gamepad1_digital", "gamepad2_digital" };
     /* The TCP/IP port races are hosted and joined on: 9803 as the Modern Patch
      * has it, or 1030, the original game's.  Every player of a race needs the
-     * same; the game reads it as it starts (NFS_NET_PORT). */
+     * same.  Chosen on the game's connection screen (port_connect.cpp), which
+     * reads it as the game starts (NFS_NET_PORT). */
     static final String NETWORK_PORT = "network_port";
     static final int NETWORK_PORT_MODERN = 9803;
-    static final int NETWORK_PORT_ORIGINAL = 1030;
 
     static final String ORIENTATION_AUTO = "auto";
     static final String ORIENTATION_LANDSCAPE = "landscape";
@@ -198,9 +196,16 @@ final class GamePreferences
 
     private GamePreferences() {}
 
+    /* Two processes share this file: the game writes what its own screens set
+     * (NFS3Activity) while the launcher stays up in its own.  Without this mode
+     * the launcher goes on holding the values it read before, and its next
+     * write puts them back over the game's.  Deprecated for being no
+     * substitute for a real store when both write at once; here only one of
+     * them is in front at a time. */
+    @SuppressWarnings("deprecation")
     static SharedPreferences get(Context context)
     {
-        return context.getSharedPreferences(FILE_NAME, Context.MODE_PRIVATE);
+        return context.getSharedPreferences(FILE_NAME, Context.MODE_MULTI_PROCESS);
     }
 
     /** Where the game's effects are felt (FORCE_FEEDBACK_OUTPUTS).  Until the

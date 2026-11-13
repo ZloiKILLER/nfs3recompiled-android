@@ -33,13 +33,6 @@
  <string name="touch_settings">Touch-Steuerung</string>
  <string name="screen_settings">Bildschirm</string>
  <string name="display_settings">Anzeige</string>
- <string name="screen_adjustment">Bildeinstellung</string>
- <string name="brightness_label">Helligkeit</string>
- <string name="contrast_label">Kontrast</string>
- <string name="adjust_hint">Die Beispiele zeigen das Ergebnis. Wirkt beim nächsten Start des Spiels.</string>
- <string name="adjust_reset">Zurücksetzen</string>
- <string name="sample_dark">Nacht</string>
- <string name="sample_bright">Tag</string>
  <string name="back_to_launcher">Zurück</string>
  <string name="switch_data">Aktivieren</string>
  <string name="data_change">Ändern…</string>
@@ -73,7 +66,6 @@
  <string name="orientation_landscape_reverse">Fest — Querformat, gedreht</string>
  <string name="fps_30">30 FPS</string>
  <string name="fps_60">60 FPS</string>
- <string name="gamma_label">Gamma</string>
  <string name="fps_cap_label">Bildrate</string>
  <string name="fps_error">Gib eine ganze Zahl von 1 bis 240 ein</string>
  <string name="save">Speichern</string>
@@ -158,6 +150,8 @@
  <string name="faq_mapping"><b>Gamepads</b>\nDas Spiel sieht immer zwei Gamepads: Gamepad 1 ist Spieler 1 zusammen mit der Touch-Steuerung, Gamepad 2 ist Spieler 2. Wähle unter Steuerung → Gamepads per Tastendruck, welches Pad welches ist, lege fest, was jede Taste tut, und tippe dann einmal auf Gamepad AN. Das schreibt die passende Steuerung in die Spieleinstellungen und sichert die alte Datei. Der linke Stick lenkt, die Trigger geben Gas und bremsen. Ein Pad hat zwei Tastensätze, so wie die Touch-Steuerung zwei Anordnungen hat: die Rennanordnung, die du hier einstellst, und eine feste für Menüs und Wiederholungen, in der Cross / A bestätigt, Circle / B zurückgeht und das Steuerkreuz die Auswahl bewegt. Zum Spielen mit Tastatur schreibe stattdessen Spielstandard.</string>
  <string name="faq_lights"><b>Licht und Rückkehr zur Strecke</b>\n☼ sendet L. ↻ sendet R, um auf die Strecke zurückzukehren. Die Tasten lassen sich unter Steuerung → Touch → Tasten ändern.</string>
  <string name="faq_screen_data"><b>Bildschirm und Spieldaten</b>\nQuerformat sperrt das Spiel waagerecht; Automatisch erlaubt das Drehen. Die FPS-Grenze begrenzt die Bildrate; ein niedrigerer Wert senkt die Last. „Spieldaten“ verwaltet die Importe und zeigt den aktiven Datensatz. „Spielen“ wird verfügbar, sobald ein Datensatz bereit ist.</string>
+ <string name="faq_picture"><b>Helligkeit, Kontrast und Gamma</b>\nDiese Werte stellst du im Spiel selbst ein: Options → Graphics → Advanced Settings oder Graphics im Pausenmenü während eines Rennens. Das Bild ändert sich sofort, während du den Regler bewegst. Done behält die Werte, Cancel stellt die vorherigen wieder her. Die Einstellungen gelten für Rennen, Menüs und Videos.</string>
+ <string name="faq_network"><b>Netzwerkrennen</b>\nÖffne Connect Players auf dem ersten Bildschirm des Spiels. Local WiFi findet Rennen zwischen Handys im selben WLAN von selbst. Network (TCP) verbindet mit jedem, der die Adresse des Hosts kennt, auch mit einem PC mit dem Originalspiel oder dem Modern Patch. Darunter stehen die Adresse dieses Handys (Your IP) und TCP Port: Ein Tippen wechselt zwischen 9803 (Modern Patch) und 1030 (Originalspiel). Alle Spieler eines TCP-Rennens brauchen denselben Port.</string>
  <string name="gamepad_buttons">Tasten</string>
  <string name="gamepad_buttons_title">Tasten von Gamepad %1$d</string>
  <string name="gamepad_buttons_hint">Was jede Taste dieses Pads beim Fahren tut. Der linke Stick lenkt, der rechte Trigger gibt Gas und der linke bremst. In den Menüs und in Wiederholungen sind die Tasten fest und müssen nicht eingestellt werden: Cross / A und Options / Menu bestätigen, Circle / B und Create / View gehen zurück, das Steuerkreuz bewegt die Auswahl. Die Tastenaktionen erreichen das Spiel, sobald die Gamepad-Steuerung hineingeschrieben wurde.</string>
@@ -193,12 +187,5 @@
  <string name="force_feedback_phone_note">Das Telefon spielt Zusammenstöße, Landungen und Schaltvorgänge, den Motor bei hoher Drehzahl und scharfe Kurven.</string>
  <string name="force_feedback_gamepad_note">Gamepad 1 spielt die Effekte des Spiels, wie sie sind. Ihre Stärke stellst du im Spiel ein: Options → Controllers → Force Feedback.</string>
  <string name="editor_snap_grid">Am Raster ausrichten</string>
- <string name="network_title">Netzwerk</string>
- <string name="network_address">Adresse dieses Geräts im Netzwerk: %1$s</string>
- <string name="network_no_address">Keine Netzwerkverbindung</string>
- <string name="network_port_label">TCP/IP-Port</string>
- <string name="network_port_modern">9803 · Modern Patch</string>
- <string name="network_port_original">1030 · Originalspiel</string>
- <string name="network_hint">IPX findet Rennen in diesem WLAN von selbst. TCP/IP verbindet mit allen, die die Adresse des Hosts kennen, auch mit einem PC mit dem Originalspiel oder dem Modern Patch. Alle Spieler verwenden denselben Port.</string>
  <string name="fps_unlimited">Unbegrenzt</string>
 </resources>

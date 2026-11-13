@@ -1,3 +1,4 @@
+#include "game_settings.h"
 #include "port_snd_sources.h"
 
 #include <algorithm>
@@ -28,8 +29,7 @@ using sources::HeldEsiEdi;
 using sources::quotient;
 using sources::shiftedToZero;
 
-constexpr Var<int32_t> kEffectsOn{0x55290c}, kSplitScreen{0x6fd3b0}, kStereo{0x55292c}, kSurround{0x5525a4};
-constexpr Var<int32_t> kSoundMode{0x6fbc00}, kEffectsVolume{0x6fbbf4};
+constexpr Var<int32_t> kEffectsOn{0x55290c}, kStereo{0x55292c}, kSurround{0x5525a4};
 constexpr Table<int32_t> kSirenOn{0x552d90}, kSirenTone{0x552da4}, kSirenFirst{0x552db8}, kSirenSecond{0x552dcc};
 constexpr Table<int32_t> kSirenTicks{0x552de0};
 constexpr Var<reg32> kPlayerSiren{0x570e68};
@@ -201,12 +201,12 @@ Result sirenTicked(App* app, CPU& cpu, reg32 esp, int32_t siren, int32_t volume,
     if (!r)
         return {};
     // The effects' volume times 63 (steady) or 85 (warbling), the siren's volume of it.
-    const int32_t effects = kEffectsVolume(app);
+    const int32_t effects = gameSettings(app).effectsVolume;
     const int32_t scale = kSirenSecond(app, siren) == -1 ? imul(effects, 63) : imul(effects, 85);
     r = setVolume(app, cpu, at - 4, kSlotSounds(app, slot), imul(volume, scale) >> 14);
     if (!r)
         return {};
-    const int32_t mode = kSoundMode(app);
+    const int32_t mode = gameSettings(app).soundSetup;
     held.setEsi(reg32(mode));
     // 3D (or surround): placed by the angle, the middle without stereo; else panned by the stereo's side.
     if (mode == 2)
@@ -273,7 +273,7 @@ void playerNoise(App* app, CPU& cpu)
     const int32_t distance = int32_t(e.edx);
     if (distance < kFar)
         held.setEdi(kFar);
-    const int32_t slot = e.eax != 0 && kSplitScreen(app) == 1 ? 0x11 : kPlayerSirenSlot;
+    const int32_t slot = e.eax != 0 && gameSettings(app).playMode == 1 ? 0x11 : kPlayerSirenSlot;
     const reg32 volume = reg32(nearness(distance, kFar));
     e.finish(cpu, callGameResult(app, cpu, frame, kSlotPlay, {reg32(slot), 3, e.ebx, volume}, {e.ecx}));
 }
@@ -287,7 +287,7 @@ void playerNoiseStop(App* app, CPU& cpu)
     const HeldEbp ebp(cpu, frame);
     if (kEffectsOn(app) == 0)
         return e.back(cpu, e.eax);
-    const reg32 slot = e.eax != 0 && kSplitScreen(app) == 1 ? 0x11 : kPlayerSirenSlot;
+    const reg32 slot = e.eax != 0 && gameSettings(app).playMode == 1 ? 0x11 : kPlayerSirenSlot;
     e.finish(cpu, callGameResult(app, cpu, frame, kSlotStop, {slot}));
 }
 

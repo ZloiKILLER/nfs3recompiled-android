@@ -9,12 +9,15 @@
 #elif defined(TRACK_EFFECTS)
     kTrackRoom,     // Render_GetTm's room (0x4bbde0, 0x4bbe40): [eax] a place in the cases' buffer; 1, or 0 now and then
     kTrackOutside,  // a box out of view (0x41bf30): 1 now and then
-    kTrackStep,     // a path's step (0x40f940): 1 mostly
+    kTrackStep,     // a path's step (0x40f940): 1 mostly, its place to [edx] and its pose to [ebx] then
+    kTrackPose,     // a car's pose (0x40f4b0): its place to [ecx] and its pose to [esp+4], as the real one writes
     kTrackLength,   // a path's length (0x40f800): its steps to [edx], its length, never 0, to [ebx]
     kTrackLit,      // track vertices lit (0x41a550): edx records of 0x1c bytes at ecx, each's vertex one of the cases'
     kTrackCount,    // a .qfs's textures, a .col's chunks: a few
     kTrackChunk,    // a .col's chunk edx: one of the cases' eight
     kTrackNearest,  // the nearest block (0x41e0f0; 0x4217e0 is trackdata.inc's): one of the cases' blocks, and a part
+    kTrackPoints,   // points into a view (0x4e0430): eax of them, 12 bytes each, to [esp+4], as the real one writes
+    kTrackMatrix,   // matrices multiplied (0x4e0280): nine floats into [ebx], as the real one writes
 #elif defined(TRACK_EFFECT_CASES)
         case kTrackRoom:
             if (words[0] < kMemory - 4)
@@ -25,8 +28,26 @@
             result = r % 4 == 0 ? 1 : 0;
             break;
         case kTrackStep:
-            result = r % 5 != 0 ? 1 : r % 2;
+        case kTrackPose:
+        {
+            // The place (3 floats) and the pose (9) written as the real one writes them: the objects
+            // read them back from their frames (drawObjectList's), else the frame's garbage, which
+            // differs once the natives' frames do.
+            const bool step = s.effect == kTrackStep;
+            if (step)
+                result = r % 5 != 0 ? 1 : r % 2;
+            const x86::reg32 place = step ? words[1] : words[3], pose = step ? words[2] : words[4];
+            for (x86::reg32 i = 0; (!step || result == 1) && i < 12; ++i)
+            {
+                const x86::reg32 to = i < 3 ? place + 4 * i : pose + 4 * (i - 3);
+                const float f = float(x86::sreg32(random(id + 0x60 + i) % 4001) - 2000) / (i < 3 ? 20.0f : 2000.0f);
+                x86::reg32 b;
+                std::memcpy(&b, &f, 4);
+                if (to < kMemory - 4)
+                    word(to) = b;
+            }
             break;
+        }
         case kTrackLength:
             if (words[1] < kMemory - 4)
                 word(words[1]) = random(id + 1) % 0x200;
@@ -58,6 +79,30 @@
         case kTrackNearest:
             result = r % 0x40;
             break;
+        case kTrackMatrix:
+            // A product written, made up: turnFromAngles multiplies by the matrix it is handed
+            // before it writes it (drawObjectList's turn, the frame's garbage for its first
+            // object), so that what it writes there is never that garbage.
+            for (x86::reg32 i = 0; i < 9 && words[2] + 4 * i < kMemory - 4; ++i)
+            {
+                const float f = float(x86::sreg32(random(id + 0x40 + i) % 2001) - 1000) / 1000.0f;
+                x86::reg32 b;
+                std::memcpy(&b, &f, 4);
+                word(words[2] + 4 * i) = b;
+            }
+            break;
+        case kTrackPoints:
+            // Written as the real one writes them: what the natives read back of their frames
+            // (a light's depth in view) is then never the frame's garbage, which differs once
+            // the natives' frames do.
+            for (x86::reg32 i = 0; i < 3 * (words[0] < 8 ? words[0] : 8) && words[4] + 4 * i < kMemory - 4; ++i)
+            {
+                const float f = float(x86::sreg32(random(id + 0x40 + i) % 4001) - 2000) / 10.0f;
+                x86::reg32 b;
+                std::memcpy(&b, &f, 4);
+                word(words[4] + 4 * i) = b;
+            }
+            break;
 #elif defined(TRACK_GAME_FUNCTIONS)
 // {address, "name", convention, registers, words, clobbers, through, deref, effect},
 // What the track's natives call that hands back something they read on: room
@@ -68,13 +113,25 @@
 {0x4bbe40, "Render_GetTm's next", kWatcom, 2, 0, kEax, -1, 0, kTrackRoom},
 {0x41bf30, "a box out of view", kWatcom, 4, 0, kEax, -1, 0, kTrackOutside},
 {0x40f940, "a path's step", kWatcom, 3, 0, kEax, -1, 0, kTrackStep},
+// A car's pose (aiplan::animationPose; aiplan.inc has it after this, writing nothing): written, as
+// drawObjectList reads the place back from its frame for the headlights.
+{0x40f4b0, "a car's pose", kStdcall, 4, 1, kEax, -1, 0, kTrackPose},
 {0x40f800, "a path's length", kWatcom, 3, 0, kEax, -1, 0, kTrackLength},
 {0x41a550, "track vertices lit", kStdcall, 4, 1, kEax, -1, 0, kTrackLit},
 {0x4227e0, "the light's spread", kWatcom, 1, 0, kEax, -1, 0, kFloatBack},
 {0x4ea654, "a .qfs's textures", kWatcom, 1, 0, kEax, -1, 0, kTrackCount},
-{0x431410, "a .col's chunks", kWatcom, 1, 0, kEax, -1, 0, kTrackCount},
+// A .col's chunks' count logs no register: collide::collCount reads none, and loadCollisions
+// calls it as C++ (guest::direct), eax at the call what the track's code happened to hold.
+{0x431410, "a .col's chunks", kWatcom, 0, 0, kEax, -1, 0, kTrackCount},
 {0x431420, "a .col's chunk", kWatcom, 2, 0, kEax, -1, 0, kTrackChunk},
 {0x41e0f0, "the nearest block", kWatcom, 1, 0, kEax, -1, 0, kTrackNearest},
+// Points into a view (vertices::transformPoints; decompiled_standins.inc has it too, writing
+// nothing): written, as the lights behind a view read them back from their frames.
+{0x4e0430, "points into a view", kStdcall, 4, 1, kEax, -1, 0, kTrackPoints},
+// Matrices multiplied (vertices::multiplyMatrices; ai_race.inc has it after this, logging the
+// second matrix and writing nothing): the product written, nothing logged past the three places --
+// the second matrix is the frame's garbage where turnFromAngles hands it its own output.
+{0x4e0280, "matrices multiplied", kWatcom, 3, 0, kEax, -1, 0, kTrackMatrix},
 // trackdata's native that loadCollisions calls by address (the track's
 // nodes taken from a .col chunk, with the .ccm and simhts.dat loaded): a
 // stand-in, its header (eax) logged -- run for real it would load files from

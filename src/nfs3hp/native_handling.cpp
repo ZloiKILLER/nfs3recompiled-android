@@ -1,6 +1,13 @@
+#include "game_settings.h"
 #include "native_guest.h"
+#include "native_handling.h"
+#include "native_vertices.h"
 
 #include <cstdint>
+#include <cstring>
+#include <initializer_list>
+#include <iterator>
+#include <optional>
 
 /* A car's handling in the race, as nfs3.exe's physics (0x4a78d6..0x4af3a1)
  * has it: its handling made for the race from the player's setup
@@ -13,10 +20,7 @@
  * (HANDLING_NATIVES), and the generated code calls it by name.
  * tools/game_checks holds each against its generated code.
  *
- * The module was compiled without optimisation: every function keeps its
- * argument (the car, eax) in its frame and loads it again before each use,
- * and its x87 work goes through memory.  The car's record, as these
- * functions use it: +0x15c and +0x10c how fast it goes and how it is on the
+ * The car's record, as these functions use it: +0x15c and +0x10c how fast it goes and how it is on the
  * road, +0x160 the road's state (0 dry; 1 and 2 as the code tells them),
  * +0x1f0 its player, +0x200 its flags (1 a player's), +0x220 the player's
  * setup (+0x40 seven floats as kDefaultSetup has them, +0x58 one of them),
@@ -33,15 +37,13 @@
  * its wheels' angle, +0x10 and +0x18 its speed across and along, +0x1c and
  * +0x24 its forces across and along, +0x28 the front's, +0x2c its slip.
  *
- * Written as their code is: each push and pop to the guest's stack, each call
- * with the return address's slot, the frame's locals in the guest's memory,
- * the registers as the code leaves them, the x87's stack in cpu.fpu as the
- * code pushes and pops it (rounded as the race's control word says: x86::FPU's
- * add, sub, mul, div), and a compare's status word left in ax as fnstsw
- * leaves it (below and equal the flags sahf makes of it).  Every other
- * function of the game's is called by address -- the rest of the physics'
- * too; the game's constants (floats and doubles in its data, 0x53dc40 to
- * 0x53de40) are read where the code reads them. */
+ * Each is a typed core (no registers, the guest's stack only for what a callee is handed) and an
+ * adapter under the game's name, for the dispatch and for callers still on registers.  The floats
+ * are the game's to the bit: fp:: in the code's order and argument order, a float(...) where the
+ * code stores one.  The vectors' functions (native_vertices.h's) are called as C++ (guest::direct)
+ * but settleCar's last; every other function of the game's by address -- the rest of the
+ * physics' too; the game's constants (floats and doubles in its data, 0x53dc40 to 0x53de40) are
+ * read where the code reads them. */
 namespace nfs3hp
 {
 namespace handling
@@ -56,28 +58,20 @@ using guest::put;
 using guest::putByte;
 using x86::reg16;
 using x86::reg32;
-using x86::reg8;
 using App = win32::WinApplication;
 using CPU = x86::CPU;
 using i32 = std::int32_t;
-using i16 = std::int16_t;
-using i8 = std::int8_t;
 
 // The race's.
-constexpr reg32 kPlayMode = 0x6fd3b0;       // 0 one player, 1 split screen, 2 and on over a link
-constexpr reg32 kRaceType = 0x6fd3b8;       // 0 a single race, 1 and 2 the series, 3 Hot Pursuit
-constexpr reg32 kLoadingFlags = 0x6fd4fc;   // 1 and 0x20: the handling's own (the simulation's)
-constexpr reg32 kAutoBox = 0x6fd490;        // the race's option the setup's grip goes by
-constexpr reg32 kAssist = 0x6fd4a4;         // the race's option the tyres' slip goes by
-constexpr reg32 kPlayers = 0x6fd548;        // the players' records, 0x6c each: 1 at the start a human's
 constexpr reg32 kFrame = 0x7d3684;          // the race's frame
 // The setup the player's is held against: seven floats, the setup's middle.
 constexpr reg32 kDefaultSetup = 0x55d024;
-// The game's that these call: Watcom's chop and exp, the sine, atan2 and the
-// square root of a stack float, a vector's dot product, a 2D turn by an
-// angle; n vectors scaled, less others, added.
+// The game's that these call by address: Watcom's chop and exp, the sine,
+// atan2 and the square root of a stack float, a 2D turn by an angle; n
+// vectors added (settleCar's last call, see there).  A vector's dot product
+// and n vectors scaled, less others, added are vertices' (guest::direct).
 constexpr reg32 kChop = 0x4dfd56, kExp = 0x4f8116, kSine = 0x4ea930, kAtan2 = 0x4ea9c0, kSqrt = 0x4ea920;
-constexpr reg32 kDot = 0x4e01f0, kRotate = 0x496bf0, kScale = 0x4e0050, kSubtract = 0x4e0000, kAdd = 0x4dffb0;
+constexpr reg32 kRotate = 0x496bf0, kAdd = 0x4dffb0;
 
 reg16 half(App* app, reg32 a) { return app->getMemory<reg16>(a); }
 x86::Float f32(App* app, reg32 a) { return x86::Float(app->getMemory<float>(a)); }
@@ -89,22 +83,6 @@ void push(App* app, CPU& cpu, reg32 value)
     put(app, cpu.esp, value);
 }
 
-reg32 pop(App* app, CPU& cpu)
-{
-    const reg32 value = at(app, cpu.esp);
-    cpu.esp += 4;
-    return value;
-}
-
-/* A call as the code makes it: the return address's slot, and esp as the
- * callee leaves it.  False when the game stopped in it. */
-bool direct(App* app, CPU& cpu, void (*function)(App*, CPU&))
-{
-    cpu.esp -= 4;
-    function(app, cpu);
-    return !cpu.terminate;
-}
-
 bool byAddress(App* app, CPU& cpu, reg32 target)
 {
     cpu.esp -= 4;
@@ -112,32 +90,145 @@ bool byAddress(App* app, CPU& cpu, reg32 target)
     return !cpu.terminate;
 }
 
-/* fcomp m: st(0) compared with m, popped; fcompp: with st(1), both popped.
- * The code's fnstsw ax and sahf follow: below and equal are the carry (C0)
- * and zero (C3) flags sahf makes of ah. */
-void fcomp(CPU& cpu, const x86::Float& m)
+auto floatAt(App* app, reg32 a) { return app->getMemory<float>(a); }
+
+reg32 bitsOf(float value)
 {
-    cpu.fpu.compare(cpu.fpu.st(0), m);
-    cpu.fpu.pop();
+    reg32 bits;
+    std::memcpy(&bits, &value, sizeof bits);
+    return bits;
 }
 
-void fcompp(CPU& cpu)
+/* A float's bits as the int the code compares them as. */
+i32 signedBits(float value) { return i32(bitsOf(value)); }
+
+/* The float's size, as the code's "0 > x ? -x : x": a compare of the x87 that leaves neither
+ * below nor equal is a plain > on every value, a NaN too (unordered sets both flags), and what
+ * is not negated stays the same bits. */
+float size(float value) { return 0.0 > x86::Float(value) ? float(-x86::Float(value)) : value; }
+
+/* Over a link or in the series the setup does not count. */
+bool linkOrSeries(App* app)
 {
-    cpu.fpu.compare(cpu.fpu.st(0), cpu.fpu.st(1));
-    cpu.fpu.pop();
-    cpu.fpu.pop();
+    return i32(gameSettings(app).playMode) > 1 || gameSettings(app).raceType == 1 || gameSettings(app).raceType == 2;
 }
 
-bool below(const CPU& cpu) { return (cpu.ah & 0x01) != 0; }
-bool equal(const CPU& cpu) { return (cpu.ah & 0x40) != 0; }
-
-/* idiv: edx:eax divided by `by`, the quotient to eax and the remainder to edx. */
-void idiv(CPU& cpu, reg32 by)
+/* A call by address with its words on the guest's stack, the first nearest; esp back as it was. */
+bool stackCall(App* app, CPU& cpu, reg32 target, std::initializer_list<reg32> words = {})
 {
-    const std::int64_t n = std::int64_t((std::uint64_t(cpu.edx) << 32) | cpu.eax);
-    const std::int64_t d = i32(by);
-    cpu.eax = reg32(n / d);
-    cpu.edx = reg32(n % d);
+    const reg32 sp = cpu.esp;
+    for (auto word = std::rbegin(words); word != std::rend(words); ++word)
+        push(app, cpu, *word);
+    const bool running = byAddress(app, cpu, target);
+    if (running)
+        cpu.esp = sp;
+    return running;
+}
+
+/* What the callee left on the x87, taken off. */
+x86::Float popResult(CPU& cpu)
+{
+    const x86::Float value = cpu.fpu.st(0);
+    cpu.fpu.pop();
+    return value;
+}
+
+/* Watcom's exp, of a double on the stack, onto the x87. */
+std::optional<x86::Float> watcomExp(App* app, CPU& cpu, x86::Float power)
+{
+    const reg32 sp = cpu.esp;
+    cpu.esp -= 8;
+    app->getMemory<double>(cpu.esp) = double(power);
+    if (!byAddress(app, cpu, kExp))
+        return std::nullopt;
+    cpu.esp = sp;
+    return popResult(cpu);
+}
+
+/* Watcom's chop of the x87's top, then fistp. */
+std::optional<i32> chop(App* app, CPU& cpu, x86::Float value)
+{
+    cpu.fpu.push(value);
+    if (!stackCall(app, cpu, kChop))
+        return std::nullopt;
+    return fp::toInteger<i32>(popResult(cpu));
+}
+
+/* The registers on entry to an adapter, for those the function keeps. */
+struct Saved
+{
+    reg32 eax, ebx, ecx, edx, esi, edi, ebp, esp;
+    explicit Saved(const CPU& cpu)
+        : eax(cpu.eax), ebx(cpu.ebx), ecx(cpu.ecx), edx(cpu.edx), esi(cpu.esi), edi(cpu.edi), ebp(cpu.ebp), esp(cpu.esp)
+    {
+    }
+    void restore(CPU& cpu) const
+    {
+        cpu.eax = eax;
+        cpu.ebx = ebx;
+        cpu.ecx = ecx;
+        cpu.edx = edx;
+        cpu.esi = esi;
+        cpu.edi = edi;
+        cpu.ebp = ebp;
+        cpu.esp = esp;
+    }
+};
+
+// The car's record.
+constexpr reg32 kCarSpeed = 0xa4, kCarSpin = 0xe4, kCarRoadState = 0x10c, kCarUpAxis = 0x130, kCarRoadSpeed = 0x15c, kCarRoad = 0x160;
+constexpr reg32 kCarRaceStarted = 0x164, kCarPlayer = 0x1f0, kCarFlags = 0x200, kCarField20c = 0x20c, kCarSetup = 0x220, kCarRaceStage = 0x2c4;
+constexpr reg32 kCarSpeedAlong = 0x4f4, kCarGear = 0x50b, kCarHandbrake = 0x50d, kCarWheelTurned = 0x514, kCarSteering = 0x51c;
+constexpr reg32 kCarHandling = 0x528, kCarGearRevs = 0x52c, kCarGearInverse = 0x54c, kCarGearShare = 0x56c, kCarDrag = 0x58c;
+constexpr reg32 kCarRevs = 0x590, kCarClutch = 0x594, kCarWheelTurns = 0x59c, kCarWheelsTurn = 0x5a4, kCarThrottle = 0x5b0;
+constexpr reg32 kCarFrontSlip = 0x5c0, kCarBackSlip = 0x5c4, kCarBrake = 0x5f0;
+constexpr std::uint8_t kCarFlagPlayer = 1, kCarFlagSetupMiddle = 2;
+constexpr std::uint8_t kGearReverse = 0, kGearNeutral = 1;
+constexpr reg32 kRaceStageFinished = 3;
+constexpr i32 kWheelFullTime = 0x180, kFullLock = 0x7f;
+// The player's setup: the sliders, as kDefaultSetup holds their middles.
+constexpr reg32 kSetupSlider = 0x40, kSetupSliders = 7, kSetupSlipSlider = 0x58;
+constexpr reg32 kSliderSecond = 4, kSliderThird = 8, kSliderFourth = 0xc, kSliderFifth = 0x10, kSliderSixth = 0x14;
+// The car's handling record.
+constexpr reg32 kHandlingShareBase = 4, kHandlingGears = 8, kHandlingRatios = 0x94, kHandlingGearShare = 0xd4, kHandlingTorque = 0x114;
+constexpr reg32 kHandlingRevsIdle = 0x1c0, kHandlingRevsLimit = 0x1c4, kHandlingTopSpeed = 0x1c8, kHandlingDriveCut = 0x1d4;
+constexpr reg32 kHandlingSideLimit = 0x23c, kHandlingDriveShare = 0x248;
+constexpr i32 kTorquePoints = 0x29;
+// An axle's record.
+constexpr reg32 kAxleDrive = 0, kAxleGrip = 4, kAxleGripShare = 8, kAxleAngle = 0xc, kAxleAcross = 0x10, kAxleAlong = 0x18;
+constexpr reg32 kAxleForceAcross = 0x1c, kAxleForceUp = 0x20, kAxleForceAlong = 0x24, kAxleFront = 0x28, kAxleSlip = 0x2c;
+// The game's constants these read.
+constexpr reg32 kTorqueSliderShift = 0x53dc68, kTorqueSliderScale = 0x53dc6c, kFirstSliderTopShare = 0x53dc70, kGearShareScale = 0x53dc7c;
+constexpr reg32 kDownOneThrottle = 0x53dca4, kUprightLowest = 0x53dcc4;  // doubles
+constexpr reg32 kStillBelow = 0x53dccc;
+constexpr reg32 kSlipLimitScale = 0x53ddb4, kSlipLimitTop = 0x53ddb8;
+constexpr reg32 kGripOtherShare = 0x53ddbc, kGripPullScale = 0x53ddc0, kGripPullTop = 0x53ddc4, kNeutralForceShare = 0x53ddc8;
+constexpr reg32 kSlideOtherShare = 0x53ddcc, kAssistSlipShare = 0x53ddd0, kSlideRoad1Share = 0x53ddd4, kSlideRoad2Share = 0x53ddd8;
+constexpr reg32 kSlidePullScale = 0x53dddc, kSlidePullTop = 0x53dde0, kHighRevsShare = 0x53dde4, kBrakeAlongShare = 0x53dde8;
+constexpr reg32 kClutchSlipShare = 0x53ddec;
+constexpr reg32 kLogisticShift = 0x53ddf4, kLogisticSteep = 0x53ddfc, kLogisticSize = 0x53de04;  // doubles
+constexpr reg32 kSteeringShareScale = 0x53de0c;
+constexpr reg32 kReverseAngleScale = 0x53de10, kReverseForceScale = 0x53de14, kGearAngleScale = 0x53de18, kGearForceScale = 0x53de1c;
+constexpr reg32 kSideLimitScale = 0x53de20, kFullLockShare = 0x53de24, kLightBrakeShare = 0x53de28;
+constexpr reg32 kFrontSideShare = 0x53de2c, kBackSideShare = 0x53de30;
+constexpr std::uint8_t kRaceFlagTorque = 1, kRaceFlagFirstSet = 4, kRaceFlagSimulationGrip = 0x20;
+// Floats' bits the code compares as ints, so that a NaN or a negative lands where it does there.
+constexpr i32 kBits0_015 = 0x3c75c28f, kBits0_02 = 0x3ca3d70a, kBits0_05 = 0x3d4ccccd, kBits0_1 = 0x3dcccccd, kBits0_15 = 0x3e19999a;
+constexpr i32 kBits0_2 = 0x3e4ccccd, kBits0_25 = 0x3e800000, kBits0_5 = 0x3f000000, kBits0_85 = 0x3f59999a, kBits0_9 = 0x3f666666;
+constexpr i32 kBits0_95 = 0x3f733333, kBits1 = 0x3f800000, kBits5 = 0x40a00000, kBitsSlow = 0x41566666;
+constexpr reg32 kBitsNotSign = 0x7fffffff;
+// settleCar's vector, where the code's frame has it: under the entry's esp and over the new esp.
+constexpr reg32 kPartBelowEntry = 0x54, kPartOverEsp = 0xc;
+
+/* The setup's slider the slip goes by. */
+reg32 slipSlider(App* app, reg32 car) { return at(app, car + kCarSetup) + kSetupSlipSlider; }
+
+/* How quickly the slip follows, by the slider: a constant less it by another, 0.7 over a link or
+ * in the series, 0.5 at least. */
+float slipPull(App* app, reg32 car, reg32 scale, reg32 top)
+{
+    const float pull = linkOrSeries(app) ? 0.7f : float(fp::sub(f32(app, top), fp::mul(f32(app, slipSlider(app, car)), f32(app, scale))));
+    return signedBits(pull) > kBits0_5 ? pull : 0.5f;
 }
 
 }  // namespace
@@ -155,3633 +246,881 @@ void matchRevsToSpeed(App* app, CPU& cpu);
 void resetDriveState(App* app, CPU& cpu);
 void settleAtRest(App* app, CPU& cpu);
 
-/* 0x4ac994 (stdcall: x, ret 4): a logistic curve onto the x87's stack,
- * 1 - c / (1 + exp((x + a) * b)) with the doubles at 0x53ddf4, 0x53ddfc and
- * 0x53de04 (Watcom's exp, 0x4f8116), through a float; every register kept. */
+/* 0x4ac994: a logistic curve, 1 - c / (1 + exp((x + a) * b)), with Watcom's exp by address. */
+std::optional<float> logistic(App* app, CPU& cpu, float x)
+{
+    const auto power = watcomExp(app, cpu, fp::mul(fp::add(x, f64(app, kLogisticShift)), f64(app, kLogisticSteep)));
+    if (!power)
+        return std::nullopt;
+    return float(fp::sub(1.0, fp::div(f64(app, kLogisticSize), fp::add(*power, 1.0))));
+}
+
+/* The adapter (stdcall: x, ret 4): onto the x87's stack, every register kept. */
 void logisticCurve(App* app, CPU& cpu)
 {
-    x86::FPU& fpu = cpu.fpu;
-    push(app, cpu, cpu.eax);
-    push(app, cpu, cpu.ebx);
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.edx);
-    push(app, cpu, cpu.esi);
-    push(app, cpu, cpu.edi);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    cpu.esp -= 4;
-    const auto leave = [&] {
-        cpu.esp = cpu.ebp;
-        cpu.ebp = pop(app, cpu);
-        cpu.edi = pop(app, cpu);
-        cpu.esi = pop(app, cpu);
-        cpu.edx = pop(app, cpu);
-        cpu.ecx = pop(app, cpu);
-        cpu.ebx = pop(app, cpu);
-        cpu.eax = pop(app, cpu);
-        cpu.esp += 4 + 4;
-    };
-    fpu.push(f32(app, cpu.ebp + 0x20));
-    fpu.st(0) = fp::add(fpu.st(0), f64(app, 0x53ddf4));
-    fpu.st(0) = fp::mul(fpu.st(0), f64(app, 0x53ddfc));
-    cpu.esp -= 8;
-    app->getMemory<double>(cpu.esp) = double(fpu.st(0));
-    fpu.pop();
-    if (!byAddress(app, cpu, kExp))
+    const Saved saved(cpu);
+    const auto value = logistic(app, cpu, floatAt(app, cpu.esp + 4));
+    if (!value)
         return;
-    fpu.push(1.0);
-    fpu.st(1) = fp::add(fpu.st(1), fpu.st(0));
-    fpu.pop();
-    fpu.st(0) = fp::div(f64(app, 0x53de04), fpu.st(0));
-    fpu.push(1.0);
-    fpu.st(1) = fp::sub(fpu.st(0), fpu.st(1));
-    fpu.pop();
-    app->getMemory<float>(cpu.ebp - 4) = float(fpu.st(0));
-    fpu.pop();
-    fpu.push(f32(app, cpu.ebp - 4));
-    return leave();
+    saved.restore(cpu);
+    cpu.fpu.push(x86::Float(*value));
+    cpu.esp += 8;
 }
 
-/* 0x4ac9dd: car eax's steering's share of the front's grip onto the x87's
- * stack: 1 while the wheel has not been turned ([+0x514] 0 or less), else
- * logisticCurve of the time it has (a 0x180th) by 0.75 (0x53de0c). */
+/* 0x4ac9dd: the steering's share of the front's grip: 1 while the wheel has not been turned,
+ * else the curve of how long it has (a whole lock's time being 1) by a constant. */
+std::optional<float> steeringShare(App* app, CPU& cpu, reg32 car)
+{
+    const i32 turned = i32(at(app, car + kCarWheelTurned));
+    if (turned <= 0)
+        return 1.0f;
+    const float time = float(fp::div(x86::Float(turned), x86::Float(kWheelFullTime)));
+    const auto curve = logistic(app, cpu, time);
+    if (!curve)
+        return std::nullopt;
+    return float(fp::mul(*curve, f32(app, kSteeringShareScale)));
+}
+
+/* The adapter: onto the x87's stack, its bits in eax, the other registers kept. */
 void steeringGrip(App* app, CPU& cpu)
 {
-    x86::FPU& fpu = cpu.fpu;
-    push(app, cpu, cpu.ebx);
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.edx);
-    push(app, cpu, cpu.esi);
-    push(app, cpu, cpu.edi);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    cpu.esp -= 0x10;
-    const auto leave = [&] {
-        cpu.esp = cpu.ebp;
-        cpu.ebp = pop(app, cpu);
-        cpu.edi = pop(app, cpu);
-        cpu.esi = pop(app, cpu);
-        cpu.edx = pop(app, cpu);
-        cpu.ecx = pop(app, cpu);
-        cpu.ebx = pop(app, cpu);
-        cpu.esp += 4;
-    };
-    put(app, cpu.ebp - 0x10, cpu.eax);
-    put(app, cpu.ebp - 8, 0x3f800000);
-    put(app, cpu.ebp - 4, 0);
-    cpu.eax = at(app, cpu.ebp - 0x10);
-    if (i32(at(app, cpu.eax + 0x514)) > 0)
-    {
-        put(app, cpu.ebp - 4, 0x180);
-        cpu.eax = at(app, cpu.ebp - 0x10);
-        fpu.push(x86::Float(i32(at(app, cpu.eax + 0x514))));
-        fpu.push(x86::Float(i32(at(app, cpu.ebp - 4))));
-        fpu.st(1) = fp::div(fpu.st(1), fpu.st(0));
-        fpu.pop();
-        app->getMemory<float>(cpu.ebp - 8) = float(fpu.st(0));
-        fpu.pop();
-        fpu.push(f32(app, cpu.ebp - 8));
-        cpu.esp -= 4;
-        app->getMemory<float>(cpu.esp) = float(fpu.st(0));
-        fpu.pop();
-        if (!direct(app, cpu, logisticCurve))
-            return;
-        app->getMemory<float>(cpu.ebp - 8) = float(fpu.st(0));
-        fpu.pop();
-        fpu.push(f32(app, cpu.ebp - 8));
-        fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53de0c));
-        app->getMemory<float>(cpu.ebp - 8) = float(fpu.st(0));
-        fpu.pop();
-    }
-    cpu.eax = at(app, cpu.ebp - 8);
-    put(app, cpu.ebp - 0xc, cpu.eax);
-    fpu.push(f32(app, cpu.ebp - 0xc));
-    return leave();
+    const Saved saved(cpu);
+    const auto share = steeringShare(app, cpu, cpu.eax);
+    if (!share)
+        return;
+    saved.restore(cpu);
+    cpu.eax = bitsOf(*share);
+    cpu.fpu.push(x86::Float(*share));
+    cpu.esp += 4;
 }
 
-/* 0x4ac027: the setup's slip limit, an integer to eax, of the setup's slider
- * at [eax]: 12 - 4 * it, chopped (0x4dfd56).  Over a link or in the series
- * the slider is put to 1 first. */
+/* 0x4ac027: how far the slip may go, by the setup's slider: 12 - 4 * it, chopped.  Over a link
+ * or in the series the slider is put to 1 first. */
+std::optional<i32> slipLimit(App* app, CPU& cpu, reg32 slider)
+{
+    if (linkOrSeries(app))
+        floatAt(app, slider) = 1.0f;
+    const float limit = float(fp::sub(f32(app, kSlipLimitTop), fp::mul(f32(app, slider), f32(app, kSlipLimitScale))));
+    return chop(app, cpu, limit);
+}
+
+/* The adapter: slider at eax, the limit to eax. */
 void setupSlipLimit(App* app, CPU& cpu)
 {
-    x86::FPU& fpu = cpu.fpu;
-    push(app, cpu, cpu.ebx);
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.edx);
-    push(app, cpu, cpu.esi);
-    push(app, cpu, cpu.edi);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    cpu.esp -= 0xc;
-    const auto leave = [&] {
-        cpu.esp = cpu.ebp;
-        cpu.ebp = pop(app, cpu);
-        cpu.edi = pop(app, cpu);
-        cpu.esi = pop(app, cpu);
-        cpu.edx = pop(app, cpu);
-        cpu.ecx = pop(app, cpu);
-        cpu.ebx = pop(app, cpu);
-        cpu.esp += 4;
-    };
-    put(app, cpu.ebp - 0xc, cpu.eax);
-    put(app, cpu.ebp - 4, 0);
-    if (i32(at(app, kPlayMode)) > 1 || at(app, kRaceType) == 1 || at(app, kRaceType) == 2)
-    {
-        cpu.eax = at(app, cpu.ebp - 0xc);
-        put(app, cpu.eax, 0x3f800000);
-    }
-    cpu.eax = at(app, cpu.ebp - 0xc);
-    fpu.push(f32(app, cpu.eax));
-    fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53ddb4));
-    fpu.st(0) = fp::sub(f32(app, 0x53ddb8), fpu.st(0));
-    app->getMemory<float>(cpu.ebp - 4) = float(fpu.st(0));
-    fpu.pop();
-    fpu.push(f32(app, cpu.ebp - 4));
-    if (!byAddress(app, cpu, kChop))
+    const Saved saved(cpu);
+    const auto limit = slipLimit(app, cpu, cpu.eax);
+    if (!limit)
         return;
-    put(app, cpu.ebp - 8, reg32(fp::toInteger<i32>(fpu.st(0))));
-    fpu.pop();
-    cpu.eax = at(app, cpu.ebp - 8);
-    return leave();
+    saved.restore(cpu);
+    cpu.eax = reg32(*limit);
+    cpu.esp += 4;
 }
 
-/* 0x4abd9c: the grip lost to the setup's slider at [edx], onto the x87's
- * stack, by car eax's road (+0x160: 2, 1, else) and whether the simulation's
- * handling is on (kLoadingFlags 0x20): 1 / max((s + a) * b - c, floor), by 3
- * on two of the roads in the simulation's.  Over a link or in the series the
- * slider is put to 1 first. */
+/* One of the grip's curves: 1 / max(top - (slider + shift) * scale, floor). The addresses are
+ * the game's constants, `lowest` the code's own value of its floor. */
+struct GripCurve
+{
+    reg32 shift, scale, top, floor;
+    float lowest;
+};
+
+float gripCurve(App* app, reg32 slider, const GripCurve& curve)
+{
+    const x86::Float divisor = fp::sub(f32(app, curve.top), fp::mul(fp::add(f32(app, slider), f32(app, curve.shift)), f32(app, curve.scale)));
+    const float held = divisor > f32(app, curve.floor) ? float(divisor) : curve.lowest;
+    return float(fp::div(1.0, held));
+}
+
+/* 0x4abd9c: the grip lost to the setup's slider, by the car's road and whether the simulation's
+ * handling is on (raceFlags 0x20): on two of the roads the simulation's is cut again.  Over a
+ * link or in the series the slider is put to 1 first. */
+float gripLoss(App* app, reg32 car, reg32 slider)
+{
+    if (linkOrSeries(app))
+        floatAt(app, slider) = 1.0f;
+    const reg32 road = at(app, car + kCarRoad);
+    if ((std::uint8_t(gameSettings(app).raceFlags) & kRaceFlagSimulationGrip) != 0)
+    {
+        if (road == 2)
+            return float(fp::mul(gripCurve(app, slider, { 0x53dd4c, 0x53dd50, 0x53dd54, 0x53dd58, 4.0f }), f32(app, 0x53dd5c)));
+        if (road == 1)
+            return float(fp::mul(gripCurve(app, slider, { 0x53dd60, 0x53dd64, 0x53dd68, 0x53dd6c, 6.0f }), f32(app, 0x53dd70)));
+        return gripCurve(app, slider, { 0x53dd74, 0x53dd78, 0x53dd7c, 0x53dd80, 16.0f });
+    }
+    if (road == 2)
+        return gripCurve(app, slider, { 0x53dd84, 0x53dd88, 0x53dd8c, 0x53dd90, 4.0f });
+    if (road == 1)
+        return gripCurve(app, slider, { 0x53dd94, 0x53dd98, 0x53dd9c, 0x53dda0, 6.0f });
+    return gripCurve(app, slider, { 0x53dda4, 0x53dda8, 0x53ddac, 0x53ddb0, 16.0f });
+}
+
+/* The adapter: car eax, slider edx; onto the x87's stack, its bits in eax. */
 void setupGripLoss(App* app, CPU& cpu)
 {
-    x86::FPU& fpu = cpu.fpu;
-    push(app, cpu, cpu.ebx);
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.esi);
-    push(app, cpu, cpu.edi);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    cpu.esp -= 0x28;
-    const auto leave = [&] {
-        cpu.esp = cpu.ebp;
-        cpu.ebp = pop(app, cpu);
-        cpu.edi = pop(app, cpu);
-        cpu.esi = pop(app, cpu);
-        cpu.ecx = pop(app, cpu);
-        cpu.ebx = pop(app, cpu);
-        cpu.esp += 4;
-    };
-    put(app, cpu.ebp - 0x10, cpu.eax);
-    put(app, cpu.ebp - 0xc, cpu.edx);
-    put(app, cpu.ebp - 4, 0);
-    if (i32(at(app, kPlayMode)) > 1 || at(app, kRaceType) == 1 || at(app, kRaceType) == 2)
+    const float loss = gripLoss(app, cpu.eax, cpu.edx);
+    cpu.eax = bitsOf(loss);
+    cpu.fpu.push(x86::Float(loss));
+    cpu.esp += 4;
+}
+
+/* The axle's slip held to slipLimit.  False when the game stopped. */
+bool holdSlip(App* app, CPU& cpu, reg32 car, reg32 axle)
+{
+    const auto limit = slipLimit(app, cpu, slipSlider(app, car));
+    if (!limit)
+        return false;
+    const float most = float(x86::Float(*limit));
+    const float slip = floatAt(app, axle + kAxleSlip);
+    floatAt(app, axle + kAxleSlip) = slip > most ? most : slip;
+    return true;
+}
+
+/* 0x4ac094: the axle's tyres gripping: the wheels' turns counted (1 for the front, 2 the back),
+ * the slip pulled towards how far the larger of the speeds across and along (with a quarter of
+ * the other) is past the grip -- or 0 -- and held to slipLimit; the force across the speed across
+ * by the slip's share (0.75 past the grip lost) by steeringShare, the force along the drive by
+ * it, both a 20th in neutral; the slip kept back in the car.  False when the game stopped. */
+bool gripAxle(App* app, CPU& cpu, reg32 car, reg32 axle)
+{
+    const bool front = at(app, axle + kAxleFront) != 0;
+    const reg32 carSlip = car + (front ? kCarFrontSlip : kCarBackSlip);
+    put(app, car + kCarWheelTurns, at(app, car + kCarWheelTurns) + (front ? 1 : 2));
+    floatAt(app, axle + kAxleSlip) = float(f32(app, carSlip));
+    const float grip = float(fp::mul(f32(app, axle + kAxleGrip), f32(app, axle + kAxleGripShare)));
+    const float across = size(floatAt(app, axle + kAxleAcross));
+    const float along = size(floatAt(app, axle + kAxleAlong));
+    const x86::Float otherShare = f32(app, kGripOtherShare);
+    const float speed = across > along ? float(fp::add(fp::mul(along, otherShare), across))
+                                       : float(fp::add(fp::mul(across, otherShare), along));
+    if (speed > grip)
     {
-        cpu.eax = at(app, cpu.ebp - 0xc);
-        put(app, cpu.eax, 0x3f800000);
-    }
-    if ((byte(app, kLoadingFlags) & 0x20) != 0)
-    {
-        cpu.eax = at(app, cpu.ebp - 0x10);
-        if (at(app, cpu.eax + 0x160) == 2)
-        {
-            cpu.eax = at(app, cpu.ebp - 0xc);
-            fpu.push(f32(app, cpu.eax));
-            fpu.st(0) = fp::add(fpu.st(0), f32(app, 0x53dd4c));
-            fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53dd50));
-            fpu.st(0) = fp::sub(f32(app, 0x53dd54), fpu.st(0));
-            fcomp(cpu, f32(app, 0x53dd58));
-            cpu.ax = fpu.status.word;
-            if (!below(cpu) && !equal(cpu))
-            {
-                cpu.eax = at(app, cpu.ebp - 0xc);
-                fpu.push(f32(app, cpu.eax));
-                fpu.st(0) = fp::add(fpu.st(0), f32(app, 0x53dd4c));
-                fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53dd50));
-                fpu.st(0) = fp::sub(f32(app, 0x53dd54), fpu.st(0));
-                app->getMemory<float>(cpu.ebp - 0x14) = float(fpu.st(0));
-                fpu.pop();
-            }
-            else
-            {
-                put(app, cpu.ebp - 0x14, 0x40800000);
-            }
-            fpu.push(1.0);
-            fpu.st(0) = fp::div(fpu.st(0), f32(app, cpu.ebp - 0x14));
-            app->getMemory<float>(cpu.ebp - 4) = float(fpu.st(0));
-            fpu.pop();
-            fpu.push(f32(app, cpu.ebp - 4));
-            fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53dd5c));
-            app->getMemory<float>(cpu.ebp - 4) = float(fpu.st(0));
-            fpu.pop();
-        }
-        else
-        {
-            cpu.eax = at(app, cpu.ebp - 0x10);
-            if (at(app, cpu.eax + 0x160) == 1)
-            {
-                cpu.eax = at(app, cpu.ebp - 0xc);
-                fpu.push(f32(app, cpu.eax));
-                fpu.st(0) = fp::add(fpu.st(0), f32(app, 0x53dd60));
-                fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53dd64));
-                fpu.st(0) = fp::sub(f32(app, 0x53dd68), fpu.st(0));
-                fcomp(cpu, f32(app, 0x53dd6c));
-                cpu.ax = fpu.status.word;
-                if (!below(cpu) && !equal(cpu))
-                {
-                    cpu.eax = at(app, cpu.ebp - 0xc);
-                    fpu.push(f32(app, cpu.eax));
-                    fpu.st(0) = fp::add(fpu.st(0), f32(app, 0x53dd60));
-                    fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53dd64));
-                    fpu.st(0) = fp::sub(f32(app, 0x53dd68), fpu.st(0));
-                    app->getMemory<float>(cpu.ebp - 0x18) = float(fpu.st(0));
-                    fpu.pop();
-                }
-                else
-                {
-                    put(app, cpu.ebp - 0x18, 0x40c00000);
-                }
-                fpu.push(1.0);
-                fpu.st(0) = fp::div(fpu.st(0), f32(app, cpu.ebp - 0x18));
-                app->getMemory<float>(cpu.ebp - 4) = float(fpu.st(0));
-                fpu.pop();
-                fpu.push(f32(app, cpu.ebp - 4));
-                fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53dd70));
-                app->getMemory<float>(cpu.ebp - 4) = float(fpu.st(0));
-                fpu.pop();
-            }
-            else
-            {
-                cpu.eax = at(app, cpu.ebp - 0xc);
-                fpu.push(f32(app, cpu.eax));
-                fpu.st(0) = fp::add(fpu.st(0), f32(app, 0x53dd74));
-                fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53dd78));
-                fpu.st(0) = fp::sub(f32(app, 0x53dd7c), fpu.st(0));
-                fcomp(cpu, f32(app, 0x53dd80));
-                cpu.ax = fpu.status.word;
-                if (!below(cpu) && !equal(cpu))
-                {
-                    cpu.eax = at(app, cpu.ebp - 0xc);
-                    fpu.push(f32(app, cpu.eax));
-                    fpu.st(0) = fp::add(fpu.st(0), f32(app, 0x53dd74));
-                    fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53dd78));
-                    fpu.st(0) = fp::sub(f32(app, 0x53dd7c), fpu.st(0));
-                    app->getMemory<float>(cpu.ebp - 0x1c) = float(fpu.st(0));
-                    fpu.pop();
-                }
-                else
-                {
-                    put(app, cpu.ebp - 0x1c, 0x41800000);
-                }
-                fpu.push(1.0);
-                fpu.st(0) = fp::div(fpu.st(0), f32(app, cpu.ebp - 0x1c));
-                app->getMemory<float>(cpu.ebp - 4) = float(fpu.st(0));
-                fpu.pop();
-            }
-        }
+        const float pull = slipPull(app, car, kGripPullScale, kGripPullTop);
+        floatAt(app, axle + kAxleSlip) = float(fp::add(fp::mul(f32(app, axle + kAxleSlip), pull),
+                                                       fp::mul(fp::sub(speed, grip), pull)));
     }
     else
     {
-        cpu.eax = at(app, cpu.ebp - 0x10);
-        if (at(app, cpu.eax + 0x160) == 2)
-        {
-            cpu.eax = at(app, cpu.ebp - 0xc);
-            fpu.push(f32(app, cpu.eax));
-            fpu.st(0) = fp::add(fpu.st(0), f32(app, 0x53dd84));
-            fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53dd88));
-            fpu.st(0) = fp::sub(f32(app, 0x53dd8c), fpu.st(0));
-            fcomp(cpu, f32(app, 0x53dd90));
-            cpu.ax = fpu.status.word;
-            if (!below(cpu) && !equal(cpu))
-            {
-                cpu.eax = at(app, cpu.ebp - 0xc);
-                fpu.push(f32(app, cpu.eax));
-                fpu.st(0) = fp::add(fpu.st(0), f32(app, 0x53dd84));
-                fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53dd88));
-                fpu.st(0) = fp::sub(f32(app, 0x53dd8c), fpu.st(0));
-                app->getMemory<float>(cpu.ebp - 0x20) = float(fpu.st(0));
-                fpu.pop();
-            }
-            else
-            {
-                put(app, cpu.ebp - 0x20, 0x40800000);
-            }
-            fpu.push(1.0);
-            fpu.st(0) = fp::div(fpu.st(0), f32(app, cpu.ebp - 0x20));
-            app->getMemory<float>(cpu.ebp - 4) = float(fpu.st(0));
-            fpu.pop();
-        }
-        else
-        {
-            cpu.eax = at(app, cpu.ebp - 0x10);
-            if (at(app, cpu.eax + 0x160) == 1)
-            {
-                cpu.eax = at(app, cpu.ebp - 0xc);
-                fpu.push(f32(app, cpu.eax));
-                fpu.st(0) = fp::add(fpu.st(0), f32(app, 0x53dd94));
-                fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53dd98));
-                fpu.st(0) = fp::sub(f32(app, 0x53dd9c), fpu.st(0));
-                fcomp(cpu, f32(app, 0x53dda0));
-                cpu.ax = fpu.status.word;
-                if (!below(cpu) && !equal(cpu))
-                {
-                    cpu.eax = at(app, cpu.ebp - 0xc);
-                    fpu.push(f32(app, cpu.eax));
-                    fpu.st(0) = fp::add(fpu.st(0), f32(app, 0x53dd94));
-                    fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53dd98));
-                    fpu.st(0) = fp::sub(f32(app, 0x53dd9c), fpu.st(0));
-                    app->getMemory<float>(cpu.ebp - 0x24) = float(fpu.st(0));
-                    fpu.pop();
-                }
-                else
-                {
-                    put(app, cpu.ebp - 0x24, 0x40c00000);
-                }
-                fpu.push(1.0);
-                fpu.st(0) = fp::div(fpu.st(0), f32(app, cpu.ebp - 0x24));
-                app->getMemory<float>(cpu.ebp - 4) = float(fpu.st(0));
-                fpu.pop();
-            }
-            else
-            {
-                cpu.eax = at(app, cpu.ebp - 0xc);
-                fpu.push(f32(app, cpu.eax));
-                fpu.st(0) = fp::add(fpu.st(0), f32(app, 0x53dda4));
-                fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53dda8));
-                fpu.st(0) = fp::sub(f32(app, 0x53ddac), fpu.st(0));
-                fcomp(cpu, f32(app, 0x53ddb0));
-                cpu.ax = fpu.status.word;
-                if (!below(cpu) && !equal(cpu))
-                {
-                    cpu.eax = at(app, cpu.ebp - 0xc);
-                    fpu.push(f32(app, cpu.eax));
-                    fpu.st(0) = fp::add(fpu.st(0), f32(app, 0x53dda4));
-                    fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53dda8));
-                    fpu.st(0) = fp::sub(f32(app, 0x53ddac), fpu.st(0));
-                    app->getMemory<float>(cpu.ebp - 0x28) = float(fpu.st(0));
-                    fpu.pop();
-                }
-                else
-                {
-                    put(app, cpu.ebp - 0x28, 0x41800000);
-                }
-                fpu.push(1.0);
-                fpu.st(0) = fp::div(fpu.st(0), f32(app, cpu.ebp - 0x28));
-                app->getMemory<float>(cpu.ebp - 4) = float(fpu.st(0));
-                fpu.pop();
-            }
-        }
+        put(app, axle + kAxleSlip, 0);
     }
-    cpu.eax = at(app, cpu.ebp - 4);
-    put(app, cpu.ebp - 8, cpu.eax);
-    fpu.push(f32(app, cpu.ebp - 8));
-    return leave();
+    if (!holdSlip(app, cpu, car, axle))
+        return false;
+    const float loss = gripLoss(app, car, slipSlider(app, car));
+    const float kept = float(fp::sub(grip, fp::mul(grip, loss)));
+    float share = 0.75f;
+    if (size(speed) > size(kept))
+    {
+        const x86::Float ratio = fp::div(kept, speed);
+        share = 0.0 > ratio ? float(-ratio) : float(ratio);
+    }
+    const float forceAcross = float(fp::mul(f32(app, axle + kAxleAcross), share));
+    const auto steering = steeringShare(app, cpu, car);
+    if (!steering)
+        return false;
+    floatAt(app, axle + kAxleForceAcross) = float(fp::mul(*steering, forceAcross));
+    put(app, axle + kAxleForceUp, 0);
+    floatAt(app, axle + kAxleForceAlong) = float(fp::mul(f32(app, axle + kAxleDrive), share));
+    if (byte(app, car + kCarGear) == kGearNeutral)
+    {
+        floatAt(app, axle + kAxleForceAcross) = float(fp::mul(f32(app, axle + kAxleForceAcross), f32(app, kNeutralForceShare)));
+        floatAt(app, axle + kAxleForceAlong) = float(fp::mul(f32(app, axle + kAxleForceAlong), f32(app, kNeutralForceShare)));
+    }
+    floatAt(app, carSlip) = float(f32(app, axle + kAxleSlip));
+    return true;
 }
 
-/* 0x4ac094: axle edx's tyres gripping (no handbrake on it): the wheels' turns
- * counted (+0x59c, by 1 for the front, 2 the back), the slip (+0x2c, from the
- * car's +0x5c0 front, +0x5c4 back) pulled towards how far the larger of the
- * speeds across and along (with a quarter of the other) is past the grip
- * (+4 by +8) -- by the setup's slider, 0.5 at least, 0.7 over a link or in the
- * series -- or 0, and held to setupSlipLimit; the force across (+0x1c) the
- * speed across by the slip's share (0.75 past the grip lost) by steeringGrip,
- * the force along (+0x24) the drive by it, both a 20th in neutral; the slip
- * kept back in the car. */
+/* The adapter: car eax, axle edx; eax and edx as the game's code leaves them. */
 void tyreGrip(App* app, CPU& cpu)
 {
-    x86::FPU& fpu = cpu.fpu;
-    push(app, cpu, cpu.ebx);
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.esi);
-    push(app, cpu, cpu.edi);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    cpu.esp -= 0x4c;
-    const auto leave = [&] {
-        cpu.esp = cpu.ebp;
-        cpu.ebp = pop(app, cpu);
-        cpu.edi = pop(app, cpu);
-        cpu.esi = pop(app, cpu);
-        cpu.ecx = pop(app, cpu);
-        cpu.ebx = pop(app, cpu);
-        cpu.esp += 4;
-    };
-    put(app, cpu.ebp - 0x28, cpu.eax);
-    put(app, cpu.ebp - 0x24, cpu.edx);
-    put(app, cpu.ebp - 0x1c, 0);
-    put(app, cpu.ebp - 0x18, 0);
-    put(app, cpu.ebp - 0x14, 0);
-    put(app, cpu.ebp - 0x10, 0);
-    put(app, cpu.ebp - 0xc, 0);
-    put(app, cpu.ebp - 8, 0);
-    put(app, cpu.ebp - 4, 0);
-    cpu.eax = at(app, cpu.ebp - 0x24);
-    if (at(app, cpu.eax + 0x28) != 0)
-    {
-        cpu.eax = at(app, cpu.ebp - 0x28);
-        put(app, cpu.eax + 0x59c, at(app, cpu.eax + 0x59c) + 1);
-    }
-    else
-    {
-        cpu.eax = at(app, cpu.ebp - 0x28);
-        put(app, cpu.eax + 0x59c, at(app, cpu.eax + 0x59c) + 2);
-    }
-    cpu.eax = at(app, cpu.ebp - 0x24);
-    if (at(app, cpu.eax + 0x28) != 0)
-    {
-        cpu.eax = at(app, cpu.ebp - 0x28);
-        fpu.push(f32(app, cpu.eax + 0x5c0));
-        cpu.eax = at(app, cpu.ebp - 0x24);
-        app->getMemory<float>(cpu.eax + 0x2c) = float(fpu.st(0));
-        fpu.pop();
-    }
-    else
-    {
-        cpu.eax = at(app, cpu.ebp - 0x28);
-        fpu.push(f32(app, cpu.eax + 0x5c4));
-        cpu.eax = at(app, cpu.ebp - 0x24);
-        app->getMemory<float>(cpu.eax + 0x2c) = float(fpu.st(0));
-        fpu.pop();
-    }
-    cpu.eax = at(app, cpu.ebp - 0x24);
-    fpu.push(f32(app, cpu.eax + 4));
-    cpu.eax = at(app, cpu.ebp - 0x24);
-    fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.eax + 8));
-    app->getMemory<float>(cpu.ebp - 0x10) = float(fpu.st(0));
-    fpu.pop();
-    cpu.eax = at(app, cpu.ebp - 0x24);
-    fpu.push(0.0);
-    fcomp(cpu, f32(app, cpu.eax + 0x10));
-    cpu.ax = fpu.status.word;
-    if (!below(cpu) && !equal(cpu))
-    {
-        cpu.eax = at(app, cpu.ebp - 0x24);
-        fpu.push(f32(app, cpu.eax + 0x10));
-        fpu.st(0) = -fpu.st(0);
-        app->getMemory<float>(cpu.ebp - 0x34) = float(fpu.st(0));
-        fpu.pop();
-    }
-    else
-    {
-        cpu.eax = at(app, cpu.ebp - 0x24);
-        cpu.eax = at(app, cpu.eax + 0x10);
-        put(app, cpu.ebp - 0x34, cpu.eax);
-    }
-    cpu.eax = at(app, cpu.ebp - 0x34);
-    put(app, cpu.ebp - 0x18, cpu.eax);
-    cpu.eax = at(app, cpu.ebp - 0x24);
-    fpu.push(0.0);
-    fcomp(cpu, f32(app, cpu.eax + 0x18));
-    cpu.ax = fpu.status.word;
-    if (!below(cpu) && !equal(cpu))
-    {
-        cpu.eax = at(app, cpu.ebp - 0x24);
-        fpu.push(f32(app, cpu.eax + 0x18));
-        fpu.st(0) = -fpu.st(0);
-        app->getMemory<float>(cpu.ebp - 0x30) = float(fpu.st(0));
-        fpu.pop();
-    }
-    else
-    {
-        cpu.eax = at(app, cpu.ebp - 0x24);
-        cpu.eax = at(app, cpu.eax + 0x18);
-        put(app, cpu.ebp - 0x30, cpu.eax);
-    }
-    cpu.eax = at(app, cpu.ebp - 0x30);
-    put(app, cpu.ebp - 0x14, cpu.eax);
-    fpu.push(f32(app, cpu.ebp - 0x18));
-    fcomp(cpu, f32(app, cpu.ebp - 0x14));
-    cpu.ax = fpu.status.word;
-    if (!below(cpu) && !equal(cpu))
-    {
-        fpu.push(f32(app, cpu.ebp - 0x14));
-        fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53ddbc));
-        fpu.st(0) = fp::add(fpu.st(0), f32(app, cpu.ebp - 0x18));
-        app->getMemory<float>(cpu.ebp - 0x2c) = float(fpu.st(0));
-        fpu.pop();
-    }
-    else
-    {
-        fpu.push(f32(app, cpu.ebp - 0x18));
-        fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53ddbc));
-        fpu.st(0) = fp::add(fpu.st(0), f32(app, cpu.ebp - 0x14));
-        app->getMemory<float>(cpu.ebp - 0x2c) = float(fpu.st(0));
-        fpu.pop();
-    }
-    cpu.eax = at(app, cpu.ebp - 0x2c);
-    put(app, cpu.ebp - 0x1c, cpu.eax);
-    fpu.push(f32(app, cpu.ebp - 0x1c));
-    fcomp(cpu, f32(app, cpu.ebp - 0x10));
-    cpu.ax = fpu.status.word;
-    if (!below(cpu) && !equal(cpu))
-    {
-        if (i32(at(app, kPlayMode)) <= 1 && at(app, kRaceType) != 1 && at(app, kRaceType) != 2)
-        {
-            cpu.eax = at(app, cpu.ebp - 0x28);
-            cpu.eax = at(app, cpu.eax + 0x220);
-            fpu.push(f32(app, cpu.eax + 0x58));
-            fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53ddc0));
-            fpu.st(0) = fp::sub(f32(app, 0x53ddc4), fpu.st(0));
-            app->getMemory<float>(cpu.ebp - 4) = float(fpu.st(0));
-            fpu.pop();
-        }
-        else
-        {
-            put(app, cpu.ebp - 4, 0x3f333333);
-        }
-        if (i32(at(app, cpu.ebp - 4)) > 0x3f000000)
-        {
-            cpu.eax = at(app, cpu.ebp - 4);
-            put(app, cpu.ebp - 0x38, cpu.eax);
-        }
-        else
-        {
-            put(app, cpu.ebp - 0x38, 0x3f000000);
-        }
-        cpu.eax = at(app, cpu.ebp - 0x38);
-        put(app, cpu.ebp - 4, cpu.eax);
-        cpu.eax = at(app, cpu.ebp - 0x24);
-        fpu.push(f32(app, cpu.eax + 0x2c));
-        fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.ebp - 4));
-        fpu.push(f32(app, cpu.ebp - 0x1c));
-        fpu.st(0) = fp::sub(fpu.st(0), f32(app, cpu.ebp - 0x10));
-        fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.ebp - 4));
-        cpu.eax = at(app, cpu.ebp - 0x24);
-        fpu.st(1) = fp::add(fpu.st(1), fpu.st(0));
-        fpu.pop();
-        app->getMemory<float>(cpu.eax + 0x2c) = float(fpu.st(0));
-        fpu.pop();
-    }
-    else
-    {
-        cpu.eax = at(app, cpu.ebp - 0x24);
-        put(app, cpu.eax + 0x2c, 0);
-    }
-    cpu.eax = at(app, cpu.ebp - 0x28);
-    cpu.eax = at(app, cpu.eax + 0x220);
-    cpu.eax += 0x58;
-    if (!direct(app, cpu, setupSlipLimit))
+    const Saved saved(cpu);
+    const reg32 car = cpu.eax;
+    if (!gripAxle(app, cpu, car, cpu.edx))
         return;
-    put(app, cpu.ebp - 0x48, cpu.eax);
-    fpu.push(x86::Float(i32(at(app, cpu.ebp - 0x48))));
-    app->getMemory<float>(cpu.ebp - 0xc) = float(fpu.st(0));
-    fpu.pop();
-    cpu.eax = at(app, cpu.ebp - 0x24);
-    fpu.push(f32(app, cpu.eax + 0x2c));
-    fcomp(cpu, f32(app, cpu.ebp - 0xc));
-    cpu.ax = fpu.status.word;
-    if (!below(cpu) && !equal(cpu))
-    {
-        cpu.eax = at(app, cpu.ebp - 0xc);
-        put(app, cpu.ebp - 0x44, cpu.eax);
-    }
-    else
-    {
-        cpu.eax = at(app, cpu.ebp - 0x24);
-        cpu.eax = at(app, cpu.eax + 0x2c);
-        put(app, cpu.ebp - 0x44, cpu.eax);
-    }
-    cpu.eax = at(app, cpu.ebp - 0x44);
-    cpu.edx = at(app, cpu.ebp - 0x24);
-    put(app, cpu.edx + 0x2c, cpu.eax);
-    cpu.eax = at(app, cpu.ebp - 0x28);
-    cpu.edx = at(app, cpu.eax + 0x220);
-    cpu.edx += 0x58;
-    cpu.eax = at(app, cpu.ebp - 0x28);
-    if (!direct(app, cpu, setupGripLoss))
-        return;
-    app->getMemory<float>(cpu.ebp - 8) = float(fpu.st(0));
-    fpu.pop();
-    fpu.push(f32(app, cpu.ebp - 0x10));
-    fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.ebp - 8));
-    fpu.st(0) = fp::sub(f32(app, cpu.ebp - 0x10), fpu.st(0));
-    app->getMemory<float>(cpu.ebp - 0x14) = float(fpu.st(0));
-    fpu.pop();
-    fpu.push(0.0);
-    fcomp(cpu, f32(app, cpu.ebp - 0x1c));
-    cpu.ax = fpu.status.word;
-    if (!below(cpu) && !equal(cpu))
-    {
-        fpu.push(f32(app, cpu.ebp - 0x1c));
-        fpu.st(0) = -fpu.st(0);
-        app->getMemory<float>(cpu.ebp - 0x40) = float(fpu.st(0));
-        fpu.pop();
-    }
-    else
-    {
-        cpu.eax = at(app, cpu.ebp - 0x1c);
-        put(app, cpu.ebp - 0x40, cpu.eax);
-    }
-    fpu.push(0.0);
-    fcomp(cpu, f32(app, cpu.ebp - 0x14));
-    cpu.ax = fpu.status.word;
-    if (!below(cpu) && !equal(cpu))
-    {
-        fpu.push(f32(app, cpu.ebp - 0x14));
-        fpu.st(0) = -fpu.st(0);
-        app->getMemory<float>(cpu.ebp - 0x3c) = float(fpu.st(0));
-        fpu.pop();
-    }
-    else
-    {
-        cpu.eax = at(app, cpu.ebp - 0x14);
-        put(app, cpu.ebp - 0x3c, cpu.eax);
-    }
-    fpu.push(f32(app, cpu.ebp - 0x40));
-    fcomp(cpu, f32(app, cpu.ebp - 0x3c));
-    cpu.ax = fpu.status.word;
-    if (!below(cpu) && !equal(cpu))
-    {
-        fpu.push(f32(app, cpu.ebp - 0x14));
-        fpu.st(0) = fp::div(fpu.st(0), f32(app, cpu.ebp - 0x1c));
-        fpu.push(0.0);
-        fcompp(cpu);
-        cpu.ax = fpu.status.word;
-        if (!below(cpu) && !equal(cpu))
-        {
-            fpu.push(f32(app, cpu.ebp - 0x14));
-            fpu.st(0) = fp::div(fpu.st(0), f32(app, cpu.ebp - 0x1c));
-            fpu.st(0) = -fpu.st(0);
-            app->getMemory<float>(cpu.ebp - 0x4c) = float(fpu.st(0));
-            fpu.pop();
-        }
-        else
-        {
-            fpu.push(f32(app, cpu.ebp - 0x14));
-            fpu.st(0) = fp::div(fpu.st(0), f32(app, cpu.ebp - 0x1c));
-            app->getMemory<float>(cpu.ebp - 0x4c) = float(fpu.st(0));
-            fpu.pop();
-        }
-        cpu.eax = at(app, cpu.ebp - 0x4c);
-        put(app, cpu.ebp - 0x18, cpu.eax);
-    }
-    else
-    {
-        put(app, cpu.ebp - 0x18, 0x3f400000);
-    }
-    cpu.eax = at(app, cpu.ebp - 0x24);
-    fpu.push(f32(app, cpu.eax + 0x10));
-    fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.ebp - 0x18));
-    app->getMemory<float>(cpu.ebp - 0x48) = float(fpu.st(0));
-    fpu.pop();
-    cpu.eax = at(app, cpu.ebp - 0x28);
-    if (!direct(app, cpu, steeringGrip))
-        return;
-    cpu.eax = at(app, cpu.ebp - 0x24);
-    fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.ebp - 0x48));
-    app->getMemory<float>(cpu.eax + 0x1c) = float(fpu.st(0));
-    fpu.pop();
-    cpu.eax = at(app, cpu.ebp - 0x24);
-    put(app, cpu.eax + 0x20, 0);
-    cpu.eax = at(app, cpu.ebp - 0x24);
-    fpu.push(f32(app, cpu.eax));
-    fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.ebp - 0x18));
-    cpu.eax = at(app, cpu.ebp - 0x24);
-    app->getMemory<float>(cpu.eax + 0x24) = float(fpu.st(0));
-    fpu.pop();
-    cpu.eax = at(app, cpu.ebp - 0x28);
-    if (byte(app, cpu.eax + 0x50b) == 1)
-    {
-        cpu.eax = at(app, cpu.ebp - 0x24);
-        fpu.push(f32(app, cpu.eax + 0x1c));
-        fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53ddc8));
-        app->getMemory<float>(cpu.eax + 0x1c) = float(fpu.st(0));
-        fpu.pop();
-        cpu.eax = at(app, cpu.ebp - 0x24);
-        fpu.push(f32(app, cpu.eax + 0x24));
-        fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53ddc8));
-        app->getMemory<float>(cpu.eax + 0x24) = float(fpu.st(0));
-        fpu.pop();
-    }
-    cpu.eax = at(app, cpu.ebp - 0x24);
-    if (at(app, cpu.eax + 0x28) != 0)
-    {
-        cpu.eax = at(app, cpu.ebp - 0x24);
-        fpu.push(f32(app, cpu.eax + 0x2c));
-        cpu.eax = at(app, cpu.ebp - 0x28);
-        app->getMemory<float>(cpu.eax + 0x5c0) = float(fpu.st(0));
-        fpu.pop();
-        return leave();
-    }
-    cpu.eax = at(app, cpu.ebp - 0x24);
-    fpu.push(f32(app, cpu.eax + 0x2c));
-    cpu.eax = at(app, cpu.ebp - 0x28);
-    app->getMemory<float>(cpu.eax + 0x5c4) = float(fpu.st(0));
-    fpu.pop();
-    return leave();
+    saved.restore(cpu);
+    cpu.eax = car;
+    cpu.edx = slipSlider(app, car);
+    cpu.esp += 4;
 }
 
-/* 0x4ac3af: axle edx's tyres past their grip: the forces' larger (with a
- * quarter of the other) against the grip less what the setup loses of it.
- * Past it, the wheels spin or lock: with the assist (kAssist) on the back
- * axle and the throttle past 0.15, the slip every fourth frame and the forces
- * cut to the grip; else the slip from how far past, by the road's share (1.5,
- * 2, or as it is), pulled in by the setup's slider, and the forces cut --
- * along only with the assist, else by half again -- when on the back, in a
- * gear, braking hard past 0.85 with the revs past 0.85 of the limit.  The
- * back axle with the clutch in (+0x594 1) in first or second slips at the
- * forces' size, by 4.  The slip held to setupSlipLimit. */
+/* 0x4ac3af: the axle's tyres past their grip: the forces' larger (with a quarter of the other)
+ * against the grip less what the setup loses of it.  Past it, the wheels spin or lock: with the
+ * assist on the back axle and the throttle past 0.15, the slip every fourth frame and the forces
+ * cut to the grip; else the slip from how far past, by the road's share, pulled in by the setup's
+ * slider, and the forces cut -- along only with the assist, else by half again -- when on the
+ * back, in a gear, braking hard with the revs high.  The back axle with the clutch in slips at
+ * the forces' size, by 4 in first or second.  The slip held to slipLimit. */
+bool slideAxle(App* app, CPU& cpu, reg32 car, reg32 axle)
+{
+    const bool front = at(app, axle + kAxleFront) != 0;
+    const float across = size(floatAt(app, axle + kAxleForceAcross));
+    const float along = size(floatAt(app, axle + kAxleForceAlong));
+    const x86::Float otherShare = f32(app, kSlideOtherShare);
+    const float force = across > along ? float(fp::add(across, float(fp::mul(along, otherShare))))
+                                       : float(fp::add(along, float(fp::mul(across, otherShare))));
+    floatAt(app, axle + kAxleSlip) = float(f32(app, car + (front ? kCarFrontSlip : kCarBackSlip)));
+    const float grip = floatAt(app, axle + kAxleGrip);
+    const float kept = float(fp::sub(grip, fp::mul(gripLoss(app, car, slipSlider(app, car)), grip)));
+    const float loss = gripLoss(app, car, slipSlider(app, car));
+    put(app, axle + kAxleSlip, 0);
+    const reg32 forceAcross = axle + kAxleForceAcross, forceAlong = axle + kAxleForceAlong, slip = axle + kAxleSlip;
+    if (force > kept)
+    {
+        const bool assist = gameSettings(app).raceOptionSimulation != 0 && !front;
+        if (assist && i32(at(app, car + kCarThrottle)) > kBits0_15)
+        {
+            const float cut = (bitsOf(force) & kBitsNotSign) != 0 ? float(fp::div(kept, force)) : 1.0f;
+            if (i32(at(app, kFrame)) % 4 == 0)
+                put(app, slip, 0);
+            else
+                floatAt(app, slip) = float(fp::mul(kept, f32(app, kAssistSlipShare)));
+            if (byte(app, car + kCarGear) > 2)
+                floatAt(app, forceAcross) = float(fp::mul(f32(app, forceAcross), cut));
+            floatAt(app, forceAlong) = float(fp::mul(f32(app, forceAlong), cut));
+        }
+        else
+        {
+            if (signedBits(size(floatAt(app, car + kCarSpeedAlong))) > kBits5 || at(app, car + kCarClutch) != 0)
+                floatAt(app, slip) = float(fp::sub(force, kept));
+            const x86::Float past = fp::mul(fp::sub(force, kept), loss);
+            const x86::Float held = fp::mul(kept, loss);
+            const float least = held > past ? float(past) : float(held);
+            const reg32 road = at(app, car + kCarRoad);
+            float lost = least;
+            if (road == 1)
+                lost = float(fp::mul(least, f32(app, kSlideRoad1Share)));
+            else if (road == 2)
+                lost = float(fp::mul(least, f32(app, kSlideRoad2Share)));
+            const float room = float(fp::sub(kept, lost));
+            const float forceSize = size(force);
+            const float cut = forceSize > room && (bitsOf(force) & kBitsNotSign) != 0 ? float(fp::div(room, forceSize)) : 1.0f;
+            const float pull = slipPull(app, car, kSlidePullScale, kSlidePullTop);
+            floatAt(app, slip) = float(fp::add(fp::mul(f32(app, slip), pull), fp::mul(fp::sub(force, kept), pull)));
+            if (!front && byte(app, car + kCarGear) == 2 && i32(at(app, car + kCarField20c)) >= kBits0_95
+                && i32(at(app, car + kCarBrake)) >= kBits0_85)
+            {
+                const x86::Float high = fp::mul(x86::Float(i32(at(app, at(app, car + kCarHandling) + kHandlingRevsLimit))), f32(app, kHighRevsShare));
+                // fcompp's "not below" is >= on every value: unordered sets below.
+                if (x86::Float(i32(at(app, car + kCarRevs))) >= high)
+                {
+                    floatAt(app, forceAcross) = float(fp::mul(f32(app, forceAcross), cut));
+                    if (gameSettings(app).raceOptionSimulation != 0)
+                        floatAt(app, forceAlong) = float(fp::mul(f32(app, forceAlong), cut));
+                    else
+                        floatAt(app, forceAlong) = float(fp::mul(fp::mul(cut, f32(app, kBrakeAlongShare)), f32(app, forceAlong)));
+                }
+            }
+        }
+    }
+    if (!front && at(app, car + kCarClutch) == 1)
+    {
+        floatAt(app, slip) = force;
+        const std::uint8_t gear = byte(app, car + kCarGear);
+        if (gear >= 2 && gear <= 3)
+            floatAt(app, slip) = float(fp::mul(f32(app, slip), f32(app, kClutchSlipShare)));
+    }
+    return holdSlip(app, cpu, car, axle);
+}
+
+/* The adapter: car eax, axle edx; the slip's bits left in eax, the axle in edx. */
 void tyreSlide(App* app, CPU& cpu)
 {
-    x86::FPU& fpu = cpu.fpu;
-    push(app, cpu, cpu.ebx);
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.esi);
-    push(app, cpu, cpu.edi);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    cpu.esp -= 0x80;
-    const auto leave = [&] {
-        cpu.esp = cpu.ebp;
-        cpu.ebp = pop(app, cpu);
-        cpu.edi = pop(app, cpu);
-        cpu.esi = pop(app, cpu);
-        cpu.ecx = pop(app, cpu);
-        cpu.ebx = pop(app, cpu);
-        cpu.esp += 4;
-    };
-    put(app, cpu.ebp - 0x50, cpu.eax);
-    put(app, cpu.ebp - 0x4c, cpu.edx);
-    put(app, cpu.ebp - 0x44, 0);
-    put(app, cpu.ebp - 0x40, 0);
-    put(app, cpu.ebp - 0x3c, 0);
-    put(app, cpu.ebp - 0x38, 0);
-    put(app, cpu.ebp - 0x34, 0);
-    put(app, cpu.ebp - 0x30, 0);
-    put(app, cpu.ebp - 0x2c, 0);
-    put(app, cpu.ebp - 0x28, 0);
-    cpu.eax = at(app, cpu.ebp - 0x4c);
-    fpu.push(0.0);
-    fcomp(cpu, f32(app, cpu.eax + 0x1c));
-    cpu.ax = fpu.status.word;
-    if (!below(cpu) && !equal(cpu))
-    {
-        cpu.eax = at(app, cpu.ebp - 0x4c);
-        fpu.push(f32(app, cpu.eax + 0x1c));
-        fpu.st(0) = -fpu.st(0);
-        app->getMemory<float>(cpu.ebp - 0x24) = float(fpu.st(0));
-        fpu.pop();
-    }
-    else
-    {
-        cpu.eax = at(app, cpu.ebp - 0x4c);
-        cpu.eax = at(app, cpu.eax + 0x1c);
-        put(app, cpu.ebp - 0x24, cpu.eax);
-    }
-    cpu.eax = at(app, cpu.ebp - 0x4c);
-    fpu.push(0.0);
-    fcomp(cpu, f32(app, cpu.eax + 0x24));
-    cpu.ax = fpu.status.word;
-    if (!below(cpu) && !equal(cpu))
-    {
-        cpu.eax = at(app, cpu.ebp - 0x4c);
-        fpu.push(f32(app, cpu.eax + 0x24));
-        fpu.st(0) = -fpu.st(0);
-        app->getMemory<float>(cpu.ebp - 0x20) = float(fpu.st(0));
-        fpu.pop();
-    }
-    else
-    {
-        cpu.eax = at(app, cpu.ebp - 0x4c);
-        cpu.eax = at(app, cpu.eax + 0x24);
-        put(app, cpu.ebp - 0x20, cpu.eax);
-    }
-    fpu.push(f32(app, cpu.ebp - 0x24));
-    fcomp(cpu, f32(app, cpu.ebp - 0x20));
-    cpu.ax = fpu.status.word;
-    if (!below(cpu) && !equal(cpu))
-    {
-        cpu.eax = at(app, cpu.ebp - 0x4c);
-        fpu.push(0.0);
-        fcomp(cpu, f32(app, cpu.eax + 0x24));
-        cpu.ax = fpu.status.word;
-        if (!below(cpu) && !equal(cpu))
-        {
-            cpu.eax = at(app, cpu.ebp - 0x4c);
-            fpu.push(f32(app, cpu.eax + 0x24));
-            fpu.st(0) = -fpu.st(0);
-            app->getMemory<float>(cpu.ebp - 0x18) = float(fpu.st(0));
-            fpu.pop();
-        }
-        else
-        {
-            cpu.eax = at(app, cpu.ebp - 0x4c);
-            cpu.eax = at(app, cpu.eax + 0x24);
-            put(app, cpu.ebp - 0x18, cpu.eax);
-        }
-        fpu.push(f32(app, cpu.ebp - 0x18));
-        fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53ddcc));
-        app->getMemory<float>(cpu.ebp - 0x14) = float(fpu.st(0));
-        fpu.pop();
-        cpu.eax = at(app, cpu.ebp - 0x4c);
-        fpu.push(0.0);
-        fcomp(cpu, f32(app, cpu.eax + 0x1c));
-        cpu.ax = fpu.status.word;
-        if (!below(cpu) && !equal(cpu))
-        {
-            cpu.eax = at(app, cpu.ebp - 0x4c);
-            fpu.push(f32(app, cpu.eax + 0x1c));
-            fpu.st(0) = -fpu.st(0);
-            app->getMemory<float>(cpu.ebp - 0x10) = float(fpu.st(0));
-            fpu.pop();
-        }
-        else
-        {
-            cpu.eax = at(app, cpu.ebp - 0x4c);
-            cpu.eax = at(app, cpu.eax + 0x1c);
-            put(app, cpu.ebp - 0x10, cpu.eax);
-        }
-        fpu.push(f32(app, cpu.ebp - 0x10));
-        fpu.st(0) = fp::add(fpu.st(0), f32(app, cpu.ebp - 0x14));
-        app->getMemory<float>(cpu.ebp - 0x1c) = float(fpu.st(0));
-        fpu.pop();
-    }
-    else
-    {
-        cpu.eax = at(app, cpu.ebp - 0x4c);
-        fpu.push(0.0);
-        fcomp(cpu, f32(app, cpu.eax + 0x1c));
-        cpu.ax = fpu.status.word;
-        if (!below(cpu) && !equal(cpu))
-        {
-            cpu.eax = at(app, cpu.ebp - 0x4c);
-            fpu.push(f32(app, cpu.eax + 0x1c));
-            fpu.st(0) = -fpu.st(0);
-            app->getMemory<float>(cpu.ebp - 0xc) = float(fpu.st(0));
-            fpu.pop();
-        }
-        else
-        {
-            cpu.eax = at(app, cpu.ebp - 0x4c);
-            cpu.eax = at(app, cpu.eax + 0x1c);
-            put(app, cpu.ebp - 0xc, cpu.eax);
-        }
-        fpu.push(f32(app, cpu.ebp - 0xc));
-        fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53ddcc));
-        app->getMemory<float>(cpu.ebp - 8) = float(fpu.st(0));
-        fpu.pop();
-        cpu.eax = at(app, cpu.ebp - 0x4c);
-        fpu.push(0.0);
-        fcomp(cpu, f32(app, cpu.eax + 0x24));
-        cpu.ax = fpu.status.word;
-        if (!below(cpu) && !equal(cpu))
-        {
-            cpu.eax = at(app, cpu.ebp - 0x4c);
-            fpu.push(f32(app, cpu.eax + 0x24));
-            fpu.st(0) = -fpu.st(0);
-            app->getMemory<float>(cpu.ebp - 4) = float(fpu.st(0));
-            fpu.pop();
-        }
-        else
-        {
-            cpu.eax = at(app, cpu.ebp - 0x4c);
-            cpu.eax = at(app, cpu.eax + 0x24);
-            put(app, cpu.ebp - 4, cpu.eax);
-        }
-        fpu.push(f32(app, cpu.ebp - 4));
-        fpu.st(0) = fp::add(fpu.st(0), f32(app, cpu.ebp - 8));
-        app->getMemory<float>(cpu.ebp - 0x1c) = float(fpu.st(0));
-        fpu.pop();
-    }
-    cpu.eax = at(app, cpu.ebp - 0x1c);
-    put(app, cpu.ebp - 0x44, cpu.eax);
-    cpu.eax = at(app, cpu.ebp - 0x4c);
-    if (at(app, cpu.eax + 0x28) != 0)
-    {
-        cpu.eax = at(app, cpu.ebp - 0x50);
-        fpu.push(f32(app, cpu.eax + 0x5c0));
-        cpu.eax = at(app, cpu.ebp - 0x4c);
-        app->getMemory<float>(cpu.eax + 0x2c) = float(fpu.st(0));
-        fpu.pop();
-    }
-    else
-    {
-        cpu.eax = at(app, cpu.ebp - 0x50);
-        fpu.push(f32(app, cpu.eax + 0x5c4));
-        cpu.eax = at(app, cpu.ebp - 0x4c);
-        app->getMemory<float>(cpu.eax + 0x2c) = float(fpu.st(0));
-        fpu.pop();
-    }
-    cpu.eax = at(app, cpu.ebp - 0x4c);
-    cpu.eax = at(app, cpu.eax + 4);
-    put(app, cpu.ebp - 0x40, cpu.eax);
-    cpu.eax = at(app, cpu.ebp - 0x50);
-    cpu.eax = at(app, cpu.eax + 0x220);
-    cpu.edx = cpu.eax + 0x58;
-    cpu.eax = at(app, cpu.ebp - 0x50);
-    if (!direct(app, cpu, setupGripLoss))
+    const Saved saved(cpu);
+    const reg32 axle = cpu.edx;
+    if (!slideAxle(app, cpu, cpu.eax, axle))
         return;
-    fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.ebp - 0x40));
-    fpu.st(0) = fp::sub(f32(app, cpu.ebp - 0x40), fpu.st(0));
-    app->getMemory<float>(cpu.ebp - 0x40) = float(fpu.st(0));
-    fpu.pop();
-    cpu.eax = at(app, cpu.ebp - 0x50);
-    cpu.eax = at(app, cpu.eax + 0x220);
-    cpu.edx = cpu.eax + 0x58;
-    cpu.eax = at(app, cpu.ebp - 0x50);
-    if (!direct(app, cpu, setupGripLoss))
-        return;
-    app->getMemory<float>(cpu.ebp - 0x38) = float(fpu.st(0));
-    fpu.pop();
-    cpu.eax = at(app, cpu.ebp - 0x4c);
-    put(app, cpu.eax + 0x2c, 0);
-    fpu.push(f32(app, cpu.ebp - 0x44));
-    fcomp(cpu, f32(app, cpu.ebp - 0x40));
-    cpu.ax = fpu.status.word;
-    if (!below(cpu) && !equal(cpu))
-    {
-        if (at(app, kAssist) != 0 && (cpu.eax = at(app, cpu.ebp - 0x4c), at(app, cpu.eax + 0x28) == 0))
-        {
-            cpu.eax = at(app, cpu.ebp - 0x50);
-            cpu.eax = at(app, cpu.ebp - 0x50);
-            if (i32(at(app, cpu.eax + 0x5b0)) > 0x3e19999a)
-            {
-                put(app, cpu.ebp - 0x54, 1);
-            }
-            else
-            {
-                put(app, cpu.ebp - 0x54, 0);
-            }
-            cpu.eax = at(app, cpu.ebp - 0x54);
-            put(app, cpu.ebp - 0x5c, cpu.eax);
-            if (at(app, cpu.ebp - 0x5c) == 0)
-                goto L_4ac67d;
-            if ((at(app, cpu.ebp - 0x44) & 0x7fffffff) != 0)
-            {
-                fpu.push(f32(app, cpu.ebp - 0x40));
-                fpu.st(0) = fp::div(fpu.st(0), f32(app, cpu.ebp - 0x44));
-                app->getMemory<float>(cpu.ebp - 0x34) = float(fpu.st(0));
-                fpu.pop();
-            }
-            else
-            {
-                put(app, cpu.ebp - 0x34, 0x3f800000);
-            }
-            cpu.ecx = 4;
-            cpu.eax = at(app, kFrame);
-            cpu.edx = at(app, kFrame);
-            cpu.edx = reg32(i32(cpu.edx) >> 0x1f);
-            idiv(cpu, cpu.ecx);
-            if (cpu.edx == 0)
-            {
-                cpu.eax = at(app, cpu.ebp - 0x4c);
-                put(app, cpu.eax + 0x2c, 0);
-            }
-            else
-            {
-                cpu.eax = at(app, cpu.ebp - 0x4c);
-                fpu.push(f32(app, cpu.ebp - 0x40));
-                fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53ddd0));
-                app->getMemory<float>(cpu.eax + 0x2c) = float(fpu.st(0));
-                fpu.pop();
-            }
-            cpu.eax = at(app, cpu.ebp - 0x50);
-            if (byte(app, cpu.eax + 0x50b) > 2)
-            {
-                cpu.eax = at(app, cpu.ebp - 0x4c);
-                fpu.push(f32(app, cpu.eax + 0x1c));
-                fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.ebp - 0x34));
-                app->getMemory<float>(cpu.eax + 0x1c) = float(fpu.st(0));
-                fpu.pop();
-            }
-            cpu.eax = at(app, cpu.ebp - 0x4c);
-            fpu.push(f32(app, cpu.eax + 0x24));
-            fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.ebp - 0x34));
-            app->getMemory<float>(cpu.eax + 0x24) = float(fpu.st(0));
-            fpu.pop();
-        }
-        else
-        {
-L_4ac67d:
-            cpu.eax = at(app, cpu.ebp - 0x50);
-            fpu.push(0.0);
-            fcomp(cpu, f32(app, cpu.eax + 0x4f4));
-            cpu.ax = fpu.status.word;
-            if (!below(cpu) && !equal(cpu))
-            {
-                cpu.eax = at(app, cpu.ebp - 0x50);
-                fpu.push(f32(app, cpu.eax + 0x4f4));
-                fpu.st(0) = -fpu.st(0);
-                app->getMemory<float>(cpu.ebp - 0x60) = float(fpu.st(0));
-                fpu.pop();
-            }
-            else
-            {
-                cpu.eax = at(app, cpu.ebp - 0x50);
-                cpu.eax = at(app, cpu.eax + 0x4f4);
-                put(app, cpu.ebp - 0x60, cpu.eax);
-            }
-            if (i32(at(app, cpu.ebp - 0x60)) > 0x40a00000 || (cpu.eax = at(app, cpu.ebp - 0x50), at(app, cpu.eax + 0x594) != 0))
-            {
-                cpu.eax = at(app, cpu.ebp - 0x4c);
-                fpu.push(f32(app, cpu.ebp - 0x44));
-                fpu.st(0) = fp::sub(fpu.st(0), f32(app, cpu.ebp - 0x40));
-                app->getMemory<float>(cpu.eax + 0x2c) = float(fpu.st(0));
-                fpu.pop();
-            }
-            cpu.eax = at(app, cpu.ebp - 0x50);
-            if (at(app, cpu.eax + 0x160) == 1)
-            {
-                fpu.push(f32(app, cpu.ebp - 0x44));
-                fpu.st(0) = fp::sub(fpu.st(0), f32(app, cpu.ebp - 0x40));
-                fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.ebp - 0x38));
-                fpu.push(f32(app, cpu.ebp - 0x40));
-                fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.ebp - 0x38));
-                fcompp(cpu);
-                cpu.ax = fpu.status.word;
-                if (!below(cpu) && !equal(cpu))
-                {
-                    fpu.push(f32(app, cpu.ebp - 0x44));
-                    fpu.st(0) = fp::sub(fpu.st(0), f32(app, cpu.ebp - 0x40));
-                    fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.ebp - 0x38));
-                    app->getMemory<float>(cpu.ebp - 0x64) = float(fpu.st(0));
-                    fpu.pop();
-                }
-                else
-                {
-                    fpu.push(f32(app, cpu.ebp - 0x40));
-                    fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.ebp - 0x38));
-                    app->getMemory<float>(cpu.ebp - 0x64) = float(fpu.st(0));
-                    fpu.pop();
-                }
-                fpu.push(f32(app, cpu.ebp - 0x64));
-                fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53ddd4));
-                app->getMemory<float>(cpu.ebp - 0x3c) = float(fpu.st(0));
-                fpu.pop();
-            }
-            else
-            {
-                cpu.eax = at(app, cpu.ebp - 0x50);
-                if (at(app, cpu.eax + 0x160) == 2)
-                {
-                    fpu.push(f32(app, cpu.ebp - 0x44));
-                    fpu.st(0) = fp::sub(fpu.st(0), f32(app, cpu.ebp - 0x40));
-                    fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.ebp - 0x38));
-                    fpu.push(f32(app, cpu.ebp - 0x40));
-                    fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.ebp - 0x38));
-                    fcompp(cpu);
-                    cpu.ax = fpu.status.word;
-                    if (!below(cpu) && !equal(cpu))
-                    {
-                        fpu.push(f32(app, cpu.ebp - 0x44));
-                        fpu.st(0) = fp::sub(fpu.st(0), f32(app, cpu.ebp - 0x40));
-                        fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.ebp - 0x38));
-                        app->getMemory<float>(cpu.ebp - 0x68) = float(fpu.st(0));
-                        fpu.pop();
-                    }
-                    else
-                    {
-                        fpu.push(f32(app, cpu.ebp - 0x40));
-                        fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.ebp - 0x38));
-                        app->getMemory<float>(cpu.ebp - 0x68) = float(fpu.st(0));
-                        fpu.pop();
-                    }
-                    fpu.push(f32(app, cpu.ebp - 0x68));
-                    fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53ddd8));
-                    app->getMemory<float>(cpu.ebp - 0x3c) = float(fpu.st(0));
-                    fpu.pop();
-                }
-                else
-                {
-                    fpu.push(f32(app, cpu.ebp - 0x44));
-                    fpu.st(0) = fp::sub(fpu.st(0), f32(app, cpu.ebp - 0x40));
-                    fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.ebp - 0x38));
-                    fpu.push(f32(app, cpu.ebp - 0x40));
-                    fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.ebp - 0x38));
-                    fcompp(cpu);
-                    cpu.ax = fpu.status.word;
-                    if (!below(cpu) && !equal(cpu))
-                    {
-                        fpu.push(f32(app, cpu.ebp - 0x44));
-                        fpu.st(0) = fp::sub(fpu.st(0), f32(app, cpu.ebp - 0x40));
-                        fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.ebp - 0x38));
-                        app->getMemory<float>(cpu.ebp - 0x6c) = float(fpu.st(0));
-                        fpu.pop();
-                    }
-                    else
-                    {
-                        fpu.push(f32(app, cpu.ebp - 0x40));
-                        fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.ebp - 0x38));
-                        app->getMemory<float>(cpu.ebp - 0x6c) = float(fpu.st(0));
-                        fpu.pop();
-                    }
-                    cpu.eax = at(app, cpu.ebp - 0x6c);
-                    put(app, cpu.ebp - 0x3c, cpu.eax);
-                }
-            }
-            fpu.push(f32(app, cpu.ebp - 0x40));
-            fpu.st(0) = fp::sub(fpu.st(0), f32(app, cpu.ebp - 0x3c));
-            app->getMemory<float>(cpu.ebp - 0x2c) = float(fpu.st(0));
-            fpu.pop();
-            fpu.push(0.0);
-            fcomp(cpu, f32(app, cpu.ebp - 0x44));
-            cpu.ax = fpu.status.word;
-            if (!below(cpu) && !equal(cpu))
-            {
-                fpu.push(f32(app, cpu.ebp - 0x44));
-                fpu.st(0) = -fpu.st(0);
-                app->getMemory<float>(cpu.ebp - 0x70) = float(fpu.st(0));
-                fpu.pop();
-            }
-            else
-            {
-                cpu.eax = at(app, cpu.ebp - 0x44);
-                put(app, cpu.ebp - 0x70, cpu.eax);
-            }
-            fpu.push(f32(app, cpu.ebp - 0x70));
-            fcomp(cpu, f32(app, cpu.ebp - 0x2c));
-            cpu.ax = fpu.status.word;
-            if ((!below(cpu) && !equal(cpu)) && (at(app, cpu.ebp - 0x44) & 0x7fffffff) != 0)
-            {
-                fpu.push(0.0);
-                fcomp(cpu, f32(app, cpu.ebp - 0x44));
-                cpu.ax = fpu.status.word;
-                if (!below(cpu) && !equal(cpu))
-                {
-                    fpu.push(f32(app, cpu.ebp - 0x44));
-                    fpu.st(0) = -fpu.st(0);
-                    app->getMemory<float>(cpu.ebp - 0x74) = float(fpu.st(0));
-                    fpu.pop();
-                }
-                else
-                {
-                    cpu.eax = at(app, cpu.ebp - 0x44);
-                    put(app, cpu.ebp - 0x74, cpu.eax);
-                }
-                fpu.push(f32(app, cpu.ebp - 0x2c));
-                fpu.st(0) = fp::div(fpu.st(0), f32(app, cpu.ebp - 0x74));
-                app->getMemory<float>(cpu.ebp - 0x34) = float(fpu.st(0));
-                fpu.pop();
-            }
-            else
-            {
-                put(app, cpu.ebp - 0x34, 0x3f800000);
-            }
-            if (i32(at(app, kPlayMode)) <= 1 && at(app, kRaceType) != 1 && at(app, kRaceType) != 2)
-            {
-                cpu.eax = at(app, cpu.ebp - 0x50);
-                cpu.eax = at(app, cpu.eax + 0x220);
-                fpu.push(f32(app, cpu.eax + 0x58));
-                fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53dddc));
-                fpu.st(0) = fp::sub(f32(app, 0x53dde0), fpu.st(0));
-                app->getMemory<float>(cpu.ebp - 0x28) = float(fpu.st(0));
-                fpu.pop();
-            }
-            else
-            {
-                put(app, cpu.ebp - 0x28, 0x3f333333);
-            }
-            if (i32(at(app, cpu.ebp - 0x28)) > 0x3f000000)
-            {
-                cpu.eax = at(app, cpu.ebp - 0x28);
-                put(app, cpu.ebp - 0x78, cpu.eax);
-            }
-            else
-            {
-                put(app, cpu.ebp - 0x78, 0x3f000000);
-            }
-            cpu.eax = at(app, cpu.ebp - 0x78);
-            put(app, cpu.ebp - 0x28, cpu.eax);
-            cpu.eax = at(app, cpu.ebp - 0x4c);
-            fpu.push(f32(app, cpu.eax + 0x2c));
-            fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.ebp - 0x28));
-            fpu.push(f32(app, cpu.ebp - 0x44));
-            fpu.st(0) = fp::sub(fpu.st(0), f32(app, cpu.ebp - 0x40));
-            fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.ebp - 0x28));
-            cpu.eax = at(app, cpu.ebp - 0x4c);
-            fpu.st(1) = fp::add(fpu.st(1), fpu.st(0));
-            fpu.pop();
-            app->getMemory<float>(cpu.eax + 0x2c) = float(fpu.st(0));
-            fpu.pop();
-            cpu.eax = at(app, cpu.ebp - 0x4c);
-            if (at(app, cpu.eax + 0x28) == 0 && (cpu.eax = at(app, cpu.ebp - 0x50), byte(app, cpu.eax + 0x50b) == 2) && (cpu.eax = at(app, cpu.ebp - 0x50), i32(at(app, cpu.eax + 0x20c)) >= 0x3f733333) && (cpu.eax = at(app, cpu.ebp - 0x50), i32(at(app, cpu.eax + 0x5f0)) >= 0x3f59999a))
-            {
-                cpu.eax = at(app, cpu.ebp - 0x50);
-                cpu.eax = at(app, cpu.eax + 0x528);
-                fpu.push(x86::Float(i32(at(app, cpu.eax + 0x1c4))));
-                fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53dde4));
-                cpu.eax = at(app, cpu.ebp - 0x50);
-                fpu.push(x86::Float(i32(at(app, cpu.eax + 0x590))));
-                fcompp(cpu);
-                cpu.ax = fpu.status.word;
-                if (!below(cpu))
-                {
-                    cpu.eax = at(app, cpu.ebp - 0x4c);
-                    fpu.push(f32(app, cpu.eax + 0x1c));
-                    fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.ebp - 0x34));
-                    app->getMemory<float>(cpu.eax + 0x1c) = float(fpu.st(0));
-                    fpu.pop();
-                    if (at(app, kAssist) != 0)
-                    {
-                        cpu.eax = at(app, cpu.ebp - 0x4c);
-                        fpu.push(f32(app, cpu.eax + 0x24));
-                        fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.ebp - 0x34));
-                        app->getMemory<float>(cpu.eax + 0x24) = float(fpu.st(0));
-                        fpu.pop();
-                    }
-                    else
-                    {
-                        fpu.push(f32(app, cpu.ebp - 0x34));
-                        fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53dde8));
-                        cpu.eax = at(app, cpu.ebp - 0x4c);
-                        fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.eax + 0x24));
-                        app->getMemory<float>(cpu.eax + 0x24) = float(fpu.st(0));
-                        fpu.pop();
-                    }
-                }
-            }
-        }
-    }
-    cpu.eax = at(app, cpu.ebp - 0x4c);
-    if (at(app, cpu.eax + 0x28) == 0 && (cpu.eax = at(app, cpu.ebp - 0x50), at(app, cpu.eax + 0x594) == 1))
-    {
-        cpu.eax = at(app, cpu.ebp - 0x44);
-        cpu.edx = at(app, cpu.ebp - 0x4c);
-        put(app, cpu.edx + 0x2c, cpu.eax);
-        cpu.eax = at(app, cpu.ebp - 0x50);
-        if (byte(app, cpu.eax + 0x50b) >= 2 && (cpu.eax = at(app, cpu.ebp - 0x50), byte(app, cpu.eax + 0x50b) <= 3))
-        {
-            cpu.eax = at(app, cpu.ebp - 0x4c);
-            fpu.push(f32(app, cpu.eax + 0x2c));
-            fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53ddec));
-            app->getMemory<float>(cpu.eax + 0x2c) = float(fpu.st(0));
-            fpu.pop();
-        }
-    }
-    cpu.eax = at(app, cpu.ebp - 0x50);
-    cpu.eax = at(app, cpu.eax + 0x220);
-    cpu.eax += 0x58;
-    if (!direct(app, cpu, setupSlipLimit))
-        return;
-    put(app, cpu.ebp - 0x80, cpu.eax);
-    fpu.push(x86::Float(i32(at(app, cpu.ebp - 0x80))));
-    app->getMemory<float>(cpu.ebp - 0x30) = float(fpu.st(0));
-    fpu.pop();
-    cpu.eax = at(app, cpu.ebp - 0x4c);
-    fpu.push(f32(app, cpu.eax + 0x2c));
-    fcomp(cpu, f32(app, cpu.ebp - 0x30));
-    cpu.ax = fpu.status.word;
-    if (!below(cpu) && !equal(cpu))
-    {
-        cpu.eax = at(app, cpu.ebp - 0x30);
-        put(app, cpu.ebp - 0x7c, cpu.eax);
-    }
-    else
-    {
-        cpu.eax = at(app, cpu.ebp - 0x4c);
-        cpu.eax = at(app, cpu.eax + 0x2c);
-        put(app, cpu.ebp - 0x7c, cpu.eax);
-    }
-    cpu.eax = at(app, cpu.ebp - 0x7c);
-    cpu.edx = at(app, cpu.ebp - 0x4c);
-    put(app, cpu.edx + 0x2c, cpu.eax);
-    return leave();
+    saved.restore(cpu);
+    cpu.eax = at(app, axle + kAxleSlip);
+    cpu.esp += 4;
 }
 
-/* 0x4aca4f: axle edx's tyres' forces for car eax.  Its grip less what the
- * setup loses; its speeds turned into the wheels' way when they are turned
- * (0x496bf0); the drive held back where the wheels would turn the car the
- * other way braking (and the mark of it); the drive by the handling's
- * +0x248; the wheel's time turned counted to 0x180 while the handbrake is on.
- * Without the handbrake, or on the front, gripping (tyreGrip) -- also when
- * the drive is past the grip after the mark.  Else sliding: the force across
- * from the slip angle (atan2, 0x4ea9c0) through a sine (0x4ea930) by the
- * grip -- in neutral and in gear each its own -- held to the handling's
- * +0x23c by 2, a quarter at full lock (the steering past 0x7f) slow or when
- * hardly braking, held to the speed across, 0 on the front stopped with the
- * handbrake, by 0.8 or 1.4; then past the grip (tyreSlide), the forces turned
- * back (0x496bf0), the slip kept in the car. */
+/* The 2D turn of the words at x and y by the axle's wheels' angle, by address. */
+bool turnByWheels(App* app, CPU& cpu, reg32 axle, reg32 x, reg32 y)
+{
+    return stackCall(app, cpu, kRotate, { at(app, x), at(app, y), at(app, axle + kAxleAngle), x, y });
+}
+
+/* The game's sine of a stack float, by address, onto the x87. */
+std::optional<x86::Float> sine(App* app, CPU& cpu, float angle)
+{
+    if (!stackCall(app, cpu, kSine, { bitsOf(angle) }))
+        return std::nullopt;
+    return popResult(cpu);
+}
+
+/* The force across a sliding axle's tyres: the sine, taken twice as the code does, of the slip's
+ * angle by a scale, by the grip and a scale, made positive. */
+std::optional<float> sideForce(App* app, CPU& cpu, float angle, float grip, reg32 angleScale, reg32 forceScale)
+{
+    const float scaled = float(fp::mul(angle, f32(app, angleScale)));
+    const auto forOnce = [&]() -> std::optional<x86::Float> {
+        const auto value = sine(app, cpu, scaled);
+        if (!value)
+            return std::nullopt;
+        return fp::mul(fp::mul(*value, grip), f32(app, forceScale));
+    };
+    const auto first = forOnce();
+    if (!first)
+        return std::nullopt;
+    const auto again = forOnce();
+    if (!again)
+        return std::nullopt;
+    return 0.0 > *first ? float(-*again) : float(*again);
+}
+
+/* 0x4aca4f: the axle's tyres' forces.  Its grip less what the setup loses; its speeds turned into
+ * the wheels' way when they are turned; the drive held back where the wheels would turn the car
+ * the other way braking (and the mark of it); the drive by the handling's +0x248; the wheel's time
+ * turned counted to a whole lock's while the handbrake is on.  With the handbrake on the back axle,
+ * or on the front with the mark and the drive past the grip, gripping (gripAxle).  Else sliding:
+ * the force across from the slip angle through a sine by the grip -- in reverse and in a gear each
+ * its own -- held to the handling's +0x23c by 2, a part at full lock slow or when hardly braking,
+ * held to the speed across, 0 on the front stopped with the handbrake, by a share for the axle;
+ * then past the grip (slideAxle), the forces turned back, the slip kept in the car. */
+AxleEnd axleTyres(App* app, CPU& cpu, reg32 car, reg32 axle)
+{
+    const reg32 handling = at(app, car + kCarHandling);
+    put(app, axle + kAxleSlip, 0);
+    const float grip = floatAt(app, axle + kAxleGrip);
+    const float kept = float(fp::sub(grip, fp::mul(gripLoss(app, car, slipSlider(app, car)), grip)));
+    const bool wheelsTurned = (at(app, axle + kAxleAngle) & kBitsNotSign) != 0;
+    if (wheelsTurned && !turnByWheels(app, cpu, axle, axle + kAxleAcross, axle + kAxleAlong))
+        return AxleEnd::Stopped;
+
+    bool heldBack = false;
+    const float drive = floatAt(app, axle + kAxleDrive);
+    const float along = floatAt(app, axle + kAxleAlong);
+    const bool lightBrake = i32(at(app, car + kCarBrake)) <= kBits0_25;
+    const std::uint8_t gear = byte(app, car + kCarGear);
+    // Each "below" of the code is !(>=) on every value: unordered sets it.
+    if (0.0 > x86::Float(drive) && 0.0 > x86::Float(along))
+    {
+        if (lightBrake || gear != kGearReverse)
+        {
+            floatAt(app, axle + kAxleDrive) = drive > along ? drive : along;
+            heldBack = true;
+        }
+    }
+    else if (!(0.0 >= x86::Float(drive)) && !(0.0 >= x86::Float(along)))
+    {
+        if (lightBrake || gear <= kGearNeutral)
+        {
+            floatAt(app, axle + kAxleDrive) = drive > along ? along : drive;
+            heldBack = true;
+        }
+    }
+    floatAt(app, axle + kAxleDrive) = float(fp::mul(f32(app, handling + kHandlingDriveShare), f32(app, axle + kAxleDrive)));
+
+    const bool handbrake = byte(app, car + kCarHandbrake) != 0;
+    if (handbrake)
+    {
+        const reg32 road = at(app, car + kCarRoad);
+        const reg32 time = at(app, car + kCarWheelTurned) + (road == 1 ? 3 : road == 2 ? 4 : 1);
+        put(app, car + kCarWheelTurned, i32(time) < kWheelFullTime ? time : reg32(kWheelFullTime));
+    }
+    else
+    {
+        put(app, car + kCarWheelTurned, 0);
+    }
+
+    const bool front = at(app, axle + kAxleFront) != 0;
+    const auto drivePastGrip = [&] { return size(floatAt(app, axle + kAxleDrive)) > floatAt(app, axle + kAxleGrip); };
+    if ((handbrake && !front) || (handbrake && front && heldBack && drivePastGrip()))
+        return gripAxle(app, cpu, car, axle) ? AxleEnd::Gripped : AxleEnd::Stopped;
+
+    if (heldBack && drivePastGrip() && !handbrake && byte(app, handling + kHandlingDriveCut) != 0)
+    {
+        const x86::Float limit = f32(app, axle + kAxleGrip);
+        const x86::Float held = f32(app, axle + kAxleDrive);
+        if (held > limit)
+            floatAt(app, axle + kAxleDrive) = float(limit);
+        else if (-limit > held)
+            floatAt(app, axle + kAxleDrive) = float(-limit);
+        floatAt(app, axle + kAxleSlip) = i32(at(app, kFrame)) % 4 == 0 ? 3.0f : 0.0f;
+    }
+
+    if (!stackCall(app, cpu, kAtan2, { at(app, axle + kAxleAcross), bitsOf(size(floatAt(app, axle + kAxleAlong))) }))
+        return AxleEnd::Stopped;
+    const float angle = float(popResult(cpu));
+    const auto force = gear == kGearReverse ? sideForce(app, cpu, angle, kept, kReverseAngleScale, kReverseForceScale)
+                                            : sideForce(app, cpu, angle, kept, kGearAngleScale, kGearForceScale);
+    if (!force)
+        return AxleEnd::Stopped;
+    float side = *force;
+    const x86::Float most = fp::mul(f32(app, handling + kHandlingSideLimit), f32(app, kSideLimitScale));
+    if (!(most >= x86::Float(side)))
+        side = float(most);
+
+    const i32 brakeBits = signedBits(size(floatAt(app, car + kCarBrake)));
+    const bool slow = signedBits(size(floatAt(app, car + kCarSpeedAlong))) < kBitsSlow;
+    const i32 steering = i32(at(app, car + kCarSteering));
+    const i32 steeringSize = steering < 0 ? i32(0u - reg32(steering)) : steering;
+    if (brakeBits < kBits0_02 && slow && steeringSize >= kFullLock)
+        side = float(fp::mul(side, f32(app, kFullLockShare)));
+    else if (brakeBits < kBits0_015 && slow)
+        side = float(fp::mul(side, f32(app, kLightBrakeShare)));
+
+    const float across = floatAt(app, axle + kAxleAcross);
+    if (0.0 > x86::Float(across))
+        side = !(-x86::Float(side) >= x86::Float(across)) ? across : float(-x86::Float(side));
+    else
+        side = across > side ? side : across;
+    if (front)
+    {
+        if (handbrake && signedBits(size(floatAt(app, car + kCarSpeedAlong))) < kBits0_5)
+            side = 0.0f;
+        floatAt(app, axle + kAxleForceAcross) = float(fp::mul(side, f32(app, kFrontSideShare)));
+    }
+    else
+    {
+        floatAt(app, axle + kAxleForceAcross) = float(fp::mul(side, f32(app, kBackSideShare)));
+    }
+    put(app, axle + kAxleForceUp, 0);
+    floatAt(app, axle + kAxleForceAlong) = float(f32(app, axle + kAxleDrive));
+
+    if (!slideAxle(app, cpu, car, axle))
+        return AxleEnd::Stopped;
+    cpu.edx = axle;  // the adapter leaves it as the turn does, as the code's frame has it
+    if (wheelsTurned && !turnByWheels(app, cpu, axle, axle + kAxleForceAcross, axle + kAxleForceAlong))
+        return AxleEnd::Stopped;
+    floatAt(app, car + (front ? kCarFrontSlip : kCarBackSlip)) = float(f32(app, axle + kAxleSlip));
+    return AxleEnd::Slid;
+}
+
+/* The adapter: car eax, axle edx; eax the car, edx as gripping or sliding leaves it. */
 void axleForces(App* app, CPU& cpu)
 {
-    x86::FPU& fpu = cpu.fpu;
-    push(app, cpu, cpu.ebx);
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.esi);
-    push(app, cpu, cpu.edi);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    cpu.esp -= 0x78;
-    const auto leave = [&] {
-        cpu.esp = cpu.ebp;
-        cpu.ebp = pop(app, cpu);
-        cpu.edi = pop(app, cpu);
-        cpu.esi = pop(app, cpu);
-        cpu.ecx = pop(app, cpu);
-        cpu.ebx = pop(app, cpu);
-        cpu.esp += 4;
-    };
-    put(app, cpu.ebp - 0x1c, cpu.eax);
-    put(app, cpu.ebp - 0x18, cpu.edx);
-    put(app, cpu.ebp - 0x10, 0);
-    put(app, cpu.ebp - 0xc, 0);
-    put(app, cpu.ebp - 8, 0);
-    put(app, cpu.ebp - 4, 0);
-    cpu.eax = at(app, cpu.ebp - 0x18);
-    put(app, cpu.eax + 0x2c, 0);
-    cpu.eax = at(app, cpu.ebp - 0x18);
-    cpu.eax = at(app, cpu.eax + 4);
-    put(app, cpu.ebp - 0x10, cpu.eax);
-    cpu.eax = at(app, cpu.ebp - 0x1c);
-    cpu.edx = at(app, cpu.eax + 0x220);
-    cpu.edx += 0x58;
-    cpu.eax = at(app, cpu.ebp - 0x1c);
-    if (!direct(app, cpu, setupGripLoss))
+    const Saved saved(cpu);
+    const reg32 car = cpu.eax;
+    const AxleEnd end = axleTyres(app, cpu, car, cpu.edx);
+    if (end == AxleEnd::Stopped)
         return;
-    fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.ebp - 0x10));
-    fpu.st(0) = fp::sub(f32(app, cpu.ebp - 0x10), fpu.st(0));
-    app->getMemory<float>(cpu.ebp - 0x10) = float(fpu.st(0));
-    fpu.pop();
-    cpu.eax = at(app, cpu.ebp - 0x18);
-    if ((at(app, cpu.eax + 0xc) & 0x7fffffff) != 0)
-    {
-        cpu.eax = at(app, cpu.ebp - 0x18);
-        cpu.eax += 0x18;
-        push(app, cpu, cpu.eax);
-        cpu.eax = at(app, cpu.ebp - 0x18);
-        cpu.eax += 0x10;
-        push(app, cpu, cpu.eax);
-        cpu.eax = at(app, cpu.ebp - 0x18);
-        push(app, cpu, at(app, cpu.eax + 0xc));
-        cpu.eax = at(app, cpu.ebp - 0x18);
-        push(app, cpu, at(app, cpu.eax + 0x18));
-        cpu.eax = at(app, cpu.ebp - 0x18);
-        push(app, cpu, at(app, cpu.eax + 0x10));
-        if (!byAddress(app, cpu, kRotate))
-            return;
-    }
-    cpu.eax = at(app, cpu.ebp - 0x18);
-    fpu.push(0.0);
-    fcomp(cpu, f32(app, cpu.eax));
-    cpu.ax = fpu.status.word;
-    if (!below(cpu) && !equal(cpu))
-    {
-        cpu.eax = at(app, cpu.ebp - 0x18);
-        fpu.push(0.0);
-        fcomp(cpu, f32(app, cpu.eax + 0x18));
-        cpu.ax = fpu.status.word;
-        if (below(cpu) || equal(cpu))
-            goto L_4acb65;
-        cpu.eax = at(app, cpu.ebp - 0x1c);
-        if (i32(at(app, cpu.eax + 0x5f0)) <= 0x3e800000 || (cpu.eax = at(app, cpu.ebp - 0x1c), byte(app, cpu.eax + 0x50b) != 0))
-        {
-            put(app, cpu.ebp - 0x20, 1);
-        }
-        else
-        {
-            put(app, cpu.ebp - 0x20, 0);
-        }
-        if (at(app, cpu.ebp - 0x20) != 0)
-        {
-            cpu.eax = at(app, cpu.ebp - 0x18);
-            fpu.push(f32(app, cpu.eax));
-            cpu.eax = at(app, cpu.ebp - 0x18);
-            fcomp(cpu, f32(app, cpu.eax + 0x18));
-            cpu.ax = fpu.status.word;
-            if (!below(cpu) && !equal(cpu))
-            {
-                cpu.eax = at(app, cpu.ebp - 0x18);
-                cpu.eax = at(app, cpu.eax);
-                put(app, cpu.ebp - 0x24, cpu.eax);
-            }
-            else
-            {
-                cpu.eax = at(app, cpu.ebp - 0x18);
-                cpu.eax = at(app, cpu.eax + 0x18);
-                put(app, cpu.ebp - 0x24, cpu.eax);
-            }
-            cpu.eax = at(app, cpu.ebp - 0x24);
-            cpu.edx = at(app, cpu.ebp - 0x18);
-            put(app, cpu.edx, cpu.eax);
-            put(app, cpu.ebp - 4, 1);
-        }
-    }
-    else
-    {
-L_4acb65:
-        cpu.eax = at(app, cpu.ebp - 0x18);
-        fpu.push(0.0);
-        fcomp(cpu, f32(app, cpu.eax));
-        cpu.ax = fpu.status.word;
-        if (below(cpu))
-        {
-            cpu.eax = at(app, cpu.ebp - 0x18);
-            fpu.push(0.0);
-            fcomp(cpu, f32(app, cpu.eax + 0x18));
-            cpu.ax = fpu.status.word;
-            if (below(cpu))
-            {
-                cpu.eax = at(app, cpu.ebp - 0x1c);
-                if (i32(at(app, cpu.eax + 0x5f0)) <= 0x3e800000 || (cpu.eax = at(app, cpu.ebp - 0x1c), byte(app, cpu.eax + 0x50b) <= 1))
-                {
-                    put(app, cpu.ebp - 0x28, 1);
-                }
-                else
-                {
-                    put(app, cpu.ebp - 0x28, 0);
-                }
-                if (at(app, cpu.ebp - 0x28) != 0)
-                {
-                    cpu.eax = at(app, cpu.ebp - 0x18);
-                    fpu.push(f32(app, cpu.eax));
-                    cpu.eax = at(app, cpu.ebp - 0x18);
-                    fcomp(cpu, f32(app, cpu.eax + 0x18));
-                    cpu.ax = fpu.status.word;
-                    if (!below(cpu) && !equal(cpu))
-                    {
-                        cpu.eax = at(app, cpu.ebp - 0x18);
-                        cpu.eax = at(app, cpu.eax + 0x18);
-                        put(app, cpu.ebp - 0x2c, cpu.eax);
-                    }
-                    else
-                    {
-                        cpu.eax = at(app, cpu.ebp - 0x18);
-                        cpu.eax = at(app, cpu.eax);
-                        put(app, cpu.ebp - 0x2c, cpu.eax);
-                    }
-                    cpu.eax = at(app, cpu.ebp - 0x2c);
-                    cpu.edx = at(app, cpu.ebp - 0x18);
-                    put(app, cpu.edx, cpu.eax);
-                    put(app, cpu.ebp - 4, 1);
-                }
-            }
-        }
-    }
-    cpu.eax = at(app, cpu.ebp - 0x1c);
-    cpu.eax = at(app, cpu.eax + 0x528);
-    fpu.push(f32(app, cpu.eax + 0x248));
-    cpu.eax = at(app, cpu.ebp - 0x18);
-    fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.eax));
-    app->getMemory<float>(cpu.eax) = float(fpu.st(0));
-    fpu.pop();
-    cpu.eax = at(app, cpu.ebp - 0x1c);
-    if (byte(app, cpu.eax + 0x50d) != 0)
-    {
-        cpu.eax = at(app, cpu.ebp - 0x1c);
-        if (at(app, cpu.eax + 0x160) == 1)
-        {
-            cpu.eax = at(app, cpu.ebp - 0x1c);
-            cpu.eax = at(app, cpu.eax + 0x514);
-            cpu.eax += 3;
-            if (i32(cpu.eax) < 0x180)
-            {
-                cpu.eax = at(app, cpu.ebp - 0x1c);
-                cpu.eax = at(app, cpu.eax + 0x514);
-                cpu.eax += 3;
-                put(app, cpu.ebp - 0x30, cpu.eax);
-            }
-            else
-            {
-                put(app, cpu.ebp - 0x30, 0x180);
-            }
-            cpu.eax = at(app, cpu.ebp - 0x30);
-            cpu.edx = at(app, cpu.ebp - 0x1c);
-            put(app, cpu.edx + 0x514, cpu.eax);
-        }
-        else
-        {
-            cpu.eax = at(app, cpu.ebp - 0x1c);
-            if (at(app, cpu.eax + 0x160) == 2)
-            {
-                cpu.eax = at(app, cpu.ebp - 0x1c);
-                cpu.eax = at(app, cpu.eax + 0x514);
-                cpu.eax += 4;
-                if (i32(cpu.eax) < 0x180)
-                {
-                    cpu.eax = at(app, cpu.ebp - 0x1c);
-                    cpu.eax = at(app, cpu.eax + 0x514);
-                    cpu.eax += 4;
-                    put(app, cpu.ebp - 0x34, cpu.eax);
-                }
-                else
-                {
-                    put(app, cpu.ebp - 0x34, 0x180);
-                }
-                cpu.eax = at(app, cpu.ebp - 0x34);
-                cpu.edx = at(app, cpu.ebp - 0x1c);
-                put(app, cpu.edx + 0x514, cpu.eax);
-            }
-            else
-            {
-                cpu.eax = at(app, cpu.ebp - 0x1c);
-                cpu.eax = at(app, cpu.eax + 0x514);
-                ++cpu.eax;
-                if (i32(cpu.eax) < 0x180)
-                {
-                    cpu.eax = at(app, cpu.ebp - 0x1c);
-                    cpu.eax = at(app, cpu.eax + 0x514);
-                    ++cpu.eax;
-                    put(app, cpu.ebp - 0x38, cpu.eax);
-                }
-                else
-                {
-                    put(app, cpu.ebp - 0x38, 0x180);
-                }
-                cpu.eax = at(app, cpu.ebp - 0x38);
-                cpu.edx = at(app, cpu.ebp - 0x1c);
-                put(app, cpu.edx + 0x514, cpu.eax);
-            }
-        }
-    }
-    else
-    {
-        cpu.eax = at(app, cpu.ebp - 0x1c);
-        put(app, cpu.eax + 0x514, 0);
-    }
-    cpu.eax = at(app, cpu.ebp - 0x1c);
-    if (byte(app, cpu.eax + 0x50d) == 0 || (cpu.eax = at(app, cpu.ebp - 0x18), at(app, cpu.eax + 0x28) != 0))
-    {
-        cpu.eax = at(app, cpu.ebp - 0x1c);
-        if (byte(app, cpu.eax + 0x50d) != 0 && (cpu.eax = at(app, cpu.ebp - 0x18), at(app, cpu.eax + 0x28) != 0) && at(app, cpu.ebp - 4) != 0)
-        {
-            cpu.eax = at(app, cpu.ebp - 0x18);
-            fpu.push(0.0);
-            fcomp(cpu, f32(app, cpu.eax));
-            cpu.ax = fpu.status.word;
-            if (!below(cpu) && !equal(cpu))
-            {
-                cpu.eax = at(app, cpu.ebp - 0x18);
-                fpu.push(f32(app, cpu.eax));
-                fpu.st(0) = -fpu.st(0);
-                app->getMemory<float>(cpu.ebp - 0x3c) = float(fpu.st(0));
-                fpu.pop();
-            }
-            else
-            {
-                cpu.eax = at(app, cpu.ebp - 0x18);
-                cpu.eax = at(app, cpu.eax);
-                put(app, cpu.ebp - 0x3c, cpu.eax);
-            }
-            cpu.eax = at(app, cpu.ebp - 0x18);
-            fpu.push(f32(app, cpu.ebp - 0x3c));
-            fcomp(cpu, f32(app, cpu.eax + 4));
-            cpu.ax = fpu.status.word;
-            if (!below(cpu) && !equal(cpu))
-                goto L_4acd3c;
-        }
-    }
-    else
-    {
-L_4acd3c:
-        cpu.edx = at(app, cpu.ebp - 0x18);
-        cpu.eax = at(app, cpu.ebp - 0x1c);
-        if (!direct(app, cpu, tyreGrip))
-            return;
-        return leave();
-    }
-    if (at(app, cpu.ebp - 4) != 0)
-    {
-        cpu.eax = at(app, cpu.ebp - 0x18);
-        fpu.push(0.0);
-        fcomp(cpu, f32(app, cpu.eax));
-        cpu.ax = fpu.status.word;
-        if (!below(cpu) && !equal(cpu))
-        {
-            cpu.eax = at(app, cpu.ebp - 0x18);
-            fpu.push(f32(app, cpu.eax));
-            fpu.st(0) = -fpu.st(0);
-            app->getMemory<float>(cpu.ebp - 0x40) = float(fpu.st(0));
-            fpu.pop();
-        }
-        else
-        {
-            cpu.eax = at(app, cpu.ebp - 0x18);
-            cpu.eax = at(app, cpu.eax);
-            put(app, cpu.ebp - 0x40, cpu.eax);
-        }
-        cpu.eax = at(app, cpu.ebp - 0x18);
-        fpu.push(f32(app, cpu.ebp - 0x40));
-        fcomp(cpu, f32(app, cpu.eax + 4));
-        cpu.ax = fpu.status.word;
-        if ((!below(cpu) && !equal(cpu)) && (cpu.eax = at(app, cpu.ebp - 0x1c), byte(app, cpu.eax + 0x50d) == 0) && (cpu.eax = at(app, cpu.ebp - 0x1c), cpu.eax = at(app, cpu.eax + 0x528), byte(app, cpu.eax + 0x1d4) != 0))
-        {
-            cpu.eax = at(app, cpu.ebp - 0x18);
-            fpu.push(f32(app, cpu.eax));
-            cpu.eax = at(app, cpu.ebp - 0x18);
-            fcomp(cpu, f32(app, cpu.eax + 4));
-            cpu.ax = fpu.status.word;
-            if (!below(cpu) && !equal(cpu))
-            {
-                cpu.eax = at(app, cpu.ebp - 0x18);
-                fpu.push(f32(app, cpu.eax + 4));
-                cpu.eax = at(app, cpu.ebp - 0x18);
-                app->getMemory<float>(cpu.eax) = float(fpu.st(0));
-                fpu.pop();
-            }
-            else
-            {
-                cpu.eax = at(app, cpu.ebp - 0x18);
-                fpu.push(f32(app, cpu.eax + 4));
-                fpu.st(0) = -fpu.st(0);
-                cpu.eax = at(app, cpu.ebp - 0x18);
-                fcomp(cpu, f32(app, cpu.eax));
-                cpu.ax = fpu.status.word;
-                if (!below(cpu) && !equal(cpu))
-                {
-                    cpu.eax = at(app, cpu.ebp - 0x18);
-                    fpu.push(f32(app, cpu.eax + 4));
-                    cpu.eax = at(app, cpu.ebp - 0x18);
-                    fpu.st(0) = -fpu.st(0);
-                    app->getMemory<float>(cpu.eax) = float(fpu.st(0));
-                    fpu.pop();
-                }
-            }
-            cpu.ecx = 4;
-            cpu.eax = at(app, kFrame);
-            cpu.edx = at(app, kFrame);
-            cpu.edx = reg32(i32(cpu.edx) >> 0x1f);
-            idiv(cpu, cpu.ecx);
-            if (cpu.edx == 0)
-            {
-                cpu.eax = at(app, cpu.ebp - 0x18);
-                put(app, cpu.eax + 0x2c, 0x40400000);
-            }
-            else
-            {
-                cpu.eax = at(app, cpu.ebp - 0x18);
-                put(app, cpu.eax + 0x2c, 0);
-            }
-        }
-    }
-    cpu.eax = at(app, cpu.ebp - 0x18);
-    fpu.push(0.0);
-    fcomp(cpu, f32(app, cpu.eax + 0x18));
-    cpu.ax = fpu.status.word;
-    if (!below(cpu) && !equal(cpu))
-    {
-        cpu.eax = at(app, cpu.ebp - 0x18);
-        fpu.push(f32(app, cpu.eax + 0x18));
-        fpu.st(0) = -fpu.st(0);
-        app->getMemory<float>(cpu.ebp - 0x44) = float(fpu.st(0));
-        fpu.pop();
-    }
-    else
-    {
-        cpu.eax = at(app, cpu.ebp - 0x18);
-        cpu.eax = at(app, cpu.eax + 0x18);
-        put(app, cpu.ebp - 0x44, cpu.eax);
-    }
-    push(app, cpu, at(app, cpu.ebp - 0x44));
-    cpu.eax = at(app, cpu.ebp - 0x18);
-    push(app, cpu, at(app, cpu.eax + 0x10));
-    if (!byAddress(app, cpu, kAtan2))
-        return;
-    app->getMemory<float>(cpu.ebp - 0xc) = float(fpu.st(0));
-    fpu.pop();
-    cpu.eax = at(app, cpu.ebp - 0x1c);
-    if (byte(app, cpu.eax + 0x50b) == 0)
-    {
-        fpu.push(f32(app, cpu.ebp - 0xc));
-        fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53de10));
-        cpu.esp -= 4;
-        app->getMemory<float>(cpu.esp) = float(fpu.st(0));
-        fpu.pop();
-        if (!byAddress(app, cpu, kSine))
-            return;
-        fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.ebp - 0x10));
-        fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53de14));
-        fpu.push(0.0);
-        fcompp(cpu);
-        cpu.ax = fpu.status.word;
-        if (!below(cpu) && !equal(cpu))
-        {
-            fpu.push(f32(app, cpu.ebp - 0xc));
-            fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53de10));
-            cpu.esp -= 4;
-            app->getMemory<float>(cpu.esp) = float(fpu.st(0));
-            fpu.pop();
-            if (!byAddress(app, cpu, kSine))
-                return;
-            fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.ebp - 0x10));
-            fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53de14));
-            fpu.st(0) = -fpu.st(0);
-            app->getMemory<float>(cpu.ebp - 0x48) = float(fpu.st(0));
-            fpu.pop();
-        }
-        else
-        {
-            fpu.push(f32(app, cpu.ebp - 0xc));
-            fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53de10));
-            cpu.esp -= 4;
-            app->getMemory<float>(cpu.esp) = float(fpu.st(0));
-            fpu.pop();
-            if (!byAddress(app, cpu, kSine))
-                return;
-            fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.ebp - 0x10));
-            fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53de14));
-            app->getMemory<float>(cpu.ebp - 0x48) = float(fpu.st(0));
-            fpu.pop();
-        }
-        cpu.eax = at(app, cpu.ebp - 0x48);
-        put(app, cpu.ebp - 8, cpu.eax);
-    }
-    else
-    {
-        fpu.push(f32(app, cpu.ebp - 0xc));
-        fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53de18));
-        cpu.esp -= 4;
-        app->getMemory<float>(cpu.esp) = float(fpu.st(0));
-        fpu.pop();
-        if (!byAddress(app, cpu, kSine))
-            return;
-        fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.ebp - 0x10));
-        fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53de1c));
-        fpu.push(0.0);
-        fcompp(cpu);
-        cpu.ax = fpu.status.word;
-        if (!below(cpu) && !equal(cpu))
-        {
-            fpu.push(f32(app, cpu.ebp - 0xc));
-            fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53de18));
-            cpu.esp -= 4;
-            app->getMemory<float>(cpu.esp) = float(fpu.st(0));
-            fpu.pop();
-            if (!byAddress(app, cpu, kSine))
-                return;
-            fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.ebp - 0x10));
-            fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53de1c));
-            fpu.st(0) = -fpu.st(0);
-            app->getMemory<float>(cpu.ebp - 0x4c) = float(fpu.st(0));
-            fpu.pop();
-        }
-        else
-        {
-            fpu.push(f32(app, cpu.ebp - 0xc));
-            fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53de18));
-            cpu.esp -= 4;
-            app->getMemory<float>(cpu.esp) = float(fpu.st(0));
-            fpu.pop();
-            if (!byAddress(app, cpu, kSine))
-                return;
-            fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.ebp - 0x10));
-            fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53de1c));
-            app->getMemory<float>(cpu.ebp - 0x4c) = float(fpu.st(0));
-            fpu.pop();
-        }
-        cpu.eax = at(app, cpu.ebp - 0x4c);
-        put(app, cpu.ebp - 8, cpu.eax);
-    }
-    cpu.eax = at(app, cpu.ebp - 0x1c);
-    cpu.eax = at(app, cpu.eax + 0x528);
-    fpu.push(f32(app, cpu.eax + 0x23c));
-    fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53de20));
-    fcomp(cpu, f32(app, cpu.ebp - 8));
-    cpu.ax = fpu.status.word;
-    if (below(cpu))
-    {
-        cpu.eax = at(app, cpu.ebp - 0x1c);
-        cpu.eax = at(app, cpu.eax + 0x528);
-        fpu.push(f32(app, cpu.eax + 0x23c));
-        fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53de20));
-        app->getMemory<float>(cpu.ebp - 0x5c) = float(fpu.st(0));
-        fpu.pop();
-    }
-    else
-    {
-        cpu.eax = at(app, cpu.ebp - 8);
-        put(app, cpu.ebp - 0x5c, cpu.eax);
-    }
-    cpu.eax = at(app, cpu.ebp - 0x5c);
-    put(app, cpu.ebp - 8, cpu.eax);
-    cpu.eax = at(app, cpu.ebp - 0x1c);
-    fpu.push(0.0);
-    fcomp(cpu, f32(app, cpu.eax + 0x5f0));
-    cpu.ax = fpu.status.word;
-    if (!below(cpu) && !equal(cpu))
-    {
-        cpu.eax = at(app, cpu.ebp - 0x1c);
-        fpu.push(f32(app, cpu.eax + 0x5f0));
-        fpu.st(0) = -fpu.st(0);
-        app->getMemory<float>(cpu.ebp - 0x58) = float(fpu.st(0));
-        fpu.pop();
-    }
-    else
-    {
-        cpu.eax = at(app, cpu.ebp - 0x1c);
-        cpu.eax = at(app, cpu.eax + 0x5f0);
-        put(app, cpu.ebp - 0x58, cpu.eax);
-    }
-    if (i32(at(app, cpu.ebp - 0x58)) < 0x3ca3d70a)
-    {
-        cpu.eax = at(app, cpu.ebp - 0x1c);
-        fpu.push(0.0);
-        fcomp(cpu, f32(app, cpu.eax + 0x4f4));
-        cpu.ax = fpu.status.word;
-        if (!below(cpu) && !equal(cpu))
-        {
-            cpu.eax = at(app, cpu.ebp - 0x1c);
-            fpu.push(f32(app, cpu.eax + 0x4f4));
-            fpu.st(0) = -fpu.st(0);
-            app->getMemory<float>(cpu.ebp - 0x54) = float(fpu.st(0));
-            fpu.pop();
-        }
-        else
-        {
-            cpu.eax = at(app, cpu.ebp - 0x1c);
-            cpu.eax = at(app, cpu.eax + 0x4f4);
-            put(app, cpu.ebp - 0x54, cpu.eax);
-        }
-        if (i32(at(app, cpu.ebp - 0x54)) >= 0x41566666)
-            goto L_4ad022;
-        cpu.eax = at(app, cpu.ebp - 0x1c);
-        if (i32(at(app, cpu.eax + 0x51c)) < 0)
-        {
-            cpu.eax = at(app, cpu.ebp - 0x1c);
-            cpu.eax = at(app, cpu.eax + 0x51c);
-            put(app, cpu.ebp - 0x50, cpu.eax);
-            put(app, cpu.ebp - 0x50, 0u - at(app, cpu.ebp - 0x50));
-        }
-        else
-        {
-            cpu.eax = at(app, cpu.ebp - 0x1c);
-            cpu.eax = at(app, cpu.eax + 0x51c);
-            put(app, cpu.ebp - 0x50, cpu.eax);
-        }
-        if (i32(at(app, cpu.ebp - 0x50)) < 0x7f)
-            goto L_4ad022;
-        fpu.push(f32(app, cpu.ebp - 8));
-        fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53de24));
-        app->getMemory<float>(cpu.ebp - 8) = float(fpu.st(0));
-        fpu.pop();
-    }
-    else
-    {
-L_4ad022:
-        cpu.eax = at(app, cpu.ebp - 0x1c);
-        fpu.push(0.0);
-        fcomp(cpu, f32(app, cpu.eax + 0x5f0));
-        cpu.ax = fpu.status.word;
-        if (!below(cpu) && !equal(cpu))
-        {
-            cpu.eax = at(app, cpu.ebp - 0x1c);
-            fpu.push(f32(app, cpu.eax + 0x5f0));
-            fpu.st(0) = -fpu.st(0);
-            app->getMemory<float>(cpu.ebp - 0x64) = float(fpu.st(0));
-            fpu.pop();
-        }
-        else
-        {
-            cpu.eax = at(app, cpu.ebp - 0x1c);
-            cpu.eax = at(app, cpu.eax + 0x5f0);
-            put(app, cpu.ebp - 0x64, cpu.eax);
-        }
-        if (i32(at(app, cpu.ebp - 0x64)) < 0x3c75c28f)
-        {
-            cpu.eax = at(app, cpu.ebp - 0x1c);
-            fpu.push(0.0);
-            fcomp(cpu, f32(app, cpu.eax + 0x4f4));
-            cpu.ax = fpu.status.word;
-            if (!below(cpu) && !equal(cpu))
-            {
-                cpu.eax = at(app, cpu.ebp - 0x1c);
-                fpu.push(f32(app, cpu.eax + 0x4f4));
-                fpu.st(0) = -fpu.st(0);
-                app->getMemory<float>(cpu.ebp - 0x60) = float(fpu.st(0));
-                fpu.pop();
-            }
-            else
-            {
-                cpu.eax = at(app, cpu.ebp - 0x1c);
-                cpu.eax = at(app, cpu.eax + 0x4f4);
-                put(app, cpu.ebp - 0x60, cpu.eax);
-            }
-            if (i32(at(app, cpu.ebp - 0x60)) < 0x41566666)
-            {
-                fpu.push(f32(app, cpu.ebp - 8));
-                fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53de28));
-                app->getMemory<float>(cpu.ebp - 8) = float(fpu.st(0));
-                fpu.pop();
-            }
-        }
-    }
-    cpu.eax = at(app, cpu.ebp - 0x18);
-    if (at(app, cpu.eax + 0x28) != 0)
-    {
-        cpu.eax = at(app, cpu.ebp - 0x18);
-        fpu.push(0.0);
-        fcomp(cpu, f32(app, cpu.eax + 0x10));
-        cpu.ax = fpu.status.word;
-        if (!below(cpu) && !equal(cpu))
-        {
-            fpu.push(f32(app, cpu.ebp - 8));
-            fpu.st(0) = -fpu.st(0);
-            cpu.eax = at(app, cpu.ebp - 0x18);
-            fcomp(cpu, f32(app, cpu.eax + 0x10));
-            cpu.ax = fpu.status.word;
-            if (below(cpu))
-            {
-                cpu.eax = at(app, cpu.ebp - 0x18);
-                cpu.eax = at(app, cpu.eax + 0x10);
-                put(app, cpu.ebp - 0x68, cpu.eax);
-            }
-            else
-            {
-                fpu.push(f32(app, cpu.ebp - 8));
-                fpu.st(0) = -fpu.st(0);
-                app->getMemory<float>(cpu.ebp - 0x68) = float(fpu.st(0));
-                fpu.pop();
-            }
-            cpu.eax = at(app, cpu.ebp - 0x68);
-            put(app, cpu.ebp - 8, cpu.eax);
-        }
-        else
-        {
-            cpu.eax = at(app, cpu.ebp - 0x18);
-            fpu.push(f32(app, cpu.eax + 0x10));
-            fcomp(cpu, f32(app, cpu.ebp - 8));
-            cpu.ax = fpu.status.word;
-            if (!below(cpu) && !equal(cpu))
-            {
-                cpu.eax = at(app, cpu.ebp - 8);
-                put(app, cpu.ebp - 0x6c, cpu.eax);
-            }
-            else
-            {
-                cpu.eax = at(app, cpu.ebp - 0x18);
-                cpu.eax = at(app, cpu.eax + 0x10);
-                put(app, cpu.ebp - 0x6c, cpu.eax);
-            }
-            cpu.eax = at(app, cpu.ebp - 0x6c);
-            put(app, cpu.ebp - 8, cpu.eax);
-        }
-        cpu.eax = at(app, cpu.ebp - 0x1c);
-        if (byte(app, cpu.eax + 0x50d) != 0)
-        {
-            cpu.eax = at(app, cpu.ebp - 0x1c);
-            fpu.push(0.0);
-            fcomp(cpu, f32(app, cpu.eax + 0x4f4));
-            cpu.ax = fpu.status.word;
-            if (!below(cpu) && !equal(cpu))
-            {
-                cpu.eax = at(app, cpu.ebp - 0x1c);
-                fpu.push(f32(app, cpu.eax + 0x4f4));
-                fpu.st(0) = -fpu.st(0);
-                app->getMemory<float>(cpu.ebp - 0x70) = float(fpu.st(0));
-                fpu.pop();
-            }
-            else
-            {
-                cpu.eax = at(app, cpu.ebp - 0x1c);
-                cpu.eax = at(app, cpu.eax + 0x4f4);
-                put(app, cpu.ebp - 0x70, cpu.eax);
-            }
-            if (i32(at(app, cpu.ebp - 0x70)) < 0x3f000000)
-            {
-                put(app, cpu.ebp - 8, 0);
-            }
-        }
-        cpu.eax = at(app, cpu.ebp - 0x18);
-        fpu.push(f32(app, cpu.ebp - 8));
-        fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53de2c));
-        app->getMemory<float>(cpu.eax + 0x1c) = float(fpu.st(0));
-        fpu.pop();
-    }
-    else
-    {
-        cpu.eax = at(app, cpu.ebp - 0x18);
-        fpu.push(0.0);
-        fcomp(cpu, f32(app, cpu.eax + 0x10));
-        cpu.ax = fpu.status.word;
-        if (!below(cpu) && !equal(cpu))
-        {
-            fpu.push(f32(app, cpu.ebp - 8));
-            fpu.st(0) = -fpu.st(0);
-            cpu.eax = at(app, cpu.ebp - 0x18);
-            fcomp(cpu, f32(app, cpu.eax + 0x10));
-            cpu.ax = fpu.status.word;
-            if (below(cpu))
-            {
-                cpu.eax = at(app, cpu.ebp - 0x18);
-                cpu.eax = at(app, cpu.eax + 0x10);
-                put(app, cpu.ebp - 0x74, cpu.eax);
-            }
-            else
-            {
-                fpu.push(f32(app, cpu.ebp - 8));
-                fpu.st(0) = -fpu.st(0);
-                app->getMemory<float>(cpu.ebp - 0x74) = float(fpu.st(0));
-                fpu.pop();
-            }
-            cpu.eax = at(app, cpu.ebp - 0x74);
-            put(app, cpu.ebp - 8, cpu.eax);
-        }
-        else
-        {
-            cpu.eax = at(app, cpu.ebp - 0x18);
-            fpu.push(f32(app, cpu.eax + 0x10));
-            fcomp(cpu, f32(app, cpu.ebp - 8));
-            cpu.ax = fpu.status.word;
-            if (!below(cpu) && !equal(cpu))
-            {
-                cpu.eax = at(app, cpu.ebp - 8);
-                put(app, cpu.ebp - 0x78, cpu.eax);
-            }
-            else
-            {
-                cpu.eax = at(app, cpu.ebp - 0x18);
-                cpu.eax = at(app, cpu.eax + 0x10);
-                put(app, cpu.ebp - 0x78, cpu.eax);
-            }
-            cpu.eax = at(app, cpu.ebp - 0x78);
-            put(app, cpu.ebp - 8, cpu.eax);
-        }
-        cpu.eax = at(app, cpu.ebp - 0x18);
-        fpu.push(f32(app, cpu.ebp - 8));
-        fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53de30));
-        app->getMemory<float>(cpu.eax + 0x1c) = float(fpu.st(0));
-        fpu.pop();
-    }
-    cpu.eax = at(app, cpu.ebp - 0x18);
-    put(app, cpu.eax + 0x20, 0);
-    cpu.eax = at(app, cpu.ebp - 0x18);
-    fpu.push(f32(app, cpu.eax));
-    cpu.eax = at(app, cpu.ebp - 0x18);
-    app->getMemory<float>(cpu.eax + 0x24) = float(fpu.st(0));
-    fpu.pop();
-    cpu.edx = at(app, cpu.ebp - 0x18);
-    cpu.eax = at(app, cpu.ebp - 0x1c);
-    if (!direct(app, cpu, tyreSlide))
-        return;
-    cpu.eax = at(app, cpu.ebp - 0x18);
-    if ((at(app, cpu.eax + 0xc) & 0x7fffffff) != 0)
-    {
-        cpu.eax = at(app, cpu.ebp - 0x18);
-        cpu.eax += 0x24;
-        push(app, cpu, cpu.eax);
-        cpu.eax = at(app, cpu.ebp - 0x18);
-        cpu.eax += 0x1c;
-        push(app, cpu, cpu.eax);
-        cpu.eax = at(app, cpu.ebp - 0x18);
-        push(app, cpu, at(app, cpu.eax + 0xc));
-        cpu.eax = at(app, cpu.ebp - 0x18);
-        push(app, cpu, at(app, cpu.eax + 0x24));
-        cpu.eax = at(app, cpu.ebp - 0x18);
-        push(app, cpu, at(app, cpu.eax + 0x1c));
-        if (!byAddress(app, cpu, kRotate))
-            return;
-    }
-    cpu.eax = at(app, cpu.ebp - 0x18);
-    if (at(app, cpu.eax + 0x28) != 0)
-    {
-        cpu.eax = at(app, cpu.ebp - 0x18);
-        fpu.push(f32(app, cpu.eax + 0x2c));
-        cpu.eax = at(app, cpu.ebp - 0x1c);
-        app->getMemory<float>(cpu.eax + 0x5c0) = float(fpu.st(0));
-        fpu.pop();
-        return leave();
-    }
-    cpu.eax = at(app, cpu.ebp - 0x18);
-    fpu.push(f32(app, cpu.eax + 0x2c));
-    cpu.eax = at(app, cpu.ebp - 0x1c);
-    app->getMemory<float>(cpu.eax + 0x5c4) = float(fpu.st(0));
-    fpu.pop();
-    return leave();
+    const reg32 slidEdx = cpu.edx;
+    saved.restore(cpu);
+    cpu.edx = end == AxleEnd::Gripped ? slipSlider(app, car) : slidEdx;
+    cpu.esp += 4;
 }
 
-/* 0x4a78d6: car eax's handling made for the race from the player's setup
- * (the car's +0x220, +0x40 seven sliders), when the raceload makes the car.
- * The setup put back to the middle (kDefaultSetup) for a car with flag 2,
- * over a link and in the series.  A human player's car (kPlayers) takes the
- * handling's second set (+0xc, +0x1bc, +0x74, +0xb4, +0xf4 over +8, +0x1b8,
- * +0x54, +0x94, +0xd4) unless kLoadingFlags has 4.  Each slider off its
- * middle -- but over a link or in the series -- moves its part of the
- * handling, held to its range: the third +0x23c, +0x234 and +0x258; the
- * second +0x1dc (and kAutoBox a 20th more); the fifth +0x254 (kAutoBox a 20th
- * less) and +0x294 by its square root; the sixth +0x24c and +0x1c8; the first
- * the torque's curve about its middle and +0x1c8; the simulation's handling
- * (kLoadingFlags 1) has the curve and +0x1c8 by 1.75 and each gear's +0xd4
- * held to 1.  Then by the gear: its ratio by the fourth, its inverse
- * (+0x54c, a 100th for none), its share (+0x56c), the limit's revs by it
- * (+0x52c); +0x1c8 by the fourth; the top gear's drag (+0x58c) from the
- * torque at the top speed. */
+/* fcomp's "not equal" on every value: unordered sets the flag too, so a NaN does not differ. */
+bool differs(x86::Float a, x86::Float b) { return a < b || a > b; }
+
+/* A float held at a bound, compared as the code does, as its bits' int. */
+void holdBitsAtLeast(App* app, reg32 a, i32 bits)
+{
+    const reg32 value = at(app, a);
+    put(app, a, i32(value) > bits ? value : reg32(bits));
+}
+
+void holdBitsAtMost(App* app, reg32 a, i32 bits)
+{
+    const reg32 value = at(app, a);
+    put(app, a, i32(value) > bits ? reg32(bits) : value);
+}
+
+/* The setup's seven sliders back to their middle. */
+void setupToMiddle(App* app, reg32 setup)
+{
+    for (reg32 i = 0; i < kSetupSliders; ++i)
+        put(app, setup + kSetupSlider + i * 4, at(app, kDefaultSetup + i * 4));
+}
+
+/* The torque curve moved about its middle by the first slider. */
+void tuneTorqueCurve(App* app, reg32 handling, reg32 sliders)
+{
+    const i32 middle = i32(at(app, handling + kHandlingRevsLimit) + at(app, handling + kHandlingRevsIdle)) / 2 / 256 + 3;
+    const i32 top = i32(at(app, handling + kHandlingRevsLimit)) / 256 + 3;
+    for (i32 i = 0; i < kTorquePoints; ++i)
+    {
+        const reg32 point = handling + kHandlingTorque + reg32(i) * 4;
+        const float part = float(fp::mul(fp::mul(fp::add(f32(app, sliders), f32(app, kTorqueSliderShift)), f32(app, kTorqueSliderScale)), f32(app, point)));
+        const x86::Float position = fp::div(x86::Float(i32(reg32(middle) - reg32(i))), x86::Float(i32(reg32(top) - reg32(middle))));
+        const float move = float(fp::mul(position, part));
+        floatAt(app, point) = float(fp::add(f32(app, point), move));
+    }
+    const x86::Float share = fp::add(fp::mul(fp::sub(f32(app, sliders), f32(app, kDefaultSetup)), f32(app, kFirstSliderTopShare)), 1.0);
+    floatAt(app, handling + kHandlingTopSpeed) = float(fp::mul(share, f32(app, handling + kHandlingTopSpeed)));
+}
+
+/* One gear's numbers in the car, from its ratio in the handling and the fourth slider. */
+void tuneGear(App* app, reg32 car, reg32 handling, reg32 sliders, reg32 gear, bool tuned)
+{
+    const reg32 ratio = handling + kHandlingRatios + gear * 4;
+    const reg32 shareBase = handling + kHandlingGearShare + gear * 4;
+    const reg32 inverse = car + kCarGearInverse + gear * 4;
+    const reg32 share = car + kCarGearShare + gear * 4;
+    if ((std::uint8_t(gameSettings(app).raceFlags) & kRaceFlagTorque) != 0)
+        holdBitsAtLeast(app, shareBase, kBits1);
+    if (tuned && differs(f32(app, sliders + kSliderFourth), f32(app, kDefaultSetup + kSliderFourth)))
+        floatAt(app, ratio) = float(fp::mul(f32(app, sliders + kSliderFourth), f32(app, ratio)));
+    if ((at(app, ratio) & kBitsNotSign) != 0)
+        floatAt(app, inverse) = float(fp::div(1.0, f32(app, ratio)));
+    else
+        floatAt(app, inverse) = 0.01f;
+    floatAt(app, share) = float(fp::mul(fp::div(f32(app, ratio), f32(app, handling + kHandlingShareBase)), f32(app, kGearShareScale)));
+    floatAt(app, share) = float(fp::mul(f32(app, shareBase), f32(app, share)));
+    const x86::Float revs = fp::mul(x86::Float(i32(at(app, handling + kHandlingRevsLimit))), f32(app, inverse));
+    floatAt(app, car + kCarGearRevs + gear * 4) = float(fp::div(1.0, revs));
+}
+
+/* 0x4a78d6: the car's handling made for the race from the player's setup (seven sliders), when
+ * the raceload makes the car.  The setup put back to the middle for a car with flag 2, over a link
+ * and in the series.  A human player's car takes the handling's second set unless raceFlags has 4.
+ * Each slider off its middle -- but over a link or in the series -- moves its part of the handling,
+ * held to its range: the third +0x23c, +0x234 and +0x258; the second +0x1dc (the computer-drives
+ * option a 20th more); the fifth +0x254 (a 20th less) and +0x294 by its square root; the sixth
+ * +0x24c and +0x1c8; the first the torque's curve about its middle and +0x1c8; the simulation's
+ * handling (raceFlags 1) has the curve and +0x1c8 by a constant and each gear's +0xd4 held to 1.
+ * Then by the gear: its ratio by the fourth, its inverse (a 100th for none), its share, the limit's
+ * revs by it; +0x1c8 by the fourth; the top gear's drag (+0x58c) from the torque at the top speed.
+ * False when the game stopped. */
+bool tuneHandling(App* app, CPU& cpu, reg32 car)
+{
+    if ((byte(app, car + kCarFlags) & kCarFlagSetupMiddle) != 0)
+        setupToMiddle(app, at(app, car + kCarSetup));
+    if (linkOrSeries(app))
+        setupToMiddle(app, at(app, car + kCarSetup));
+    const reg32 setup = at(app, car + kCarSetup);
+    const reg32 sliders = setup + kSetupSlider;
+    const reg32 handling = at(app, car + kCarHandling);
+    const bool tuned = !linkOrSeries(app);
+    const bool computerDrives = gameSettings(app).raceOptionComputerDrives != 0;
+
+    const reg32 entry = at(app, car + kCarPlayer) * 0x6c;
+    if (gameSettings(app).entryAt(entry).transmission == 1 && (std::uint8_t(gameSettings(app).raceFlags) & kRaceFlagFirstSet) == 0)
+    {
+        put(app, handling + 8, at(app, handling + 0xc));
+        floatAt(app, handling + 0x1b8) = float(f32(app, handling + 0x1bc));
+        for (reg32 i = 0; i < 8; ++i)
+        {
+            floatAt(app, handling + i * 4 + 0x54) = float(f32(app, handling + i * 4 + 0x74));
+            floatAt(app, handling + i * 4 + 0xd4) = float(f32(app, handling + i * 4 + 0xf4));
+            floatAt(app, handling + i * 4 + 0x94) = float(f32(app, handling + i * 4 + 0xb4));
+        }
+    }
+
+    const reg32 third = sliders + kSliderThird;
+    if (differs(f32(app, third), f32(app, kDefaultSetup + kSliderThird)) && tuned)
+    {
+        floatAt(app, handling + 0x23c) = float(fp::mul(f32(app, third), f32(app, handling + 0x23c)));
+        const float grip = float(fp::add(fp::mul(fp::sub(f32(app, third), f32(app, kDefaultSetup + kSliderThird)), f32(app, 0x53dc4c)), f32(app, kDefaultSetup + kSliderThird)));
+        floatAt(app, handling + 0x234) = float(fp::mul(f32(app, handling + 0x234), grip));
+        holdBitsAtLeast(app, handling + 0x234, 0x3eeb851f);
+        holdBitsAtMost(app, handling + 0x234, 0x3f0f5c29);
+        const float away = float(fp::mul(fp::sub(1.0, f32(app, third)), f32(app, 0x53dc50)));
+        const float scaled = float(fp::mul(away, f32(app, handling + 0x258)));
+        floatAt(app, handling + 0x258) = float(fp::add(f32(app, handling + 0x258), scaled));
+    }
+
+    const reg32 second = sliders + kSliderSecond;
+    if (differs(f32(app, second), f32(app, kDefaultSetup + kSliderSecond)) && tuned)
+        floatAt(app, handling + 0x1dc) = float(fp::sub(f32(app, handling + 0x1dc), f32(app, second)));
+    if (computerDrives && tuned)
+        floatAt(app, handling + 0x1dc) = float(fp::add(f32(app, handling + 0x1dc), f32(app, 0x53dc54)));
+    holdBitsAtMost(app, handling + 0x1dc, 0x3f400000);
+    holdBitsAtLeast(app, handling + 0x1dc, 0x3e99999a);
+
+    const reg32 fifth = sliders + kSliderFifth;
+    if (differs(f32(app, fifth), f32(app, kDefaultSetup + kSliderFifth)) && tuned)
+    {
+        floatAt(app, handling + 0x254) = float(fp::mul(f32(app, fifth), f32(app, handling + 0x254)));
+        holdBitsAtLeast(app, handling + 0x254, 0x3e99999a);
+        holdBitsAtMost(app, handling + 0x254, 0x3f333333);
+        if (!stackCall(app, cpu, kSqrt, { at(app, fifth) }))
+            return false;
+        floatAt(app, handling + 0x294) = float(fp::div(f32(app, handling + 0x294), popResult(cpu)));
+    }
+    if (computerDrives && tuned)
+        floatAt(app, handling + 0x254) = float(fp::add(f32(app, handling + 0x254), f32(app, 0x53dc58)));
+
+    const reg32 sixth = sliders + kSliderSixth;
+    if (differs(f32(app, sixth), f32(app, kDefaultSetup + kSliderSixth)) && tuned)
+    {
+        const float scale = float(fp::add(fp::mul(fp::add(f32(app, sixth), f32(app, 0x53dc5c)), f32(app, 0x53dc60)), 1.0));
+        floatAt(app, handling + 0x24c) = float(fp::mul(f32(app, handling + 0x24c), scale));
+        const x86::Float share = fp::add(fp::mul(fp::sub(f32(app, sixth), f32(app, kDefaultSetup)), f32(app, 0x53dc64)), 1.0);
+        floatAt(app, handling + kHandlingTopSpeed) = float(fp::div(f32(app, handling + kHandlingTopSpeed), share));
+    }
+
+    if (differs(f32(app, sliders), f32(app, kDefaultSetup)) && tuned)
+        tuneTorqueCurve(app, handling, sliders);
+
+    if ((std::uint8_t(gameSettings(app).raceFlags) & kRaceFlagTorque) != 0)
+    {
+        for (i32 i = 0; i < kTorquePoints; ++i)
+        {
+            const reg32 point = handling + kHandlingTorque + reg32(i) * 4;
+            floatAt(app, point) = float(fp::mul(f32(app, point), f32(app, 0x53dc74)));
+        }
+        floatAt(app, handling + kHandlingTopSpeed) = float(fp::mul(f32(app, handling + kHandlingTopSpeed), f32(app, 0x53dc78)));
+    }
+
+    for (reg32 gear = 0; i32(gear) < i32(at(app, handling + kHandlingGears)); ++gear)
+        tuneGear(app, car, handling, sliders, gear, tuned);
+
+    if (differs(f32(app, sliders + kSliderFourth), f32(app, kDefaultSetup + kSliderFourth)) && tuned)
+        floatAt(app, handling + kHandlingTopSpeed) = float(fp::div(f32(app, handling + kHandlingTopSpeed), f32(app, sliders + kSliderFourth)));
+
+    // The top gear's drag, from the torque at the revs of the top speed.
+    const reg32 gears = at(app, handling + kHandlingGears) << 2;
+    const i32 revs = fp::toInteger<i32>(fp::mul(f32(app, handling + kHandlingTopSpeed), f32(app, handling + gears + 0x90)));
+    float drag = floatAt(app, handling + kHandlingTorque + (reg32(revs / 256) << 2));
+    drag = float(fp::mul(drag, f32(app, car + gears + 0x568)));
+    drag = float(fp::div(drag, f32(app, handling + gears + 0xd0)));
+    if (tuned)
+    {
+        const x86::Float slider = fp::div(fp::add(1.0, f32(app, setup + 0x54)), f32(app, 0x53dc80));
+        floatAt(app, car + kCarDrag) = float(fp::div(drag, slider));
+    }
+    else
+    {
+        floatAt(app, car + kCarDrag) = float(fp::div(drag, f32(app, 0x53dc84)));
+    }
+    const x86::Float cube = fp::mul(fp::mul(fp::mul(f32(app, handling + kHandlingTopSpeed), f32(app, 0x53dc88)), f32(app, handling + kHandlingTopSpeed)), f32(app, handling + kHandlingTopSpeed));
+    floatAt(app, car + kCarDrag) = float(fp::div(f32(app, car + kCarDrag), cube));
+    floatAt(app, car + kCarDrag) = float(fp::mul(f32(app, car + kCarDrag), f32(app, 0x53dc8c)));
+    return true;
+}
+
+/* The adapter: car eax, left in eax; the other registers kept. */
 void applyTuning(App* app, CPU& cpu)
 {
-    x86::FPU& fpu = cpu.fpu;
-    push(app, cpu, cpu.ebx);
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.edx);
-    push(app, cpu, cpu.esi);
-    push(app, cpu, cpu.edi);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    cpu.esp -= 0x48;
-    const auto leave = [&] {
-        cpu.esp = cpu.ebp;
-        cpu.ebp = pop(app, cpu);
-        cpu.edi = pop(app, cpu);
-        cpu.esi = pop(app, cpu);
-        cpu.edx = pop(app, cpu);
-        cpu.ecx = pop(app, cpu);
-        cpu.ebx = pop(app, cpu);
-        cpu.esp += 4;
-    };
-    put(app, cpu.ebp - 0x1c, cpu.eax);
-    put(app, cpu.ebp - 8, 0);
-    put(app, cpu.ebp - 4, 0);
-    cpu.eax = at(app, cpu.ebp - 0x1c);
-    if ((byte(app, cpu.eax + 0x200) & 2) != 0)
-    {
-        cpu.eax = at(app, cpu.ebp - 0x1c);
-        cpu.esi = at(app, cpu.eax + 0x220);
-        cpu.ecx = 7;
-        cpu.edi = cpu.esi + 0x40;
-        cpu.esi = kDefaultSetup;
-        for (; cpu.ecx != 0; --cpu.ecx)
-        {
-            put(app, cpu.edi, at(app, cpu.esi));
-            cpu.esi += 4;
-            cpu.edi += 4;
-        }
-    }
-    if (at(app, kRaceType) == 1 || at(app, kRaceType) == 2 || i32(at(app, kPlayMode)) > 1)
-    {
-        cpu.eax = at(app, cpu.ebp - 0x1c);
-        cpu.esi = at(app, cpu.eax + 0x220);
-        cpu.ecx = 7;
-        cpu.edi = cpu.esi + 0x40;
-        cpu.esi = kDefaultSetup;
-        for (; cpu.ecx != 0; --cpu.ecx)
-        {
-            put(app, cpu.edi, at(app, cpu.esi));
-            cpu.esi += 4;
-            cpu.edi += 4;
-        }
-    }
-    cpu.eax = at(app, cpu.ebp - 0x1c);
-    cpu.eax = at(app, cpu.eax + 0x220);
-    cpu.eax += 0x40;
-    put(app, cpu.ebp - 4, cpu.eax);
-    cpu.eax = at(app, cpu.ebp - 0x1c);
-    cpu.eax = at(app, cpu.eax + 0x1f0) * 0x6c;
-    if (at(app, cpu.eax + 0x6fd548) == 1 && (byte(app, kLoadingFlags) & 4) == 0)
-    {
-        cpu.eax = at(app, cpu.ebp - 0x1c);
-        cpu.edx = at(app, cpu.eax + 0x528);
-        cpu.eax = at(app, cpu.ebp - 0x1c);
-        cpu.eax = at(app, cpu.eax + 0x528);
-        cpu.edx = at(app, cpu.edx + 0xc);
-        put(app, cpu.eax + 8, cpu.edx);
-        cpu.eax = at(app, cpu.ebp - 0x1c);
-        cpu.edx = at(app, cpu.eax + 0x528);
-        cpu.eax = at(app, cpu.ebp - 0x1c);
-        cpu.eax = at(app, cpu.eax + 0x528);
-        fpu.push(f32(app, cpu.edx + 0x1bc));
-        app->getMemory<float>(cpu.eax + 0x1b8) = float(fpu.st(0));
-        fpu.pop();
-        put(app, cpu.ebp - 0x14, 0);
-        while (i32(at(app, cpu.ebp - 0x14)) < 8)
-        {
-            cpu.eax = at(app, cpu.ebp - 0x1c);
-            cpu.eax = at(app, cpu.eax + 0x528);
-            cpu.edx = at(app, cpu.ebp - 0x14);
-            cpu.edx <<= 2;
-            cpu.edx += cpu.eax;
-            cpu.eax = at(app, cpu.ebp - 0x1c);
-            cpu.ecx = at(app, cpu.eax + 0x528);
-            cpu.eax = at(app, cpu.ebp - 0x14);
-            cpu.eax <<= 2;
-            cpu.eax += cpu.ecx;
-            fpu.push(f32(app, cpu.edx + 0x74));
-            app->getMemory<float>(cpu.eax + 0x54) = float(fpu.st(0));
-            fpu.pop();
-            cpu.eax = at(app, cpu.ebp - 0x1c);
-            cpu.eax = at(app, cpu.eax + 0x528);
-            cpu.edx = at(app, cpu.ebp - 0x14);
-            cpu.edx <<= 2;
-            cpu.edx += cpu.eax;
-            cpu.eax = at(app, cpu.ebp - 0x1c);
-            cpu.ecx = at(app, cpu.eax + 0x528);
-            cpu.eax = at(app, cpu.ebp - 0x14);
-            cpu.eax <<= 2;
-            cpu.eax += cpu.ecx;
-            fpu.push(f32(app, cpu.edx + 0xf4));
-            app->getMemory<float>(cpu.eax + 0xd4) = float(fpu.st(0));
-            fpu.pop();
-            cpu.eax = at(app, cpu.ebp - 0x1c);
-            cpu.eax = at(app, cpu.eax + 0x528);
-            cpu.edx = at(app, cpu.ebp - 0x14);
-            cpu.edx <<= 2;
-            cpu.edx += cpu.eax;
-            cpu.eax = at(app, cpu.ebp - 0x1c);
-            cpu.ecx = at(app, cpu.eax + 0x528);
-            cpu.eax = at(app, cpu.ebp - 0x14);
-            cpu.eax <<= 2;
-            cpu.eax += cpu.ecx;
-            fpu.push(f32(app, cpu.edx + 0xb4));
-            app->getMemory<float>(cpu.eax + 0x94) = float(fpu.st(0));
-            fpu.pop();
-            cpu.eax = at(app, cpu.ebp - 0x14);
-            put(app, cpu.ebp - 0x14, at(app, cpu.ebp - 0x14) + 1);
-        }
-    }
-    cpu.eax = at(app, cpu.ebp - 4);
-    fpu.push(f32(app, cpu.eax + 8));
-    fcomp(cpu, f32(app, 0x55d02c));
-    cpu.ax = fpu.status.word;
-    if (!equal(cpu) && i32(at(app, kPlayMode)) <= 1 && at(app, kRaceType) != 1 && at(app, kRaceType) != 2)
-    {
-        cpu.eax = at(app, cpu.ebp - 0x1c);
-        cpu.eax = at(app, cpu.eax + 0x528);
-        cpu.edx = at(app, cpu.ebp - 4);
-        fpu.push(f32(app, cpu.edx + 8));
-        fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.eax + 0x23c));
-        app->getMemory<float>(cpu.eax + 0x23c) = float(fpu.st(0));
-        fpu.pop();
-        cpu.eax = at(app, cpu.ebp - 4);
-        fpu.push(f32(app, cpu.eax + 8));
-        fpu.st(0) = fp::sub(fpu.st(0), f32(app, 0x55d02c));
-        fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53dc4c));
-        fpu.st(0) = fp::add(fpu.st(0), f32(app, 0x55d02c));
-        app->getMemory<float>(cpu.ebp - 8) = float(fpu.st(0));
-        fpu.pop();
-        cpu.eax = at(app, cpu.ebp - 0x1c);
-        cpu.eax = at(app, cpu.eax + 0x528);
-        fpu.push(f32(app, cpu.eax + 0x234));
-        fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.ebp - 8));
-        app->getMemory<float>(cpu.eax + 0x234) = float(fpu.st(0));
-        fpu.pop();
-        cpu.eax = at(app, cpu.ebp - 0x1c);
-        cpu.eax = at(app, cpu.eax + 0x528);
-        if (i32(at(app, cpu.eax + 0x234)) > 0x3eeb851f)
-        {
-            cpu.eax = at(app, cpu.ebp - 0x1c);
-            cpu.eax = at(app, cpu.eax + 0x528);
-            cpu.eax = at(app, cpu.eax + 0x234);
-            put(app, cpu.ebp - 0x24, cpu.eax);
-        }
-        else
-        {
-            put(app, cpu.ebp - 0x24, 0x3eeb851f);
-        }
-        cpu.eax = at(app, cpu.ebp - 0x1c);
-        cpu.edx = at(app, cpu.eax + 0x528);
-        cpu.eax = at(app, cpu.ebp - 0x24);
-        put(app, cpu.edx + 0x234, cpu.eax);
-        cpu.eax = at(app, cpu.ebp - 0x1c);
-        cpu.eax = at(app, cpu.eax + 0x528);
-        if (i32(at(app, cpu.eax + 0x234)) > 0x3f0f5c29)
-        {
-            put(app, cpu.ebp - 0x20, 0x3f0f5c29);
-        }
-        else
-        {
-            cpu.eax = at(app, cpu.ebp - 0x1c);
-            cpu.eax = at(app, cpu.eax + 0x528);
-            cpu.eax = at(app, cpu.eax + 0x234);
-            put(app, cpu.ebp - 0x20, cpu.eax);
-        }
-        cpu.edx = at(app, cpu.ebp - 0x1c);
-        cpu.edx = at(app, cpu.edx + 0x528);
-        cpu.eax = at(app, cpu.ebp - 0x20);
-        put(app, cpu.edx + 0x234, cpu.eax);
-        cpu.eax = at(app, cpu.ebp - 4);
-        fpu.push(1.0);
-        fpu.st(0) = fp::sub(fpu.st(0), f32(app, cpu.eax + 8));
-        fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53dc50));
-        app->getMemory<float>(cpu.ebp - 8) = float(fpu.st(0));
-        fpu.pop();
-        cpu.eax = at(app, cpu.ebp - 0x1c);
-        cpu.eax = at(app, cpu.eax + 0x528);
-        fpu.push(f32(app, cpu.ebp - 8));
-        fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.eax + 0x258));
-        app->getMemory<float>(cpu.ebp - 8) = float(fpu.st(0));
-        fpu.pop();
-        cpu.eax = at(app, cpu.ebp - 0x1c);
-        cpu.eax = at(app, cpu.eax + 0x528);
-        fpu.push(f32(app, cpu.eax + 0x258));
-        fpu.st(0) = fp::add(fpu.st(0), f32(app, cpu.ebp - 8));
-        app->getMemory<float>(cpu.eax + 0x258) = float(fpu.st(0));
-        fpu.pop();
-    }
-    cpu.eax = at(app, cpu.ebp - 4);
-    fpu.push(f32(app, cpu.eax + 4));
-    fcomp(cpu, f32(app, 0x55d028));
-    cpu.ax = fpu.status.word;
-    if (!equal(cpu) && i32(at(app, kPlayMode)) <= 1 && at(app, kRaceType) != 1 && at(app, kRaceType) != 2)
-    {
-        cpu.eax = at(app, cpu.ebp - 0x1c);
-        cpu.eax = at(app, cpu.eax + 0x528);
-        cpu.edx = at(app, cpu.ebp - 4);
-        fpu.push(f32(app, cpu.edx + 4));
-        fpu.st(0) = fp::sub(f32(app, cpu.eax + 0x1dc), fpu.st(0));
-        app->getMemory<float>(cpu.eax + 0x1dc) = float(fpu.st(0));
-        fpu.pop();
-    }
-    if (at(app, kAutoBox) != 0 && i32(at(app, kPlayMode)) <= 1 && at(app, kRaceType) != 1 && at(app, kRaceType) != 2)
-    {
-        cpu.eax = at(app, cpu.ebp - 0x1c);
-        cpu.eax = at(app, cpu.eax + 0x528);
-        fpu.push(f32(app, cpu.eax + 0x1dc));
-        fpu.st(0) = fp::add(fpu.st(0), f32(app, 0x53dc54));
-        app->getMemory<float>(cpu.eax + 0x1dc) = float(fpu.st(0));
-        fpu.pop();
-    }
-    cpu.eax = at(app, cpu.ebp - 0x1c);
-    cpu.eax = at(app, cpu.eax + 0x528);
-    if (i32(at(app, cpu.eax + 0x1dc)) > 0x3f400000)
-    {
-        put(app, cpu.ebp - 0x2c, 0x3f400000);
-    }
-    else
-    {
-        cpu.eax = at(app, cpu.ebp - 0x1c);
-        cpu.eax = at(app, cpu.eax + 0x528);
-        cpu.eax = at(app, cpu.eax + 0x1dc);
-        put(app, cpu.ebp - 0x2c, cpu.eax);
-    }
-    cpu.eax = at(app, cpu.ebp - 0x1c);
-    cpu.edx = at(app, cpu.eax + 0x528);
-    cpu.eax = at(app, cpu.ebp - 0x2c);
-    put(app, cpu.edx + 0x1dc, cpu.eax);
-    cpu.eax = at(app, cpu.ebp - 0x1c);
-    cpu.eax = at(app, cpu.eax + 0x528);
-    if (i32(at(app, cpu.eax + 0x1dc)) > 0x3e99999a)
-    {
-        cpu.eax = at(app, cpu.ebp - 0x1c);
-        cpu.eax = at(app, cpu.eax + 0x528);
-        cpu.eax = at(app, cpu.eax + 0x1dc);
-        put(app, cpu.ebp - 0x28, cpu.eax);
-    }
-    else
-    {
-        put(app, cpu.ebp - 0x28, 0x3e99999a);
-    }
-    cpu.eax = at(app, cpu.ebp - 0x1c);
-    cpu.edx = at(app, cpu.eax + 0x528);
-    cpu.eax = at(app, cpu.ebp - 0x28);
-    put(app, cpu.edx + 0x1dc, cpu.eax);
-    cpu.eax = at(app, cpu.ebp - 4);
-    fpu.push(f32(app, cpu.eax + 0x10));
-    fcomp(cpu, f32(app, 0x55d034));
-    cpu.ax = fpu.status.word;
-    if (!equal(cpu) && i32(at(app, kPlayMode)) <= 1 && at(app, kRaceType) != 1 && at(app, kRaceType) != 2)
-    {
-        cpu.eax = at(app, cpu.ebp - 0x1c);
-        cpu.eax = at(app, cpu.eax + 0x528);
-        cpu.edx = at(app, cpu.ebp - 4);
-        fpu.push(f32(app, cpu.edx + 0x10));
-        fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.eax + 0x254));
-        app->getMemory<float>(cpu.eax + 0x254) = float(fpu.st(0));
-        fpu.pop();
-        cpu.eax = at(app, cpu.ebp - 0x1c);
-        cpu.eax = at(app, cpu.eax + 0x528);
-        if (i32(at(app, cpu.eax + 0x254)) > 0x3e99999a)
-        {
-            cpu.eax = at(app, cpu.ebp - 0x1c);
-            cpu.eax = at(app, cpu.eax + 0x528);
-            cpu.eax = at(app, cpu.eax + 0x254);
-            put(app, cpu.ebp - 0x34, cpu.eax);
-        }
-        else
-        {
-            put(app, cpu.ebp - 0x34, 0x3e99999a);
-        }
-        cpu.eax = at(app, cpu.ebp - 0x1c);
-        cpu.edx = at(app, cpu.eax + 0x528);
-        cpu.eax = at(app, cpu.ebp - 0x34);
-        put(app, cpu.edx + 0x254, cpu.eax);
-        cpu.eax = at(app, cpu.ebp - 0x1c);
-        cpu.eax = at(app, cpu.eax + 0x528);
-        if (i32(at(app, cpu.eax + 0x254)) > 0x3f333333)
-        {
-            put(app, cpu.ebp - 0x30, 0x3f333333);
-        }
-        else
-        {
-            cpu.eax = at(app, cpu.ebp - 0x1c);
-            cpu.eax = at(app, cpu.eax + 0x528);
-            cpu.eax = at(app, cpu.eax + 0x254);
-            put(app, cpu.ebp - 0x30, cpu.eax);
-        }
-        cpu.edx = at(app, cpu.ebp - 0x1c);
-        cpu.edx = at(app, cpu.edx + 0x528);
-        cpu.eax = at(app, cpu.ebp - 0x30);
-        put(app, cpu.edx + 0x254, cpu.eax);
-        cpu.edx = at(app, cpu.ebp - 0x1c);
-        cpu.edx = at(app, cpu.edx + 0x528);
-        cpu.eax = at(app, cpu.ebp - 4);
-        push(app, cpu, at(app, cpu.eax + 0x10));
-        if (!byAddress(app, cpu, kSqrt))
-            return;
-        fpu.st(0) = fp::div(f32(app, cpu.edx + 0x294), fpu.st(0));
-        app->getMemory<float>(cpu.edx + 0x294) = float(fpu.st(0));
-        fpu.pop();
-    }
-    if (at(app, kAutoBox) != 0 && i32(at(app, kPlayMode)) <= 1 && at(app, kRaceType) != 1 && at(app, kRaceType) != 2)
-    {
-        cpu.eax = at(app, cpu.ebp - 0x1c);
-        cpu.eax = at(app, cpu.eax + 0x528);
-        fpu.push(f32(app, cpu.eax + 0x254));
-        fpu.st(0) = fp::add(fpu.st(0), f32(app, 0x53dc58));
-        app->getMemory<float>(cpu.eax + 0x254) = float(fpu.st(0));
-        fpu.pop();
-    }
-    cpu.eax = at(app, cpu.ebp - 4);
-    fpu.push(f32(app, cpu.eax + 0x14));
-    fcomp(cpu, f32(app, 0x55d038));
-    cpu.ax = fpu.status.word;
-    if (!equal(cpu) && i32(at(app, kPlayMode)) <= 1 && at(app, kRaceType) != 1 && at(app, kRaceType) != 2)
-    {
-        cpu.eax = at(app, cpu.ebp - 4);
-        fpu.push(f32(app, cpu.eax + 0x14));
-        fpu.st(0) = fp::add(fpu.st(0), f32(app, 0x53dc5c));
-        fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53dc60));
-        fpu.push(1.0);
-        fpu.st(1) = fp::add(fpu.st(1), fpu.st(0));
-        fpu.pop();
-        app->getMemory<float>(cpu.ebp - 8) = float(fpu.st(0));
-        fpu.pop();
-        cpu.eax = at(app, cpu.ebp - 0x1c);
-        cpu.eax = at(app, cpu.eax + 0x528);
-        fpu.push(f32(app, cpu.eax + 0x24c));
-        fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.ebp - 8));
-        app->getMemory<float>(cpu.eax + 0x24c) = float(fpu.st(0));
-        fpu.pop();
-        cpu.eax = at(app, cpu.ebp - 0x1c);
-        cpu.eax = at(app, cpu.eax + 0x528);
-        cpu.edx = at(app, cpu.ebp - 4);
-        fpu.push(f32(app, cpu.edx + 0x14));
-        fpu.st(0) = fp::sub(fpu.st(0), f32(app, kDefaultSetup));
-        fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53dc64));
-        fpu.push(1.0);
-        fpu.st(1) = fp::add(fpu.st(1), fpu.st(0));
-        fpu.pop();
-        fpu.st(0) = fp::div(f32(app, cpu.eax + 0x1c8), fpu.st(0));
-        app->getMemory<float>(cpu.eax + 0x1c8) = float(fpu.st(0));
-        fpu.pop();
-    }
-    cpu.eax = at(app, cpu.ebp - 4);
-    fpu.push(f32(app, cpu.eax));
-    fcomp(cpu, f32(app, kDefaultSetup));
-    cpu.ax = fpu.status.word;
-    if (!equal(cpu) && i32(at(app, kPlayMode)) <= 1 && at(app, kRaceType) != 1 && at(app, kRaceType) != 2)
-    {
-        put(app, cpu.ebp - 0x40, 0);
-        put(app, cpu.ebp - 0x3c, 0);
-        put(app, cpu.ebp - 0x38, 0);
-        cpu.edx = at(app, cpu.ebp - 0x1c);
-        cpu.edx = at(app, cpu.edx + 0x528);
-        cpu.eax = at(app, cpu.ebp - 0x1c);
-        cpu.eax = at(app, cpu.eax + 0x528);
-        cpu.edx = at(app, cpu.edx + 0x1c4);
-        cpu.edx += at(app, cpu.eax + 0x1c0);
-        cpu.eax = cpu.edx;
-        cpu.edx = reg32(i32(cpu.edx) >> 0x1f);
-        cpu.eax -= cpu.edx;
-        cpu.eax = reg32(i32(cpu.eax) >> 1);
-        cpu.edx = cpu.eax;
-        cpu.eax = cpu.edx;
-        cpu.edx = reg32(i32(cpu.edx) >> 0x1f);
-        {
-            const reg32 carry = (cpu.edx >> 24) & 1;
-            cpu.edx <<= 8;
-            cpu.eax -= cpu.edx + carry;
-        }
-        cpu.eax = reg32(i32(cpu.eax) >> 8);
-        cpu.eax += 3;
-        put(app, cpu.ebp - 0x40, cpu.eax);
-        cpu.edx = at(app, cpu.ebp - 0x1c);
-        cpu.edx = at(app, cpu.edx + 0x528);
-        cpu.eax = at(app, cpu.edx + 0x1c4);
-        cpu.edx = at(app, cpu.edx + 0x1c4);
-        cpu.edx = reg32(i32(cpu.edx) >> 0x1f);
-        {
-            const reg32 carry = (cpu.edx >> 24) & 1;
-            cpu.edx <<= 8;
-            cpu.eax -= cpu.edx + carry;
-        }
-        cpu.eax = reg32(i32(cpu.eax) >> 8);
-        cpu.eax += 3;
-        put(app, cpu.ebp - 0x3c, cpu.eax);
-        put(app, cpu.ebp - 0x14, 0);
-        while (i32(at(app, cpu.ebp - 0x14)) < 0x29)
-        {
-            cpu.eax = at(app, cpu.ebp - 0x1c);
-            cpu.eax = at(app, cpu.eax + 0x528);
-            cpu.edx = at(app, cpu.ebp - 0x14);
-            cpu.edx <<= 2;
-            cpu.edx += cpu.eax;
-            cpu.eax = at(app, cpu.ebp - 4);
-            fpu.push(f32(app, cpu.eax));
-            fpu.st(0) = fp::add(fpu.st(0), f32(app, 0x53dc68));
-            fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53dc6c));
-            fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.edx + 0x114));
-            app->getMemory<float>(cpu.ebp - 0x38) = float(fpu.st(0));
-            fpu.pop();
-            cpu.eax = at(app, cpu.ebp - 0x40);
-            cpu.eax -= at(app, cpu.ebp - 0x14);
-            put(app, cpu.ebp - 0x44, cpu.eax);
-            fpu.push(x86::Float(i32(at(app, cpu.ebp - 0x44))));
-            cpu.eax = at(app, cpu.ebp - 0x3c);
-            cpu.eax -= at(app, cpu.ebp - 0x40);
-            put(app, cpu.ebp - 0x44, cpu.eax);
-            fpu.push(x86::Float(i32(at(app, cpu.ebp - 0x44))));
-            fpu.st(1) = fp::div(fpu.st(1), fpu.st(0));
-            fpu.pop();
-            fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.ebp - 0x38));
-            app->getMemory<float>(cpu.ebp - 0x38) = float(fpu.st(0));
-            fpu.pop();
-            cpu.eax = at(app, cpu.ebp - 0x1c);
-            cpu.edx = at(app, cpu.eax + 0x528);
-            cpu.eax = at(app, cpu.ebp - 0x14);
-            cpu.eax <<= 2;
-            cpu.eax += cpu.edx;
-            fpu.push(f32(app, cpu.eax + 0x114));
-            fpu.st(0) = fp::add(fpu.st(0), f32(app, cpu.ebp - 0x38));
-            app->getMemory<float>(cpu.eax + 0x114) = float(fpu.st(0));
-            fpu.pop();
-            cpu.eax = at(app, cpu.ebp - 0x14);
-            put(app, cpu.ebp - 0x14, at(app, cpu.ebp - 0x14) + 1);
-        }
-        cpu.eax = at(app, cpu.ebp - 0x1c);
-        cpu.eax = at(app, cpu.eax + 0x528);
-        cpu.edx = at(app, cpu.ebp - 4);
-        fpu.push(f32(app, cpu.edx));
-        fpu.st(0) = fp::sub(fpu.st(0), f32(app, kDefaultSetup));
-        fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53dc70));
-        fpu.push(1.0);
-        fpu.st(1) = fp::add(fpu.st(1), fpu.st(0));
-        fpu.pop();
-        fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.eax + 0x1c8));
-        app->getMemory<float>(cpu.eax + 0x1c8) = float(fpu.st(0));
-        fpu.pop();
-    }
-    if ((byte(app, kLoadingFlags) & 1) != 0)
-    {
-        put(app, cpu.ebp - 0x14, 0);
-        while (i32(at(app, cpu.ebp - 0x14)) < 0x29)
-        {
-            cpu.eax = at(app, cpu.ebp - 0x1c);
-            cpu.eax = at(app, cpu.eax + 0x528);
-            cpu.edx = at(app, cpu.ebp - 0x14);
-            cpu.edx <<= 2;
-            cpu.eax += cpu.edx;
-            fpu.push(f32(app, cpu.eax + 0x114));
-            fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53dc74));
-            app->getMemory<float>(cpu.eax + 0x114) = float(fpu.st(0));
-            fpu.pop();
-            cpu.eax = at(app, cpu.ebp - 0x14);
-            put(app, cpu.ebp - 0x14, at(app, cpu.ebp - 0x14) + 1);
-        }
-        cpu.eax = at(app, cpu.ebp - 0x1c);
-        cpu.eax = at(app, cpu.eax + 0x528);
-        fpu.push(f32(app, cpu.eax + 0x1c8));
-        fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53dc78));
-        app->getMemory<float>(cpu.eax + 0x1c8) = float(fpu.st(0));
-        fpu.pop();
-    }
-    put(app, cpu.ebp - 0x14, 0);
-    for (;;)
-    {
-        cpu.eax = at(app, cpu.ebp - 0x1c);
-        cpu.edx = at(app, cpu.eax + 0x528);
-        cpu.eax = at(app, cpu.ebp - 0x14);
-        if (i32(cpu.eax) >= i32(at(app, cpu.edx + 8)))
-            break;
-        if ((byte(app, kLoadingFlags) & 1) != 0)
-        {
-            cpu.eax = at(app, cpu.ebp - 0x1c);
-            cpu.eax = at(app, cpu.eax + 0x528);
-            cpu.edx = at(app, cpu.ebp - 0x14);
-            cpu.edx <<= 2;
-            cpu.eax += cpu.edx;
-            if (i32(at(app, cpu.eax + 0xd4)) > 0x3f800000)
-            {
-                cpu.eax = at(app, cpu.ebp - 0x1c);
-                cpu.eax = at(app, cpu.eax + 0x528);
-                cpu.edx = at(app, cpu.ebp - 0x14);
-                cpu.edx <<= 2;
-                cpu.eax += cpu.edx;
-                cpu.eax = at(app, cpu.eax + 0xd4);
-                put(app, cpu.ebp - 0x48, cpu.eax);
-            }
-            else
-            {
-                put(app, cpu.ebp - 0x48, 0x3f800000);
-            }
-            cpu.eax = at(app, cpu.ebp - 0x1c);
-            cpu.edx = at(app, cpu.eax + 0x528);
-            cpu.eax = at(app, cpu.ebp - 0x14);
-            cpu.eax <<= 2;
-            cpu.edx += cpu.eax;
-            cpu.eax = at(app, cpu.ebp - 0x48);
-            put(app, cpu.edx + 0xd4, cpu.eax);
-        }
-        cpu.eax = at(app, cpu.ebp - 4);
-        fpu.push(f32(app, cpu.eax + 0xc));
-        fcomp(cpu, f32(app, 0x55d030));
-        cpu.ax = fpu.status.word;
-        if (!equal(cpu) && i32(at(app, kPlayMode)) <= 1 && at(app, kRaceType) != 1 && at(app, kRaceType) != 2)
-        {
-            cpu.eax = at(app, cpu.ebp - 0x1c);
-            cpu.eax = at(app, cpu.eax + 0x528);
-            cpu.edx = at(app, cpu.ebp - 0x14);
-            cpu.edx <<= 2;
-            cpu.eax += cpu.edx;
-            cpu.edx = at(app, cpu.ebp - 4);
-            fpu.push(f32(app, cpu.edx + 0xc));
-            fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.eax + 0x94));
-            app->getMemory<float>(cpu.eax + 0x94) = float(fpu.st(0));
-            fpu.pop();
-        }
-        cpu.eax = at(app, cpu.ebp - 0x1c);
-        cpu.eax = at(app, cpu.eax + 0x528);
-        cpu.edx = at(app, cpu.ebp - 0x14);
-        cpu.edx <<= 2;
-        cpu.eax += cpu.edx;
-        if ((at(app, cpu.eax + 0x94) & 0x7fffffff) != 0)
-        {
-            cpu.eax = at(app, cpu.ebp - 0x1c);
-            cpu.edx = at(app, cpu.eax + 0x528);
-            cpu.eax = at(app, cpu.ebp - 0x14);
-            cpu.eax <<= 2;
-            cpu.eax += cpu.edx;
-            fpu.push(1.0);
-            fpu.st(0) = fp::div(fpu.st(0), f32(app, cpu.eax + 0x94));
-            cpu.eax = at(app, cpu.ebp - 0x14);
-            cpu.eax <<= 2;
-            cpu.eax += at(app, cpu.ebp - 0x1c);
-            app->getMemory<float>(cpu.eax + 0x54c) = float(fpu.st(0));
-            fpu.pop();
-        }
-        else
-        {
-            cpu.eax = at(app, cpu.ebp - 0x14);
-            cpu.eax <<= 2;
-            cpu.eax += at(app, cpu.ebp - 0x1c);
-            put(app, cpu.eax + 0x54c, 0x3c23d70a);
-        }
-        cpu.eax = at(app, cpu.ebp - 0x1c);
-        cpu.edx = at(app, cpu.eax + 0x528);
-        cpu.eax = at(app, cpu.ebp - 0x14);
-        cpu.eax <<= 2;
-        cpu.edx += cpu.eax;
-        cpu.eax = at(app, cpu.ebp - 0x1c);
-        cpu.eax = at(app, cpu.eax + 0x528);
-        fpu.push(f32(app, cpu.edx + 0x94));
-        fpu.st(0) = fp::div(fpu.st(0), f32(app, cpu.eax + 4));
-        fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53dc7c));
-        cpu.eax = at(app, cpu.ebp - 0x14);
-        cpu.eax <<= 2;
-        cpu.eax += at(app, cpu.ebp - 0x1c);
-        app->getMemory<float>(cpu.eax + 0x56c) = float(fpu.st(0));
-        fpu.pop();
-        cpu.eax = at(app, cpu.ebp - 0x14);
-        cpu.eax <<= 2;
-        cpu.eax += at(app, cpu.ebp - 0x1c);
-        cpu.edx = at(app, cpu.ebp - 0x1c);
-        cpu.edx = at(app, cpu.edx + 0x528);
-        cpu.ecx = at(app, cpu.ebp - 0x14);
-        cpu.ecx <<= 2;
-        cpu.edx += cpu.ecx;
-        fpu.push(f32(app, cpu.edx + 0xd4));
-        fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.eax + 0x56c));
-        app->getMemory<float>(cpu.eax + 0x56c) = float(fpu.st(0));
-        fpu.pop();
-        cpu.edx = at(app, cpu.ebp - 0x14);
-        cpu.edx <<= 2;
-        cpu.edx += at(app, cpu.ebp - 0x1c);
-        cpu.eax = at(app, cpu.ebp - 0x1c);
-        cpu.eax = at(app, cpu.eax + 0x528);
-        fpu.push(x86::Float(i32(at(app, cpu.eax + 0x1c4))));
-        fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.edx + 0x54c));
-        fpu.push(1.0);
-        fpu.st(1) = fp::div(fpu.st(0), fpu.st(1));
-        fpu.pop();
-        cpu.eax = at(app, cpu.ebp - 0x14);
-        cpu.eax <<= 2;
-        cpu.eax += at(app, cpu.ebp - 0x1c);
-        app->getMemory<float>(cpu.eax + 0x52c) = float(fpu.st(0));
-        fpu.pop();
-        cpu.eax = at(app, cpu.ebp - 0x14);
-        put(app, cpu.ebp - 0x14, at(app, cpu.ebp - 0x14) + 1);
-    }
-    cpu.eax = at(app, cpu.ebp - 4);
-    fpu.push(f32(app, cpu.eax + 0xc));
-    fcomp(cpu, f32(app, 0x55d030));
-    cpu.ax = fpu.status.word;
-    if (!equal(cpu) && i32(at(app, kPlayMode)) <= 1 && at(app, kRaceType) != 1 && at(app, kRaceType) != 2)
-    {
-        cpu.eax = at(app, cpu.ebp - 0x1c);
-        cpu.eax = at(app, cpu.eax + 0x528);
-        cpu.edx = at(app, cpu.ebp - 4);
-        fpu.push(f32(app, cpu.edx + 0xc));
-        fpu.st(0) = fp::div(f32(app, cpu.eax + 0x1c8), fpu.st(0));
-        app->getMemory<float>(cpu.eax + 0x1c8) = float(fpu.st(0));
-        fpu.pop();
-    }
-    cpu.eax = at(app, cpu.ebp - 0x1c);
-    cpu.eax = at(app, cpu.eax + 0x528);
-    cpu.eax = at(app, cpu.eax + 8);
-    cpu.eax <<= 2;
-    cpu.ecx = cpu.eax;
-    cpu.eax = at(app, cpu.ebp - 0x1c);
-    cpu.edx = at(app, cpu.eax + 0x528);
-    cpu.edx += cpu.ecx;
-    cpu.eax = at(app, cpu.ebp - 0x1c);
-    cpu.eax = at(app, cpu.eax + 0x528);
-    fpu.push(f32(app, cpu.eax + 0x1c8));
-    fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.edx + 0x90));
-    cpu.esp -= 4;
-    put(app, cpu.esp, reg32(fp::toInteger<i32>(fpu.st(0))));
-    fpu.pop();
-    cpu.eax = pop(app, cpu);
-    put(app, cpu.ebp - 0x10, cpu.eax);
-    cpu.eax = at(app, cpu.ebp - 0x1c);
-    cpu.ecx = at(app, cpu.eax + 0x528);
-    cpu.eax = at(app, cpu.ebp - 0x10);
-    cpu.edx = at(app, cpu.ebp - 0x10);
-    cpu.edx = reg32(i32(cpu.edx) >> 0x1f);
-    {
-        const reg32 carry = (cpu.edx >> 24) & 1;
-        cpu.edx <<= 8;
-        cpu.eax -= cpu.edx + carry;
-    }
-    cpu.eax = reg32(i32(cpu.eax) >> 8);
-    put(app, cpu.ebp - 0x44, cpu.eax);
-    fpu.push(x86::Float(i32(at(app, cpu.ebp - 0x44))));
-    cpu.esp -= 4;
-    put(app, cpu.esp, reg32(fp::toInteger<i32>(fpu.st(0))));
-    fpu.pop();
-    cpu.eax = pop(app, cpu);
-    cpu.eax <<= 2;
-    cpu.eax += cpu.ecx;
-    cpu.eax = at(app, cpu.eax + 0x114);
-    put(app, cpu.ebp - 0xc, cpu.eax);
-    cpu.eax = at(app, cpu.ebp - 0x1c);
-    cpu.eax = at(app, cpu.eax + 0x528);
-    cpu.eax = at(app, cpu.eax + 8);
-    cpu.eax <<= 2;
-    cpu.eax += at(app, cpu.ebp - 0x1c);
-    fpu.push(f32(app, cpu.ebp - 0xc));
-    fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.eax + 0x568));
-    app->getMemory<float>(cpu.ebp - 0xc) = float(fpu.st(0));
-    fpu.pop();
-    cpu.eax = at(app, cpu.ebp - 0x1c);
-    cpu.eax = at(app, cpu.eax + 0x528);
-    cpu.eax = at(app, cpu.eax + 8);
-    cpu.eax <<= 2;
-    cpu.edx = cpu.eax;
-    cpu.eax = at(app, cpu.ebp - 0x1c);
-    cpu.eax = at(app, cpu.eax + 0x528);
-    cpu.eax += cpu.edx;
-    fpu.push(f32(app, cpu.ebp - 0xc));
-    fpu.st(0) = fp::div(fpu.st(0), f32(app, cpu.eax + 0xd0));
-    app->getMemory<float>(cpu.ebp - 0xc) = float(fpu.st(0));
-    fpu.pop();
-    if (i32(at(app, kPlayMode)) <= 1 && at(app, kRaceType) != 1 && at(app, kRaceType) != 2)
-    {
-        cpu.eax = at(app, cpu.ebp - 0x1c);
-        cpu.eax = at(app, cpu.eax + 0x220);
-        fpu.push(1.0);
-        fpu.st(0) = fp::add(fpu.st(0), f32(app, cpu.eax + 0x54));
-        fpu.st(0) = fp::div(fpu.st(0), f32(app, 0x53dc80));
-        cpu.eax = at(app, cpu.ebp - 0x1c);
-        fpu.st(0) = fp::div(f32(app, cpu.ebp - 0xc), fpu.st(0));
-        app->getMemory<float>(cpu.eax + 0x58c) = float(fpu.st(0));
-        fpu.pop();
-    }
-    else
-    {
-        cpu.eax = at(app, cpu.ebp - 0x1c);
-        fpu.push(f32(app, cpu.ebp - 0xc));
-        fpu.st(0) = fp::div(fpu.st(0), f32(app, 0x53dc84));
-        app->getMemory<float>(cpu.eax + 0x58c) = float(fpu.st(0));
-        fpu.pop();
-    }
-    cpu.eax = at(app, cpu.ebp - 0x1c);
-    cpu.eax = at(app, cpu.eax + 0x528);
-    fpu.push(f32(app, cpu.eax + 0x1c8));
-    fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53dc88));
-    cpu.eax = at(app, cpu.ebp - 0x1c);
-    cpu.eax = at(app, cpu.eax + 0x528);
-    fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.eax + 0x1c8));
-    cpu.eax = at(app, cpu.ebp - 0x1c);
-    cpu.eax = at(app, cpu.eax + 0x528);
-    fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.eax + 0x1c8));
-    cpu.eax = at(app, cpu.ebp - 0x1c);
-    fpu.st(0) = fp::div(f32(app, cpu.eax + 0x58c), fpu.st(0));
-    app->getMemory<float>(cpu.eax + 0x58c) = float(fpu.st(0));
-    fpu.pop();
-    cpu.eax = at(app, cpu.ebp - 0x1c);
-    fpu.push(f32(app, cpu.eax + 0x58c));
-    fpu.st(0) = fp::mul(fpu.st(0), f32(app, 0x53dc8c));
-    app->getMemory<float>(cpu.eax + 0x58c) = float(fpu.st(0));
-    fpu.pop();
-    return leave();
+    const Saved saved(cpu);
+    if (!tuneHandling(app, cpu, cpu.eax))
+        return;
+    saved.restore(cpu);
+    cpu.esp += 4;
 }
 
-/* 0x4a8bb9: the automatic gearbox's choice for car eax, to eax: 0 in reverse
- * or neutral, 2 for a player's car finished, else the gear (+0x50b) as it is
- * or the one up or down it changes to.  The revs each gear would turn at
- * (the wheels' turn +0x5a4 by its ratio) against the limit's 5/6 and 7/8
- * (up, but not past the top), and half the limit (down: by one or two, by the
- * throttle) -- by the brake (+0x5f0 past 0.9) the revs' size against the
- * limit first. */
+/* 0x4a8bb9: the automatic gearbox's choice: 0 in reverse or neutral or for no change, 2 for a
+ * player's car finished, else the gear it changes to.  The revs each gear would turn at (the
+ * wheels' turn by its ratio) against the limit's 5/6 and 7/8 (up, but not past the top), and half
+ * the limit (down: by one or two, by the throttle) -- with the wheels on the limit, or the brake
+ * past 0.9, these; else only down by one. */
+reg32 gearChoice(App* app, reg32 car)
+{
+    const std::uint8_t gear8 = byte(app, car + kCarGear);
+    if (gear8 < 2)
+        return 0;
+    if ((byte(app, car + kCarFlags) & kCarFlagPlayer) != 0 && at(app, car + kCarRaceStage) == kRaceStageFinished)
+        return 2;
+    const reg32 gear = gear8;
+    const reg32 handling = at(app, car + kCarHandling);
+    const i32 limit = i32(at(app, handling + kHandlingRevsLimit));
+    const i32 halfLimit = limit / 2;
+    const i32 fiveSixths = i32(reg32(limit) - reg32(limit / 6));
+    const i32 sevenEighths = i32(reg32(limit) - reg32(limit / 8));
+    const float throttle = size(floatAt(app, car + kCarThrottle));
+    const reg32 gears = at(app, handling + kHandlingGears);
+    const x86::Float lastGearTop = fp::mul(x86::Float(limit), f32(app, car + (gears << 2) + kCarGearInverse - 8));
+    const reg32 topGear = gears - 1 - (lastGearTop > f32(app, handling + kHandlingTopSpeed) ? 1 : 0);
+    const bool belowTop = i32(gear) < i32(topGear);
+    const reg32 upGear = belowTop ? gear + 1 : gear;
+    const reg32 downOne = gear8 > 2 ? gear - 1 : gear;
+    const reg32 downTwo = gear8 > 3 ? gear - 2 : gear;
+    const auto revsIn = [&](reg32 inGear) {
+        return fp::toInteger<i32>(fp::mul(f32(app, car + kCarWheelsTurn), f32(app, handling + kHandlingRatios + (inGear << 2))));
+    };
+    const i32 revs = revsIn(gear);
+    const i32 revsDownOne = revsIn(downOne);
+    const i32 revsDownTwo = revsIn(downTwo);
+    const i32 revsSize = revs < 0 ? i32(0u - reg32(revs)) : revs;
+
+    // Down to a gear not the one it is in: the choice; else no change.
+    const auto to = [&](reg32 target) { return gear != target ? target : 0; };
+    if (i32(at(app, car + kCarBrake)) <= kBits0_9 && revsSize <= limit)
+    {
+        if ((halfLimit > revsDownOne && downOne == 2)
+            || (revsDownOne < fiveSixths && i32(downOne) > 2 && signedBits(throttle) < kBits0_1))
+            return to(downOne);
+        return 0;
+    }
+    if (revs > sevenEighths && belowTop)
+        return to(upGear);
+    const bool easedOff = signedBits(throttle) < kBits0_05;
+    if (((halfLimit > revsDownTwo && downTwo == 2) || (revsDownTwo < fiveSixths && i32(downTwo) > 2)) && easedOff && gear != downTwo)
+        return downTwo;
+    // fcomp's "below" is !(>=) on every value: unordered sets it.
+    if ((halfLimit > revsDownOne && downOne == 2 && !(x86::Float(throttle) >= f64(app, kDownOneThrottle)))
+        || (revsDownOne < fiveSixths && i32(downOne) > 2 && easedOff))
+        return to(downOne);
+    return 0;
+}
+
+/* The adapter: car eax, the choice to eax. */
 void automaticGear(App* app, CPU& cpu)
 {
-    x86::FPU& fpu = cpu.fpu;
-    push(app, cpu, cpu.ebx);
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.edx);
-    push(app, cpu, cpu.esi);
-    push(app, cpu, cpu.edi);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    cpu.esp -= 0x44;
-    const auto leave = [&] {
-        cpu.esp = cpu.ebp;
-        cpu.ebp = pop(app, cpu);
-        cpu.edi = pop(app, cpu);
-        cpu.esi = pop(app, cpu);
-        cpu.edx = pop(app, cpu);
-        cpu.ecx = pop(app, cpu);
-        cpu.ebx = pop(app, cpu);
-        cpu.esp += 4;
-    };
-    put(app, cpu.ebp - 0x3c, cpu.eax);
-    put(app, cpu.ebp - 0x34, 0);
-    put(app, cpu.ebp - 0x30, 0);
-    put(app, cpu.ebp - 0x2c, 0);
-    put(app, cpu.ebp - 0x28, 0);
-    put(app, cpu.ebp - 0x24, 0);
-    put(app, cpu.ebp - 0x20, 0);
-    put(app, cpu.ebp - 0x1c, 0);
-    put(app, cpu.ebp - 0x18, 0);
-    cpu.edx = at(app, cpu.ebp - 0x3c);
-    cpu.edx = at(app, cpu.edx + 0x528);
-    cpu.ecx = 6;
-    cpu.eax = at(app, cpu.edx + 0x1c4);
-    cpu.edx = at(app, cpu.edx + 0x1c4);
-    cpu.edx = reg32(i32(cpu.edx) >> 0x1f);
-    idiv(cpu, cpu.ecx);
-    cpu.edx = at(app, cpu.ebp - 0x3c);
-    cpu.edx = at(app, cpu.edx + 0x528);
-    cpu.edx = at(app, cpu.edx + 0x1c4);
-    cpu.edx -= cpu.eax;
-    put(app, cpu.ebp - 0x14, cpu.edx);
-    cpu.edx = at(app, cpu.ebp - 0x3c);
-    cpu.edx = at(app, cpu.edx + 0x528);
-    cpu.eax = at(app, cpu.edx + 0x1c4);
-    cpu.edx = at(app, cpu.edx + 0x1c4);
-    cpu.edx = reg32(i32(cpu.edx) >> 0x1f);
-    {
-        const reg32 carry = (cpu.edx >> 29) & 1;
-        cpu.edx <<= 3;
-        cpu.eax -= cpu.edx + carry;
-    }
-    cpu.eax = reg32(i32(cpu.eax) >> 3);
-    cpu.edx = at(app, cpu.ebp - 0x3c);
-    cpu.edx = at(app, cpu.edx + 0x528);
-    cpu.edx = at(app, cpu.edx + 0x1c4);
-    cpu.edx -= cpu.eax;
-    put(app, cpu.ebp - 0x10, cpu.edx);
-    put(app, cpu.ebp - 0xc, 0);
-    put(app, cpu.ebp - 8, 0);
-    put(app, cpu.ebp - 4, 0);
-    cpu.eax = at(app, cpu.ebp - 0x3c);
-    if (byte(app, cpu.eax + 0x50b) < 2)
-    {
-        put(app, cpu.ebp - 0x38, 0);
-    }
-    else
-    {
-        cpu.eax = at(app, cpu.ebp - 0x3c);
-        if ((byte(app, cpu.eax + 0x200) & 1) != 0 && (cpu.eax = at(app, cpu.ebp - 0x3c), at(app, cpu.eax + 0x2c4) == 3))
-        {
-            put(app, cpu.ebp - 0x38, 2);
-        }
-        else
-        {
-            cpu.eax = at(app, cpu.ebp - 0x3c);
-            fpu.push(0.0);
-            fcomp(cpu, f32(app, cpu.eax + 0x5b0));
-            cpu.ax = fpu.status.word;
-            if (!below(cpu) && !equal(cpu))
-            {
-                cpu.eax = at(app, cpu.ebp - 0x3c);
-                fpu.push(f32(app, cpu.eax + 0x5b0));
-                fpu.st(0) = -fpu.st(0);
-                app->getMemory<float>(cpu.ebp - 0x40) = float(fpu.st(0));
-                fpu.pop();
-            }
-            else
-            {
-                cpu.eax = at(app, cpu.ebp - 0x3c);
-                cpu.eax = at(app, cpu.eax + 0x5b0);
-                put(app, cpu.ebp - 0x40, cpu.eax);
-            }
-            cpu.eax = at(app, cpu.ebp - 0x40);
-            put(app, cpu.ebp - 0xc, cpu.eax);
-            cpu.eax = at(app, cpu.ebp - 0x3c);
-            cpu.eax = at(app, cpu.eax + 0x528);
-            cpu.edx = at(app, cpu.eax + 8);
-            cpu.edx <<= 2;
-            cpu.edx += at(app, cpu.ebp - 0x3c);
-            cpu.eax = at(app, cpu.ebp - 0x3c);
-            cpu.eax = at(app, cpu.eax + 0x528);
-            fpu.push(x86::Float(i32(at(app, cpu.eax + 0x1c4))));
-            fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.edx + 0x544));
-            cpu.eax = at(app, cpu.ebp - 0x3c);
-            cpu.eax = at(app, cpu.eax + 0x528);
-            fcomp(cpu, f32(app, cpu.eax + 0x1c8));
-            cpu.ax = fpu.status.word;
-            if (!below(cpu) && !equal(cpu))
-            {
-                put(app, cpu.ebp - 0x18, 1);
-            }
-            else
-            {
-                put(app, cpu.ebp - 0x18, 0);
-            }
-            cpu.eax = at(app, cpu.ebp - 0x3c);
-            cpu.eax = at(app, cpu.eax + 0x528);
-            cpu.eax = at(app, cpu.eax + 8);
-            --cpu.eax;
-            cpu.eax -= at(app, cpu.ebp - 0x18);
-            cpu.edx = cpu.eax;
-            cpu.eax = at(app, cpu.ebp - 0x3c);
-            cpu.al = byte(app, cpu.eax + 0x50b);
-            cpu.eax &= 0xff;
-            if (i32(cpu.eax) < i32(cpu.edx))
-            {
-                cpu.eax = at(app, cpu.ebp - 0x3c);
-                cpu.al = byte(app, cpu.eax + 0x50b);
-                cpu.eax &= 0xff;
-                ++cpu.eax;
-                put(app, cpu.ebp - 0x1c, cpu.eax);
-            }
-            else
-            {
-                cpu.eax = 0;
-                cpu.edx = at(app, cpu.ebp - 0x3c);
-                cpu.al = byte(app, cpu.edx + 0x50b);
-                put(app, cpu.ebp - 0x1c, cpu.eax);
-            }
-            cpu.eax = at(app, cpu.ebp - 0x3c);
-            if (byte(app, cpu.eax + 0x50b) > 2)
-            {
-                cpu.eax = at(app, cpu.ebp - 0x3c);
-                cpu.al = byte(app, cpu.eax + 0x50b);
-                cpu.eax &= 0xff;
-                --cpu.eax;
-                put(app, cpu.ebp - 0x24, cpu.eax);
-            }
-            else
-            {
-                cpu.eax = 0;
-                cpu.edx = at(app, cpu.ebp - 0x3c);
-                cpu.al = byte(app, cpu.edx + 0x50b);
-                put(app, cpu.ebp - 0x24, cpu.eax);
-            }
-            cpu.eax = at(app, cpu.ebp - 0x3c);
-            if (byte(app, cpu.eax + 0x50b) > 3)
-            {
-                cpu.eax = at(app, cpu.ebp - 0x3c);
-                cpu.al = byte(app, cpu.eax + 0x50b);
-                cpu.eax &= 0xff;
-                cpu.eax -= 2;
-                put(app, cpu.ebp - 0x20, cpu.eax);
-            }
-            else
-            {
-                cpu.eax = 0;
-                cpu.edx = at(app, cpu.ebp - 0x3c);
-                cpu.al = byte(app, cpu.edx + 0x50b);
-                put(app, cpu.ebp - 0x20, cpu.eax);
-            }
-            cpu.eax = at(app, cpu.ebp - 0x3c);
-            cpu.al = byte(app, cpu.eax + 0x50b);
-            cpu.eax &= 0xff;
-            cpu.eax <<= 2;
-            cpu.edx = cpu.eax;
-            cpu.eax = at(app, cpu.ebp - 0x3c);
-            cpu.eax = at(app, cpu.eax + 0x528);
-            cpu.edx += cpu.eax;
-            cpu.eax = at(app, cpu.ebp - 0x3c);
-            fpu.push(f32(app, cpu.eax + 0x5a4));
-            fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.edx + 0x94));
-            cpu.esp -= 4;
-            put(app, cpu.esp, reg32(fp::toInteger<i32>(fpu.st(0))));
-            fpu.pop();
-            cpu.eax = pop(app, cpu);
-            put(app, cpu.ebp - 0x34, cpu.eax);
-            cpu.eax = at(app, cpu.ebp - 0x3c);
-            cpu.edx = at(app, cpu.eax + 0x528);
-            cpu.eax = at(app, cpu.ebp - 0x1c);
-            cpu.eax <<= 2;
-            cpu.edx += cpu.eax;
-            cpu.eax = at(app, cpu.ebp - 0x3c);
-            fpu.push(f32(app, cpu.eax + 0x5a4));
-            fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.edx + 0x94));
-            cpu.esp -= 4;
-            put(app, cpu.esp, reg32(fp::toInteger<i32>(fpu.st(0))));
-            fpu.pop();
-            cpu.eax = pop(app, cpu);
-            put(app, cpu.ebp - 0x30, cpu.eax);
-            cpu.eax = at(app, cpu.ebp - 0x3c);
-            cpu.edx = at(app, cpu.eax + 0x528);
-            cpu.eax = at(app, cpu.ebp - 0x24);
-            cpu.eax <<= 2;
-            cpu.edx += cpu.eax;
-            cpu.eax = at(app, cpu.ebp - 0x3c);
-            fpu.push(f32(app, cpu.eax + 0x5a4));
-            fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.edx + 0x94));
-            cpu.esp -= 4;
-            put(app, cpu.esp, reg32(fp::toInteger<i32>(fpu.st(0))));
-            fpu.pop();
-            cpu.eax = pop(app, cpu);
-            put(app, cpu.ebp - 0x2c, cpu.eax);
-            cpu.eax = at(app, cpu.ebp - 0x3c);
-            cpu.eax = at(app, cpu.eax + 0x528);
-            cpu.edx = at(app, cpu.ebp - 0x20);
-            cpu.edx <<= 2;
-            cpu.edx += cpu.eax;
-            cpu.eax = at(app, cpu.ebp - 0x3c);
-            fpu.push(f32(app, cpu.eax + 0x5a4));
-            fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.edx + 0x94));
-            cpu.esp -= 4;
-            put(app, cpu.esp, reg32(fp::toInteger<i32>(fpu.st(0))));
-            fpu.pop();
-            cpu.eax = pop(app, cpu);
-            put(app, cpu.ebp - 0x28, cpu.eax);
-            cpu.eax = at(app, cpu.ebp - 0x3c);
-            if (i32(at(app, cpu.eax + 0x5f0)) <= 0x3f666666)
-            {
-                if (i32(at(app, cpu.ebp - 0x34)) < 0)
-                {
-                    cpu.eax = at(app, cpu.ebp - 0x34);
-                    put(app, cpu.ebp - 0x44, cpu.eax);
-                    put(app, cpu.ebp - 0x44, 0u - at(app, cpu.ebp - 0x44));
-                }
-                else
-                {
-                    cpu.eax = at(app, cpu.ebp - 0x34);
-                    put(app, cpu.ebp - 0x44, cpu.eax);
-                }
-                cpu.eax = at(app, cpu.ebp - 0x3c);
-                cpu.edx = at(app, cpu.eax + 0x528);
-                cpu.eax = at(app, cpu.ebp - 0x44);
-                if (i32(cpu.eax) <= i32(at(app, cpu.edx + 0x1c4)))
-                    goto L_4a9025;
-            }
-            cpu.eax = at(app, cpu.ebp - 0x34);
-            if (i32(cpu.eax) > i32(at(app, cpu.ebp - 0x10)))
-            {
-                cpu.eax = at(app, cpu.ebp - 0x3c);
-                cpu.eax = at(app, cpu.eax + 0x528);
-                cpu.eax = at(app, cpu.eax + 8);
-                --cpu.eax;
-                cpu.eax -= at(app, cpu.ebp - 0x18);
-                cpu.edx = cpu.eax;
-                cpu.eax = at(app, cpu.ebp - 0x3c);
-                cpu.al = byte(app, cpu.eax + 0x50b);
-                cpu.eax &= 0xff;
-                if (i32(cpu.eax) >= i32(cpu.edx))
-                    goto L_4a8f2a;
-                cpu.eax = at(app, cpu.ebp - 0x3c);
-                cpu.al = byte(app, cpu.eax + 0x50b);
-                cpu.eax &= 0xff;
-                if (cpu.eax != at(app, cpu.ebp - 0x1c))
-                {
-                    cpu.eax = 0;
-                    cpu.edx = at(app, cpu.ebp - 0x3c);
-                    cpu.al = byte(app, cpu.edx + 0x50b);
-                    put(app, cpu.ebp - 4, cpu.eax);
-                    cpu.eax = at(app, cpu.ebp - 0x1c);
-                    put(app, cpu.ebp - 8, cpu.eax);
-                }
-            }
-            else
-            {
-L_4a8f2a:
-                cpu.edx = at(app, cpu.ebp - 0x3c);
-                cpu.edx = at(app, cpu.edx + 0x528);
-                cpu.eax = at(app, cpu.edx + 0x1c4);
-                cpu.edx = at(app, cpu.edx + 0x1c4);
-                cpu.edx = reg32(i32(cpu.edx) >> 0x1f);
-                cpu.eax -= cpu.edx;
-                cpu.eax = reg32(i32(cpu.eax) >> 1);
-                if ((i32(cpu.eax) > i32(at(app, cpu.ebp - 0x28)) && at(app, cpu.ebp - 0x20) == 2 && i32(at(app, cpu.ebp - 0xc)) < 0x3d4ccccd) || ((cpu.eax = at(app, cpu.ebp - 0x28), i32(cpu.eax) < i32(at(app, cpu.ebp - 0x14))) && i32(at(app, cpu.ebp - 0x20)) > 2 && i32(at(app, cpu.ebp - 0xc)) < 0x3d4ccccd))
-                {
-                    cpu.eax = at(app, cpu.ebp - 0x3c);
-                    cpu.al = byte(app, cpu.eax + 0x50b);
-                    cpu.eax &= 0xff;
-                    if (cpu.eax == at(app, cpu.ebp - 0x20))
-                        goto L_4a8fa5;
-                    cpu.eax = 0;
-                    cpu.edx = at(app, cpu.ebp - 0x3c);
-                    cpu.al = byte(app, cpu.edx + 0x50b);
-                    put(app, cpu.ebp - 4, cpu.eax);
-                    cpu.eax = at(app, cpu.ebp - 0x20);
-                    put(app, cpu.ebp - 8, cpu.eax);
-                }
-                else
-                {
-L_4a8fa5:
-                    cpu.edx = at(app, cpu.ebp - 0x3c);
-                    cpu.edx = at(app, cpu.edx + 0x528);
-                    cpu.eax = at(app, cpu.edx + 0x1c4);
-                    cpu.edx = at(app, cpu.edx + 0x1c4);
-                    cpu.edx = reg32(i32(cpu.edx) >> 0x1f);
-                    cpu.eax -= cpu.edx;
-                    cpu.eax = reg32(i32(cpu.eax) >> 1);
-                    if (i32(cpu.eax) > i32(at(app, cpu.ebp - 0x2c)) && at(app, cpu.ebp - 0x24) == 2)
-                    {
-                        fpu.push(f32(app, cpu.ebp - 0xc));
-                        fcomp(cpu, f64(app, 0x53dca4));
-                        cpu.ax = fpu.status.word;
-                        if (below(cpu))
-                            goto L_4a8ff7;
-                    }
-                    cpu.eax = at(app, cpu.ebp - 0x2c);
-                    if (i32(cpu.eax) < i32(at(app, cpu.ebp - 0x14)) && i32(at(app, cpu.ebp - 0x24)) > 2 && i32(at(app, cpu.ebp - 0xc)) < 0x3d4ccccd)
-                    {
-L_4a8ff7:
-                        cpu.eax = at(app, cpu.ebp - 0x3c);
-                        cpu.al = byte(app, cpu.eax + 0x50b);
-                        cpu.eax &= 0xff;
-                        if (cpu.eax != at(app, cpu.ebp - 0x24))
-                        {
-                            cpu.eax = 0;
-                            cpu.edx = at(app, cpu.ebp - 0x3c);
-                            cpu.al = byte(app, cpu.edx + 0x50b);
-                            put(app, cpu.ebp - 4, cpu.eax);
-                            cpu.eax = at(app, cpu.ebp - 0x24);
-                            put(app, cpu.ebp - 8, cpu.eax);
-                            goto L_4a908e;
-L_4a9025:
-                            cpu.edx = at(app, cpu.ebp - 0x3c);
-                            cpu.edx = at(app, cpu.edx + 0x528);
-                            cpu.eax = at(app, cpu.edx + 0x1c4);
-                            cpu.edx = at(app, cpu.edx + 0x1c4);
-                            cpu.edx = reg32(i32(cpu.edx) >> 0x1f);
-                            cpu.eax -= cpu.edx;
-                            cpu.eax = reg32(i32(cpu.eax) >> 1);
-                            if ((i32(cpu.eax) > i32(at(app, cpu.ebp - 0x2c)) && at(app, cpu.ebp - 0x24) == 2) || ((cpu.eax = at(app, cpu.ebp - 0x2c), i32(cpu.eax) < i32(at(app, cpu.ebp - 0x14))) && i32(at(app, cpu.ebp - 0x24)) > 2 && i32(at(app, cpu.ebp - 0xc)) < 0x3dcccccd))
-                            {
-                                cpu.eax = at(app, cpu.ebp - 0x3c);
-                                cpu.al = byte(app, cpu.eax + 0x50b);
-                                cpu.eax &= 0xff;
-                                if (cpu.eax != at(app, cpu.ebp - 0x24))
-                                {
-                                    cpu.eax = 0;
-                                    cpu.edx = at(app, cpu.ebp - 0x3c);
-                                    cpu.al = byte(app, cpu.edx + 0x50b);
-                                    put(app, cpu.ebp - 4, cpu.eax);
-                                    cpu.eax = at(app, cpu.ebp - 0x24);
-                                    put(app, cpu.ebp - 8, cpu.eax);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-L_4a908e:
-            cpu.eax = at(app, cpu.ebp - 8);
-            put(app, cpu.ebp - 0x38, cpu.eax);
-        }
-    }
-    cpu.eax = at(app, cpu.ebp - 0x38);
-    return leave();
+    cpu.eax = gearChoice(app, cpu.eax);
+    cpu.esp += 4;
 }
 
-/* 0x4aa4f4: car eax's speeds along its axes (+0x4ec, +0x4f4: dot products of
- * its speed with +0x190 and +0x1a8), and in a gear past second -- or in
- * first, or slow in second -- the engine's revs (+0x590) matched to the
- * speed by the gear's +0x52c, held to the idle (chopped); the clutch, the
- * throttle and the axles' slip cleared. */
+/* A dot product (vertices', 0x4e01f0), as the x87 leaves it stored to a float. */
+std::optional<float> dot(App* app, CPU& cpu, reg32 a, reg32 b)
+{
+    const double product = guest::direct<0x4e01f0, vertices::dotProduct>(app, cpu, a, b);
+    if (cpu.terminate)
+        return std::nullopt;
+    return float(product);
+}
+
+/* 0x4aa4f4: the car's speeds along its axes (dot products of its speed with two of its axes); the
+ * clutch, the throttle and the axles' slip cleared.  The code then has a matching of the revs to
+ * the speed which it cannot reach: its test wants neutral, its next the gear not neutral. */
+bool matchToSpeed(App* app, CPU& cpu, reg32 car)
+{
+    const auto forward = dot(app, cpu, car + kCarSpeed, car + 0x190);
+    if (!forward)
+        return false;
+    floatAt(app, car + 0x4ec) = *forward;
+    const auto along = dot(app, cpu, car + kCarSpeed, car + 0x1a8);
+    if (!along)
+        return false;
+    floatAt(app, car + kCarSpeedAlong) = *along;
+    put(app, car + kCarClutch, 0);
+    put(app, car + kCarThrottle, 0);
+    put(app, car + kCarFrontSlip, 0);
+    put(app, car + kCarBackSlip, 0);
+    return true;
+}
+
+/* The adapter: car eax, left in eax; the other registers kept. */
 void matchRevsToSpeed(App* app, CPU& cpu)
 {
-    x86::FPU& fpu = cpu.fpu;
-    push(app, cpu, cpu.ebx);
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.edx);
-    push(app, cpu, cpu.esi);
-    push(app, cpu, cpu.edi);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    cpu.esp -= 0x10;
-    const auto leave = [&] {
-        cpu.esp = cpu.ebp;
-        cpu.ebp = pop(app, cpu);
-        cpu.edi = pop(app, cpu);
-        cpu.esi = pop(app, cpu);
-        cpu.edx = pop(app, cpu);
-        cpu.ecx = pop(app, cpu);
-        cpu.ebx = pop(app, cpu);
-        cpu.esp += 4;
-    };
-    put(app, cpu.ebp - 0xc, cpu.eax);
-    cpu.edx = at(app, cpu.ebp - 0xc);
-    cpu.edx += 0x190;
-    cpu.eax = at(app, cpu.ebp - 0xc);
-    cpu.eax += 0xa4;
-    if (!byAddress(app, cpu, kDot))
+    const Saved saved(cpu);
+    if (!matchToSpeed(app, cpu, cpu.eax))
         return;
-    cpu.eax = at(app, cpu.ebp - 0xc);
-    app->getMemory<float>(cpu.eax + 0x4ec) = float(fpu.st(0));
-    fpu.pop();
-    cpu.edx = at(app, cpu.ebp - 0xc);
-    cpu.edx += 0x1a8;
-    cpu.eax = at(app, cpu.ebp - 0xc);
-    cpu.eax += 0xa4;
-    if (!byAddress(app, cpu, kDot))
-        return;
-    cpu.eax = at(app, cpu.ebp - 0xc);
-    app->getMemory<float>(cpu.eax + 0x4f4) = float(fpu.st(0));
-    fpu.pop();
-    cpu.eax = at(app, cpu.ebp - 0xc);
-    fpu.push(0.0);
-    fcomp(cpu, f32(app, cpu.eax + 0x4f4));
-    cpu.ax = fpu.status.word;
-    if (!below(cpu) && !equal(cpu))
-    {
-        cpu.eax = at(app, cpu.ebp - 0xc);
-        fpu.push(f32(app, cpu.eax + 0x4f4));
-        fpu.st(0) = -fpu.st(0);
-        app->getMemory<float>(cpu.ebp - 4) = float(fpu.st(0));
-        fpu.pop();
-    }
-    else
-    {
-        cpu.eax = at(app, cpu.ebp - 0xc);
-        cpu.eax = at(app, cpu.eax + 0x4f4);
-        put(app, cpu.ebp - 4, cpu.eax);
-    }
-    if ((i32(at(app, cpu.ebp - 4)) >= 0x3f800000 || (cpu.eax = at(app, cpu.ebp - 0xc), byte(app, cpu.eax + 0x50b) != 2)) && (cpu.eax = at(app, cpu.ebp - 0xc), byte(app, cpu.eax + 0x50b) == 1))
-    {
-        cpu.eax = at(app, cpu.ebp - 0xc);
-        if (byte(app, cpu.eax + 0x50b) != 1)
-        {
-            cpu.eax = at(app, cpu.ebp - 0xc);
-            cpu.edx = 0;
-            cpu.dl = byte(app, cpu.eax + 0x50b);
-            cpu.edx <<= 2;
-            cpu.edx += at(app, cpu.ebp - 0xc);
-            cpu.eax = at(app, cpu.ebp - 0xc);
-            fpu.push(f32(app, cpu.eax + 0x4f4));
-            fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.edx + 0x52c));
-            cpu.eax = at(app, cpu.ebp - 0xc);
-            cpu.eax = at(app, cpu.eax + 0x528);
-            fpu.push(x86::Float(i32(at(app, cpu.eax + 0x1c4))));
-            fpu.st(1) = fp::mul(fpu.st(1), fpu.st(0));
-            fpu.pop();
-            cpu.eax = at(app, cpu.ebp - 0xc);
-            cpu.eax = at(app, cpu.eax + 0x528);
-            fpu.push(x86::Float(i32(at(app, cpu.eax + 0x1c0))));
-            fcompp(cpu);
-            cpu.ax = fpu.status.word;
-            if (below(cpu))
-            {
-                cpu.eax = at(app, cpu.ebp - 0xc);
-                cpu.edx = 0;
-                cpu.dl = byte(app, cpu.eax + 0x50b);
-                cpu.edx <<= 2;
-                cpu.edx += at(app, cpu.ebp - 0xc);
-                cpu.eax = at(app, cpu.ebp - 0xc);
-                fpu.push(f32(app, cpu.eax + 0x4f4));
-                fpu.st(0) = fp::mul(fpu.st(0), f32(app, cpu.edx + 0x52c));
-                cpu.eax = at(app, cpu.ebp - 0xc);
-                cpu.eax = at(app, cpu.eax + 0x528);
-                fpu.push(x86::Float(i32(at(app, cpu.eax + 0x1c4))));
-                fpu.st(1) = fp::mul(fpu.st(1), fpu.st(0));
-                fpu.pop();
-                app->getMemory<float>(cpu.ebp - 0x10) = float(fpu.st(0));
-                fpu.pop();
-            }
-            else
-            {
-                cpu.eax = at(app, cpu.ebp - 0xc);
-                cpu.eax = at(app, cpu.eax + 0x528);
-                fpu.push(x86::Float(i32(at(app, cpu.eax + 0x1c0))));
-                app->getMemory<float>(cpu.ebp - 0x10) = float(fpu.st(0));
-                fpu.pop();
-            }
-            cpu.eax = at(app, cpu.ebp - 0xc);
-            fpu.push(f32(app, cpu.ebp - 0x10));
-            if (!byAddress(app, cpu, kChop))
-                return;
-            put(app, cpu.eax + 0x590, reg32(fp::toInteger<i32>(fpu.st(0))));
-            fpu.pop();
-        }
-    }
-    cpu.eax = at(app, cpu.ebp - 0xc);
-    put(app, cpu.eax + 0x594, 0);
-    cpu.eax = at(app, cpu.ebp - 0xc);
-    put(app, cpu.eax + 0x5b0, 0);
-    cpu.eax = at(app, cpu.ebp - 0xc);
-    put(app, cpu.eax + 0x5c0, 0);
-    cpu.eax = at(app, cpu.ebp - 0xc);
-    put(app, cpu.eax + 0x5c4, 0);
-    return leave();
+    saved.restore(cpu);
+    cpu.esp += 4;
 }
 
-/* 0x4aa79f: car eax's drive put back: +0x506 and the gear (+0x50b) 2, +0x507
- * 0 -- the same for a human player's car or not -- and its forces, speeds
- * along the axes, the clutch, the throttle and the axles' slip cleared. */
+/* 0x4aa79f: the car's drive put back: +0x506 and the gear 2, +0x507 0 (the code has this for a
+ * human player's car and for the others, the same) and its forces, speeds along the axes, the
+ * clutch, the throttle and the axles' slip cleared. */
+void resetDrive(App* app, reg32 car)
+{
+    putByte(app, car + 0x506, 2);
+    putByte(app, car + kCarGear, 2);
+    putByte(app, car + 0x507, 0);
+    for (const reg32 cleared : { 0x2e8u, 0x2ecu, 0x2f0u, 0x2f4u, 0x2f8u, 0x2fcu, 0x4ecu, 0x4f0u, 0x4f4u, 0x4f8u, 0x4fcu, 0x500u,
+                                 kCarClutch, kCarThrottle, kCarFrontSlip, kCarBackSlip, 0x2e4u })
+        put(app, car + cleared, 0);
+}
+
+/* The adapter: car eax, left there. */
 void resetDriveState(App* app, CPU& cpu)
 {
-    x86::FPU& fpu = cpu.fpu;
-    push(app, cpu, cpu.ebx);
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.edx);
-    push(app, cpu, cpu.esi);
-    push(app, cpu, cpu.edi);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    cpu.esp -= 8;
-    const auto leave = [&] {
-        cpu.esp = cpu.ebp;
-        cpu.ebp = pop(app, cpu);
-        cpu.edi = pop(app, cpu);
-        cpu.esi = pop(app, cpu);
-        cpu.edx = pop(app, cpu);
-        cpu.ecx = pop(app, cpu);
-        cpu.ebx = pop(app, cpu);
-        cpu.esp += 4;
-    };
-    put(app, cpu.ebp - 8, cpu.eax);
-    cpu.eax = at(app, cpu.ebp - 8);
-    cpu.eax = at(app, cpu.eax + 0x1f0) * 0x6c;
-    if (at(app, cpu.eax + 0x6fd548) == 1)
-    {
-        cpu.eax = at(app, cpu.ebp - 8);
-        putByte(app, cpu.eax + 0x506, 2);
-        cpu.eax = at(app, cpu.ebp - 8);
-        putByte(app, cpu.eax + 0x50b, 2);
-        cpu.eax = at(app, cpu.ebp - 8);
-        putByte(app, cpu.eax + 0x507, 0);
-    }
-    else
-    {
-        cpu.eax = at(app, cpu.ebp - 8);
-        putByte(app, cpu.eax + 0x506, 2);
-        cpu.eax = at(app, cpu.ebp - 8);
-        putByte(app, cpu.eax + 0x50b, 2);
-        cpu.eax = at(app, cpu.ebp - 8);
-        putByte(app, cpu.eax + 0x507, 0);
-    }
-    cpu.eax = at(app, cpu.ebp - 8);
-    put(app, cpu.eax + 0x2e8, 0);
-    cpu.eax = at(app, cpu.ebp - 8);
-    put(app, cpu.eax + 0x2ec, 0);
-    cpu.eax = at(app, cpu.ebp - 8);
-    put(app, cpu.eax + 0x2f0, 0);
-    cpu.eax = at(app, cpu.ebp - 8);
-    put(app, cpu.eax + 0x2f4, 0);
-    cpu.eax = at(app, cpu.ebp - 8);
-    put(app, cpu.eax + 0x2f8, 0);
-    cpu.eax = at(app, cpu.ebp - 8);
-    put(app, cpu.eax + 0x2fc, 0);
-    cpu.eax = at(app, cpu.ebp - 8);
-    put(app, cpu.eax + 0x4ec, 0);
-    cpu.eax = at(app, cpu.ebp - 8);
-    put(app, cpu.eax + 0x4f0, 0);
-    cpu.eax = at(app, cpu.ebp - 8);
-    put(app, cpu.eax + 0x4f4, 0);
-    cpu.eax = at(app, cpu.ebp - 8);
-    put(app, cpu.eax + 0x4f8, 0);
-    cpu.eax = at(app, cpu.ebp - 8);
-    put(app, cpu.eax + 0x4fc, 0);
-    cpu.eax = at(app, cpu.ebp - 8);
-    put(app, cpu.eax + 0x500, 0);
-    cpu.eax = at(app, cpu.ebp - 8);
-    put(app, cpu.eax + 0x594, 0);
-    cpu.eax = at(app, cpu.ebp - 8);
-    put(app, cpu.eax + 0x5b0, 0);
-    cpu.eax = at(app, cpu.ebp - 8);
-    put(app, cpu.eax + 0x5c0, 0);
-    cpu.eax = at(app, cpu.ebp - 8);
-    put(app, cpu.eax + 0x5c4, 0);
-    cpu.eax = at(app, cpu.ebp - 8);
-    put(app, cpu.eax + 0x2e4, 0);
-    return leave();
+    resetDrive(app, cpu.eax);
+    cpu.esp += 4;
 }
 
-/* 0x4aa8e7: car eax settled when it is all but stopped ([+0x15c] 0.2 or less)
- * and upright (+0x130's up 0 or more): its speed's and its spin's parts off
- * the up axis damped -- by 0.94 and 0.98 at the race's start, else by 0.98
- * and 0.998 when it hardly moves (two of the speeds' sizes under 0.9) --
- * the vectors scaled, less and added by 0x4e0050, 0x4e0000, 0x4dffb0. */
+/* One vector scaled (vertices', 0x4e0050) into the result. */
+bool scaleVector(App* app, CPU& cpu, reg32 vector, float scale, reg32 result)
+{
+    guest::direct<0x4e0050, vertices::scaleVectorsBy>(app, cpu, 1, vector, scale, result);
+    return !cpu.terminate;
+}
+
+/* One vector less the other, or with it added, in place (vertices', 0x4e0000 and 0x4dffb0). */
+template <bool Add>
+bool vectorWith(App* app, CPU& cpu, reg32 vector, reg32 other)
+{
+    if constexpr (Add)
+        guest::direct<0x4dffb0, vertices::offsetVectorList<true>>(app, cpu, 1, vector, other, vector);
+    else
+        guest::direct<0x4e0000, vertices::offsetVectorList<false>>(app, cpu, 1, vector, other, vector);
+    return !cpu.terminate;
+}
+
+/* The other added by address (n in eax, the vector edx, the other ebx, the result ecx): settleCar's
+ * last call, whose eax -- the vector past its end -- is what settleCar leaves, which its callers
+ * on registers see; vertices' core gives nothing back. */
+bool addByAddress(App* app, CPU& cpu, reg32 vector, reg32 other)
+{
+    cpu.eax = 1;
+    cpu.edx = vector;
+    cpu.ebx = other;
+    cpu.ecx = vector;
+    return stackCall(app, cpu, kAdd);
+}
+
+/* A vector's part along the up axis taken off, scaled by `keep`, and put back: `part` a vector
+ * on the guest's stack the callees are handed.  `last`: settleCar's last, its add by address. */
+bool dampUpPart(App* app, CPU& cpu, reg32 vector, reg32 up, reg32 part, float along, float keep, reg32 scaleFrom, reg32 scaleTo,
+                bool last)
+{
+    if (!scaleVector(app, cpu, up, along, part) || !vectorWith<false>(app, cpu, vector, part)
+        || !scaleVector(app, cpu, scaleFrom, keep, scaleTo))
+        return false;
+    return last ? addByAddress(app, cpu, vector, part) : vectorWith<true>(app, cpu, vector, part);
+}
+
+/* 0x4aa8e7: the car settled when it is all but stopped and upright: its speed's and its spin's
+ * parts off the up axis damped -- by 0.94 and 0.98 at the race's start, else by 0.98 and 0.998
+ * unless it hardly moves (two of the speeds' sizes under the constant).  eax is left as the code
+ * leaves it, which callers on registers can see: where it stops early, the status word of its last
+ * compare in the low half.  False when the game stopped. */
+bool settleCar(App* app, CPU& cpu, reg32 car)
+{
+    const reg32 up = car + kCarUpAxis;
+    if (i32(at(app, car + kCarRoadSpeed)) > kBits0_2)
+    {
+        cpu.eax = car;
+        return true;
+    }
+    const x86::Float upward = f32(app, up + 4);
+    const x86::Float lowest = f64(app, kUprightLowest);
+    if (!(upward >= lowest))
+    {
+        cpu.fpu.compare(upward, lowest);
+        cpu.eax = up;
+        cpu.ax = cpu.fpu.status.word;
+        return true;
+    }
+    const float rolling = floatAt(app, car + kCarRoadState);
+    const auto speedUp = dot(app, cpu, car + 0xc0, up);
+    if (!speedUp)
+        return false;
+    const auto spinUp = dot(app, cpu, car + 0xd8, up);
+    if (!spinUp)
+        return false;
+    const float rollingSize = size(rolling), speedSize = size(*speedUp), spinSize = size(*spinUp);
+    float keepSpeed = 0.94f, keepSpin = 0.98f;
+    if (half(app, car + kCarRaceStarted) != 0)
+    {
+        const x86::Float still = f32(app, kStillBelow);
+        const x86::Float lastSum = fp::add(speedSize, spinSize);
+        if (!(fp::add(rollingSize, speedSize) > still) && !(fp::add(rollingSize, spinSize) > still) && !(lastSum > still))
+        {
+            cpu.fpu.compare(lastSum, still);
+            cpu.eax = car;
+            cpu.ax = cpu.fpu.status.word;
+            return true;
+        }
+        keepSpeed = 0.98f;
+        keepSpin = 0.998f;
+    }
+    // The vector the callees are handed, on the guest's stack, under the frame the code has.
+    cpu.esp -= kPartBelowEntry;
+    const reg32 part = cpu.esp + kPartOverEsp;
+    const reg32 speed = car + kCarSpeed, spin = car + kCarSpin;
+    const auto alongSpeed = dot(app, cpu, up, speed);
+    if (!alongSpeed)
+        return false;
+    if (!dampUpPart(app, cpu, speed, up, part, *alongSpeed, keepSpeed, speed, speed, false))
+        return false;
+    const auto alongSpin = dot(app, cpu, up, spin);
+    if (!alongSpin)
+        return false;
+    return dampUpPart(app, cpu, spin, up, part, *alongSpin, keepSpin, part, part, true);
+}
+
+/* The adapter: car eax; eax as settleCar leaves it, the other registers kept. */
 void settleAtRest(App* app, CPU& cpu)
 {
-    x86::FPU& fpu = cpu.fpu;
-    push(app, cpu, cpu.ebx);
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.edx);
-    push(app, cpu, cpu.esi);
-    push(app, cpu, cpu.edi);
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    cpu.esp -= 0x3c;
-    const auto leave = [&] {
-        cpu.esp = cpu.ebp;
-        cpu.ebp = pop(app, cpu);
-        cpu.edi = pop(app, cpu);
-        cpu.esi = pop(app, cpu);
-        cpu.edx = pop(app, cpu);
-        cpu.ecx = pop(app, cpu);
-        cpu.ebx = pop(app, cpu);
-        cpu.esp += 4;
-    };
-    put(app, cpu.ebp - 0x18, cpu.eax);
-    cpu.eax = at(app, cpu.ebp - 0x18);
-    cpu.eax += 0x130;
-    put(app, cpu.ebp - 4, cpu.eax);
-    cpu.eax = at(app, cpu.ebp - 0x18);
-    if (i32(at(app, cpu.eax + 0x15c)) > 0x3e4ccccd)
-        return leave();
-    cpu.eax = at(app, cpu.ebp - 4);
-    fpu.push(f32(app, cpu.eax + 4));
-    fcomp(cpu, f64(app, 0x53dcc4));
-    cpu.ax = fpu.status.word;
-    if (below(cpu))
-        return leave();
-    cpu.eax = at(app, cpu.ebp - 0x18);
-    cpu.eax = at(app, cpu.eax + 0x10c);
-    put(app, cpu.ebp - 0x20, cpu.eax);
-    cpu.edx = at(app, cpu.ebp - 4);
-    cpu.eax = at(app, cpu.ebp - 0x18);
-    cpu.eax += 0xc0;
-    if (!byAddress(app, cpu, kDot))
+    const Saved saved(cpu);
+    if (!settleCar(app, cpu, cpu.eax))
         return;
-    app->getMemory<float>(cpu.ebp - 0xc) = float(fpu.st(0));
-    fpu.pop();
-    cpu.edx = at(app, cpu.ebp - 4);
-    cpu.eax = at(app, cpu.ebp - 0x18);
-    cpu.eax += 0xd8;
-    if (!byAddress(app, cpu, kDot))
-        return;
-    app->getMemory<float>(cpu.ebp - 0x1c) = float(fpu.st(0));
-    fpu.pop();
-    fpu.push(0.0);
-    fcomp(cpu, f32(app, cpu.ebp - 0x20));
-    cpu.ax = fpu.status.word;
-    if (!below(cpu) && !equal(cpu))
-    {
-        fpu.push(f32(app, cpu.ebp - 0x20));
-        fpu.st(0) = -fpu.st(0);
-        app->getMemory<float>(cpu.ebp - 0x3c) = float(fpu.st(0));
-        fpu.pop();
-    }
-    else
-    {
-        cpu.eax = at(app, cpu.ebp - 0x20);
-        put(app, cpu.ebp - 0x3c, cpu.eax);
-    }
-    cpu.eax = at(app, cpu.ebp - 0x3c);
-    put(app, cpu.ebp - 0x20, cpu.eax);
-    fpu.push(0.0);
-    fcomp(cpu, f32(app, cpu.ebp - 0xc));
-    cpu.ax = fpu.status.word;
-    if (!below(cpu) && !equal(cpu))
-    {
-        fpu.push(f32(app, cpu.ebp - 0xc));
-        fpu.st(0) = -fpu.st(0);
-        app->getMemory<float>(cpu.ebp - 0x38) = float(fpu.st(0));
-        fpu.pop();
-    }
-    else
-    {
-        cpu.eax = at(app, cpu.ebp - 0xc);
-        put(app, cpu.ebp - 0x38, cpu.eax);
-    }
-    cpu.eax = at(app, cpu.ebp - 0x38);
-    put(app, cpu.ebp - 0xc, cpu.eax);
-    fpu.push(0.0);
-    fcomp(cpu, f32(app, cpu.ebp - 0x1c));
-    cpu.ax = fpu.status.word;
-    if (!below(cpu) && !equal(cpu))
-    {
-        fpu.push(f32(app, cpu.ebp - 0x1c));
-        fpu.st(0) = -fpu.st(0);
-        app->getMemory<float>(cpu.ebp - 0x34) = float(fpu.st(0));
-        fpu.pop();
-    }
-    else
-    {
-        cpu.eax = at(app, cpu.ebp - 0x1c);
-        put(app, cpu.ebp - 0x34, cpu.eax);
-    }
-    cpu.eax = at(app, cpu.ebp - 0x34);
-    put(app, cpu.ebp - 0x1c, cpu.eax);
-    cpu.eax = at(app, cpu.ebp - 0x18);
-    if (half(app, cpu.eax + 0x164) == 0)
-    {
-        put(app, cpu.ebp - 0x14, 0x3f70a3d7);
-        put(app, cpu.ebp - 0x10, 0x3f7ae148);
-    }
-    else
-    {
-        fpu.push(f32(app, cpu.ebp - 0x20));
-        fpu.st(0) = fp::add(fpu.st(0), f32(app, cpu.ebp - 0xc));
-        fcomp(cpu, f32(app, 0x53dccc));
-        cpu.ax = fpu.status.word;
-        if (below(cpu) || equal(cpu))
-        {
-            fpu.push(f32(app, cpu.ebp - 0x20));
-            fpu.st(0) = fp::add(fpu.st(0), f32(app, cpu.ebp - 0x1c));
-            fcomp(cpu, f32(app, 0x53dccc));
-            cpu.ax = fpu.status.word;
-            if (below(cpu) || equal(cpu))
-            {
-                fpu.push(f32(app, cpu.ebp - 0xc));
-                fpu.st(0) = fp::add(fpu.st(0), f32(app, cpu.ebp - 0x1c));
-                fcomp(cpu, f32(app, 0x53dccc));
-                cpu.ax = fpu.status.word;
-                if (below(cpu) || equal(cpu))
-                    return leave();
-            }
-        }
-        put(app, cpu.ebp - 0x14, 0x3f7ae148);
-        put(app, cpu.ebp - 0x10, 0x3f7f7cee);
-    }
-    cpu.edx = at(app, cpu.ebp - 0x18);
-    cpu.edx += 0xa4;
-    cpu.eax = at(app, cpu.ebp - 4);
-    if (!byAddress(app, cpu, kDot))
-        return;
-    app->getMemory<float>(cpu.ebp - 8) = float(fpu.st(0));
-    fpu.pop();
-    cpu.eax = cpu.ebp - 0x30;
-    push(app, cpu, cpu.eax);
-    fpu.push(f32(app, cpu.ebp - 8));
-    cpu.esp -= 4;
-    app->getMemory<float>(cpu.esp) = float(fpu.st(0));
-    fpu.pop();
-    cpu.edx = at(app, cpu.ebp - 4);
-    cpu.eax = 1;
-    if (!byAddress(app, cpu, kScale))
-        return;
-    cpu.ecx = at(app, cpu.ebp - 0x18);
-    cpu.ecx += 0xa4;
-    cpu.ebx = cpu.ebp - 0x30;
-    cpu.edx = at(app, cpu.ebp - 0x18);
-    cpu.edx += 0xa4;
-    cpu.eax = 1;
-    if (!byAddress(app, cpu, kSubtract))
-        return;
-    cpu.eax = at(app, cpu.ebp - 0x18);
-    cpu.eax += 0xa4;
-    push(app, cpu, cpu.eax);
-    fpu.push(f32(app, cpu.ebp - 0x14));
-    cpu.esp -= 4;
-    app->getMemory<float>(cpu.esp) = float(fpu.st(0));
-    fpu.pop();
-    cpu.edx = at(app, cpu.ebp - 0x18);
-    cpu.edx += 0xa4;
-    cpu.eax = 1;
-    if (!byAddress(app, cpu, kScale))
-        return;
-    cpu.ecx = at(app, cpu.ebp - 0x18);
-    cpu.ecx += 0xa4;
-    cpu.ebx = cpu.ebp - 0x30;
-    cpu.edx = at(app, cpu.ebp - 0x18);
-    cpu.edx += 0xa4;
-    cpu.eax = 1;
-    if (!byAddress(app, cpu, kAdd))
-        return;
-    cpu.edx = at(app, cpu.ebp - 0x18);
-    cpu.edx += 0xe4;
-    cpu.eax = at(app, cpu.ebp - 4);
-    if (!byAddress(app, cpu, kDot))
-        return;
-    app->getMemory<float>(cpu.ebp - 8) = float(fpu.st(0));
-    fpu.pop();
-    cpu.eax = cpu.ebp - 0x30;
-    push(app, cpu, cpu.eax);
-    fpu.push(f32(app, cpu.ebp - 8));
-    cpu.esp -= 4;
-    app->getMemory<float>(cpu.esp) = float(fpu.st(0));
-    fpu.pop();
-    cpu.edx = at(app, cpu.ebp - 4);
-    cpu.eax = 1;
-    if (!byAddress(app, cpu, kScale))
-        return;
-    cpu.ecx = at(app, cpu.ebp - 0x18);
-    cpu.ecx += 0xe4;
-    cpu.ebx = cpu.ebp - 0x30;
-    cpu.edx = at(app, cpu.ebp - 0x18);
-    cpu.edx += 0xe4;
-    cpu.eax = 1;
-    if (!byAddress(app, cpu, kSubtract))
-        return;
-    cpu.eax = cpu.ebp - 0x30;
-    push(app, cpu, cpu.eax);
-    fpu.push(f32(app, cpu.ebp - 0x10));
-    cpu.esp -= 4;
-    app->getMemory<float>(cpu.esp) = float(fpu.st(0));
-    fpu.pop();
-    cpu.edx = cpu.ebp - 0x30;
-    cpu.eax = 1;
-    if (!byAddress(app, cpu, kScale))
-        return;
-    cpu.ecx = at(app, cpu.ebp - 0x18);
-    cpu.ecx += 0xe4;
-    cpu.ebx = cpu.ebp - 0x30;
-    cpu.edx = at(app, cpu.ebp - 0x18);
-    cpu.edx += 0xe4;
-    cpu.eax = 1;
-    if (!byAddress(app, cpu, kAdd))
-        return;
-    return leave();
+    const reg32 left = cpu.eax;
+    saved.restore(cpu);
+    cpu.eax = left;
+    cpu.esp += 4;
 }
 
 }  // namespace handling

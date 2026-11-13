@@ -1,5 +1,7 @@
 #include "port_text.h"
 #include "port_draw2d.h"
+#include "native_windows.h"
+#include <winapi/user32.h>
 
 #include <cstdint>
 #include <cstring>
@@ -147,7 +149,7 @@ constexpr reg32 kMemmove = 0x4ea4f0;
 constexpr reg32 kReadMouse = 0x435310;
 constexpr reg32 kKeyDown = 0x4eb1c0, kScreenCapture = 0x452410;
 constexpr reg32 kNextKey = 0x4cc970, kKeyFeedback = 0x449a60, kResetAttractTimer = 0x4961e0;
-constexpr reg32 kGetKeyState = 0x534738;      // GetKeyState's import
+constexpr reg32 kGetKeyState = 0x534738;      // GetAsyncKeyState's import
 constexpr reg32 kDisplayModeName = 0x448400, kControllerName = 0x43d9f0;
 constexpr reg32 kCarKnown = 0x439cc0, kCarIsPolice = 0x4396b0, kCarName = 0x439250;
 constexpr reg32 kFree = 0x4e1890, kSprintf = 0x4df690, kLoadFile = 0x4e0ec0;
@@ -284,8 +286,6 @@ int32_t onMenuY(App* app, int32_t y)
 
 /* ---- The language's text ---- */
 
-Result lineText(App* app, CPU& cpu, reg32 esp, int32_t number, reg32 edx);
-
 /* 0x4d17b0's: the text of a number past the language's lines: a display
  * mode's name (0x7a8 to 0x7bc), a car's (0x7bd to 0x7ee: its name, or "police
  * car" or "car" for one the game knows only so), a controller's (0x855 to
@@ -324,6 +324,8 @@ Result nameText(App* app, CPU& cpu, reg32 esp, int32_t number, reg32 edx)
     return int32_t(kNoText);
 }
 
+}  // namespace
+
 /* 0x4d1850's: line `number` of the language's text, or a name past them
  * (edx as the caller had it, which those that are names hand on). */
 Result lineText(App* app, CPU& cpu, reg32 esp, int32_t number, reg32 edx)
@@ -353,6 +355,9 @@ Result loadedLanguageText(App* app, CPU& cpu, reg32 esp, int32_t language)
     kLanguageTexts.set(app, r);
     return int32_t(r);
 }
+
+namespace
+{
 
 /* ---- The fonts' quads ---- */
 
@@ -455,6 +460,8 @@ Result quadsDrawn(App* app, CPU& cpu, reg32 esp, reg32 list)
     return int32_t(eax);
 }
 
+}  // namespace
+
 /* 0x4d1340's: both fonts' quads drawn, render state 0x2bf on around them on
  * a card with alpha. */
 Result fontsDrawn(App* app, CPU& cpu, reg32 esp)
@@ -477,6 +484,9 @@ Result fontsDrawn(App* app, CPU& cpu, reg32 esp)
     }
     return drawn;
 }
+
+namespace
+{
 
 /* ---- The 3D card's font ---- */
 
@@ -697,6 +707,8 @@ WidthResult measured(App* app, CPU& cpu, reg32 esp, reg32 text)
 
 /* ---- The menus' text ---- */
 
+}  // namespace
+
 /* 0x452020's: how wide text `text` is in font `font`: on the 640 wide screen
  * of the menus when the 3D card draws them, else as the 2D screens draw it;
  * 5 for none. */
@@ -719,6 +731,9 @@ Result menuTextWidth(App* app, CPU& cpu, reg32 esp, reg32 text, reg32 font)
         return {};
     return int32_t(r);
 }
+
+namespace
+{
 
 /* 0x4513c0's: the menus' text's colour: the 3D card's font's in a race's
  * pause screens, the 2D screens' otherwise. */
@@ -744,6 +759,8 @@ Result textDrawnAt(App* app, CPU& cpu, reg32 esp, reg32 text, int32_t x, int32_t
         return {};
     return int32_t(r);
 }
+
+}  // namespace
 
 /* 0x452190's: text `text` (none: nothing) in font `font` at x, y -- its right
  * there with alignment 1 or 4, its middle with 2 or 5; past 2 with a shadow
@@ -795,6 +812,9 @@ reg32 dimmed(App* app, CPU& cpu, reg32 slot, reg32 eax)
     scaleSet(app, cpu, word(app, slot));
     return eax;
 }
+
+namespace
+{
 
 /* 0x451500's: the mouse read -- its buttons to [buttons], x to [x], y to
  * [y], the wheel to [wheel] -- x and y put on the menus' 640 by 480 screen in
@@ -1075,13 +1095,20 @@ Result mouseKey(App* app, CPU& cpu, reg32 esp)
     return wheel == 0 ? 0 : wheel > 0 ? 0x4800 : 0x5000;
 }
 
-/* Whether key `key` is held down (GetKeyState's top bit). */
+/* Whether key `key` is held down (GetAsyncKeyState's top bit), eax the key
+ * and esp `at` as the code has them: the port's own, called as C++
+ * (native_windows.h); in the check through its import's slot. */
 std::optional<bool> keyHeld(App* app, CPU& cpu, reg32 at, reg32 key)
 {
-    reg32 state;
-    if (!callGame(app, cpu, at, word(app, kGetKeyState), {key}, {key}, state))
+    cpu.esp = at;
+    cpu.eax = key;
+    cpu.edx = 0;
+    cpu.ebx = 0;
+    cpu.ecx = 0;
+    const std::optional<reg32> state = guest::windows<kGetKeyState, &win32::user32::GetAsyncKeyState>(app, cpu, key);
+    if (!state)
         return {};
-    return (state & 0x8000) != 0;
+    return (*state & 0x8000) != 0;
 }
 
 /* The keys queued thrown away. */
@@ -1092,6 +1119,8 @@ bool keysFlushed(App* app, CPU& cpu, reg32 at)
             return false;
     return true;
 }
+
+}  // namespace
 
 /* 0x451960's: the menus' key now -- the mouse's, else the keyboard's, else
  * (every 40 ticks) the joystick's -- as a key and its scan code, each made
@@ -1169,7 +1198,24 @@ Result menuKeyOf(App* app, CPU& cpu, reg32 esp, reg32 repeating)
     return int32_t(key);
 }
 
-}  // namespace
+/* 0x452100's: the 2D screens' font, `font`. */
+void selectFontOf(App* app, reg32 font)
+{
+    kScreenFont.set(app, font);
+}
+
+/* 0x4d1400's: the text scale kept; the scale. */
+reg32 keepTextScaleOf(App* app)
+{
+    kKeptTextScale.set(app, kTextScale(app));
+    return kKeptTextScale(app);
+}
+
+/* 0x4d1410's: the text scale kept put back. */
+void restoreTextScaleOf(App* app, CPU& cpu)
+{
+    scaleSet(app, cpu, kKeptTextScale(app));
+}
 
 /* ---- The adapters: the game's registers and stack in, the result in eax
  * (a width on the x87's stack too) out. ---- */
@@ -1198,7 +1244,7 @@ void textWidth(App* app, CPU& cpu)
 void selectFont(App* app, CPU& cpu)
 {
     const Entry e(cpu);
-    kScreenFont.set(app, e.eax);
+    selectFontOf(app, e.eax);
     e.back(cpu, e.eax);
 }
 
@@ -1321,15 +1367,14 @@ void setTextScale(App* app, CPU& cpu)
 void keepTextScale(App* app, CPU& cpu)
 {
     const Entry e(cpu);
-    kKeptTextScale.set(app, kTextScale(app));
-    e.back(cpu, kKeptTextScale(app));
+    e.back(cpu, keepTextScaleOf(app));
 }
 
 /* 0x4d1410: the text scale kept put back. */
 void restoreTextScale(App* app, CPU& cpu)
 {
     const Entry e(cpu);
-    scaleSet(app, cpu, kKeptTextScale(app));
+    restoreTextScaleOf(app, cpu);
     e.back(cpu, e.eax);
 }
 

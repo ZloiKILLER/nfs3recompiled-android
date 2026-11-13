@@ -658,6 +658,15 @@ bool makeEaNetArguments(CheckApp& g, const std::string& name, x86::CPU& cpu, x86
         cpu.ebx = chance(90) ? 1 + below(0x40) : below(0x100);
         if (chance(30))
             g.getMemory<x86::reg8>(cpu.edx) = 6;
+        /* The machines' states not 0, so that a machine announced gone from
+         * here is not told to the others: that packet (0x12 bytes) lies in
+         * announceMachineLeft's frame over the words connSend's layers pushed
+         * there, its second byte and the two after it never set, and the
+         * send's stand-in logs 9 words of it -- garbage the native layers do
+         * not push.  announceMachineLeft's own cases send it. */
+        if (name == "sendPacket")
+            for (x86::reg32 i = 0; i < 8; ++i)
+                g.getMemory<x86::reg16>(0x7a22ca + 2 * i) |= 1;
         // Connections that fail mostly, to be tried again until lost.
         if (name == "sendPacket" && chance(50))
         {

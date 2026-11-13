@@ -1,3 +1,4 @@
+#include "game_settings.h"
 #include "port_snd_speech.h"
 
 #include <cstdint>
@@ -23,8 +24,7 @@ namespace port
 namespace
 {
 
-constexpr Var<int32_t> kGameMode{0x6fd3b8}, kLaps{0x6fd4b4}, kRaceMode{0x6fd520}, kRaceOver{0x6fd50c};
-constexpr Var<int32_t> kLanguage{0x6fbc68}, kRaceTime{0x7d3684}, kRaceClock{0x7d36b0};
+constexpr Var<int32_t> kRaceTime{0x7d3684}, kRaceClock{0x7d36b0};
 constexpr Var<int32_t> kMusicOn{0x552794}, kBestLap{0x552904};
 constexpr Table<uint8_t> kLastLap{0x5710c8, 1}, kEventKind{0x5710a0, 1};
 constexpr Table<int32_t> kLapStart{0x5710d0}, kLapTime{0x5710f0};
@@ -32,7 +32,7 @@ constexpr Table<reg32> kRaceOrder{0x5efac8};
 constexpr Var<int32_t> kMusicLap{0x552860}, kMusicLapNow{0x55285c}, kMusicAhead{0x55284c};
 constexpr Var<uint8_t> kMusicLevel{0x552850}, kMusicEvent{0x552834}, kWaitMark{0x552d7c};
 constexpr Var<int32_t> kMusicBusy{0x552838};
-constexpr Var<int32_t> kMusicEnabled{0x552910}, kMusicSetting{0x6fbb54}, kMusicVolume{0x6fbbf0}, kMusicReady{0x552914};
+constexpr Var<int32_t> kMusicEnabled{0x552910}, kMusicReady{0x552914};
 constexpr Var<uint8_t> kMusicMuted{0x552590};
 constexpr Var<int32_t> kLineStart{0x571238}, kLineEnd{0x571240};
 constexpr Var<float> kMetricScale{0x536a18}, kImperialScale{0x536a1c};
@@ -53,7 +53,7 @@ struct Tick
     uint8_t own;    // the car's player
     reg32 side;     // the player's side in the split screen, else 0
 
-    reg32 pan() const { return kSplitScreenMode(app) == 1 ? (side != 0 ? kSideRight : kSideLeft) : 0; }
+    reg32 pan() const { return gameSettings(app).playMode == 1 ? (side != 0 ? kSideRight : kSideLeft) : 0; }
 
     /* The race voice's line `effect` queued at full volume (kind 0), the
      * player's side. */
@@ -90,7 +90,7 @@ static Result raceAnnouncerTicked(App* app, CPU& cpu, reg32 esp, reg32 car)
     const reg32 frame = esp - 6 * 4;
     const HeldEbp ebp(cpu, frame);
     const reg32 sp = frame - 0x3c;
-    const int32_t split = kSplitScreenMode(app);
+    const int32_t split = gameSettings(app).playMode;
     const uint8_t own = load<uint8_t>(app, car + 0x1f0);
     const Tick t{app, cpu, sp, car, own, split == 1 ? own : 0u};
     const reg32 place = load<reg32>(app, kRaceOrder(app, own) + 0x2bc);
@@ -107,10 +107,10 @@ static Result raceAnnouncerTicked(App* app, CPU& cpu, reg32 esp, reg32 car)
         return {};
     if (*key != 0 && t.side == 0)
         kMusicOn.set(app, kMusicOn(app) == 0 ? 1 : 0);
-    if (kGameMode(app) == 3 && !call(kPursuitSounds, Args{t.side, 0, 0, 0}))
+    if (gameSettings(app).raceType == 3 && !call(kPursuitSounds, Args{t.side, 0, 0, 0}))
         return {};
     const uint8_t flags = load<uint8_t>(app, car + 0x200);
-    if (split != 1 && !((flags & 1) != 0 && load<int32_t>(app, car + 0x2c4) == 3) && kRaceMode(app) != 0)
+    if (split != 1 && !((flags & 1) != 0 && load<int32_t>(app, car + 0x2c4) == 3) && gameSettings(app).opponentCount != 0)
     {
         if ((flags & 0x20) == 0)
         {
@@ -129,17 +129,17 @@ static Result raceAnnouncerTicked(App* app, CPU& cpu, reg32 esp, reg32 car)
         if (*key != 0)
         {
             // The lap time: the revs' counter, unsigned, scaled for the voice's units.
-            const int32_t language = kLanguage(app);
-            const bool metric = language == 1 || language == 2 || (language == 0 && kSpeechUnits(app) == 0);
+            const int32_t language = gameSettings(app).hud[0].speedometerForm;
+            const bool metric = language == 1 || language == 2 || (language == 0 && gameSettings(app).language == 0);
             const int32_t seconds = scaledRevs(app, car, metric ? kMetricScale(app) : kImperialScale(app));
             if (!lapTimeLineQueued(app, cpu, sp - 4, 0, seconds))
                 return {};
         }
     }
     const int32_t lap = load<int32_t>(app, car + 0x204);
-    const int32_t laps = kLaps(app);
+    const int32_t laps = gameSettings(app).laps;
     const reg32 lastLap = reg32(kLastLap(app, own));
-    if (kGameMode(app) != 3)
+    if (gameSettings(app).raceType != 3)
     {
         // A new lap: the lap's line, the best lap's.
         bool said = false;
@@ -168,15 +168,15 @@ static Result raceAnnouncerTicked(App* app, CPU& cpu, reg32 esp, reg32 car)
             }
         }
         // The race over: the position.
-        if (lastLap != reg32(lap) && lap == laps && !(kRaceOver(app) != 0 && split > 1)
-            && !(kRaceMode(app) == 0 && split == 0))
+        if (lastLap != reg32(lap) && lap == laps && !(gameSettings(app).networkGame != 0 && split > 1)
+            && !(gameSettings(app).opponentCount == 0 && split == 0))
         {
             const Result radioLine = copLineChosen(app, cpu, sp - 4, int32_t(place));
             if (!radioLine || !t.say(reg32(*radioLine) + (t.side << 4)))
                 return {};
         }
     }
-    if (kGameMode(app) != 3)
+    if (gameSettings(app).raceType != 3)
     {
         // The last lap, or the lap's number.
         bool queued = false;
@@ -215,7 +215,7 @@ static Result raceAnnouncerTicked(App* app, CPU& cpu, reg32 esp, reg32 car)
         ahead = load<int32_t>(app, first + 0x2bc) >= load<int32_t>(app, second + 0x2bc);
     }
     eax = (eax & 0xffffff00u) | (ahead ? 1u : 0u);
-    if (kMusicEnabled(app) == 0 || kMusicSetting(app) != 0 || kMusicVolume(app) == 0 || kMusicMuted(app) != 0
+    if (kMusicEnabled(app) == 0 || gameSettings(app).installIsRemote != 0 || gameSettings(app).raceMusicVolume == 0 || kMusicMuted(app) != 0
         || kMusicReady(app) == 0)
         return int32_t(eax);
     if (split == 1 && uint8_t(eax) != uint8_t(t.side))
@@ -231,7 +231,7 @@ static Result raceAnnouncerTicked(App* app, CPU& cpu, reg32 esp, reg32 car)
         level = 0;
     else
         level = 0x32;
-    const int32_t mode = kRaceMode(app);
+    const int32_t mode = gameSettings(app).opponentCount;
     if (mode != 0)
     {
         if (mode == 1)

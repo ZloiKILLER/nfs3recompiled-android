@@ -32,7 +32,9 @@
 // The files group's (native_ea_files.cpp, not stood in before): a file of the
 // game's opened by name (its first 16 bytes logged), closed, read.
 {0x4e28d0, "a game file opened", kWatcom, 4, 0, kEax | kEdx | kEbx | kEcx, 0, 4, kSupportOpened},
-{0x4e2da0, "a game file closed", kWatcom, 2, 0, kEax, -1, 0, kNothing},
+// The close's one register: ea::closeChecked reads only eax (native_ea_files.h), and the natives
+// call it as C++ (guest::direct), edx their own.
+{0x4e2da0, "a game file closed", kWatcom, 1, 0, kEax, -1, 0, kNothing},
 {0x4e2de0, "a game file read", kWatcom, 3, 0, kEax | kEdx | kEbx, -1, 0, kNothing},
 // The sound stream's top-up around a load (native_snd_stream.cpp; no tested
 // code calls them but the load): kept to their code -- every register but

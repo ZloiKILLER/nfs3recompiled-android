@@ -23,7 +23,11 @@ ROOT = HERE.parents[2]
 sys.path.insert(0, str(ROOT / "tools/game_checks/windows"))
 import winbuild  # noqa: E402
 
-BUILD = CHECKS / "build"
+# FRONTEND_STRICT=1: a build of its own where guest::direct leaves the registers as the game's
+# direct call does (native_guest.h, NFS_FRONTEND_STRICT): what a callee left no longer reaches the
+# caller, eax after it is spoilt.  A "calls differ" or "memory" there is a difference in the game.
+STRICT = os.environ.get("FRONTEND_STRICT") == "1"
+BUILD = CHECKS / ("build_strict" if STRICT else "build")
 
 
 def groups():
@@ -52,6 +56,11 @@ def group_includes():
     put("group_decls.inc", "".join((CHECKS / "groups" / (g.stem + "_decls.inc")).read_text()
                                    for g in groups() if (CHECKS / "groups" / (g.stem + "_decls.inc")).exists()))
     put("group_addresses.inc", "".join("0x%s,\n" % r[0] for g in groups() for r in rows(g)))
+    # A group's rows read off nfs3.exe (specs_from_exe.py), in its own process only, under kSpecs' own.
+    put("group_specs.inc", "".join(
+        'if (g_group == "%s")\n    for (const auto& row : std::map<x86::reg32, Spec>{\n%s\n    })\n        specs.emplace(row);\n'
+        % (g.stem, (CHECKS / "groups" / (g.stem + "_specs.inc")).read_text())
+        for g in groups() if (CHECKS / "groups" / (g.stem + "_specs.inc")).exists()))
     put("group_own.inc", "".join('if (g_group == "%s")\n    list = { %s };\n' % (g.stem, ", ".join("0x" + r[0] for r in rows(g)))
                                  for g in groups() if rows(g)))
     put("group_own.inc", "".join('if (g_group == "%s")\n    list = { %s };\n' % (g.stem, ", ".join("0x" + r[0] for r in rows(g)))
@@ -74,8 +83,8 @@ def from_run_sh():
     return functions, [Path(s) for s in sources]
 
 
-def main():
-    rounds = sys.argv[1] if len(sys.argv) > 1 else "1000"
+def build():
+    """Everything made and linked: frontend_checks.exe's path."""
     BUILD.mkdir(parents=True, exist_ok=True)
     group_includes()
     functions, sources = from_run_sh()
@@ -87,7 +96,8 @@ def main():
     # A group's rows change what generate.py writes.
     for g in groups():
         key.update(g.read_bytes())
-    for f in ([CHECKS / "generate.py", CHECKS / "extract.py", ROOT / "disassemble_nfs3hp.py", ROOT / "nfs3hp/nfs3.exe"]
+    for f in ([CHECKS / "generate.py", CHECKS / "extract.py", CHECKS / "port_sites.py", ROOT / "disassemble_nfs3hp.py",
+               ROOT / "nfs3hp/nfs3.exe"]
               + sorted((ROOT / "disasm").rglob("*.py")) + sorted((ROOT / "tools").glob("apply_*.py"))
               + sorted((ROOT / "src/nfs3hp").glob("*.inc")) + [ROOT / "src/nfs3hp/decompiled.json"]
               + sorted(disassembly.iterdir())):
@@ -107,6 +117,9 @@ def main():
                                         ROOT / "tools/loading_checks/stub", ROOT / "third_party", ROOT / "include",
                                         disassembly, ROOT / "src/nfs3hp"]]
     winbuild.includes = lambda generated: includes
+    # guest::direct always by address here, at compile time (native_guest.h).
+    if "/DNFS_FRONTEND_CHECKS" not in winbuild.FLAGS:
+        winbuild.FLAGS = winbuild.FLAGS + ["/DNFS_FRONTEND_CHECKS"] + (["/DNFS_FRONTEND_STRICT"] if STRICT else [])
     objects = BUILD / "obj"
     errors = winbuild.compile_all(sources, objects, BUILD)
     if errors:
@@ -115,6 +128,12 @@ def main():
     err = winbuild.link(sorted(objects.glob("*.obj")), exe)
     if err:
         sys.exit(err)
+    return exe
+
+
+def main():
+    rounds = sys.argv[1] if len(sys.argv) > 1 else "1000"
+    exe = build()
     # The functions in shares, every JOBS-th, side by side; each share's
     # differences printed, then the total.  Each group in its own processes, with
     # its own world; the rest in theirs.

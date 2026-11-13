@@ -1,4 +1,6 @@
+#include "game_settings.h"
 #include "port_sound_slice.h"
+#include "port_sound_racesetup.h"
 
 #include <cstdint>
 
@@ -15,9 +17,9 @@ namespace port
 namespace
 {
 
-constexpr Var<int32_t> kEffectsOn{0x55290c}, kPlayerCar{0x6fd4ac}, kSecondSet{0x6fd4c0}, kCarCount{0x6fd4b4};
-constexpr Var<int32_t> kRaceValue{0x6fd2b4}, kCopsPlaying{0x552608}, kEffectsKept{0x552920}, kEngineKept{0x552924};
-constexpr Var<int32_t> kEffectsVolume{0x6fbbf4}, kEngineVolume{0x6fbbf8}, kMusicOn{0x552910}, kMusicOnKept{0x552918};
+constexpr Var<int32_t> kEffectsOn{0x55290c};
+constexpr Var<int32_t> kCopsPlaying{0x552608}, kEffectsKept{0x552920}, kEngineKept{0x552924};
+constexpr Var<int32_t> kMusicOn{0x552910}, kMusicOnKept{0x552918};
 constexpr Var<uint8_t> kBusUsed{0x552930};
 
 // One of the race's sound slots (0x570de8): the sound playing (-1 none) and its effect.
@@ -86,7 +88,7 @@ void carFlagTest(App*, CPU& cpu)
 void raceValue(App* app, CPU& cpu)
 {
     const Entry e(cpu);
-    e.back(cpu, reg32(kRaceValue(app)));
+    e.back(cpu, reg32(gameSettings(app).recordsHolder));
 }
 
 /* 0x4129b0: nothing. */
@@ -104,12 +106,12 @@ void slotsEmpty(App* app, CPU& cpu)
     e.back(cpu, kSlotCount);
 }
 
-/* 0x4136e0: the race's first bank (<audio dir> and 0x536a20's name) loaded
- * into slot 0, with 0x10 for the load. */
-void raceBankLoad(App* app, CPU& cpu)
+/* 0x4136e0's: the race's first bank (<audio dir> and 0x536a20's name) loaded
+ * into slot 0, with 0x10 for the load, the game's code's frame (6 words
+ * pushed) below `esp`. */
+Result raceBankLoadOf(App* app, CPU& cpu, reg32 esp)
 {
-    const Entry e(cpu);
-    const reg32 frame = e.frame(6);
+    const reg32 frame = esp - 6 * 4;
     const reg32 name = frame - 0x64;
     const HeldEbp ebp(cpu, frame);
     Game g(app, cpu, name);
@@ -117,7 +119,15 @@ void raceBankLoad(App* app, CPU& cpu)
     appendText(app, name, 0x536a20, &g.esi);
     g.edi = name;
     g.sync();
-    e.finish(cpu, bankLoaded(app, cpu, name - 4, name, 0, 0x10, name));
+    return bankLoaded(app, cpu, name - 4, name, 0, 0x10, name);
+}
+
+/* 0x4136e0: the race's first bank (<audio dir> and 0x536a20's name) loaded
+ * into slot 0, with 0x10 for the load. */
+void raceBankLoad(App* app, CPU& cpu)
+{
+    const Entry e(cpu);
+    e.finish(cpu, raceBankLoadOf(app, cpu, e.esp));
 }
 
 /* 0x4129c0: the race's sound set up: the slots emptied, the engines started,
@@ -138,11 +148,11 @@ void raceSoundInit(App* app, CPU& cpu)
         slotsEmptied(app);
         if (!g.call(kEngineSoundsStart, {kSlotCount, e.edx, e.ebx, e.ecx}, eax))
             return;
-        const int32_t car = kPlayerCar(app);
+        const int32_t car = gameSettings(app).track;
         if (car < 0xa)
         {
             // The cops' radio's banks of this car, in the first set or the second.
-            const reg32 set = kSecondSet(app) == 0 ? 0x552864 : 0x5528b4;
+            const reg32 set = gameSettings(app).backwards == 0 ? 0x552864 : 0x5528b4;
             app->getMemory<reg32>(0x571240) = app->getMemory<reg32>(set + reg32(car) * 8);
             app->getMemory<reg32>(0x571238) = app->getMemory<reg32>(set + reg32(car) * 8 + 4);
         }
@@ -176,7 +186,7 @@ void raceSoundInit(App* app, CPU& cpu)
     app->getMemory<uint8_t>(0x552930) = 0;
     app->getMemory<uint8_t>(0x552859) = 0;
     app->getMemory<uint8_t>(0x55285a) = 0;
-    app->getMemory<reg32>(0x552904) = reg32(kRaceValue(app));
+    app->getMemory<reg32>(0x552904) = reg32(gameSettings(app).recordsHolder);
     app->getMemory<uint8_t>(0x552834) = 4;
     app->getMemory<reg32>(0x552838) = 0xffffffff;
     app->getMemory<uint8_t>(0x552850) = 0;
@@ -186,9 +196,9 @@ void raceSoundInit(App* app, CPU& cpu)
     app->getMemory<uint8_t>(0x552909) = 1;
     // A pick among the cars at random.
     const reg32 random = nextRandom(app);
-    app->getMemory<reg32>(0x552c34) = random % reg32(kCarCount(app));
-    app->getMemory<reg32>(0x552920) = reg32(kEffectsVolume(app));
-    app->getMemory<reg32>(0x552924) = reg32(kEngineVolume(app));
+    app->getMemory<reg32>(0x552c34) = random % reg32(gameSettings(app).laps);
+    app->getMemory<reg32>(0x552920) = reg32(gameSettings(app).effectsVolume);
+    app->getMemory<reg32>(0x552924) = reg32(gameSettings(app).engineVolume);
     app->getMemory<reg32>(0x552c38) = 0;
     if (!g.call(kSetMasterVolume, {0x78}, eax))
         return;
@@ -237,8 +247,8 @@ void raceSoundEnd(App* app, CPU& cpu)
         return;
     if (!g.call(kSetMasterVolume, {0x7f}, eax) || !g.call(kCarsRestore, {eax}, eax))
         return;
-    kEffectsVolume.set(app, kEffectsKept(app));
-    kEngineVolume.set(app, kEngineKept(app));
+    gameSettings(app).effectsVolume = kEffectsKept(app);
+    gameSettings(app).engineVolume = kEngineKept(app);
     kMusicOn.set(app, kMusicOnKept(app));
     e.back(cpu, reg32(kMusicOnKept(app)));
 }

@@ -1,5 +1,15 @@
+#include "native_frontend_glue.h"
+#include "native_frontend_draw.h"
+#include "game_settings.h"
+#include "native_controls_devices.h"
+#include "native_ea_support.h"
+#include "native_ea_threads.h"
 #include "native_guest.h"
+#include "native_windows.h"
+#include "port_dialogs.h"
+#include "port_sound_music.h"
 #include "port_text.h"
+#include <winapi/kernel32.h>
 
 #include <cstdint>
 #include <initializer_list>
@@ -30,9 +40,17 @@
  * with the return address's slot, the frame's locals in the guest's memory,
  * the registers as the code leaves them.  The switches go by the targets
  * nfs3.exe's tables hold (0x46c930, 0x46c990, 0x46cac8, 0x4961f0).  Windows'
- * functions are called through their imports' slots, every function of the
- * game's that is not this file's -- and those of this file's that the checks
- * stand in for, for the other files' natives -- by address. */
+ * functions are the port's own, called as C++ (in the checks through their
+ * imports' slots); the typed cores of the port's and the libraries' --
+ * the music's, the dialogs', the files', the locks', the control sets -- as
+ * C++ too (guest::direct: every register but eax kept, as they keep them; in
+ * the checks by address where they stand in), every other function of the
+ * game's by address.
+ *
+ * Plan step 5: each function a typed core in frontend::glue (native_frontend_glue.h) -- its
+ * arguments into the registers, the code run, eax back, the ret left to the adapter under the
+ * game's name, which the calls by address enter.  A core of this file calls another, and
+ * native_frontend_draw.cpp's, as C++ (guest::direct). */
 namespace nfs3hp
 {
 namespace frontend
@@ -58,15 +76,11 @@ constexpr reg32 kNetworkPlayerReady = 0x79f5f8, kNetworkPlayerBytes = 0x60;
 constexpr reg32 kMouseX = 0x55e5e4, kMouseY = 0x55e5e8, kMouseClick = 0x55e5ec;
 constexpr reg32 kMouseButtons = 0x55e5f4, kMouseWheel = 0x55e5f8;
 constexpr reg32 kSliderFlags = 0x55eb2e;      // 0x20 a demo's command line, 0x10 ...
-// The controls.
-constexpr reg32 kGameMode = 0x6fd3b0;         // 1: two players on one screen
-constexpr reg32 kControllers = 0x6fc970;      // 0x88 bytes each, the first byte's 4 a game pad
-constexpr reg32 kFirstDigital = 0x6fd2dc, kSecondDigital = 0x6fd348;
 // The attract mode and the movies.
 constexpr reg32 kMoviesOff = 0x7a1fdc, kMovieFolder = 0x7a32b4;
 constexpr reg32 kClock = 0x79c1a4, kAttractSince = 0x55e548, kAttractMovie = 0x55e54c;
 constexpr reg32 kMouseBeforeX = 0x55e550, kMouseBeforeY = 0x55e554;
-constexpr reg32 kAttractOff = 0x6fbb54, kMusicVolume = 0x6fbbe8, kAttractTicks = 0x1400;
+constexpr reg32 kAttractTicks = 0x1400;
 constexpr reg32 kMovies[] = {0x53beac, 0x53beb8, 0x53bec4, 0x53bed0};   // titleav, demoav1-3.mad
 // The network's locks.
 constexpr reg32 kNetworkLock = 0x55e5b8, kNetworkLock2 = 0x55ecb4, kNetworkLock3 = 0x55ecb8;
@@ -76,15 +90,9 @@ constexpr reg32 kKeyRing = 0x7f6fe0, kKeyRead = 0x7f7474, kKeyLock = 0x7f7478;
 constexpr reg32 kKeyWrite = 0x7f747c, kKeyRingSize = 0x7f7480;
 // What is called by address.
 constexpr reg32 kEnterCriticalSection = 0x5344b8, kLeaveCriticalSection = 0x534588;
-constexpr reg32 kMusicStreamMake = 0x410330, kMusicStart = 0x4104f0, kMusicStop = 0x4109d0;
-constexpr reg32 kMusicStreamEnd = 0x410aa0;
-constexpr reg32 kDialogShown = 0x4438b0;
-constexpr reg32 kSliderSingle = 0x469520, kSliderRange = 0x46afd0;
 constexpr reg32 kPlayMovieFile = 0x495bc0;
 constexpr reg32 kNetworkSlot = 0x4a6690, kClearBuffers = 0x4d5d30;
 constexpr reg32 kClearBuffersReset = 0x4d5d70, kFillZero = 0x4e070c;
-constexpr reg32 kFileExists = 0x4e0e60;
-constexpr reg32 kFreeLock = 0x4eb360;
 constexpr reg32 kKeyCharacter = 0x4f0010, kFlushKeys = 0x4f0240;
 
 void push(win32::WinApplication* app, x86::CPU& cpu, reg32 value)
@@ -127,14 +135,25 @@ bool byAddress(win32::WinApplication* app, x86::CPU& cpu, reg32 target)
     return !cpu.terminate;
 }
 
-/* A Windows function, through its import's slot. */
-bool windows(win32::WinApplication* app, x86::CPU& cpu, reg32 slot)
+/* A Windows function, its words handed: the port's own, called as C++ (native_windows.h); in the
+ * check through its import's slot, as the code calls it.  False when the game stopped in it. */
+template <reg32 Slot, auto Function, typename... Words>
+bool windows(win32::WinApplication* app, x86::CPU& cpu, Words... words)
 {
-    return byAddress(app, cpu, at(app, slot));
+    return guest::windows<Slot, Function>(app, cpu, words...).has_value();
+}
+
+/* ret, the adapters' end: the return address popped, unless the game stopped
+ * in the function. */
+void ret(x86::CPU& cpu)
+{
+    if (!cpu.terminate)
+        cpu.esp += 4;
 }
 
 /* push ebp, mov ebp, esp after the registers named, and sub esp, `locals`;
- * mov esp, ebp, pop ebp, the registers popped and ret the other way. */
+ * mov esp, ebp, pop ebp and the registers popped the other way, the ret left
+ * to the adapter (ret). */
 void enter(win32::WinApplication* app, x86::CPU& cpu, std::initializer_list<reg32*> saved, reg32 locals)
 {
     for (reg32* r : saved)
@@ -150,7 +169,6 @@ void leave(win32::WinApplication* app, x86::CPU& cpu, std::initializer_list<reg3
     cpu.ebp = pop(app, cpu);
     for (auto r = std::rbegin(saved); r != std::rend(saved); ++r)
         **r = pop(app, cpu);
-    cpu.esp += 4;
 }
 
 /* Two bytes a turn from esi to edi to the string's end: esi and al as the
@@ -205,8 +223,9 @@ void nextKey(win32::WinApplication* app, x86::CPU& cpu);
 /* 0x43c000: whether binding eax is digital: 1 unless it is a controller's
  * (its low byte 1), then whether that controller (its top four bits) is a
  * game pad (4 in its record's first byte). */
-void bindingIsDigital(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 glue::bindingIsDigital(App* app, CPU& cpu, reg32 binding)
 {
+    cpu.eax = binding;
     push(app, cpu, cpu.edx);
     push(app, cpu, cpu.ebp);
     cpu.ebp = cpu.esp;
@@ -221,27 +240,28 @@ void bindingIsDigital(win32::WinApplication* app, x86::CPU& cpu)
         cpu.edx = cpu.eax;
         cpu.eax <<= 4;
         cpu.eax += cpu.edx;
-        cpu.eax = (byte(app, cpu.eax * 8 + kControllers) & 4) != 0 ? 1 : 0;
+        cpu.eax = (std::uint8_t(gameSettings(app).deviceAt(cpu.eax * 8).kind) & 4) != 0 ? 1 : 0;
     }
     cpu.ebp = pop(app, cpu);
     cpu.edx = pop(app, cpu);
-    cpu.esp += 4;
+    return cpu.eax;
 }
 
 /* 0x43c040: the game mode's control set (0x4904d0) looked at: whether its
  * steering, throttle and brake are digital (0x6fd2dc on), and the second
  * player's (0x6fd348 on) with two on one screen. */
-void noteDigitalControls(win32::WinApplication* app, x86::CPU& cpu)
+void glue::noteDigitalControls(App* app, CPU& cpu)
 {
     push(app, cpu, cpu.ebx);
     push(app, cpu, cpu.ecx);
     push(app, cpu, cpu.edx);
     push(app, cpu, cpu.ebp);
     cpu.ebp = cpu.esp;
-    cpu.eax = at(app, kGameMode);
-    if (!byAddress(app, cpu, 0x4904d0))
+    cpu.eax = gameSettings(app).playMode;
+    cpu.eax = guest::direct<0x4904d0, controls::controlSets>(app, cpu, cpu.eax);
+    if (cpu.terminate)
         return;
-    cpu.ebx = at(app, kGameMode);
+    cpu.ebx = gameSettings(app).playMode;
     cpu.edx = cpu.eax;
     cpu.ecx = cpu.eax;
     if (cpu.ebx == 1)
@@ -249,30 +269,33 @@ void noteDigitalControls(win32::WinApplication* app, x86::CPU& cpu)
         for (reg32 i = 0; i < 3; ++i)
         {
             cpu.eax = at(app, cpu.edx + 0x38 + 4 * i);
-            if (!direct(app, cpu, bindingIsDigital))
+            guest::direct<0x43c000, bindingIsDigital>(app, cpu, cpu.eax);
+            if (cpu.terminate)
                 return;
-            put(app, kSecondDigital + 4 * i, cpu.eax);
+            gameSettings(app).players[1].digital[i] = cpu.eax;
         }
     }
     for (reg32 i = 0; i < 3; ++i)
     {
         cpu.eax = at(app, cpu.ecx + 4 + 4 * i);
-        if (!direct(app, cpu, bindingIsDigital))
+        guest::direct<0x43c000, bindingIsDigital>(app, cpu, cpu.eax);
+        if (cpu.terminate)
             return;
-        put(app, kFirstDigital + 4 * i, cpu.eax);
+        gameSettings(app).players[0].digital[i] = cpu.eax;
     }
     cpu.ebp = pop(app, cpu);
     cpu.edx = pop(app, cpu);
     cpu.ecx = pop(app, cpu);
     cpu.ebx = pop(app, cpu);
-    cpu.esp += 4;
 }
 
 /* 0x46c9b0: slider eax's value onto the x87's stack -- a range's (kind 2)
  * end edx (0x46afd0), 0 for kind 1, a single one's (0x469520) else -- as a
  * float. */
-void sliderValue(win32::WinApplication* app, x86::CPU& cpu)
+void glue::sliderValue(App* app, CPU& cpu, reg32 slider, reg32 end)
 {
+    cpu.eax = slider;
+    cpu.edx = end;
     enter(app, cpu, {&cpu.ebx, &cpu.ecx}, 4);
     const reg32 ebp = cpu.ebp;
     cpu.ecx = cpu.eax;
@@ -284,14 +307,16 @@ void sliderValue(win32::WinApplication* app, x86::CPU& cpu)
         cpu.ecx &= 0xffff;
     if (cpu.cx == 2)
     {
-        if (!byAddress(app, cpu, kSliderRange))
+        guest::direct<0x46afd0, draw::twoAxisValue>(app, cpu, cpu.eax, cpu.edx);
+        if (cpu.terminate)
             return;
         app->getMemory<float>(ebp - 4) = float(cpu.fpu.pop());
     }
     else if (cpu.cx != 1)
     {
         cpu.edx = 0;
-        if (!byAddress(app, cpu, kSliderSingle))
+        guest::direct<0x469520, draw::sliderStoredValue>(app, cpu, cpu.eax);
+        if (cpu.terminate)
             return;
         app->getMemory<float>(ebp - 4) = float(cpu.fpu.pop());
     }
@@ -300,24 +325,27 @@ void sliderValue(win32::WinApplication* app, x86::CPU& cpu)
 }
 
 /* 0x46cac0: the function slider eax's moves go to, edx (+0x78). */
-void sliderSetOnMove(win32::WinApplication* app, x86::CPU& cpu)
+void glue::sliderSetOnMove(App* app, CPU& cpu, reg32 slider, reg32 function)
 {
+    cpu.eax = slider;
+    cpu.edx = function;
     push(app, cpu, cpu.ebp);
     cpu.ebp = cpu.esp;
     put(app, cpu.eax + 0x78, cpu.edx);
     cpu.ebp = pop(app, cpu);
-    cpu.esp += 4;
 }
 
 /* 0x46cca0: slider eax's bar's colours, bl and dl (+0x3e, +0x3f). */
-void sliderSetColour(win32::WinApplication* app, x86::CPU& cpu)
+void glue::sliderSetColour(App* app, CPU& cpu, reg32 slider, reg32 second, reg32 first)
 {
+    cpu.eax = slider;
+    cpu.edx = second;
+    cpu.ebx = first;
     push(app, cpu, cpu.ebp);
     cpu.ebp = cpu.esp;
     putByte(app, cpu.eax + 0x3e, cpu.bl);
     putByte(app, cpu.eax + 0x3f, cpu.dl);
     cpu.ebp = pop(app, cpu);
-    cpu.esp += 4;
 }
 
 /* 0x4960e0: movie eax played from the movies' folder (0x7a32b4), when movies
@@ -326,8 +354,9 @@ void sliderSetColour(win32::WinApplication* app, x86::CPU& cpu)
  * quality the processor's speed allows (1 under 133 MHz, 2 under 200, 3),
  * told the processor is slow under 133; the buffers cleared again, the keys
  * flushed, the music's stream made again.  1. */
-void playMovie(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 glue::playMovie(App* app, CPU& cpu, reg32 movie)
 {
+    cpu.eax = movie;
     push(app, cpu, cpu.ebx);
     push(app, cpu, cpu.ecx);
     push(app, cpu, cpu.edx);
@@ -364,13 +393,19 @@ void playMovie(win32::WinApplication* app, x86::CPU& cpu)
         copyPairs(app, cpu);
         cpu.edi = pop(app, cpu);
         cpu.eax = ebp - 0x7e;
-        if (!byAddress(app, cpu, kFileExists))
-            return;
+        const std::optional<bool> there = guest::direct<0x4e0e60, ea::fileThere>(app, cpu, cpu.eax);
+        if (!there)
+            return cpu.eax;
+        cpu.eax = *there ? 1 : 0;
         if (cpu.eax != 0)
         {
-            if (!byAddress(app, cpu, kFlushKeys) || !byAddress(app, cpu, kClearBuffers)
-                || !byAddress(app, cpu, kMusicStreamEnd))
-                return;
+            if (!byAddress(app, cpu, kFlushKeys) || !byAddress(app, cpu, kClearBuffers))
+                return cpu.eax;
+            const port::Result ended =
+                guest::direct<0x410aa0, port::musicStreamEndOf>(app, cpu, cpu.esp - 4, cpu.eax, cpu.ebx, cpu.ecx);
+            if (!ended)
+                return cpu.eax;
+            cpu.eax = reg32(*ended);
             // The movies' best quality, every frame: no phone is too slow for them.
             put(app, ebp + 0x7e, cpu.edx);
             cpu.ecx = 3;
@@ -379,8 +414,13 @@ void playMovie(win32::WinApplication* app, x86::CPU& cpu)
             cpu.eax = ebp - 0x7e;
             cpu.ebx = 0;
             if (!byAddress(app, cpu, kPlayMovieFile) || !byAddress(app, cpu, kClearBuffersReset)
-                || !byAddress(app, cpu, kFlushKeys) || !byAddress(app, cpu, kMusicStreamMake))
-                return;
+                || !byAddress(app, cpu, kFlushKeys))
+                return cpu.eax;
+            const port::Result made =
+                guest::direct<0x410330, port::musicStreamMade>(app, cpu, cpu.esp - 4, cpu.eax, cpu.ecx);
+            if (!made)
+                return cpu.eax;
+            cpu.eax = reg32(*made);
         }
     }
     cpu.eax = 1;
@@ -391,25 +431,24 @@ void playMovie(win32::WinApplication* app, x86::CPU& cpu)
     cpu.edx = pop(app, cpu);
     cpu.ecx = pop(app, cpu);
     cpu.ebx = pop(app, cpu);
-    cpu.esp += 4;
+    return cpu.eax;
 }
 
 /* 0x4961e0: the attract mode's wait started again, from the clock now. */
-void resetAttractTimer(win32::WinApplication* app, x86::CPU& cpu)
+void glue::resetAttractTimer(App* app, CPU& cpu)
 {
     push(app, cpu, cpu.ebp);
     cpu.ebp = cpu.esp;
     cpu.eax = at(app, kClock);
     put(app, kAttractSince, cpu.eax);
     cpu.ebp = pop(app, cpu);
-    cpu.esp += 4;
 }
 
 /* 0x496200: the main menu's attract mode, every pass: with movies on and it
  * not off (0x6fbb54), its wait started again while a dialog is up or as the
  * mouse moves (0); 0x1400 ticks on, the music stopped, the next of its four
  * movies played (0x55e54c, 0 to 3), the menus' tune started again, 1. */
-void attractMode(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 glue::attractMode(App* app, CPU& cpu)
 {
     push(app, cpu, cpu.ebx);
     push(app, cpu, cpu.ecx);
@@ -423,17 +462,23 @@ void attractMode(win32::WinApplication* app, x86::CPU& cpu)
         cpu.edx = pop(app, cpu);
         cpu.ecx = pop(app, cpu);
         cpu.ebx = pop(app, cpu);
-        cpu.esp += 4;
+        return cpu.eax;
     };
-    if (at(app, kMoviesOff) != 0 || at(app, kAttractOff) != 0)
+    if (at(app, kMoviesOff) != 0 || gameSettings(app).installIsRemote != 0)
     {
         cpu.eax = 0;
         return done();
     }
-    if (!byAddress(app, cpu, kDialogShown))
-        return;
-    if (cpu.al != 0 && !direct(app, cpu, resetAttractTimer))
-        return;
+    // Whether a dialog is up: al (port_dialogs.cpp's), the rest of eax as it came.
+    cpu.al = guest::direct<0x4438b0, port::dialogs::dialogShownOf>(app, cpu);
+    if (cpu.terminate)
+        return cpu.eax;
+    if (cpu.al != 0)
+    {
+        guest::direct<0x4961e0, resetAttractTimer>(app, cpu);
+        if (cpu.terminate)
+            return cpu.eax;
+    }
     cpu.ebx = at(app, kMouseX);
     bool moved = cpu.ebx != at(app, kMouseBeforeX);
     if (!moved)
@@ -447,8 +492,9 @@ void attractMode(win32::WinApplication* app, x86::CPU& cpu)
         put(app, kMouseBeforeX, cpu.eax);
         cpu.eax = at(app, kMouseY);
         put(app, kMouseBeforeY, cpu.eax);
-        if (!direct(app, cpu, resetAttractTimer))
-            return;
+        guest::direct<0x4961e0, resetAttractTimer>(app, cpu);
+        if (cpu.terminate)
+            return cpu.eax;
         cpu.eax = 0;
         return done();
     }
@@ -459,21 +505,27 @@ void attractMode(win32::WinApplication* app, x86::CPU& cpu)
         cpu.eax = 0;
         return done();
     }
-    if (!byAddress(app, cpu, kMusicStop))
-        return;
+    const port::Result stopped = guest::direct<0x4109d0, port::musicStopped>(app, cpu, cpu.esp - 4, cpu.eax);
+    if (!stopped)
+        return cpu.eax;
+    cpu.eax = reg32(*stopped);
     cpu.eax = at(app, kAttractMovie);
     // The table at 0x4961f0: 0x4962a3, 0x4962aa, 0x4962b1, 0x4962b8.
     if (cpu.eax <= 3)
     {
         cpu.eax = kMovies[cpu.eax];
-        if (!direct(app, cpu, playMovie))
-            return;
+        guest::direct<0x4960e0, playMovie>(app, cpu, cpu.eax);
+        if (cpu.terminate)
+            return cpu.eax;
     }
     cpu.eax = 0x16;
-    cpu.edx = at(app, kMusicVolume);
+    cpu.edx = gameSettings(app).menuMusicVolume;
     cpu.ebx = 0;
-    if (!byAddress(app, cpu, kMusicStart))
-        return;
+    const port::Result started = guest::direct<0x4104f0, port::musicStarted>(
+        app, cpu, cpu.esp - 4, std::int32_t(cpu.eax), std::int32_t(cpu.edx), std::int32_t(cpu.ebx));
+    if (!started)
+        return cpu.eax;
+    cpu.eax = reg32(*started);
     cpu.edx = at(app, kAttractMovie);
     ++cpu.edx;
     cpu.ecx = 4;
@@ -483,30 +535,38 @@ void attractMode(win32::WinApplication* app, x86::CPU& cpu)
     cpu.eax = reg32(sreg32(dividend / 4));
     cpu.edx = reg32(sreg32(dividend % 4));
     put(app, kAttractMovie, cpu.edx);
-    if (!direct(app, cpu, resetAttractTimer))
-        return;
+    guest::direct<0x4961e0, resetAttractTimer>(app, cpu);
+    if (cpu.terminate)
+        return cpu.eax;
     cpu.eax = 1;
-    done();
+    return done();
 }
 
 /* 0x49a4d0: the network's three locks freed (0x4eb360) and forgotten, the
  * record at 0x79f918 cleared. */
-void freeNetworkLocks(win32::WinApplication* app, x86::CPU& cpu)
+void glue::freeNetworkLocks(App* app, CPU& cpu)
 {
+    // Lock eax freed (native_ea_threads.cpp's), eax its result; false when the game stopped.
+    const auto freeLock = [&] {
+        const std::optional<reg32> head = guest::direct<0x4eb360, ea::lockFreed>(app, cpu, cpu.eax);
+        if (head)
+            cpu.eax = *head;
+        return head.has_value();
+    };
     push(app, cpu, cpu.edx);
     push(app, cpu, cpu.ebp);
     cpu.ebp = cpu.esp;
     cpu.eax = at(app, kNetworkLock);
-    if (!byAddress(app, cpu, kFreeLock))
+    if (!freeLock())
         return;
     cpu.edx = 0;
     cpu.eax = at(app, kNetworkLock2);
     put(app, kNetworkLock, cpu.edx);
-    if (!byAddress(app, cpu, kFreeLock))
+    if (!freeLock())
         return;
     cpu.eax = at(app, kNetworkLock3);
     put(app, kNetworkLock2, cpu.edx);
-    if (!byAddress(app, cpu, kFreeLock))
+    if (!freeLock())
         return;
     cpu.eax = kNetworkRecord;
     put(app, kNetworkLock3, cpu.edx);
@@ -515,12 +575,11 @@ void freeNetworkLocks(win32::WinApplication* app, x86::CPU& cpu)
         return;
     cpu.ebp = pop(app, cpu);
     cpu.edx = pop(app, cpu);
-    cpu.esp += 4;
 }
 
 /* 0x49ab60: 1 when in a network race of two machines or more every other
  * machine's player (0x4a6690) is ready (0x79f5f8, 0x60 a player); else 0. */
-void allPlayersReady(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 glue::allPlayersReady(App* app, CPU& cpu)
 {
     push(app, cpu, cpu.ecx);
     push(app, cpu, cpu.edx);
@@ -530,7 +589,7 @@ void allPlayersReady(win32::WinApplication* app, x86::CPU& cpu)
         cpu.ebp = pop(app, cpu);
         cpu.edx = pop(app, cpu);
         cpu.ecx = pop(app, cpu);
-        cpu.esp += 4;
+        return cpu.eax;
     };
     cpu.eax = 0;
     if (at(app, kNetworkRace) == 0 || sreg16(half(app, kNetworkPlayers + 2)) < 2)
@@ -543,7 +602,7 @@ void allPlayersReady(win32::WinApplication* app, x86::CPU& cpu)
             break;
         cpu.eax = reg32(sreg32(sreg16(cpu.dx)));
         if (!byAddress(app, cpu, kNetworkSlot))
-            return;
+            return cpu.eax;
         cwde(cpu);
         if (cpu.eax == 0xffffffff)
         {
@@ -562,14 +621,14 @@ void allPlayersReady(win32::WinApplication* app, x86::CPU& cpu)
         ++cpu.edx;
     }
     cpu.eax = 1;
-    done();
+    return done();
 }
 
 /* 0x49c080: the mouse read into the menus' (0x55e5f4 its buttons, 0x55e5e4
  * and 0x55e5e8 the pointer, 0x55e5f8 the wheel) as a key: a button pressed,
  * the click forgotten (0x55e5ec) and Enter (0xd) for the left, Escape (0x1b)
  * for another; none, 0. */
-void mouseKey(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 glue::mouseKey(App* app, CPU& cpu)
 {
     push(app, cpu, cpu.ebx);
     push(app, cpu, cpu.ecx);
@@ -581,7 +640,7 @@ void mouseKey(win32::WinApplication* app, x86::CPU& cpu)
     cpu.edx = kMouseX;
     cpu.eax = kMouseButtons;
     if (!direct(app, cpu, port::text::readMenuMouse))
-        return;
+        return cpu.eax;
     cpu.ah = byte(app, kMouseButtons);
     if ((cpu.ah & 0xf) != 0)
     {
@@ -595,13 +654,14 @@ void mouseKey(win32::WinApplication* app, x86::CPU& cpu)
     cpu.edx = pop(app, cpu);
     cpu.ecx = pop(app, cpu);
     cpu.ebx = pop(app, cpu);
-    cpu.esp += 4;
+    return cpu.eax;
 }
 
 /* 0x49c1f0: whether the menus' pointer is inside box eax (y, x, width,
  * height, words), edges out. */
-void pointerInBox(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 glue::pointerInBox(App* app, CPU& cpu, reg32 box)
 {
+    cpu.eax = box;
     push(app, cpu, cpu.ebx);
     push(app, cpu, cpu.ecx);
     push(app, cpu, cpu.edx);
@@ -635,23 +695,22 @@ void pointerInBox(win32::WinApplication* app, x86::CPU& cpu)
     cpu.edx = pop(app, cpu);
     cpu.ecx = pop(app, cpu);
     cpu.ebx = pop(app, cpu);
-    cpu.esp += 4;
+    return cpu.eax;
 }
 
 /* 0x4cc970: the next key off the keyboard's ring, under its lock: its scan
  * code in the high word, its character -- the ring's, or the scan code's
  * with the shifts of its low byte (0x4f0010) -- in the low; keys without one
  * passed over; none, 0. */
-void nextKey(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 glue::nextKey(App* app, CPU& cpu)
 {
     enter(app, cpu, {&cpu.ebx, &cpu.ecx, &cpu.edx, &cpu.esi, &cpu.edi}, 4);
     const reg32 ebp = cpu.ebp;
     cpu.edx = at(app, kKeyLock);
-    push(app, cpu, cpu.edx);
     cpu.esi = 0;
     cpu.ebx = 0;
-    if (!windows(app, cpu, kEnterCriticalSection))
-        return;
+    if (!windows<kEnterCriticalSection, &win32::kernel32::EnterCriticalSection>(app, cpu, cpu.edx))
+        return cpu.eax;
     for (;;)
     {
         cpu.ecx = at(app, kKeyWrite);
@@ -669,7 +728,7 @@ void nextKey(win32::WinApplication* app, x86::CPU& cpu)
             cpu.eax = cpu.esi;
             cpu.dl = byte(app, ebp - 4);
             if (!byAddress(app, cpu, kKeyCharacter))
-                return;
+                return cpu.eax;
             cpu.ebx = cpu.eax;
         }
         cpu.edx = at(app, kKeyRead);
@@ -683,13 +742,93 @@ void nextKey(win32::WinApplication* app, x86::CPU& cpu)
         put(app, kKeyRead, cpu.edx);
     }
     cpu.edi = at(app, kKeyLock);
-    push(app, cpu, cpu.edi);
-    if (!windows(app, cpu, kLeaveCriticalSection))
-        return;
+    if (!windows<kLeaveCriticalSection, &win32::kernel32::LeaveCriticalSection>(app, cpu, cpu.edi))
+        return cpu.eax;
     cpu.eax = cpu.esi;
     cpu.eax <<= 16;
     cpu.eax |= cpu.ebx;
     leave(app, cpu, {&cpu.ebx, &cpu.ecx, &cpu.edx, &cpu.esi, &cpu.edi});
+    return cpu.eax;
+}
+
+/* The adapters under the game's names, which disassemble_nfs3hp.py binds the addresses to: the
+ * arguments from the registers, the core, the ret. */
+void bindingIsDigital(win32::WinApplication* app, x86::CPU& cpu)
+{
+    glue::bindingIsDigital(app, cpu, cpu.eax);
+    ret(cpu);
+}
+
+void noteDigitalControls(win32::WinApplication* app, x86::CPU& cpu)
+{
+    glue::noteDigitalControls(app, cpu);
+    ret(cpu);
+}
+
+void sliderValue(win32::WinApplication* app, x86::CPU& cpu)
+{
+    glue::sliderValue(app, cpu, cpu.eax, cpu.edx);
+    ret(cpu);
+}
+
+void sliderSetOnMove(win32::WinApplication* app, x86::CPU& cpu)
+{
+    glue::sliderSetOnMove(app, cpu, cpu.eax, cpu.edx);
+    ret(cpu);
+}
+
+void sliderSetColour(win32::WinApplication* app, x86::CPU& cpu)
+{
+    glue::sliderSetColour(app, cpu, cpu.eax, cpu.edx, cpu.ebx);
+    ret(cpu);
+}
+
+void playMovie(win32::WinApplication* app, x86::CPU& cpu)
+{
+    glue::playMovie(app, cpu, cpu.eax);
+    ret(cpu);
+}
+
+void resetAttractTimer(win32::WinApplication* app, x86::CPU& cpu)
+{
+    glue::resetAttractTimer(app, cpu);
+    ret(cpu);
+}
+
+void attractMode(win32::WinApplication* app, x86::CPU& cpu)
+{
+    glue::attractMode(app, cpu);
+    ret(cpu);
+}
+
+void freeNetworkLocks(win32::WinApplication* app, x86::CPU& cpu)
+{
+    glue::freeNetworkLocks(app, cpu);
+    ret(cpu);
+}
+
+void allPlayersReady(win32::WinApplication* app, x86::CPU& cpu)
+{
+    glue::allPlayersReady(app, cpu);
+    ret(cpu);
+}
+
+void mouseKey(win32::WinApplication* app, x86::CPU& cpu)
+{
+    glue::mouseKey(app, cpu);
+    ret(cpu);
+}
+
+void pointerInBox(win32::WinApplication* app, x86::CPU& cpu)
+{
+    glue::pointerInBox(app, cpu, cpu.eax);
+    ret(cpu);
+}
+
+void nextKey(win32::WinApplication* app, x86::CPU& cpu)
+{
+    glue::nextKey(app, cpu);
+    ret(cpu);
 }
 
 }  // namespace frontend

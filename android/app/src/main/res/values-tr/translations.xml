@@ -31,13 +31,6 @@
  <string name="touch_settings">Dokunmatik kontroller</string>
  <string name="screen_settings">Ekran</string>
  <string name="display_settings">Ekran</string>
- <string name="screen_adjustment">Görüntü ayarı</string>
- <string name="brightness_label">Parlaklık</string>
- <string name="contrast_label">Kontrast</string>
- <string name="adjust_hint">Örnekler sonucu gösterir. Oyunun bir sonraki açılışında etkili olur.</string>
- <string name="adjust_reset">Sıfırla</string>
- <string name="sample_dark">Gece</string>
- <string name="sample_bright">Gündüz</string>
  <string name="back_to_launcher">Geri</string>
  <string name="switch_data">Etkinleştir</string>
  <string name="data_change">Değiştir…</string>
@@ -71,7 +64,6 @@
  <string name="orientation_landscape_reverse">Sabit — yatay, ters</string>
  <string name="fps_30">30 FPS</string>
  <string name="fps_60">60 FPS</string>
- <string name="gamma_label">Gama</string>
  <string name="fps_cap_label">Kare hızı</string>
  <string name="fps_error">1 ile 240 arasında bir tam sayı gir</string>
  <string name="save">Kaydet</string>
@@ -156,6 +148,8 @@
  <string name="faq_mapping"><b>Kumandalar</b>\nOyun her zaman iki kumanda görür: Kumanda 1, dokunmatik kontrollerle birlikte 1. oyuncudur, Kumanda 2 ise 2. oyuncudur. Kontroller → Kumandalar bölümünde üzerindeki bir düğmeye basarak hangi kumandanın hangisi olduğunu seç, her düğmenin ne yaptığını ayarla, ardından Kumanda AÇIK düğmesine bir kez bas. Bu, uygun kontrolleri oyun ayarlarına yazar ve eski dosyanın yedeğini alır. Sol çubuk direksiyonu çevirir, tetikler gaz verir ve fren yapar. Kumandanın iki düğme takımı vardır, tıpkı dokunmatik kontrollerin iki yerleşimi olduğu gibi: burada ayarladığın yarış takımı ve menülerle tekrarlar için sabit olan takım — orada Cross / A onaylar, Circle / B geri gider, yön tuşları seçimi taşır. Klavyeyle oynamak için bunun yerine Oyun varsayılanı seçeneğini yaz.</string>
  <string name="faq_lights"><b>Farlar ve piste dönüş</b>\n☼ L gönderir. ↻ piste dönmek için R gönderir. Tuşlar Kontroller → Dokunma → Tuşlar bölümünde değiştirilebilir.</string>
  <string name="faq_screen_data"><b>Ekran ve oyun verileri</b>\nYatay oyunu yatayda kilitler; Otomatik dönüşe izin verir. FPS sınırı kare hızını kısar; daha düşük bir değer saniyedeki işi azaltır. «Oyun verileri» içe aktarmaları yönetir ve hangi kümenin etkin olduğunu gösterir. Bir küme hazır olduğunda «Oyna» etkinleşir.</string>
+ <string name="faq_picture"><b>Parlaklık, kontrast ve gama</b>\nBunlar oyunun içinden ayarlanır: Options → Graphics → Advanced Settings veya yarış sırasında duraklatma menüsündeki Graphics. Kaydırıcıyı hareket ettirdikçe görüntü hemen değişir. Done değerleri korur, Cancel öncekileri geri getirir. Ayarlar yarışlarda, menülerde ve videolarda geçerlidir.</string>
+ <string name="faq_network"><b>Ağ yarışları</b>\nOyunun ilk ekranında Connect Players öğesini açın. Local WiFi, aynı Wi-Fi ağındaki telefonlar arasındaki yarışları kendisi bulur. Network (TCP), sunucunun adresini bilen herkese, orijinal oyunu veya Modern Patch’i çalıştıran bir PC’ye de bağlanır. Altlarında bu telefonun adresi (Your IP) ve TCP Port görünür: dokunmak 9803 (Modern Patch) ile 1030 (orijinal oyun) arasında geçiş yapar. Bir TCP yarışındaki tüm oyuncular aynı bağlantı noktasını kullanmalıdır.</string>
  <string name="gamepad_buttons">Düğmeler</string>
  <string name="gamepad_buttons_title">Kumanda %1$d düğmeleri</string>
  <string name="gamepad_buttons_hint">Bu kumandanın her düğmesinin sürerken ne yaptığı. Sol çubuk direksiyonu çevirir, sağ tetik gaz verir, sol tetik fren yapar. Menülerde ve tekrarlarda düğmeler sabittir ve ayar gerektirmez: Cross / A ile Options / Menu onaylar, Circle / B ile Create / View geri gider, yön tuşları seçimi taşır. Düğme işlemleri, kumanda kontrolleri oyuna yazıldıktan sonra oyuna ulaşır.</string>
@@ -191,12 +185,5 @@
  <string name="force_feedback_phone_note">Telefon çarpışmaları, inişleri ve vites değişimlerini, yüksek devirde motoru ve keskin virajları verir.</string>
  <string name="force_feedback_gamepad_note">Kumanda 1, oyunun efektlerini olduğu gibi verir. Güçleri oyunda ayarlanır: Options → Controllers → Force Feedback.</string>
  <string name="editor_snap_grid">Izgaraya hizala</string>
- <string name="network_title">Ağ</string>
- <string name="network_address">Bu cihazın ağdaki adresi: %1$s</string>
- <string name="network_no_address">Ağ bağlantısı yok</string>
- <string name="network_port_label">TCP/IP bağlantı noktası</string>
- <string name="network_port_modern">9803 · Modern Patch</string>
- <string name="network_port_original">1030 · orijinal oyun</string>
- <string name="network_hint">IPX bu Wi-Fi ağındaki yarışları kendisi bulur. TCP/IP, sunucunun adresini bilen herkese bağlanır; orijinal oyunu ya da Modern Patch\'i çalıştıran bir PC\'ye de. Tüm oyuncular aynı bağlantı noktasını kullanır.</string>
  <string name="fps_unlimited">Sınırsız</string>
 </resources>

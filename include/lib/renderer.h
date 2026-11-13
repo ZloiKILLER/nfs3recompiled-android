@@ -15,6 +15,17 @@ namespace win32
 class Window;
 class ThrashRenderer;
 
+/* What the final blit does to the finished frame, as its shader takes them:
+ * gamma and contrast 1 and brightness 0 leave the picture as it was drawn. */
+struct DisplayAdjustment
+{
+    float gamma;
+    float brightness;
+    float contrast;
+};
+DisplayAdjustment displayAdjustment();
+void setDisplayAdjustment(const DisplayAdjustment& adjustment);
+
 class Renderer: public GenericResource
 {
 

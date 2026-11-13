@@ -1,3 +1,4 @@
+#include "game_settings.h"
 #include "diag_hooks.h"
 #include "replay_trace.h"
 
@@ -21,8 +22,8 @@ namespace nfs3hp
 namespace
 {
 
-constexpr x86::reg32 kCars = 0x5e1120, kCarBytes = 0x9ac, kCarCount = 0x6fd510;
-constexpr x86::reg32 kClock = 0x7d3684, kPlayerIndex = 0x6fd4f4, kPlayerCars = 0x5efa48, kReplay = 0x6fd3a0;
+constexpr x86::reg32 kCars = 0x5e1120, kCarBytes = 0x9ac;
+constexpr x86::reg32 kClock = 0x7d3684, kPlayerCars = 0x5efa48;
 
 SDL_IOStream* s_file = nullptr;
 const char* s_what = "";
@@ -44,7 +45,7 @@ void openTrace(win32::WinApplication* app)
     const char* root = SDL_GetAndroidExternalStoragePath();
     if (!root)
         return;
-    const bool replay = app->getMemory<x86::reg32>(kReplay) == 2;
+    const bool replay = gameSettings(app).replayMode == 2;
     s_what = replay ? "replay" : "race";
     const std::string folder = std::string(root) + "/logs";
     mkdir(folder.c_str(), 0770);
@@ -55,7 +56,7 @@ void openTrace(win32::WinApplication* app)
         SDL_Log("[TRACE] cannot write %s", path.c_str());
         return;
     }
-    s_cars = app->getMemory<x86::reg32>(kCarCount);
+    s_cars = gameSettings(app).entryCount;
     s_steps = 0;
     const x86::reg32 header[4] = {0x5254464e, 1, replay ? 1u : 0u, s_cars};
     SDL_WriteIO(s_file, header, sizeof header);
@@ -64,7 +65,7 @@ void openTrace(win32::WinApplication* app)
 
 void carStepped(win32::WinApplication* app, x86::reg32 car)
 {
-    const x86::reg32 player = app->getMemory<x86::reg32>(kPlayerIndex);
+    const x86::reg32 player = gameSettings(app).localPlayer;
     if (player >= 16 || car != app->getMemory<x86::reg32>(kPlayerCars + player * 4))
         return;
     const x86::reg32 clock = app->getMemory<x86::reg32>(kClock);
@@ -73,7 +74,7 @@ void carStepped(win32::WinApplication* app, x86::reg32 car)
      * going round again, whose first pass it already has. */
     if (s_file && clock < s_lastClock)
     {
-        s_passDone = app->getMemory<x86::reg32>(kReplay) == 2;
+        s_passDone = gameSettings(app).replayMode == 2;
         closeTrace(app);
     }
     if (s_passDone)

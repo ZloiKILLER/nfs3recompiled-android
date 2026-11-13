@@ -608,8 +608,10 @@ DWORD GetFullPathNameA(WinApplication* app, x86::CPU& cpu,
                        LPCSTR lpFileName, DWORD nBufferLength, LPSTR lpBuffer, x86::reg32* lpFilePart)
 {
     NFS2_USE(nBufferLength);
-    x86::reg32 lpBufferAddress = app->getMemory<x86::reg32>(cpu.esp + 12);
-    NFS2_ASSERT(&app->getMemory<char>(lpBufferAddress) == lpBuffer);
+    // The buffer's address in the game's memory, from the pointer (not the stack: a C++ caller,
+    // guest::windows, pushes none).
+    NFS2_USE(cpu);
+    const x86::reg32 lpBufferAddress = app->guestAddress(lpBuffer);
     strcpy(lpBuffer, "C:\\nfs2se\\");
     *lpFilePart = lpBufferAddress + static_cast<x86::reg32>(strlen(lpBuffer));
     strcat(lpBuffer, lpFileName);

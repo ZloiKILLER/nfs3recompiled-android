@@ -31,13 +31,6 @@
  <string name="touch_settings">Управљање додиром</string>
  <string name="screen_settings">Екран</string>
  <string name="display_settings">Екран</string>
- <string name="screen_adjustment">Подешавање слике</string>
- <string name="brightness_label">Осветљеност</string>
- <string name="contrast_label">Контраст</string>
- <string name="adjust_hint">Узорци приказују резултат. Примењује се при следећем покретању игре.</string>
- <string name="adjust_reset">Врати</string>
- <string name="sample_dark">Ноћ</string>
- <string name="sample_bright">Дан</string>
  <string name="back_to_launcher">Назад</string>
  <string name="switch_data">Активирај</string>
  <string name="data_change">Промени…</string>
@@ -71,7 +64,6 @@
  <string name="orientation_landscape_reverse">Фиксно — водоравно, обрнуто</string>
  <string name="fps_30">30 FPS</string>
  <string name="fps_60">60 FPS</string>
- <string name="gamma_label">Гама</string>
  <string name="fps_cap_label">Број слика</string>
  <string name="fps_error">Унеси цео број од 1 до 240</string>
  <string name="save">Сачувај</string>
@@ -156,6 +148,8 @@
  <string name="faq_mapping"><b>Контролери</b>\nИгра увек види два контролера: контролер 1 је играч 1 заједно са управљањем додиром, контролер 2 је играч 2. У Управљање → Контролери притиском тастера изабери који је контролер чији и подеси шта ради сваки тастер, затим једном притисни Контролер УКЉУЧЕН. То у подешавања игре уписује одговарајуће управљање и резервно копира стару датотеку. Лева палица скреће, окидачи убрзавају и коче. Контролер има два скупа тастера, као што управљање додиром има два распореда: тркачки, који се подешава овде, и непроменљив за меније и снимке, где Cross / A потврђује, Circle / B враћа назад, а крст помера избор. За играње на тастатури уместо тога упиши Подразумевано у игри.</string>
  <string name="faq_lights"><b>Светла и повратак на стазу</b>\n☼ шаље L. ↻ шаље R за повратак на стазу. Тастери могу да се промене у Управљање → Додир → Тастери.</string>
  <string name="faq_screen_data"><b>Екран и подаци игре</b>\nВодоравно закључава игру водоравно; Аутоматски дозвољава ротацију. Ограничење FPS-а смањује број сличица; нижа вредност смањује оптерећење. «Подаци игре» управљају увозима и показују који је скуп активан. «Играј» се омогућава кад је скуп спреман.</string>
+ <string name="faq_picture"><b>Осветљеност, контраст и гама</b>\nПодешавају се у самој игри: Options → Graphics → Advanced Settings или Graphics у менију паузе током трке. Слика се мења одмах док померате клизач. Done чува вредности, Cancel враћа претходне. Подешавања важе за трке, меније и видео-снимке.</string>
+ <string name="faq_network"><b>Мрежне трке</b>\nОтворите Connect Players на првом екрану игре. Local WiFi сам проналази трке између телефона на истој Wi-Fi мрежи. Network (TCP) повезује са свима који знају адресу хоста, укључујући рачунар са оригиналном игром или Modern Patch-ом. Испод се виде адреса овог телефона (Your IP) и TCP Port: додир пребацује између 9803 (Modern Patch) и 1030 (оригинална игра). Сви играчи TCP трке морају да користе исти порт.</string>
  <string name="gamepad_buttons">Тастери</string>
  <string name="gamepad_buttons_title">Тастери контролера %1$d</string>
  <string name="gamepad_buttons_hint">Шта ради сваки тастер овог контролера док возиш. Лева палица скреће, десни окидач убрзава, а леви кочи. У менијима и снимцима тастери су непроменљиви и не подешавају се: Cross / A и Options / Menu потврђују, Circle / B и Create / View враћају назад, крст помера избор. Радње тастера стижу до игре кад се у њу упише управљање контролерима.</string>
@@ -191,12 +185,5 @@
  <string name="force_feedback_phone_note">Телефон репродукује сударе, доскоке и промене брзина, мотор на високим обртајима и оштра скретања.</string>
  <string name="force_feedback_gamepad_note">Контролер 1 репродукује ефекте игре какви јесу. Њихова јачина подешава се у игри: Options → Controllers → Force Feedback.</string>
  <string name="editor_snap_grid">Поравнај са мрежом</string>
- <string name="network_title">Мрежа</string>
- <string name="network_address">Адреса овог уређаја у мрежи: %1$s</string>
- <string name="network_no_address">Нема мрежне везе</string>
- <string name="network_port_label">TCP/IP порт</string>
- <string name="network_port_modern">9803 · Modern Patch</string>
- <string name="network_port_original">1030 · оригинална игра</string>
- <string name="network_hint">IPX сам проналази трке у овој Wi-Fi мрежи. TCP/IP повезује са сваким ко зна адресу домаћина, и са PC-јем са оригиналном игром или Modern Patch-ом. Сви играчи користе исти порт.</string>
  <string name="fps_unlimited">Без ограничења</string>
 </resources>

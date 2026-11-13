@@ -42,6 +42,11 @@ case kRaceloadFits:
 {0x495230, "the loading bar drawn", kStdcall, 0, 1, 0, -1, 0, kNothing},
 {0x48f550, "the race's controls read", kWatcom, 0, 0, kEax, -1, 0, kNothing},
 {0x42bcb0, "a car placed on the grid", kWatcom, 1, 0, kEax, -1, 0, kNothing},
+// loadFile (loadfileadr), the name eax and the flags edx and no more: the
+// callers' ebx and ecx are not its (it pushes them), and the cars' .viv's
+// typed loading leaves its own there.  sound_lib.inc's row (4 registers)
+// comes after this one, so this is the one every check has.
+{0x4e0ec0, "a file loaded", kWatcom, 2, 0, kEax, -1, 0, kLoad},
 #elif defined(RACELOAD_POINTERS)
 // {slot, "name", convention, registers, words, clobbers, through, deref, effect},
 #elif defined(RACELOAD_PROMISES)

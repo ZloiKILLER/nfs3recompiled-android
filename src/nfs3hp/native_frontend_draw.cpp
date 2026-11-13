@@ -1,3 +1,4 @@
+#include "native_frontend_draw.h"
 #include "native_guest.h"
 #include "port_text.h"
 
@@ -19,7 +20,11 @@
  * the registers as the code leaves them; the x87's stack pushed and popped a
  * value at a time.  What the menus' other code and the graphics' natives do
  * is called by address, and so is what of this file has a stand-in in
- * tools/game_checks, which holds each against its generated code. */
+ * tools/game_checks, which holds each against its generated code.
+ *
+ * Plan step 5: each function a typed core in frontend::draw (native_frontend_draw.h) -- its
+ * arguments into the registers, the code run, eax back, the ret left to the adapter under the
+ * game's name, which the calls by address enter. */
 namespace nfs3hp
 {
 namespace frontend
@@ -197,6 +202,14 @@ bool belowOrEqual(const x86::CPU& cpu)
     return cpu.fpu.status.c0 || cpu.fpu.status.c3;
 }
 
+/* ret, the adapters' end: the return address popped, unless the game stopped
+ * in the function. */
+void ret(x86::CPU& cpu)
+{
+    if (!cpu.terminate)
+        cpu.esp += 4;
+}
+
 /* push ebp, mov ebp, esp after the registers named, and sub esp, `locals`;
  * leave it the other way round, ret `popped`. */
 void enter(win32::WinApplication* app, x86::CPU& cpu, std::initializer_list<reg32*> saved, reg32 locals)
@@ -292,30 +305,32 @@ void inlineAppend(win32::WinApplication* app, x86::CPU& cpu)
 }  // namespace
 
 /* 0x469520: the value of the slider at eax, onto the x87's stack. */
-void sliderStoredValue(win32::WinApplication* app, x86::CPU& cpu)
+void draw::sliderStoredValue(App* app, CPU& cpu, reg32 slider)
 {
+    cpu.eax = slider;
     push(app, cpu, cpu.ebp);
     cpu.ebp = cpu.esp;
     cpu.fpu.push(loadFloat(app, cpu.eax + 0x54));
     cpu.ebp = pop(app, cpu);
-    cpu.esp += 4;
 }
 
 /* 0x46afd0: value edx of the two-axis slider at eax, onto the x87's stack. */
-void twoAxisValue(win32::WinApplication* app, x86::CPU& cpu)
+void draw::twoAxisValue(App* app, CPU& cpu, reg32 slider, reg32 end)
 {
+    cpu.eax = slider;
+    cpu.edx = end;
     push(app, cpu, cpu.ebp);
     cpu.ebp = cpu.esp;
     cpu.fpu.push(loadFloat(app, cpu.eax + cpu.edx * 4 + 0x54));
     cpu.ebp = pop(app, cpu);
-    cpu.esp += 4;
 }
 
 /* 0x4956f0: the .qfs file named at eax loaded (the formats' 0x4f2e20,
  * eax its result): the name copied into the frame, [0x55e544]'s extension put
  * after it where it has none of its own. */
-void loadQfs(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 draw::loadQfs(App* app, CPU& cpu, reg32 fileName)
 {
+    cpu.eax = fileName;
     enter(app, cpu, {&cpu.ebx, &cpu.ecx, &cpu.esi, &cpu.edi}, 0x200);
     cpu.ebp -= 0x27e;
     const reg32 name = cpu.ebp + 0x7e;
@@ -347,14 +362,34 @@ void loadQfs(win32::WinApplication* app, x86::CPU& cpu)
     }
     cpu.eax = name;
     if (!byAddress(app, cpu, kLoadQfsFile))
-        return;
+        return cpu.eax;
     cpu.esp = cpu.ebp + 0x27e;
     cpu.ebp = pop(app, cpu);
     cpu.edi = pop(app, cpu);
     cpu.esi = pop(app, cpu);
     cpu.ecx = pop(app, cpu);
     cpu.ebx = pop(app, cpu);
-    cpu.esp += 4;
+    return cpu.eax;
+}
+
+/* The adapters under the game's names, which disassemble_nfs3hp.py binds the addresses to: the
+ * arguments from the registers, the core, the ret. */
+void sliderStoredValue(win32::WinApplication* app, x86::CPU& cpu)
+{
+    draw::sliderStoredValue(app, cpu, cpu.eax);
+    ret(cpu);
+}
+
+void twoAxisValue(win32::WinApplication* app, x86::CPU& cpu)
+{
+    draw::twoAxisValue(app, cpu, cpu.eax, cpu.edx);
+    ret(cpu);
+}
+
+void loadQfs(win32::WinApplication* app, x86::CPU& cpu)
+{
+    draw::loadQfs(app, cpu, cpu.eax);
+    ret(cpu);
 }
 
 }  // namespace frontend

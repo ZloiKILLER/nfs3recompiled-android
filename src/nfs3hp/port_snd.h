@@ -1,7 +1,10 @@
 #ifndef NFS3HP_PORT_SND_H
 #define NFS3HP_PORT_SND_H
 
+#include "native_windows.h"
 #include "port.h"
+
+#include <winapi/kernel32.h>
 
 #include <array>
 #include <cstdint>
@@ -267,6 +270,24 @@ constexpr int32_t kNoSound = -8, kNoVoices = -9, kNotStarted = -10, kNoMethod = 
 inline int32_t imul(int32_t a, int32_t b) { return int32_t(uint32_t(a) * uint32_t(b)); }
 inline int32_t idiv(int32_t a, int32_t b) { return b == -1 ? int32_t(0u - uint32_t(a)) : a / b; }
 inline int32_t negated(int32_t a) { return int32_t(0u - uint32_t(a)); }
+
+/* A Windows function (`Function`) called as callGame calls the game's code: esp and the register
+ * arguments `a` set, `words` handed.  The port's own, called as C++ (native_windows.h); in the
+ * check through its import's slot `Slot`.  `result` its eax; false when the game stops. */
+template <reg32 Slot, auto Function, typename... Words>
+inline bool callWindows(App* app, CPU& cpu, reg32 esp, Args a, reg32& result, Words... words)
+{
+    cpu.esp = esp;
+    cpu.eax = a.eax;
+    cpu.edx = a.edx;
+    cpu.ebx = a.ebx;
+    cpu.ecx = a.ecx;
+    const std::optional<reg32> eax = guest::windows<Slot, Function>(app, cpu, words...);
+    if (!eax)
+        return false;
+    result = *eax;
+    return true;
+}
 
 /* Where an error comes from -- the source file's and the function's names, as
  * the game has them -- and Error's text. */

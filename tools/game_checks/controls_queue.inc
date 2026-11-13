@@ -212,7 +212,13 @@ bool makeQueueArguments(CheckApp& g, const std::string& name, x86::CPU& cpu, x86
         cpu.ebx = 1 + (chance(80) ? below(0x24) : below(0x80));
     }
     else if (name == "sendOwnInput")
+    {
         cpu.eax = aRecord();
+        // No more than the game's 8 players: past them repeatMissingInputs writes its records on
+        // beyond the packet in sendOwnInput's frame, over the registers it saved there.
+        if (x86::sreg32(g.word(0x6fd514)) > 8)
+            g.word(0x6fd514) = 8;
+    }
     else if (name == "receiveInput")
     {
         cpu.eax = random32();

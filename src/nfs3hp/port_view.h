@@ -1,6 +1,7 @@
 #ifndef NFS3HP_PORT_VIEW_H
 #define NFS3HP_PORT_VIEW_H
 
+#include "native_guest.h"
 #include "port.h"
 
 /* The pan-and-zoom view over the front end's and the pause screens' maps,
@@ -42,8 +43,50 @@ void recordFloatAt(App* app, CPU& cpu);       // 0x46b030
 void recordFloatByKind(App* app, CPU& cpu);   // 0x46ca70
 void metricPopup(App* app, CPU& cpu);         // 0x46cf30
 
+/* The typed cores the menus call as C++ (guest::direct), and how the game's code calls each by address
+ * (ByAddress below, for the checks' stand-ins).  A Result is nullopt when the game stopped in a call.  A core's
+ * `esp` is the frame base its adapter hands it: the game's esp on entry, at the return address.  A caller
+ * through guest::direct passes cpu.esp - 4 - 4 * N, N the stack words the game's call pushes: the esp the
+ * adapter hands it, so the core's frame lies where the game's does; by address the call makes it. */
+
+// The game's 0x4646e0: the pan's base set to `value` plus one.
+void storedIncremented(App* app, float value);
+// The game's 0x46cf30: the lap-metric popup over the race's results for the record at `record` (eax back as it
+// came); esp the frame base.
+Result metricPopupOf(App* app, CPU& cpu, reg32 esp, reg32 record);
+
 }  // namespace view
 }  // namespace port
+
+namespace guest
+{
+
+// Stdcall: the float's bits pushed (ret 4); eax left as it came.
+template <>
+struct ByAddress<port::view::storedIncremented>
+{
+    template <x86::reg32 Address>
+    static void call(win32::WinApplication* app, x86::CPU& cpu, float value)
+    {
+        x86::reg32 bits;
+        std::memcpy(&bits, &value, sizeof bits);
+        const KeptRegisters kept(cpu);
+        guest::call(app, cpu, Address, {bits});
+    }
+};
+
+// The record in eax; eax back.
+template <>
+struct ByAddress<port::view::metricPopupOf>
+{
+    template <x86::reg32 Address>
+    static port::Result call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32, x86::reg32 record)
+    {
+        return watcomEax(app, cpu, Address, {record});
+    }
+};
+
+}  // namespace guest
 }  // namespace nfs3hp
 
 #endif

@@ -1,3 +1,4 @@
+#include "game_settings.h"
 #include "port_snd_3d.h"
 
 /* The race's sound in space, rewritten (port.h says how): where a sound's
@@ -96,7 +97,7 @@ Result angleFromAxes(App* app, CPU& cpu, reg32 esp, reg32 listener, reg32 vector
     if (!gameDot(app, cpu, esp, vector, listener + 0x24, top))
         return {};
     const int32_t second = scaledTop<Real>(top, scale);
-    if (kMirror(app) != 0)
+    if (gameSettings(app).mirrored != 0)
         first = negated(first);
     reg32 angle;
     if (!callGame(app, cpu, esp, kAngle, {reg32(first >> 8), reg32(second >> 8)}, {}, angle))

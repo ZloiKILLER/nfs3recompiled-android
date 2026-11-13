@@ -43,7 +43,7 @@ class LauncherActivity : ComponentActivity() {
     enum class Screen {
         Main, Language, Data, GameData, DataSets, Saves, LauncherSettings,
         Controls, Touch, TouchKeys, Editor, Gamepads, GamepadButtons, ControlsHelp,
-        ForceFeedback, Faq, Display, Adjustment, Network, Advanced, Logs,
+        ForceFeedback, Faq, Display, Advanced, Logs,
     }
 
     /** A question put to the player: a title, the question, and what the
@@ -559,6 +559,8 @@ class LauncherActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
+        // What the game wrote while it was in front is read back here.
+        GamePreferences.get(this)
         if (autoReplayPending) {
             autoReplayPending = false
             startGame()
@@ -628,8 +630,6 @@ class LauncherActivity : ComponentActivity() {
             // The Data screens are a level deeper than the rest.
             Screen.GameData, Screen.Saves, Screen.LauncherSettings, Screen.Logs -> go(Screen.Data)
             Screen.DataSets -> go(Screen.GameData)
-            // Screen adjustment sits under Display.
-            Screen.Adjustment -> go(Screen.Display)
             else -> go(Screen.Main)
         }
     }

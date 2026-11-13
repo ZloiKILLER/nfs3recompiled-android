@@ -1,4 +1,17 @@
+#include "native_frontend_hudedit.h"
+#include "game_settings.h"
+#include "native_carstate.h"
+#include "native_ea_memory.h"
+#include "native_ea_support.h"
 #include "native_frontend.h"
+#include "native_frontend_hudr.h"
+#include "native_frontend_hudz.h"
+#include "native_frontend_menuf.h"
+#include "port_buttons.h"
+#include "port_hud.h"
+#include "port_menus.h"
+#include "port_shapes.h"
+#include "port_text.h"
 #include <nfs3hp.h>
 #include <iterator>
 
@@ -21,7 +34,14 @@
  * its miniature of the screen shows, and shows or hides items where they differ.
  *
  * What the race draws from the records is the race's HUD: sub_4853c0 and the
- * drawing functions stay where they are, called by address. */
+ * drawing functions stay where they are, called by address.
+ *
+ * Plan step 5: each function a typed core in frontend::hudedit (native_frontend_hudedit.h), in a
+ * frame of its own where the game's function has one (fe::Frame), and an adapter under the game's
+ * name for the calls by address.  A core of this file calls another as C++ (guest::direct), and
+ * the port's and the libraries' typed cores too (fe::direct) but where the screen goes on with the
+ * registers the call leaves: sub_442a40's (find), sub_461270's (the key handlers) and sub_4d6390's
+ * from sub_45f300.  The rest of the game still by address. */
 namespace nfs3hp
 {
 
@@ -36,73 +56,35 @@ using fe::Item;
  * What the screens share
  * ------------------------------------------------------------------------- */
 
-constexpr x86::reg32 kSplitScreen = 0x6fd3b0;      // 1 in split screen, past it over a network
-constexpr x86::reg32 kRaceType = 0x6fd3b8;
 constexpr std::uint32_t kHotPursuit = 3;
-constexpr x86::reg32 kLanguage = 0x6fbb4c;
 
 // The HUD's records.
-constexpr x86::reg32 kRecords = 0x6fbc50;
 constexpr x86::reg32 kRecordsBytes = 0x9d8;
 constexpr x86::reg32 kPlayerRecord = 0x348;
 constexpr x86::reg32 kCopRecord = 0x1a4;
-constexpr x86::reg32 kShown = 0x00;                // the HUD is on at all
-constexpr x86::reg32 kOpponentName = 0x04;
-constexpr x86::reg32 kOpponentList = 0x08;
-constexpr x86::reg32 kRearView = 0x0c;
-constexpr x86::reg32 kMapScale = 0x10;             // a float, the scale's number from 1
-constexpr x86::reg32 kSplitTime = 0x14;            // 0 none, otherwise its form from 1
-constexpr x86::reg32 kSpeedometer = 0x18;          // likewise
-constexpr x86::reg32 kTachometer = 0x1c;           // likewise
-constexpr x86::reg32 kMapStyle = 0x20;             // likewise
 constexpr x86::reg32 kRectangles = 0x24;           // 23 of 16 bytes: the elements' places
 constexpr x86::reg32 kRectangleBytes = 16;
 constexpr x86::reg32 kPlayerRectangles = 0x170;
 constexpr x86::reg32 kLanguageRectangle = 0x194;   // one more, that depends on the language
 constexpr std::int32_t kElements = 23;
 
-constexpr x86::reg32 record(x86::reg32 player, x86::reg32 cop)
-{
-    return kRecords + player * kPlayerRecord + cop * kCopRecord;
-}
-
 // The game's.
-constexpr x86::reg32 kCameraTarget = 0x422bd0;     // eax a player: what his camera follows
 constexpr x86::reg32 kTargetFlags = 0x200;
 constexpr std::uint8_t kTargetIsCop = 0x20;
 constexpr x86::reg32 kSetCameraOverride = 0x423960;  // eax a player, edx the mode
 constexpr std::uint32_t kCameraWhileEditing = 3;
 constexpr std::uint32_t kCameraAfterEditing = 0x17;
-constexpr x86::reg32 kDimBackground = 0x451530;
 constexpr std::uint32_t kFloat0_6 = 0x3f19999a;    // 0.6f
-constexpr x86::reg32 kCodelinkMatches = 0x4429c0;
 constexpr x86::reg32 kFindItem = 0x442a40;
-constexpr x86::reg32 kButtonKey = 0x461270;
-constexpr x86::reg32 kScaleItem = 0x45c9d0;        // an element's item, to the screen's size
+constexpr x86::reg32 kButtonKey = 0x461270;        // leaves ebx and edx, which the key handlers hand on
 constexpr x86::reg32 kSprintf = 0x4df690;
 constexpr x86::reg32 kStrcmp = 0x4ee310;
-constexpr x86::reg32 kLoadShapes = 0x44ac90;       // eax a path
 constexpr x86::reg32 kFindShape = 0x4ef1e0;        // eax the file, edx a name
-constexpr x86::reg32 kShapeTexture = 0x4d6390;     // eax a shape, edx the old texture
-constexpr x86::reg32 kLoadFile = 0x4e0ec0;
-constexpr x86::reg32 kFree = 0x4e1890;
+constexpr x86::reg32 kShapeTexture = 0x4d6390;     // eax a shape, edx the old texture; leaves edx
 constexpr x86::reg32 kStrtok = 0x4eff60;
 constexpr x86::reg32 kSscanf = 0x4f0548;
 // The race's HUD.
-constexpr x86::reg32 kRebuildElement = 0x4853c0;   // eax a player, edx an element
 constexpr x86::reg32 kRebuildBand = 0x4800a0;      // eax a player
-constexpr x86::reg32 kHighlightElement = 0x482030;  // eax the element, -1 none; edx a player; ebx 0
-constexpr x86::reg32 kSetHudPane = 0x4844c0;       // eax a player
-// These functions, which call one another by address.
-constexpr x86::reg32 kPlaceElement = 0x45ca90;
-constexpr x86::reg32 kShowSpeedometer = 0x45dae0;
-constexpr x86::reg32 kShowTachometer = 0x45deb0;
-constexpr x86::reg32 kGreyMirrors = 0x45e160;
-constexpr x86::reg32 kGreyOpponentNames = 0x45e210;
-constexpr x86::reg32 kPlaceImages = 0x45e310;
-constexpr x86::reg32 kShowScreenItems = 0x45e3d0;
-constexpr x86::reg32 kSetScreenArt = 0x45f300;
-constexpr x86::reg32 kLoadDefaults = 0x485680;
 
 constexpr GuestString kTwo{ 0x53a814, "2" };
 constexpr GuestString kNameAndChar{ 0x53a818, "%s%c" };
@@ -110,6 +92,9 @@ constexpr std::uint32_t kCharTwo = 0x32;
 constexpr GuestString kTwoStrings{ 0x53a934, "%s%s" };
 constexpr x86::reg32 kArtFolder = 0x7a2db4;
 
+/* By address: the screens go on with what it leaves -- the item in eax, the name in edx (sub_45dae0,
+ * sub_45e310 and sub_45e3d0 return them) -- and its core (frontend::menus::findItem) hands back the
+ * item alone. */
 Item find(Guest& guest, x86::reg32 menu, x86::reg32 name)
 {
     return Item(guest, guest.call(kFindItem, fe::args({ menu, name })));
@@ -161,9 +146,9 @@ void nameWithTwo(Guest& guest, x86::reg32 buffer, x86::reg32 name, x86::reg32 pl
 }
 
 /* Whether a player's camera follows a cop: which half of his record counts. */
-x86::reg32 copOf(Guest& guest, x86::reg32 player)
+x86::reg32 copOf(Guest& guest, x86::CPU& cpu, x86::reg32 player)
 {
-    const x86::reg32 target = guest.call(kCameraTarget, fe::args({ player }));
+    const x86::reg32 target = fe::direct<0x422bd0, carstate::targetOfCamera>(guest.app(), cpu, player);
     return (guest.byte(target + kTargetFlags) & kTargetIsCop) ? 1 : 0;
 }
 
@@ -200,122 +185,6 @@ x86::reg32 signedKey(x86::reg32 ebx)
     return x86::reg32(std::int32_t(std::int16_t(ebx)));
 }
 
-/* sub_44de80, as a pause screen of the HUD opens: the race dimmed, its cameras
- * set, the rectangles kept for going back, the two buttons given their keys. */
-x86::reg32 onLayoutEnter(Guest& guest, x86::reg32 menu)
-{
-    const x86::reg32 cop1 = copOf(guest, 0);
-    const x86::reg32 cop2 = copOf(guest, 1);
-    guest.call(kDimBackground, fe::args({ cop2, 1 }, { kFloat0_6 }));
-    guest.setDword(kHudAlwaysDrawn, 1);
-    guest.setDword(kEditDone, 0);
-    guest.call(kSetCameraOverride, fe::args({ 0, kCameraWhileEditing }));
-    if (guest.dword(kSplitScreen) == 1)
-        guest.call(kSetCameraOverride, fe::args({ 1, kCameraWhileEditing }));
-    if (guest.dword(kSplitScreen) == 1)
-    {
-        copyBytes(guest, kSavedRectangles, record(1, cop1) + kRectangles, kPlayerRectangles);
-        copyBytes(guest, kSavedRectangles2, record(2, cop2) + kRectangles, kPlayerRectangles);
-    }
-    else
-    {
-        copyBytes(guest, kSavedRectangles, record(0, cop1) + kRectangles, kPlayerRectangles);
-    }
-    if (Item done = fe::findItem(guest, menu, kDone))
-        guest.setDword(done.address() + kOnKey, kDoneKeyHandler);
-    if (Item reset = fe::findItem(guest, menu, kReset))
-        guest.setDword(reset.address() + kOnKey, kResetKeyHandler);
-    guest.call(kRebuildBand, fe::args({ 0 }));
-    if (guest.dword(kSplitScreen) == 1)
-        guest.call(kRebuildBand, fe::args({ 1 }));
-    return 0;
-}
-
-/* sub_44dfd0, as it closes: unless done left it, the rectangles back and the
- * HUD rebuilt from them; then the race as it was. */
-x86::reg32 onLayoutExit(Guest& guest)
-{
-    const x86::reg32 cop1 = copOf(guest, 0);
-    const x86::reg32 cop2 = copOf(guest, 1);
-    if (guest.dword(kEditDone) == 0)
-    {
-        if (guest.dword(kSplitScreen) == 1)
-        {
-            copyBytes(guest, record(1, cop1) + kRectangles, kSavedRectangles, kPlayerRectangles);
-            copyBytes(guest, record(2, cop2) + kRectangles, kSavedRectangles2, kPlayerRectangles);
-        }
-        else
-        {
-            copyBytes(guest, record(0, cop1) + kRectangles, kSavedRectangles, kPlayerRectangles);
-        }
-        for (x86::reg32 player = 0; player < (guest.dword(kSplitScreen) == 1 ? 2u : 1u); ++player)
-        {
-            for (std::int32_t element = 0; element < kElements; ++element)
-                guest.call(kRebuildElement, fe::args({ player, x86::reg32(element) }));
-            guest.call(kRebuildBand, fe::args({ player }));
-        }
-    }
-    guest.call(kHighlightElement, fe::args({ 0xffffffff, 0, 0 }));
-    guest.call(kHighlightElement, fe::args({ 0xffffffff, 1, 0 }));
-    guest.setDword(kHudAlwaysDrawn, 0);
-    guest.call(kSetCameraOverride, fe::args({ 0, kCameraAfterEditing }));
-    if (guest.dword(kSplitScreen) == 1)
-        guest.call(kSetCameraOverride, fe::args({ 1, kCameraAfterEditing }));
-    if (guest.dword(kSplitScreen) == 1)
-    {
-        guest.call(kSetHudPane, fe::args({ 0 }));
-        guest.call(kSetHudPane, fe::args({ 1 }));
-    }
-    return 0;
-}
-
-/* sub_44de20, the reset button's key handler: Enter takes the defaults from
- * disc and puts every element of the screen in its new place.  The handler
- * leaves ebx its last item and edx that item's number. */
-x86::reg32 resetKey(Guest& guest, x86::reg32 item, x86::reg32 menu, x86::reg32 ebx)
-{
-    if (std::int16_t(ebx) != kKeyEnter)
-        return guest.call(kButtonKey, fe::args({ item, menu, signedKey(ebx) }));
-    guest.call(kLoadDefaults);
-    x86::reg32 index = (ebx & 0xffff0000) | guest.word(menu + fe::menu::kFirstItem);
-    for (;; ++index)
-    {
-        const x86::reg32 number = signedKey(index);
-        const x86::reg32 at = fe::item::kTable + fe::item::kSize * number;
-        if (guest.dword(at) == 0)
-        {
-            guest.leaveEbx(index);
-            guest.leaveEdx(number);
-            return 2;
-        }
-        if (guest.dword(at) == kElementItem)
-        {
-            guest.call(kPlaceElement, fe::args({ at, at, index }));
-            guest.call(kScaleItem, fe::args({ at, at, index }));
-        }
-    }
-}
-
-/* sub_45ca90: an element's item put where its rectangle and the race's HUD
- * have it; eax what it copied last. */
-x86::reg32 placeElement(Guest& guest, x86::reg32 item)
-{
-    const std::int32_t number = std::int32_t(guest.dword(item + kElementNumber));
-    const x86::reg32 player = number < kElements ? 0 : 1;
-    const x86::reg32 element = x86::reg32(number) - (player != 0 ? x86::reg32(kElements) : 0);
-    const x86::reg32 owner = (guest.dword(kSplitScreen) == 1 ? 1 : 0) + player;
-    const x86::reg32 cop = copOf(guest, player);
-    const x86::reg32 offset = element * kRectangleBytes;
-    copyBytes(guest, item + kElementRectangle, record(owner, cop) + kRectangles + offset, kRectangleBytes);
-    const x86::reg32 placed = offset + player * kPlayerRectangles;
-    guest.setWord(item + fe::item::kX, guest.word(kPlacedLeft + placed));
-    guest.setWord(item + fe::item::kY, guest.word(kPlacedTop + placed));
-    guest.setDword(item + kElementRight, guest.dword(kPlacedRight + placed));
-    const x86::reg32 bottom = guest.dword(kPlacedBottom + placed);
-    guest.setDword(item + kElementBottom, bottom);
-    return bottom;
-}
-
 constexpr x86::reg32 kLanguageLetters = 0x47bbb8;  // "egfsiw"
 constexpr x86::reg32 kHudFolder = 0x7a29b4;
 constexpr GuestString kDefaultsName{ 0x53b660, "%s%cdef.pos" };
@@ -325,64 +194,6 @@ constexpr GuestString kScanFloat{ 0x53b678, "%f" };
 constexpr std::uint32_t kLoadFileFlags = 0x10;
 constexpr x86::reg32 kLanguageRectangles = 0x55d454;  // 16 bytes by cop, by player, by language
 constexpr x86::reg32 kRebuildAfterDefaults = 0x55d440;
-
-/* sub_485680: the rectangles' defaults for this language, from a text file of
- * fields -- a name and four numbers for each of the 23 elements, for each
- * player and each of racer and cop.  Besides the reset button, the game's
- * start calls it (sub_485880). */
-x86::reg32 loadDefaults(Guest& guest)
-{
-    const x86::reg32 path = guest.frame();         // char[0x100]
-    const x86::reg32 name = guest.frame() + 0x100;
-    const x86::reg32 letters = guest.frame() + 0x180;
-    copyBytes(guest, letters, kLanguageLetters, 7);
-    const std::uint32_t letter = guest.byte(letters + guest.dword(kLanguage));
-    guest.call(kSprintf, fe::args({}, { path, kDefaultsName.address, kHudFolder, letter }));
-    const x86::reg32 file = guest.call(kLoadFile, fe::args({ path, kLoadFileFlags }));
-    if (file == 0)
-        return 0;
-    const x86::reg32 separators = kDefaultsSeparators.address;
-    x86::reg32 token = guest.call(kStrtok, fe::args({ file, separators }));
-    const auto scan = [&](x86::reg32 format, x86::reg32 to) {
-        guest.call(kSscanf, fe::args({}, { token, format, to }));
-        token = guest.call(kStrtok, fe::args({ 0, separators }));
-    };
-    for (x86::reg32 player = 0; player < 3; ++player)
-    {
-        for (x86::reg32 cop = 0; cop < 2; ++cop)
-        {
-            for (std::int32_t element = 0; element < kElements; ++element)
-            {
-                const x86::reg32 rectangle = record(player, cop) + kRectangles + element * kRectangleBytes;
-                scan(kScanName.address, name);
-                scan(kScanFloat.address, rectangle + 4);
-                scan(kScanFloat.address, rectangle);
-                scan(kScanFloat.address, rectangle + 0xc);
-                scan(kScanFloat.address, rectangle + 8);
-            }
-        }
-    }
-    guest.call(kFree, fe::args({ file }));
-    for (x86::reg32 player = 0; player < 3; ++player)
-    {
-        for (x86::reg32 cop = 0; cop < 2; ++cop)
-        {
-            const x86::reg32 from = kLanguageRectangles + guest.dword(kLanguage) * 0x60 + player * 0x20 + cop * 0x10;
-            copyBytes(guest, record(player, cop) + kLanguageRectangle, from, kRectangleBytes);
-        }
-    }
-    if (guest.dword(kRebuildAfterDefaults) == 0)
-        return kCopRecord;   // what the last sum above left in eax
-    for (x86::reg32 player = 0; player < 2; ++player)
-    {
-        for (std::int32_t element = 0; element < kElements; ++element)
-            guest.call(kRebuildElement, fe::args({ player, x86::reg32(element) }));
-    }
-    guest.call(kRebuildBand, fe::args({ 0 }));
-    if (guest.dword(kSplitScreen) == 1)
-        guest.call(kRebuildBand, fe::args({ 1 }));
-    return guest.eax();
-}
 
 /* ---------------------------------------------------------------------------
  * hud
@@ -524,7 +335,7 @@ x86::reg32 showInstrument(Guest& guest, x86::reg32 menu, x86::reg32 player, x86:
     }
     bool called = false;
     x86::reg32 result = player * kPlayerRecord;
-    if (guest.dword(record(player, cop)) != 0)
+    if (gameSettings(guest).hudOf(player, cop).shown != 0)
     {
         result = setting;
         if (setting <= Count)
@@ -581,10 +392,277 @@ x86::reg32 greyOut(Guest& guest, x86::reg32 menu, const GuestString (&names)[Cou
     return guest.eax();
 }
 
-/* sub_45e310: the images in their places on the miniature. */
-x86::reg32 placeImages(Guest& guest, x86::reg32 menu)
+/* The miniature's corner added to an item's place. */
+void moveToMiniature(Guest& guest, Item item)
 {
-    const bool split = guest.dword(kSplitScreen) == 1;
+    const x86::reg32 at = item.address();
+    guest.setWord(at + fe::item::kX, std::uint16_t(guest.word(at + fe::item::kX) + guest.word(kMiniatureX)));
+    guest.setWord(at + fe::item::kY, std::uint16_t(guest.word(at + fe::item::kY) + guest.word(kMiniatureY)));
+}
+
+/* The map on the miniature, in its style and scale; part of hud's every pass. */
+void showMap(Guest& guest, x86::CPU& cpu, x86::reg32 menu, x86::reg32 player, x86::reg32 cop)
+{
+    const x86::reg32 name = guest.frame();
+    const x86::reg32 path = guest.frame() + 0x100;
+    const x86::reg32 at = slot(player, cop);
+    guest.setDword(kShownMapScale + 4 * player, guest.dword(kListMapScale + at));
+    guest.setDword(kShownMapStyle + 4 * player, guest.dword(kListMapStyle + at));
+    guest.copyString(name, player == 2 ? kMapImage2.address : kMapImage.address);
+    Item map = find(guest, menu, name);
+    if (!map)
+        return;
+    const std::int32_t style = std::int32_t(guest.dword(kListMapStyle + at));
+    if (style >= 2)
+    {
+        map.setHidden(true);
+        return;
+    }
+    const x86::reg32 shapeNumber = guest.dword(kListMapScale + at) + x86::reg32(style) * 4;
+    guest.setDword(player == 2 ? kMapShapePlayer2 : kMapShapePlayer1, shapeNumber);
+    guest.call(kSprintf, fe::args({}, { path, kTwoStrings.address, kArtFolder, guest.dword(map.address() + kItemFile) }));
+    const x86::reg32 file =
+        x86::reg32(*fe::direct<0x44ac90, port::buttons::shapesLoaded>(guest.app(), cpu, cpu.esp - 4, path, cpu.ebx));
+    const x86::reg32 old = signedKey(guest.word(map.address() + kItemTexture));
+    const x86::reg32 shape = guest.call(kFindShape, fe::args({ file, guest.dword(kMapShapes + 4 * shapeNumber) }));
+    const std::int32_t texture = *fe::direct<0x4d6390, port::shapes::artTexturesOf>(guest.app(), cpu, cpu.esp - 4, shape,
+                                                                                    std::int32_t(old), cpu.ecx);
+    guest.setWord(map.address() + kItemTexture, std::uint16_t(texture));
+    map.setHidden(false);
+}
+
+const GuestString kLayoutEnterStrings[] = { kDone, kReset };
+const GuestString kDefaultsStrings[] = { kDefaultsName, kDefaultsSeparators, kScanName, kScanFloat };
+const GuestString kSpeedometerStrings[] = { kAkph, kDkph, kAmph, kDmph, kTwo };
+const GuestString kTachometerStrings[] = { kArpm, kMrpm, kDrpm, kTwo };
+const GuestString kHudEnterStrings[] = {
+    kCredits, kSingleDefaults, kSplitDefaults, kHotSplitDefaults, kScreen, kTimeImage2, kPlayer1Selected,
+    kPlayer2Selected, kNameAndChar, kRearImage, kOppnImage, kOpplImage, kOppnImage2, kOpplImage2, kCopRadarImage2,
+    kOppcImage2, kSplitImage, kCopRadarImage, kOppcImage, kArtBoth, kArtPlayer1, kArtPlayer2, kArtNeither, kArtOn,
+};
+const GuestString kHudExitStrings[] = { kCancel };
+const GuestString kScreenItemsStrings[] = {
+    kRearImage, kMapImage, kOppnImage, kOpplImage, kOppcImage, kSplitImage, kCopRadarImage, kPosImage, kTimeImage,
+    kLapsImage, kPosImage2, kTimeImage2, kLapsImage2, kNameAndChar, kTwo,
+};
+const GuestString kScreenArtStrings[] = {
+    kScreen, kPlayer1Selected, kPlayer2Selected, kArtBoth, kArtPlayer1, kArtPlayer2, kArtNeither, kArtOn, kArtOff,
+    kTwoStrings,
+};
+const GuestString kHudFrameStrings[] = {
+    kNameAndChar, kRearImage, kMapImage, kMapImage2, kTwoStrings, kSplitImage, kSplitImage2, kOppnImage, kOppnImage2,
+    kOppcImage, kOpplImage, kTwo,
+};
+
+}
+
+/* sub_44de00: done's key handler, Enter keeping the places as they are. */
+x86::reg32 frontend::hudedit::doneKey(App* app, CPU& cpu, reg32 item, reg32 menu, reg32 key)
+{
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 4);
+    if (std::int16_t(key) == kKeyEnter)
+        guest.setDword(kEditDone, 1);
+    // By address: the handler leaves ebx and edx as sub_461270 leaves them.
+    return guest.call(kButtonKey, fe::args({ item, menu, signedKey(key) }));
+}
+
+/* sub_44de80, as a pause screen of the HUD opens: the race dimmed, its cameras
+ * set, the rectangles kept for going back, the two buttons given their keys. */
+x86::reg32 frontend::hudedit::layoutEnter(App* app, CPU& cpu, reg32 menu)
+{
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 28);
+    const x86::reg32 cop1 = copOf(guest, cpu, 0);
+    const x86::reg32 cop2 = copOf(guest, cpu, 1);
+    // The shade pushed where the game's code pushes it, under the frame; the edx of 1 its code sets
+    // is for kHudAlwaysDrawn after the call, not the callee's.
+    const x86::reg32 shade = guest.frame() - 4;
+    guest.setDword(shade, kFloat0_6);
+    fe::direct<0x451530, port::text::dimmed>(app, cpu, shade, cop2);
+    guest.setDword(kHudAlwaysDrawn, 1);
+    guest.setDword(kEditDone, 0);
+    guest.call(kSetCameraOverride, fe::args({ 0, kCameraWhileEditing }));
+    if (gameSettings(guest).playMode == 1)
+        guest.call(kSetCameraOverride, fe::args({ 1, kCameraWhileEditing }));
+    if (gameSettings(guest).playMode == 1)
+    {
+        copyBytes(guest, kSavedRectangles, hudRecordAddress(1, cop1) + kRectangles, kPlayerRectangles);
+        copyBytes(guest, kSavedRectangles2, hudRecordAddress(2, cop2) + kRectangles, kPlayerRectangles);
+    }
+    else
+    {
+        copyBytes(guest, kSavedRectangles, hudRecordAddress(0, cop1) + kRectangles, kPlayerRectangles);
+    }
+    if (Item done = fe::findItem(guest, menu, kDone))
+        guest.setDword(done.address() + kOnKey, kDoneKeyHandler);
+    if (Item reset = fe::findItem(guest, menu, kReset))
+        guest.setDword(reset.address() + kOnKey, kResetKeyHandler);
+    guest.call(kRebuildBand, fe::args({ 0 }));
+    if (gameSettings(guest).playMode == 1)
+        guest.call(kRebuildBand, fe::args({ 1 }));
+    return 0;
+}
+
+/* sub_44dfd0, as it closes: unless done left it, the rectangles back and the
+ * HUD rebuilt from them; then the race as it was. */
+x86::reg32 frontend::hudedit::layoutExit(App* app, CPU& cpu)
+{
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 24);
+    const x86::reg32 cop1 = copOf(guest, cpu, 0);
+    const x86::reg32 cop2 = copOf(guest, cpu, 1);
+    if (guest.dword(kEditDone) == 0)
+    {
+        if (gameSettings(guest).playMode == 1)
+        {
+            copyBytes(guest, hudRecordAddress(1, cop1) + kRectangles, kSavedRectangles, kPlayerRectangles);
+            copyBytes(guest, hudRecordAddress(2, cop2) + kRectangles, kSavedRectangles2, kPlayerRectangles);
+        }
+        else
+        {
+            copyBytes(guest, hudRecordAddress(0, cop1) + kRectangles, kSavedRectangles, kPlayerRectangles);
+        }
+        for (x86::reg32 player = 0; player < (gameSettings(guest).playMode == 1 ? 2u : 1u); ++player)
+        {
+            for (std::int32_t element = 0; element < kElements; ++element)
+                fe::direct<0x4853c0, frontend::hudr::rebuildElement>(app, cpu, player, x86::reg32(element));
+            guest.call(kRebuildBand, fe::args({ player }));
+        }
+    }
+    // No element highlighted (-1) in either view, in the part's own colour (0).
+    fe::direct<0x482030, frontend::hudz::setGridHighlight>(app, cpu, 0xffffffff, x86::reg32(0), x86::reg32(0));
+    fe::direct<0x482030, frontend::hudz::setGridHighlight>(app, cpu, 0xffffffff, x86::reg32(1), x86::reg32(0));
+    guest.setDword(kHudAlwaysDrawn, 0);
+    guest.call(kSetCameraOverride, fe::args({ 0, kCameraAfterEditing }));
+    if (gameSettings(guest).playMode == 1)
+        guest.call(kSetCameraOverride, fe::args({ 1, kCameraAfterEditing }));
+    if (gameSettings(guest).playMode == 1)
+    {
+        fe::direct<0x4844c0, port::hud::hudPaneSetOf>(app, cpu, cpu.esp - 4, port::Args{ 0, cpu.edx, cpu.ebx, cpu.ecx });
+        fe::direct<0x4844c0, port::hud::hudPaneSetOf>(app, cpu, cpu.esp - 4, port::Args{ 1, cpu.edx, cpu.ebx, cpu.ecx });
+    }
+    return 0;
+}
+
+/* sub_44de20, the reset button's key handler: Enter takes the defaults from
+ * disc and puts every element of the screen in its new place.  The handler
+ * leaves ebx its last item and edx that item's number. */
+x86::reg32 frontend::hudedit::resetKey(App* app, CPU& cpu, reg32 item, reg32 menu, reg32 key)
+{
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 4);
+    if (std::int16_t(key) != kKeyEnter)  // by address: ebx and edx left as sub_461270 leaves them
+        return guest.call(kButtonKey, fe::args({ item, menu, signedKey(key) }));
+    guest::direct<0x485680, loadDefaults>(app, cpu);
+    x86::reg32 index = (key & 0xffff0000) | guest.word(menu + fe::menu::kFirstItem);
+    for (;; ++index)
+    {
+        const x86::reg32 number = signedKey(index);
+        const x86::reg32 at = fe::item::kTable + fe::item::kSize * number;
+        if (guest.dword(at) == 0)
+        {
+            guest.leaveEbx(index);
+            guest.leaveEdx(number);
+            return 2;
+        }
+        if (guest.dword(at) == kElementItem)
+        {
+            guest::direct<0x45ca90, placeElement>(app, cpu, at);
+            // edx and ebx as the game's code has them (the item, the index), unread.
+            fe::direct<0x45c9d0, frontend::menuf::elementToRecord>(app, cpu, at);
+        }
+    }
+}
+
+/* sub_45ca90: an element's item put where its rectangle and the race's HUD
+ * have it; eax what it copied last. */
+x86::reg32 frontend::hudedit::placeElement(App* app, CPU& cpu, reg32 item)
+{
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 24);
+    const std::int32_t number = std::int32_t(guest.dword(item + kElementNumber));
+    const x86::reg32 player = number < kElements ? 0 : 1;
+    const x86::reg32 element = x86::reg32(number) - (player != 0 ? x86::reg32(kElements) : 0);
+    const x86::reg32 owner = (gameSettings(guest).playMode == 1 ? 1 : 0) + player;
+    const x86::reg32 cop = copOf(guest, cpu, player);
+    const x86::reg32 offset = element * kRectangleBytes;
+    copyBytes(guest, item + kElementRectangle, hudRecordAddress(owner, cop) + kRectangles + offset, kRectangleBytes);
+    const x86::reg32 placed = offset + player * kPlayerRectangles;
+    guest.setWord(item + fe::item::kX, guest.word(kPlacedLeft + placed));
+    guest.setWord(item + fe::item::kY, guest.word(kPlacedTop + placed));
+    guest.setDword(item + kElementRight, guest.dword(kPlacedRight + placed));
+    const x86::reg32 bottom = guest.dword(kPlacedBottom + placed);
+    guest.setDword(item + kElementBottom, bottom);
+    return bottom;
+}
+
+/* sub_485680: the rectangles' defaults for this language, from a text file of
+ * fields -- a name and four numbers for each of the 23 elements, for each
+ * player and each of racer and cop.  Besides the reset button, the game's
+ * start calls it (sub_485880). */
+x86::reg32 frontend::hudedit::loadDefaults(App* app, CPU& cpu)
+{
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 24 + 0x18c);
+    const x86::reg32 path = guest.frame();         // char[0x100]
+    const x86::reg32 name = guest.frame() + 0x100;
+    const x86::reg32 letters = guest.frame() + 0x180;
+    copyBytes(guest, letters, kLanguageLetters, 7);
+    const std::uint32_t letter = guest.byte(letters + gameSettings(guest).language);
+    guest.call(kSprintf, fe::args({}, { path, kDefaultsName.address, kHudFolder, letter }));
+    const x86::reg32 file = *fe::direct<0x4e0ec0, ea::loadWhole>(app, cpu, path, kLoadFileFlags);
+    if (file == 0)
+        return 0;
+    const x86::reg32 separators = kDefaultsSeparators.address;
+    x86::reg32 token = guest.call(kStrtok, fe::args({ file, separators }));
+    const auto scan = [&](x86::reg32 format, x86::reg32 to) {
+        guest.call(kSscanf, fe::args({}, { token, format, to }));
+        token = guest.call(kStrtok, fe::args({ 0, separators }));
+    };
+    for (x86::reg32 player = 0; player < 3; ++player)
+    {
+        for (x86::reg32 cop = 0; cop < 2; ++cop)
+        {
+            for (std::int32_t element = 0; element < kElements; ++element)
+            {
+                const x86::reg32 rectangle = hudRecordAddress(player, cop) + kRectangles + element * kRectangleBytes;
+                scan(kScanName.address, name);
+                scan(kScanFloat.address, rectangle + 4);
+                scan(kScanFloat.address, rectangle);
+                scan(kScanFloat.address, rectangle + 0xc);
+                scan(kScanFloat.address, rectangle + 8);
+            }
+        }
+    }
+    fe::direct<0x4e1890, ea::purgeBlock>(app, cpu, file);
+    for (x86::reg32 player = 0; player < 3; ++player)
+    {
+        for (x86::reg32 cop = 0; cop < 2; ++cop)
+        {
+            const x86::reg32 from = kLanguageRectangles + gameSettings(guest).language * 0x60 + player * 0x20 + cop * 0x10;
+            copyBytes(guest, hudRecordAddress(player, cop) + kLanguageRectangle, from, kRectangleBytes);
+        }
+    }
+    if (guest.dword(kRebuildAfterDefaults) == 0)
+        return kCopRecord;   // what the last sum above left in eax
+    for (x86::reg32 player = 0; player < 2; ++player)
+    {
+        for (std::int32_t element = 0; element < kElements; ++element)
+            fe::direct<0x4853c0, frontend::hudr::rebuildElement>(app, cpu, player, x86::reg32(element));
+    }
+    guest.call(kRebuildBand, fe::args({ 0 }));
+    if (gameSettings(guest).playMode == 1)
+        guest.call(kRebuildBand, fe::args({ 1 }));
+    return guest.eax();
+}
+
+/* sub_45e310: the images in their places on the miniature. */
+x86::reg32 frontend::hudedit::placeImages(App* app, CPU& cpu, reg32 menu)
+{
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 24);
+    const bool split = gameSettings(guest).playMode == 1;
     const x86::reg32 left = split ? kImageSplitLeft : kImageLeft;
     const x86::reg32 top = split ? kImageSplitTop : kImageTop;
     for (x86::reg32 i = 0; i < kImageCount; ++i)
@@ -601,19 +679,13 @@ x86::reg32 placeImages(Guest& guest, x86::reg32 menu)
     return guest.eax();
 }
 
-/* The miniature's corner added to an item's place. */
-void moveToMiniature(Guest& guest, Item item)
-{
-    const x86::reg32 at = item.address();
-    guest.setWord(at + fe::item::kX, std::uint16_t(guest.word(at + fe::item::kX) + guest.word(kMiniatureX)));
-    guest.setWord(at + fe::item::kY, std::uint16_t(guest.word(at + fe::item::kY) + guest.word(kMiniatureY)));
-}
-
 /* sub_45e3d0: only this player's and cop's controls shown, and on the miniature
  * what they say.  With the HUD off, the controls are greyed and no image shows
  * but the rear view.  ebx and eax are what its sums leave. */
-x86::reg32 showScreenItems(Guest& guest, x86::reg32 menu, x86::reg32 player, x86::reg32 cop)
+x86::reg32 frontend::hudedit::showScreenItems(App* app, CPU& cpu, reg32 menu, reg32 player, reg32 cop)
 {
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 16 + 0x10c);
     const x86::reg32 name = guest.frame();    // char[0x100]
     for (x86::reg32 p = 0; p < 3; ++p)
     {
@@ -623,8 +695,8 @@ x86::reg32 showScreenItems(Guest& guest, x86::reg32 menu, x86::reg32 player, x86
                 hide(guest, menu, guest.dword(control(p, c, i)));
         }
     }
-    const x86::reg32 fields = record(player, cop);
-    if (guest.dword(fields + kShown) == 0)
+    const HudRecord& fields = gameSettings(guest).hudOf(player, cop);
+    if (fields.shown == 0)
     {
         for (x86::reg32 i = 0; i < kControlCount; ++i)
         {
@@ -646,7 +718,7 @@ x86::reg32 showScreenItems(Guest& guest, x86::reg32 menu, x86::reg32 player, x86
             item.setDisabled(false);
         if (Item item = find(guest, menu, guest.dword(control(0, cop, kMirrorCascade))))
             item.setDisabled(false);
-        if (guest.dword(record(0, cop) + kRearView) == 0)
+        if (gameSettings(guest).hudOf(0, cop).rearView == 0)
             return cop * kCopRecord;
         show(guest, menu, guest.dword(kImages));
         return guest.eax();
@@ -660,18 +732,18 @@ x86::reg32 showScreenItems(Guest& guest, x86::reg32 menu, x86::reg32 player, x86
             item.setDisabled(false);
         }
     }
-    guest.call(kGreyMirrors, fe::args({ menu }));
-    guest.call(kGreyOpponentNames, fe::args({ menu }));
-    if (guest.dword(record(0, cop) + kRearView) != 0 && player == 0)
+    guest::direct<0x45e160, greyMirrors>(app, cpu, menu);
+    guest::direct<0x45e210, greyOpponentNames>(app, cpu, menu);
+    if (gameSettings(guest).hudOf(0, cop).rearView != 0 && player == 0)
         show(guest, menu, kRearImage.address);
-    guest.call(kShowSpeedometer, fe::args({ player, cop, menu }));
-    guest.call(kShowTachometer, fe::args({ player, cop, menu }));
+    guest::direct<0x45dae0, showSpeedometer>(app, cpu, player, cop, menu);
+    guest::direct<0x45deb0, showTachometer>(app, cpu, player, cop, menu);
     if (guest.dword(kListMapStyle + slot(player, cop)) != 2)
     {
         imageName(guest, name, kMapImage.address, player);
         show(guest, menu, name);
     }
-    if (guest.dword(fields + kOpponentName) != 0)
+    if (fields.opponentName != 0)
     {
         imageName(guest, name, kOppnImage.address, player);
         setHidden(guest, menu, name, cop != 0);
@@ -680,7 +752,7 @@ x86::reg32 showScreenItems(Guest& guest, x86::reg32 menu, x86::reg32 player, x86
     x86::reg32 ebx = menu;
     if (Item item = find(guest, menu, name))
     {
-        item.setHidden(guest.dword(fields + kOpponentList) == 0);
+        item.setHidden(fields.opponentList == 0);
         ebx = player * kPlayerRecord;
     }
     if (guest.dword(kListSplitTime + slot(player, cop)) != 5)
@@ -707,17 +779,19 @@ x86::reg32 showScreenItems(Guest& guest, x86::reg32 menu, x86::reg32 player, x86
 
 /* sub_45e960, hud as it opens: the records kept for Cancel, the screen's
  * buttons for who plays, the miniature, and the lists from the records. */
-x86::reg32 onHudEnter(Guest& guest, x86::reg32 menu)
+x86::reg32 frontend::hudedit::hudEnter(App* app, CPU& cpu, reg32 menu)
 {
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 24 + 0x108);
     const x86::reg32 name = guest.frame();    // char[0x100]
-    copyBytes(guest, kSavedRecords, kRecords, kRecordsBytes);
+    copyBytes(guest, kSavedRecords, SETTINGS_ADDRESS(hud), kRecordsBytes);
     if (Item credits = fe::findItem(guest, menu, kCredits))
     {
-        if (std::int32_t(guest.dword(kSplitScreen)) > 1)
+        if (std::int32_t(gameSettings(guest).playMode) > 1)
             credits.setDisabled(true);
     }
-    const bool hotPursuit = guest.dword(kRaceType) == kHotPursuit;
-    if (guest.dword(kSplitScreen) == 1)
+    const bool hotPursuit = gameSettings(guest).raceType == kHotPursuit;
+    if (gameSettings(guest).playMode == 1)
     {
         hide(guest, menu, kSingleDefaults.address);
         hide(guest, menu, hotPursuit ? kSplitDefaults.address : kHotSplitDefaults.address);
@@ -745,8 +819,8 @@ x86::reg32 onHudEnter(Guest& guest, x86::reg32 menu)
     guest.setDword(kShownChoice, 0xffffffff);
     guest.setDword(kShownOnOff, 0xffffffff);
     guest.setDword(kShownRearView, 0xffffffff);
-    if (guest.dword(kSplitScreen) == 1)
-        guest.call(kShowScreenItems, fe::args({ menu, 2, 0 }));
+    if (gameSettings(guest).playMode == 1)
+        guest::direct<0x45e3d0, showScreenItems>(app, cpu, menu, 2, 0);
     guest.setDword(kChoice, 0);
     if (Item screen = fe::findItem(guest, menu, kScreen))
     {
@@ -774,13 +848,13 @@ x86::reg32 onHudEnter(Guest& guest, x86::reg32 menu)
             }
         }
     }
-    if (guest.dword(kSplitScreen) == 1)
+    if (gameSettings(guest).playMode == 1)
     {
         if (Item screen = fe::findItem(guest, menu, kScreen))
         {
             const x86::reg32 art = screen.address() + kItemArt;
-            const bool player2On = guest.dword(record(2, 0) + kShown) != 0;
-            if (guest.dword(record(1, 0) + kShown) != 0)
+            const bool player2On = gameSettings(guest).hudOf(2, 0).shown != 0;
+            if (gameSettings(guest).hudOf(1, 0).shown != 0)
             {
                 guest.setDword(kOnOff, 1);
                 guest.setDword(art, player2On ? kArtBoth.address : kArtPlayer1.address);
@@ -807,7 +881,7 @@ x86::reg32 onHudEnter(Guest& guest, x86::reg32 menu)
     }
     else
     {
-        guest.setDword(kOnOff, guest.dword(kRecords + kShown));
+        guest.setDword(kOnOff, gameSettings(guest).hud[0].shown);
         if (Item screen = fe::findItem(guest, menu, kScreen))
             guest.setDword(screen.address() + kItemArt, kArtOn.address);
         for (x86::reg32 p = 1; p < 3; ++p)
@@ -821,7 +895,7 @@ x86::reg32 onHudEnter(Guest& guest, x86::reg32 menu)
         for (x86::reg32 i = 0; i < kControlCount; ++i)
             hide(guest, menu, guest.dword(control(0, 1, i)));
     }
-    guest.call(kPlaceImages, fe::args({ menu }));
+    guest::direct<0x45e310, placeImages>(app, cpu, menu);
 
     // A list's entries are the settings from 1; its last, the setting 0, none.
     const auto toList = [](x86::reg32 setting, x86::reg32 none) { return setting != 0 ? setting - 1 : none; };
@@ -830,52 +904,52 @@ x86::reg32 onHudEnter(Guest& guest, x86::reg32 menu)
     {
         for (x86::reg32 c = 0; c < 2; ++c)
         {
-            const x86::reg32 fields = record(p, c);
+            HudRecord& fields = gameSettings(guest).hudOf(p, c);
             const x86::reg32 at = slot(p, c);
-            std::int32_t scale = x87.truncated(fp::add(x87.load(fields + kMapScale), x87.load(kFloatMinusOne)));
+            std::int32_t scale = x87.truncated(fp::add(x86::Float(fields.mapScale), x87.load(kFloatMinusOne)));
             if (scale < 0)
                 scale = 0;
             if (scale > 3)
                 scale = 3;
             guest.setDword(kListMapScale + at, x86::reg32(scale));
-            guest.setDword(kListSpeedometer + at, toList(guest.dword(fields + kSpeedometer), 4));
-            guest.setDword(kListTachometer + at, toList(guest.dword(fields + kTachometer), 3));
-            guest.setDword(kListMapStyle + at, toList(guest.dword(fields + kMapStyle), 2));
-            guest.setDword(kListSplitTime + at, toList(guest.dword(fields + kSplitTime), 5));
+            guest.setDword(kListSpeedometer + at, toList(fields.speedometerForm, 4));
+            guest.setDword(kListTachometer + at, toList(fields.tachometerForm, 3));
+            guest.setDword(kListMapStyle + at, toList(fields.mapStyle, 2));
+            guest.setDword(kListSplitTime + at, toList(fields.splitTimeForm, 5));
         }
     }
 
-    if (guest.dword(kSplitScreen) == 1)
+    if (gameSettings(guest).playMode == 1)
     {
-        guest.call(kShowSpeedometer, fe::args({ 1, 0, menu }));
-        guest.call(kShowTachometer, fe::args({ 1, 0, menu }));
-        guest.call(kShowSpeedometer, fe::args({ 2, 0, menu }));
-        guest.call(kShowTachometer, fe::args({ 2, 0, menu }));
+        guest::direct<0x45dae0, showSpeedometer>(app, cpu, 1, 0, menu);
+        guest::direct<0x45deb0, showTachometer>(app, cpu, 1, 0, menu);
+        guest::direct<0x45dae0, showSpeedometer>(app, cpu, 2, 0, menu);
+        guest::direct<0x45deb0, showTachometer>(app, cpu, 2, 0, menu);
         const auto hideIfOff = [&](const GuestString& image, x86::reg32 setting) {
             if (Item item = fe::findItem(guest, menu, image))
             {
-                if (guest.dword(setting) == 0)
+                if (setting == 0)
                     item.setHidden(true);
             }
         };
-        hideIfOff(kOppnImage, record(1, 0) + kOpponentName);
-        hideIfOff(kOpplImage, record(1, 0) + kOpponentList);
-        hideIfOff(kOppnImage2, record(2, 0) + kOpponentName);
-        hideIfOff(kOpplImage2, record(2, 0) + kOpponentList);
+        hideIfOff(kOppnImage, gameSettings(guest).hudOf(1, 0).opponentName);
+        hideIfOff(kOpplImage, gameSettings(guest).hudOf(1, 0).opponentList);
+        hideIfOff(kOppnImage2, gameSettings(guest).hudOf(2, 0).opponentName);
+        hideIfOff(kOpplImage2, gameSettings(guest).hudOf(2, 0).opponentList);
         hide(guest, menu, kCopRadarImage2.address);
         hide(guest, menu, kOppcImage2.address);
     }
     else
     {
-        guest.call(kShowSpeedometer, fe::args({ 0, 0, menu }));
-        guest.call(kShowTachometer, fe::args({ 0, 0, menu }));
-        if (guest.dword(kRecords + kOpponentName) == 0)
+        guest::direct<0x45dae0, showSpeedometer>(app, cpu, 0, 0, menu);
+        guest::direct<0x45deb0, showTachometer>(app, cpu, 0, 0, menu);
+        if (gameSettings(guest).hud[0].opponentName == 0)
             hide(guest, menu, kOppnImage.address);
-        if (guest.dword(kRecords + kOpponentList) == 0)
+        if (gameSettings(guest).hud[0].opponentList == 0)
             hide(guest, menu, kOpplImage.address);
-        if (guest.dword(kRecords + kRearView) == 0)
+        if (gameSettings(guest).hud[0].rearView == 0)
             hide(guest, menu, kRearImage.address);
-        if (guest.dword(kRecords + kSplitTime) == 0)
+        if (gameSettings(guest).hud[0].splitTimeForm == 0)
             hide(guest, menu, kSplitImage.address);
         for (x86::reg32 i = 0; i < kImageCount; ++i)
         {
@@ -886,22 +960,26 @@ x86::reg32 onHudEnter(Guest& guest, x86::reg32 menu)
     }
     hide(guest, menu, kCopRadarImage.address);
     hide(guest, menu, kOppcImage.address);
-    guest.call(kGreyMirrors, fe::args({ menu }));
-    guest.call(kGreyOpponentNames, fe::args({ menu }));
+    guest::direct<0x45e160, greyMirrors>(app, cpu, menu);
+    guest::direct<0x45e210, greyOpponentNames>(app, cpu, menu);
     return 0;
 }
 
 /* sub_45f160, hud as it closes: Cancel puts the records back; any other way
  * out, the lists go into the records. */
-x86::reg32 onHudExit(Guest& guest, x86::reg32 menu)
+x86::reg32 frontend::hudedit::hudExit(App* app, CPU& cpu, reg32 menu)
 {
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 28);
     const std::int32_t first = std::int16_t(guest.word(menu + fe::menu::kFirstItem));
     const std::int32_t selected = std::int16_t(guest.word(menu + fe::menu::kSelected));
     const x86::reg32 item = fe::item::kTable + fe::item::kSize * x86::reg32(first + selected);
     if (guest.dword(item) == 5
-        && guest.call(kCodelinkMatches, fe::args({ guest.dword(item + fe::item::kCodelink), kCancel.address })) != 0)
+        && *fe::direct<0x4429c0, port::menus::codelinkMatched>(app, cpu, cpu.esp - 4,
+                                                                guest.dword(item + fe::item::kCodelink),
+                                                                kCancel.address, cpu.ebx) != 0)
     {
-        copyBytes(guest, kRecords, kSavedRecords, kRecordsBytes);
+        copyBytes(guest, SETTINGS_ADDRESS(hud), kSavedRecords, kRecordsBytes);
         return 0;
     }
     const auto toSetting = [](x86::reg32 entry, x86::reg32 none) { return entry != none ? entry + 1 : 0; };
@@ -909,14 +987,14 @@ x86::reg32 onHudExit(Guest& guest, x86::reg32 menu)
     {
         for (x86::reg32 c = 0; c < 2; ++c)
         {
-            const x86::reg32 fields = record(p, c);
+            HudRecord& fields = gameSettings(guest).hudOf(p, c);
             const x86::reg32 at = slot(p, c);
             const x86::Float scale = fp::add(1.0, fe::X87::integer(std::int32_t(guest.dword(kListMapScale + at))));
-            guest.setFloat(fields + kMapScale, float(scale));
-            guest.setDword(fields + kSpeedometer, toSetting(guest.dword(kListSpeedometer + at), 4));
-            guest.setDword(fields + kTachometer, toSetting(guest.dword(kListTachometer + at), 3));
-            guest.setDword(fields + kMapStyle, toSetting(guest.dword(kListMapStyle + at), 2));
-            guest.setDword(fields + kSplitTime, toSetting(guest.dword(kListSplitTime + at), 5));
+            fields.mapScale = float(scale);
+            fields.speedometerForm = toSetting(guest.dword(kListSpeedometer + at), 4);
+            fields.tachometerForm = toSetting(guest.dword(kListTachometer + at), 3);
+            fields.mapStyle = toSetting(guest.dword(kListMapStyle + at), 2);
+            fields.splitTimeForm = toSetting(guest.dword(kListSplitTime + at), 5);
         }
     }
     return 0;
@@ -925,8 +1003,10 @@ x86::reg32 onHudExit(Guest& guest, x86::reg32 menu)
 /* sub_45f300: the miniature's art, by whose HUD is on (the other player's, in
  * split screen, by the art it has now), and whose frame is lit.  Loaded anew
  * only when it is another.  ebx its name, as it leaves it. */
-x86::reg32 setScreenArt(Guest& guest, x86::reg32 menu, x86::reg32 player, x86::reg32 cop)
+x86::reg32 frontend::hudedit::setScreenArt(App* app, CPU& cpu, reg32 menu, reg32 player, reg32 cop)
 {
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 16 + 0x104);
     const x86::reg32 path = guest.frame();    // char[0x100]
     const Item screen = fe::findItem(guest, menu, kScreen);
     if (!screen)
@@ -935,7 +1015,7 @@ x86::reg32 setScreenArt(Guest& guest, x86::reg32 menu, x86::reg32 player, x86::r
         return 0;
     }
     const x86::reg32 at = screen.address();
-    const bool on = guest.dword(record(player, cop)) != 0;
+    const bool on = gameSettings(guest).hudOf(player, cop).shown != 0;
     x86::reg32 art;
     if (player == 1)
     {
@@ -965,71 +1045,47 @@ x86::reg32 setScreenArt(Guest& guest, x86::reg32 menu, x86::reg32 player, x86::r
     if (guest.call(kStrcmp, fe::args({ art, guest.dword(at + kItemArt) })) == 0)
         return 0;
     guest.call(kSprintf, fe::args({}, { path, kTwoStrings.address, kArtFolder, guest.dword(at + kItemFile) }));
-    const x86::reg32 file = guest.call(kLoadShapes, fe::args({ path }));
+    const x86::reg32 file =
+        x86::reg32(*fe::direct<0x44ac90, port::buttons::shapesLoaded>(app, cpu, cpu.esp - 4, path, cpu.ebx));
     const x86::reg32 old = signedKey(guest.word(at + kItemTexture));
     const x86::reg32 shape = guest.call(kFindShape, fe::args({ file, art }));
+    // By address: the function leaves edx as sub_4d6390 leaves it.
     const x86::reg32 texture = guest.call(kShapeTexture, fe::args({ shape, old }));
     guest.setWord(at + kItemTexture, std::uint16_t(texture));
     guest.setDword(at + kItemArt, art);
     return texture;
 }
 
-/* The map on the miniature, in its style and scale; part of hud's every pass. */
-void showMap(Guest& guest, x86::reg32 menu, x86::reg32 player, x86::reg32 cop)
-{
-    const x86::reg32 name = guest.frame();
-    const x86::reg32 path = guest.frame() + 0x100;
-    const x86::reg32 at = slot(player, cop);
-    guest.setDword(kShownMapScale + 4 * player, guest.dword(kListMapScale + at));
-    guest.setDword(kShownMapStyle + 4 * player, guest.dword(kListMapStyle + at));
-    guest.copyString(name, player == 2 ? kMapImage2.address : kMapImage.address);
-    Item map = find(guest, menu, name);
-    if (!map)
-        return;
-    const std::int32_t style = std::int32_t(guest.dword(kListMapStyle + at));
-    if (style >= 2)
-    {
-        map.setHidden(true);
-        return;
-    }
-    const x86::reg32 shapeNumber = guest.dword(kListMapScale + at) + x86::reg32(style) * 4;
-    guest.setDword(player == 2 ? kMapShapePlayer2 : kMapShapePlayer1, shapeNumber);
-    guest.call(kSprintf, fe::args({}, { path, kTwoStrings.address, kArtFolder, guest.dword(map.address() + kItemFile) }));
-    const x86::reg32 file = guest.call(kLoadShapes, fe::args({ path }));
-    const x86::reg32 old = signedKey(guest.word(map.address() + kItemTexture));
-    const x86::reg32 shape = guest.call(kFindShape, fe::args({ file, guest.dword(kMapShapes + 4 * shapeNumber) }));
-    guest.setWord(map.address() + kItemTexture, std::uint16_t(guest.call(kShapeTexture, fe::args({ shape, old }))));
-    map.setHidden(false);
-}
-
 /* sub_45f4c0, hud on every pass: whose HUD is laid out, by the list's choice,
  * and then the items for what has changed. */
-x86::reg32 onHudFrame(Guest& guest, x86::reg32 menu)
+x86::reg32 frontend::hudedit::hudFrame(App* app, CPU& cpu, reg32 menu)
 {
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 24 + 0x15c);
     const x86::reg32 name = guest.frame();    // char[0x100]
     const auto chosenText = [&] { return guest.word(guest.dword(kChoices) + 2 * guest.dword(kChoice)); };
     x86::reg32 player = 0;
-    if (guest.dword(kSplitScreen) == 1)
+    if (gameSettings(guest).playMode == 1)
     {
         const std::uint16_t text = chosenText();
         player = text == kTextPlayer2 || text == kTextPlayer2Cop ? 2 : 1;
     }
     x86::reg32 cop = 0;
-    if (guest.dword(kRaceType) == kHotPursuit)
+    if (gameSettings(guest).raceType == kHotPursuit)
     {
         const std::uint16_t text = chosenText();
         cop = text == kTextCop || text == kTextPlayer1Cop || text == kTextPlayer2Cop ? 1 : 0;
     }
-    const x86::reg32 fields = record(player, cop);
+    HudRecord& fields = gameSettings(guest).hudOf(player, cop);
     const x86::reg32 at = slot(player, cop);
     const x86::reg32 own = 4 * player;
 
     if (guest.dword(kShownChoice) != guest.dword(kChoice))
     {
         guest.setDword(kShownChoice, guest.dword(kChoice));
-        guest.setDword(kOnOff, guest.dword(fields + kShown));
+        guest.setDword(kOnOff, fields.shown);
         guest.setDword(kShownOnOff, 0xffffffff);
-        guest.call(kSetScreenArt, fe::args({ menu, player, cop }));
+        guest::direct<0x45f300, setScreenArt>(app, cpu, menu, player, cop);
         // Every image looked up, by both players' names, and nothing done with
         // them: the test of its flags that follows in the game goes nowhere.
         for (x86::reg32 i = 0; i < kImageCount; ++i)
@@ -1046,14 +1102,14 @@ x86::reg32 onHudFrame(Guest& guest, x86::reg32 menu)
     {
         const std::uint32_t onOff = guest.dword(kOnOff);
         guest.setDword(kShownOnOff, onOff);
-        guest.setDword(fields + kShown, onOff);
-        guest.call(kShowScreenItems, fe::args({ menu, player, cop }));
-        guest.call(kSetScreenArt, fe::args({ menu, player, cop }));
+        fields.shown = onOff;
+        guest::direct<0x45e3d0, showScreenItems>(app, cpu, menu, player, cop);
+        guest::direct<0x45f300, setScreenArt>(app, cpu, menu, player, cop);
     }
 
-    if (guest.dword(kSplitScreen) != 1)
+    if (gameSettings(guest).playMode != 1)
     {
-        const std::uint32_t rearView = guest.dword(record(0, cop) + kRearView);
+        const std::uint32_t rearView = gameSettings(guest).hudOf(0, cop).rearView;
         if (guest.dword(kShownRearView) != rearView)
         {
             guest.setDword(kShownRearView, rearView);
@@ -1061,23 +1117,23 @@ x86::reg32 onHudFrame(Guest& guest, x86::reg32 menu)
         }
     }
 
-    if (guest.dword(fields + kShown) == 0)
+    if (fields.shown == 0)
         return 0;
 
     if (guest.dword(kListMapScale + at) != guest.dword(kShownMapScale + own)
         || guest.dword(kListMapStyle + at) != guest.dword(kShownMapStyle + own))
     {
-        showMap(guest, menu, player, cop);
+        showMap(guest, cpu, menu, player, cop);
     }
     if (guest.dword(kListSpeedometer + at) != guest.dword(kShownSpeedometer + own))
     {
         guest.setDword(kShownSpeedometer + own, guest.dword(kListSpeedometer + at));
-        guest.call(kShowSpeedometer, fe::args({ player, cop, menu }));
+        guest::direct<0x45dae0, showSpeedometer>(app, cpu, player, cop, menu);
     }
     if (guest.dword(kListTachometer + at) != guest.dword(kShownTachometer + own))
     {
         guest.setDword(kShownTachometer + own, guest.dword(kListTachometer + at));
-        guest.call(kShowTachometer, fe::args({ player, cop, menu }));
+        guest::direct<0x45deb0, showTachometer>(app, cpu, player, cop, menu);
     }
     if (guest.dword(kListSplitTime + at) != guest.dword(kShownSplitTime + own))
     {
@@ -1085,15 +1141,15 @@ x86::reg32 onHudFrame(Guest& guest, x86::reg32 menu)
         guest.copyString(name, player == 2 ? kSplitImage2.address : kSplitImage.address);
         setHidden(guest, menu, name, guest.dword(kShownSplitTime + own) == 5);
     }
-    if (guest.dword(fields + kOpponentName) != guest.dword(kShownOpponentName + own))
+    if (fields.opponentName != guest.dword(kShownOpponentName + own))
     {
-        guest.setDword(kShownOpponentName + own, guest.dword(fields + kOpponentName));
+        guest.setDword(kShownOpponentName + own, fields.opponentName);
         guest.copyString(name, player == 2 ? kOppnImage2.address : kOppnImage.address);
         setHidden(guest, menu, name, guest.dword(kShownOpponentName + own) == 0);
     }
-    if (guest.dword(fields + kOpponentList) != guest.dword(kShownOpponentList + own))
+    if (fields.opponentList != guest.dword(kShownOpponentList + own))
     {
-        guest.setDword(kShownOpponentList + own, guest.dword(fields + kOpponentList));
+        guest.setDword(kShownOpponentList + own, fields.opponentList);
         nameWithTwo(guest, name, cop != 0 ? kOppcImage.address : kOpplImage.address, player);
         setHidden(guest, menu, name, guest.dword(kShownOpponentList + own) == 0);
     }
@@ -1103,153 +1159,151 @@ x86::reg32 onHudFrame(Guest& guest, x86::reg32 menu)
     return 0;
 }
 
-const GuestString kLayoutEnterStrings[] = { kDone, kReset };
-const GuestString kDefaultsStrings[] = { kDefaultsName, kDefaultsSeparators, kScanName, kScanFloat };
-const GuestString kSpeedometerStrings[] = { kAkph, kDkph, kAmph, kDmph, kTwo };
-const GuestString kTachometerStrings[] = { kArpm, kMrpm, kDrpm, kTwo };
-const GuestString kHudEnterStrings[] = {
-    kCredits, kSingleDefaults, kSplitDefaults, kHotSplitDefaults, kScreen, kTimeImage2, kPlayer1Selected,
-    kPlayer2Selected, kNameAndChar, kRearImage, kOppnImage, kOpplImage, kOppnImage2, kOpplImage2, kCopRadarImage2,
-    kOppcImage2, kSplitImage, kCopRadarImage, kOppcImage, kArtBoth, kArtPlayer1, kArtPlayer2, kArtNeither, kArtOn,
-};
-const GuestString kHudExitStrings[] = { kCancel };
-const GuestString kScreenItemsStrings[] = {
-    kRearImage, kMapImage, kOppnImage, kOpplImage, kOppcImage, kSplitImage, kCopRadarImage, kPosImage, kTimeImage,
-    kLapsImage, kPosImage2, kTimeImage2, kLapsImage2, kNameAndChar, kTwo,
-};
-const GuestString kScreenArtStrings[] = {
-    kScreen, kPlayer1Selected, kPlayer2Selected, kArtBoth, kArtPlayer1, kArtPlayer2, kArtNeither, kArtOn, kArtOff,
-    kTwoStrings,
-};
-const GuestString kHudFrameStrings[] = {
-    kNameAndChar, kRearImage, kMapImage, kMapImage2, kTwoStrings, kSplitImage, kSplitImage2, kOppnImage, kOppnImage2,
-    kOppcImage, kOpplImage, kTwo,
-};
+/* sub_45dae0: the speedometer on the miniature. */
+x86::reg32 frontend::hudedit::showSpeedometer(App* app, CPU& cpu, reg32 player, reg32 cop, reg32 menu)
+{
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 16 + 0x48);
+    return showInstrument(guest, menu, player, cop, kSpeedometerForms, kListSpeedometer);
+}
 
+/* sub_45deb0: the tachometer on the miniature. */
+x86::reg32 frontend::hudedit::showTachometer(App* app, CPU& cpu, reg32 player, reg32 cop, reg32 menu)
+{
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 16 + 0x38);
+    return showInstrument(guest, menu, player, cop, kTachometerForms, kListTachometer);
+}
+
+/* sub_45e160: the rear view's buttons and lists greyed out. */
+x86::reg32 frontend::hudedit::greyMirrors(App* app, CPU& cpu, reg32 menu)
+{
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 12);
+    return greyOut(guest, menu, kMirrorItems);
+}
+
+/* sub_45e210: a cop's opponents' names and split times greyed out. */
+x86::reg32 frontend::hudedit::greyOpponentNames(App* app, CPU& cpu, reg32 menu)
+{
+    Guest guest(app, cpu);
+    const fe::Frame frame(guest, cpu, 12);
+    return greyOut(guest, menu, kCopItems);
 }
 
 void frontend::hudEditDoneKey(win32::WinApplication* app, x86::CPU& cpu)
 {
-    // sub_44de00: done's key handler, Enter keeping the places as they are.
-    static fe::Site site{ "sub_44de00", 0, 4, nullptr, 0, 0 };
-    const x86::reg32 item = cpu.eax, menu = cpu.edx, ebx = cpu.ebx;
-    fe::runWhole(app, cpu, site, [&](Guest& guest) {
-        if (std::int16_t(ebx) == kKeyEnter)
-            guest.setDword(kEditDone, 1);
-        return guest.call(kButtonKey, fe::args({ item, menu, signedKey(ebx) }));
-    });
+    static fe::Site site{ "sub_44de00", 0, 0, nullptr, 0, 0 };
+    const x86::reg32 item = cpu.eax, menu = cpu.edx, key = cpu.ebx;
+    fe::runWhole(app, cpu, site, [&](Guest&) { return hudedit::doneKey(app, cpu, item, menu, key); });
 }
 
 void frontend::hudEditResetKey(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_44de20", 0, 4, nullptr, 0, 0 };
-    const x86::reg32 item = cpu.eax, menu = cpu.edx, ebx = cpu.ebx;
-    fe::runWhole(app, cpu, site, [&](Guest& guest) { return resetKey(guest, item, menu, ebx); });
+    static fe::Site site{ "sub_44de20", 0, 0, nullptr, 0, 0 };
+    const x86::reg32 item = cpu.eax, menu = cpu.edx, key = cpu.ebx;
+    fe::runWhole(app, cpu, site, [&](Guest&) { return hudedit::resetKey(app, cpu, item, menu, key); });
 }
 
 void frontend::hudEditLayoutOnEnter(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_44de80", 0, 28, kLayoutEnterStrings, std::size(kLayoutEnterStrings) };
+    static fe::Site site{ "sub_44de80", 0, 0, kLayoutEnterStrings, std::size(kLayoutEnterStrings) };
     const x86::reg32 menu = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest& guest) { return onLayoutEnter(guest, menu); });
+    fe::runWhole(app, cpu, site, [&](Guest&) { return hudedit::layoutEnter(app, cpu, menu); });
 }
 
 void frontend::hudEditLayoutOnExit(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_44dfd0", 0, 24, nullptr, 0 };
-    fe::runWhole(app, cpu, site, [](Guest& guest) { return onLayoutExit(guest); });
+    static fe::Site site{ "sub_44dfd0", 0, 0, nullptr, 0 };
+    fe::runWhole(app, cpu, site, [&](Guest&) { return hudedit::layoutExit(app, cpu); });
 }
 
 void frontend::hudEditPlaceElement(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_45ca90", 0, 24, nullptr, 0 };
+    static fe::Site site{ "sub_45ca90", 0, 0, nullptr, 0 };
     const x86::reg32 item = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest& guest) { return placeElement(guest, item); });
+    fe::runWhole(app, cpu, site, [&](Guest&) { return hudedit::placeElement(app, cpu, item); });
 }
 
 void frontend::hudEditShowSpeedometer(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_45dae0", 0, 16 + 0x48, kSpeedometerStrings, std::size(kSpeedometerStrings),
+    static fe::Site site{ "sub_45dae0", 0, 0, kSpeedometerStrings, std::size(kSpeedometerStrings),
                           fe::kRestoreEcx | fe::kRestoreEsi | fe::kRestoreEdi };
     const x86::reg32 player = cpu.eax, cop = cpu.edx, menu = cpu.ebx;
-    fe::runWhole(app, cpu, site, [&](Guest& guest) {
-        return showInstrument(guest, menu, player, cop, kSpeedometerForms, kListSpeedometer);
-    });
+    fe::runWhole(app, cpu, site, [&](Guest&) { return hudedit::showSpeedometer(app, cpu, player, cop, menu); });
 }
 
 void frontend::hudEditShowTachometer(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_45deb0", 0, 16 + 0x38, kTachometerStrings, std::size(kTachometerStrings),
+    static fe::Site site{ "sub_45deb0", 0, 0, kTachometerStrings, std::size(kTachometerStrings),
                           fe::kRestoreEcx | fe::kRestoreEsi | fe::kRestoreEdi };
     const x86::reg32 player = cpu.eax, cop = cpu.edx, menu = cpu.ebx;
-    fe::runWhole(app, cpu, site, [&](Guest& guest) {
-        return showInstrument(guest, menu, player, cop, kTachometerForms, kListTachometer);
-    });
+    fe::runWhole(app, cpu, site, [&](Guest&) { return hudedit::showTachometer(app, cpu, player, cop, menu); });
 }
 
 void frontend::hudEditGreyMirrors(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_45e160", 0, 12, kMirrorItems, std::size(kMirrorItems),
+    static fe::Site site{ "sub_45e160", 0, 0, kMirrorItems, std::size(kMirrorItems),
                           fe::kRestoreEcx | fe::kRestoreEdx };
     const x86::reg32 menu = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest& guest) { return greyOut(guest, menu, kMirrorItems); });
+    fe::runWhole(app, cpu, site, [&](Guest&) { return hudedit::greyMirrors(app, cpu, menu); });
 }
 
 void frontend::hudEditGreyOpponentNames(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_45e210", 0, 12, kCopItems, std::size(kCopItems), fe::kRestoreEcx | fe::kRestoreEdx };
+    static fe::Site site{ "sub_45e210", 0, 0, kCopItems, std::size(kCopItems), fe::kRestoreEcx | fe::kRestoreEdx };
     const x86::reg32 menu = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest& guest) { return greyOut(guest, menu, kCopItems); });
+    fe::runWhole(app, cpu, site, [&](Guest&) { return hudedit::greyOpponentNames(app, cpu, menu); });
 }
 
 void frontend::hudEditPlaceImages(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_45e310", 0, 24, nullptr, 0 };
+    static fe::Site site{ "sub_45e310", 0, 0, nullptr, 0 };
     const x86::reg32 menu = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest& guest) { return placeImages(guest, menu); });
+    fe::runWhole(app, cpu, site, [&](Guest&) { return hudedit::placeImages(app, cpu, menu); });
 }
 
 void frontend::hudEditShowScreenItems(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_45e3d0", 0, 16 + 0x10c, kScreenItemsStrings, std::size(kScreenItemsStrings),
+    static fe::Site site{ "sub_45e3d0", 0, 0, kScreenItemsStrings, std::size(kScreenItemsStrings),
                           fe::kRestoreEcx | fe::kRestoreEsi | fe::kRestoreEdi };
     const x86::reg32 menu = cpu.eax, player = cpu.edx, cop = cpu.ebx;
-    fe::runWhole(app, cpu, site, [&](Guest& guest) { return showScreenItems(guest, menu, player, cop); });
+    fe::runWhole(app, cpu, site, [&](Guest&) { return hudedit::showScreenItems(app, cpu, menu, player, cop); });
 }
 
 void frontend::hudEditOnEnter(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_45e960", 0, 24 + 0x108, kHudEnterStrings, std::size(kHudEnterStrings) };
+    static fe::Site site{ "sub_45e960", 0, 0, kHudEnterStrings, std::size(kHudEnterStrings) };
     const x86::reg32 menu = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest& guest) { return onHudEnter(guest, menu); });
+    fe::runWhole(app, cpu, site, [&](Guest&) { return hudedit::hudEnter(app, cpu, menu); });
 }
 
 void frontend::hudEditOnExit(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_45f160", 0, 28, kHudExitStrings, std::size(kHudExitStrings) };
+    static fe::Site site{ "sub_45f160", 0, 0, kHudExitStrings, std::size(kHudExitStrings) };
     const x86::reg32 menu = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest& guest) { return onHudExit(guest, menu); });
+    fe::runWhole(app, cpu, site, [&](Guest&) { return hudedit::hudExit(app, cpu, menu); });
 }
 
 void frontend::hudEditSetScreenArt(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_45f300", 0, 16 + 0x104, kScreenArtStrings, std::size(kScreenArtStrings),
+    static fe::Site site{ "sub_45f300", 0, 0, kScreenArtStrings, std::size(kScreenArtStrings),
                           fe::kRestoreEcx | fe::kRestoreEsi | fe::kRestoreEdi };
     const x86::reg32 menu = cpu.eax, player = cpu.edx, cop = cpu.ebx;
-    fe::runWhole(app, cpu, site, [&](Guest& guest) { return setScreenArt(guest, menu, player, cop); });
+    fe::runWhole(app, cpu, site, [&](Guest&) { return hudedit::setScreenArt(app, cpu, menu, player, cop); });
 }
 
 void frontend::hudEditOnFrame(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_45f4c0", 0, 24 + 0x15c, kHudFrameStrings, std::size(kHudFrameStrings) };
+    static fe::Site site{ "sub_45f4c0", 0, 0, kHudFrameStrings, std::size(kHudFrameStrings) };
     const x86::reg32 menu = cpu.eax;
-    fe::runWhole(app, cpu, site, [&](Guest& guest) { return onHudFrame(guest, menu); });
+    fe::runWhole(app, cpu, site, [&](Guest&) { return hudedit::hudFrame(app, cpu, menu); });
 }
 
 void frontend::hudEditLoadDefaults(win32::WinApplication* app, x86::CPU& cpu)
 {
-    static fe::Site site{ "sub_485680", 0, 24 + 0x18c, kDefaultsStrings, std::size(kDefaultsStrings) };
-    fe::runWhole(app, cpu, site, [](Guest& guest) { return loadDefaults(guest); });
+    static fe::Site site{ "sub_485680", 0, 0, kDefaultsStrings, std::size(kDefaultsStrings) };
+    fe::runWhole(app, cpu, site, [&](Guest&) { return hudedit::loadDefaults(app, cpu); });
 }
 
 }

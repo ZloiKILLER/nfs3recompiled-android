@@ -31,13 +31,6 @@
  <string name="touch_settings">Χειρισμός με αφή</string>
  <string name="screen_settings">Οθόνη</string>
  <string name="display_settings">Οθόνη</string>
- <string name="screen_adjustment">Ρύθμιση εικόνας</string>
- <string name="brightness_label">Φωτεινότητα</string>
- <string name="contrast_label">Αντίθεση</string>
- <string name="adjust_hint">Τα δείγματα δείχνουν το αποτέλεσμα. Ισχύει από την επόμενη εκκίνηση του παιχνιδιού.</string>
- <string name="adjust_reset">Επαναφορά</string>
- <string name="sample_dark">Νύχτα</string>
- <string name="sample_bright">Μέρα</string>
  <string name="back_to_launcher">Πίσω</string>
  <string name="switch_data">Ενεργοποίηση</string>
  <string name="data_change">Αλλαγή…</string>
@@ -71,7 +64,6 @@
  <string name="orientation_landscape_reverse">Σταθερά — οριζόντια, ανάποδα</string>
  <string name="fps_30">30 FPS</string>
  <string name="fps_60">60 FPS</string>
- <string name="gamma_label">Γάμμα</string>
  <string name="fps_cap_label">Ρυθμός καρέ</string>
  <string name="fps_error">Δώσε ακέραιο από 1 έως 240</string>
  <string name="save">Αποθήκευση</string>
@@ -156,6 +148,8 @@
  <string name="faq_mapping"><b>Χειριστήρια</b>\nΤο παιχνίδι βλέπει πάντα δύο χειριστήρια: το χειριστήριο 1 είναι ο παίκτης 1 μαζί με τον χειρισμό με αφή, το χειριστήριο 2 είναι ο παίκτης 2. Στο Χειρισμός → Χειριστήρια διάλεξε ποιο είναι ποιο πατώντας ένα κουμπί του, ρύθμισε τι κάνει κάθε κουμπί και μετά πάτα μία φορά Χειριστήριο ΕΝΕΡΓΟ. Αυτό γράφει τον αντίστοιχο χειρισμό στις ρυθμίσεις του παιχνιδιού και κρατά αντίγραφο του παλιού αρχείου. Ο αριστερός μοχλός στρίβει, οι σκανδάλες επιταχύνουν και φρενάρουν. Το χειριστήριο έχει δύο σύνολα κουμπιών, όπως ο χειρισμός με αφή έχει δύο διατάξεις: αυτό του αγώνα που ρυθμίζεις εδώ και ένα σταθερό για τα μενού και τις επαναλήψεις, όπου το Cross / A επιβεβαιώνει, το Circle / B γυρίζει πίσω και ο σταυρός μετακινεί την επιλογή. Για παιχνίδι με πληκτρολόγιο, γράψε αντί γι\' αυτό Προεπιλογή παιχνιδιού.</string>
  <string name="faq_lights"><b>Φώτα και επιστροφή στην πίστα</b>\nΤο ☼ στέλνει L. Το ↻ στέλνει R για επιστροφή στην πίστα. Τα πλήκτρα αλλάζουν στο Χειρισμός → Αφή → Πλήκτρα.</string>
  <string name="faq_screen_data"><b>Οθόνη και δεδομένα παιχνιδιού</b>\nΤο οριζόντια κλειδώνει το παιχνίδι σε οριζόντια θέση· το Αυτόματος επιτρέπει την περιστροφή. Το όριο FPS περιορίζει τον ρυθμό καρέ· χαμηλότερη τιμή μειώνει τη δουλειά ανά δευτερόλεπτο. Τα «Δεδομένα παιχνιδιού» διαχειρίζονται τις εισαγωγές και δείχνουν ποιο σύνολο είναι ενεργό. Το «Παίξε» ενεργοποιείται όταν ένα σύνολο είναι έτοιμο.</string>
+ <string name="faq_picture"><b>Φωτεινότητα, αντίθεση και γάμμα</b>\nΡυθμίζονται μέσα στο ίδιο το παιχνίδι: Options → Graphics → Advanced Settings ή Graphics στο μενού παύσης κατά τη διάρκεια αγώνα. Η εικόνα αλλάζει αμέσως καθώς μετακινείτε το ρυθμιστικό. Το Done κρατά τις τιμές, το Cancel επαναφέρει τις προηγούμενες. Οι ρυθμίσεις ισχύουν για αγώνες, μενού και βίντεο.</string>
+ <string name="faq_network"><b>Αγώνες δικτύου</b>\nΑνοίξτε το Connect Players στην πρώτη οθόνη του παιχνιδιού. Το Local WiFi βρίσκει μόνο του αγώνες μεταξύ τηλεφώνων στο ίδιο δίκτυο Wi-Fi. Το Network (TCP) συνδέεται με όποιον γνωρίζει τη διεύθυνση του οικοδεσπότη, ακόμη και με PC με το αρχικό παιχνίδι ή το Modern Patch. Από κάτω εμφανίζονται η διεύθυνση αυτού του τηλεφώνου (Your IP) και το TCP Port: ένα πάτημα εναλλάσσει μεταξύ 9803 (Modern Patch) και 1030 (αρχικό παιχνίδι). Όλοι οι παίκτες ενός αγώνα TCP πρέπει να χρησιμοποιούν την ίδια θύρα.</string>
  <string name="gamepad_buttons">Κουμπιά</string>
  <string name="gamepad_buttons_title">Κουμπιά χειριστηρίου %1$d</string>
  <string name="gamepad_buttons_hint">Τι κάνει κάθε κουμπί αυτού του χειριστηρίου όσο οδηγείς. Ο αριστερός μοχλός στρίβει, η δεξιά σκανδάλη επιταχύνει και η αριστερή φρενάρει. Στα μενού και στις επαναλήψεις τα κουμπιά είναι σταθερά και δεν ρυθμίζονται: Cross / A και Options / Menu επιβεβαιώνουν, Circle / B και Create / View γυρίζουν πίσω, ο σταυρός μετακινεί την επιλογή. Οι ενέργειες των κουμπιών φτάνουν στο παιχνίδι μόλις γραφτεί σε αυτό ο χειρισμός με χειριστήρια.</string>
@@ -191,12 +185,5 @@
  <string name="force_feedback_phone_note">Το τηλέφωνο αποδίδει συγκρούσεις, προσγειώσεις και αλλαγές ταχυτήτων, τη μηχανή σε υψηλές στροφές και τις απότομες στροφές.</string>
  <string name="force_feedback_gamepad_note">Το χειριστήριο 1 αποδίδει τα εφέ του παιχνιδιού όπως είναι. Η έντασή τους ρυθμίζεται στο παιχνίδι: Options → Controllers → Force Feedback.</string>
  <string name="editor_snap_grid">Ευθυγράμμιση στο πλέγμα</string>
- <string name="network_title">Δίκτυο</string>
- <string name="network_address">Διεύθυνση αυτής της συσκευής στο δίκτυο: %1$s</string>
- <string name="network_no_address">Χωρίς σύνδεση δικτύου</string>
- <string name="network_port_label">Θύρα TCP/IP</string>
- <string name="network_port_modern">9803 · Modern Patch</string>
- <string name="network_port_original">1030 · αρχικό παιχνίδι</string>
- <string name="network_hint">Το IPX βρίσκει μόνο του αγώνες σε αυτό το Wi-Fi. Το TCP/IP συνδέει με όποιον γνωρίζει τη διεύθυνση του οικοδεσπότη, ακόμη και με PC με το αρχικό παιχνίδι ή το Modern Patch. Όλοι οι παίκτες χρησιμοποιούν την ίδια θύρα.</string>
  <string name="fps_unlimited">Χωρίς όριο</string>
 </resources>

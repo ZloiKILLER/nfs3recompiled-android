@@ -1,6 +1,7 @@
 #ifndef NFS3HP_PORT_SHAPES_H
 #define NFS3HP_PORT_SHAPES_H
 
+#include "native_guest.h"
 #include "port.h"
 
 /* The game's shapes, rewritten (port.h says how): an FSH shape turned into a
@@ -42,8 +43,101 @@ Result drawArt(App* app, CPU& cpu, reg32 esp, int32_t record, int32_t x, int32_t
 void resetTextures(App* app, CPU& cpu);  // 0x4d5c40
 void shapeTexture(App* app, CPU& cpu);   // 0x4d6070
 
+/* The typed cores the menus call as C++ (guest::direct) -- shapeNamed (0x4d5db0) and drawArt (0x4d7160) above,
+ * and these -- and how the game's code calls each by address (ByAddress below, for the checks' stand-ins).  A
+ * Result is nullopt when the game stopped in a call.  A core's `esp` is the frame base its adapter hands it:
+ * the game's esp on entry, at the return address.  A caller through guest::direct passes cpu.esp - 4 - 4 * N, N
+ * the stack words the game's call pushes: the esp the adapter hands it, so the core's frame lies where the
+ * game's does; by address the call makes it. */
+
+// The game's 0x4d5c40: the textures let go of; esp the frame base.
+Result texturesLetGo(App* app, CPU& cpu, reg32 esp);
+// The game's 0x4d6070: shape `shape` made a texture into the record at `out`, at most `size` a side, in the format
+// at `format`; esp the frame base.
+Result textureOf(App* app, CPU& cpu, reg32 esp, reg32 out, reg32 shape, int32_t size, reg32 format);
+// The game's 0x4d6390: the art shape `shape` made textures, `again` the record to fill again (0 a new one), `ecx`
+// handed on; the record; esp the frame base.
+Result artTexturesOf(App* app, CPU& cpu, reg32 esp, reg32 shape, int32_t again, reg32 ecx);
+// The game's 0x4d7990: art record `record` drawn at x, y, opaque; esp the frame base.
+Result drawShapeOf(App* app, CPU& cpu, reg32 esp, int32_t record, int32_t x, int32_t y);
+
 }  // namespace shapes
 }  // namespace port
+
+namespace guest
+{
+
+// Nothing handed over; eax back.
+template <>
+struct ByAddress<port::shapes::texturesLetGo>
+{
+    template <x86::reg32 Address>
+    static port::Result call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32)
+    {
+        return watcomEax(app, cpu, Address, {});
+    }
+};
+
+// The name in eax; the record in eax.
+template <>
+struct ByAddress<port::shapes::shapeNamed>
+{
+    template <x86::reg32 Address>
+    static port::Result call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32, x86::reg32 name)
+    {
+        return watcomEax(app, cpu, Address, {name});
+    }
+};
+
+// The record in eax, the shape in edx, the size in ebx, the format in ecx; eax back.
+template <>
+struct ByAddress<port::shapes::textureOf>
+{
+    template <x86::reg32 Address>
+    static port::Result call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32, x86::reg32 out, x86::reg32 shape,
+                             std::int32_t size, x86::reg32 format)
+    {
+        return watcomEax(app, cpu, Address, {out, shape, x86::reg32(size), format});
+    }
+};
+
+// The shape in eax, the record in edx, `ecx` in ecx (ebx left as it is); the record in eax.
+template <>
+struct ByAddress<port::shapes::artTexturesOf>
+{
+    template <x86::reg32 Address>
+    static port::Result call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32, x86::reg32 shape,
+                             std::int32_t again, x86::reg32 ecx)
+    {
+        return watcomEax(app, cpu, Address, {shape, x86::reg32(again), cpu.ebx, ecx});
+    }
+};
+
+// The record in eax, x in edx, y in ebx, the colour in ecx; eax back.
+template <>
+struct ByAddress<port::shapes::drawArt>
+{
+    template <x86::reg32 Address>
+    static port::Result call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32, std::int32_t record,
+                             std::int32_t x, std::int32_t y, x86::reg32 colour)
+    {
+        return watcomEax(app, cpu, Address, {x86::reg32(record), x86::reg32(x), x86::reg32(y), colour});
+    }
+};
+
+// The record in eax, x in edx, y in ebx; eax back.
+template <>
+struct ByAddress<port::shapes::drawShapeOf>
+{
+    template <x86::reg32 Address>
+    static port::Result call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32, std::int32_t record,
+                             std::int32_t x, std::int32_t y)
+    {
+        return watcomEax(app, cpu, Address, {x86::reg32(record), x86::reg32(x), x86::reg32(y)});
+    }
+};
+
+}  // namespace guest
 }  // namespace nfs3hp
 
 #endif

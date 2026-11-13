@@ -97,7 +97,8 @@ SITES = [
     # sub_459fe0: likewise, the last good place put back; edx is the element.
     ("nfs3hp.16.cpp", "0045a031  a5", MOVSD,
      MOVSD + "\n    hudLayoutDesigned(app, cpu.edi - 16, cpu.edx); /* port: the layout as laid out, not as drawn */",
-     ""),
+     # Its own: the other site of this name is in sub_459db0, which is native.
+     "void hudLayoutDesigned(win32::WinApplication* app, x86::reg32 rect, x86::reg32 element);\n"),
     # sub_459db0: may the element stand here?  eax is the rectangle tried, edx
     # the player, ebx the element.
     ("nfs3hp.16.cpp", "00459f7a  e8f1f6ffff", CALL_FITS,

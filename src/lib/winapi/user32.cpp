@@ -59,7 +59,9 @@ x86::reg32 CharUpperA(WinApplication* app, x86::CPU& cpu,
     NFS2_USE(cpu);
     for (char* c = lpsz; *c; ++c)
         *c = char(toupper(*c));
-    return app->getMemory<x86::reg32>(cpu.esp + 4);
+    // The string's own address, as Windows gives it back: from the pointer, not the stack, so
+    // that a C++ caller (guest::windows) gets it too.
+    return app->guestAddress(lpsz);
 }
 
 DWORD CharUpperBuffA(WinApplication* app, x86::CPU& cpu,

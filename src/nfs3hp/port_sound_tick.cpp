@@ -1,3 +1,4 @@
+#include "game_settings.h"
 #include "port_snd_3d.h"
 
 #include <algorithm>
@@ -47,8 +48,7 @@ static_assert(sizeof(CopSource) == 0x38, "a cop source");
 
 constexpr Records<CopSource> kSources{0x570b78};
 constexpr Table<reg32> kRoadCars{0x5efac8};
-constexpr Var<int32_t> kRoadCarCount{0x5efd9c}, kSplitScreen{0x6fd3b0}, kCameraKind{0x6fd3a0};
-constexpr Var<reg32> kViewedPlayer{0x6fd4f4};
+constexpr Var<int32_t> kRoadCarCount{0x5efd9c};
 constexpr Var<int32_t> kReplayCamera{0x55fe30}, kCopsCloseness{0x55260c};
 constexpr Table<reg32> kPlayerCars{0x570af0, 0x50};
 constexpr Var<double> kRoadScale{0x536958}, kSpeedScale{0x536950};
@@ -100,9 +100,9 @@ Result copSourcesIn(App* app, CPU& cpu, reg32 entryEsp, int32_t player, int32_t 
         const reg32 car = kRoadCars(app, i);
         if ((app->getMemory<uint8_t>(car + 0x200) & 4) != 0)
         {
-            if (kSplitScreen(app) <= 1)
+            if (std::int32_t(gameSettings(app).playMode) <= 1)
                 continue;
-            if (kViewedPlayer(app) == guest::at(app, car + 0x1f0))
+            if (gameSettings(app).localPlayer == guest::at(app, car + 0x1f0))
                 continue;
         }
         if ((app->getMemory<uint8_t>(car + 0x200) & 0x40) != 0 || app->getMemory<uint8_t>(car + 0x89) == 0)
@@ -213,7 +213,7 @@ Result copSoundIn(App* app, CPU& cpu, reg32 entryEsp, int32_t player, int32_t in
     if (*ahead < 0)
         return *ahead;
     int32_t angle;
-    if (kSplitScreen(app) == 1)
+    if (gameSettings(app).playMode == 1)
         angle = player != 0 ? 0xc000 : 0x3fff;
     else
     {
@@ -371,7 +371,7 @@ bool listenerAt(Calls& game, Arithmetic a, int32_t player, reg32 carSlot)
         return false;
     const reg32 car = guest::at(app, carSlot);
     moveListener(app, a, player, kListener);
-    guest::put(app, reg32(kListenerDirection.at), kCameraKind(app) >= 2 ? kMoved : car + 0xa4);
+    guest::put(app, reg32(kListenerDirection.at), std::int32_t(gameSettings(app).replayMode) >= 2 ? kMoved : car + 0xa4);
     return true;
 }
 
@@ -419,7 +419,7 @@ void raceSoundTick(App* app, CPU& cpu)
         return true;
     };
     Result r;
-    if (kSplitScreen(app) == 1)
+    if (gameSettings(app).playMode == 1)
     {
         if (!listenerAt(game, a, 0, 0x570af0) || !cops(0, 0, 1))
             return;

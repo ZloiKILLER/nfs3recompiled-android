@@ -1,3 +1,4 @@
+#include "game_settings.h"
 #include "port_view.h"
 #include "port_text.h"
 
@@ -62,8 +63,6 @@ constexpr reg32 kMenuView = 0x21;           // the item whose view this is
 // metrics an entry holds and where they are in it, and the fields of the
 // record whose box it is (all words but the rows' and the first's, which are
 // the high halves of dwords).
-constexpr Var<reg32> kScreenKind{0x6fd3b8};          // 3: none to draw
-constexpr Var<reg32> kMetricCount{0x6fd4b4};
 constexpr reg32 kMetricValues = 0x298;               // an entry's floats
 constexpr reg32 kEntryKind = 0x2c4;
 constexpr reg32 kEntryNone = 4;
@@ -100,11 +99,16 @@ float bitsToFloat(reg32 bits)
 
 /* ---- 0x4646e0, 0x469580, 0x46b030, 0x46ca70 ---- */
 
+}  // namespace
+
 /* The pan's base: the float given, plus one, kept as a float. */
 void storedIncremented(App* app, float value)
 {
     kPanBase.set(app, float(double(value) + 1.0));
 }
+
+namespace
+{
 
 /* The record's first float. */
 float firstFloat(App* app, reg32 record)
@@ -1188,7 +1192,7 @@ bool popupMetrics(App* app, CPU& cpu, const Entry& e)
     const auto field = [&](int index) -> int32_t { return int16_t(word(box + 2 * reg32(index))); };
     const auto recordWord = [&](reg32 offset) -> uint16_t { return word(record + offset); };
 
-    if (kScreenKind(app) == 3)
+    if (gameSettings(app).raceType == 3)
         return true;
     // The box: the record's parts added up, as 16 bits.
     app->getMemory<uint16_t>(box + 2) =
@@ -1216,7 +1220,7 @@ bool popupMetrics(App* app, CPU& cpu, const Entry& e)
     app->getMemory<reg32>(entryAt) = entry;
     if (entry == 0 || app->getMemory<reg32>(entry + kEntryKind) == kEntryNone)
         return true;
-    const reg32 metrics = kMetricCount(app);
+    const reg32 metrics = gameSettings(app).laps;
     app->getMemory<reg32>(count) = metrics;
     app->getMemory<reg32>(bestValue) = 0;
     for (int32_t j = 0; j < int32_t(metrics); ++j)
@@ -1262,6 +1266,18 @@ bool popupMetrics(App* app, CPU& cpu, const Entry& e)
 }
 
 }  // namespace
+
+/* 0x46cf30's, as C++ (port_view.h): popupMetrics for the record `record`,
+ * its frame from `esp`; eax as it came. */
+Result metricPopupOf(App* app, CPU& cpu, reg32 esp, reg32 record)
+{
+    Entry e(cpu);
+    e.esp = esp;
+    e.eax = record;
+    if (!popupMetrics(app, cpu, e))
+        return {};
+    return int32_t(record);
+}
 
 /* ---- The adapters ---- */
 
@@ -1343,8 +1359,7 @@ void viewFrame(App* app, CPU& cpu)
 void metricPopup(App* app, CPU& cpu)
 {
     const Entry e(cpu);
-    if (popupMetrics(app, cpu, e))
-        e.back(cpu, e.eax);
+    e.finish(cpu, metricPopupOf(app, cpu, e.esp, e.eax));
 }
 
 void recordFloatByKind(App* app, CPU& cpu)

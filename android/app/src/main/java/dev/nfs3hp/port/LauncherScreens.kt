@@ -1,8 +1,6 @@
 package dev.nfs3hp.port
 
 import android.content.Context
-import android.graphics.Bitmap
-import android.graphics.BitmapFactory
 import android.graphics.Typeface
 import android.text.Spanned
 import android.text.format.Formatter
@@ -15,11 +13,8 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
-import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -36,10 +31,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
-import androidx.compose.foundation.pager.HorizontalPager
-import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicText
 import androidx.compose.foundation.text.InlineTextContent
@@ -53,20 +45,15 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.CompositionLocalProvider
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
@@ -78,12 +65,10 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.em
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
-import kotlinx.coroutines.launch
 
 /** Every screen of the launcher, by the one the activity says is up, moving
  *  as Material moves between the levels of an app: a screen further in comes
@@ -108,7 +93,7 @@ fun LauncherScreens(a: LauncherActivity) {
 private fun depth(screen: LauncherActivity.Screen): Int = when (screen) {
     LauncherActivity.Screen.Main -> 0
     LauncherActivity.Screen.Controls, LauncherActivity.Screen.Display, LauncherActivity.Screen.Data,
-    LauncherActivity.Screen.Language, LauncherActivity.Screen.Faq, LauncherActivity.Screen.Network -> 1
+    LauncherActivity.Screen.Language, LauncherActivity.Screen.Faq -> 1
     LauncherActivity.Screen.TouchKeys, LauncherActivity.Screen.GamepadButtons,
     LauncherActivity.Screen.ControlsHelp, LauncherActivity.Screen.DataSets, LauncherActivity.Screen.Editor -> 3
     else -> 2
@@ -135,8 +120,6 @@ private fun Screen(a: LauncherActivity, screen: LauncherActivity.Screen) {
         LauncherActivity.Screen.ForceFeedback -> ForceFeedbackScreen(a)
         LauncherActivity.Screen.Faq -> FaqScreen(a)
         LauncherActivity.Screen.Display -> DisplayScreen(a)
-        LauncherActivity.Screen.Adjustment -> AdjustmentScreen(a)
-        LauncherActivity.Screen.Network -> NetworkScreen(a)
         LauncherActivity.Screen.Advanced -> AdvancedScreen(a)
     }
 }
@@ -213,7 +196,6 @@ private fun MainScreen(a: LauncherActivity) {
         val menu = @Composable { each: Modifier ->
             MainMenuButton(stringResource(R.string.controls_hub), each) { a.go(LauncherActivity.Screen.Controls) }
             MainMenuButton(stringResource(R.string.display_settings), each) { a.go(LauncherActivity.Screen.Display) }
-            MainMenuButton(stringResource(R.string.network_title), each) { a.go(LauncherActivity.Screen.Network) }
             MainMenuButton(stringResource(R.string.data_settings), each) { a.go(LauncherActivity.Screen.Data) }
             MainMenuButton(stringResource(R.string.language_label), each) { a.go(LauncherActivity.Screen.Language) }
             MainMenuButton(stringResource(R.string.faq_title), each) { a.go(LauncherActivity.Screen.Faq) }
@@ -882,6 +864,7 @@ private val FAQ_SECTIONS = intArrayOf(
     R.string.faq_edges, R.string.faq_hiding,
     R.string.faq_vibration, R.string.faq_mapping,
     R.string.faq_lights, R.string.faq_screen_data,
+    R.string.faq_picture, R.string.faq_network,
 )
 
 @Composable
@@ -1009,195 +992,9 @@ private fun DisplayScreen(a: LauncherActivity) {
                         fps = index
                         preferences.edit().putInt(GamePreferences.FPS_CAP, fpsCaps[index]).apply()
                     }
-                    MenuButton(stringResource(R.string.screen_adjustment), { a.go(LauncherActivity.Screen.Adjustment) }, Modifier.fillMaxWidth())
                 }
             },
         )
-    }
-}
-
-// ---- Network ----
-
-/* Where the others find this phone, and the TCP/IP port every player of a race
- * has to share.  IPX needs neither: the game finds a race on the Wi-Fi itself. */
-@Composable
-private fun NetworkScreen(a: LauncherActivity) {
-    val preferences = remember { GamePreferences.get(a) }
-    var port by remember {
-        mutableIntStateOf(
-            if (preferences.getInt(GamePreferences.NETWORK_PORT, GamePreferences.NETWORK_PORT_MODERN)
-                == GamePreferences.NETWORK_PORT_ORIGINAL) 1 else 0
-        )
-    }
-    val address = remember { localNetworkAddress() }
-    ScreenFrame(stringResource(R.string.network_title), onBack = { a.go(LauncherActivity.Screen.Main) }) {
-        Panel(Modifier.widthIn(max = 640.dp)) {
-            if (address != null) {
-                val line = stringResource(R.string.network_address, address)
-                val at = line.indexOf(address)
-                Text(
-                    buildAnnotatedString {
-                        append(line)
-                        if (at >= 0)
-                            addStyle(SpanStyle(color = GameColors.Gold, fontWeight = FontWeight.Bold), at, at + address.length)
-                    },
-                    color = GameColors.Silver,
-                    style = MaterialTheme.typography.titleMedium,
-                )
-            } else {
-                Hint(stringResource(R.string.network_no_address), color = GameColors.Silver)
-            }
-        }
-        Panel(Modifier.widthIn(max = 640.dp)) {
-            Label(stringResource(R.string.network_port_label))
-            ChoiceList(
-                listOf(stringResource(R.string.network_port_modern), stringResource(R.string.network_port_original)),
-                port,
-            ) { index ->
-                port = index
-                preferences.edit().putInt(
-                    GamePreferences.NETWORK_PORT,
-                    if (index == 1) GamePreferences.NETWORK_PORT_ORIGINAL else GamePreferences.NETWORK_PORT_MODERN,
-                ).apply()
-            }
-        }
-        Hint(stringResource(R.string.network_hint), Modifier.widthIn(max = 640.dp))
-    }
-}
-
-/* This phone's address on the local network, picked as the game picks the one
- * it gives the others (Socket::localAddress): of the interfaces up, the one that
- * broadcasts, on a private network, named as Wi-Fi, a hotspot or a cable is. */
-private fun localNetworkAddress(): String? {
-    var best: String? = null
-    var bestScore = -1
-    try {
-        val interfaces = java.net.NetworkInterface.getNetworkInterfaces() ?: return null
-        for (network in interfaces) {
-            if (!network.isUp || network.isLoopback)
-                continue
-            val name = network.name ?: ""
-            for (entry in network.interfaceAddresses) {
-                val address = entry.address as? java.net.Inet4Address ?: continue
-                var score = 0
-                if (entry.broadcast != null) score += 4
-                if (address.isSiteLocalAddress) score += 2
-                if (listOf("wlan", "swlan", "ap", "eth", "en").any { name.startsWith(it) }) score += 1
-                if (score > bestScore) {
-                    best = address.hostAddress
-                    bestScore = score
-                }
-            }
-        }
-    } catch (e: java.net.SocketException) {
-        AppLog.w("NFS3Launcher", "no network interfaces: $e")
-    }
-    return best
-}
-
-/* Gamma, brightness and contrast over two sample frames -- one daylight, one
- * night -- because the three pull the ends of the range in opposite
- * directions: what rescues a night track washes out a daylit one.  The
- * samples run through the same curve the game's final blit uses
- * (ScreenAdjustment mirrors the shader), so what moves here is what a race
- * will look like.  Reset goes back to the picture as the game drew it. */
-@Composable
-private fun AdjustmentScreen(a: LauncherActivity) {
-    val preferences = remember { GamePreferences.get(a) }
-    var gamma by remember { mutableIntStateOf(ScreenAdjustment.gammaPercent(preferences)) }
-    var brightness by remember { mutableIntStateOf(ScreenAdjustment.brightnessPercent(preferences)) }
-    var contrast by remember { mutableIntStateOf(ScreenAdjustment.contrastPercent(preferences)) }
-    val sources = remember {
-        arrayOf(
-            BitmapFactory.decodeResource(a.resources, R.drawable.adjust_sample_bright),
-            BitmapFactory.decodeResource(a.resources, R.drawable.adjust_sample_dark),
-        )
-    }
-    val shown = remember { sources.map { it.copy(Bitmap.Config.ARGB_8888, true) } }
-    /* One buffer for both, reused on every step: a preview that allocated a
-     * megabyte per frame would stutter exactly while being judged. */
-    val scratch = remember { IntArray(sources.maxOf { it.width * it.height }) }
-    var drawn by remember { mutableIntStateOf(0) }
-    LaunchedEffect(gamma, brightness, contrast) {
-        val curve = ScreenAdjustment.curve(gamma, brightness, contrast)
-        for (i in sources.indices)
-            ScreenAdjustment.apply(sources[i], shown[i], curve, scratch)
-        drawn++
-    }
-    fun save() = preferences.edit()
-        .putInt(GamePreferences.GAMMA, gamma)
-        .putInt(GamePreferences.BRIGHTNESS, brightness)
-        .putInt(GamePreferences.CONTRAST, contrast)
-        .apply()
-    val pager = rememberPagerState { 2 }
-    val scope = rememberCoroutineScope()
-    val captions = listOf(stringResource(R.string.sample_bright), stringResource(R.string.sample_dark))
-    /* Three sliders, a hint and two pictures on one screen: drawn a size
-     * smaller than the rest of the launcher so that all of it fits at once,
-     * with Reset up beside the title. */
-    val system = LocalDensity.current
-    CompositionLocalProvider(LocalDensity provides Density(system.density * 0.85f, system.fontScale)) {
-        ScreenFrame(
-            stringResource(R.string.screen_adjustment),
-            onBack = { a.go(LauncherActivity.Screen.Display) },
-            scroll = false,
-            action = {
-                QuietButton(stringResource(R.string.adjust_reset), {
-                    gamma = ScreenAdjustment.NEUTRAL
-                    brightness = ScreenAdjustment.NEUTRAL
-                    contrast = ScreenAdjustment.NEUTRAL
-                    save()
-                })
-            },
-        ) {
-            TwoPanes(
-                first = { modifier, narrow ->
-                    Column(
-                        if (narrow) modifier else modifier.verticalScroll(rememberScrollState()),
-                        verticalArrangement = Arrangement.spacedBy(6.dp),
-                    ) {
-                        Hint(stringResource(R.string.adjust_hint))
-                        SliderRow(stringResource(R.string.gamma_label), gamma, ScreenAdjustment.GAMMA_MIN..ScreenAdjustment.GAMMA_MAX, { "$it%" }) {
-                            gamma = it; save()
-                        }
-                        SliderRow(stringResource(R.string.brightness_label), brightness, ScreenAdjustment.BRIGHTNESS_MIN..ScreenAdjustment.BRIGHTNESS_MAX, { "$it%" }) {
-                            brightness = it; save()
-                        }
-                        SliderRow(stringResource(R.string.contrast_label), contrast, ScreenAdjustment.CONTRAST_MIN..ScreenAdjustment.CONTRAST_MAX, { "$it%" }) {
-                            contrast = it; save()
-                        }
-                    }
-                },
-                second = { modifier, narrow ->
-                    Column(if (narrow) modifier.height(260.dp) else modifier, horizontalAlignment = Alignment.CenterHorizontally) {
-                        Text(captions[pager.currentPage], color = GameColors.Gold, fontWeight = FontWeight.Bold,
-                            style = MaterialTheme.typography.titleMedium)
-                        Spacer(Modifier.height(6.dp))
-                        HorizontalPager(pager, Modifier.fillMaxWidth().weight(1f)) { page ->
-                            key(drawn) {
-                                Image(
-                                    shown[page].asImageBitmap(),
-                                    contentDescription = captions[page],
-                                    modifier = Modifier.fillMaxSize().clip(RoundedCornerShape(12.dp)),
-                                    contentScale = ContentScale.Fit,
-                                )
-                            }
-                        }
-                        Row(Modifier.padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                            for (page in 0 until 2) {
-                                Box(
-                                    Modifier
-                                        .size(12.dp)
-                                        .clip(CircleShape)
-                                        .background(if (pager.currentPage == page) GameColors.Gold else GameColors.PillEdge)
-                                        .clickable { scope.launch { pager.animateScrollToPage(page) } }
-                                )
-                            }
-                        }
-                    }
-                },
-            )
-        }
     }
 }
 

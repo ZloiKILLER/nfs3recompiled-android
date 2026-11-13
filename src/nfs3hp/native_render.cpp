@@ -1,8 +1,15 @@
 #include <nfs3hp.h>
+#include "game_settings.h"
 #include "dynamic_fullscreen.h"
 #include "port_thrash.h"
+#include "native_render.h"
+#include "native_windows.h"
+#include <winapi/gdi32.h>
+#include <winapi/user32.h>
 #include <cmath>
+#include <cstdint>
 #include <cstring>
+#include <optional>
 
 /* a * b + c fused into one fma rounds once where the x87 rounds twice. */
 #if defined(__clang__)
@@ -489,6 +496,44 @@ bool callWithRegisters(win32::WinApplication* app, x86::CPU& cpu, IntegerFlags& 
     return true;
 }
 
+/* A Windows function (`Function`) as callWithRegisters calls, `words` handed: the port's own,
+ * called as C++ (native_windows.h), esp as the stdcall leaves it -- where it was.  In the check
+ * the call stays as the code makes it: the words pushed below esp, the stand-in in its import's
+ * slot `Slot` called, and esp as that leaves it (render's stand-ins leave the words, as the game's
+ * code then has them). */
+template <x86::reg32 Slot, auto Function, typename... Words>
+bool windowsWithRegisters(win32::WinApplication* app, x86::CPU& cpu, IntegerFlags& flags, Registers& r,
+                          x86::reg32 ebp, x86::reg32& esp, Words... words)
+{
+#ifdef NFS_GAME_CHECKS
+    const x86::reg32 pushed[] = { x86::reg32(words)..., 0 };
+    for (std::size_t i = sizeof...(Words); i-- > 0;)
+    {
+        esp -= 4;
+        app->getMemory<x86::reg32>(esp) = pushed[i];
+    }
+    if (!callWithRegisters(app, cpu, flags, r, ebp, esp, app->getMemory<x86::reg32>(Slot)))
+        return false;
+    esp = cpu.esp;
+    return true;
+#else
+    flags.store(cpu);
+    cpu.eax = r.eax;
+    cpu.ebx = r.ebx;
+    cpu.ecx = r.ecx;
+    cpu.edx = r.edx;
+    cpu.esi = r.esi;
+    cpu.edi = r.edi;
+    cpu.ebp = ebp;
+    cpu.esp = esp;
+    if (!guest::windows<Slot, Function>(app, cpu, words...))
+        return false;
+    r = { cpu.eax, cpu.ebx, cpu.ecx, cpu.edx, cpu.esi, cpu.edi };
+    flags.load(cpu);
+    return true;
+#endif
+}
+
 /* The HUD's border width in pixels: the screen's width times [k0] and [k1]
  * (4/640), as fistp rounds it.  The width is the 4:3 one hudReferenceWidth
  * gives (a port, tools/apply_hud_scale.py, in place of [0x7cdac8]). */
@@ -497,6 +542,86 @@ x86::reg32 hudBorder(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 k0, x
     const Memory m{app};
     const double width = double(x86::sreg32(hudReferenceWidth(app)));
     return x86::reg32(fp::toInteger<x86::sreg32>(x86::Float(M::mul(M::mul(width, m.load(k0)), m.load(k1)))));
+}
+
+/* The typed natives' words (plan step 5): a core with named parameters that keeps its locals in
+ * C++, and an adapter under the game's name that takes the registers and leaves them, the flags
+ * and the x87 as the game's code does -- the check compares all of them, and every register at
+ * every call out. */
+using App = win32::WinApplication;
+using CPU = x86::CPU;
+using x86::reg32;
+using x86::reg8;
+using i32 = std::int32_t;
+
+reg32 at(App* app, reg32 address) { return app->getMemory<reg32>(address); }
+void put(App* app, reg32 address, reg32 value) { app->getMemory<reg32>(address) = value; }
+reg8 byteAt(App* app, reg32 address) { return app->getMemory<reg8>(address); }
+void putByte(App* app, reg32 address, reg8 value) { app->getMemory<reg8>(address) = value; }
+
+// The driver's abilities (THRASH_about's): bit 0x40 a driver drawing with alpha, 6 others.
+constexpr reg32 kDriverAbilities = 0x7a3a58;
+constexpr reg8 kAbilityAlpha = 0x40;
+
+/* A colour's channels times the high byte of `scale` (held to 0xffff) in 256ths, as the game's
+ * inline pair of muls (darken): each channel's product fits its 16 bits. */
+reg32 darkened(reg32 colour, reg32 scale)
+{
+    const reg32 factor = ((i32(scale) >= 0x10000 ? 0xffffu : scale) >> 8) & 0xff;
+    const reg32 redBlue = (colour & 0xff00ff) * factor;
+    const reg32 alphaGreen = ((colour & 0xff00ff00) >> 8) * factor;
+    return (alphaGreen & 0xff00ff00) | ((redBlue >> 8) & 0xff00ff);
+}
+
+/* The integer flags cmp a, b leaves (CF, ZF, SF, OF), for an adapter. */
+void compareFlags(CPU& cpu, reg32 a, reg32 b)
+{
+    IntegerFlags flags;
+    flags.compare(a, b);
+    flags.store(cpu);
+}
+
+/* The flags test or and leave of a value: CF and OF clear. */
+void logicFlags(CPU& cpu, reg32 value)
+{
+    IntegerFlags flags;
+    flags.logic(value);
+    flags.store(cpu);
+}
+
+/* The caller's registers as an adapter found them, for those the original pushes on entry and
+ * pops before its ret: restore() gives back the ones named and returns past the return address
+ * and `popped` bytes of arguments. */
+class Entry
+{
+public:
+    enum : unsigned { kEbx = 1, kEcx = 2, kEdx = 4, kEsi = 8, kEdi = 16, kEbp = 32 };
+    explicit Entry(const CPU& cpu)
+        : esp(cpu.esp), saved{cpu.ebx, cpu.ecx, cpu.edx, cpu.esi, cpu.edi, cpu.ebp}
+    {
+    }
+    void restore(CPU& cpu, unsigned which, reg32 popped = 0) const
+    {
+        reg32* const registers[] = {&cpu.ebx, &cpu.ecx, &cpu.edx, &cpu.esi, &cpu.edi, &cpu.ebp};
+        for (unsigned k = 0; k < 6; ++k)
+            if (which & (1u << k))
+                *registers[k] = saved[k];
+        cpu.esp = esp + 4 + popped;
+    }
+    const reg32 esp;  // the return address's
+
+private:
+    reg32 saved[6];
+};
+
+/* A call by address with ebp at the original's frame and esp as deep as its is there; the
+ * registers the original has at the call are set by each callee's helper, every other one is as
+ * the caller left it.  False when the game stopped. */
+bool callIn(App* app, CPU& cpu, reg32 frame, reg32 esp, reg32 target)
+{
+    cpu.ebp = frame;
+    cpu.esp = esp;
+    return call(app, cpu, target);
 }
 
 }
@@ -2663,8 +2788,8 @@ void sky(win32::WinApplication* app, x86::CPU& cpu)
     flags.compare(m.word(0x55d2a4), 0);
     if (m.word(0x55d2a4) == 0 && !callTo(0x479ed0))
         return;
-    flags.compare(m.word(0x6fbc2c), 1);
-    bool plain = m.word(0x6fbc2c) == 1;
+    flags.compare(gameSettings(app).skyDetail, 1);
+    bool plain = gameSettings(app).skyDetail == 1;
     if (!plain)
     {
         // port (apply_mirror_detail): clouds and lightning in the mirror too
@@ -2775,8 +2900,8 @@ void viewSky(win32::WinApplication* app, x86::CPU& cpu)
     }
     if (!done)
     {
-        flags.compare(m.word(0x6fbc2c), 2);
-        done = m.word(0x6fbc2c) == 2;
+        flags.compare(gameSettings(app).skyDetail, 2);
+        done = gameSettings(app).skyDetail == 2;
     }
     if (!done)
     {
@@ -3002,7 +3127,7 @@ void skyDome(win32::WinApplication* app, x86::CPU& cpu)
         // port (apply_alpha_intensity): test byte [0x7a3a58], 0x40 as if set
         flags.logic8(0x40);
         flags.store(cpu);  // sahf below takes CF, ZF, SF over; OF stays
-        const double glare = m.load(0x6fbc38);
+        const double glare = double(gameSettings(app).alphaIntensity);
         compared(1.0, glare);
         if (1.0 > glare)
         {
@@ -3348,7 +3473,7 @@ void countdown(win32::WinApplication* app, x86::CPU& cpu)
     r.eax = half(r.eax);
     m.store(ebp - 8, M::mul(double(x86::sreg32(m.word(ebp - 4))), m.load(0x53b5d8)));
     r.ebx = m.word(ebp - 0x18) + r.eax;
-    r.esi = m.word(0x6fd3b0);
+    r.esi = gameSettings(app).playMode;
     flags.compare(r.esi, 1);
     r.eax = r.esi == 1 ? 0x28 : 0x50;
     m.word(ebp - 4, r.eax);
@@ -3376,7 +3501,7 @@ void countdown(win32::WinApplication* app, x86::CPU& cpu)
         m.store(0x679014, turn);
         const double size = M::mul(turn, m.load(ebp - 8));
         const double angle = M::mul(-m.load(0x679014), m.load(0x53b5e0));
-        r.ecx = m.word(0x6fd3b0);
+        r.ecx = gameSettings(app).playMode;
         m.store(0x679014, size);
         m.store(ebp - 0xc, angle);
         flags.compare(r.ecx, 1);
@@ -3420,7 +3545,7 @@ void countdown(win32::WinApplication* app, x86::CPU& cpu)
     m.word(ebp - 4, r.eax);
     const double grown = M::add(M::mul(double(x86::sreg32(m.word(ebp - 4))), m.load(0x53b5dc)), m.load(0x53b5e4));
     const double size = M::mul(grown, m.load(ebp - 8));
-    r.esi = m.word(0x6fd3b0);
+    r.esi = gameSettings(app).playMode;
     m.store(0x679014, size);
     flags.compare(r.esi, 1);
     if (r.esi == 1)
@@ -3548,8 +3673,8 @@ void carLights(win32::WinApplication* app, x86::CPU& cpu)
     }
     if (!callTo(0x49c410) || !callTo(0x49d640))
         return;
-    flags.compare(m.word(0x6fd4c8), 0);
-    if (m.word(0x6fd4c8) != 0)
+    flags.compare(gameSettings(app).night, 0);
+    if (gameSettings(app).night != 0)
     {
         r.eax = m.word(ebp - 4);
         // port (apply_mirror_detail): the mirror as the main view
@@ -3567,8 +3692,8 @@ void carLights(win32::WinApplication* app, x86::CPU& cpu)
             r.edi = r.eax;
         }
     }
-    flags.compare(m.word(0x6fbc20), 0);
-    r.eax = m.word(0x6fbc20) != 0 ? 1 : 0;
+    flags.compare(gameSettings(app).useSpecular, 0);
+    r.eax = gameSettings(app).useSpecular != 0 ? 1 : 0;
     if (!callTo(0x49d750))
         return;
     r.eax = 0x55d2a8;
@@ -3638,8 +3763,8 @@ void carLights(win32::WinApplication* app, x86::CPU& cpu)
     m.store(esp, nearer);
     if (!callTo(0x49c420))
         return;
-    flags.compare(m.word(0x6fd4ac), 8);
-    if (m.word(0x6fd4ac) != 8)
+    flags.compare(gameSettings(app).track, 8);
+    if (gameSettings(app).track != 8)
     {
         leave();
         return;
@@ -3787,8 +3912,8 @@ void detailedCarLights(win32::WinApplication* app, x86::CPU& cpu)
         leave();
         return;
     }
-    flags.compare(m.word(0x6fd4c8), 0);
-    if (m.word(0x6fd4c8) != 0)
+    flags.compare(gameSettings(app).night, 0);
+    if (gameSettings(app).night != 0)
     {
         r.eax = m.word(ebp + 0x7a);
         // port (apply_mirror_detail): the mirror as the main view
@@ -5385,8 +5510,8 @@ void mediumCarLights(win32::WinApplication* app, x86::CPU& cpu)
     flags.compare(m.word(r.edx + 0xf8), 0);
     if (x86::sreg32(m.word(r.edx + 0xf8)) <= 0)
         return leave();
-    flags.compare(m.word(0x6fd4c8), 0);
-    if (m.word(0x6fd4c8) != 0)
+    flags.compare(gameSettings(app).night, 0);
+    if (gameSettings(app).night != 0)
     {
         r.eax = m.word(ebp + 0x76);
         // port (apply_mirror_detail): the mirror as the main view
@@ -5886,7 +6011,7 @@ void viewPass(win32::WinApplication* app, x86::CPU& cpu)
     flags.logic8(0x40);
     flags.store(cpu);  // sahf below takes CF, ZF, SF over; OF stays
     {
-        const double glare = m.load(0x6fbc38);
+        const double glare = double(gameSettings(app).alphaIntensity);
         app->getMemory<double>(ebp - 8) = glare;
         cpu.fpu.compare(x86::Float(1.0), x86::Float(glare));
         r.eax = (r.eax & 0xffff0000) | cpu.fpu.status.word;
@@ -6011,16 +6136,13 @@ cars:
     cpu.esp = entry + 4;
 }
 
-/* sub_434870: the polygon lists' drawers for the driver's abilities
+/* sub_434870's core: the polygon lists' drawers for the driver's abilities
  * ([0x7a3a58]): the five pointers at 0x5f0780.. and 0x5f0788. */
-void polygonDrawers(win32::WinApplication* app, x86::CPU& cpu)
+void choosePolygonDrawers(win32::WinApplication* app)
 {
     const Memory m{app};
-    IntegerFlags flags;
     m.word(0x5f0788, 0x433d40);
-    setByte(cpu.eax, 1, m.byte(0x7a3a58));
-    const x86::reg8 abilities = x86::reg8(cpu.eax >> 8);
-    flags.logic8(abilities & 0x40);
+    const x86::reg8 abilities = m.byte(0x7a3a58);
     if (abilities & 0x40)
     {
         m.word(0x5f0784, 0x4336e0);
@@ -6028,76 +6150,97 @@ void polygonDrawers(win32::WinApplication* app, x86::CPU& cpu)
         m.word(0x5f0794, 0x434850);
         m.word(0x5f078c, 0x4347b0);
         m.word(0x5f0780, 0x433840);
-        cpu.eax = 0x4347b0;
+    }
+    else if (abilities & 6)
+    {
+        m.word(0x5f0784, 0x433530);
+        m.word(0x5f0790, 0x433660);
+        m.word(0x5f0794, 0x434850);
+        m.word(0x5f078c, 0x434120);
+        m.word(0x5f0780, 0x4332b0);
     }
     else
     {
+        m.word(0x5f0784, 0x433a50);
+        m.word(0x5f0790, 0x4347d0);
+        m.word(0x5f0794, 0x434850);
+        m.word(0x5f078c, 0x4347b0);
+        m.word(0x5f0780, 0x433bb0);
+    }
+}
+
+/* sub_434870: choosePolygonDrawers; eax and the flags as the code leaves
+ * them: the abilities in its second byte (mov ah), then the last pointer
+ * stored where that is a constant in eax (0x4347b0, 0x433bb0). */
+void polygonDrawers(win32::WinApplication* app, x86::CPU& cpu)
+{
+    choosePolygonDrawers(app);
+    const Memory m{app};
+    IntegerFlags flags;
+    setByte(cpu.eax, 1, m.byte(0x7a3a58));
+    const x86::reg8 abilities = x86::reg8(cpu.eax >> 8);
+    flags.logic8(abilities & 0x40);
+    if (abilities & 0x40)
+        cpu.eax = 0x4347b0;
+    else
+    {
         flags.logic8(abilities & 6);
-        if (abilities & 6)
-        {
-            m.word(0x5f0784, 0x433530);
-            m.word(0x5f0790, 0x433660);
-            m.word(0x5f0794, 0x434850);
-            m.word(0x5f078c, 0x434120);
-            m.word(0x5f0780, 0x4332b0);
-        }
-        else
-        {
-            m.word(0x5f0784, 0x433a50);
-            m.word(0x5f0790, 0x4347d0);
-            m.word(0x5f0794, 0x434850);
-            m.word(0x5f078c, 0x4347b0);
-            m.word(0x5f0780, 0x433bb0);
+        if (!(abilities & 6))
             cpu.eax = 0x433bb0;
-        }
     }
     flags.store(cpu);
     cpu.esp += 4;
 }
 
 
-/* sub_49d800: the two colours in eax and edx to 0x55e6dc and 0x55e6e0,
- * darkened by the sun's glare [0x6fbc38] times [0x53c698] when that is below
- * 1 (on every driver, a port). */
-void glareColours(win32::WinApplication* app, x86::CPU& cpu)
+namespace
+{
+
+// The glare's darkening of the two colours, a double: its integer from the glare by fistp.
+constexpr reg32 kGlareToColourScale = 0x53c698;
+constexpr reg32 kGlareColours = 0x55e6dc;  // two colours
+
+/* 0x49d800's work: the two colours to kGlareColours, darkened by the sun's glare (gameSettings'
+ * alpha intensity, on every driver: a port) times [kGlareToColourScale] when the glare is below 1.
+ * Returns the darkening's integer then (the game works it out twice from the same glare). */
+std::optional<reg32> setGlareColours(App* app, reg32 first, reg32 second)
 {
     const Memory m{app};
-    const x86::reg32 entry = cpu.esp;
-    const x86::reg32 saved[] = { cpu.ebx, cpu.ecx, cpu.esi, cpu.edi, cpu.ebp };
-    // push ebx, ecx, esi, edi, ebp; mov ebp, esp; sub esp, 8
-    const x86::reg32 ebp = entry - 20;
-    const x86::reg32 esp = entry - 20 - 8;
-    Registers r{ cpu.eax, cpu.ebx, cpu.ecx, cpu.edx, cpu.esi, cpu.edi };
-    IntegerFlags flags;
-    r.edi = r.eax;
-    r.esi = r.edx;
-    // port (apply_alpha_intensity): test byte [0x7a3a58], 0x40 as if set
-    flags.logic8(0x40);
-    const double glare = m.load(0x6fbc38);
-    app->getMemory<double>(ebp - 8) = glare;
-    if (glareBelowOne(cpu, flags, r, glare))
+    const double glare = double(gameSettings(app).alphaIntensity);
+    std::optional<reg32> scale;
+    // fld1; fcomp; sahf; jbe: not below for a NaN, as 1 > NaN is false
+    if (1.0 > glare)
     {
-        const x86::reg32 first = x86::reg32(fp::toInteger<x86::sreg32>(x86::Float(M::mul(glare, m.loadDouble(0x53c698)))));
-        m.word(esp - 4, first);
-        darken(flags, r, r.edi, first);
-        const x86::reg32 second =
-            x86::reg32(fp::toInteger<x86::sreg32>(x86::Float(M::mul(m.load(0x6fbc38), m.loadDouble(0x53c698)))));
-        r.edi = r.eax;
-        m.word(esp - 4, second);
-        darken(flags, r, r.esi, second);
-        r.esi = r.eax;
+        scale = reg32(fp::toInteger<x86::sreg32>(x86::Float(M::mul(glare, m.loadDouble(kGlareToColourScale)))));
+        first = darkened(first, *scale);
+        second = darkened(second, *scale);
     }
-    m.word(0x55e6e0, r.esi);
-    m.word(0x55e6dc, r.edi);
-    flags.store(cpu);
-    cpu.eax = r.eax;
-    cpu.edx = r.edx;
-    cpu.ebx = saved[0];
-    cpu.ecx = saved[1];
-    cpu.esi = saved[2];
-    cpu.edi = saved[3];
-    cpu.ebp = saved[4];
-    cpu.esp = entry + 4;
+    put(app, kGlareColours + 4, second);
+    put(app, kGlareColours, first);
+    return scale;
+}
+
+}
+
+/* sub_49d800: setGlareColours for eax and edx.  The status word of the glare's compare in ax and
+ * its sahf's flags (OF cleared by the port's test before it); after darkening, the second colour
+ * in eax, the mul's high half 0 in edx and the flags of the darkening's cmp. */
+void glareColours(win32::WinApplication* app, x86::CPU& cpu)
+{
+    const Entry entry(cpu);
+    const reg32 second = cpu.edx;
+    const std::optional<reg32> scale = setGlareColours(app, cpu.eax, second);
+    cpu.flags.of = 0;
+    cpu.fpu.compare(x86::Float(1.0), x86::Float(double(gameSettings(app).alphaIntensity)));
+    cpu.eax = (cpu.eax & 0xffff0000) | cpu.fpu.status.word;
+    cpu.flags.lo = reg8(0x02 | ((cpu.fpu.status.word >> 8) & 0xd7));
+    if (scale)
+    {
+        cpu.eax = darkened(second, *scale);
+        cpu.edx = 0;
+        compareFlags(cpu, *scale, 0x10000);
+    }
+    entry.restore(cpu, Entry::kEbx | Entry::kEcx | Entry::kEsi | Entry::kEdi | Entry::kEbp);
 }
 
 /* sub_472d10: the detail settings, the game's highest of the five it chose by
@@ -6130,7 +6273,7 @@ void detailSettings(win32::WinApplication* app, x86::CPU& cpu)
         if (k == 7)
         {
             r.edx = 2;
-            m.word(0x6fd3a8, r.edx);
+            gameSettings(app).unknown1868 = r.edx;
         }
         for (x86::reg32 b = 0; b < 10; b += 2)
             app->getMemory<x86::reg16>(ebp - tables[k] + b) = app->getMemory<x86::reg16>(0x472168 + 10 * k + b);
@@ -6148,29 +6291,29 @@ void detailSettings(win32::WinApplication* app, x86::CPU& cpu)
     }
     auto entryOf = [&](x86::reg32 table) { return x86::reg32(x86::sreg32(m.word(ebp + r.ecx * 2 - table - 2)) >> 16); };
     r.edx = entryOf(0x60);
-    m.word(0x6fbc28, 0);  // port (apply_view_distance): View Distance Full at any CPU speed
+    gameSettings(app).viewDistance = 0;  // port (apply_view_distance): View Distance Full at any CPU speed
     r.edx = entryOf(0x30);
-    m.word(0x6fbc2c, r.edx);
+    gameSettings(app).skyDetail = r.edx;
     r.edx = entryOf(0x48);
     r.edi = 1;
     r.ebx = 0x3f800000;
-    m.word(0x6fbc1c, r.edx);
+    gameSettings(app).detailLevel = r.edx;
     r.edx = entryOf(0x3c);
     r.eax = entryOf(0x18);
-    m.word(0x6fbc30, r.edx);
+    gameSettings(app).effectsLevel = r.edx;
     r.edx = entryOf(0xc);
-    m.word(0x6fbc44, r.edi);
-    m.word(0x6fbc48, r.edi);
-    m.word(0x6fbc20, r.edx);
+    gameSettings(app).detailFlag104 = r.edi;
+    gameSettings(app).nearPolygons = r.edi;
+    gameSettings(app).useSpecular = r.edx;
     r.edx = entryOf(0x24);
-    m.word(0x6fbc38, r.ebx);
-    m.word(0x6fbc3c, r.eax);
-    m.word(0x6fbc24, r.edx);
+    gameSettings(app).alphaIntensityBits = r.ebx;
+    gameSettings(app).detailFlagFc = r.eax;
+    gameSettings(app).useLights = r.edx;
     r.edx = 0;
     r.eax = m.word(0x7a3a58);
-    m.word(0x6fbc4c, r.edx);
+    gameSettings(app).wideScreen = r.edx;
     setByte(r.edx, 0, m.byte(0x7a3a58));
-    m.word(0x6fbc10, r.eax);
+    gameSettings(app).configVersion = r.eax;
     flags.logic8(x86::reg8(r.edx) & 0x40);
     if (r.edx & 0x40)
     {
@@ -6180,7 +6323,7 @@ void detailSettings(win32::WinApplication* app, x86::CPU& cpu)
             return;
         flags.logic(r.eax);
         if (!r.eax)
-            m.word(0x6fbc38, 0x3f000000);
+            gameSettings(app).alphaIntensityBits = 0x3f000000;
     }
     flags.logic8(m.byte(0x7a3a58) & 6);
     if (m.byte(0x7a3a58) & 6)
@@ -6188,8 +6331,8 @@ void detailSettings(win32::WinApplication* app, x86::CPU& cpu)
         r.edi = 0;
         flags.logic(0);
         r.eax = 0x140;
-        m.word(0x6fbc3c, r.edi);
-        m.word(0x6fbc34, r.edi);
+        gameSettings(app).detailFlagFc = r.edi;
+        gameSettings(app).projectedText = r.edi;
     }
     else
         r.eax = 0x280;
@@ -6201,11 +6344,11 @@ void detailSettings(win32::WinApplication* app, x86::CPU& cpu)
     r.edx = m.word(ebp - 0x164);
     flags.logic(r.edx);
     if (r.edx)
-        m.word(0x6fbc34, 1);
+        gameSettings(app).projectedText = 1;
     else
     {
-        m.word(0x6fbc3c, r.edx);
-        m.word(0x6fbc34, r.edx);
+        gameSettings(app).detailFlagFc = r.edx;
+        gameSettings(app).projectedText = r.edx;
     }
     r.eax = entryOf(0x54);
     m.word(0x791b28, r.eax);
@@ -6255,7 +6398,7 @@ void sparks(win32::WinApplication* app, x86::CPU& cpu)
     };
 
     {
-        const double scaled = M::mul(m.load(0x6fbc38), m.loadDouble(0x5497dc));
+        const double scaled = M::mul(double(gameSettings(app).alphaIntensity), m.loadDouble(0x5497dc));
         r.eax = m.word(r.eax + 4);
         r.edx = 0;
         m.word(ebp - 0x20, r.eax);
@@ -6351,7 +6494,7 @@ void sparks(win32::WinApplication* app, x86::CPU& cpu)
         setByte(r.eax, 1, m.byte(0x7a3a58));
         // port (apply_alpha_intensity): test ah, 0x40 as if set
         flags.logic8(0x40);
-        if (glareBelowOne(cpu, flags, r, m.load(0x6fbc38)))
+        if (glareBelowOne(cpu, flags, r, double(gameSettings(app).alphaIntensity)))
         {
             darken(flags, r, m.word(ebp - 0x14), m.word(ebp - 0x44));
             m.word(ebp - 0x14, r.eax);
@@ -6526,7 +6669,7 @@ void glow(win32::WinApplication* app, x86::CPU& cpu)
     r.esi = r.eax;
     const x86::reg32 view = r.esi;
     r.ecx = 0;
-    r.edi = m.word(0x6fbc30);
+    r.edi = gameSettings(app).effectsLevel;
     m.word(ebp + 0x42, 0);
     m.word(ebp + 0x3a, 0);
     flags.compare(r.edi, 2);
@@ -6557,7 +6700,7 @@ void glow(win32::WinApplication* app, x86::CPU& cpu)
     // port (apply_alpha_intensity): test ah, 0x40 as if set
     flags.logic8(0x40);
     {
-        const double glare = m.load(0x6fbc38);
+        const double glare = double(gameSettings(app).alphaIntensity);
         app->getMemory<double>(ebp + 0xe) = glare;
         if (glareBelowOne(cpu, flags, r, glare))
         {
@@ -6716,90 +6859,93 @@ void glow(win32::WinApplication* app, x86::CPU& cpu)
 }
 
 
-/* sub_47b7d0: the colours (+0x10) of eax vertices from edx (0x20 bytes
- * each) darkened by the sun's glare [0x6fbc38] times [0x53b418]. */
-void glareVertices(win32::WinApplication* app, x86::CPU& cpu)
+namespace
+{
+
+// The glare's darkening of vertices' colours, a double: its integer from the glare by fistp.
+constexpr reg32 kGlareToVertexScale = 0x53b418;
+constexpr reg32 kVertexBytes = 0x20, kVertexColour = 0x10;
+
+/* 0x47b7d0's work: the colours of `count` vertices from `vertices` darkened by the sun's glare
+ * (gameSettings' alpha intensity) times [kGlareToVertexScale].  Returns the last colour made, or
+ * the darkening's integer for none. */
+reg32 glareVertexColours(App* app, reg32 count, reg32 vertices)
 {
     const Memory m{app};
-    const x86::reg32 entry = cpu.esp;
-    const x86::reg32 saved[] = { cpu.ebx, cpu.ecx, cpu.esi, cpu.edi, cpu.ebp };
-    // push ebx, ecx, esi, edi, ebp; mov ebp, esp; sub esp, 4
-    const x86::reg32 ebp = entry - 20;
-    const x86::reg32 esp = entry - 20 - 4;
-    Registers r{ cpu.eax, cpu.ebx, cpu.ecx, cpu.edx, cpu.esi, cpu.edi };
-    IntegerFlags flags;
-    r.edi = r.eax;
-    r.esi = r.edx;
-    r.eax = x86::reg32(fp::toInteger<x86::sreg32>(x86::Float(M::mul(m.load(0x6fbc38), m.loadDouble(0x53b418)))));
-    m.word(esp - 4, r.eax);
-    m.word(ebp - 4, r.eax);
-    for (;;)
+    const reg32 scale = reg32(fp::toInteger<x86::sreg32>(
+        x86::Float(M::mul(double(gameSettings(app).alphaIntensity), m.loadDouble(kGlareToVertexScale)))));
+    reg32 last = scale;
+    for (reg32 left = count; left != 0; --left, vertices += kVertexBytes)
     {
-        flags.compare(r.edi - 1, 0xffffffff);
-        --r.edi;
-        if (r.edi == 0xffffffff)
-            break;
-        const x86::reg32 colour = m.word(r.esi + 0x10);
-        r.esi += 0x20;
-        darken(flags, r, colour, m.word(ebp - 4));
-        flags.logic(r.eax);
-        m.word(r.esi - 0x10, r.eax);
+        last = darkened(at(app, vertices + kVertexColour), scale);
+        put(app, vertices + kVertexColour, last);
     }
-    flags.store(cpu);
-    cpu.eax = r.eax;
-    cpu.edx = r.edx;
-    cpu.ebx = saved[0];
-    cpu.ecx = saved[1];
-    cpu.esi = saved[2];
-    cpu.edi = saved[3];
-    cpu.ebp = saved[4];
-    cpu.esp = entry + 4;
+    return last;
 }
 
-/* sub_4cb670: sub_4e070c on 0x12c00 bytes at 0x7ddfd0 and 0x6400 at
- * 0x7f0bd0, the eight bytes at 0x560f30 for a driver with bit 0x40 of
- * [0x7a3a58], 0x7f6fd0 and 0x7f6fd4 cleared. */
+// The two buffers cleared for a race's drawing, and the words after them.
+constexpr reg32 kZeroMemory = 0x4e070c;  // ZeroMemoryRegisterCall: edx bytes from eax
+constexpr reg32 kDepthBuckets = 0x7ddfd0, kDepthBucketsBytes = 0x12c00;
+constexpr reg32 kPolygonBuckets = 0x7f0bd0, kPolygonBucketsBytes = 0x6400;
+constexpr reg32 kBucketsUsed = 0x7f6fd0;  // two words
+// Eight bytes of colours, set for a driver drawing with alpha.
+constexpr reg32 kAlphaColours = 0x560f30;
+
+/* kZeroMemory on `bytes` from `address` in a frame at `frame`, esp there; what it leaves in the
+ * registers stays.  False when the game stopped. */
+bool zeroMemory(App* app, CPU& cpu, reg32 frame, reg32 address, reg32 bytes)
+{
+    cpu.eax = address;
+    cpu.edx = bytes;
+    return callIn(app, cpu, frame, frame, kZeroMemory);
+}
+
+/* 0x4cb670's work, from a frame three words below the return address.  False when the game
+ * stopped. */
+bool clearDrawingBuffers(App* app, CPU& cpu)
+{
+    const reg32 frame = cpu.esp - 12;  // push ecx, edx, ebp; mov ebp, esp
+    if (!zeroMemory(app, cpu, frame, kDepthBuckets, kDepthBucketsBytes)
+        || !zeroMemory(app, cpu, frame, kPolygonBuckets, kPolygonBucketsBytes))
+        return false;
+    if (byteAt(app, kDriverAbilities) & kAbilityAlpha)
+    {
+        for (reg32 k : {2u, 1u, 0u, 7u, 4u, 3u})
+            putByte(app, kAlphaColours + k, 0x7f);
+        putByte(app, kAlphaColours + 6, 0);
+        putByte(app, kAlphaColours + 5, 0x3f);
+    }
+    put(app, kBucketsUsed + 4, 0);
+    put(app, kBucketsUsed, 0);
+    return true;
+}
+
+}
+
+/* sub_47b7d0: glareVertexColours for eax vertices from edx.  edx is 0 after a vertex: the high
+ * half of the darkening's last mul, which no channel's product reaches. */
+void glareVertices(win32::WinApplication* app, x86::CPU& cpu)
+{
+    const reg32 count = cpu.eax;
+    cpu.eax = glareVertexColours(app, count, cpu.edx);
+    if (count != 0)
+        cpu.edx = 0;
+    compareFlags(cpu, 0xffffffff, 0xffffffff);  // dec edi to -1; cmp edi, -1
+    cpu.esp += 4;
+}
+
+/* sub_4cb670: clearDrawingBuffers; eax, ebx, esi, edi as ZeroMemory leaves them, al 0x3f and
+ * the flags of the ability's test after it. */
 void clearBuffers(win32::WinApplication* app, x86::CPU& cpu)
 {
-    const Memory m{app};
-    const x86::reg32 entry = cpu.esp;
-    const x86::reg32 saved[] = { cpu.ecx, cpu.edx, cpu.ebp };
-    // push ecx, edx, ebp; mov ebp, esp
-    const x86::reg32 ebp = entry - 12;
-    x86::reg32 esp = ebp;
-    Registers r{ cpu.eax, cpu.ebx, cpu.ecx, cpu.edx, cpu.esi, cpu.edi };
-    IntegerFlags flags;
-    r.edx = 0x12c00;
-    r.eax = 0x7ddfd0;
-    if (!callWithRegisters(app, cpu, flags, r, ebp, esp, 0x4e070c))
+    const Entry entry(cpu);
+    if (!clearDrawingBuffers(app, cpu))
         return;
-    esp = cpu.esp;
-    r.edx = 0x6400;
-    r.eax = 0x7f0bd0;
-    if (!callWithRegisters(app, cpu, flags, r, ebp, esp, 0x4e070c))
-        return;
-    flags.logic8(m.byte(0x7a3a58) & 0x40);
-    if (m.byte(0x7a3a58) & 0x40)
-    {
-        setByte(r.edx, 0, 0x7f);
-        setByte(r.eax, 0, 0x3f);
-        setByte(r.ecx, 1, 0);
-        for (x86::reg32 a : { 0x560f32u, 0x560f31u, 0x560f30u, 0x560f37u, 0x560f34u, 0x560f33u })
-            m.byte(a, 0x7f);
-        m.byte(0x560f36, 0);
-        m.byte(0x560f35, 0x3f);
-    }
-    m.word(0x7f6fd4, 0);
-    m.word(0x7f6fd0, 0);
-    flags.store(cpu);
-    cpu.eax = r.eax;
-    cpu.ebx = r.ebx;
-    cpu.esi = r.esi;
-    cpu.edi = r.edi;
-    cpu.ecx = saved[0];
-    cpu.edx = saved[1];
-    cpu.ebp = saved[2];
-    cpu.esp = entry + 4;
+    const reg8 alpha = byteAt(app, kDriverAbilities) & kAbilityAlpha;
+    if (alpha)
+        setByte(cpu.eax, 0, 0x3f);
+    logicFlags(cpu, alpha);
+    entry.restore(cpu, Entry::kEcx | Entry::kEdx | Entry::kEbp);
 }
 
 /* sub_4a4410: the ten bouncing pictures of a 2D screen (not on the drivers
@@ -7149,13 +7295,13 @@ void roadLight(win32::WinApplication* app, x86::CPU& cpu)
     r.ecx = r.eax;
     copy3(ebp + 6, 0x491110);
     r.edx = 0;
-    r.esi = m.word(0x6fbc30);
+    r.esi = gameSettings(app).effectsLevel;
     m.word(ebp + 0x66, 0);
     flags.compare(r.esi, 2);
     if (r.esi == 2)
         return none();
-    flags.compare(m.word(0x6fd4cc), 0);
-    if (m.word(0x6fd4cc) == 0)
+    flags.compare(gameSettings(app).weather, 0);
+    if (gameSettings(app).weather == 0)
         return none();
     push(r.ebx);
     r.eax = m.word(ebp + 0x9a);
@@ -7460,7 +7606,7 @@ void roadLight(win32::WinApplication* app, x86::CPU& cpu)
     // port (apply_alpha_intensity): test byte [0x7a3a58], 0x40 as if set
     flags.logic8(0x40);
     {
-        const double glare = m.load(0x6fbc38);
+        const double glare = double(gameSettings(app).alphaIntensity);
         app->getMemory<double>(ebp + 0x4e) = glare;
         if (glareBelowOne(cpu, flags, r, glare))
         {
@@ -7623,7 +7769,7 @@ void raceViews(win32::WinApplication* app, x86::CPU& cpu)
         return leave();
     if (!callTo(0x41dae0) || !callTo(0x41deb0))
         return;
-    r.esi = m.word(0x6fd3b0);
+    r.esi = gameSettings(app).playMode;
     flags.compare(r.esi, 1);
     const bool split = r.esi == 1;
     r.ebx = 0x5dd090;
@@ -7642,7 +7788,7 @@ void raceViews(win32::WinApplication* app, x86::CPU& cpu)
     r.eax = 0x536d14;
     if (!callTo(0x41d8a0) || !callTo(0x41dcc0) || !callTo(0x41dc60) || !callTo(0x41a100))
         return;
-    r.eax = m.word(0x6fd4ac);
+    r.eax = gameSettings(app).track;
     if (!callTo(0x470b90) || !callTo(0x41d900))
         return;
     leave();
@@ -7725,7 +7871,7 @@ void smoke(win32::WinApplication* app, x86::CPU& cpu)
     // port (apply_alpha_intensity): test ah, 0x40 as if set
     flags.logic8(0x40);
     {
-        const double glare = m.load(0x6fbc38);
+        const double glare = double(gameSettings(app).alphaIntensity);
         app->getMemory<double>(ebp - 0x54) = glare;
         if (glareBelowOne(cpu, flags, r, glare))
         {
@@ -8029,7 +8175,7 @@ void streaks(win32::WinApplication* app, x86::CPU& cpu)
         m.word(ebp - 4, r.eax);
         // port (apply_alpha_intensity): test byte [0x7a3a58], 0x40 as if set
         flags.logic8(0x40);
-        const double glare = m.load(0x6fbc38);
+        const double glare = double(gameSettings(app).alphaIntensity);
         app->getMemory<double>(ebp - 0x50) = glare;
         if (glareBelowOne(cpu, flags, r, glare))
         {
@@ -8268,12 +8414,12 @@ void viewDistances(win32::WinApplication* app, x86::CPU& cpu)
     // push ebx, ecx, edx, esi, edi, ebp; mov ebp, esp; sub esp, 0x18
     const x86::reg32 ebp = entry - 24;
     IntegerFlags flags;
-    x86::reg32 eax = m.word(0x6fbc28) - 1;
+    x86::reg32 eax = gameSettings(app).viewDistance - 1;
     flags.logic(eax);
     if (x86::sreg32(eax) < 0)
         eax = 0;
     // port (apply_view_distance): Full leaves the far distance whole
-    const x86::reg32 reduced = viewDistanceReduced(app, m.word(0x6fd4c8));
+    const x86::reg32 reduced = viewDistanceReduced(app, gameSettings(app).night);
     const x86::reg32 row = eax * 4;
     flags.logic(reduced);
     const x86::reg32 table = reduced ? ebp - 0x18 : ebp - 0xc;
@@ -8296,7 +8442,7 @@ void viewDistances(win32::WinApplication* app, x86::CPU& cpu)
         }
         return result;
     };
-    const x86::reg32 split = m.word(0x6fd3b0);
+    const x86::reg32 split = gameSettings(app).playMode;
     flags.compare(split, 1);
     if (split == 1)
     {
@@ -8318,14 +8464,14 @@ void viewDistances(win32::WinApplication* app, x86::CPU& cpu)
         eax = scale(0x960000, true);
     }
     m.word(0x5dd11c, eax);
-    flags.compare(m.word(0x6fbc28), 0);
-    if (m.word(0x6fbc28) == 0)
+    flags.compare(gameSettings(app).viewDistance, 0);
+    if (gameSettings(app).viewDistance == 0)
     {
         eax = m.word(0x5dd108);
         m.word(0x5dd11c, eax);
         m.word(0x5dd118, eax);
-        flags.compare(m.word(0x6fd3b0), 1);
-        if (m.word(0x6fd3b0) == 1)
+        flags.compare(gameSettings(app).playMode, 1);
+        if (gameSettings(app).playMode == 1)
         {
             eax = m.word(0x5dd15c);
             m.word(0x5dd170, eax);
@@ -8361,32 +8507,42 @@ void viewDistances(win32::WinApplication* app, x86::CPU& cpu)
     cpu.esp = entry + 4;
 }
 
-/* sub_4b56e0: the transform buffer's size (four times the original's, a
- * port) to [eax] and edx, sub_4e1620 for 0x53ec28. */
+namespace
+{
+
+// port (apply_transform_buffer): four times the original's transform buffer.
+constexpr reg32 kTransformBufferBytes = 4u * 799744u;
+constexpr reg32 kTransformBuffer = 0x53ec28;
+constexpr reg32 kAllocate = 0x4e1620;  // the game's allocator: edx bytes for the block eax names, ebx its kind
+
+/* kAllocate, in a frame at `frame` with esp there; what it leaves in the registers stays.  False
+ * when the game stopped. */
+bool allocate(App* app, CPU& cpu, reg32 frame, reg32 block, reg32 bytes, reg32 kind)
+{
+    cpu.eax = block;
+    cpu.edx = bytes;
+    cpu.ebx = kind;
+    return callIn(app, cpu, frame, frame, kAllocate);
+}
+
+/* 0x4b56e0's work: the transform buffer's size to `size` and the buffer allocated, from a frame
+ * three words below the return address. */
+bool allocateTransformBuffer(App* app, CPU& cpu, reg32 size)
+{
+    const reg32 frame = cpu.esp - 12;  // push ebx, edx, ebp; mov ebp, esp
+    put(app, size, kTransformBufferBytes);
+    return allocate(app, cpu, frame, kTransformBuffer, kTransformBufferBytes, 0);
+}
+
+}
+
+/* sub_4b56e0: allocateTransformBuffer for eax; eax, ecx, esi, edi and the flags as the allocator
+ * leaves them. */
 void transformBuffer(win32::WinApplication* app, x86::CPU& cpu)
 {
-    const Memory m{app};
-    const x86::reg32 entry = cpu.esp;
-    const x86::reg32 saved[] = { cpu.ebx, cpu.edx, cpu.ebp };
-    // push ebx, edx, ebp; mov ebp, esp
-    const x86::reg32 ebp = entry - 12;
-    Registers r{ cpu.eax, cpu.ebx, cpu.ecx, cpu.edx, cpu.esi, cpu.edi };
-    IntegerFlags flags;
-    // port (apply_transform_buffer): four times the transform buffer
-    r.edx = 4u * 799744u;
-    m.word(r.eax, 4u * 799744u);
-    r.ebx = 0;
-    r.eax = 0x53ec28;
-    if (!callWithRegisters(app, cpu, flags, r, ebp, ebp, 0x4e1620))
-        return;
-    cpu.eax = r.eax;
-    cpu.ecx = r.ecx;
-    cpu.esi = r.esi;
-    cpu.edi = r.edi;
-    cpu.ebx = saved[0];
-    cpu.edx = saved[1];
-    cpu.ebp = saved[2];
-    cpu.esp = entry + 4;
+    const Entry entry(cpu);
+    if (allocateTransformBuffer(app, cpu, cpu.eax))
+        entry.restore(cpu, Entry::kEbx | Entry::kEdx | Entry::kEbp);
 }
 
 /* sub_4bef50: a screen mode (eax, at least 1) from the driver's list
@@ -8593,7 +8749,6 @@ void startDriver(win32::WinApplication* app, x86::CPU& cpu)
         push(a);
         return callTo(m.word(0x9ef96c));
     };
-    auto import = [&](x86::reg32 slot) { return callTo(m.word(cpu.ecs + slot)); };
     auto leave = [&]() {
         flags.store(cpu);
         cpu.eax = r.eax;
@@ -8716,14 +8871,11 @@ void startDriver(win32::WinApplication* app, x86::CPU& cpu)
         m.word(0x55fed0, r.esi);
         break;
     case 6:
-        if (!import(0x534740))
+        if (!windowsWithRegisters<0x534740, &win32::user32::GetDesktopWindow>(app, cpu, flags, r, ebp, esp))
             return;
-        push(r.eax);
-        if (!import(0x534754))
+        if (!windowsWithRegisters<0x534754, &win32::user32::GetWindowDC>(app, cpu, flags, r, ebp, esp, r.eax))
             return;
-        push(0xc);
-        push(r.eax);
-        if (!import(0x534458))
+        if (!windowsWithRegisters<0x534458, &win32::gdi32::GetDeviceCaps>(app, cpu, flags, r, ebp, esp, r.eax, 0xc))
             return;
         flags.compare(r.eax, 8);
         if (x86::sreg32(r.eax) < 8)
@@ -8733,12 +8885,10 @@ void startDriver(win32::WinApplication* app, x86::CPU& cpu)
             r.ecx = 0;
             r.edi = ebp - 4;
             r.esi = 0x4b55c8;
-            push(0x30);
-            push(0x53ec28);
             r.edi = m.word(ebp + r.ebx * 4 - 0x1c);
-            push(r.edi);
-            push(0);
-            if (!import(0x534764) || !callTo(0x4f2a7d))
+            if (!windowsWithRegisters<0x534764, &win32::user32::MessageBoxA>(app, cpu, flags, r, ebp, esp, 0, r.edi,
+                                                                             0x53ec28, 0x30)
+                || !callTo(0x4f2a7d))
                 return;
         }
         if (!load(m.word(m.word(ebp - 4) * 4 + 0x55fd68)))
@@ -8792,11 +8942,9 @@ void startDriver(win32::WinApplication* app, x86::CPU& cpu)
         m.word(0x7a3a70, r.edi);
         break;
     default:
-        push(0x30);
-        push(0x53ec28);
-        push(0x53fdb4);
-        push(0);
-        if (!import(0x534764) || !callTo(0x4f2a7d))
+        if (!windowsWithRegisters<0x534764, &win32::user32::MessageBoxA>(app, cpu, flags, r, ebp, esp, 0, 0x53fdb4,
+                                                                         0x53ec28, 0x30)
+            || !callTo(0x4f2a7d))
             return;
         m.word(0x7a3a70, 1);
         break;
@@ -8860,288 +9008,340 @@ void hudFrame(win32::WinApplication* app, x86::CPU& cpu)
     cpu.esp = entry + 8;
 }
 
-/* sub_480910: HUD element edx's rectangle for player eax, in pixels to the
- * table at 0x749758 (23 four-int rectangles a player): its layout's fractions
- * (0x6fbc74.., by split screen, the player's view (sub_422bd0) and bit 0x20
- * of its +0x200) times the width ebx and the height ecx, each truncated by
- * sub_4dfd56 and stored by fistp; then widescreenHudRect (a port,
- * tools/apply_widescreen.py). */
-void hudRect(win32::WinApplication* app, x86::CPU& cpu)
+namespace
 {
-    const Memory m{app};
-    const x86::reg32 entry = cpu.esp;
-    const x86::reg32 saved[] = { cpu.esi, cpu.edi, cpu.ebp };
-    // push esi, edi, ebp; mov ebp, esp; sub esp, 0xc
-    const x86::reg32 ebp = entry - 12;
-    const x86::reg32 esp = ebp - 12;
-    IntegerFlags flags;
-    const x86::reg32 split = m.word(0x6fd3b0);
-    flags.compare(split, 1);
-    Registers r{ cpu.eax, cpu.ecx, cpu.eax + (split == 1 ? 1u : 0u), cpu.edx, cpu.eax, cpu.ebx };
-    if (!callWithRegisters(app, cpu, flags, r, ebp, esp, 0x422bd0))
-        return;
-    m.word(ebp - 8, r.ecx);
-    const x86::reg8 mirrored = m.byte(r.eax + 0x200) & 0x20;
-    flags.logic8(mirrored);
-    const x86::reg32 edx = r.edx << 4;
-    const x86::reg32 ecx = r.ecx * 0x348 + (mirrored ? 0x1a4u : 0u) + edx;
-    const double width = double(x86::sreg32(r.edi)), height = double(x86::sreg32(r.ebx));
-    const double a = M::mul(width, m.load(ecx + 0x6fbc78));
-    const double b = M::mul(width, m.load(ecx + 0x6fbc80));
-    const double c = M::mul(height, m.load(ecx + 0x6fbc74));
-    const double d = M::mul(height, m.load(ecx + 0x6fbc7c));
-    m.word(ebp - 4, r.ebx);
-    r.eax = r.esi * 4 - r.esi;
-    r.ecx = ecx;
-    r.edx = edx;
-    cpu.fpu.count += 4;
-    cpu.fpu.st(0) = x86::Float(a);
-    cpu.fpu.st(1) = x86::Float(c);
-    cpu.fpu.st(2) = x86::Float(b);
-    cpu.fpu.st(3) = x86::Float(d);
-    auto fxch = [&](int i) {
-        const x86::Float top = cpu.fpu.st(0);
-        cpu.fpu.st(0) = cpu.fpu.st(i);
-        cpu.fpu.st(i) = top;
-    };
-    auto truncate = [&]() { return callWithRegisters(app, cpu, flags, r, ebp, esp, 0x4dfd56); };
-    if (!truncate())
-        return;
-    r.eax <<= 3;
-    fxch(2);
-    if (!truncate())
-        return;
-    fxch(1);
-    if (!truncate())
-        return;
-    r.eax -= r.esi;
-    fxch(3);
-    if (!truncate())
-        return;
-    r.eax <<= 4;
-    // fxch st(2), then four fistp: st(2), st(1), st(3), st(0) as they are now
-    const x86::reg32 x0 = x86::reg32(fp::toInteger<x86::sreg32>(cpu.fpu.st(2)));
-    const x86::reg32 x1 = x86::reg32(fp::toInteger<x86::sreg32>(cpu.fpu.st(1)));
-    const x86::reg32 y0 = x86::reg32(fp::toInteger<x86::sreg32>(cpu.fpu.st(3)));
-    const x86::reg32 y1 = x86::reg32(fp::toInteger<x86::sreg32>(cpu.fpu.st(0)));
-    const x86::reg32 slot = r.edx + r.eax;
-    m.word(slot + 0x749758, x0);
-    m.word(slot + 0x749760, x1);
-    m.word(slot + 0x74975c, y0);
-    m.word(slot + 0x749764, y1);
-    m.word(ebp - 4, y1);
+
+constexpr reg32 kPlayerCar = 0x422bd0;  // the car of player eax's view, to eax
+constexpr reg32 kHudFrame = 0x47f650;   // hudFrame, called by address: the check stands in for it
+// The HUD's rectangles in pixels: 23 of 16 bytes (left, top, right, bottom) a player.
+constexpr reg32 kHudRects = 0x749758, kHudRectsBytes = 0x170;
+// A car's flags: bit 0x20 a cop's (Hot Pursuit), whose HUD has the other layout.
+constexpr reg32 kCarFlags = 0x200;
+constexpr reg8 kCarCop = 0x20;
+
+/* An element's inside in pixels: its rectangle moved in by a border. */
+struct Edges
+{
+    reg32 left, top, right, bottom;
+};
+
+Edges insetBy(App* app, reg32 rect, reg32 border)
+{
+    return {at(app, rect) + border, at(app, rect + 4) + border, at(app, rect + 8) - border,
+            at(app, rect + 0xc) - border};
+}
+
+/* kPlayerCar for `player` from the frame at `frame`, esp at `esp`: the car, or nullopt when the
+ * game stopped.  The registers but eax are as the caller has them. */
+std::optional<reg32> playerCar(App* app, CPU& cpu, reg32 frame, reg32 esp, reg32 player)
+{
+    cpu.eax = player;
+    if (!callIn(app, cpu, frame, esp, kPlayerCar))
+        return std::nullopt;
+    return cpu.eax;
+}
+
+/* kHudFrame: the frame's eight quads to `quads` around `inside`, its right edge pushed at `esp`
+ * (ret 4).  esi and edi are as the caller has them.  False when the game stopped. */
+bool drawHudFrame(App* app, CPU& cpu, reg32 frame, reg32 esp, reg32 quads, const Edges& inside)
+{
+    put(app, esp, inside.right);
+    cpu.eax = quads;
+    cpu.ebx = inside.left;
+    cpu.ecx = inside.bottom;
+    cpu.edx = inside.top;
+    return callIn(app, cpu, frame, esp, kHudFrame);
+}
+
+// The HUD layout's records (gameSettings' hudAt): a row by split screen and player, two layouts.
+constexpr reg32 kHudRowBytes = 0x348, kHudLayoutBytes = 0x1a4;
+
+constexpr reg32 kChop = 0x4dfd56;  // __CHP: st(0) to a whole value toward 0
+
+/* kChop on `value`, pushed alone: the code has its other values under it on the x87 stack, which
+ * __CHP leaves alone.  The registers are as the caller has them; nullopt when the game stopped. */
+std::optional<x86::Float> chop(App* app, CPU& cpu, reg32 frame, reg32 esp, x86::Float value)
+{
+    cpu.fpu.push(value);
+    if (!callIn(app, cpu, frame, esp, kChop))
+        return std::nullopt;
+    return cpu.fpu.take();
+}
+
+/* What placeHudRect leaves for its adapter: the layout's record offset, the rectangle's slot in
+ * kHudRects and its bottom. */
+struct HudRectPlaced
+{
+    reg32 record, slot, bottom;
+};
+
+/* 0x480910's work: HUD element `element`'s rectangle for `player` in pixels to kHudRects: its
+ * layout's fractions (by split screen, the player's car's cop bit) times the width and the
+ * height, each made whole toward 0 by __CHP and stored by fistp; then widescreenHudRect (a port,
+ * tools/apply_widescreen.py).  nullopt when the game stopped. */
+std::optional<HudRectPlaced> placeHudRect(App* app, CPU& cpu, reg32 player, reg32 element, reg32 width,
+                                          reg32 height)
+{
+    const reg32 frame = cpu.esp - 12;  // push esi, edi, ebp; mov ebp, esp; sub esp, 0xc
+    const reg32 esp = frame - 12;
+    const reg32 row = player + (gameSettings(app).playMode == 1 ? 1u : 0u);
+    cpu.ebx = height;  // as the code has them at the call
+    cpu.ecx = row;
+    cpu.esi = player;
+    cpu.edi = width;
+    const std::optional<reg32> car = playerCar(app, cpu, frame, esp, player);
+    if (!car)
+        return std::nullopt;
+    const reg32 offset = element << 4;
+    const reg32 record = row * kHudRowBytes + ((byteAt(app, *car + kCarFlags) & kCarCop) ? kHudLayoutBytes : 0)
+                         + offset;
+    const HudRect& fractions = gameSettings(app).hudAt(record).rects[0];
+    const double across = double(i32(width)), down = double(i32(height));
+    const double left = M::mul(across, double(fractions.left));
+    const double right = M::mul(across, double(fractions.right));
+    const double top = M::mul(down, double(fractions.top));
+    const double bottom = M::mul(down, double(fractions.bottom));
+    cpu.ecx = record;
+    cpu.edx = offset;
+    // the four chopped in this order, eax on its way to player * kHudRectsBytes in between
+    std::optional<x86::Float> whole[4];
+    const double values[4] = {left, right, top, bottom};
+    const reg32 held[4] = {player * 3, player * 24, player * 24, player * 23};
+    for (int k = 0; k < 4; ++k)
+    {
+        cpu.eax = held[k];
+        whole[k] = chop(app, cpu, frame, esp, x86::Float(values[k]));
+        if (!whole[k])
+            return std::nullopt;
+    }
+    const reg32 slot = offset + player * kHudRectsBytes;
+    const reg32 placed[4] = {reg32(fp::toInteger<i32>(*whole[0])), reg32(fp::toInteger<i32>(*whole[1])),
+                             reg32(fp::toInteger<i32>(*whole[2])), reg32(fp::toInteger<i32>(*whole[3]))};
+    put(app, kHudRects + slot, placed[0]);
+    put(app, kHudRects + slot + 8, placed[1]);
+    put(app, kHudRects + slot + 4, placed[2]);
+    put(app, kHudRects + slot + 0xc, placed[3]);
     // port (apply_widescreen): pictures in the HUD keep their shape on a wide screen
     widescreenHudRect(app, slot);
-    cpu.fpu.count -= 4;
-    flags.store(cpu);
-    cpu.eax = y1;
-    cpu.ebx = r.ebx;
-    cpu.ecx = r.ecx;
-    cpu.edx = slot;
-    cpu.esi = saved[0];
-    cpu.edi = saved[1];
-    cpu.ebp = saved[2];
-    cpu.esp = entry + 4;
+    return HudRectPlaced{record, slot, placed[3]};
 }
 
-/* sub_480fc0: HUD element 1 for player eax, from its rectangle at 0x749768:
- * its frame (sub_47f650 into 0x791a8c's 0x400 bytes a player) a border inside
- * the rectangle, and the picture in it at 0x791b38 (0x100 bytes a player):
- * the corners of its quad, the same inset, and its centre at +0xc0. */
+}
+
+/* sub_480910: placeHudRect for player eax, element edx, width ebx, height ecx; the bottom in
+ * eax, the height in ebx, the record's offset in ecx, the slot in edx; the flags as __CHP leaves
+ * them. */
+void hudRect(win32::WinApplication* app, x86::CPU& cpu)
+{
+    const Entry entry(cpu);
+    const reg32 height = cpu.ecx;
+    const std::optional<HudRectPlaced> placed = placeHudRect(app, cpu, cpu.eax, cpu.edx, cpu.ebx, height);
+    if (!placed)
+        return;
+    cpu.eax = placed->bottom;
+    cpu.ebx = height;
+    cpu.ecx = placed->record;
+    cpu.edx = placed->slot;
+    entry.restore(cpu, Entry::kEsi | Entry::kEdi | Entry::kEbp);
+}
+
+namespace
+{
+
+/* A HUD quad's corners as floats at `quad`: x at +0, +0x60 (left) and +0x20, +0x40 (right), y at
+ * +4, +0x24 (top) and +0x44, +0x64 (bottom), each pair in the order the game writes them. */
+void hudQuadLeft(App* app, reg32 quad, i32 x)
+{
+    const Memory m{app};
+    m.store(quad + 0x60, double(x));
+    m.store(quad, double(x));
+}
+
+void hudQuadRight(App* app, reg32 quad, i32 x)
+{
+    const Memory m{app};
+    m.store(quad + 0x40, double(x));
+    m.store(quad + 0x20, double(x));
+}
+
+void hudQuadTop(App* app, reg32 quad, i32 y)
+{
+    const Memory m{app};
+    m.store(quad + 0x24, double(y));
+    m.store(quad + 4, double(y));
+}
+
+/* (a + b) / 2 rounded toward 0, as the code's sar, sub, sar does it, wrapping as it does. */
+reg32 middle(reg32 a, reg32 b)
+{
+    const reg32 sum = a + b;
+    return reg32(i32(sum - reg32(i32(sum) >> 31)) >> 1);
+}
+
+// Element 1, the picture: its frame's quads (0x400 bytes a player) and its quad (0x100).
+constexpr reg32 kPictureRect = 0x10, kPictureFrames = 0x791a8c, kPictureQuads = 0x791b38;
+constexpr reg32 kPictureBorder = 0x53b518;  // two floats, the border's scale
+constexpr reg32 kQuadCentre = 0xc0;          // the centre's x, y after the four corners
+
+/* 0x480fc0's work: HUD element 1 for `player`: its frame a border inside its rectangle, and the
+ * picture in it the same inset, with its centre.  Returns the centre's y; nullopt when the game
+ * stopped. */
+std::optional<reg32> placeHudPicture(App* app, CPU& cpu, reg32 player)
+{
+    const Memory m{app};
+    const reg32 frame = cpu.esp - 24;  // push ebx, ecx, edx, esi, edi, ebp; mov ebp, esp
+    const reg32 rect = kHudRects + player * kHudRectsBytes + kPictureRect;
+    // the border by fistp each time it is used: the same each time
+    const Edges inside = insetBy(app, rect, hudBorder(app, cpu, kPictureBorder, kPictureBorder + 4));
+    cpu.esi = rect;  // as the code keeps them
+    cpu.edi = player;
+    if (!drawHudFrame(app, cpu, frame, frame - 8, (player << 10) + at(app, kPictureFrames), inside))
+        return std::nullopt;
+    // each edge read as it is written: the quad may lie over the rectangle
+    const reg32 border = hudBorder(app, cpu, kPictureBorder, kPictureBorder + 4);
+    const reg32 quad = at(app, kPictureQuads) + (player << 8);
+    hudQuadLeft(app, quad, i32(border + at(app, rect)));
+    hudQuadRight(app, quad, i32(at(app, rect + 8) - border));
+    hudQuadTop(app, quad, i32(border + at(app, rect + 4)));
+    const i32 bottom = i32(at(app, rect + 0xc) - border);
+    m.store(quad + 0x64, double(bottom));
+    m.store(quad + 0x44, double(bottom));
+    m.store(quad + kQuadCentre, double(i32(middle(at(app, rect), at(app, rect + 8)))));
+    const reg32 centreY = middle(at(app, rect + 4), at(app, rect + 0xc));
+    m.store(quad + kQuadCentre + 4, double(i32(centreY)));
+    return centreY;
+}
+
+// Element 3, the dial: its frame's quads (0x400 bytes a player) and its quad (0xe0).
+constexpr reg32 kDialRect = 0x30, kDialFrames = 0x791b34, kDialQuads = 0x791b2c;
+constexpr reg32 kDialBorder = 0x53b520;  // two floats, the border's scale
+constexpr reg32 kDialWidthScale = 0x53b528, kDialCentreScale = 0x53b52c;
+constexpr reg32 kDialWidths = 0x724760, kDialCentres = 0x724768;
+constexpr reg32 kDialForm = 3;  // tachometerForm's dial with a centre
+
+/* What placeHudDial chose: the layout's offset (0 or kHudLayoutBytes) and the tachometer's form. */
+struct DialLayout
+{
+    reg32 layout, form;
+};
+
+/* 0x4812e0's work: HUD element 3 for `player`: its frame a border inside its rectangle, the dial's
+ * quad laid over the frame's inside corners, its width times [kDialWidthScale] to kDialWidths
+ * and, for the layout's dial with a centre, its centre times [kDialCentreScale] to kDialCentres.
+ * nullopt when the game stopped. */
+std::optional<DialLayout> placeHudDial(App* app, CPU& cpu, reg32 player)
+{
+    const Memory m{app};
+    const reg32 frame = cpu.esp - 24;  // push ebx, ecx, edx, esi, edi, ebp; mov ebp, esp
+    const reg32 row = player + (gameSettings(app).playMode == 1 ? 1u : 0u);
+    cpu.edx = row;  // as the code has them at the call
+    cpu.esi = player;
+    const std::optional<reg32> car = playerCar(app, cpu, frame, frame - 12, player);
+    if (!car)
+        return std::nullopt;
+    const reg32 layout = (byteAt(app, *car + kCarFlags) & kCarCop) ? kHudLayoutBytes : 0;
+    const reg32 rect = kHudRects + player * kHudRectsBytes + kDialRect;
+    const Edges inside = insetBy(app, rect, hudBorder(app, cpu, kDialBorder, kDialBorder + 4));
+    cpu.edi = player << 10;
+    if (!drawHudFrame(app, cpu, frame, frame - 16, at(app, kDialFrames) + (player << 10), inside))
+        return std::nullopt;
+    const double border = double(i32(hudBorder(app, cpu, kDialBorder, kDialBorder + 4)));
+    const reg32 quad = at(app, kDialQuads) + player * 0xe0;
+    // the frame drawn, its inside corners: [kDialFrames] read again each time
+    auto frameAt = [&](reg32 offset) { return m.load(at(app, kDialFrames) + (player << 10) + offset); };
+    auto place = [&](double value, reg32 first, reg32 second) {
+        m.store(quad + first, value);
+        m.store(quad + second, value);
+    };
+    place(M::add(border, frameAt(0)), 0x60, 0);
+    place(M::add(border, frameAt(4)), 0x24, 4);
+    place(M::sub(frameAt(0x240), border), 0x40, 0x20);
+    const double width = M::mul(M::sub(m.load(quad + 0x20), m.load(quad)), m.load(kDialWidthScale));
+    place(M::sub(frameAt(0x244), border), 0x64, 0x44);
+    const reg32 form = gameSettings(app).hudAt(row * kHudRowBytes + layout).tachometerForm;
+    m.store(player * 4 + kDialWidths, width);
+    if (form == kDialForm)
+    {
+        const double scale = m.load(kDialCentreScale);
+        m.store(player * 8 + kDialCentres, M::mul(M::add(m.load(quad), m.load(quad + 0x40)), scale));
+        m.store(player * 8 + kDialCentres + 4, M::mul(scale, M::add(m.load(quad + 4), m.load(quad + 0x44))));
+    }
+    return DialLayout{layout, form};
+}
+
+// Element 17 (22 for a cop): the panel's frame quads (0x400 bytes a player) and its quad (0x80).
+constexpr reg32 kPanelRect = 0x110, kCopPanelRect = 0x160, kPanelFrames = 0x791b40, kPanelQuads = 0x791b58;
+constexpr reg32 kPanelBorder = 0x53b58c;  // two floats, the border's scale
+constexpr reg32 kPanelText = 0x700230;    // four words cleared
+
+/* 0x481aa0's work: HUD element 17 for `player` (22 for a cop's car): its frame a border inside its
+ * rectangle, its quad the same inset, and kPanelText's four words cleared.  False when the game
+ * stopped. */
+bool placeHudPanel(App* app, CPU& cpu, reg32 player)
+{
+    const Memory m{app};
+    const reg32 frame = cpu.esp - 24;  // push ebx, ecx, edx, esi, edi, ebp; mov ebp, esp
+    cpu.edi = player;  // as the code keeps it
+    const std::optional<reg32> car = playerCar(app, cpu, frame, frame - 4, player);
+    if (!car)
+        return false;
+    const reg32 rect = kHudRects + player * kHudRectsBytes
+                       + ((byteAt(app, *car + kCarFlags) & kCarCop) ? kCopPanelRect : kPanelRect);
+    const Edges inside = insetBy(app, rect, hudBorder(app, cpu, kPanelBorder, kPanelBorder + 4));
+    cpu.esi = rect;
+    if (!drawHudFrame(app, cpu, frame, frame - 8, at(app, kPanelFrames) + (player << 10), inside))
+        return false;
+    // each edge read as it is written: the quad may lie over the rectangle
+    const reg32 border = hudBorder(app, cpu, kPanelBorder, kPanelBorder + 4);
+    const reg32 quad = (player << 7) + at(app, kPanelQuads);
+    hudQuadLeft(app, quad, i32(border + at(app, rect)));
+    hudQuadRight(app, quad, i32(at(app, rect + 8) - border));
+    hudQuadTop(app, quad, i32(border + at(app, rect + 4)));
+    const i32 bottom = i32(at(app, rect + 0xc) - border);
+    put(app, kPanelText + 4, 0);
+    put(app, kPanelText + 0xc, 0);
+    put(app, kPanelText + 8, 0);
+    m.store(quad + 0x64, double(bottom));
+    put(app, kPanelText, 0);
+    m.store(quad + 0x44, double(bottom));
+    return true;
+}
+
+}
+
+/* sub_480fc0: placeHudPicture for player eax, the centre's y left in eax; the flags as hudFrame
+ * leaves them. */
 void hudPicture(win32::WinApplication* app, x86::CPU& cpu)
 {
-    const Memory m{app};
-    const x86::reg32 entry = cpu.esp;
-    const x86::reg32 saved[] = { cpu.ebx, cpu.ecx, cpu.edx, cpu.esi, cpu.edi, cpu.ebp };
-    // push ebx, ecx, edx, esi, edi, ebp; mov ebp, esp; sub esp, 4
-    const x86::reg32 ebp = entry - 24;
-    IntegerFlags flags;
-    auto border = [&]() { return hudBorder(app, cpu, 0x53b518, 0x53b51c); };
-    const x86::reg32 player = cpu.eax;
-    const x86::reg32 rect = player * 0x170 + 0x749758 + 0x10;
-    // the border, by fistp each time it is used: the same each time
-    const x86::reg32 i = border();
-    const x86::reg32 right = m.word(rect + 8) - i;
-    const x86::reg32 bottom = m.word(rect + 0xc) - i;
-    const x86::reg32 left = m.word(rect) + i;
-    const x86::reg32 top = m.word(rect + 4) + i;
-    m.word(ebp - 4, top);
-    // push edx: the frame's right edge, sub_47f650's argument
-    m.word(ebp - 8, right);
-    Registers r{ (player << 10) + m.word(0x791a8c), left, bottom, top, rect, player };
-    if (!callWithRegisters(app, cpu, flags, r, ebp, ebp - 8, 0x47f650))
+    const Entry entry(cpu);
+    const std::optional<reg32> centreY = placeHudPicture(app, cpu, cpu.eax);
+    if (!centreY)
         return;
-    const x86::reg32 j = border();
-    const x86::reg32 quad = m.word(0x791b38) + (r.edi << 8);
-    auto corner = [&](x86::reg32 value, x86::reg32 a, x86::reg32 b) {
-        m.word(ebp - 4, value);
-        m.store(quad + a, double(x86::sreg32(value)));
-        m.store(quad + b, double(x86::sreg32(value)));
-    };
-    corner(j + m.word(r.esi), 0x60, 0);
-    corner(m.word(r.esi + 8) - j, 0x40, 0x20);
-    corner(j + m.word(r.esi + 4), 0x24, 4);
-    corner(m.word(r.esi + 0xc) - j, 0x64, 0x44);
-    // (a + b) / 2 rounded toward 0, as cdq-free sar, sub, sar does it
-    auto middle = [](x86::reg32 a, x86::reg32 b) {
-        const x86::reg32 sum = a + b;
-        return x86::reg32(x86::sreg32(sum - x86::reg32(x86::sreg32(sum) >> 31)) >> 1);
-    };
-    x86::reg32 eax = middle(m.word(r.esi), m.word(r.esi + 8));
-    m.word(ebp - 4, eax);
-    m.store(quad + 0xc0, double(x86::sreg32(eax)));
-    eax = middle(m.word(r.esi + 4), m.word(r.esi + 0xc));
-    m.word(ebp - 4, eax);
-    m.store(quad + 0xc4, double(x86::sreg32(eax)));
-    flags.store(cpu);
-    cpu.eax = eax;
-    cpu.ebx = saved[0];
-    cpu.ecx = saved[1];
-    cpu.edx = saved[2];
-    cpu.esi = saved[3];
-    cpu.edi = saved[4];
-    cpu.ebp = saved[5];
-    cpu.esp = entry + 4;
+    cpu.eax = *centreY;
+    entry.restore(cpu, Entry::kEbx | Entry::kEcx | Entry::kEdx | Entry::kEsi | Entry::kEdi | Entry::kEbp);
 }
 
-/* sub_4812e0: HUD element 3 for player eax, from its rectangle at 0x749788:
- * its frame (sub_47f650 into 0x791b34's 0x400 bytes a player) a border inside
- * it, and the picture at 0x791b2c (0xe0 bytes a player) laid over the frame's
- * inside corners; its height times [0x53b528] to 0x724760, and, where the
- * layout's kind ([0x6fbc6c], by split screen and bit 0x20 of the player's
- * view, sub_422bd0) is 3, its centre times [0x53b52c] to 0x724768. */
+/* sub_4812e0: placeHudDial for player eax: the layout's offset left in eax, the flags of its cmp
+ * of the form with 3. */
 void hudDial(win32::WinApplication* app, x86::CPU& cpu)
 {
-    const Memory m{app};
-    const x86::reg32 entry = cpu.esp;
-    const x86::reg32 saved[] = { cpu.ebx, cpu.ecx, cpu.edx, cpu.esi, cpu.edi, cpu.ebp };
-    // push ebx, ecx, edx, esi, edi, ebp; mov ebp, esp; sub esp, 0xc
-    const x86::reg32 ebp = entry - 24;
-    IntegerFlags flags;
-    auto border = [&]() { return hudBorder(app, cpu, 0x53b520, 0x53b524); };
-    const x86::reg32 split = m.word(0x6fd3b0);
-    flags.compare(split, 1);
-    Registers r{ cpu.eax, cpu.ebx, cpu.ecx, cpu.eax + (split == 1 ? 1u : 0u), cpu.eax, cpu.edi };
-    if (!callWithRegisters(app, cpu, flags, r, ebp, ebp - 12, 0x422bd0))
+    const Entry entry(cpu);
+    const std::optional<DialLayout> dial = placeHudDial(app, cpu, cpu.eax);
+    if (!dial)
         return;
-    m.word(ebp - 0xc, r.edx);
-    const x86::reg8 mirrored = m.byte(r.eax + 0x200) & 0x20;
-    flags.logic8(mirrored);
-    if (!mirrored)
-        r.ebx = 0;
-    m.word(ebp - 8, mirrored ? 1 : 0);
-    // the border, by fistp each time it is used: the same each time
-    const x86::reg32 slot = r.esi * 0x170;
-    const x86::reg32 i = border();
-    const x86::reg32 right = m.word(slot + 0x749790) - i;
-    // push ecx: the frame's right edge, sub_47f650's argument
-    m.word(ebp - 16, right);
-    const x86::reg32 bottom = m.word(slot + 0x749794) - i;
-    const x86::reg32 left = m.word(slot + 0x749788) + i;
-    const x86::reg32 top = i + m.word(slot + 0x74978c);
-    const x86::reg32 frame = m.word(0x791b34) + (r.esi << 10);
-    m.word(ebp - 4, frame);
-    r = { frame, left, bottom, top, r.esi, r.esi << 10 };
-    if (!callWithRegisters(app, cpu, flags, r, ebp, ebp - 16, 0x47f650))
-        return;
-    const x86::reg32 j = border();
-    const x86::reg32 picture = m.word(0x791b2c) + r.esi * 0xe0;
-    auto place = [&](double value, x86::reg32 a, x86::reg32 b) {
-        m.store(picture + a, value);
-        m.store(picture + b, value);
-    };
-    // the frame sub_47f650 drew, its inside corners: [0x791b34] read again each time
-    m.word(ebp - 4, j);
-    place(M::add(double(x86::sreg32(j)), m.load(m.word(0x791b34) + r.edi)), 0x60, 0);
-    place(M::add(double(x86::sreg32(j)), m.load(m.word(0x791b34) + r.edi + 4)), 0x24, 4);
-    place(M::sub(m.load(m.word(0x791b34) + r.edi + 0x240), double(x86::sreg32(j))), 0x40, 0x20);
-    const x86::reg32 inside = m.word(0x791b34) + r.edi;
-    const x86::reg32 row = m.word(ebp - 0xc) * 0x348, column = m.word(ebp - 8) * 0x1a4;
-    const double across = M::mul(M::sub(m.load(picture + 0x20), m.load(picture)), m.load(0x53b528));
-    const double down = M::sub(m.load(inside + 0x244), double(x86::sreg32(j)));
-    place(down, 0x64, 0x44);
-    const x86::reg32 kind = m.word(row + column + 0x6fbc6c);
-    m.store(r.esi * 4 + 0x724760, across);
-    flags.compare(kind, 3);
-    if (kind == 3)
-    {
-        const double scale = m.load(0x53b52c);
-        m.store(r.esi * 8 + 0x724768, M::mul(M::add(m.load(picture), m.load(picture + 0x40)), scale));
-        m.store(r.esi * 8 + 0x72476c, M::mul(scale, M::add(m.load(picture + 4), m.load(picture + 0x44))));
-    }
-    flags.store(cpu);
-    cpu.eax = column;
-    cpu.ebx = saved[0];
-    cpu.ecx = saved[1];
-    cpu.edx = saved[2];
-    cpu.esi = saved[3];
-    cpu.edi = saved[4];
-    cpu.ebp = saved[5];
-    cpu.esp = entry + 4;
+    cpu.eax = dial->layout;
+    compareFlags(cpu, dial->form, kDialForm);
+    entry.restore(cpu, Entry::kEbx | Entry::kEcx | Entry::kEdx | Entry::kEsi | Entry::kEdi | Entry::kEbp);
 }
 
-/* sub_481aa0: HUD element 17 for player eax (22 where bit 0x20 of the
- * player's view, sub_422bd0, is set): its frame (sub_47f650 into 0x791b40's
- * 0x400 bytes a player) a border inside its rectangle, the quad at 0x791b58
- * (0x80 bytes a player) the same inset, and 0x700230..3c cleared. */
+/* sub_481aa0: placeHudPanel for player eax, eax 0; the flags as hudFrame leaves them. */
 void hudPanel(win32::WinApplication* app, x86::CPU& cpu)
 {
-    const Memory m{app};
-    const x86::reg32 entry = cpu.esp;
-    const x86::reg32 saved[] = { cpu.ebx, cpu.ecx, cpu.edx, cpu.esi, cpu.edi, cpu.ebp };
-    // push ebx, ecx, edx, esi, edi, ebp; mov ebp, esp; sub esp, 4
-    const x86::reg32 ebp = entry - 24;
-    IntegerFlags flags;
-    auto border = [&]() { return hudBorder(app, cpu, 0x53b58c, 0x53b590); };
-    Registers r{ cpu.eax, cpu.ebx, cpu.ecx, cpu.edx, cpu.esi, cpu.eax };
-    if (!callWithRegisters(app, cpu, flags, r, ebp, ebp - 4, 0x422bd0))
+    const Entry entry(cpu);
+    if (!placeHudPanel(app, cpu, cpu.eax))
         return;
-    const x86::reg32 player = r.edi;
-    const x86::reg8 mirrored = m.byte(r.eax + 0x200) & 0x20;
-    flags.logic8(mirrored);
-    x86::reg32 rect = 0x749758 + player * 0x170;
-    if (!mirrored)
-        flags.add(rect, 0x110);
-    rect += mirrored ? 0x160 : 0x110;
-    // the border, by fistp each time it is used: the same each time
-    const x86::reg32 i = border();
-    const x86::reg32 right = m.word(rect + 8) - i;
-    // push edx: the frame's right edge, sub_47f650's argument
-    m.word(ebp - 8, right);
-    const x86::reg32 bottom = m.word(rect + 0xc) - i;
-    const x86::reg32 left = m.word(rect) + i;
-    const x86::reg32 top = m.word(rect + 4) + i;
-    m.word(ebp - 4, player << 10);
-    r = { m.word(0x791b40) + (player << 10), left, bottom, top, rect, player };
-    if (!callWithRegisters(app, cpu, flags, r, ebp, ebp - 8, 0x47f650))
-        return;
-    const x86::reg32 j = border();
-    const x86::reg32 quad = (r.edi << 7) + m.word(0x791b58);
-    auto corner = [&](x86::reg32 value, x86::reg32 a, x86::reg32 b) {
-        m.word(ebp - 4, value);
-        m.store(quad + a, double(x86::sreg32(value)));
-        m.store(quad + b, double(x86::sreg32(value)));
-    };
-    corner(j + m.word(r.esi), 0x60, 0);
-    corner(m.word(r.esi + 8) - j, 0x40, 0x20);
-    corner(j + m.word(r.esi + 4), 0x24, 4);
-    const x86::reg32 last = m.word(r.esi + 0xc) - j;
-    m.word(ebp - 4, last);
-    m.word(0x700234, 0);
-    m.word(0x70023c, 0);
-    m.word(0x700238, 0);
-    m.store(quad + 0x64, double(x86::sreg32(last)));
-    m.word(0x700230, 0);
-    m.store(quad + 0x44, double(x86::sreg32(last)));
-    flags.store(cpu);
     cpu.eax = 0;
-    cpu.ebx = saved[0];
-    cpu.ecx = saved[1];
-    cpu.edx = saved[2];
-    cpu.esi = saved[3];
-    cpu.edi = saved[4];
-    cpu.ebp = saved[5];
-    cpu.esp = entry + 4;
+    entry.restore(cpu, Entry::kEbx | Entry::kEcx | Entry::kEdx | Entry::kEsi | Entry::kEdi | Entry::kEbp);
 }
 
 /* sub_481c50: the table of player eax -- the racers' standings, or with bit
@@ -9758,8 +9958,8 @@ void barGauges(win32::WinApplication* app, x86::CPU& cpu)
     sahfCompare(0.0, m.load(ebp + 0x72));
     if (!cpu.flags.cf && !cpu.flags.zf)
         m.store(ebp + 0x72, M::add(1.0, m.load(ebp + 0x72)));
-    flags.compare(m.word(0x6fd4c4), 0);
-    if (m.word(0x6fd4c4))
+    flags.compare(gameSettings(app).mirrored, 0);
+    if (gameSettings(app).mirrored)
         m.store(ebp + 0x72, M::sub(1.0, m.load(ebp + 0x72)));
     r.edx = 0;
     m.word(ebp + 0x76, 0);
@@ -10012,8 +10212,8 @@ void cockpit(win32::WinApplication* app, x86::CPU& cpu)
     flags.compare(m.word(0x79c4a0), 0);
     if (m.word(0x79c4a0))
         return leave();
-    flags.compare(m.word(0x6fbc4c), 0);
-    if (m.word(0x6fbc4c))
+    flags.compare(gameSettings(app).wideScreen, 0);
+    if (gameSettings(app).wideScreen)
         return leave();
     // port (apply_cabin): the cabin fitted to 4:3, was [0x7cdb98], [0x7cdb9c], [0x7cdba0], [0x7cdba4]
     const double tiles = m.loadDouble(0x53b76c);
@@ -10036,8 +10236,8 @@ void cockpit(win32::WinApplication* app, x86::CPU& cpu)
     if (!callTo(0x4206f0))
         return;
     r.edx = r.eax;
-    flags.compare(m.word(0x6fd4c8), 0);
-    if (m.word(0x6fd4c8))
+    flags.compare(gameSettings(app).night, 0);
+    if (gameSettings(app).night)
     {
         r.eax = r.ecx;
         if (!callTo(0x4b97b0))
@@ -10787,7 +10987,7 @@ void hudBand(win32::WinApplication* app, x86::CPU& cpu)
     auto Y1 = [&](x86::reg32 k4) { return k4 + ebp - 0x1a; };
     const x86::reg32 player = r.edi;
     m.word(ebp + 0x3e, m.word(0x791ac0) + player * 0x380);
-    r.edx = m.word(0x6fd3b0);
+    r.edx = gameSettings(app).playMode;
     flags.compare(r.edx, 1);
     r.eax = r.edx == 1 ? 1 : 0;
     r.edx = player + r.eax;
@@ -10906,7 +11106,7 @@ void hudBand(win32::WinApplication* app, x86::CPU& cpu)
     // element 3 in the band (its layout kind 2 or 3, or [0x559264])
     const x86::reg32 kinds = m.word(ebp + 0x56) * 0x348 + m.word(ebp + 0x5a) * 0x1a4;
     r.eax = kinds;
-    r.edx = m.word(r.eax + 0x6fbc6c);
+    r.edx = gameSettings(app).hudAt(r.eax).tachometerForm;
     bool counts;
     flags.compare(r.edx, 2);
     counts = r.edx == 2;
@@ -10937,12 +11137,12 @@ void hudBand(win32::WinApplication* app, x86::CPU& cpu)
     m.word(ebp + 0x1a, m.word(ebp + 0x56) * 0x348);
     m.word(ebp + 0x16, m.word(ebp + 0x5a) * 0x1a4);
     r.eax = m.word(ebp + 0x1a) + m.word(ebp + 0x16);
-    flags.compare(m.word(r.eax + 0x6fbc68), 4);
-    counts = m.word(r.eax + 0x6fbc68) == 4;
+    flags.compare(gameSettings(app).hudAt(r.eax).speedometerForm, 4);
+    counts = gameSettings(app).hudAt(r.eax).speedometerForm == 4;
     if (!counts)
     {
-        flags.compare(m.word(r.eax + 0x6fbc68), 2);
-        counts = m.word(r.eax + 0x6fbc68) == 2;
+        flags.compare(gameSettings(app).hudAt(r.eax).speedometerForm, 2);
+        counts = gameSettings(app).hudAt(r.eax).speedometerForm == 2;
     }
     if (!counts)
     {
@@ -10969,8 +11169,8 @@ void hudBand(win32::WinApplication* app, x86::CPU& cpu)
     if (!m.word(ebp + 0x56))
     {
         r.eax = m.word(ebp + 0x5a) * 0x1a4;
-        flags.compare(m.word(r.eax + 0x6fbc5c), 0);
-        counts = m.word(r.eax + 0x6fbc5c) != 0;
+        flags.compare(gameSettings(app).hudAt(r.eax).rearView, 0);
+        counts = gameSettings(app).hudAt(r.eax).rearView != 0;
         if (!counts)
         {
             flags.compare(m.word(0x559264), 0);
@@ -11639,7 +11839,7 @@ void hud(win32::WinApplication* app, x86::CPU& cpu)
     flags.logic8(m.byte(r.eax + 0x200) & 0x20);
     r.edx = (m.byte(r.eax + 0x200) & 0x20) ? 1 : 0;
     m.word(ebp - 0x3c, r.edx);
-    r.edx = m.word(0x6fd3b0);
+    r.edx = gameSettings(app).playMode;
     flags.compare(r.edx, 1);
     r.eax = r.edx == 1 ? 1 : 0;
     r.edx = player() + r.eax;
@@ -11693,7 +11893,7 @@ void hud(win32::WinApplication* app, x86::CPU& cpu)
         flags.compare(m.word(0x7a3d10), 0);
         if (m.word(0x7a3d10))
             return leave();
-        r.eax = m.word(0x6fd4bc) - 1;
+        r.eax = gameSettings(app).pursuitOutCount - 1;
         r.edx = m.word(r.edi + 0x2c8);
         flags.compare(r.eax, r.edx);
         r.eax = le(r.eax, r.edx) ? 0x1a7 : 0x1a6;
@@ -11713,8 +11913,8 @@ void hud(win32::WinApplication* app, x86::CPU& cpu)
     if (!callTo(0x4beb80))
         return;
     // the cop's arrests in a pursuit (kind 7) for game mode 3
-    flags.compare(m.word(0x6fd3b8), 3);
-    if (m.word(0x6fd3b8) == 3)
+    flags.compare(gameSettings(app).raceType, 3);
+    if (gameSettings(app).raceType == 3)
     {
         flags.compare(m.word(ebp - 4), 0);
         if (m.word(ebp - 4))
@@ -11758,8 +11958,8 @@ void hud(win32::WinApplication* app, x86::CPU& cpu)
             flags.compare(m.word(ebp - 0xc), 1);
             if (m.word(ebp - 0xc) != 1)
             {
-                flags.compare(m.word(0x6fd3a0), 2);
-                if (m.word(0x6fd3a0) == 2)
+                flags.compare(gameSettings(app).replayMode, 2);
+                if (gameSettings(app).replayMode == 2)
                 {
                     flags.compare(m.word(0x55fe3c), 0);
                     if (m.word(0x55fe3c) && !callTo(0x482880))
@@ -11804,8 +12004,8 @@ void hud(win32::WinApplication* app, x86::CPU& cpu)
         flags.logic(r.eax);
         if (!r.eax)
             return true;
-        flags.compare(m.word(0x6fd3b0), 1);
-        if (m.word(0x6fd3b0) == 1)
+        flags.compare(gameSettings(app).playMode, 1);
+        if (gameSettings(app).playMode == 1)
             return true;
         r.eax = (player() << 5) + m.word(0x791b48);
         r.edx = m.word(0x791b48);
@@ -11906,8 +12106,8 @@ void hud(win32::WinApplication* app, x86::CPU& cpu)
     {
         r.edx = m.word(ebp - 4) * 0x1a4;
         r.eax = m.word(ebp - 0xc) * 0x348;
-        flags.compare(m.word(r.edx + r.eax + 0x6fbc50), 0);
-        if (m.word(r.edx + r.eax + 0x6fbc50))
+        flags.compare(gameSettings(app).hudAt(r.edx + r.eax).shown, 0);
+        if (gameSettings(app).hudAt(r.edx + r.eax).shown)
         {
             flags.logic8(m.byte(r.edi + 0x200) & 4);
             if (!(m.byte(r.edi + 0x200) & 4))
@@ -11919,8 +12119,8 @@ void hud(win32::WinApplication* app, x86::CPU& cpu)
                     compact = true;
                     if (!m.word(0x791b1c))
                     {
-                        flags.compare(m.word(0x6fd3a0), 2);
-                        compact = m.word(0x6fd3a0) != 2;
+                        flags.compare(gameSettings(app).replayMode, 2);
+                        compact = gameSettings(app).replayMode != 2;
                     }
                 }
             }
@@ -11946,7 +12146,7 @@ void hud(win32::WinApplication* app, x86::CPU& cpu)
         if (!callTo(0x47fcb0))
             return;
         r.eax = r.ecx * 0x1a4;
-        r.ebx = m.word(r.edx + r.eax + 0x6fbc58);
+        r.ebx = gameSettings(app).hudAt(r.edx + r.eax).opponentList;
         flags.logic(r.ebx);
         if (r.ebx)
         {
@@ -11985,8 +12185,8 @@ void hud(win32::WinApplication* app, x86::CPU& cpu)
         }
         r.eax = m.word(ebp - 4) * 0x1a4;
         r.edx = m.word(ebp - 0xc) * 0x348;
-        flags.compare(m.word(r.edx + r.eax + 0x6fbc70), 0);
-        if (m.word(r.edx + r.eax + 0x6fbc70) && !map())
+        flags.compare(gameSettings(app).hudAt(r.edx + r.eax).mapStyle, 0);
+        if (gameSettings(app).hudAt(r.edx + r.eax).mapStyle && !map())
             return;
         if (!layers(false))
             return;
@@ -11998,14 +12198,14 @@ void hud(win32::WinApplication* app, x86::CPU& cpu)
         return finish();
     r.edx = m.word(ebp - 0xc) * 0x348;
     r.eax = m.word(ebp - 4) * 0x1a4;
-    flags.compare(m.word(r.edx + r.eax + 0x6fbc50), 0);
-    if (!m.word(r.edx + r.eax + 0x6fbc50))
+    flags.compare(gameSettings(app).hudAt(r.edx + r.eax).shown, 0);
+    if (!gameSettings(app).hudAt(r.edx + r.eax).shown)
         return finish();
     flags.compare(m.word(0x791b1c), 0);
     if (!m.word(0x791b1c))
     {
-        flags.compare(m.word(0x6fd3a0), 2);
-        if (m.word(0x6fd3a0) == 2)
+        flags.compare(gameSettings(app).replayMode, 2);
+        if (gameSettings(app).replayMode == 2)
             return finish();
     }
     flags.logic8(m.byte(r.edi + 0x200) & 4);
@@ -12042,8 +12242,8 @@ void hud(win32::WinApplication* app, x86::CPU& cpu)
         bool call = true;
         if (m.word(r.edx * 4 + 0x79c4a0))
         {
-            flags.compare(r.eax, m.word(0x6fd510));
-            if (!lt(r.eax, m.word(0x6fd510)))
+            flags.compare(r.eax, gameSettings(app).entryCount);
+            if (!lt(r.eax, gameSettings(app).entryCount))
             {
                 r.eax = 0;
                 call = false;
@@ -12068,7 +12268,7 @@ void hud(win32::WinApplication* app, x86::CPU& cpu)
     r.eax = m.word(ebp - 4) * 0x1a4;
     r.edx = m.word(ebp - 0xc) * 0x348;
     r.eax += r.edx;
-    r.ebx = m.word(r.eax + 0x6fbc64);
+    r.ebx = gameSettings(app).hudAt(r.eax).splitTimeForm;
     flags.compare(r.ebx, 2);
     bool laps = r.ebx == 2;
     if (!laps)
@@ -12132,10 +12332,10 @@ void hud(win32::WinApplication* app, x86::CPU& cpu)
             m.word(0x72522c, r.eax);
             r.eax = r.ecx * 0x1a4;
             bool blink = false;
-            flags.compare(m.word(r.edx + r.eax + 0x6fbc64), 3);
-            if (m.word(r.edx + r.eax + 0x6fbc64) == 3)
+            flags.compare(gameSettings(app).hudAt(r.edx + r.eax).splitTimeForm, 3);
+            if (gameSettings(app).hudAt(r.edx + r.eax).splitTimeForm == 3)
             {
-                r.edx = m.word(0x6fd2b4);
+                r.edx = gameSettings(app).recordsHolder;
                 flags.compare(r.edx, m.word(0x72522c));
                 blink = !lt(r.edx, m.word(0x72522c));
             }
@@ -12143,8 +12343,8 @@ void hud(win32::WinApplication* app, x86::CPU& cpu)
             {
                 r.eax = m.word(ebp - 4) * 0x1a4;
                 r.edx = m.word(ebp - 0xc) * 0x348;
-                flags.compare(m.word(r.edx + r.eax + 0x6fbc64), 2);
-                if (m.word(r.edx + r.eax + 0x6fbc64) == 2)
+                flags.compare(gameSettings(app).hudAt(r.edx + r.eax).splitTimeForm, 2);
+                if (gameSettings(app).hudAt(r.edx + r.eax).splitTimeForm == 2)
                 {
                     r.ebx = m.word(ebp - 0x14);
                     flags.compare(r.ebx, m.word(0x72522c));
@@ -12172,7 +12372,7 @@ void hud(win32::WinApplication* app, x86::CPU& cpu)
     }
     // the last lap's flash: [0x72521c]
     r.ecx = m.word(r.edi + 0x234) + 1;
-    r.eax = m.word(0x6fd4b4);
+    r.eax = gameSettings(app).laps;
     flags.compare(r.ecx, r.eax);
     if (!le(r.ecx, r.eax))
         r.ecx = r.eax;
@@ -12181,8 +12381,8 @@ void hud(win32::WinApplication* app, x86::CPU& cpu)
     bool flash = false;
     if (lt(r.eax, 0x140))
     {
-        flags.compare(r.ecx, m.word(0x6fd4b4));
-        flash = r.ecx == m.word(0x6fd4b4);
+        flags.compare(r.ecx, gameSettings(app).laps);
+        flash = r.ecx == gameSettings(app).laps;
     }
     if (flash)
         m.word(0x72521c, 1);
@@ -12238,7 +12438,7 @@ void hud(win32::WinApplication* app, x86::CPU& cpu)
         push(r.ebx);
         r.eax = m.word(ebp - 8);
         push(r.eax);
-        r.edx = m.word(0x6fd4b8);
+        r.edx = gameSettings(app).pursuitWinCount;
         r.eax = m.word(r.edi + 0x2cc);
         push(m.word(0x791b3c));
         if (!callTo(0x489a50))
@@ -12264,8 +12464,8 @@ void hud(win32::WinApplication* app, x86::CPU& cpu)
     if (!callTo(0x4898b0))
         return;
     // the percentage done (element 7) after frame 0x200
-    flags.compare(m.word(0x6fd498), 0);
-    if (m.word(0x6fd498))
+    flags.compare(gameSettings(app).raceOptionCones, 0);
+    if (gameSettings(app).raceOptionCones)
     {
         flags.compare(m.word(0x7d3684), 0x200);
         if (!le(m.word(0x7d3684), 0x200))
@@ -12316,7 +12516,7 @@ void hud(win32::WinApplication* app, x86::CPU& cpu)
     flags.compare(m.word(ebp - 4), 0);
     if (m.word(ebp - 4))
     {
-        r.ecx = m.word(0x6fd4b4);
+        r.ecx = gameSettings(app).laps;
         for (r.eax = 0;; )
         {
             flags.compare(r.eax, m.word(0x5efda0));
@@ -12369,7 +12569,7 @@ void hud(win32::WinApplication* app, x86::CPU& cpu)
         push(r.ebx);
         r.eax = m.word(ebp - 8);
         push(r.eax);
-        r.edx = m.word(0x6fd4b4);
+        r.edx = gameSettings(app).laps;
         r.eax = r.ecx;
         push(m.word(0x791b3c));
         if (!callTo(0x4899d0))
@@ -12385,7 +12585,7 @@ void hud(win32::WinApplication* app, x86::CPU& cpu)
             r.edx = player();
             r.eax = times23(r.edx);
             r.edx = r.eax;
-            r.ebx = m.word(0x6fbb4c);
+            r.ebx = gameSettings(app).language;
             r.edx <<= 4;
             flags.logic(r.ebx);
             r.ecx = player();
@@ -12404,7 +12604,7 @@ void hud(win32::WinApplication* app, x86::CPU& cpu)
             r.ebx = m.word(ebp - 8);
             push(r.ebx);
             push(m.word(0x791b3c));
-            const bool small = m.word(0x6fbb4c) != 0;
+            const bool small = gameSettings(app).language != 0;
             if (!small)
                 push(m.word(0x791b54));
             if (!callTo(0x4cdee0))
@@ -12417,8 +12617,8 @@ void hud(win32::WinApplication* app, x86::CPU& cpu)
         }
     }
     // the race-mode meter (game mode 3, the racer): sub_48c0e0 lit by the place (sub_4013b0)
-    flags.compare(m.word(0x6fd3b8), 3);
-    if (m.word(0x6fd3b8) == 3)
+    flags.compare(gameSettings(app).raceType, 3);
+    if (gameSettings(app).raceType == 3)
     {
         flags.compare(m.word(ebp - 4), 0);
         if (!m.word(ebp - 4))
@@ -12501,8 +12701,8 @@ void hud(win32::WinApplication* app, x86::CPU& cpu)
         }
     }
     // the opponents' count (element 2 of the racer's, game mode 3)
-    flags.compare(m.word(0x6fd3b8), 3);
-    if (m.word(0x6fd3b8) == 3)
+    flags.compare(gameSettings(app).raceType, 3);
+    if (gameSettings(app).raceType == 3)
     {
         flags.compare(m.word(ebp - 4), 0);
         if (!m.word(ebp - 4))
@@ -12524,7 +12724,7 @@ void hud(win32::WinApplication* app, x86::CPU& cpu)
             r.edx = m.word(ebp - 8);
             push(r.edx);
             r.eax = m.word(r.edi + 0x2c8);
-            r.edx = m.word(0x6fd4bc);
+            r.edx = gameSettings(app).pursuitOutCount;
             push(m.word(0x791b3c));
             if (!callTo(0x489a50))
                 return;
@@ -12534,8 +12734,8 @@ void hud(win32::WinApplication* app, x86::CPU& cpu)
     r.ebx = m.word(ebp - 4);
     r.eax = r.ebx * 0x1a4;
     r.edx = m.word(ebp - 0xc) * 0x348;
-    flags.compare(m.word(r.edx + r.eax + 0x6fbc58), 0);
-    if (m.word(r.edx + r.eax + 0x6fbc58))
+    flags.compare(gameSettings(app).hudAt(r.edx + r.eax).opponentList, 0);
+    if (gameSettings(app).hudAt(r.edx + r.eax).opponentList)
     {
         flags.logic(r.ebx);
         if (r.ebx)
@@ -12582,14 +12782,14 @@ void hud(win32::WinApplication* app, x86::CPU& cpu)
     }
     r.eax = m.word(ebp - 0xc) * 0x348;
     r.edx = m.word(ebp - 4) * 0x1a4;
-    flags.compare(m.word(r.edx + r.eax + 0x6fbc70), 0);
-    if (m.word(r.edx + r.eax + 0x6fbc70) && !map())
+    flags.compare(gameSettings(app).hudAt(r.edx + r.eax).mapStyle, 0);
+    if (gameSettings(app).hudAt(r.edx + r.eax).mapStyle && !map())
         return;
     // the rev counter by its kind (layout +0x6fbc6c): 1 the digital one, else the dial
     r.eax = m.word(ebp - 4) * 0x1a4;
     r.edx = m.word(ebp - 0xc) * 0x348;
     r.eax += r.edx;
-    r.ebx = m.word(r.eax + 0x6fbc6c);
+    r.ebx = gameSettings(app).hudAt(r.eax).tachometerForm;
     flags.logic(r.ebx);
     if (r.ebx)
     {
@@ -12670,7 +12870,7 @@ void hud(win32::WinApplication* app, x86::CPU& cpu)
     r.eax = m.word(ebp - 0xc) * 0x348;
     r.edx = m.word(ebp - 4) * 0x1a4;
     r.eax += r.edx;
-    r.ebx = m.word(r.eax + 0x6fbc68);
+    r.ebx = gameSettings(app).hudAt(r.eax).speedometerForm;
     // |speed| to [ebp+at]: fldz; fcomp; jae, fchs
     auto speed = [&](x86::reg32 at) {
         sahfCompare(0.0, m.load(r.edi + 0x4f4));
@@ -12717,7 +12917,7 @@ void hud(win32::WinApplication* app, x86::CPU& cpu)
             push(r.ecx);
             r.ebx = m.word(ebp - 8);
             push(r.ebx);
-            r.eax = m.word(0x6fd3b0);
+            r.eax = gameSettings(app).playMode;
             push(m.word(0x791b50));
             auto split = [&]() {
                 flags.compare(r.eax, 1);
@@ -12728,16 +12928,16 @@ void hud(win32::WinApplication* app, x86::CPU& cpu)
             split();
             r.edx = r.eax * 0x348;
             r.eax = m.word(ebp - 4) * 0x1a4;
-            flags.compare(m.word(r.edx + r.eax + 0x6fbc68), 1);
-            bool big = m.word(r.edx + r.eax + 0x6fbc68) == 1;
+            flags.compare(gameSettings(app).hudAt(r.edx + r.eax).speedometerForm, 1);
+            bool big = gameSettings(app).hudAt(r.edx + r.eax).speedometerForm == 1;
             if (!big)
             {
-                r.eax = m.word(0x6fd3b0);
+                r.eax = gameSettings(app).playMode;
                 split();
                 r.eax = r.eax * 0x348;
                 r.edx = m.word(ebp - 4) * 0x1a4;
-                flags.compare(m.word(r.edx + r.eax + 0x6fbc68), 2);
-                big = m.word(r.edx + r.eax + 0x6fbc68) == 2;
+                flags.compare(gameSettings(app).hudAt(r.edx + r.eax).speedometerForm, 2);
+                big = gameSettings(app).hudAt(r.edx + r.eax).speedometerForm == 2;
             }
             if (big)
                 r.eax = 1;
@@ -12757,8 +12957,8 @@ void hud(win32::WinApplication* app, x86::CPU& cpu)
     r.edx = m.word(r.edi + 0x1f0);
     r.eax = (r.edx * 4 - r.edx) << 2;
     r.edx = r.eax;
-    flags.compare(m.word(r.edx + r.eax * 8 + 0x6fd548), 0);
-    if (!m.word(r.edx + r.eax * 8 + 0x6fd548))
+    flags.compare(gameSettings(app).entryAt(r.edx + r.eax * 8).transmission, 0);
+    if (!gameSettings(app).entryAt(r.edx + r.eax * 8).transmission)
     {
         r.eax = r.edi;
         if (!callTo(0x4a8bb9))
@@ -12776,7 +12976,7 @@ void hud(win32::WinApplication* app, x86::CPU& cpu)
     r.eax = m.word(ebp - 0xc) * 0x348;
     r.ecx = m.word(ebp - 4) * 0x1a4;
     r.eax += r.ecx;
-    r.ecx = m.word(r.eax + 0x6fbc68);
+    r.ecx = gameSettings(app).hudAt(r.eax).speedometerForm;
     flags.compare(r.ecx, 4);
     bool gear = r.ecx == 4;
     if (!gear)
@@ -12856,7 +13056,7 @@ void hud(win32::WinApplication* app, x86::CPU& cpu)
         r.edx = r.eax;
         r.eax = r.ebx * 0x1a4;
         r.edx <<= 4;
-        r.eax = m.word(r.ecx + r.eax + 0x6fbc64);
+        r.eax = gameSettings(app).hudAt(r.ecx + r.eax).splitTimeForm;
         m.store(ebp - 0x10, fild32(m, r.edx + 0x74980c));
         --r.eax;
         flags.compare(r.eax, 4);
@@ -12875,8 +13075,8 @@ void hud(win32::WinApplication* app, x86::CPU& cpu)
                 }
                 if (shown)
                 {
-                    flags.compare(m.word(0x6fd2b4), 0);
-                    if (m.word(0x6fd2b4))
+                    flags.compare(gameSettings(app).recordsHolder, 0);
+                    if (gameSettings(app).recordsHolder)
                     {
                         flags.compare(m.word(r.edi + 0x234), 0);
                         if (m.word(r.edi + 0x234))
@@ -12896,7 +13096,7 @@ void hud(win32::WinApplication* app, x86::CPU& cpu)
                             push(r.ecx);
                             r.ebx = m.word(ebp - 8);
                             push(r.ebx);
-                            r.eax = m.word(0x6fd2b4);
+                            r.eax = gameSettings(app).recordsHolder;
                             r.edx = m.word(ebp - 0x14);
                             push(m.word(0x791b3c));
                             flags.compare(r.eax, r.edx);
@@ -12925,7 +13125,7 @@ void hud(win32::WinApplication* app, x86::CPU& cpu)
                             push(r.ecx);
                             r.ebx = m.word(ebp - 8);
                             push(r.ebx);
-                            r.eax = m.word(0x6fd2b4);
+                            r.eax = gameSettings(app).recordsHolder;
                             push(m.word(0x791b3c));
                         }
                         if (!callTo(0x4898b0))
@@ -13146,8 +13346,8 @@ void hud(win32::WinApplication* app, x86::CPU& cpu)
     {
         r.eax = m.word(ebp - 0xc) * 0x348;
         r.edx = m.word(ebp - 4) * 0x1a4;
-        flags.compare(m.word(r.edx + r.eax + 0x6fbc54), 0);
-        if (m.word(r.edx + r.eax + 0x6fbc54))
+        flags.compare(gameSettings(app).hudAt(r.edx + r.eax).opponentName, 0);
+        if (gameSettings(app).hudAt(r.edx + r.eax).opponentName)
         {
             r.eax = m.word(0x725210);
             r.edx = m.word(r.eax + 0x220);
@@ -13230,8 +13430,8 @@ void hud(win32::WinApplication* app, x86::CPU& cpu)
         if (!m.word(r.eax + 0x9a4))
         {
             r.eax = m.word(ebp - 0x3c) * 0x1a4;
-            flags.compare(m.word(r.eax + 0x6fc2e0), 0);
-            layersOnly = m.word(r.eax + 0x6fc2e0) != 0;
+            flags.compare(gameSettings(app).hudAt(4 * 0x1a4 + r.eax).shown, 0);
+            layersOnly = gameSettings(app).hudAt(4 * 0x1a4 + r.eax).shown != 0;
         }
     }
     if (!layersOnly)
@@ -13300,7 +13500,7 @@ void carTextures(win32::WinApplication* app, x86::CPU& cpu)
     m.word(ebp - 4, car);
     m.word(ebp - 8, r.edx);
     auto isPlayer = [&]() {
-        r.eax = m.word(0x6fd4f4);
+        r.eax = gameSettings(app).localPlayer;
         r.edx = car;
         flags.compare(r.edx, m.word(r.eax * 4 + 0x5efa48));
         return r.edx == m.word(r.eax * 4 + 0x5efa48);
@@ -13308,7 +13508,7 @@ void carTextures(win32::WinApplication* app, x86::CPU& cpu)
     // port (apply_car_detail): every car at the player's texture size
     r.ebx = isPlayer() ? 256u : (fullCarDetail() ? 256u : 128u);
     r.edx = m.word(car + 0x1f0) * 12;
-    r.eax = m.word(r.edx + r.edx * 8 + 0x6fd540);
+    r.eax = gameSettings(app).entryAt(r.edx + r.edx * 8).car;
     r.edi = name;
     if (!callTo(0x439300))
         return;
@@ -13358,8 +13558,8 @@ void carTextures(win32::WinApplication* app, x86::CPU& cpu)
         r.eax = r.edx * 12;
         r.edx = r.eax;
         r.eax = (r.eax << 3) + r.edx;
-        flags.add(r.eax, 0x6fd52c);
-        r.eax += 0x6fd52c;
+        flags.add(r.eax, SETTINGS_ADDRESS(entries));
+        r.eax += SETTINGS_ADDRESS(entries);
         r.ecx = r.eax + 0x20;
         r.edx = name;
         r.eax = car;
