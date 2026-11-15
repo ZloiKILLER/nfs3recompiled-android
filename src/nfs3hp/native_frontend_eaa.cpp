@@ -18,7 +18,8 @@
 #include "host_video.h"
 #include "host_window.h"
 #include <nfs3hp.h>
-#include <winapi/kernel32.h>
+#include <lib/winapp.h>
+#include <winapi/types.h>
 #include <cstdint>
 #include <initializer_list>
 #include <optional>

@@ -68,9 +68,10 @@
  * Each is a typed function (its arguments named, its locals C++'s, the guest's
  * memory where it is) under a name of its own, with an adapter under the
  * game's name for the callers still on registers and the dispatch: it takes
- * the registers, calls the typed function and leaves eax (and edx, ebx where
- * the code does not keep them), the x87's stack and the guest's stack as the
- * game's code does -- what the check compares; a typed function gives what
+ * the registers, calls the typed function under the caller's registers
+ * (adapts: the code keeps them, its argument registers no caller reads) and
+ * leaves eax, the x87's stack and the guest's stack as the game's code does
+ * -- what the check compares; a typed function gives what
  * the code leaves in eax beside its answer where no caller reads it but the
  * check.  The x87's arithmetic is fp's in the code's order of operands, a
  * float kept where the code stores one; a compare's status word in ax as
@@ -111,12 +112,12 @@ constexpr reg32 kNodeCount = 0x5dd940, kNodes = 0x5dd948;
 // The class records of the pursuit (0x18 bytes), by the car's +0x30.
 constexpr reg32 kClassKind = 0x552274, kClassFlag = 0x552278, kClassKeen = 0x55227c;
 // What is called by address: the game's, the lane votes (0x40de30, its adapter's NFS_CAR_TRACE
-// record), strncpy (whose edx namePhrase leaves); and of the typed files' those whose eax an adapter
+// record), strncpy; and of the typed files' those whose eax an adapter
 // here leaves, which their headers give only as whether (a cop near, a node within reach, the cop
 // held, the car driven on), or that the code hands words on the guest's stack (the debug text, the
 // tunnel's test, which takes a copy of the place).  The menu files' (the radar, the places named,
 // the car put on its node and settled, the car ticketed: feCore), memset, strstr and the car's
-// chosen colour are called as C++, the eax they leave put back.
+// chosen colour are called as C++, the eax they leave given back.
 constexpr reg32 kCopNear = 0x40f050, kInReach = 0x40f000, kResetHeld = 0x404b90, kCopFinish = 0x40de30;
 constexpr reg32 kSpeedLimit = 0x40cd80;
 constexpr reg32 kDebugText = 0x42d520, kMonoPrint = 0x4e08f0;
@@ -127,23 +128,9 @@ constexpr reg32 kCarColour = 0x439780;
 constexpr reg32 kEndPath = 0x4529a0, kVoiceBankLoad = 0x413750;
 constexpr reg32 kInTunnel = 0x420bf0;
 
-void push(App* app, CPU& cpu, reg32 value)
-{
-    cpu.esp -= 4;
-    put(app, cpu.esp, value);
-}
-
 reg16 half(App* app, reg32 a) { return app->getMemory<reg16>(a); }
 sreg32 s(reg32 v) { return sreg32(v); }
 
-/* A call as the code makes it: the return address's slot, and esp as the
- * callee leaves it.  False when the game stopped in it. */
-bool byAddress(App* app, CPU& cpu, reg32 target)
-{
-    cpu.esp -= 4;
-    app->dynamic_call(target, cpu);
-    return !cpu.terminate;
-}
 
 /* A native_frontend_* file's typed core called as C++ (guest::direct): nothing (false) when the
  * game stopped in it (its calls into the game throw fe::Terminated).  tools/game_checks does not
@@ -199,24 +186,15 @@ auto feCore(App* app, CPU& cpu, Args... args)
     }
 }
 
-/* A result put in eax too, as the call by address left it there. */
-std::optional<reg32> leftInEax(CPU& cpu, std::optional<reg32> eax)
-{
-    if (eax)
-        cpu.eax = *eax;
-    return eax;
-}
-
-/* 0x439790 (port::fields'): model's chosen colour for player, in eax too; nullopt when the game
- * stopped.  Its esp the call's (no words pushed). */
+/* 0x439790 (port::fields'): model's chosen colour for player; nullopt when the game stopped.  Its
+ * esp the call's (no words pushed). */
 std::optional<reg32> chosenColour(App* app, CPU& cpu, reg32 model, reg32 player)
 {
     const port::Result colour =
         guest::direct<0x439790, port::fields::chosenColour>(app, cpu, cpu.esp - 4, model, std::int32_t(player));
     if (!colour || cpu.terminate)
         return std::nullopt;
-    cpu.eax = reg32(*colour);
-    return cpu.eax;
+    return reg32(*colour);
 }
 
 // The game's constants as the x87 loads them.
@@ -340,74 +318,81 @@ private:
     const reg32 base;
 };
 
-/* A call of one of this file's typed functions where the game's code calls: the return address's slot. */
+/* A call of one of this file's typed functions where the game's code calls: the return address's slot,
+ * and the slots of the `words` it pushes before it. */
 class CallSlot
 {
 public:
-    explicit CallSlot(CPU& cpu) : cpu(cpu) { cpu.esp -= 4; }
-    ~CallSlot() { cpu.esp += 4; }
+    explicit CallSlot(CPU& cpu, reg32 words = 0) : cpu(cpu), bytes(4 + 4 * words) { cpu.esp -= bytes; }
+    ~CallSlot() { cpu.esp += bytes; }
 
 private:
     CPU& cpu;
+    const reg32 bytes;
 };
 
-/* The registers a function's prologue pushes and its epilogue pops, as they were. */
-class Saved
+/* An adapter's run of its core: every register but eax as the caller had it after it (the game's
+ * code pops what it pushed; its other registers are its arguments, which no caller reads), eax what
+ * the core gives -- a core that gives nothing, or answers only whether the game went on (a bool),
+ * leaves eax as it is -- and the return address and `popped` bytes of the caller's words popped.
+ * False when the game stopped. */
+template <typename T>
+struct IsOptional : std::false_type
 {
-public:
-    explicit Saved(CPU& cpu) : cpu(cpu), ebx(cpu.ebx), ecx(cpu.ecx), edx(cpu.edx), esi(cpu.esi), edi(cpu.edi), ebp(cpu.ebp) {}
-    void restore() const
+};
+
+template <typename T>
+struct IsOptional<std::optional<T>> : std::true_type
+{
+};
+
+template <typename Core>
+bool adapts(CPU& cpu, Core&& core, reg32 popped = 0)
+{
+    using Result = std::decay_t<decltype(core())>;
+    std::optional<reg32> left;
     {
-        cpu.ebx = ebx;
-        cpu.ecx = ecx;
-        cpu.edx = edx;
-        cpu.esi = esi;
-        cpu.edi = edi;
-        cpu.ebp = ebp;
+        const guest::KeptRegisters kept(cpu);
+        if constexpr (std::is_void_v<Result>)
+            core();
+        else if constexpr (std::is_same_v<Result, bool>)
+        {
+            if (!core())
+                return false;
+        }
+        else if constexpr (IsOptional<Result>::value)
+        {
+            const Result result = core();
+            if (!result)
+                return false;
+            left = reg32(*result);
+        }
+        else
+            left = reg32(core());
     }
-
-private:
-    CPU& cpu;
-    const reg32 ebx, ecx, edx, esi, edi, ebp;
-};
-
-/* A call by address, its arguments in eax, edx, ebx and ecx as the code hands them: eax as the callee
- * leaves it, nullopt when the game stopped. */
-std::optional<reg32> call(App* app, CPU& cpu, reg32 target, reg32 eax)
-{
-    cpu.eax = eax;
-    if (!byAddress(app, cpu, target))
-        return std::nullopt;
-    return cpu.eax;
+    if (left)
+        cpu.eax = *left;
+    cpu.esp += 4 + popped;
+    return true;
 }
 
-std::optional<reg32> call(App* app, CPU& cpu, reg32 target, reg32 eax, reg32 edx)
+/* A call by address with `pushed` on the guest's stack (pushed in that order) and `registers` into
+ * eax, edx, ebx and ecx in turn (guest::watcom), every register but eax kept and esp back as it was
+ * after: eax as the callee leaves it, nullopt when the game stopped. */
+std::optional<reg32> callPushing(App* app, CPU& cpu, reg32 target, std::initializer_list<reg32> registers,
+                                 std::initializer_list<reg32> pushed)
 {
-    cpu.edx = edx;
-    return call(app, cpu, target, eax);
-}
-
-std::optional<reg32> call(App* app, CPU& cpu, reg32 target, reg32 eax, reg32 edx, reg32 ebx)
-{
-    cpu.ebx = ebx;
-    return call(app, cpu, target, eax, edx);
+    const guest::KeptRegisters kept(cpu);
+    for (const reg32 word : pushed)
+    {
+        cpu.esp -= 4;
+        put(app, cpu.esp, word);
+    }
+    return guest::watcomEax(app, cpu, target, registers);
 }
 
 /* The car's pursuit class times 3, as the code leaves it in eax (it scales it by 8 for the record). */
 reg32 classTimesThree(App* app, reg32 car) { return at(app, at(app, car + kCarChoice) + kChoiceClass) * 3; }
-
-/* A call by address with `pushed` on the guest's stack (pushed in that order), esp back as it was
- * after: eax as the callee leaves it, nullopt when the game stopped. */
-std::optional<reg32> callPushing(App* app, CPU& cpu, reg32 target, std::initializer_list<reg32> pushed)
-{
-    const reg32 esp = cpu.esp;
-    for (const reg32 word : pushed)
-        push(app, cpu, word);
-    if (!byAddress(app, cpu, target))
-        return std::nullopt;
-    cpu.esp = esp;
-    return cpu.eax;
-}
 
 }  // namespace
 
@@ -484,14 +469,7 @@ void trafficStep(App* app, CPU& cpu);
 // The typed functions called before they are written.
 reg32 followChasedCar(App* app, reg32 car);
 
-/* What resetOnTrackOf leaves in eax and edx. */
-struct ResetLeft
-{
-    reg32 eax;
-    reg32 edx;
-};
-
-std::optional<ResetLeft> resetOnTrackOf(App* app, CPU& cpu, reg32 car, reg32 record);
+std::optional<reg32> resetOnTrackOf(App* app, CPU& cpu, reg32 car, reg32 record);
 
 /* 0x408ad0, 0x408ae0, 0x40c140, 0x40c150: the pursuit's hooks at the race's
  * start and end (the race's set-up 0x4c45f0 and its end 0x4c4740 call them),
@@ -534,8 +512,7 @@ void stopAtRoadside(App* app, reg32 car)
 /* 0x408b30: stopAtRoadside for the car eax; every register kept. */
 void roadsideTarget(App* app, CPU& cpu)
 {
-    stopAtRoadside(app, cpu.eax);
-    cpu.esp += 4;
+    adapts(cpu, [&, car = cpu.eax] { stopAtRoadside(app, car); });
 }
 
 /* 150 frames more to the lanes' time of where the car is: the outer lanes' where it is in one of its
@@ -553,11 +530,11 @@ void addLaneTime(App* app, reg32 car)
  * car is in the left outer lane, else the right outer lane (what it was compared with). */
 void countLaneTime(App* app, CPU& cpu)
 {
-    const reg32 car = cpu.eax;
-    addLaneTime(app, car);
-    const reg32 n = nodeRecord(app, at(app, car + kCarNode));
-    cpu.eax = outerLeft(app, n) == i32(at(app, car + kCarLane)) ? n : reg32(outerRight(app, n));
-    cpu.esp += 4;
+    adapts(cpu, [&, car = cpu.eax] {
+        addLaneTime(app, car);
+        const reg32 n = nodeRecord(app, at(app, car + kCarNode));
+        return outerLeft(app, n) == i32(at(app, car + kCarLane)) ? n : reg32(outerRight(app, n));
+    });
 }
 
 // A car's side across the road to the road's units (a lane's width 2^15): a double.
@@ -612,11 +589,12 @@ i32 stopForCops(App* app, reg32 car)
  * runs backwards, as the code leaves it. */
 void pulledOverTarget(App* app, CPU& cpu)
 {
-    const reg32 car = cpu.eax;
-    cpu.eax = reg32(stopForCops(app, car));
-    if (gameSettings(app).backwards != 0)
-        cpu.ah = byte(app, car + kCarTargetSign);
-    cpu.esp += 4;
+    adapts(cpu, [&, car = cpu.eax] {
+        const reg32 place = reg32(stopForCops(app, car));
+        if (gameSettings(app).backwards == 0)
+            return place;
+        return (place & 0xffff00ffu) | reg32(byte(app, car + kCarTargetSign)) << 8;
+    });
 }
 
 // The class factor's: by the chase's kind 0 and 1 (floats), every second and fourth quarter of 512
@@ -674,15 +652,15 @@ std::optional<float> classFactor(App* app, CPU& cpu, reg32 car)
  * else the factor's bits, as the code leaves it. */
 void classSpeedFactor(App* app, CPU& cpu)
 {
-    const reg32 car = cpu.eax;
-    const Saved saved(cpu);
-    const std::optional<float> factor = classFactor(app, cpu, car);
-    if (!factor)
-        return;
-    saved.restore();
-    cpu.eax = knockoutAlone(app) ? car : floatBits(*factor);
-    cpu.fpu.push(Float(*factor));
-    cpu.esp += 4;
+    std::optional<float> factor;
+    const auto left = [&, car = cpu.eax]() -> std::optional<reg32> {
+        factor = classFactor(app, cpu, car);
+        if (!factor)
+            return std::nullopt;
+        return knockoutAlone(app) ? car : floatBits(*factor);
+    };
+    if (adapts(cpu, left))
+        cpu.fpu.push(Float(*factor));
 }
 
 /* 0x408f00 and 0x409090: a factor of 1 onto the x87's stack (fld1) -- the targetSpeed's factors the
@@ -729,7 +707,7 @@ std::optional<FactorLeft> radarFactorOf(App* app, CPU& cpu, reg32 car)
     if (half(app, 0x7a22da) != 0 && s(gameSettings(app).humanCount) <= s(at(app, car + kCarIndex)))
         return FactorLeft{1.0f, car};
     const std::optional<reg32> word =
-        leftInEax(cpu, feCore<0x4c8040, frontend::neta::playerControls>(app, cpu, record, at(app, car + kCarIndex)));
+        feCore<0x4c8040, frontend::neta::playerControls>(app, cpu, record, at(app, car + kCarIndex));
     if (!word)
         return std::nullopt;
     if (*word == 0)
@@ -741,14 +719,14 @@ std::optional<FactorLeft> radarFactorOf(App* app, CPU& cpu, reg32 car)
     {
         if (at(app, record + kRadarKind) != 1)
             return FactorLeft{1.0f, behindMost};
-        std::optional<ResetLeft> reset;
+        std::optional<reg32> reset;
         {
             const CallSlot slot(cpu);
             reset = resetOnTrackOf(app, cpu, car, record);
         }
         if (!reset)
             return std::nullopt;
-        return FactorLeft{1.0f, reset->eax};
+        return FactorLeft{1.0f, *reset};
     }
     if (at(app, car + kCarControl) == 3)
         return FactorLeft{1.0f, behindMost};
@@ -777,14 +755,15 @@ std::optional<FactorLeft> radarFactorOf(App* app, CPU& cpu, reg32 car)
 /* 0x408f10: radarFactorOf the car eax onto the x87's stack, eax as the code leaves it. */
 void radarFactor(App* app, CPU& cpu)
 {
-    const Saved saved(cpu);
-    const std::optional<FactorLeft> factor = radarFactorOf(app, cpu, cpu.eax);
-    if (!factor)
-        return;
-    saved.restore();
-    cpu.eax = factor->eax;
-    cpu.fpu.push(Float(factor->factor));
-    cpu.esp += 4;
+    std::optional<FactorLeft> factor;
+    const auto left = [&, car = cpu.eax]() -> std::optional<reg32> {
+        factor = radarFactorOf(app, cpu, car);
+        if (!factor)
+            return std::nullopt;
+        return factor->eax;
+    };
+    if (adapts(cpu, left))
+        cpu.fpu.push(Float(factor->factor));
 }
 
 // The race's leader and its kind.
@@ -839,11 +818,12 @@ float leaderFactorOf(App* app, reg32 car)
  * leader, else the car, as the code leaves it. */
 void leaderFactor(App* app, CPU& cpu)
 {
-    const reg32 car = cpu.eax;
-    const float factor = leaderFactorOf(app, car);
-    cpu.eax = at(app, kLeader) != 0 ? floatBits(factor) : car;
+    float factor = 0;
+    adapts(cpu, [&, car = cpu.eax] {
+        factor = leaderFactorOf(app, car);
+        return at(app, kLeader) != 0 ? floatBits(factor) : car;
+    });
     cpu.fpu.push(Float(factor));
-    cpu.esp += 4;
 }
 
 /* The car's target speed: its node's (0x40ed40), signed as it goes (the track backwards, the car
@@ -866,13 +846,7 @@ std::optional<reg32> nodeTarget(App* app, CPU& cpu, reg32 car)
 /* 0x409290: nodeTarget for the car eax, eax as the code leaves it. */
 void nodeTargetSpeed(App* app, CPU& cpu)
 {
-    const Saved saved(cpu);
-    const std::optional<reg32> left = nodeTarget(app, cpu, cpu.eax);
-    if (!left)
-        return;
-    saved.restore();
-    cpu.eax = *left;
-    cpu.esp += 4;
+    adapts(cpu, [&, car = cpu.eax] { return nodeTarget(app, cpu, car); });
 }
 
 /* The car no longer marked chased (+0x620), but where one of the cops [0x5efa88..], [0x5efd88] of them,
@@ -894,8 +868,7 @@ void releaseChase(App* app, reg32 car)
 /* 0x4092f0: releaseChase of the car eax. */
 void markChased(App* app, CPU& cpu)
 {
-    releaseChase(app, cpu.eax);
-    cpu.esp += 4;
+    adapts(cpu, [&, car = cpu.eax] { releaseChase(app, car); });
 }
 
 // The computer's speed past which the pace eases it, its offset (doubles); the cops' chase speed
@@ -971,13 +944,7 @@ std::optional<reg32> targetSpeedOf(App* app, CPU& cpu, reg32 car)
 /* 0x409330: targetSpeedOf the car eax, eax as the code leaves it. */
 void targetSpeed(App* app, CPU& cpu)
 {
-    const Saved saved(cpu);
-    const std::optional<reg32> left = targetSpeedOf(app, cpu, cpu.eax);
-    if (!left)
-        return;
-    saved.restore();
-    cpu.eax = *left;
-    cpu.esp += 4;
+    adapts(cpu, [&, car = cpu.eax] { return targetSpeedOf(app, cpu, car); });
 }
 
 /* targetSpeedOf, from a frame of its own (push ebp, mov ebp, esp). */
@@ -991,13 +958,7 @@ std::optional<reg32> targetSpeedFramed(App* app, CPU& cpu, reg32 car)
 /* 0x4094b0: targetSpeedFramed for the car eax, eax as the code leaves it. */
 void targetSpeedOnly(App* app, CPU& cpu)
 {
-    const Saved saved(cpu);
-    const std::optional<reg32> left = targetSpeedFramed(app, cpu, cpu.eax);
-    if (!left)
-        return;
-    saved.restore();
-    cpu.eax = *left;
-    cpu.esp += 4;
+    adapts(cpu, [&, car = cpu.eax] { return targetSpeedFramed(app, cpu, car); });
 }
 
 // The share of the gap a chase of level 2 eases back by (a double).
@@ -1041,8 +1002,7 @@ reg32 matchChased(App* app, reg32 car)
 /* 0x4094d0: matchChased for the car eax, eax as the code leaves it. */
 void matchChasedSpeed(App* app, CPU& cpu)
 {
-    cpu.eax = matchChased(app, cpu.eax);
-    cpu.esp += 4;
+    adapts(cpu, [&, car = cpu.eax] { return matchChased(app, car); });
 }
 /* For a car of a class keener than 2 with no cop near it (0x40f050): 15 more to each chase's score
  * [0x56ef20] whose car is a cop's, on, and 1 to 9 behind -- but where the chase's level [0x56ec80] is
@@ -1052,7 +1012,7 @@ std::optional<reg32> scoreCloseCopsOf(App* app, CPU& cpu, reg32 car)
     const GuestFrame frame(cpu, 0xc, 0);
     if (keenness(app, car) <= 2)
         return classTimesThree(app, car);
-    const std::optional<reg32> near = call(app, cpu, kCopNear, car, 0);
+    const std::optional<reg32> near = guest::watcomEax(app, cpu, kCopNear, {car, 0});
     if (!near)
         return std::nullopt;
     if (*near != 0)
@@ -1075,13 +1035,7 @@ std::optional<reg32> scoreCloseCopsOf(App* app, CPU& cpu, reg32 car)
 /* 0x4095d0: scoreCloseCopsOf the car eax, eax as the code leaves it. */
 void scoreCloseCops(App* app, CPU& cpu)
 {
-    const Saved saved(cpu);
-    const std::optional<reg32> left = scoreCloseCopsOf(app, cpu, cpu.eax);
-    if (!left)
-        return;
-    saved.restore();
-    cpu.eax = *left;
-    cpu.esp += 4;
+    adapts(cpu, [&, car = cpu.eax] { return scoreCloseCopsOf(app, cpu, car); });
 }
 
 // A frame's step of the lanes' times that have begun.
@@ -1098,9 +1052,10 @@ void growLaneTimesBy(App* app)
 /* 0x409660: growLaneTimesBy; eax left 22, as the code leaves it. */
 void growLaneTimes(App* app, CPU& cpu)
 {
-    growLaneTimesBy(app);
-    cpu.eax = kLaneTimeStep;
-    cpu.esp += 4;
+    adapts(cpu, [&] {
+        growLaneTimesBy(app);
+        return kLaneTimeStep;
+    });
 }
 
 /* The score of the lane the car will take, 4 nodes on (0x40e160, 0x40e0c0), against its own [+0x638]:
@@ -1113,7 +1068,7 @@ std::optional<reg32> scoreLaneOf(App* app, CPU& cpu, reg32 car)
     const GuestFrame frame(cpu, 0x18, 0);
     if ((byte(app, car + kCarPursuitFlagsHigh) & kFlagAgainst) != 0)
         return car;
-    const std::optional<reg32> near = call(app, cpu, kCopNear, car, 0);
+    const std::optional<reg32> near = guest::watcomEax(app, cpu, kCopNear, {car, 0});
     if (!near)
         return std::nullopt;
     if (*near != 0)
@@ -1156,13 +1111,7 @@ std::optional<reg32> scoreLaneOf(App* app, CPU& cpu, reg32 car)
 /* 0x4096b0: scoreLaneOf the car eax, eax as the code leaves it. */
 void scoreLane(App* app, CPU& cpu)
 {
-    const Saved saved(cpu);
-    const std::optional<reg32> left = scoreLaneOf(app, cpu, cpu.eax);
-    if (!left)
-        return;
-    saved.restore();
-    cpu.eax = *left;
-    cpu.esp += 4;
+    adapts(cpu, [&, car = cpu.eax] { return scoreLaneOf(app, cpu, car); });
 }
 
 /* The chases' scores where no cop is near the car (0x40f050): 5 more to [0x56eefc] for each chase
@@ -1172,7 +1121,7 @@ void scoreLane(App* app, CPU& cpu)
 std::optional<reg32> scoreChasesOf(App* app, CPU& cpu, reg32 car)
 {
     const GuestFrame frame(cpu, 0x10, 0);
-    const std::optional<reg32> near = call(app, cpu, kCopNear, car, 0);
+    const std::optional<reg32> near = guest::watcomEax(app, cpu, kCopNear, {car, 0});
     if (!near)
         return std::nullopt;
     if (*near != 0)
@@ -1203,13 +1152,7 @@ std::optional<reg32> scoreChasesOf(App* app, CPU& cpu, reg32 car)
 /* 0x4097c0: scoreChasesOf the car eax, eax as the code leaves it. */
 void scoreChases(App* app, CPU& cpu)
 {
-    const Saved saved(cpu);
-    const std::optional<reg32> left = scoreChasesOf(app, cpu, cpu.eax);
-    if (!left)
-        return;
-    saved.restore();
-    cpu.eax = *left;
-    cpu.esp += 4;
+    adapts(cpu, [&, car = cpu.eax] { return scoreChasesOf(app, cpu, car); });
 }
 
 // The debug text's: its row's kind (0x4b) and column (0xf), its chase count's format ("V%d") and a blank.
@@ -1217,8 +1160,8 @@ constexpr reg32 kDebugKind = 0x4b, kDebugColumn = 0xf, kChaseCountText = 0x53642
 
 /* The car on the radio (+0x621 | 0x80) where it is of a keen class, has been chased (+0x6e4), is not
  * out (+0x7d4) and one of the chases of stage 0 to 4 is its cop's; then the debug text of its chase's
- * count ("V%d", or blank) at its index's row (0x42d520).  Gives what the call leaves in eax; nullopt
- * when the game stopped. */
+ * count ("V%d", or blank) at its index's row (0x42d520, which keeps every register).  Gives what the
+ * code leaves in eax, the row; nullopt when the game stopped. */
 std::optional<reg32> radioChaseCountOf(App* app, CPU& cpu, reg32 car)
 {
     const GuestFrame frame(cpu, 0x14, 0);
@@ -1240,23 +1183,20 @@ std::optional<reg32> radioChaseCountOf(App* app, CPU& cpu, reg32 car)
         }
     }
     const reg32 row = at(app, car + kCarIndex) * 6;
-    cpu.eax = row;
-    if ((byte(app, car + kCarPursuitFlagsHigh) & kFlagOnRadio) != 0)
-        return callPushing(app, cpu, kDebugText,
-                           {at(app, car + kCarChaseCount), kChaseCountText, kDebugColumn, row, 1, kDebugKind});
-    return callPushing(app, cpu, kDebugText, {kBlankText, kDebugColumn, row, 1, kDebugKind});
+    const bool counted = (byte(app, car + kCarPursuitFlagsHigh) & kFlagOnRadio) != 0;
+    const std::optional<reg32> shown =
+        counted ? callPushing(app, cpu, kDebugText, {},
+                              {at(app, car + kCarChaseCount), kChaseCountText, kDebugColumn, row, 1, kDebugKind})
+                : callPushing(app, cpu, kDebugText, {}, {kBlankText, kDebugColumn, row, 1, kDebugKind});
+    if (!shown)
+        return std::nullopt;
+    return row;
 }
 
-/* 0x409840: radioChaseCountOf the car eax, eax as the call leaves it. */
+/* 0x409840: radioChaseCountOf the car eax, eax as the code leaves it. */
 void radioChaseCount(App* app, CPU& cpu)
 {
-    const Saved saved(cpu);
-    const std::optional<reg32> left = radioChaseCountOf(app, cpu, cpu.eax);
-    if (!left)
-        return;
-    saved.restore();
-    cpu.eax = *left;
-    cpu.esp += 4;
+    adapts(cpu, [&, car = cpu.eax] { return radioChaseCountOf(app, cpu, car); });
 }
 
 // scoreSpeeds' scales: the speed's two and its offset; the scores' by the speed past the cop's, by the
@@ -1307,15 +1247,13 @@ reg32 scoreSpeedsOf(App* app, reg32 car)
 /* 0x409920: scoreSpeedsOf the car eax, eax as the code leaves it. */
 void scoreSpeeds(App* app, CPU& cpu)
 {
-    cpu.eax = scoreSpeedsOf(app, cpu.eax);
-    cpu.esp += 4;
+    adapts(cpu, [&, car = cpu.eax] { return scoreSpeedsOf(app, car); });
 }
 
 /* 0x409a80: 1 in eax -- the check of a cop's state 3, always done. */
 void alwaysOne(App*, CPU& cpu)
 {
-    cpu.eax = 1;
-    cpu.esp += 4;
+    adapts(cpu, [] { return 1; });
 }
 
 // How far behind a car a cop takes it over: 25 nodes, 12 in the rain or snow, halved at night but for a
@@ -1344,7 +1282,7 @@ std::optional<reg32> takeOverCarsOf(App* app, CPU& cpu, reg32 cop)
         const reg32 back = guest::direct<0x40e160, aiplan::nodeAhead>(app, cpu, car, reg32(-behind));
         if (cpu.terminate)
             return std::nullopt;
-        const std::optional<reg32> reach = call(app, cpu, kInReach, at(app, cop + kCarNode), back, kTakeOverReach);
+        const std::optional<reg32> reach = guest::watcomEax(app, cpu, kInReach, {at(app, cop + kCarNode), back, kTakeOverReach});
         if (!reach)
             return std::nullopt;
         left = *reach;
@@ -1362,13 +1300,7 @@ std::optional<reg32> takeOverCarsOf(App* app, CPU& cpu, reg32 cop)
 /* 0x409a90: takeOverCarsOf the cop eax, eax as the code leaves it. */
 void takeOverCars(App* app, CPU& cpu)
 {
-    const Saved saved(cpu);
-    const std::optional<reg32> left = takeOverCarsOf(app, cpu, cpu.eax);
-    if (!left)
-        return;
-    saved.restore();
-    cpu.eax = *left;
-    cpu.esp += 4;
+    adapts(cpu, [&, cop = cpu.eax] { return takeOverCarsOf(app, cpu, cop); });
 }
 
 /* The cop back to state 1, its record's +0x1c cleared, and the car reset (0x429100) where it may be
@@ -1387,13 +1319,7 @@ std::optional<reg32> startResetOf(App* app, CPU& cpu, reg32 cop)
 /* 0x409b40: startResetOf the cop eax, eax as the code leaves it. */
 void startReset(App* app, CPU& cpu)
 {
-    const Saved saved(cpu);
-    const std::optional<reg32> left = startResetOf(app, cpu, cpu.eax);
-    if (!left)
-        return;
-    saved.restore();
-    cpu.eax = *left;
-    cpu.esp += 4;
+    adapts(cpu, [&, cop = cpu.eax] { return startResetOf(app, cpu, cop); });
 }
 
 // The race's frames before a car stuck may be reset, and how long it is let stay so.
@@ -1425,13 +1351,7 @@ std::optional<reg32> checkProgressOf(App* app, CPU& cpu, reg32 car)
 /* 0x409b70: checkProgressOf the car eax, eax as the code leaves it. */
 void checkProgress(App* app, CPU& cpu)
 {
-    const Saved saved(cpu);
-    const std::optional<reg32> left = checkProgressOf(app, cpu, cpu.eax);
-    if (!left)
-        return;
-    saved.restore();
-    cpu.eax = *left;
-    cpu.esp += 4;
+    adapts(cpu, [&, car = cpu.eax] { return checkProgressOf(app, cpu, car); });
 }
 // A cop's states (+0x6e0): chasing, taking a car over, at its node's speed, stopped, pulling a car
 // over at the roadside, halted, waiting.
@@ -1468,7 +1388,7 @@ std::optional<reg32> copStepOf(App* app, CPU& cpu, reg32 cop)
     // Another file's, by address, the cop in eax: false where the game stopped.
     reg32 answer = 0;
     const auto other = [&](reg32 target) {
-        const std::optional<reg32> left = call(app, cpu, target, cop);
+        const std::optional<reg32> left = guest::watcomEax(app, cpu, target, {cop});
         answer = left.value_or(0);
         return left.has_value();
     };
@@ -1627,13 +1547,7 @@ std::optional<reg32> copStepOf(App* app, CPU& cpu, reg32 cop)
 /* 0x409c00: copStepOf the cop eax, eax as the code leaves it. */
 void copStep(App* app, CPU& cpu)
 {
-    const Saved saved(cpu);
-    const std::optional<reg32> left = copStepOf(app, cpu, cpu.eax);
-    if (!left)
-        return;
-    saved.restore();
-    cpu.eax = *left;
-    cpu.esp += 4;
+    adapts(cpu, [&, cop = cpu.eax] { return copStepOf(app, cpu, cop); });
 }
 
 namespace
@@ -1714,13 +1628,13 @@ std::optional<reg32> loadRacerBanksOf(App* app, CPU& cpu, reg32 handedOn)
         if (*police != 0)
             continue;
         copyGuestString(app, path, kSpeechFolder);
-        if (!call(app, cpu, kEndPath, path))
+        if (!guest::watcomEax(app, cpu, kEndPath, {path}))
             return std::nullopt;
         const std::optional<reg32> folder = guest::direct<0x4392b0, load::folderOf>(app, cpu, model);
         if (!folder)
             return std::nullopt;
         appendGuestString(app, path, *folder);
-        if (!call(app, cpu, kEndPath, path))
+        if (!guest::watcomEax(app, cpu, kEndPath, {path}))
             return std::nullopt;
         appendGuestString(app, path, kBankName);
         appendGuestString(app, path, at(app, gameSettings(app).language * 4 + kLanguageLetters));
@@ -1728,7 +1642,7 @@ std::optional<reg32> loadRacerBanksOf(App* app, CPU& cpu, reg32 handedOn)
         const reg32 playMode = gameSettings(app).playMode;
         if ((index == 0 || index == 1) && playMode == 1)
         {
-            const std::optional<reg32> own = call(app, cpu, kCarColour, model);
+            const std::optional<reg32> own = guest::watcomEax(app, cpu, kCarColour, {model});
             const std::optional<reg32> custom = own ? chosenColour(app, cpu, model, index) : std::nullopt;
             if (!custom)
                 return std::nullopt;
@@ -1742,7 +1656,7 @@ std::optional<reg32> loadRacerBanksOf(App* app, CPU& cpu, reg32 handedOn)
         }
         else if (gameSettings(app).localPlayer == index)
         {
-            const std::optional<reg32> own = call(app, cpu, kCarColour, model);
+            const std::optional<reg32> own = guest::watcomEax(app, cpu, kCarColour, {model});
             const std::optional<reg32> custom = own ? chosenColour(app, cpu, model, 0) : std::nullopt;
             if (!custom)
                 return std::nullopt;
@@ -1758,18 +1672,18 @@ std::optional<reg32> loadRacerBanksOf(App* app, CPU& cpu, reg32 handedOn)
         {
             const std::optional<reg32> name = guest::direct<0x439250, load::nameOf>(app, cpu, model);
             const std::optional<reg32> pace =
-                name ? std::optional<reg32>(cpu.eax = guest::direct<0x4e0820, watcom::clib::strstr>(app, cpu, *name, kPaceName))
+                name ? std::optional<reg32>(guest::direct<0x4e0820, watcom::clib::strstr>(app, cpu, *name, kPaceName))
                      : std::nullopt;
             if (!pace)
                 return std::nullopt;
             if (*pace != 0)
                 handed = kCustomColour;
         }
-        if (!call(app, cpu, kVoiceBankLoad, path, handed, bank))
+        if (!guest::watcomEax(app, cpu, kVoiceBankLoad, {path, handed, bank}))
             return std::nullopt;
         put(app, i * 4 + kSpeechBanks, bank);
         bank += 1;
-        if (bank == kTooManyBanks && !callPushing(app, cpu, kMonoPrint, {kTooManyText}))
+        if (bank == kTooManyBanks && !callPushing(app, cpu, kMonoPrint, {}, {kTooManyText}))
             return std::nullopt;
     }
 }
@@ -1777,13 +1691,7 @@ std::optional<reg32> loadRacerBanksOf(App* app, CPU& cpu, reg32 handedOn)
 /* 0x40a010: loadRacerBanksOf; eax as the code leaves it. */
 void loadRacerBanks(App* app, CPU& cpu)
 {
-    const Saved saved(cpu);
-    const std::optional<reg32> left = loadRacerBanksOf(app, cpu, cpu.eax);
-    if (!left)
-        return;
-    saved.restore();
-    cpu.eax = *left;
-    cpu.esp += 4;
+    adapts(cpu, [&, handedOn = cpu.eax] { return loadRacerBanksOf(app, cpu, handedOn); });
 }
 
 /* The radio's frames counted: since anyone spoke [0x5524c8], and each of the 8 voices' [0x56ee68] and
@@ -1803,21 +1711,26 @@ void tickRadioFrames(App* app)
 /* 0x40a330: tickRadioFrames; every register kept. */
 void countRadioFrames(App* app, CPU& cpu)
 {
-    tickRadioFrames(app);
-    cpu.esp += 4;
+    adapts(cpu, [&] { tickRadioFrames(app); });
 }
 
 namespace
 {
 
-/* The game's random number (0x4e0d88), edx 0 before it, and the remainder of edx:eax after it by `by`,
- * as div leaves it; nullopt when the game stopped. */
+/* The game's random number (0x4e0d88); nullopt when the game stopped. */
+std::optional<reg32> randomNumber(App* app, CPU& cpu)
+{
+    return guest::watcomEax(app, cpu, kRandom, {});
+}
+
+/* The game's random number's remainder by `by`: edx 0 before it, which it keeps, and the remainder of
+ * edx:eax after it as div leaves it; nullopt when the game stopped. */
 std::optional<reg32> randomModulo(App* app, CPU& cpu, reg32 by)
 {
-    cpu.edx = 0;
-    if (!byAddress(app, cpu, kRandom))
+    const std::optional<reg32> r = randomNumber(app, cpu);
+    if (!r)
         return std::nullopt;
-    return reg32((std::uint64_t(cpu.edx) << 32 | cpu.eax) % by);
+    return *r % by;
 }
 
 // A line of speech's record as 0x4c85a0 reads it, in the frame: the phrase, its volume, its pan, its
@@ -1859,7 +1772,8 @@ VoiceOfEight voiceOfCar(App* app, reg32 car)
 
 }  // namespace
 
-/* What a burst of the radio's noise leaves in eax and edx. */
+/* What a burst of the radio's noise leaves in eax, and the phrase it said (in edx, which radioStopped
+ * leaves). */
 struct NoiseLeft
 {
     reg32 eax;
@@ -1887,25 +1801,22 @@ std::optional<NoiseLeft> radioNoiseOf(App* app, CPU& cpu, reg32 handedOn, reg32 
     put(app, line + kLineMark, kMarkOther);
     put(app, line + kLineVoice, at(app, kNoiseVoice));
     put(app, line + kLinePhrase, phrase);
-    const std::optional<reg32> said = call(app, cpu, kSpeechLine, line);
+    const std::optional<reg32> said = guest::watcomEax(app, cpu, kSpeechLine, {line});
     if (!said)
         return std::nullopt;
     return NoiseLeft{*said, phrase};
 }
 
-/* 0x40a380: radioNoiseOf for the car ebx, eax handed on, the side edx; eax and edx as the code leaves
- * them. */
+/* 0x40a380: radioNoiseOf for the car ebx, eax handed on, the side edx; eax as the code leaves it. */
 void radioNoise(App* app, CPU& cpu)
 {
-    const reg32 ebx = cpu.ebx, ecx = cpu.ecx;
-    const std::optional<NoiseLeft> left = radioNoiseOf(app, cpu, cpu.eax, cpu.edx, cpu.ebx);
-    if (!left)
-        return;
-    cpu.ebx = ebx;
-    cpu.ecx = ecx;
-    cpu.eax = left->eax;
-    cpu.edx = left->edx;
-    cpu.esp += 4;
+    const auto left = [&, handedOn = cpu.eax, side = cpu.edx, car = cpu.ebx]() -> std::optional<reg32> {
+        const std::optional<NoiseLeft> noise = radioNoiseOf(app, cpu, handedOn, side, car);
+        if (!noise)
+            return std::nullopt;
+        return noise->eax;
+    };
+    adapts(cpu, left);
 }
 
 /* The phrase said by the car (0x4c85a0), `handedOn` handed on -- by the dispatcher (volume 110,
@@ -1941,18 +1852,15 @@ std::optional<reg32> sayPhraseOf(App* app, CPU& cpu, reg32 handedOn, bool byVoic
     put(app, line + kLineHanded, handedOn);
     put(app, line + kLineMark, phrase == kDispatcherPhrase ? (byVoice ? kMarkVoice : kMarkDispatcher) : kMarkOther);
     put(app, line + kLineCar, car);
-    return call(app, cpu, kSpeechLine, line);
+    return guest::watcomEax(app, cpu, kSpeechLine, {line});
 }
 
 /* 0x40a410: sayPhraseOf the phrase ebx by the car ecx, eax handed on, by its voice where edx; eax as the
  * code leaves it. */
 void sayPhrase(App* app, CPU& cpu)
 {
-    const std::optional<reg32> left = sayPhraseOf(app, cpu, cpu.eax, cpu.edx != 0, cpu.ebx, cpu.ecx, cpu.esi, cpu.edi);
-    if (!left)
-        return;
-    cpu.eax = *left;
-    cpu.esp += 4;
+    adapts(cpu, [&, handedOn = cpu.eax, byVoice = cpu.edx != 0, phrase = cpu.ebx, car = cpu.ecx, side = cpu.esi,
+                 voice = cpu.edi] { return sayPhraseOf(app, cpu, handedOn, byVoice, phrase, car, side, voice); });
 }
 
 /* The phrase of the car's own description said (0x4c85a0) with the speech bank's voice [0x571124 + 12
@@ -1989,20 +1897,20 @@ std::optional<reg32> sayCarPhraseOf(App* app, CPU& cpu, reg32 handedOn, bool byV
     put(app, line + kLineHanded, handedOn);
     put(app, line + kLineMark, phrase == kDispatcherPhrase ? (byVoice ? kMarkVoice : kMarkDispatcher) : kMarkOther);
     put(app, line + kLineCar, car);
-    return call(app, cpu, kSpeechLine, line);
+    return guest::watcomEax(app, cpu, kSpeechLine, {line});
 }
 
 /* 0x40a580: sayCarPhraseOf the phrase ebx by the car ecx, eax handed on, by its voice where edx, the
  * bank on the stack (ret 4); eax as the code leaves it. */
 void sayCarPhrase(App* app, CPU& cpu)
 {
-    const reg32 bank = at(app, cpu.esp + 4);
-    const std::optional<reg32> left =
-        sayCarPhraseOf(app, cpu, cpu.eax, cpu.edx != 0, cpu.ebx, cpu.ecx, bank, cpu.esi, cpu.edi);
-    if (!left)
-        return;
-    cpu.eax = *left;
-    cpu.esp += 8;
+    adapts(
+        cpu,
+        [&, handedOn = cpu.eax, byVoice = cpu.edx != 0, phrase = cpu.ebx, car = cpu.ecx, bank = at(app, cpu.esp + 4),
+         keptPhrase = cpu.esi, keptSide = cpu.edi] {
+            return sayCarPhraseOf(app, cpu, handedOn, byVoice, phrase, car, bank, keptPhrase, keptSide);
+        },
+        4);
 }
 
 // The radio's phrases' names: 8 bytes each, 7 letters at most.
@@ -2013,20 +1921,13 @@ constexpr reg32 kPhraseNames = 0x56ec90, kPhraseNameLength = 7;
 std::optional<reg32> namePhraseAs(App* app, CPU& cpu, reg32 phrase, reg32 text)
 {
     const GuestFrame frame(cpu, 8, 0);
-    return call(app, cpu, kStrncpy, phrase * 8 + kPhraseNames, text, kPhraseNameLength);
+    return guest::watcomEax(app, cpu, kStrncpy, {phrase * 8 + kPhraseNames, text, kPhraseNameLength});
 }
 
-/* 0x40a6d0: namePhraseAs the phrase eax from the text edx; eax as strncpy leaves it, edx too (not
- * compared: the check's strncpy leaves it otherwise). */
+/* 0x40a6d0: namePhraseAs the phrase eax from the text edx; eax as strncpy leaves it. */
 void namePhrase(App* app, CPU& cpu)
 {
-    const reg32 ebx = cpu.ebx;
-    const std::optional<reg32> left = namePhraseAs(app, cpu, cpu.eax, cpu.edx);
-    if (!left)
-        return;
-    cpu.ebx = ebx;
-    cpu.eax = *left;
-    cpu.esp += 4;
+    adapts(cpu, [&, phrase = cpu.eax, text = cpu.edx] { return namePhraseAs(app, cpu, phrase, text); });
 }
 
 /* The radio's phrases named at the race's start (ALLU, u24, u31, GO24, 10-4, inPrst, join, resume,
@@ -2058,18 +1959,10 @@ std::optional<reg32> namePhrasesOf(App* app, CPU& cpu)
     return loadRacerBanksOf(app, cpu, left);
 }
 
-/* 0x40a6f0: namePhrasesOf; eax as the code leaves it, ebx and edx kept (the other registers as the
- * callees leave them). */
+/* 0x40a6f0: namePhrasesOf; eax as the code leaves it. */
 void namePhrases(App* app, CPU& cpu)
 {
-    const reg32 ebx = cpu.ebx, edx = cpu.edx;
-    const std::optional<reg32> left = namePhrasesOf(app, cpu);
-    if (!left)
-        return;
-    cpu.ebx = ebx;
-    cpu.edx = edx;
-    cpu.eax = *left;
-    cpu.esp += 4;
+    adapts(cpu, [&] { return namePhrasesOf(app, cpu); });
 }
 
 // The radio's load past which no message of any weight is said.
@@ -2087,8 +1980,7 @@ reg32 radioFreeFor(App* app, reg32 weight, reg32 car)
 /* 0x40a910: radioFreeFor the weight eax and the car edx, in eax. */
 void radioFree(App* app, CPU& cpu)
 {
-    cpu.eax = radioFreeFor(app, cpu.eax, cpu.edx);
-    cpu.esp += 4;
+    adapts(cpu, [&, weight = cpu.eax, car = cpu.edx] { return radioFreeFor(app, weight, car); });
 }
 
 /* 0x40a940, 0x40aea0, 0x40b7f0: empty -- the radio's message done, a car's description's hook, and a
@@ -2119,15 +2011,13 @@ void quietVoiceOf(App* app, reg32 voice)
     put(app, voice * 4 + kVoiceQuiet, 0);
 }
 
-/* 0x40a950: quietVoiceOf the voice eax where edx is 1 (edx left 0 then, as the code leaves it). */
+/* 0x40a950: quietVoiceOf the voice eax where edx is 1. */
 void quietVoice(App* app, CPU& cpu)
 {
-    if (cpu.edx == 1)
-    {
-        cpu.edx = 0;
-        quietVoiceOf(app, cpu.eax);
-    }
-    cpu.esp += 4;
+    adapts(cpu, [&, voice = cpu.eax, quiet = cpu.edx == 1] {
+        if (quiet)
+            quietVoiceOf(app, voice);
+    });
 }
 
 // The voice that spoke last.
@@ -2144,10 +2034,10 @@ std::optional<reg32> sayVoicePhraseOf(App* app, CPU& cpu, reg32 car, bool asked)
     const GuestFrame frame(cpu, 0x10, 0);
     if (at(app, kLastVoice) == at(app, car + kCarVoice))
         return at(app, kLastVoice);
-    // The dispatcher says it, 0 handed on (esi the car, edi the caller's, as the code leaves them).
+    // The dispatcher says it, 0 handed on (no voice of the 8: nothing kept in the line).
     const auto say = [&](reg32 phrase) {
         const CallSlot slot(cpu);
-        return sayPhraseOf(app, cpu, 0, false, phrase, car, car, cpu.edi);
+        return sayPhraseOf(app, cpu, 0, false, phrase, car, 0, 0);
     };
     // Half the time and a little less: the random number's remainder by 100 past 50.
     const auto now = [&]() -> std::optional<bool> {
@@ -2178,29 +2068,18 @@ std::optional<reg32> sayVoicePhraseOf(App* app, CPU& cpu, reg32 car, bool asked)
     return say(last);
 }
 
-/* 0x40a970: sayVoicePhraseOf the car eax, asked where edx; eax as the code leaves it, edx 0 where it
- * spoke. */
+/* 0x40a970: sayVoicePhraseOf the car eax, asked where edx; eax as the code leaves it. */
 void sayVoicePhrase(App* app, CPU& cpu)
 {
-    const reg32 car = cpu.eax, ebx = cpu.ebx, ecx = cpu.ecx;
-    const bool spoke = at(app, kLastVoice) != at(app, car + kCarVoice);
-    const std::optional<reg32> left = sayVoicePhraseOf(app, cpu, car, cpu.edx != 0);
-    if (!left)
-        return;
-    cpu.ebx = ebx;
-    cpu.ecx = ecx;
-    cpu.eax = *left;
-    if (spoke)
-        cpu.edx = 0;
-    cpu.esp += 4;
+    adapts(cpu, [&, car = cpu.eax, asked = cpu.edx != 0] { return sayVoicePhraseOf(app, cpu, car, asked); });
 }
 
 // The frames a voice keeps quiet before it gives its call again.
 constexpr i32 kCallSignQuiet = 0x78;
 
 /* The car's call sign (its voice + 0x10) said by its voice, where another spoke last or its voice has
- * been quiet 120 frames [0x5524cc], whose count starts again.  What the code leaves in eax; nullopt when
- * the game stopped. */
+ * been quiet 120 frames [0x5524cc], whose count starts again (a voice past the 8 takes the caller's edi
+ * for its handle, as the code does).  What the code leaves in eax; nullopt when the game stopped. */
 std::optional<reg32> sayCallSignOf(App* app, CPU& cpu, reg32 car)
 {
     const GuestFrame frame(cpu, 0x14, 0);
@@ -2215,69 +2094,40 @@ std::optional<reg32> sayCallSignOf(App* app, CPU& cpu, reg32 car)
 /* 0x40aa20: sayCallSignOf the car eax; eax as the code leaves it. */
 void sayCallSign(App* app, CPU& cpu)
 {
-    const std::optional<reg32> left = sayCallSignOf(app, cpu, cpu.eax);
-    if (!left)
-        return;
-    cpu.eax = *left;
-    cpu.esp += 4;
+    adapts(cpu, [&, car = cpu.eax] { return sayCallSignOf(app, cpu, car); });
 }
 
-/* The phrase said by the dispatcher, of no car.  What the code leaves in eax; nullopt when the game
- * stopped. */
+/* The phrase said by the dispatcher, of no car (no voice of the 8: nothing kept in the line).  What
+ * the code leaves in eax; nullopt when the game stopped. */
 std::optional<reg32> sayPhraseOnlyOf(App* app, CPU& cpu, reg32 phrase)
 {
     const GuestFrame frame(cpu, 0x10, 0);
     const CallSlot slot(cpu);
-    return sayPhraseOf(app, cpu, 0, false, phrase, 0, cpu.esi, cpu.edi);
+    return sayPhraseOf(app, cpu, 0, false, phrase, 0, 0, 0);
 }
 
 /* 0x40aa70: sayPhraseOnlyOf the phrase eax; eax as the code leaves it. */
 void sayPhraseOnly(App* app, CPU& cpu)
 {
-    const std::optional<reg32> left = sayPhraseOnlyOf(app, cpu, cpu.eax);
-    if (!left)
-        return;
-    cpu.eax = *left;
-    cpu.esp += 4;
+    adapts(cpu, [&, phrase = cpu.eax] { return sayPhraseOnlyOf(app, cpu, phrase); });
 }
 
-/* The car's unit (its voice + 0x14) said by the dispatcher.  What the code leaves in eax; nullopt when
- * the game stopped. */
+/* The car's unit (its voice + 0x14) said by the dispatcher (nothing kept in the line).  What the code
+ * leaves in eax; nullopt when the game stopped. */
 std::optional<reg32> sayUnitOf(App* app, CPU& cpu, reg32 car)
 {
     const GuestFrame frame(cpu, 0x10, 0);
     const CallSlot slot(cpu);
-    return sayPhraseOf(app, cpu, 0, false, at(app, car + kCarVoice) + kUnitCall, car, cpu.esi, cpu.edi);
+    return sayPhraseOf(app, cpu, 0, false, at(app, car + kCarVoice) + kUnitCall, car, 0, 0);
 }
 
 /* 0x40aa90: sayUnitOf the car eax; eax as the code leaves it. */
 void sayUnit(App* app, CPU& cpu)
 {
-    const std::optional<reg32> left = sayUnitOf(app, cpu, cpu.eax);
-    if (!left)
-        return;
-    cpu.eax = *left;
-    cpu.esp += 4;
+    adapts(cpu, [&, car = cpu.eax] { return sayUnitOf(app, cpu, car); });
 }
 // A "help" pending.
 constexpr reg32 kHelpPending = 0x5524f4;
-
-/* What sayDescription leaves: eax, and in ebx the phrase it said last -- or the kind less 8 where it
- * said none (edx then the car, else whom). */
-struct DescriptionLeft
-{
-    reg32 eax;
-    bool said;
-    reg32 ebx;
-};
-
-/* The game's random number (0x4e0d88); nullopt when the game stopped. */
-std::optional<reg32> randomNumber(App* app, CPU& cpu)
-{
-    if (!byAddress(app, cpu, kRandom))
-        return std::nullopt;
-    return cpu.eax;
-}
 
 /* The message of the kind (8 to 35, the switch at 0x40aab0) said about the car, by its voice (`whom` 1)
  * or the dispatcher (0): for 8 to 11 the chased car's description in its bank [0x56ee28] (sayCarPhraseOf,
@@ -2285,44 +2135,32 @@ std::optional<reg32> randomNumber(App* app, CPU& cpu)
  * pending [0x5524f4]); else phrases of the kind, some picked at random of two to four (0x4e0d88): 12 and
  * 13 0x20.., 15 0x28.., 16 0x30.., 19 0x2c.. (of three), 20 0x2c.., 24 0xc.., 25 0x1e.., 26 0x1d, 27
  * 0x34../0x37.., 28 0x3a../0x33.., 29 0x31 and 30 0x32 (a "help" pending after), 31 to 33 0x37 or 0x39 to
- * 0x3b, 34 0x3c or 0x35.., 35 0x1a..; nothing for the rest.  What the code leaves in eax and ebx; nullopt
- * when the game stopped. */
-std::optional<DescriptionLeft> sayDescriptionOf(App* app, CPU& cpu, reg32 whom, reg32 car, reg32 kind)
+ * 0x3b, 34 0x3c or 0x35.., 35 0x1a..; nothing for the rest.  What the code leaves in eax; nullopt when
+ * the game stopped. */
+std::optional<reg32> sayDescriptionOf(App* app, CPU& cpu, reg32 whom, reg32 car, reg32 kind)
 {
     const GuestFrame frame(cpu, 0x10, 0);
     const bool byVoice = whom != 0;
     // A phrase said, 0 handed on (esi `side` -- whom but for kind 30 -- and edi the car, as the code
     // leaves them for a voice past the 8).
-    const auto say = [&](reg32 phrase, reg32 side) -> std::optional<DescriptionLeft> {
+    const auto say = [&](reg32 phrase, reg32 side) {
         const CallSlot slot(cpu);
-        const std::optional<reg32> left = sayPhraseOf(app, cpu, 0, byVoice, phrase, car, side, car);
-        if (!left)
-            return std::nullopt;
-        return DescriptionLeft{*left, true, phrase};
+        return sayPhraseOf(app, cpu, 0, byVoice, phrase, car, side, car);
     };
     // One of two or four phrases on from `phrase`, at random.
-    const auto pick = [&](reg32 mask, reg32 phrase) -> std::optional<DescriptionLeft> {
+    const auto pick = [&](reg32 mask, reg32 phrase) -> std::optional<reg32> {
         const std::optional<reg32> r = randomNumber(app, cpu);
         if (!r)
             return std::nullopt;
         return say((*r & mask) + phrase, whom);
     };
     // A phrase of the chased car's own description, with its bank (pushed, ret 4).
-    const auto sayCar = [&](reg32 phrase) -> std::optional<DescriptionLeft> {
+    const auto sayCar = [&](reg32 phrase) {
         const reg32 bank = at(app, at(app, at(app, car + kCarChased) + kCarIndex) * 4 + kSpeechBanks);
-        const reg32 esp = cpu.esp;
-        cpu.esp -= 4;
-        std::optional<reg32> left;
-        {
-            const CallSlot slot(cpu);
-            left = sayCarPhraseOf(app, cpu, 0, byVoice, phrase, car, bank, whom, car);
-        }
-        cpu.esp = esp;
-        if (!left)
-            return std::nullopt;
-        return DescriptionLeft{*left, true, phrase};
+        const CallSlot slot(cpu, 1);
+        return sayCarPhraseOf(app, cpu, 0, byVoice, phrase, car, bank, whom, car);
     };
-    const DescriptionLeft none{whom, false, kind - 8};
+    const reg32 none = whom;
     if (kind - 8 > 0x1b)
         return none;
     switch (kind)
@@ -2334,7 +2172,7 @@ std::optional<DescriptionLeft> sayDescriptionOf(App* app, CPU& cpu, reg32 whom, 
     {
         if (byVoice && at(app, kHelpPending) == 0 && !pick(3, 0x24))
             return std::nullopt;
-        const std::optional<DescriptionLeft> left = sayCar(byVoice ? 0x11 : 0);
+        const std::optional<reg32> left = sayCar(byVoice ? 0x11 : 0);
         if (!left)
             return std::nullopt;
         put(app, kHelpPending, 0);
@@ -2360,7 +2198,7 @@ std::optional<DescriptionLeft> sayDescriptionOf(App* app, CPU& cpu, reg32 whom, 
     case 29:
     case 30:
     {
-        const std::optional<DescriptionLeft> left = kind == 29 ? say(0x31, whom) : say(0x32, 1);
+        const std::optional<reg32> left = kind == 29 ? say(0x31, whom) : say(0x32, 1);
         if (!left)
             return std::nullopt;
         put(app, kHelpPending, 1);
@@ -2375,19 +2213,10 @@ std::optional<DescriptionLeft> sayDescriptionOf(App* app, CPU& cpu, reg32 whom, 
     }
 }
 
-/* 0x40ab20: sayDescriptionOf the kind ebx about the car edx by whom eax; eax and ebx as the code leaves
- * them, edx whom where it said a phrase. */
+/* 0x40ab20: sayDescriptionOf the kind ebx about the car edx by whom eax; eax as the code leaves it. */
 void sayDescription(App* app, CPU& cpu)
 {
-    const reg32 whom = cpu.eax;
-    const std::optional<DescriptionLeft> left = sayDescriptionOf(app, cpu, whom, cpu.edx, cpu.ebx);
-    if (!left)
-        return;
-    cpu.eax = left->eax;
-    cpu.ebx = left->ebx;
-    if (left->said)
-        cpu.edx = whom;
-    cpu.esp += 4;
+    adapts(cpu, [&, whom = cpu.eax, car = cpu.edx, kind = cpu.ebx] { return sayDescriptionOf(app, cpu, whom, car, kind); });
 }
 
 // Each voice's last place said and its prefix ("100+"-like).
@@ -2397,13 +2226,6 @@ constexpr reg32 kPlacePhrase = 0, kPlaceDistance = 4, kPlaceKind = 8;
 // A place's phrase said for the dispatcher (moved on by 0x20), the prefixes past 100 and 50.
 constexpr reg32 kPlaceAgain = 0x20, kPrefixFar = 0x7f, kPrefixNear = 0x7e;
 constexpr reg32 kNoPlace = 0xffffffff;
-
-/* What sayLocation leaves in eax and edx. */
-struct LocationLeft
-{
-    reg32 eax;
-    reg32 edx;
-};
 
 /* __CHP: the value to an integer, towards 0, as a whole value; never nullopt (the optional is the
  * callers' stop signal). */
@@ -2418,9 +2240,8 @@ std::optional<Float> chop(App* app, CPU& cpu, Float value)
  * named place there (0x4c8550, into the frame's record: its phrase, distance, kind) -- 0 or 0x20 on at
  * random for kind 2 -- or else the next (0x4c8470), with the prefixes 0x7f and 0x7e for a road of kind 1
  * past 100 and 50; each voice's last place and prefix noted [0x5524f8], [0x552520] -- but where the same
- * voice spoke last of the same place.  What the code leaves in eax and edx; nullopt when the game
- * stopped. */
-std::optional<LocationLeft> sayLocationOf(App* app, CPU& cpu, reg32 whom, reg32 car)
+ * voice spoke last of the same place.  What the code leaves in eax; nullopt when the game stopped. */
+std::optional<reg32> sayLocationOf(App* app, CPU& cpu, reg32 whom, reg32 car)
 {
     const GuestFrame frame(cpu, 0x14, 0x18);
     const reg32 record = frame - 0x18;
@@ -2436,7 +2257,7 @@ std::optional<LocationLeft> sayLocationOf(App* app, CPU& cpu, reg32 whom, reg32 
         if (at(app, slot + kVoicePlace) != kNoPlace)
         {
             if (at(app, kLastVoice) == voice())
-                return LocationLeft{slot, car};
+                return slot;
             const reg32 prefix = at(app, slot + kVoicePrefix);
             reg32 phrase = at(app, slot + kVoicePlace);
             if (prefix != 0)
@@ -2448,7 +2269,7 @@ std::optional<LocationLeft> sayLocationOf(App* app, CPU& cpu, reg32 whom, reg32 
             if (!say(phrase))
                 return std::nullopt;
             put(app, voice() * 4 + kVoicePlace, kNoPlace);
-            return LocationLeft{voice(), 0};
+            return voice();
         }
     }
     const std::optional<Float> chopped = chop(app, cpu, f32(app, car + kCarSpeed));
@@ -2458,17 +2279,17 @@ std::optional<LocationLeft> sayLocationOf(App* app, CPU& cpu, reg32 whom, reg32 
     const reg32 size = speed > 0 ? reg32(speed) : 0u - reg32(speed);
     const reg32 ahead = reg32(std::int64_t(s(size)) / 6) * at(app, kRadioLoad);
     const reg32 onto = reg32(std::int64_t(s(at(app, car + kCarNode) + ahead + ahead)) % s(at(app, kNodeCount)));
-    const std::optional<reg32> nearest = leftInEax(cpu, feCore<0x4c8550, frontend::tail::placeAtNode>(app, cpu, onto, record));
+    const std::optional<reg32> nearest = feCore<0x4c8550, frontend::tail::placeAtNode>(app, cpu, onto, record);
     if (!nearest)
         return std::nullopt;
-    // The same voice spoke last of the same place: what the code's compares leave in eax and edx.
-    const auto again = [&]() -> std::optional<LocationLeft> {
+    // The same voice spoke last of the same place: what the code's compares leave in eax.
+    const auto again = [&]() -> std::optional<reg32> {
         if (at(app, kLastVoice) != voice())
             return std::nullopt;
         const reg32 phrase = at(app, record + kPlacePhrase);
         if (phrase != at(app, voice() * 4 + kVoicePlace))
             return std::nullopt;
-        return LocationLeft{phrase, voice()};
+        return phrase;
     };
     if (*nearest != kNoPlace)
     {
@@ -2480,20 +2301,20 @@ std::optional<LocationLeft> sayLocationOf(App* app, CPU& cpu, reg32 whom, reg32 
                 return std::nullopt;
             said = at(app, record + kPlacePhrase) + ((*r & 1) << 5);
         }
-        if (const std::optional<LocationLeft> same = again())
+        if (const std::optional<reg32> same = again())
             return same;
         if (!say(said))
             return std::nullopt;
         put(app, voice() * 4 + kVoicePlace, said);
         put(app, voice() * 4 + kVoicePrefix, 0);
-        return LocationLeft{voice(), said};
+        return voice();
     }
-    const std::optional<reg32> next = leftInEax(cpu, feCore<0x4c8470, frontend::tail::placeNearNode>(app, cpu, onto, record));
+    const std::optional<reg32> next = feCore<0x4c8470, frontend::tail::placeNearNode>(app, cpu, onto, record);
     if (!next)
         return std::nullopt;
     if (*next == 0)
-        return LocationLeft{0, record};
-    if (const std::optional<LocationLeft> same = again())
+        return 0;
+    if (const std::optional<reg32> same = again())
         return same;
     for (const reg32 prefix : {kPrefixFar, kPrefixNear})
     {
@@ -2503,16 +2324,14 @@ std::optional<LocationLeft> sayLocationOf(App* app, CPU& cpu, reg32 whom, reg32 
             return std::nullopt;
         put(app, voice() * 4 + kVoicePlace, at(app, record + kPlacePhrase));
         put(app, voice() * 4 + kVoicePrefix, prefix);
-        return LocationLeft{voice(), voice()};
+        return voice();
     }
     const reg32 kind = at(app, record + kPlaceKind);
-    reg32 edx;
     if (kind == 0)
     {
         if (!say(at(app, record + kPlacePhrase) + kPlaceAgain))
             return std::nullopt;
         put(app, voice() * 4 + kVoicePlace, at(app, record + kPlacePhrase) + kPlaceAgain);
-        edx = voice();
     }
     else if (kind == 2)
     {
@@ -2523,47 +2342,32 @@ std::optional<LocationLeft> sayLocationOf(App* app, CPU& cpu, reg32 whom, reg32 
         if (!say(said))
             return std::nullopt;
         put(app, voice() * 4 + kVoicePlace, said);
-        edx = said;
     }
     else
     {
         if (!say(at(app, record + kPlacePhrase)))
             return std::nullopt;
         put(app, voice() * 4 + kVoicePlace, at(app, record + kPlacePhrase));
-        edx = voice();
     }
     put(app, voice() * 4 + kVoicePrefix, 0);
-    return LocationLeft{voice(), edx};
+    return voice();
 }
 
-/* 0x40aeb0: sayLocationOf the car edx by whom eax; eax and edx as the code leaves them. */
+/* 0x40aeb0: sayLocationOf the car edx by whom eax; eax as the code leaves it. */
 void sayLocation(App* app, CPU& cpu)
 {
-    const Saved saved(cpu);
-    const std::optional<LocationLeft> left = sayLocationOf(app, cpu, cpu.eax, cpu.edx);
-    if (!left)
-        return;
-    saved.restore();
-    cpu.eax = left->eax;
-    cpu.edx = left->edx;
-    cpu.esp += 4;
+    adapts(cpu, [&, whom = cpu.eax, car = cpu.edx] { return sayLocationOf(app, cpu, whom, car); });
 }
 // The speeds past which the speed is said (doubles), the phrases "200+", "150+", "100+" and the last.
 constexpr reg32 kSpeedSaid[] = {0x53666c, 0x536674, 0x53667c, 0x536684};
 constexpr reg32 kSpeedPhrases[] = {0x3f, 0x3e, 0x3d, 0x3c};
 
-/* What saySpeed leaves in eax, and the phrase it said (0 for none), which it leaves in ebx. */
-struct SpeedLeft
-{
-    reg32 eax;
-    reg32 phrase;
-};
-
-/* The speed of the car `about` said for the car, by its voice where `whom` (sayPhraseOf): the phrase
+/* The speed of the car `about` said for the car, by its voice where `whom` (sayPhraseOf, a voice past
+ * the 8 with the caller's edi for its handle, as the code does): the phrase
  * 0x3f, 0x3e, 0x3d or 0x3c past [0x53666c], [0x536674], [0x53667c], [0x536684]; none slower.  What the
- * code leaves in eax and ebx (the status word of the last compare where none is said); nullopt when the
- * game stopped. */
-std::optional<SpeedLeft> saySpeedOf(App* app, CPU& cpu, reg32 whom, reg32 about, reg32 car)
+ * code leaves in eax (the status word of the last compare where none is said); nullopt when the game
+ * stopped. */
+std::optional<reg32> saySpeedOf(App* app, CPU& cpu, reg32 whom, reg32 about, reg32 car)
 {
     const GuestFrame frame(cpu, 0xc, 8);
     const Float speed = f32(app, about + kCarSpeedAbs);
@@ -2575,26 +2379,15 @@ std::optional<SpeedLeft> saySpeedOf(App* app, CPU& cpu, reg32 whom, reg32 about,
         const std::optional<reg32> said = sayPhraseOf(app, cpu, 0, whom != 0, kSpeedPhrases[k], car, whom, cpu.edi);
         if (!said)
             return std::nullopt;
-        return SpeedLeft{*said, kSpeedPhrases[k]};
+        return *said;
     }
-    return SpeedLeft{withStatus(whom, speed, f64(app, kSpeedSaid[3])), 0};
+    return withStatus(whom, speed, f64(app, kSpeedSaid[3]));
 }
 
-/* 0x40b190: saySpeedOf the car edx for the car ebx, by whom eax; eax as the code leaves it, ebx the
- * phrase and edx whom where it said one. */
+/* 0x40b190: saySpeedOf the car edx for the car ebx, by whom eax; eax as the code leaves it. */
 void saySpeed(App* app, CPU& cpu)
 {
-    const reg32 whom = cpu.eax;
-    const std::optional<SpeedLeft> left = saySpeedOf(app, cpu, whom, cpu.edx, cpu.ebx);
-    if (!left)
-        return;
-    cpu.eax = left->eax;
-    if (left->phrase != 0)
-    {
-        cpu.ebx = left->phrase;
-        cpu.edx = whom;
-    }
-    cpu.esp += 4;
+    adapts(cpu, [&, whom = cpu.eax, about = cpu.edx, car = cpu.ebx] { return saySpeedOf(app, cpu, whom, about, car); });
 }
 
 namespace
@@ -2605,19 +2398,13 @@ namespace
 std::optional<reg32> describe(App* app, CPU& cpu, reg32 whom, reg32 car, reg32 kind)
 {
     const CallSlot slot(cpu);
-    const std::optional<DescriptionLeft> left = sayDescriptionOf(app, cpu, whom, car, kind);
-    if (!left)
-        return std::nullopt;
-    return left->eax;
+    return sayDescriptionOf(app, cpu, whom, car, kind);
 }
 
 std::optional<reg32> locate(App* app, CPU& cpu, reg32 whom, reg32 car)
 {
     const CallSlot slot(cpu);
-    const std::optional<LocationLeft> left = sayLocationOf(app, cpu, whom, car);
-    if (!left)
-        return std::nullopt;
-    return left->eax;
+    return sayLocationOf(app, cpu, whom, car);
 }
 
 std::optional<reg32> callSign(App* app, CPU& cpu, reg32 car)
@@ -2650,7 +2437,7 @@ std::optional<NoiseLeft> noiseFor(App* app, CPU& cpu, reg32 car, reg32 side)
     return radioNoiseOf(app, cpu, 0, side, car);
 }
 
-std::optional<SpeedLeft> speedOf(App* app, CPU& cpu, reg32 car)
+std::optional<reg32> speedOf(App* app, CPU& cpu, reg32 car)
 {
     const CallSlot slot(cpu);
     return saySpeedOf(app, cpu, 1, at(app, car + kCarChased), car);
@@ -2710,13 +2497,7 @@ std::optional<reg32> radioSpottedOf(App* app, CPU& cpu, reg32 car)
 /* 0x40b220: radioSpottedOf the cop eax; eax as the code leaves it. */
 void radioSpotted(App* app, CPU& cpu)
 {
-    const Saved saved(cpu);
-    const std::optional<reg32> left = radioSpottedOf(app, cpu, cpu.eax);
-    if (!left)
-        return;
-    saved.restore();
-    cpu.eax = *left;
-    cpu.esp += 4;
+    adapts(cpu, [&, car = cpu.eax] { return radioSpottedOf(app, cpu, car); });
 }
 
 /* A cop's report that it is in pursuit of its chased car (a cop's; the radio free at weight 4): of the
@@ -2766,13 +2547,7 @@ std::optional<reg32> radioPursuitOf(App* app, CPU& cpu, reg32 car)
 /* 0x40b330: radioPursuitOf the cop eax; eax as the code leaves it. */
 void radioPursuit(App* app, CPU& cpu)
 {
-    const Saved saved(cpu);
-    const std::optional<reg32> left = radioPursuitOf(app, cpu, cpu.eax);
-    if (!left)
-        return;
-    saved.restore();
-    cpu.eax = *left;
-    cpu.esp += 4;
+    adapts(cpu, [&, car = cpu.eax] { return radioPursuitOf(app, cpu, car); });
 }
 
 // The frames a voice keeps quiet before it says it lost the car.
@@ -2808,13 +2583,7 @@ std::optional<reg32> radioLostOf(App* app, CPU& cpu, reg32 car)
 /* 0x40b480: radioLostOf the cop eax; eax as the code leaves it. */
 void radioLost(App* app, CPU& cpu)
 {
-    const Saved saved(cpu);
-    const std::optional<reg32> left = radioLostOf(app, cpu, cpu.eax);
-    if (!left)
-        return;
-    saved.restore();
-    cpu.eax = *left;
-    cpu.esp += 4;
+    adapts(cpu, [&, car = cpu.eax] { return radioLostOf(app, cpu, car); });
 }
 
 /* A cop's call for backup on its chased car (a cop's; the radio free at weight 3): its call sign, its
@@ -2860,13 +2629,7 @@ std::optional<reg32> radioBackupOf(App* app, CPU& cpu, reg32 car)
 /* 0x40b530: radioBackupOf the cop eax; eax as the code leaves it. */
 void radioBackup(App* app, CPU& cpu)
 {
-    const Saved saved(cpu);
-    const std::optional<reg32> left = radioBackupOf(app, cpu, cpu.eax);
-    if (!left)
-        return;
-    saved.restore();
-    cpu.eax = *left;
-    cpu.esp += 4;
+    adapts(cpu, [&, car = cpu.eax] { return radioBackupOf(app, cpu, car); });
 }
 
 /* A cop on patrol, the car it chases not a cop's (the radio free at weight 4): no voice last, its call
@@ -2895,13 +2658,7 @@ std::optional<reg32> radioPatrolOf(App* app, CPU& cpu, reg32 car)
 /* 0x40b670: radioPatrolOf the cop eax; eax as the code leaves it. */
 void radioPatrol(App* app, CPU& cpu)
 {
-    const Saved saved(cpu);
-    const std::optional<reg32> left = radioPatrolOf(app, cpu, cpu.eax);
-    if (!left)
-        return;
-    saved.restore();
-    cpu.eax = *left;
-    cpu.esp += 4;
+    adapts(cpu, [&, car = cpu.eax] { return radioPatrolOf(app, cpu, car); });
 }
 
 /* A roadblock (the radio free at weight 4): no voice last, the call sign, the description of kind 0xf,
@@ -2934,13 +2691,7 @@ std::optional<reg32> radioRoadblockOf(App* app, CPU& cpu, reg32 car)
 /* 0x40b720: radioRoadblockOf the cop eax; eax as the code leaves it. */
 void radioRoadblock(App* app, CPU& cpu)
 {
-    const Saved saved(cpu);
-    const std::optional<reg32> left = radioRoadblockOf(app, cpu, cpu.eax);
-    if (!left)
-        return;
-    saved.restore();
-    cpu.eax = *left;
-    cpu.esp += 4;
+    adapts(cpu, [&, car = cpu.eax] { return radioRoadblockOf(app, cpu, car); });
 }
 
 /* A message of the kind 0x1c (a ticket) or 0x1b (an arrest): the radio free at weight 3, the call
@@ -2972,13 +2723,7 @@ std::optional<reg32> radioOfKindOf(App* app, CPU& cpu, reg32 car, reg32 kind)
  * leaves it. */
 void radioOfKind(App* app, CPU& cpu, reg32 kind)
 {
-    const Saved saved(cpu);
-    const std::optional<reg32> left = radioOfKindOf(app, cpu, cpu.eax, kind);
-    if (!left)
-        return;
-    saved.restore();
-    cpu.eax = *left;
-    cpu.esp += 4;
+    adapts(cpu, [&, car = cpu.eax] { return radioOfKindOf(app, cpu, car, kind); });
 }
 
 // The messages' kinds: a ticket, an arrest.
@@ -3037,17 +2782,16 @@ std::optional<StoppedLeft> radioStoppedOf(App* app, CPU& cpu, reg32 car, reg32 h
     return StoppedLeft{spokeLast(app, car), noise->edx};
 }
 
-/* 0x40b9c0: radioStoppedOf the car eax, how edx; eax and edx as the code leaves them. */
+/* 0x40b9c0: radioStoppedOf the car eax, how edx; eax as the code leaves it. */
 void radioStopped(App* app, CPU& cpu)
 {
-    const Saved saved(cpu);
-    const std::optional<StoppedLeft> left = radioStoppedOf(app, cpu, cpu.eax, cpu.edx);
-    if (!left)
-        return;
-    saved.restore();
-    cpu.eax = left->eax;
-    cpu.edx = left->edx;
-    cpu.esp += 4;
+    const auto left = [&, car = cpu.eax, how = cpu.edx]() -> std::optional<reg32> {
+        const std::optional<StoppedLeft> stopped = radioStoppedOf(app, cpu, car, how);
+        if (!stopped)
+            return std::nullopt;
+        return stopped->eax;
+    };
+    adapts(cpu, left);
 }
 
 /* An ambulance called (kind 0x22): the radio free at weight 4, the call sign, the voice's reply, the
@@ -3081,13 +2825,7 @@ std::optional<reg32> radioAmbulanceOf(App* app, CPU& cpu, reg32 car)
 /* 0x40bac0: radioAmbulanceOf the cop eax; eax as the code leaves it. */
 void radioAmbulance(App* app, CPU& cpu)
 {
-    const Saved saved(cpu);
-    const std::optional<reg32> left = radioAmbulanceOf(app, cpu, cpu.eax);
-    if (!left)
-        return;
-    saved.restore();
-    cpu.eax = *left;
-    cpu.esp += 4;
+    adapts(cpu, [&, car = cpu.eax] { return radioAmbulanceOf(app, cpu, car); });
 }
 
 /* Spikes laid (kind 0x19, now and then 0x1a and the place too): the radio free at weight 4, the call
@@ -3110,13 +2848,7 @@ std::optional<reg32> radioSpikesOf(App* app, CPU& cpu, reg32 car)
 /* 0x40bba0: radioSpikesOf the cop eax; eax as the code leaves it. */
 void radioSpikes(App* app, CPU& cpu)
 {
-    const Saved saved(cpu);
-    const std::optional<reg32> left = radioSpikesOf(app, cpu, cpu.eax);
-    if (!left)
-        return;
-    saved.restore();
-    cpu.eax = *left;
-    cpu.esp += 4;
+    adapts(cpu, [&, car = cpu.eax] { return radioSpikesOf(app, cpu, car); });
 }
 
 /* A cop's short message of the kind (the radio free at weight 3): the call sign, the voice's reply and
@@ -3136,13 +2868,7 @@ std::optional<reg32> radioShortOf(App* app, CPU& cpu, reg32 car, reg32 kind, boo
 /* 0x40bc30, 0x40bca0, 0x40bd00: radioShortOf the cop eax; eax as the code leaves it. */
 void radioShort(App* app, CPU& cpu, reg32 kind, bool place)
 {
-    const Saved saved(cpu);
-    const std::optional<reg32> left = radioShortOf(app, cpu, cpu.eax, kind, place);
-    if (!left)
-        return;
-    saved.restore();
-    cpu.eax = *left;
-    cpu.esp += 4;
+    adapts(cpu, [&, car = cpu.eax] { return radioShortOf(app, cpu, car, kind, place); });
 }
 
 // The short messages' kinds: a call for help (with the place), the pursuit resumed, called off.
@@ -3201,13 +2927,13 @@ constexpr reg32 kRaceUnderWay = 0x7d3680;
  * nodes), raised by [0x5efdd0] (by [0x53668c] more in a tunnel, 0x420bf0), its speed the radar's (+8,
  * ahead of a human's car) or the computer's at the node (0x40e080) along the node's heading bytes (by
  * [0x536694]); settled (0x428970), its frames +0x174 and +0x524, and ticketed (0x4c7fd0) -- in a race
- * under way where the car is not being put back already (+0x184).  What the code leaves in eax and edx;
- * nullopt when the game stopped. */
-std::optional<ResetLeft> resetOnTrackOf(App* app, CPU& cpu, reg32 car, reg32 record)
+ * under way where the car is not being put back already (+0x184).  What the code leaves in eax; nullopt
+ * when the game stopped. */
+std::optional<reg32> resetOnTrackOf(App* app, CPU& cpu, reg32 car, reg32 record)
 {
     const GuestFrame frame(cpu, 0x14, 0x14);
     if (at(app, kRaceUnderWay) == 0 || at(app, car + kCarResetting) != 0)
-        return ResetLeft{car, record};
+        return car;
     const auto ahead = [&] { return i32(sreg16(half(app, record + kRadarAhead))); };
     const auto setAhead = [&](i32 value) { app->getMemory<reg16>(record + kRadarAhead) = reg16(value); };
     const i32 far = ahead() <= 0 ? -ahead() : ahead();
@@ -3226,14 +2952,13 @@ std::optional<ResetLeft> resetOnTrackOf(App* app, CPU& cpu, reg32 car, reg32 rec
     }
     else if (target < 0)
         target += s(count);
-    if (!leftInEax(cpu, feCore<0x428d60, frontend::loada::carPlaceOnRoad>(app, cpu, car, reg32(target))))
+    if (!feCore<0x428d60, frontend::loada::carPlaceOnRoad>(app, cpu, car, reg32(target)))
         return std::nullopt;
     float height = f32At(app, kResetHeight);
     // eax at the call as the code leaves it there, the last word it pushes through it (+0xa0): a
     // stand-in of the check's hands eax back now and then.
-    cpu.eax = at(app, car + kCarPlaceZ);
     const std::optional<reg32> tunnel =
-        callPushing(app, cpu, kInTunnel,
+        callPushing(app, cpu, kInTunnel, {at(app, car + kCarPlaceZ)},
                     {at(app, car + kCarNode), at(app, car + kCarPlaceZ), at(app, car + kCarHeight), at(app, car + kCarPlace)});
     if (!tunnel)
         return std::nullopt;
@@ -3259,28 +2984,21 @@ std::optional<ResetLeft> resetOnTrackOf(App* app, CPU& cpu, reg32 car, reg32 rec
     putFloat(app, car + kCarVelocity, float(fp::mul(fp::mul(heading(0), scale), Float(speed))));
     putFloat(app, car + kCarVelocity + 4, float(fp::mul(fp::mul(heading(1), scale), Float(speed))));
     putFloat(app, car + kCarVelocity + 8, float(fp::mul(fp::mul(scale, heading(2)), Float(speed))));
-    if (!leftInEax(cpu, feCore<0x428970, frontend::loada::carReset>(app, cpu, car)))
+    if (!feCore<0x428970, frontend::loada::carReset>(app, cpu, car))
         return std::nullopt;
     put(app, car + kCarSettleFrames, 0x40);
     put(app, car + kCarSettleFramesToo, 0x20);
     const std::optional<reg32> ticketed =
-        leftInEax(cpu, feCore<0x4c7fd0, frontend::neta::clearRing>(app, cpu, at(app, car + kCarIndex)));
+        feCore<0x4c7fd0, frontend::neta::clearRing>(app, cpu, at(app, car + kCarIndex));
     if (!ticketed)
         return std::nullopt;
-    return ResetLeft{*ticketed, nodes};
+    return *ticketed;
 }
 
-/* 0x40bd80: resetOnTrackOf the car eax by the radar's record edx; eax and edx as the code leaves them. */
+/* 0x40bd80: resetOnTrackOf the car eax by the radar's record edx; eax as the code leaves it. */
 void resetOnTrack(App* app, CPU& cpu)
 {
-    const Saved saved(cpu);
-    const std::optional<ResetLeft> left = resetOnTrackOf(app, cpu, cpu.eax, cpu.edx);
-    if (!left)
-        return;
-    saved.restore();
-    cpu.eax = left->eax;
-    cpu.edx = left->edx;
-    cpu.esp += 4;
+    adapts(cpu, [&, car = cpu.eax, record = cpu.edx] { return resetOnTrackOf(app, cpu, car, record); });
 }
 
 // The chases' scores cleared at a cop's start (20 bytes); its marks cleared then, as a word at +0x620:
@@ -3299,7 +3017,7 @@ std::optional<reg32> copRestartOf(App* app, CPU& cpu, reg32 cop)
         return std::nullopt;
     if (*active == 0)
         return 0;
-    cpu.eax = guest::direct<0x4e0640, watcom::clib::memset>(app, cpu, kStartScores, 0, kStartScoresSize);
+    guest::direct<0x4e0640, watcom::clib::memset>(app, cpu, kStartScores, 0, kStartScoresSize);
     if (cpu.terminate)
         return std::nullopt;
     app->getMemory<reg16>(cop + kCarPursuitFlags) = reg16(half(app, cop + kCarPursuitFlags) & kRestartMarks);
@@ -3321,19 +3039,13 @@ std::optional<reg32> copRestartOf(App* app, CPU& cpu, reg32 cop)
     }
     if (!guest::direct<0x40ddb0, aiplan::pickLane>(app, cpu, cop))
         return std::nullopt;
-    return call(app, cpu, kCopFinish, cop);
+    return guest::watcomEax(app, cpu, kCopFinish, {cop});
 }
 
 /* 0x40bf50: copRestartOf the cop eax; eax as the code leaves it. */
 void copRestart(App* app, CPU& cpu)
 {
-    const Saved saved(cpu);
-    const std::optional<reg32> left = copRestartOf(app, cpu, cpu.eax);
-    if (!left)
-        return;
-    saved.restore();
-    cpu.eax = *left;
-    cpu.esp += 4;
+    adapts(cpu, [&, cop = cpu.eax] { return copRestartOf(app, cpu, cop); });
 }
 
 // The traffic's top speed (a double).
@@ -3404,8 +3116,7 @@ reg32 followChasedCar(App* app, reg32 car)
 /* 0x40bff0: followChasedCar for the car eax, eax as the code leaves it. */
 void followChased(App* app, CPU& cpu)
 {
-    cpu.eax = followChasedCar(app, cpu.eax);
-    cpu.esp += 4;
+    adapts(cpu, [&, car = cpu.eax] { return followChasedCar(app, car); });
 }
 
 // The speed of the car followed under which a car going backwards follows it backwards (a double).
@@ -3454,13 +3165,7 @@ std::optional<reg32> followCarOf(App* app, CPU& cpu, reg32 car)
 /* 0x40c160: followCarOf the car eax; eax as the code leaves it. */
 void followCar(App* app, CPU& cpu)
 {
-    const Saved saved(cpu);
-    const std::optional<reg32> left = followCarOf(app, cpu, cpu.eax);
-    if (!left)
-        return;
-    saved.restore();
-    cpu.eax = *left;
-    cpu.esp += 4;
+    adapts(cpu, [&, car = cpu.eax] { return followCarOf(app, cpu, car); });
 }
 
 // The race's frame from which the countdowns run; the cars still in, the cars out.
@@ -3494,13 +3199,7 @@ std::optional<bool> countdownDoneOf(App* app, CPU& cpu, reg32 car)
 /* 0x40c210: countdownDoneOf the car eax, 1 or 0 in eax. */
 void countdownDone(App* app, CPU& cpu)
 {
-    const Saved saved(cpu);
-    const std::optional<bool> done = countdownDoneOf(app, cpu, cpu.eax);
-    if (!done)
-        return;
-    saved.restore();
-    cpu.eax = *done ? 1 : 0;
-    cpu.esp += 4;
+    adapts(cpu, [&, car = cpu.eax] { return countdownDoneOf(app, cpu, car); });
 }
 
 /* The traffic's car's target speed: its node's (0x40ed40) + 1, no more than the traffic's top speed,
@@ -3535,13 +3234,7 @@ std::optional<reg32> trafficTargetOf(App* app, CPU& cpu, reg32 car)
 /* 0x40c270: trafficTargetOf the car eax; eax as the code leaves it. */
 void trafficTarget(App* app, CPU& cpu)
 {
-    const Saved saved(cpu);
-    const std::optional<reg32> left = trafficTargetOf(app, cpu, cpu.eax);
-    if (!left)
-        return;
-    saved.restore();
-    cpu.eax = *left;
-    cpu.esp += 4;
+    adapts(cpu, [&, car = cpu.eax] { return trafficTargetOf(app, cpu, car); });
 }
 
 // The traffic's random numbers: the state, the last full product, the multiplier.
@@ -3602,19 +3295,13 @@ std::optional<reg32> trafficStepOf(App* app, CPU& cpu, reg32 car)
     else
         putFloat(app, car + kCarSpeedAbs, float(-speed));
     put(app, kTrafficRandomFull, full);
-    return call(app, cpu, kSpeedLimit, car);
+    return guest::watcomEax(app, cpu, kSpeedLimit, {car});
 }
 
 /* 0x40c2f0: trafficStepOf the car eax; eax as the code leaves it. */
 void trafficStep(App* app, CPU& cpu)
 {
-    const Saved saved(cpu);
-    const std::optional<reg32> left = trafficStepOf(app, cpu, cpu.eax);
-    if (!left)
-        return;
-    saved.restore();
-    cpu.eax = *left;
-    cpu.esp += 4;
+    adapts(cpu, [&, car = cpu.eax] { return trafficStepOf(app, cpu, car); });
 }
 
 }  // namespace pursuit

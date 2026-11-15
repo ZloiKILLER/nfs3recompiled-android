@@ -14,6 +14,7 @@
 #include "native_frontend_wina.h"
 #include "native_trackdata.h"
 #include "native_vertices.h"
+#include "thrash_calls.h"
 #include <nfs3hp.h>
 #include <cstdint>
 #include <cstring>
@@ -369,14 +370,15 @@ x86::reg32 frontend::rendd::readDriverFeatures(App* app, CPU& cpu, reg32 first)
     const fe::Frame ownFrame(guest, cpu, 0x18);
     constexpr reg32 kFeatures = 0x7a3a5c;
     constexpr reg32 kFeatureQueries = 0x55fd94;
-    constexpr reg32 kThrashSetState = 0x9ef96c;
     guest.setDword(kFeatures, 0);
     reg32 bit = first;
     for (reg32 i = 0; i < 5; ++i)
     {
-        const reg32 answer = guest.call(guest.dword(kThrashSetState),
-                                        args({}, { guest.dword(kFeatureQueries + 8 * i), guest.dword(kFeatureQueries + 8 * i + 4) }));
-        bit = (answer != 0 ? 1u : 0u) << i;
+        const std::optional<reg32> answer = guest::driver<thrash::kThrashSetState, &port::driver::setState>(
+            app, cpu, guest.dword(kFeatureQueries + 8 * i), guest.dword(kFeatureQueries + 8 * i + 4));
+        if (!answer)
+            throw fe::Terminated();
+        bit = (*answer != 0 ? 1u : 0u) << i;
         guest.setDword(kFeatures, guest.dword(kFeatures) | bit);
     }
     return bit;

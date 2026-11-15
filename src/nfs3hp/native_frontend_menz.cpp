@@ -18,7 +18,7 @@
 #include "port_snd_stream_calls.h"
 #include <fpu.h>
 #include <nfs3hp.h>
-#include <winapi/kernel32.h>
+#include "host_system.h"
 #include <cstdint>
 #include <cstring>
 #include <initializer_list>
@@ -590,7 +590,7 @@ reg32 frontend::menz::singleInstanceCheck(App* app, CPU& cpu, reg32 name)
     if (name == 0)
         name = g.dword(kClassName);
     g.setDword(kMutex, callImport<kCreateMutexA, &host::createMutex>(g, cpu, 0, 1, name));
-    if (callImport<kGetLastError, &win32::kernel32::GetLastError>(g, cpu) != kErrorAlreadyExists)
+    if (callImport<kGetLastError, &host::lastError>(g, cpu) != kErrorAlreadyExists)
         return 0;
     const reg32 window = callImport<kFindWindowA, &host::findWindow>(g, cpu, 0, g.dword(kClassName));
     cpu.ebx = window;

@@ -16,7 +16,7 @@ public:
     void lock();
     /* Non-blocking: locks and returns true only if the mutex was free or
      * already owned by this thread; otherwise returns immediately without
-     * taking the lock.  See EnterCriticalSection (kernel32.cpp) for why this
+     * taking the lock.  See enterLock (src/nfs3hp/host_threads.cpp) for why this
      * exists: it lets the common, uncontended case skip releasing the guest
      * execution context altogether. */
     bool tryLock();

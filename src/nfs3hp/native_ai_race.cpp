@@ -113,26 +113,16 @@ constexpr reg32 kRamming = 0x56ea70;
 // What is called by address: the game's, ea::yRotation (whose frame on the guest's stack sits
 // under the angle the code pushes), the lane votes (0x40de30, its adapter's NFS_CAR_TRACE record);
 // and the typed files' calls whose adapters here leave what the callee leaves in a register beyond
-// what its header gives -- the nodes' gap's edx, the vectors' subtraction's eax and edx, the
-// timer's, the stop's, the horn's end's, a node's and a ram's eax.  The other typed files'
-// functions are called as C++ (guest::direct), the menu files' (the distance, a key, the sirens,
-// a car settled) too (feCore), their eax put back where the code leaves it.
-constexpr reg32 kNodeGap = 0x40e120;
+// what its header gives -- the vectors' subtraction's, the timer's, the stop's, the horn's end's,
+// a node's and a ram's eax.  The other typed files' functions are called as C++ (guest::direct),
+// the menu files' (the distance, a key, the sirens, a car settled) too (feCore), their eax put
+// back where the code leaves it.
 constexpr reg32 kChop = 0x4dfd56, kYRotation = 0x4dfde0, kSubtract = 0x4e0000;
 constexpr reg32 kCarRadio = 0x4127c0, kPlayerCopRadio = 0x412880;
 constexpr reg32 kCopChaseSet = 0x411750;
 constexpr reg32 kParkCar = 0x4a0980;
 constexpr reg32 kSetTimer = 0x405fd0, kSteer = 0x40de30, kStop = 0x40ce70;
 constexpr reg32 kAtNode = 0x40f000, kRamWait = 0x40f050, kRivalNear = 0x40deb0;
-
-/* A call as the code makes it: the return address's slot, and esp as the
- * callee leaves it.  False when the game stopped in it. */
-bool byAddress(App* app, CPU& cpu, reg32 target)
-{
-    cpu.esp -= 4;
-    app->dynamic_call(target, cpu);
-    return !cpu.terminate;
-}
 
 /* A native_frontend_* file's typed core called as C++ (guest::direct): nothing (false) when the
  * game stopped in it (its calls into the game throw fe::Terminated).  tools/game_checks does not
@@ -406,59 +396,23 @@ bool compareBelow(CPU& cpu, const Float& a, const Float& b)
 /* eax as fnstsw ax leaves it: the status word in its low half. */
 reg32 withStatus(const CPU& cpu, reg32 eax) { return (eax & 0xffff0000) | cpu.fpu.status.word; }
 
-/* What a function's frame keeps of its caller's across a call by address: every register but eax. */
-class KeptRegisters
-{
-public:
-    explicit KeptRegisters(CPU& cpu)
-        : cpu_(cpu), ebx_(cpu.ebx), ecx_(cpu.ecx), edx_(cpu.edx), esi_(cpu.esi), edi_(cpu.edi), ebp_(cpu.ebp), esp_(cpu.esp)
-    {
-    }
-    ~KeptRegisters()
-    {
-        cpu_.ebx = ebx_;
-        cpu_.ecx = ecx_;
-        cpu_.edx = edx_;
-        cpu_.esi = esi_;
-        cpu_.edi = edi_;
-        cpu_.ebp = ebp_;
-        cpu_.esp = esp_;
-    }
-
-private:
-    CPU& cpu_;
-    reg32 ebx_, ecx_, edx_, esi_, edi_, ebp_, esp_;
-};
-
 /* 0x40e120 (aiplan::nodesBetween): the gap in nodes to `node` from `from`, signed; nullopt when
- * the game stopped.  Where `edx` asks for what it leaves in edx (it does not keep it), which
- * nodesBetween does not give, by address. */
-std::optional<i32> nodeGap(App* app, CPU& cpu, reg32 node, reg32 from, reg32* edx = nullptr)
+ * the game stopped. */
+std::optional<i32> nodeGap(App* app, CPU& cpu, reg32 node, reg32 from)
 {
-    if (!edx)
-    {
-        const i32 gap = guest::direct<0x40e120, aiplan::nodesBetween>(app, cpu, node, from);
-        if (cpu.terminate)
-            return std::nullopt;
-        return gap;
-    }
-    const KeptRegisters kept(cpu);
-    cpu.eax = node;
-    cpu.edx = from;
-    if (!byAddress(app, cpu, kNodeGap))
+    const i32 gap = guest::direct<0x40e120, aiplan::nodesBetween>(app, cpu, node, from);
+    if (cpu.terminate)
         return std::nullopt;
-    *edx = cpu.edx;
-    return i32(cpu.eax);
+    return gap;
 }
 
-/* The gap's size as the code asks it: twice, the second negated where the first was not over 0;
- * the second's edx to `edx`, where asked. */
-std::optional<i32> nodeGapSize(App* app, CPU& cpu, reg32 node, reg32 from, reg32* edx = nullptr)
+/* The gap's size as the code asks it: twice, the second negated where the first was not over 0. */
+std::optional<i32> nodeGapSize(App* app, CPU& cpu, reg32 node, reg32 from)
 {
     const std::optional<i32> first = nodeGap(app, cpu, node, from);
     if (!first)
         return std::nullopt;
-    const std::optional<i32> second = nodeGap(app, cpu, node, from, edx);
+    const std::optional<i32> second = nodeGap(app, cpu, node, from);
     if (!second)
         return std::nullopt;
     return *first > 0 ? *second : i32(neg(reg32(*second)));
@@ -482,16 +436,6 @@ std::optional<reg32> keyState(App* app, CPU& cpu, reg32 key, reg32 input)
     if (!leftInEax(cpu, state))
         return std::nullopt;
     return state;
-}
-
-/* A call by address with the registers `set` puts in, eax left as the callee leaves it (a word
- * of the radio, a siren, a sound): false when the game stopped. */
-template <typename Set>
-bool callWith(App* app, CPU& cpu, reg32 target, Set set)
-{
-    const KeptRegisters kept(cpu);
-    set();
-    return byAddress(app, cpu, target);
 }
 
 /* An order's node and second word, each a signed word. */
@@ -545,19 +489,12 @@ bool subtractVectors(App* app, CPU& cpu, i32 count, reg32 vector, reg32 other, r
     return !cpu.terminate;
 }
 
-/* 0x4e0000 by address, for pullOverSpot, which leaves the eax and edx it leaves (it does not keep
- * edx) -- which its header does not give: that edx, nullopt when the game stopped. */
-std::optional<reg32> subtractVectorsLeavingEdx(App* app, CPU& cpu, reg32 count, reg32 vector, reg32 other,
+/* 0x4e0000 by address, for pullOverSpot, which leaves the eax it leaves -- which its header does
+ * not give: that eax, nullopt when the game stopped. */
+std::optional<reg32> subtractVectorsLeavingEax(App* app, CPU& cpu, reg32 count, reg32 vector, reg32 other,
                                                reg32 result)
 {
-    const KeptRegisters kept(cpu);
-    cpu.eax = count;
-    cpu.edx = vector;
-    cpu.ebx = other;
-    cpu.ecx = result;
-    if (!byAddress(app, cpu, kSubtract))
-        return std::nullopt;
-    return cpu.edx;
+    return guest::watcomEax(app, cpu, kSubtract, {count, vector, other, result});
 }
 
 /* 0x4e0050 (vertices::scaleVectorsBy): `count` vectors at `vector` scaled by `scale`, to `result`;
@@ -583,7 +520,7 @@ std::optional<Float> dot(App* app, CPU& cpu, reg32 a, reg32 b)
  * and its frame on the guest's stack, under that word, is what it hands the sine's function. */
 bool yRotation(App* app, CPU& cpu, reg32 matrix, reg32 angle)
 {
-    const KeptRegisters kept(cpu);
+    const guest::KeptRegisters kept(cpu);
     cpu.eax = matrix;
     return guest::through(app, cpu, kYRotation, {angle});
 }
@@ -638,11 +575,7 @@ bool setTimer(App* app, CPU& cpu, reg32 car, reg32 how, reg32 frames)
  * give. */
 bool setTimerLeavingEax(App* app, CPU& cpu, reg32 car, reg32 how, reg32 frames)
 {
-    return callWith(app, cpu, kSetTimer, [&] {
-        cpu.eax = car;
-        cpu.edx = how;
-        cpu.ebx = frames;
-    });
+    return guest::watcom(app, cpu, kSetTimer, {car, how, frames});
 }
 
 /* 0x405220 (aidrive::jumpBehind): car's driver reset (`putBack` its mode); false when the game
@@ -707,7 +640,7 @@ bool multiply(App* app, CPU& cpu, reg32 a, reg32 b, reg32 to)
  * stopped. */
 bool callFor(App* app, CPU& cpu, reg32 target, reg32 car)
 {
-    return callWith(app, cpu, target, [&] { cpu.eax = car; });
+    return guest::watcom(app, cpu, target, {car});
 }
 
 /* A node gap the track's way: negated where it runs backwards. */
@@ -718,12 +651,7 @@ i32 alongTrack(App* app, i32 gap) { return gameSettings(app).backwards != 0 ? i3
  * aiplan::carInReach gives only whether. */
 std::optional<reg32> ramWait(App* app, CPU& cpu, reg32 car, reg32 asking)
 {
-    const KeptRegisters kept(cpu);
-    cpu.eax = car;
-    cpu.edx = asking;
-    if (!byAddress(app, cpu, kRamWait))
-        return std::nullopt;
-    return cpu.eax;
+    return guest::watcomEax(app, cpu, kRamWait, {car, asking});
 }
 
 
@@ -1103,17 +1031,13 @@ std::optional<RadioCall> callAboutCar(App* app, CPU& cpu, reg32 cop, reg32 car)
         return RadioCall::TooSlow;
     if (!(i32(at(app, kClock)) > i32(at(app, cop + kCarRadioDue))))
         return RadioCall::TooSoon;
-    if (!callWith(app, cpu, kCarRadio, [&] {
-            cpu.eax = cop;
-            cpu.edx = radioMessage(app, cop);
-        }))
+    if (!guest::watcom(app, cpu, kCarRadio, {cop, radioMessage(app, cop)}))
         return std::nullopt;
     put(app, cop + kCarRadioDue, at(app, kClock) + kRadioCallTicks);
     return RadioCall::Called;
 }
 
-/* 0x401520: callAboutCar for cop eax and car edx; eax and edx as the code leaves them on each way
- * out. */
+/* 0x401520: callAboutCar for cop eax and car edx; eax as the code leaves it on each way out. */
 void copRadioCall(App* app, CPU& cpu)
 {
     const reg32 cop = cpu.eax, car = cpu.edx;
@@ -1135,7 +1059,6 @@ void copRadioCall(App* app, CPU& cpu)
         break;
     case RadioCall::Called:
         cpu.eax = at(app, cop + kCarRadioDue);
-        cpu.edx = radioMessage(app, cop);
         break;
     }
     cpu.esp += 4;
@@ -1147,20 +1070,14 @@ void copRadioCall(App* app, CPU& cpu)
 bool radioTicket(App* app, CPU& cpu, reg32 cop, reg32 car)
 {
     const reg32 left = gameSettings(app).pursuitOutCount - at(app, car + kCarTickets);
-    return callWith(app, cpu, kPlayerCopRadio, [&] {
-        cpu.eax = cop;
-        cpu.edx = radioMessage(app, cop);
-        cpu.ebx = left;
-    });
+    return guest::watcom(app, cpu, kPlayerCopRadio, {cop, radioMessage(app, cop), left});
 }
 
-/* 0x401580: radioTicket for cop eax and car edx; eax as the radio leaves it, edx its message. */
+/* 0x401580: radioTicket for cop eax and car edx; eax as the radio leaves it. */
 void ticketRadio(App* app, CPU& cpu)
 {
-    const reg32 cop = cpu.eax;
-    if (!radioTicket(app, cpu, cop, cpu.edx))
+    if (!radioTicket(app, cpu, cpu.eax, cpu.edx))
         return;
-    cpu.edx = radioMessage(app, cop);
     cpu.esp += 4;
 }
 
@@ -1228,18 +1145,15 @@ void giveOrderOf(App* app, reg32 car, reg32 from, reg8 kind, reg16 node, reg16 w
 }
 
 /* 0x403830: giveOrderOf car eax from edx, the kind bl, node cx, the stack's word, side byte and
- * flag byte; ret 0xc.  eax the order; edx, for a car given it, the word's with the flag byte. */
+ * flag byte; ret 0xc.  eax the order. */
 void giveOrder(App* app, CPU& cpu)
 {
     const reg32 car = cpu.eax;
     const reg32 order = at(app, car + kCarOrder);
-    const bool player = byte(app, car + kCarFlags) & kFlagPlayer;
-    const reg32 word2 = at(app, cpu.esp + 4);
+    const reg16 word2 = reg16(at(app, cpu.esp + 4));
     const reg8 side = byte(app, cpu.esp + 8), flag = byte(app, cpu.esp + 0xc);
-    giveOrderOf(app, car, cpu.edx, cpu.bl, cpu.cx, reg16(word2), side, flag);
+    giveOrderOf(app, car, cpu.edx, cpu.bl, cpu.cx, word2, side, flag);
     cpu.eax = order;
-    if (!player)
-        cpu.edx = (word2 & 0xffffff00) | flag;
     cpu.esp += 4 + 0xc;
 }
 
@@ -1373,7 +1287,6 @@ struct CopStop
     reg32 kind = 0;       // the join's kind
     bool joined = false;  // joinPursuitOf's
     i32 gap = 0;          // the player's cop's
-    reg32 edx = 0;        // what the gap's function left in edx, for the adapter
 };
 
 /* 0x401650: racer stops for cop `index`: the cop's roadblock mark cleared; the racer's pursuit
@@ -1417,12 +1330,11 @@ std::optional<CopStop> stopForCopOf(App* app, CPU& cpu, reg32 racer, reg32 index
         return CopStop{StopWay::Nothing};
     if (at(app, cop + kCarChased) != 0)
         return CopStop{StopWay::Nothing};
-    reg32 edx = 0;
-    const std::optional<i32> gap = nodeGapSize(app, cpu, at(app, racer + kCarNode), at(app, cop + kCarNode), &edx);
+    const std::optional<i32> gap = nodeGapSize(app, cpu, at(app, racer + kCarNode), at(app, cop + kCarNode));
     if (!gap)
         return std::nullopt;
     if (*gap >= kPlayerCopReach)
-        return CopStop{StopWay::TooFar, 0, false, *gap, edx};
+        return CopStop{StopWay::TooFar, 0, false, *gap};
     const std::optional<bool> joined = joinPursuitOf(app, cpu, kJoinPlayerCop, cop, racer, 0.0f);
     if (!joined)
         return std::nullopt;
@@ -1430,8 +1342,7 @@ std::optional<CopStop> stopForCopOf(App* app, CPU& cpu, reg32 racer, reg32 index
     return CopStop{StopWay::Joined, kJoinPlayerCop, *joined};
 }
 
-/* 0x401650: stopForCopOf racer eax, cop index edx; eax and edx as the code leaves them on each way
- * out. */
+/* 0x401650: stopForCopOf racer eax, cop index edx; eax as the code leaves it on each way out. */
 void stopForCop(App* app, CPU& cpu)
 {
     const reg32 racer = cpu.eax, index = cpu.edx;
@@ -1445,13 +1356,11 @@ void stopForCop(App* app, CPU& cpu)
         break;
     case StopWay::TooFar:
         cpu.eax = reg32(stop->gap);
-        cpu.edx = stop->edx;
         break;
     case StopWay::Chasing:
         cpu.eax = at(app, cop + kCarChased);
         break;
     case StopWay::Joined:
-        cpu.edx = cop;
         if (!stop->joined)
             cpu.eax = stop->kind;
         else if (stop->kind == kJoinPlayerCop)
@@ -1659,7 +1568,7 @@ void dropCop(App* app, CPU& cpu)
  * and 2 to the right, or the same to the left): its heading (+0x210, 1/1024 of a turn) turned by
  * that into the orientation at +0x8ec (ea::yRotation), the offset along it from its place to
  * +0x910, less its height (+0x118) at +0x914.  The offset's vector on the guest's stack, handed to
- * the vectors' functions.  The edx the vectors' subtraction leaves (its adapter's); nullopt when
+ * the vectors' functions.  The eax the vectors' subtraction leaves (its adapter's); nullopt when
  * the game stopped. */
 std::optional<reg32> pullOverSpotOf(App* app, CPU& cpu, reg32 car, bool left)
 {
@@ -1678,22 +1587,22 @@ std::optional<reg32> pullOverSpotOf(App* app, CPU& cpu, reg32 car, bool left)
         return std::nullopt;
     if (!scaleVectors(app, cpu, 1, car + kCarSpotSide, floatOf(along), offset))
         return std::nullopt;
-    const std::optional<reg32> edx =
-        subtractVectorsLeavingEdx(app, cpu, 1, car + kCarPlace, offset, car + kCarSpotPlace);
-    if (!edx)
+    const std::optional<reg32> eax =
+        subtractVectorsLeavingEax(app, cpu, 1, car + kCarPlace, offset, car + kCarSpotPlace);
+    if (!eax)
         return std::nullopt;
     putFloat(app, car + kCarSpotHeight, float(fp::sub(f32(app, car + kCarSpotHeight), f32(app, car + kCarHeight))));
-    return edx;
+    return eax;
 }
 
-/* 0x401b50: pullOverSpotOf car eax, on the side edx (not 0 for the left); eax and edx as the
- * vectors' subtraction leaves them. */
+/* 0x401b50: pullOverSpotOf car eax, on the side edx (not 0 for the left); eax as the vectors'
+ * subtraction leaves it. */
 void pullOverSpot(App* app, CPU& cpu)
 {
-    const std::optional<reg32> edx = pullOverSpotOf(app, cpu, cpu.eax, cpu.edx != 0);
-    if (!edx)
+    const std::optional<reg32> eax = pullOverSpotOf(app, cpu, cpu.eax, cpu.edx != 0);
+    if (!eax)
         return;
-    cpu.edx = *edx;
+    cpu.eax = *eax;
     cpu.esp += 4;
 }
 
@@ -1771,16 +1680,13 @@ std::optional<reg32> planPullOverOf(App* app, CPU& cpu, reg32 car)
     return kept;
 }
 
-/* 0x401c20: planPullOverOf car edx; eax the car, edx the kept spot's polygon, else the last snap's
- * mode. */
+/* 0x401c20: planPullOverOf car edx; eax the car. */
 void planPullOver(App* app, CPU& cpu)
 {
     const reg32 car = cpu.edx;
-    const std::optional<reg32> polygon = planPullOverOf(app, cpu, car);
-    if (!polygon)
+    if (!planPullOverOf(app, cpu, car))
         return;
     cpu.eax = car;
-    cpu.edx = *polygon != 0 ? *polygon : 1;
     cpu.esp += 4;
 }
 
@@ -2250,12 +2156,7 @@ std::optional<RivalOutcome> rivalTickOf(App* app, CPU& cpu, reg32 racer)
     {
         reg32 edx, ebx, ecx;
     } kSounds[] = {{3, 0x18, 8}, {3, 0x10, 5}, {2, 0x50, 8}, {1, 0x64, 8}};
-    if (!callWith(app, cpu, kCopChaseSet, [&] {
-            cpu.ecx = kSounds[kind].ecx;
-            cpu.ebx = kSounds[kind].ebx;
-            cpu.edx = kSounds[kind].edx;
-            cpu.eax = racer;
-        }))
+    if (!guest::watcom(app, cpu, kCopChaseSet, {racer, kSounds[kind].edx, kSounds[kind].ebx, kSounds[kind].ecx}))
         return std::nullopt;
     return RivalOutcome{Rivalry::ChaseSound};
 }
@@ -2451,11 +2352,10 @@ void carReversing(App* app, CPU& cpu)
 }
 
 /* 0x4028e0: car onto the side of the road toward node (+0x621 bit 0x10 set where the node is
- * behind it).  The gap; what the gap's function left in edx to `edx`, where asked; nullopt when
- * the game stopped. */
-std::optional<i32> sideTowardNodeOf(App* app, CPU& cpu, reg32 car, reg32 node, reg32* edx = nullptr)
+ * behind it).  The gap; nullopt when the game stopped. */
+std::optional<i32> sideTowardNodeOf(App* app, CPU& cpu, reg32 car, reg32 node)
 {
-    const std::optional<i32> gap = nodeGap(app, cpu, node, at(app, car + kCarNode), edx);
+    const std::optional<i32> gap = nodeGap(app, cpu, node, at(app, car + kCarNode));
     if (!gap)
         return std::nullopt;
     if (*gap >= 0)
@@ -2465,15 +2365,13 @@ std::optional<i32> sideTowardNodeOf(App* app, CPU& cpu, reg32 car, reg32 node, r
     return gap;
 }
 
-/* 0x4028e0: sideTowardNodeOf car eax, node edx; eax the gap, edx as the gap's function left it. */
+/* 0x4028e0: sideTowardNodeOf car eax, node edx; eax the gap. */
 void sideTowardNode(App* app, CPU& cpu)
 {
-    reg32 edx = 0;
-    const std::optional<i32> gap = sideTowardNodeOf(app, cpu, cpu.eax, cpu.edx, &edx);
+    const std::optional<i32> gap = sideTowardNodeOf(app, cpu, cpu.eax, cpu.edx);
     if (!gap)
         return;
     cpu.eax = reg32(*gap);
-    cpu.edx = edx;
     cpu.esp += 4;
 }
 
@@ -2498,13 +2396,7 @@ void sideOfOrder(App* app, CPU& cpu)
  * when the game stopped. */
 std::optional<reg32> atNode(App* app, CPU& cpu, reg32 node, reg32 target, reg32 word2)
 {
-    const KeptRegisters kept(cpu);
-    cpu.eax = node;
-    cpu.edx = target;
-    cpu.ebx = word2;
-    if (!byAddress(app, cpu, kAtNode))
-        return std::nullopt;
-    return cpu.eax;
+    return guest::watcomEax(app, cpu, kAtNode, {node, target, word2});
 }
 
 /* 0x402fd0: whether car is at its order's node (0x40f000, the order's node and second word). */
@@ -2953,21 +2845,13 @@ std::optional<reg32> copsWantedOf(App* app, CPU& cpu, reg32 cop, reg32 racer)
     return i32(more) > 0 ? more : 0;
 }
 
-/* What copsWanted's code leaves in edx: 4 for a racer out of the race, else its pursuit. */
-reg32 copsWantedEdx(App* app, reg32 racer)
-{
-    return at(app, racer + kCarState) == kOutOfPursuits ? kOutOfPursuits : at(app, racer + kCarPursuit);
-}
-
-/* 0x403f80: copsWantedOf cop eax, racer edx; eax the count, edx as the code leaves it. */
+/* 0x403f80: copsWantedOf cop eax, racer edx; eax the count. */
 void copsWanted(App* app, CPU& cpu)
 {
-    const reg32 racer = cpu.edx;
-    const std::optional<reg32> wanted = copsWantedOf(app, cpu, cpu.eax, racer);
+    const std::optional<reg32> wanted = copsWantedOf(app, cpu, cpu.eax, cpu.edx);
     if (!wanted)
         return;
     cpu.eax = *wanted;
-    cpu.edx = copsWantedEdx(app, racer);
     cpu.esp += 4;
 }
 
@@ -3089,10 +2973,7 @@ std::optional<Park> parkCopOf(App* app, CPU& cpu, reg32 cop)
         if (compareBelow(cpu, Float(float(*apart)), f64(app, kParkReach)))
             return Park::RacerNear;
     }
-    if (!callWith(app, cpu, kParkCar, [&] {
-            cpu.eax = cop;
-            cpu.edx = gameSettings(app).backwards;
-        }))
+    if (!guest::watcom(app, cpu, kParkCar, {cop, reg32(gameSettings(app).backwards)}))
         return std::nullopt;
     const reg32 angle = byte(app, at(app, cop + kCarOrder) + kOrderFlag) != 0 ? kQuarterTurnBits : kThreeQuartersBits;
     if (!yRotation(app, cpu, turn, angle) || !multiply(app, cpu, cop + kCarOrientation, turn, cop + kCarOrientation)
@@ -3312,15 +3193,13 @@ bool sendCopAheadOf(App* app, CPU& cpu, reg32 cop, reg32 car)
     return true;
 }
 
-/* 0x404340: sendCopAheadOf cop eax, car edx; eax the order, edx as giveOrder leaves it. */
+/* 0x404340: sendCopAheadOf cop eax, car edx; eax the order. */
 void sendCopAhead(App* app, CPU& cpu)
 {
-    const reg32 cop = cpu.eax, car = cpu.edx;
-    const bool player = byte(app, cop + kCarFlags) & kFlagPlayer;
-    if (!sendCopAheadOf(app, cpu, cop, car))
+    const reg32 cop = cpu.eax;
+    if (!sendCopAheadOf(app, cpu, cop, cpu.edx))
         return;
     cpu.eax = at(app, cop + kCarOrder);
-    cpu.edx = player ? car : 0;
     cpu.esp += 4;
 }
 
@@ -4540,19 +4419,14 @@ reg32 copHitEax(App* app, const CPU& cpu, reg32 cop, const HitOutcome& hit)
     return cpu.eax;
 }
 
-/* 0x402cb0: copHitByCarOf cop eax, racer edx; eax and edx as the code leaves them on each way
- * out. */
+/* 0x402cb0: copHitByCarOf cop eax, racer edx; eax as the code leaves it on each way out. */
 void copHitByCar(App* app, CPU& cpu)
 {
-    const reg32 cop = cpu.eax, racer = cpu.edx;
-    const std::optional<HitOutcome> hit = copHitByCarOf(app, cpu, cop, racer);
+    const reg32 cop = cpu.eax;
+    const std::optional<HitOutcome> hit = copHitByCarOf(app, cpu, cop, cpu.edx);
     if (!hit)
         return;
     cpu.eax = copHitEax(app, cpu, cop, *hit);
-    if (hit->way == CopHit::NotWanted)
-        cpu.edx = copsWantedEdx(app, racer);
-    else if (hit->way == CopHit::Switched || hit->way == CopHit::Joined)
-        cpu.edx = cop;
     cpu.esp += 4;
 }
 

@@ -18,6 +18,7 @@
 #include "native_trackdata.h"
 #include "native_vertices.h"
 #include "native_watcom.h"
+#include "thrash_calls.h"
 
 #include <cstdint>
 #include <cstring>
@@ -51,8 +52,10 @@
  *
  * Each is a typed core -- named parameters, a result, C++ locals -- with an
  * adapter under the game's name for the dispatch and the callers still on
- * registers, which leaves eax, ebx, ecx, edx and the x87's stack as the
- * game's code does (a fcomp's status word in ax where it shows).  The x87's
+ * registers, which leaves eax and the x87's stack as the game's code does (a
+ * fcomp's status word in ax where it shows), the registers it was handed no
+ * argument in as the caller had them.  A callee is handed its argument
+ * registers, every other register kept across the call.  The x87's
  * arithmetic goes through fp::add, sub, mul and div in the code's order, with
  * its operands in the order the code has them, each float the code stores
  * rounded there.  Other typed files' functions are called as C++
@@ -118,15 +121,14 @@ constexpr reg32 kDepthNear = 0x537474, kDepthFar = 0x53747c, kPointerSize = 0x53
 constexpr reg32 kZeroVector = 0x42dd30, kZeroVector2 = 0x42dd3c, kEdgeBits = 0x42dd48;
 
 // What is called by address though another typed file's, for what it leaves
-// in the registers beyond what its core gives back: the boxes' tests (the edx
-// the last leaves is findContact's), the cars' response (its eax and edx are
-// collideCars'), a vector normalized where its eax is againstWalls', vectors
-// added where they are pushApart's last call, the line between the cars
-// (vectors less another: its ebx and ecx are pushed into the tests' frames).
+// in the registers beyond what its core gives back: the boxes' tests, the
+// cars' response (its eax is collideCars'), a vector normalized where its eax
+// is againstWalls', the line between the cars (vectors less another: its ebx
+// and ecx are pushed into the tests' frames).
 constexpr reg32 kFaceInFirst = 0x42dd60, kFaceInSecond = 0x42e010;
 constexpr reg32 kEdgeInFirst = 0x42e2c0, kEdgeInSecond = 0x42e4f0;
 constexpr reg32 kCarsRespond = 0x42f280;
-constexpr reg32 kNormalize = 0x4972f0, kAddVectors = 0x4dffb0;
+constexpr reg32 kNormalize = 0x4972f0;
 constexpr reg32 kSubtractVectors = 0x4e0000;
 
 /* A loop's safepoint, where the generated code has one: the guest's context
@@ -308,6 +310,23 @@ private:
     const reg32 base;
 };
 
+/* A call by address as the code makes it: `registers` into eax, edx, ebx and
+ * ecx in turn, `words` pushed (the first at the top) and taken off after it;
+ * every register but eax as it was before after it (guest::KeptRegisters).
+ * eax as the callee leaves it; nullopt when the game stopped. */
+std::optional<reg32> callWith(App* app, CPU& cpu, reg32 target, std::initializer_list<reg32> registers,
+                              std::initializer_list<reg32> words = {})
+{
+    const guest::KeptRegisters kept(cpu);
+    reg32* const into[] = {&cpu.eax, &cpu.edx, &cpu.ebx, &cpu.ecx};
+    unsigned i = 0;
+    for (const reg32 value : registers)
+        *into[i++] = value;
+    if (!guest::call(app, cpu, target, words))
+        return std::nullopt;
+    return cpu.eax;
+}
+
 }  // namespace
 
 void findContact(App* app, CPU& cpu);
@@ -404,30 +423,23 @@ std::optional<reg32> contactKind(App* app, CPU& cpu, reg32 a, reg32 b, const Pus
     const GuestFrame frame(cpu, 0x14, 0);  // as deep as the code's
     for (const Probe& probe : probes)
     {
-        cpu.eax = a;
-        cpu.edx = b;
-        cpu.ebx = probe.ebx;
-        cpu.ecx = probe.ecx;
-        if (!guest::call(app, cpu, probe.test, {probe.pushed}))
+        const std::optional<reg32> hit = callWith(app, cpu, probe.test, {a, b, probe.ebx, probe.ecx}, {probe.pushed});
+        if (!hit)
             return std::nullopt;
-        if (cpu.eax != 0)
+        if (*hit != 0)
             return probe.kind;
     }
     return 0;
 }
 
-/* 0x42f550: contactKind of car eax and car edx; edx as the last test leaves
- * it. */
+/* 0x42f550: contactKind of car eax and car edx. */
 void findContact(App* app, CPU& cpu)
 {
-    const reg32 ebx = cpu.ebx, ecx = cpu.ecx;
     const std::optional<reg32> kind =
         contactKind(app, cpu, cpu.eax, cpu.edx, {cpu.ebx, cpu.ecx, cpu.esi, cpu.edi, cpu.ebp});
     if (!kind)
         return;
     cpu.eax = *kind;
-    cpu.ebx = ebx;
-    cpu.ecx = ecx;
     cpu.esp += 4;
 }
 
@@ -457,12 +469,6 @@ void turnRound(App* app, reg32 vector, std::initializer_list<reg32> order)
         putByte(app, vector + 4 * word + 3, byte(app, vector + 4 * word + 3) ^ 0x80);
 }
 
-/* What contactNormal's code leaves in eax, ebx and edx. */
-struct NormalLeft
-{
-    reg32 eax, ebx, edx;
-};
-
 // A car's speed (three floats), as contactNormal reads it; its axes.
 constexpr reg32 kCarSpeed = 0xa4, kCarUp = 0xcc;
 
@@ -474,9 +480,10 @@ constexpr reg32 kCarSpeed = 0xa4, kCarUp = 0xcc;
  * its corner offset's sign, in the frame, where the dot products are handed
  * it); else the axis of `car` whose box the contact point is least inside,
  * turned round by its offset's sign.  An axis is turned for `second` where 0
- * is below the offset (a NaN too), else where 0 is above it.  `ebx` the
- * caller's, for what the code leaves in it. */
-std::optional<NormalLeft> normalOfContact(App* app, CPU& cpu, reg32 a, reg32 b, reg32 second, reg32 ebx)
+ * is below the offset (a NaN too), else where 0 is above it.  What the code
+ * leaves in eax: the normal's third word, or what the sign bytes went
+ * through. */
+std::optional<reg32> normalOfContact(App* app, CPU& cpu, reg32 a, reg32 b, reg32 second)
 {
     const bool flag = second != 0;
     const reg32 mover = flag ? a : b, car = flag ? b : a;
@@ -526,8 +533,7 @@ std::optional<NormalLeft> normalOfContact(App* app, CPU& cpu, reg32 a, reg32 b, 
         else if (fAbove(*alongUp, *alongRight))
             chosen = up;
         copy(kContactNormal, chosen);
-        // edx the speed's vector, as the code handed it to the last dot product.
-        return NormalLeft{at(app, kContactNormal + 8), ebx, speed};
+        return at(app, kContactNormal + 8);
     }
     // How far inside each of car's half sizes the corner is.
     float inside[3];
@@ -545,24 +551,17 @@ std::optional<NormalLeft> normalOfContact(App* app, CPU& cpu, reg32 a, reg32 b, 
         axis = 1;
     copy(kContactNormal, car + kCarForward + 0xc * axis);
     if (!turn(offsets[axis]))
-        return NormalLeft{0, ebx, car};
-    // The sign bytes go through bl, cl and bh; al, ch and ah; dl, bl and dh.
+        return 0;
+    // The sign bytes of axis 1 go through al and ah.
     const auto flipped = [&](reg32 word) { return reg32(byte(app, kContactNormal + 4 * word + 3) ^ 0x80); };
-    if (axis == 0)
-    {
-        const reg32 low = flipped(0), high = flipped(1);
-        turnRound(app, kContactNormal, {0, 2, 1});
-        return NormalLeft{1, (ebx & 0xffff0000) | high << 8 | low, car};
-    }
     if (axis == 1)
     {
         const reg32 low = flipped(1), high = flipped(2);
         turnRound(app, kContactNormal, {1, 0, 2});
-        return NormalLeft{high << 8 | low, ebx, car};
+        return high << 8 | low;
     }
-    const reg32 low = flipped(0), high = flipped(1), third = flipped(2);
     turnRound(app, kContactNormal, {0, 2, 1});
-    return NormalLeft{1, (ebx & 0xffffff00) | third, (car & 0xffff0000) | high << 8 | low};
+    return 1;
 }
 
 }  // namespace
@@ -570,14 +569,10 @@ std::optional<NormalLeft> normalOfContact(App* app, CPU& cpu, reg32 a, reg32 b, 
 /* 0x42f8c0: normalOfContact for car eax and car edx, by ebx. */
 void contactNormal(App* app, CPU& cpu)
 {
-    const reg32 ecx = cpu.ecx;
-    const std::optional<NormalLeft> n = normalOfContact(app, cpu, cpu.eax, cpu.edx, cpu.ebx, cpu.ebx);
-    if (!n)
+    const std::optional<reg32> left = normalOfContact(app, cpu, cpu.eax, cpu.edx, cpu.ebx);
+    if (!left)
         return;
-    cpu.eax = n->eax;
-    cpu.ebx = n->ebx;
-    cpu.edx = n->edx;
-    cpu.ecx = ecx;
+    cpu.eax = *left;
     cpu.esp += 4;
 }
 
@@ -622,24 +617,18 @@ bool pushApart(App* app, CPU& cpu, reg32 a, reg32 b, const reg32 (&direction)[3]
     guest::direct<0x4dffb0, vertices::offsetVectorList<true>>(app, cpu, 1, a + kCarPosition, back, a + kCarPosition);
     if (cpu.terminate)
         return false;
-    // By address: the registers it leaves are pushCarsApart's and separateCars'.
-    cpu.eax = 1;
-    cpu.edx = cpu.ecx = b + kCarPosition;
-    cpu.ebx = on;
-    return guest::call(app, cpu, kAddVectors);
+    guest::direct<0x4dffb0, vertices::offsetVectorList<true>>(app, cpu, 1, b + kCarPosition, on, b + kCarPosition);
+    return !cpu.terminate;
 }
 
 /* 0x42fe10: pushApart for car eax and car edx along the direction on the
- * stack; 1, edx as the last call leaves it; ret 0xc. */
+ * stack; 1; ret 0xc. */
 void pushCarsApart(App* app, CPU& cpu)
 {
-    const reg32 ebx = cpu.ebx, ecx = cpu.ecx;
     const reg32 direction[3] = {at(app, cpu.esp + 4), at(app, cpu.esp + 8), at(app, cpu.esp + 0xc)};
     if (!pushApart(app, cpu, cpu.eax, cpu.edx, direction, {cpu.ebx, cpu.ecx, cpu.esi, cpu.ebp}))
         return;
     cpu.eax = 1;
-    cpu.ebx = ebx;
-    cpu.ecx = ecx;
     cpu.esp += 4 + 0xc;
 }
 
@@ -693,13 +682,20 @@ std::optional<reg32> separateTwo(App* app, CPU& cpu, reg32 a, reg32 b)
     reg32 result = 0;
     for (reg32 pushes = 0;;)
     {
-        // The line from the first car to the second, into either frame.
-        cpu.eax = 1;
-        cpu.edx = b + kCarPosition;
-        cpu.ebx = a + kCarPosition;
-        cpu.ecx = line;
-        if (!guest::call(app, cpu, kSubtractVectors))
-            return std::nullopt;
+        // The line from the first car to the second, into either frame; what
+        // the call leaves in ebx and ecx the code pushes in contactKind's.
+        reg32 leftEbx, leftEcx;
+        {
+            const guest::KeptRegisters kept(cpu);
+            cpu.eax = 1;
+            cpu.edx = b + kCarPosition;
+            cpu.ebx = a + kCarPosition;
+            cpu.ecx = line;
+            if (!guest::call(app, cpu, kSubtractVectors))
+                return std::nullopt;
+            leftEbx = cpu.ebx;
+            leftEcx = cpu.ecx;
+        }
         static const reg32 axes[] = {0xc0, 0xcc, 0xd8};
         for (reg32 i = 0; i < 6; ++i)
         {
@@ -711,7 +707,7 @@ std::optional<reg32> separateTwo(App* app, CPU& cpu, reg32 a, reg32 b)
         std::optional<reg32> kind;
         {
             const GuestFrame slot(cpu, 0, 4);  // the call's return address, as the code has it
-            kind = contactKind(app, cpu, a, b, {cpu.ebx, cpu.ecx, a, b, frame - 0});
+            kind = contactKind(app, cpu, a, b, {leftEbx, leftEcx, a, b, frame - 0});
         }
         if (!kind)
             return std::nullopt;
@@ -721,7 +717,7 @@ std::optional<reg32> separateTwo(App* app, CPU& cpu, reg32 a, reg32 b)
         if (*kind == 3 || *kind == 4)
         {
             const GuestFrame slot(cpu, 0, 4);
-            if (!normalOfContact(app, cpu, a, b, *kind == 4 ? 1 : 0, cpu.ebx))
+            if (!normalOfContact(app, cpu, a, b, *kind == 4 ? 1 : 0))
                 return std::nullopt;
         }
         ++pushes;
@@ -741,42 +737,26 @@ std::optional<reg32> separateTwo(App* app, CPU& cpu, reg32 a, reg32 b)
 
 }  // namespace
 
-/* 0x42fee0: separateTwo for car eax and car edx; edx as the last call leaves
- * it. */
+/* 0x42fee0: separateTwo for car eax and car edx. */
 void separateCars(App* app, CPU& cpu)
 {
-    const reg32 ebx = cpu.ebx, ecx = cpu.ecx;
     const std::optional<reg32> r = separateTwo(app, cpu, cpu.eax, cpu.edx);
     if (!r)
         return;
     cpu.eax = *r;
-    cpu.ebx = ebx;
-    cpu.ecx = ecx;
     cpu.esp += 4;
 }
 
 /* The fixed point's multiply, as the code makes it -- imul; shl edx, 16;
  * shr eax, 16; adc eax, edx -- of a by b, rounded by the bit shr shifts
- * out: the product, and edx as the code leaves it. */
-struct Fixed
-{
-    reg32 value, high;
-};
-
-Fixed fixedTimes(reg32 a, reg32 b)
+ * out. */
+reg32 fixedTimes(reg32 a, reg32 b)
 {
     const std::int64_t product = std::int64_t(sreg32(a)) * sreg32(b);
     const reg32 low = reg32(product);
     const reg32 high = reg32(std::uint64_t(product) >> 32) << 16;
-    return {(low >> 16) + high + ((low >> 15) & 1), high};
+    return (low >> 16) + high + ((low >> 15) & 1);
 }
-
-/* What edgeNormal leaves in the registers: the normal's second and third
- * terms in 16.16 (eax and ebx), the last multiply's edx. */
-struct EdgeNormal
-{
-    reg32 second, third, high;
-};
 
 // The corners of a track position's polygon, 16.16 (x, y, z each).
 constexpr reg32 kPlaceCorners = 0x24;
@@ -787,8 +767,9 @@ constexpr reg32 kPlaceCorners = 0x24;
  * (0x4970c0), its cross product with up (0, 1, 0) -- each term a 16.16
  * multiply, the first by edx as the normalizing leaves it -- into floats at
  * `out` (the third term first).  Another edge: the frame's run and rise as
- * they were on the guest's stack. */
-std::optional<EdgeNormal> edgeNormal(App* app, CPU& cpu, reg32 edge, reg32 place, reg32 out)
+ * they were on the guest's stack.  The second term in 16.16, as the code
+ * leaves it in eax. */
+std::optional<reg32> edgeNormal(App* app, CPU& cpu, reg32 edge, reg32 place, reg32 out)
 {
     const GuestFrame frame(cpu, 0x10, 0x28);
     const reg32 vector = frame - 0x10;
@@ -815,16 +796,21 @@ std::optional<EdgeNormal> edgeNormal(App* app, CPU& cpu, reg32 edge, reg32 place
     default:
         break;
     }
-    cpu.eax = vector;
-    cpu.edx = 0;
-    if (!guest::call(app, cpu, 0x4970c0))
-        return std::nullopt;
+    // edx 0 handed over, and the first multiply by what the call leaves there.
+    reg32 leftEdx;
+    {
+        const guest::KeptRegisters kept(cpu);
+        cpu.eax = vector;
+        cpu.edx = 0;
+        if (!guest::call(app, cpu, 0x4970c0))
+            return std::nullopt;
+        leftEdx = cpu.edx;
+    }
     constexpr reg32 kOne = 0x10000;  // up's y; its x and z 0
     const reg32 x = at(app, vector), y = at(app, vector + 4), z = at(app, vector + 8);
-    const reg32 first = fixedTimes(y, cpu.edx).value - fixedTimes(z, kOne).value;
-    const reg32 second = fixedTimes(z, 0).value - fixedTimes(x, 0).value;
-    const Fixed last = fixedTimes(y, 0);
-    const reg32 third = fixedTimes(x, kOne).value - last.value;
+    const reg32 first = fixedTimes(y, leftEdx) - fixedTimes(z, kOne);
+    const reg32 second = fixedTimes(z, 0) - fixedTimes(x, 0);
+    const reg32 third = fixedTimes(x, kOne) - fixedTimes(y, 0);
     const Float scale = loadDouble(app, kFixedScale);
     const Float thirdScaled = fp::mul(Float(sreg32(third)), scale);
     const Float firstScaled = fp::mul(Float(sreg32(first)), scale);
@@ -832,19 +818,16 @@ std::optional<EdgeNormal> edgeNormal(App* app, CPU& cpu, reg32 edge, reg32 place
     storeFloat(app, out + 8, thirdScaled);
     storeFloat(app, out, firstScaled);
     storeFloat(app, out + 4, secondScaled);
-    return EdgeNormal{second, third, last.high};
+    return second;
 }
 
-/* 0x430210: edgeNormal of edge eax of the track position at ebx into edx;
- * eax, ebx and edx as the code leaves them. */
+/* 0x430210: edgeNormal of edge eax of the track position at ebx into edx. */
 void polygonEdgeNormal(App* app, CPU& cpu)
 {
-    const std::optional<EdgeNormal> n = edgeNormal(app, cpu, cpu.eax, cpu.ebx, cpu.edx);
-    if (!n)
+    const std::optional<reg32> second = edgeNormal(app, cpu, cpu.eax, cpu.ebx, cpu.edx);
+    if (!second)
         return;
-    cpu.eax = n->second;
-    cpu.ebx = n->third;
-    cpu.edx = n->high;
+    cpu.eax = *second;
     cpu.esp += 4;
 }
 
@@ -855,19 +838,13 @@ constexpr reg32 kPlacePolygon = 0x10, kPlaceOwnCorners = 0x14, kPlaceHasPolygon 
 constexpr reg32 kPolygonRecordBytes = 0x24;
 constexpr reg32 kCarY = 0x9c, kCarStage = 0x164;
 
-/* What clear leaves: its result, and edx as the code leaves it. */
-struct Clear
-{
-    reg32 result, edx;
-};
-
 /* Whether car `car` is clear of the wall of the track position `place`: 1
  * for no polygon there, a polygon with something of its own, of kind 0 or
  * 14; else whether the car is below the corners' lowest (its four corners,
  * or the polygon record's first four times when the corners are not its
  * own) plus the margin -- -0.6, -2 for a car with a stage (+0x164).  The lowest is kept
  * as a float, as the code stores it, each against the next as doubles. */
-std::optional<Clear> clear(App* app, CPU& cpu, reg32 car, reg32 place)
+std::optional<reg32> clear(App* app, CPU& cpu, reg32 car, reg32 place)
 {
     const GuestFrame frame(cpu, 0x14, 0x30);  // as deep as the code's
     const reg32 kind = guest::direct<0x4207e0, trackdata::placeSurface>(app, cpu, place, 1) & 0x3f;
@@ -875,10 +852,10 @@ std::optional<Clear> clear(App* app, CPU& cpu, reg32 car, reg32 place)
         return std::nullopt;
     const reg32 polygon = at(app, place + kPlaceHasPolygon);
     if (polygon == 0)
-        return Clear{1, polygon};
+        return 1;
     const reg32 corners = place + 0x54;
     if (corners == 0 || at(app, place + kPlaceThing) != 0 || kind == 0 || kind == 0xe)
-        return Clear{1, corners};
+        return 1;
     const reg32 carY = at(app, car + kCarY);
     float lowest = 0;
     for (reg32 i = 0; i < 4; ++i)
@@ -898,21 +875,16 @@ std::optional<Clear> clear(App* app, CPU& cpu, reg32 car, reg32 place)
     }
     const reg32 margin = half(app, car + kCarStage) != 0 ? kWallMarginRace : kWallMarginOther;
     const Float top = fp::add(Float(lowest), loadDouble(app, margin));
-    return Clear{fBelow(floatAt(carY), top) ? 1u : 0u, 4};
+    return fBelow(floatAt(carY), top) ? 1u : 0u;
 }
 
-/* 0x430350: clear of car eax against the track position edx; edx as the
- * code leaves it. */
+/* 0x430350: clear of car eax against the track position edx. */
 void clearOfWall(App* app, CPU& cpu)
 {
-    const reg32 ebx = cpu.ebx, ecx = cpu.ecx;
-    const std::optional<Clear> c = clear(app, cpu, cpu.eax, cpu.edx);
+    const std::optional<reg32> c = clear(app, cpu, cpu.eax, cpu.edx);
     if (!c)
         return;
-    cpu.eax = c->result;
-    cpu.edx = c->edx;
-    cpu.ebx = ebx;
-    cpu.ecx = ecx;
+    cpu.eax = *c;
     cpu.esp += 4;
 }
 
@@ -962,6 +934,7 @@ std::optional<reg32> againstWalls(App* app, CPU& cpu, reg32 car)
     copyWords(axes, car + kCarForward, 9);
     put(app, turnWord, 0);
     // A thirty-second of the speed, and of the turn onto the stack.
+    std::optional<reg32> turnedAny;
     {
         const Float by = loadFloat(app, kSpeedStep);
         storeFloat(app, step, fp::mul(loadFloat(app, car + kCarSpeed), by));
@@ -970,13 +943,12 @@ std::optional<reg32> againstWalls(App* app, CPU& cpu, reg32 car)
         const float turnZ = float(fp::mul(loadFloat(app, car + kCarTurn + 8), by));
         const float turnY = float(fp::mul(loadFloat(app, car + kCarTurn + 4), by));
         const float turnX = float(fp::mul(by, loadFloat(app, car + kCarTurn)));
-        const std::optional<reg32> turnedAny = feCore<0x4a2cc0, frontend::simb::turnMatrix>(
-            app, cpu, turned, bitsOf(turnX), bitsOf(turnY), bitsOf(turnZ), turnWord);
+        turnedAny = feCore<0x4a2cc0, frontend::simb::turnMatrix>(app, cpu, turned, bitsOf(turnX), bitsOf(turnY),
+                                                                bitsOf(turnZ), turnWord);
         if (!turnedAny)
             return std::nullopt;
-        cpu.eax = *turnedAny;  // as the call by address leaves it
     }
-    if (cpu.eax != 0)
+    if (*turnedAny != 0)
     {
         guest::direct<0x4e0280, vertices::multiplyMatrix>(app, cpu, axes, turned, axes);
         if (cpu.terminate)
@@ -1060,10 +1032,7 @@ std::optional<reg32> againstWalls(App* app, CPU& cpu, reg32 car)
             return std::nullopt;
         const auto clearAt = [&](reg32 at) -> std::optional<reg32> {
             const GuestFrame slot(cpu, 0, 4);  // the call's return address, as the code has it
-            const std::optional<Clear> r = clear(app, cpu, car, at);
-            if (!r)
-                return std::nullopt;
-            return r->result;
+            return clear(app, cpu, car, at);
         };
         const std::optional<reg32> clearHere = clearAt(place);
         if (!clearHere)
@@ -1151,13 +1120,13 @@ std::optional<reg32> againstWalls(App* app, CPU& cpu, reg32 car)
         if (crossedWalls == 0)
             continue;
         // By address: the eax it leaves is againstWalls' where the length is 0.
-        cpu.eax = normal;
-        if (!guest::call(app, cpu, kNormalize))
+        const std::optional<reg32> normalized = callWith(app, cpu, kNormalize, {normal});
+        if (!normalized)
             return std::nullopt;
         const Float length = cpu.fpu.take();
         const reg16 word = fcom(cpu, 0.0, length);
         if (word & kC3)
-            return (cpu.eax & 0xffff0000) | word;
+            return (*normalized & 0xffff0000) | word;
         // The wall's corner by the edges' bits: its polygon's, scaled, for
         // the surface.
         copyWords(surface, corner, 3);
@@ -1202,51 +1171,39 @@ std::optional<reg32> againstWalls(App* app, CPU& cpu, reg32 car)
         const reg8 kinds = byte(app, at(app, kPolygonRecords) + at(app, car + kCarSlice) * kPolygonRecordBytes + 0xe);
         const reg32 kind = fAbove(0.0, Float(sideKept)) ? (kinds >> 4) & 0xf : kinds & 0xf;
         put(app, car + kCarSoundKind, kind | 0x40000);
-        cpu.eax = kind | 0x40000;
         if ((byte(app, car + kCarFlags) & 2) && !guest::direct<0x406160, aidrive::reverseIfTipped>(app, cpu, car, normal))
             return std::nullopt;
-        cpu.eax = car;
-        if ((byte(app, car + kCarFlags) & 4) && !guest::call(app, cpu, kWallJolt))
-            return std::nullopt;
-        return cpu.eax;
+        if (!(byte(app, car + kCarFlags) & 4))
+            return car;
+        return callWith(app, cpu, kWallJolt, {car});
     }
 }
 
 }  // namespace
 
-/* 0x4304b0: againstWalls for car eax; every other register as it was. */
+/* 0x4304b0: againstWalls for car eax. */
 void carAgainstWalls(App* app, CPU& cpu)
 {
-    const reg32 ebx = cpu.ebx, ecx = cpu.ecx, edx = cpu.edx;
     const std::optional<reg32> r = againstWalls(app, cpu, cpu.eax);
     if (!r)
         return;
     cpu.eax = *r;
-    cpu.ebx = ebx;
-    cpu.ecx = ecx;
-    cpu.edx = edx;
     cpu.esp += 4;
 }
 
 namespace
 {
 
-/* What collide leaves: whether the cars touched at all, and separateCars'
- * last result. */
-struct Collided
-{
-    bool touched;
-    reg32 last;
-};
-
 /* Cars a and b collided: taken apart (separateCars) up to 33 times while
  * they still touch, and if they touched at all their response worked out
  * at the contact's point (0x42f280, the cars in eax and edx, the point in
- * ebx). */
-std::optional<Collided> collide(App* app, CPU& cpu, reg32 a, reg32 b)
+ * ebx).  What the code leaves in eax: the response's, or separateCars' last
+ * result where they never touched. */
+std::optional<reg32> collide(App* app, CPU& cpu, reg32 a, reg32 b)
 {
     const GuestFrame frame(cpu, 0x14, 0);  // separateCars' frame is handed to its callees
-    Collided c{false, 0};
+    bool touched = false;
+    reg32 last = 0;
     for (int tries = 0; tries < 33; ++tries)
     {
         safepoint(app, cpu);
@@ -1257,36 +1214,25 @@ std::optional<Collided> collide(App* app, CPU& cpu, reg32 a, reg32 b)
         }
         if (!r)
             return std::nullopt;
-        c.last = *r;
-        if (c.last == 0)
+        last = *r;
+        if (last == 0)
             break;
-        c.touched = true;
+        touched = true;
     }
-    if (c.touched)
-    {
-        cpu.eax = a;
-        cpu.edx = b;
-        cpu.ebx = kContactPoint;
-        if (!guest::call(app, cpu, kCarsRespond))
-            return std::nullopt;
-    }
-    return c;
+    if (touched)
+        return callWith(app, cpu, kCarsRespond, {a, b, kContactPoint});
+    return last;
 }
 
 }  // namespace
 
-/* 0x430c80: collide for car eax and car edx; eax and edx the last result
- * when they never touched, else as the response leaves them. */
+/* 0x430c80: collide for car eax and car edx. */
 void collideCars(App* app, CPU& cpu)
 {
-    const reg32 ebx = cpu.ebx, ecx = cpu.ecx;
-    const std::optional<Collided> c = collide(app, cpu, cpu.eax, cpu.edx);
-    if (!c)
+    const std::optional<reg32> left = collide(app, cpu, cpu.eax, cpu.edx);
+    if (!left)
         return;
-    if (!c->touched)
-        cpu.eax = cpu.edx = c->last;
-    cpu.ebx = ebx;
-    cpu.ecx = ecx;
+    cpu.eax = *left;
     cpu.esp += 4;
 }
 
@@ -1296,11 +1242,6 @@ void clearCarList(App* app, CPU& cpu)
     put(app, kCarCount, 0);
     cpu.esp += 4;
 }
-
-namespace
-{
-
-}  // namespace
 
 /* Whether the point at `point` (x and z; y taken as the car's) is within
  * `reach` of car `car`'s box along its forward and right axes: the point less
@@ -1316,7 +1257,6 @@ std::optional<reg32> inReach(App* app, CPU& cpu, reg32 car, reg32 point, reg32 r
         const std::optional<Float> along = dot(app, cpu, car + axis.first, offset);
         if (!along)
             return std::nullopt;
-        cpu.edx = offset;  // as the code's call left it: the offset it handed in edx
         const float size = positive(float(*along));
         if (fBelow(fp::add(loadFloat(app, car + axis.second), floatAt(reachBits)), Float(size)))
             return 0;
@@ -1325,17 +1265,14 @@ std::optional<reg32> inReach(App* app, CPU& cpu, reg32 car, reg32 point, reg32 r
 }
 
 /* 0x430ce0: inReach for car eax, the point at edx, the reach and the
- * offset's vector on the stack; ret 8.  edx as the last call leaves it. */
+ * offset's vector on the stack; ret 8. */
 void objectInReach(App* app, CPU& cpu)
 {
-    const reg32 ebx = cpu.ebx, ecx = cpu.ecx;
     const std::optional<reg32> r =
         inReach(app, cpu, cpu.eax, cpu.edx, at(app, cpu.esp + 4), at(app, cpu.esp + 8));
     if (!r)
         return;
     cpu.eax = *r;
-    cpu.ebx = ebx;
-    cpu.ecx = ecx;
     cpu.esp += 4 + 8;
 }
 
@@ -1376,9 +1313,10 @@ std::optional<reg32> addToList(App* app, CPU& cpu, reg32 car)
         if (!near)
             continue;
         const GuestFrame slot(cpu, 0, 4);  // the call's return address, as the code has it
-        if (!collide(app, cpu, car, other))
+        const std::optional<reg32> collided = collide(app, cpu, car, other);
+        if (!collided)
             return std::nullopt;
-        eax = cpu.eax;
+        eax = *collided;
     }
     put(app, kCarCount, at(app, kCarCount) + 1);
     return eax;
@@ -1460,11 +1398,7 @@ std::optional<reg32> againstObjects(App* app, CPU& cpu, reg32 car)
         const Float toFixed = loadDouble(app, kObjectToFixed);
         const reg32 joltZ = reg32(fp::toInteger<sreg32>(fp::mul(loadFloat(app, offset + 8), toFixed)));
         const reg32 joltX = reg32(fp::toInteger<sreg32>(fp::mul(loadFloat(app, offset), toFixed)));
-        cpu.eax = car;
-        cpu.edx = how;
-        cpu.ebx = joltX;
-        cpu.ecx = joltZ;
-        if (!guest::call(app, cpu, kObjectJolt))
+        if (!callWith(app, cpu, kObjectJolt, {car, how, joltX, joltZ}))
             return std::nullopt;
         if (how == 1)
         {
@@ -1482,10 +1416,7 @@ std::optional<reg32> againstObjects(App* app, CPU& cpu, reg32 car)
             guest::direct<0x4dffb0, vertices::offsetVectorList<true>>(app, cpu, i32(how), point, scaled, scaled);
             if (cpu.terminate)
                 return std::nullopt;
-            cpu.eax = car;
-            cpu.edx = away;
-            cpu.ebx = scaled;
-            if (!guest::call(app, cpu, kObjectResponse, {0}))
+            if (!callWith(app, cpu, kObjectResponse, {car, away, scaled}, {0}))
                 return std::nullopt;
             if ((at(app, car + kCarSoundLoudness) & 0x7fffffff) != 0)
             {
@@ -1532,31 +1463,23 @@ std::optional<reg32> againstObjects(App* app, CPU& cpu, reg32 car)
     }
 }
 
-/* 0x430da0: againstObjects for car eax; every other register as it was. */
+/* 0x430da0: againstObjects for car eax. */
 void carAgainstObjects(App* app, CPU& cpu)
 {
-    const reg32 ebx = cpu.ebx, ecx = cpu.ecx, edx = cpu.edx;
     const std::optional<reg32> r = againstObjects(app, cpu, cpu.eax);
     if (!r)
         return;
     cpu.eax = *r;
-    cpu.ebx = ebx;
-    cpu.ecx = ecx;
-    cpu.edx = edx;
     cpu.esp += 4;
 }
 
-/* 0x4310c0: addToList for car eax; ebx, ecx and edx as the caller had them. */
+/* 0x4310c0: addToList for car eax. */
 void addCarToList(App* app, CPU& cpu)
 {
-    const reg32 ebx = cpu.ebx, ecx = cpu.ecx, edx = cpu.edx;
     const std::optional<reg32> r = addToList(app, cpu, cpu.eax);
     if (!r)
         return;
     cpu.eax = *r;
-    cpu.ebx = ebx;
-    cpu.ecx = ecx;
-    cpu.edx = edx;
     cpu.esp += 4;
 }
 
@@ -1567,79 +1490,62 @@ constexpr reg32 kCarOut = 0x88, kCarIn = 0x89, kCarCountdown = 0x174, kCarCollid
 
 /* A car's collisions for the frame: its countdown on; for a car in the race
  * the other cars (once the countdown is out), the track's objects (by the
- * flag 0x40, likewise) and walls (0x80), then 0x4a0140 (sima's).  False when
- * the game stopped; eax as the code leaves it. */
-bool frameCollisions(App* app, CPU& cpu, reg32 car)
+ * flag 0x40, likewise) and walls (0x80), then 0x4a0140 (sima's).  What the
+ * code leaves in eax: that one's, or the car for a car out of the race;
+ * nullopt when the game stopped. */
+std::optional<reg32> frameCollisions(App* app, CPU& cpu, reg32 car)
 {
     const GuestFrame frame(cpu, 0x14, 0);  // as deep as the code's, for its callees' frames
     const reg32 countdown = at(app, car + kCarCountdown);
     if (sreg32(countdown) > 0)
         put(app, car + kCarCountdown, countdown - 1);
     if (byte(app, car + kCarOut) != 0 || byte(app, car + kCarIn) == 0)
-        return true;
+        return car;
     const bool settled = at(app, car + kCarCountdown) == 0;
     if (settled)
     {
         const GuestFrame slot(cpu, 0, 4);  // the call's return address, as the code has it
         if (!addToList(app, cpu, car))
-            return false;
+            return std::nullopt;
     }
     if ((byte(app, car + kCarCollides) & 0x40) && settled)
     {
         const GuestFrame slot(cpu, 0, 4);  // the call's return address, as the code has it
         if (!againstObjects(app, cpu, car))
-            return false;
+            return std::nullopt;
     }
     if (byte(app, car + kCarCollides) & 0x80)
     {
         const GuestFrame slot(cpu, 0, 4);
         if (!againstWalls(app, cpu, car))
-            return false;
+            return std::nullopt;
     }
-    const std::optional<reg32> onRoad = feCore<0x4a0140, frontend::sima::carOntoRoad>(app, cpu, car);
-    if (!onRoad)
-        return false;
-    cpu.eax = *onRoad;  // as the call by address leaves it
-    return true;
+    return feCore<0x4a0140, frontend::sima::carOntoRoad>(app, cpu, car);
 }
 
-/* 0x4311d0 (a car's +0x618): frameCollisions for car eax; every other
- * register as it was. */
+/* 0x4311d0 (a car's +0x618): frameCollisions for car eax. */
 void carCollisions(App* app, CPU& cpu)
 {
-    const reg32 ebx = cpu.ebx, ecx = cpu.ecx, edx = cpu.edx;
-    if (!frameCollisions(app, cpu, cpu.eax))
+    const std::optional<reg32> left = frameCollisions(app, cpu, cpu.eax);
+    if (!left)
         return;
-    cpu.ebx = ebx;
-    cpu.ecx = ecx;
-    cpu.edx = edx;
+    cpu.eax = *left;
     cpu.esp += 4;
 }
 
-/* What squaredDistance leaves: the square, and the parts the code leaves in
- * ecx (z's difference) and edx (x's and y's squares summed). */
-struct Squared
-{
-    reg32 square, dz, xy;
-};
-
 /* The square of the distance between the points (ax, ay, az) and (bx, by,
  * bz), in integers as they wrap. */
-Squared squaredDistance(reg32 ax, reg32 ay, reg32 az, reg32 bx, reg32 by, reg32 bz)
+reg32 squaredDistance(reg32 ax, reg32 ay, reg32 az, reg32 bx, reg32 by, reg32 bz)
 {
     const reg32 dx = ax - bx, dy = ay - by, dz = az - bz;
-    const reg32 xy = dy * dy + dx * dx;
-    return {dz * dz + xy, dz, xy};
+    return dz * dz + (dy * dy + dx * dx);
 }
 
 /* 0x431250: squaredDistance of (eax, edx, ebx) and (ecx, and the two on the
  * stack); ret 8. */
 void distanceSquared(App* app, CPU& cpu)
 {
-    const Squared s = squaredDistance(cpu.eax, cpu.edx, cpu.ebx, cpu.ecx, at(app, cpu.esp + 4), at(app, cpu.esp + 8));
-    cpu.eax = s.square;
-    cpu.ecx = s.dz;
-    cpu.edx = s.xy;
+    cpu.eax = squaredDistance(cpu.eax, cpu.edx, cpu.ebx, cpu.ecx, at(app, cpu.esp + 4), at(app, cpu.esp + 8));
     cpu.esp += 4 + 8;
 }
 
@@ -1649,35 +1555,32 @@ constexpr reg32 kPoints = 0x5537c4, kPointCount = 0x167, kPointBytes = 0x10;
 /* The value of the point nearest (x, y, z) among the points; the first of
  * those as near as another (compared signed, as they wrap), the search over
  * at a distance of 0. */
-Nearest nearest(App* app, reg32 x, reg32 y, reg32 z)
+reg32 nearest(App* app, reg32 x, reg32 y, reg32 z)
 {
     const auto distance = [&](reg32 i) {
         const reg32 p = kPoints + i * kPointBytes;
         return squaredDistance(x, y, z, at(app, p), at(app, p + 4), at(app, p + 8));
     };
-    Squared d = distance(0);
     reg32 best = 0;
-    sreg32 bestSquare = sreg32(d.square);
+    sreg32 bestSquare = sreg32(distance(0));
     for (reg32 i = 1; sreg32(i) < sreg32(kPointCount); ++i)
     {
-        d = distance(i);
-        if (sreg32(d.square) < bestSquare)
+        const reg32 square = distance(i);
+        if (sreg32(square) < bestSquare)
         {
             best = i;
-            bestSquare = sreg32(d.square);
-            if (d.square == 0)
+            bestSquare = sreg32(square);
+            if (square == 0)
                 break;
         }
     }
-    return {at(app, kPoints + best * kPointBytes + 0xc), d.xy};
+    return at(app, kPoints + best * kPointBytes + 0xc);
 }
 
 /* 0x431280: nearest to (eax, edx, ebx). */
 void nearestPoint(App* app, CPU& cpu)
 {
-    const Nearest n = nearest(app, cpu.eax, cpu.edx, cpu.ebx);
-    cpu.eax = n.value;
-    cpu.edx = n.edx;
+    cpu.eax = nearest(app, cpu.eax, cpu.edx, cpu.ebx);
     cpu.esp += 4;
 }
 
@@ -1687,26 +1590,21 @@ constexpr reg32 kCollHandle = 0x5eff18, kCollHeader = 0x5eff08;
 constexpr reg32 kCollVersion = 0x5eff0c, kCollSize = 0x5eff10, kCollCount = 0x5eff14;
 constexpr reg32 kCollMagic = 0x53746c;
 constexpr reg32 kCollHeaderBytes = 0x10, kCollVersionWanted = 0xb;
-// EA's files (native_ea_files.h) are called as C++, but readColl's read: the edx it leaves is
-// readCollFile's.
-constexpr reg32 kFileRead = 0x4e2de0;   // the handle eax, to edx, ebx bytes
+// EA's files (native_ea_files.h) are called as C++.
 
-/* The COLL file `handle` closed, its handle 0 -- as the code writes it,
- * edx's 0 as the close keeps it; eax what the close gives back.  False when
- * the game stopped. */
-bool closeColl(App* app, CPU& cpu, reg32 handle)
+/* The COLL file `handle` closed, its handle 0.  What the close gives back,
+ * as the code leaves it in eax; nullopt when the game stopped. */
+std::optional<reg32> closeColl(App* app, CPU& cpu, reg32 handle)
 {
     const std::optional<reg32> closed = guest::direct<0x4e2da0, ea::closeChecked>(app, cpu, handle);
-    if (!closed)
-        return false;
-    cpu.eax = *closed;
-    put(app, kCollHandle, 0);
-    return true;
+    if (closed)
+        put(app, kCollHandle, 0);
+    return closed;
 }
 
 /* The COLL file named `name` opened (one open before closed first): its
  * header read and checked -- 'COLL', version 11.  The handle, or 0 with the
- * file closed (its handle 0 as the close keeps ebx's). */
+ * file closed (its handle 0). */
 std::optional<reg32> openColl(App* app, CPU& cpu, reg32 name)
 {
     const GuestFrame frame(cpu, 0x14, 8);  // the open's two words
@@ -1721,18 +1619,13 @@ std::optional<reg32> openColl(App* app, CPU& cpu, reg32 name)
     bool good = false;
     if (*read != 0)
     {
-        // The registers as the code loads them for it (ebx reaches the close).
-        cpu.eax = kCollHeader;
-        cpu.edx = kCollMagic;
-        cpu.ebx = 4;
-        cpu.eax = guest::direct<0x4eb390, watcom::clib::strncmp>(app, cpu, kCollHeader, kCollMagic, 4u);
+        const reg32 differs = guest::direct<0x4eb390, watcom::clib::strncmp>(app, cpu, kCollHeader, kCollMagic, 4u);
         if (cpu.terminate)
             return std::nullopt;
-        good = cpu.eax == 0 && at(app, kCollVersion) == kCollVersionWanted;
+        good = differs == 0 && at(app, kCollVersion) == kCollVersionWanted;
     }
     if (good)
         return at(app, kCollHandle);
-    // The handle 0, ebx's as the close keeps it.
     if (!guest::direct<0x4e2da0, ea::closeChecked>(app, cpu, at(app, kCollHandle)))
         return std::nullopt;
     put(app, kCollHandle, 0);
@@ -1745,33 +1638,27 @@ bool readColl(App* app, CPU& cpu, reg32 handle, reg32 to)
 {
     if (!guest::direct<0x4e2e60, ea::seekChecked>(app, cpu, handle, kCollHeaderBytes))
         return false;
-    cpu.eax = handle;
-    cpu.edx = to;
-    cpu.ebx = at(app, kCollSize) - kCollHeaderBytes;
-    return guest::call(app, cpu, kFileRead);
+    return guest::direct<0x4e2de0, ea::readChecked>(app, cpu, handle, to, at(app, kCollSize) - kCollHeaderBytes)
+        .has_value();
 }
 
 /* 0x431320: openColl for the name at eax. */
 void openCollFile(App* app, CPU& cpu)
 {
-    const reg32 ebx = cpu.ebx, ecx = cpu.ecx, edx = cpu.edx;
     const std::optional<reg32> handle = openColl(app, cpu, cpu.eax);
     if (!handle)
         return;
     cpu.eax = *handle;
-    cpu.ebx = ebx;
-    cpu.ecx = ecx;
-    cpu.edx = edx;
     cpu.esp += 4;
 }
 
-/* 0x4313b0: closeColl for eax; edx as the caller had it. */
+/* 0x4313b0: closeColl for eax. */
 void closeCollFile(App* app, CPU& cpu)
 {
-    const reg32 edx = cpu.edx;
-    if (!closeColl(app, cpu, cpu.eax))
+    const std::optional<reg32> closed = closeColl(app, cpu, cpu.eax);
+    if (!closed)
         return;
-    cpu.edx = edx;
+    cpu.eax = *closed;
     cpu.esp += 4;
 }
 
@@ -1788,15 +1675,12 @@ void collFileSize(App* app, CPU& cpu)
     cpu.esp += 4;
 }
 
-/* 0x4313e0: readColl of the COLL file eax into edx; 1, edx as the read
- * leaves it. */
+/* 0x4313e0: readColl of the COLL file eax into edx; 1. */
 void readCollFile(App* app, CPU& cpu)
 {
-    const reg32 ebx = cpu.ebx;
     if (!readColl(app, cpu, cpu.eax, cpu.edx))
         return;
     cpu.eax = 1;
-    cpu.ebx = ebx;
     cpu.esp += 4;
 }
 
@@ -1855,8 +1739,7 @@ std::optional<reg32> controls(App* app, CPU& cpu, reg32 car)
         if (!guest::direct<0x405740, aidrive::driveCop>(app, cpu, car))
             return std::nullopt;
     }
-    cpu.eax = car;
-    if (!guest::call(app, cpu, at(app, car + kCarOwnControls)))
+    if (!callWith(app, cpu, at(app, car + kCarOwnControls), {car}))
         return std::nullopt;
     putByte(app, car + kCarThrottleAsked, byte(app, kControls + 4));
     putByte(app, car + kCarBrakeAsked, byte(app, kControls + 5));
@@ -1894,24 +1777,18 @@ std::optional<reg32> controls(App* app, CPU& cpu, reg32 car)
     return eax;
 }
 
-/* 0x431430 (a car's +0x600): controls for car eax; ebx, ecx and edx as the
- * caller had them. */
+/* 0x431430 (a car's +0x600): controls for car eax. */
 void playerControls(App* app, CPU& cpu)
 {
-    const reg32 ebx = cpu.ebx, ecx = cpu.ecx, edx = cpu.edx;
     const std::optional<reg32> eax = controls(app, cpu, cpu.eax);
     if (!eax)
         return;
     cpu.eax = *eax;
-    cpu.ebx = ebx;
-    cpu.ecx = ecx;
-    cpu.edx = edx;
     cpu.esp += 4;
 }
 
 // The render states the game keeps (setRenderState's cache), -1 for none.
 constexpr reg32 kStateTexture = 0x554e54, kStateAlpha = 0x554e58, kStateDepthBias = 0x554e5c;
-constexpr reg32 kThrashSetState = 0x9ef96c;  // THRASH_setstate's pointer: (state, value), stdcall
 // The render states' numbers the drawers set themselves.
 constexpr reg32 kTextureState = 1, kFogColourState = 3, kAlphaTestState = 0x68, kDepthBiasState = 0x15;
 // The driver's depth for the HUD (0 off the card), the card's, the race's depth bias.
@@ -1951,14 +1828,12 @@ bool setStates(App* app, CPU& cpu, std::initializer_list<std::pair<reg32, reg32>
     return true;
 }
 
-/* The render-state functions' adapter: the core, edx as the caller had it
- * (their code pushes and pops it), eax as the last call leaves it. */
-void keepingEdx(App* app, CPU& cpu, bool (*core)(App*, CPU&))
+/* The render-state functions' adapter: the core, eax as the last call
+ * leaves it. */
+void statesAdapter(App* app, CPU& cpu, bool (*core)(App*, CPU&))
 {
-    const reg32 edx = cpu.edx;
     if (!core(app, cpu))
         return;
-    cpu.edx = edx;
     cpu.esp += 4;
 }
 
@@ -1991,7 +1866,7 @@ bool pictureStates(App* app, CPU& cpu)
 bool hudStates(App* app, CPU& cpu)
 {
     put(app, kHudDepth, gameSettings(app).projectedText != 0 ? at(app, kCardDepth) : 0);
-    if (!guest::call(app, cpu, kDepthOffsets))
+    if (!guest::watcom(app, cpu, kDepthOffsets, {}))
         return false;
     forgetStates(app);
     return setRenderState(app, cpu, 4, at(app, kHudDepth)) && setRenderState(app, cpu, 0xd, 1)
@@ -2009,25 +1884,25 @@ bool screenStates(App* app, CPU& cpu)
 /* 0x431aa0: textStates. */
 void statesForText(App* app, CPU& cpu)
 {
-    keepingEdx(app, cpu, textStates);
+    statesAdapter(app, cpu, textStates);
 }
 
 /* 0x431af0: pictureStates. */
 void statesForPictures(App* app, CPU& cpu)
 {
-    keepingEdx(app, cpu, pictureStates);
+    statesAdapter(app, cpu, pictureStates);
 }
 
 /* 0x431b40: hudStates. */
 void statesForHud(App* app, CPU& cpu)
 {
-    keepingEdx(app, cpu, hudStates);
+    statesAdapter(app, cpu, hudStates);
 }
 
 /* 0x431bc0: screenStates. */
 void statesForScreens(App* app, CPU& cpu)
 {
-    keepingEdx(app, cpu, screenStates);
+    statesAdapter(app, cpu, screenStates);
 }
 
 /* A view pass's layer that draws nothing: what its callers hand it (eax how many quads, edx the
@@ -2211,12 +2086,12 @@ constexpr reg32 kDrawFlat = 0x4c0b20;        // a flat triangle, eax and edx
 namespace
 {
 
-/* THRASH_setstate (state, value) through its pointer, the value kept at
- * `kept` first.  False when the game stopped. */
+/* THRASH_setstate (state, value) through its pointer (thrash_calls.h), the
+ * value kept at `kept` first.  False when the game stopped. */
 bool setThrashState(App* app, CPU& cpu, reg32 state, reg32 value, reg32 kept)
 {
     put(app, kept, value);
-    return guest::call(app, cpu, at(app, kThrashSetState), {state, value});
+    return guest::driver<thrash::kThrashSetState, &port::driver::setState>(app, cpu, state, value).has_value();
 }
 
 /* The drawers' alpha test, on for `on`, set only where it changes. */
@@ -2255,14 +2130,11 @@ bool depthBiasState(App* app, CPU& cpu, reg8 flags)
     return setThrashState(app, cpu, kDepthBiasState, bias, kStateDepthBias);
 }
 
-/* A drawer's draw call: the corners in eax, edx, ebx and ecx. */
-bool drawCorners(App* app, CPU& cpu, reg32 target, reg32 a, reg32 b, reg32 c, reg32 d)
+/* A drawer's draw call: the corners in eax, edx, ebx and ecx (a triangle's
+ * three). */
+bool drawCorners(App* app, CPU& cpu, reg32 target, std::initializer_list<reg32> corners)
 {
-    cpu.eax = a;
-    cpu.edx = b;
-    cpu.ebx = c;
-    cpu.ecx = d;
-    return guest::call(app, cpu, target);
+    return callWith(app, cpu, target, corners).has_value();
 }
 
 /* The next record of a drawer's run: 0 at the list's end, the record itself
@@ -2324,7 +2196,7 @@ std::optional<reg32> texturedTriangles(App* app, CPU& cpu, reg32 record)
         if (now != 0 && (byte(app, now + kTextureFlags) & 8)
             && !guest::direct<0x432390, graphics::softwareBlendColour>(app, cpu, at(app, first + 0x10)))
             return std::nullopt;
-        if (!drawCorners(app, cpu, kDrawTriangle, first, second, third, cpu.ecx))
+        if (!drawCorners(app, cpu, kDrawTriangle, {first, second, third}))
             return std::nullopt;
         if (const auto next = runEnds(app, at(app, record), kKindTriangle))
             return next;
@@ -2341,9 +2213,7 @@ std::optional<reg32> flatTriangle(App* app, CPU& cpu, reg32 record)
         return std::nullopt;
     if (!alphaState(app, cpu, (byte(app, record + kRecordFlags) & 1) != 0))
         return std::nullopt;
-    cpu.eax = first;
-    cpu.edx = second;
-    if (!guest::call(app, cpu, kDrawFlat))
+    if (!drawCorners(app, cpu, kDrawFlat, {first, second}))
         return std::nullopt;
     return at(app, record);
 }
@@ -2375,7 +2245,7 @@ std::optional<reg32> trianglesByZ(App* app, CPU& cpu, reg32 record)
         }
         if (!textureState(app, cpu, record, texture) || !depthBiasState(app, cpu, flags))
             return std::nullopt;
-        if (!drawCorners(app, cpu, (flags & 0x10) ? kDrawTriangleZ : kDrawTriangle, first, second, third, cpu.ecx))
+        if (!drawCorners(app, cpu, (flags & 0x10) ? kDrawTriangleZ : kDrawTriangle, {first, second, third}))
             return std::nullopt;
         if (const auto next = runEnds(app, at(app, record), kKindTriangle))
             return next;
@@ -2410,7 +2280,7 @@ std::optional<reg32> quadsByZ(App* app, CPU& cpu, reg32 record)
         }
         if (!textureState(app, cpu, record, texture) || !depthBiasState(app, cpu, flags))
             return std::nullopt;
-        if (!drawCorners(app, cpu, (flags & 0x10) ? kDrawQuadZ : kDrawQuad, first, second, third, fourth))
+        if (!drawCorners(app, cpu, (flags & 0x10) ? kDrawQuadZ : kDrawQuad, {first, second, third, fourth}))
             return std::nullopt;
         if (const auto next = runEnds(app, at(app, record), kKindQuad))
             return next;
@@ -2456,14 +2326,11 @@ void drawFlatTrianglesAgain(App* app, CPU& cpu)
  * game stopped. */
 std::optional<reg32> ownColourTriangles(App* app, CPU& cpu, reg32 record)
 {
-    cpu.eax = record;
-    if (!guest::call(app, cpu, at(app, kHudDepth) != 0 ? 0x434380 : 0x433e30))
-        return std::nullopt;
-    return cpu.eax;
+    return callWith(app, cpu, at(app, kHudDepth) != 0 ? 0x434380 : 0x433e30, {record});
 }
 
 /* 0x4347b0 (a polygon list's drawer): ownColourTriangles for the record in
- * eax; the other registers as the callee leaves them. */
+ * eax. */
 void drawColouredTriangles(App* app, CPU& cpu)
 {
     const std::optional<reg32> next = ownColourTriangles(app, cpu, cpu.eax);
@@ -2481,16 +2348,13 @@ std::optional<reg32> stateFromRecord(App* app, CPU& cpu, reg32 record)
     return at(app, record);
 }
 
-/* 0x434850 (a polygon list's drawer): stateFromRecord; edx as the caller had
- * it. */
+/* 0x434850 (a polygon list's drawer): stateFromRecord. */
 void stateRecord(App* app, CPU& cpu)
 {
-    const reg32 edx = cpu.edx;
     const std::optional<reg32> next = stateFromRecord(app, cpu, cpu.eax);
     if (!next)
         return;
     cpu.eax = *next;
-    cpu.edx = edx;
     cpu.esp += 4;
 }
 
@@ -2499,7 +2363,8 @@ constexpr reg32 kDrawers = 0x5f0780;
 
 /* The polygon list from `record`: state 0xd 1, then each record handed to
  * the drawer of its kind (called by address: the table's), which gives back
- * the next.  eax as the last call leaves it.  False when the game stopped. */
+ * the next.  eax as the last call leaves it (0 after a drawer, the state's
+ * answer for an empty list).  False when the game stopped. */
 bool drawList(App* app, CPU& cpu, reg32 record)
 {
     if (!setRenderState(app, cpu, 0xd, 1))
@@ -2508,23 +2373,20 @@ bool drawList(App* app, CPU& cpu, reg32 record)
     {
         safepoint(app, cpu);
         const reg32 kind = reg32(sreg32(at(app, record + 2)) >> 16);
-        cpu.eax = record;
-        if (!guest::call(app, cpu, at(app, kind * 4 + kDrawers)))
+        const std::optional<reg32> next = callWith(app, cpu, at(app, kind * 4 + kDrawers), {record});
+        if (!next)
             return false;
-        record = cpu.eax;
+        record = *next;
     }
     safepoint(app, cpu);
     return true;
 }
 
-/* 0x434950: drawList from eax; ecx and edx as the caller had them. */
+/* 0x434950: drawList from eax. */
 void drawRecords(App* app, CPU& cpu)
 {
-    const reg32 ecx = cpu.ecx, edx = cpu.edx;
     if (!drawList(app, cpu, cpu.eax))
         return;
-    cpu.ecx = ecx;
-    cpu.edx = edx;
     cpu.esp += 4;
 }
 
@@ -2559,17 +2421,13 @@ void setMirrored(App* app, CPU& cpu)
 }
 
 /* 0x4349d0: setViewMirrored for the view at eax, then the polygon list on
- * the stack's first word drawn (drawList); ret 8.  ecx and edx as the
- * caller had them (pushed and popped here and in drawRecords). */
+ * the stack's first word drawn (drawList); ret 8. */
 void drawMirroredRecords(App* app, CPU& cpu)
 {
-    const reg32 ecx = cpu.ecx, edx = cpu.edx;
     const reg32 list = at(app, cpu.esp + 4);
     setViewMirrored(app, cpu.eax);
     if (!drawList(app, cpu, list))
         return;
-    cpu.ecx = ecx;
-    cpu.edx = edx;
     cpu.esp += 4 + 8;
 }
 
@@ -2588,9 +2446,10 @@ void countFrame(App* app, CPU& cpu)
  * back). */
 void raceViewDistance(App* app, CPU& cpu)
 {
-    cpu.eax = gameSettings(app).viewDistance;
-    if (!guest::call(app, cpu, 0x41d610))
+    const std::optional<reg32> left = guest::watcomEax(app, cpu, 0x41d610, {gameSettings(app).viewDistance});
+    if (!left)
         return;
+    cpu.eax = *left;
     cpu.esp += 4;
 }
 
@@ -2608,7 +2467,7 @@ bool fogColour(App* app, CPU& cpu)
 /* 0x434a90: fogColour. */
 void raceFrameEnd(App* app, CPU& cpu)
 {
-    keepingEdx(app, cpu, fogColour);
+    statesAdapter(app, cpu, fogColour);
 }
 
 /* 0x434ae0: nothing at the race's frame (an empty function). */
@@ -2733,24 +2592,18 @@ bool pointer(App* app, CPU& cpu)
     put(app, corners[3] + kVertexV, at(app, record + 0x20));
     for (const reg32 corner : corners)
         putByte(app, corner + kVertexClip, clipCodeOf(app, corner));
-    cpu.ebx = corners[2];
-    cpu.ecx = corners[3];
     if (!setRenderState(app, cpu, kTextureState, at(app, kPointers + at(app, kPointer) * kPointerRecordBytes)))
         return false;
-    return drawCorners(app, cpu, kDrawQuad, corners[0], corners[1], corners[2], corners[3]);
+    return drawCorners(app, cpu, kDrawQuad, {corners[0], corners[1], corners[2], corners[3]});
 }
 
 }  // namespace
 
-/* 0x434b60: pointer; every register but eax as it was. */
+/* 0x434b60: pointer. */
 void drawPointer(App* app, CPU& cpu)
 {
-    const reg32 ebx = cpu.ebx, ecx = cpu.ecx, edx = cpu.edx;
     if (!pointer(app, cpu))
         return;
-    cpu.ebx = ebx;
-    cpu.ecx = ecx;
-    cpu.edx = edx;
     cpu.esp += 4;
 }
 
@@ -2794,14 +2647,10 @@ bool moveMemory(App* app, CPU& cpu, reg32 from, reg32 to, reg32 bytes)
     return guest::direct<0x4ea4f0, ea::moveMemory>(app, cpu, to, from, bytes);
 }
 
-/* The game's free (0x4e1890, ea::purgememadr); eax what it gives back, as the code leaves it. */
-bool freeBlock(App* app, CPU& cpu, reg32 block)
+/* The game's free (0x4e1890, ea::purgememadr): what it gives back. */
+std::optional<reg32> freeBlock(App* app, CPU& cpu, reg32 block)
 {
-    const std::optional<reg32> freed = guest::direct<0x4e1890, ea::purgeBlock>(app, cpu, block);
-    if (!freed)
-        return false;
-    cpu.eax = *freed;
-    return true;
+    return guest::direct<0x4e1890, ea::purgeBlock>(app, cpu, block);
 }
 
 /* idiv: `value` (its sign extended) divided by `by`, the remainder. */
@@ -2810,16 +2659,12 @@ reg32 remainder(reg32 value, reg32 by)
     return reg32(std::int64_t(sreg32(value)) % sreg32(by));
 }
 
-/* The adapter of a messages' function whose code pushes and pops ebx, ecx
- * and edx: the result in eax. */
-void keepingRegisters(CPU& cpu, const std::optional<reg32>& result, reg32 ebx, reg32 ecx, reg32 edx)
+/* The adapter of a messages' function: the result in eax. */
+void returns(CPU& cpu, const std::optional<reg32>& result)
 {
     if (!result)
         return;
     cpu.eax = *result;
-    cpu.ebx = ebx;
-    cpu.ecx = ecx;
-    cpu.edx = edx;
     cpu.esp += 4;
 }
 
@@ -2863,20 +2708,22 @@ std::optional<reg32> openChannels(App* app, CPU& cpu, reg32 settings)
     return copyAt;
 }
 
-/* The messages out of use, their blocks freed.  eax as the last free leaves
- * it, or as it was. */
-bool closeChannels(App* app, CPU& cpu)
+/* The messages out of use, their blocks freed.  What the code leaves in eax:
+ * what the last free gives back, or `eax` as the caller had it where there
+ * is nothing to free; nullopt when the game stopped. */
+std::optional<reg32> closeChannels(App* app, CPU& cpu, reg32 eax)
 {
     const reg32 messages = at(app, kMessages);
     put(app, kMessagesOn, 0);
-    if (messages != 0 && !freeBlock(app, cpu, messages))
-        return false;
+    std::optional<reg32> left = eax;
+    if (messages != 0 && !(left = freeBlock(app, cpu, messages)))
+        return std::nullopt;
     const reg32 copy = at(app, kMessageCopy);
-    if (copy != 0 && !freeBlock(app, cpu, copy))
-        return false;
+    if (copy != 0 && !(left = freeBlock(app, cpu, copy)))
+        return std::nullopt;
     put(app, kMessages, 0);
     put(app, kMessageCopy, 0);
-    return true;
+    return left;
 }
 
 namespace
@@ -2938,34 +2785,32 @@ reg32 channelScrolled(App* app)
     return at(app, kMessages);
 }
 
-/* The character (edx's low byte) added to channel `channel`'s next line,
+/* The character `character` added to channel `channel`'s next line,
  * while the messages are in use: at the line's length, for messages of kind
  * 1, the line starts again and its +4 moves on (of the line's length plus
  * one); for another kind the next line taken (cleared) and the first moved
  * on as they meet, scrolled, and the kept the first.  Its text ended after
  * it.  1, or 0 out of use. */
-Added addCharacter(App* app, reg32 channel, reg32 edx)
+reg32 addCharacter(App* app, reg32 channel, reg8 character)
 {
     if (at(app, kMessagesOn) == 0)
-        return {0, edx};
+        return 0;
     const reg32 messages = at(app, kMessages);
     const reg32 offset = channel * kChannelBytes;
     const reg32 channelAt = offset + messages + kChannels;
     const reg32 line = messages + kChannels + offset + kChannelLines + at(app, channelAt + kChannelNext) * kLineBytes;
     const reg32 count = at(app, line + kLineCount);
     put(app, line + kLineCount, count + 1);
-    putByte(app, line + kLineText + count, reg8(edx));
+    putByte(app, line + kLineText + count, character);
     if (at(app, messages + kMessagesKind) == 1)
     {
-        edx = at(app, messages + kLineLength);
-        if (sreg32(edx) < sreg32(at(app, line + kLineCount)))
+        if (sreg32(at(app, messages + kLineLength)) < sreg32(at(app, line + kLineCount)))
             put(app, line + kLineCount, 0);
         const reg32 from = at(app, line + kLineFrom);
         if (from == at(app, line + kLineCount))
         {
             put(app, line + kLineFrom, from + 1);
-            edx = remainder(from + 1, at(app, at(app, kMessages) + kLineLength) + 1);
-            put(app, line + kLineFrom, edx);
+            put(app, line + kLineFrom, remainder(from + 1, at(app, at(app, kMessages) + kLineLength) + 1));
         }
         put(app, line + kLineStart, at(app, line + kLineFrom));
     }
@@ -2990,41 +2835,30 @@ Added addCharacter(App* app, reg32 channel, reg32 edx)
         if (at(app, at(app, kMessages) + kScrolling) != 0)
             channelScrolled(app);
         const reg32 now = at(app, kMessages) + channel * kChannelBytes + kChannels;
-        edx = at(app, now + kChannelFirst);
-        put(app, now + kChannelKept, edx);
+        put(app, now + kChannelKept, at(app, now + kChannelFirst));
     }
     putByte(app, line + kLineText + at(app, line + kLineCount), 0);
-    return {1, edx};
+    return 1;
 }
 
 }  // namespace
 
 /* The text at `text` added to channel `channel` a character at a time, up
  * to the line's length, the rest of the line filled with 0s; the additions
- * counted.  1, or 0 out of use or when a character could not be added; edx
- * as the code leaves it. */
-Added addText(App* app, reg32 channel, reg32 text)
+ * counted.  1, or 0 out of use or when a character could not be added. */
+reg32 addText(App* app, reg32 channel, reg32 text)
 {
-    reg32 edx = at(app, kMessagesOn);
-    if (edx == 0)
-        return {0, edx};
+    if (at(app, kMessagesOn) == 0)
+        return 0;
     put(app, kMessagesAdded, at(app, kMessagesAdded) + 1);
     reg32 added = 0;
     for (; byte(app, text) != 0 && sreg32(added) < sreg32(at(app, at(app, kMessages) + kLineLength)); ++added, ++text)
-    {
-        const Added a = addCharacter(app, channel, byte(app, text));
-        edx = a.edx;
-        if (a.result == 0)
-            return a;
-    }
+        if (addCharacter(app, channel, byte(app, text)) == 0)
+            return 0;
     for (; sreg32(added) < sreg32(at(app, at(app, kMessages) + kLineLength)); ++added)
-    {
-        const Added a = addCharacter(app, channel, 0);
-        edx = a.edx;
-        if (a.result == 0)
-            return a;
-    }
-    return {1, edx};
+        if (addCharacter(app, channel, 0) == 0)
+            return 0;
+    return 1;
 }
 
 namespace
@@ -3080,17 +2914,13 @@ std::optional<reg32> copyChannel(App* app, CPU& cpu, reg32 channel)
 /* 0x436c40: openChannels from the settings at eax. */
 void openMessages(App* app, CPU& cpu)
 {
-    const reg32 ebx = cpu.ebx, ecx = cpu.ecx, edx = cpu.edx;
-    keepingRegisters(cpu, openChannels(app, cpu, cpu.eax), ebx, ecx, edx);
+    returns(cpu, openChannels(app, cpu, cpu.eax));
 }
 
-/* 0x436cf0: closeChannels. */
+/* 0x436cf0: closeChannels, eax as the caller had it. */
 void closeMessages(App* app, CPU& cpu)
 {
-    const reg32 ebx = cpu.ebx, ecx = cpu.ecx, edx = cpu.edx;
-    if (!closeChannels(app, cpu))
-        return;
-    keepingRegisters(cpu, cpu.eax, ebx, ecx, edx);
+    returns(cpu, closeChannels(app, cpu, cpu.eax));
 }
 
 /* 0x436d40: clearAllChannels. */
@@ -3107,41 +2937,35 @@ void clearMessages(App* app, CPU& cpu)
     cpu.esp += 4;
 }
 
-/* 0x436dc0: clearLine for line edx of channel eax; eax the channel's lines
- * and edx the line's offset among them, as the code leaves them. */
+/* 0x436dc0: clearLine for line edx of channel eax; eax the channel's lines,
+ * as the code leaves it. */
 void clearMessageLine(App* app, CPU& cpu)
 {
     const reg32 channel = cpu.eax, line = cpu.edx;
     const reg32 lines = at(app, kMessages) + kChannels + channel * kChannelBytes + kChannelLines;
     clearLine(app, channel, line);
     cpu.eax = lines;
-    cpu.edx = line * kLineBytes;
     cpu.esp += 4;
 }
 
 /* 0x436e10: addText of the text at edx to channel eax. */
 void addMessageText(App* app, CPU& cpu)
 {
-    const Added a = addText(app, cpu.eax, cpu.edx);
-    cpu.eax = a.result;
-    cpu.edx = a.edx;
+    cpu.eax = addText(app, cpu.eax, cpu.edx);
     cpu.esp += 4;
 }
 
 /* 0x436e90: addCharacter of dl to channel eax. */
 void addMessageCharacter(App* app, CPU& cpu)
 {
-    const Added a = addCharacter(app, cpu.eax, cpu.edx);
-    cpu.eax = a.result;
-    cpu.edx = a.edx;
+    cpu.eax = addCharacter(app, cpu.eax, reg8(cpu.edx));
     cpu.esp += 4;
 }
 
 /* 0x437080: copyChannel of channel eax. */
 void copyMessageLines(App* app, CPU& cpu)
 {
-    const reg32 ebx = cpu.ebx, ecx = cpu.ecx, edx = cpu.edx;
-    keepingRegisters(cpu, copyChannel(app, cpu, cpu.eax), ebx, ecx, edx);
+    returns(cpu, copyChannel(app, cpu, cpu.eax));
 }
 
 /* 0x4371a0: channelScrolled (the code compares the block's kind with 1, for

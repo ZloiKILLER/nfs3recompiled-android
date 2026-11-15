@@ -11,7 +11,8 @@
 #include "native_windows.h"
 #include "host_threads.h"
 #include <nfs3hp.h>
-#include <winapi/kernel32.h>
+#include "host_files.h"
+#include "host_system.h"
 
 #include <array>
 #include <optional>
@@ -241,7 +242,7 @@ reg32 frontend::watc::setOsHandle(App* app, CPU& cpu, reg32 osHandle, reg32 hand
     {
         if (standard == 2)
             guest.leaveEdx(osHandle);
-        callImport<kSetStdHandle, &win32::kernel32::SetStdHandle>(guest, cpu, reg32(0) - 10 - standard, osHandle);
+        callImport<kSetStdHandle, &host::setStdHandle>(guest, cpu, reg32(0) - 10 - standard, osHandle);
     }
     const reg32 size = guest.dword(kHandleCount);
     reg32 table = guest.dword(kHandleTable);
@@ -653,13 +654,13 @@ reg32 frontend::watc::threadData(App* app, CPU& cpu)
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 16);
     // In esi across what follows, as the code keeps it.
-    cpu.esi = callImport<kGetLastError, &win32::kernel32::GetLastError>(guest, cpu);
+    cpu.esi = callImport<kGetLastError, &host::lastError>(guest, cpu);
     reg32 data = callImport<kTlsGetValue, &host::tlsGet>(guest, cpu, guest.dword(kTlsIndex));
     if (data == 0)
         data = guest.call(0x525e10);   // by address: the esi its fatal error's path leaves is read after it
     else if (guest.byte(data + 0x53) != 0)
         data = fe::direct<0x525e4c, resizeThreadData>(app, cpu);
-    callImport<kSetLastError, &win32::kernel32::SetLastError>(guest, cpu, cpu.esi);
+    callImport<kSetLastError, &host::setLastError>(guest, cpu, cpu.esi);
     return data;
 }
 
@@ -738,7 +739,7 @@ reg32 frontend::watc::detachThread(App* app, CPU& cpu, reg32 closeIt)
     guest::direct<0x525f84, removeThread>(app, cpu, guest.dword(data + 0xda));
     callImport<kTlsSetValue, &host::tlsSet>(guest, cpu, guest.dword(kTlsIndex), 0);
     if (thread != 0 && closeIt != 0)
-        callImport<kCloseHandle, &win32::kernel32::CloseHandle>(guest, cpu, thread);
+        callImport<kCloseHandle, &host::closeHandle>(guest, cpu, thread);
     return guest.eax();
 }
 
@@ -864,10 +865,10 @@ reg32 frontend::watc::hasActiveWindow(App* app, CPU& cpu)
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 12);
     reg32 window = 0;
-    const reg32 user32 = callImport<kLoadLibrary, &win32::kernel32::LoadLibraryA>(guest, cpu, 0x5513d4);
+    const reg32 user32 = callImport<kLoadLibrary, &host::loadLibrary>(guest, cpu, 0x5513d4);
     if (user32 != 0)
     {
-        const reg32 getActiveWindow = callImport<kGetProcAddress, &win32::kernel32::GetProcAddress>(guest, cpu, user32, 0x5513e0);
+        const reg32 getActiveWindow = callImport<kGetProcAddress, &host::procAddress>(guest, cpu, user32, 0x5513e0);
         if (getActiveWindow != 0)
             window = guest.call(getActiveWindow);
     }
@@ -979,7 +980,7 @@ reg32 frontend::watc::reportException(App* app, CPU& cpu, reg32 pointers)
     const reg32 length = guest.length(buffer);
     cpu.ecx = length;
     const reg32 handles = guest.dword(kHandleTable);
-    callImport<kWriteFile, &win32::kernel32::WriteFile>(guest, cpu, guest.dword(handles + 8), buffer, length, buffer + 0x100, 0);
+    callImport<kWriteFile, &host::writeFile>(guest, cpu, guest.dword(handles + 8), buffer, length, buffer + 0x100, 0);
     return 1;
 }
 
@@ -1002,8 +1003,8 @@ reg32 frontend::watc::exceptionHandler(App* app, CPU& cpu, reg32 record, reg32 c
         guest.setDword(pointers, record);
         guest.setDword(pointers + 4, context);
         cpu.eax = pointers;
-        if (callImport<kUnhandledExceptionFilter, &win32::kernel32::UnhandledExceptionFilter>(guest, cpu, pointers) != 0)
-            callImport<kExitProcess, &win32::kernel32::ExitProcess>(guest, cpu, 0xffffffff);
+        if (callImport<kUnhandledExceptionFilter, &host::unhandledExceptionFilter>(guest, cpu, pointers) != 0)
+            callImport<kExitProcess, &host::exitProcess>(guest, cpu, 0xffffffff);
         return 1;
     };
     if ((guest.byte(record + 4) & 6) != 0)
@@ -1532,7 +1533,7 @@ reg32 frontend::watc::freeEnviron(App* app, CPU& cpu)
     }
     const reg32 block = guest.dword(kEnvironmentBlock);
     if (block != 0)
-        callImport<kFreeEnvironmentStrings, &win32::kernel32::FreeEnvironmentStringsA>(guest, cpu, block);
+        callImport<kFreeEnvironmentStrings, &host::freeEnvironmentStrings>(guest, cpu, block);
     return guest.eax();
 }
 
@@ -1551,9 +1552,9 @@ reg32 frontend::watc::setMbcp(App* app, CPU& cpu, reg32 asked)
     const auto clearTable = [&] { fe::direct<kMemset, watcom::clib::memset>(guest.app(), guest.cpu(), kLeadBytes, 0, 0x101); };
     reg32 page = asked;
     if (asked == 0xffffffff)
-        page = callImport<kGetAcp, &win32::kernel32::GetACP>(guest, cpu);
+        page = callImport<kGetAcp, &host::ansiCodePage>(guest, cpu);
     else if (asked == 0xfffffffe)
-        page = callImport<kGetOemCp, &win32::kernel32::GetOEMCP>(guest, cpu);
+        page = callImport<kGetOemCp, &host::oemCodePage>(guest, cpu);
     else if (asked == 0xfffffffd)
     {
         clearTable();
@@ -1577,7 +1578,7 @@ reg32 frontend::watc::setMbcp(App* app, CPU& cpu, reg32 asked)
         page = 1;
     const reg32 info = guest.frame();
     cpu.eax = info;
-    if (callImport<kGetCpInfo, &win32::kernel32::GetCPInfo>(guest, cpu, page, info) == 0)
+    if (callImport<kGetCpInfo, &host::codePageInfo>(guest, cpu, page, info) == 0)
         return 1;
     clearTable();
     guest.setDword(kIsMultibyte, 0);
@@ -1593,7 +1594,7 @@ reg32 frontend::watc::setMbcp(App* app, CPU& cpu, reg32 asked)
     }
     if (page == 1)
     {
-        guest.setDword(kCodePage, callImport<kGetOemCp, &win32::kernel32::GetOEMCP>(guest, cpu));
+        guest.setDword(kCodePage, callImport<kGetOemCp, &host::oemCodePage>(guest, cpu));
         return 0;
     }
     guest.setDword(kCodePage, page);
@@ -1938,7 +1939,7 @@ reg32 frontend::watc::consoleUnhook(App* app, CPU& cpu)
     const fe::Frame frame(guest, cpu, 8);
     constexpr reg32 kHooked = 0x56b124;
     if (guest.byte(kHooked) != 0
-        && callImport<kSetConsoleCtrlHandler, &win32::kernel32::SetConsoleCtrlHandler>(guest, cpu, 0x52612c, 0) != 0)
+        && callImport<kSetConsoleCtrlHandler, &host::setConsoleCtrlHandler>(guest, cpu, 0x52612c, 0) != 0)
         guest.setByte(kHooked, 0);
     return guest.byte(kHooked) == 0 ? 1 : 0;
 }
@@ -3039,7 +3040,7 @@ reg32 frontend::watc::putEnvironment(App* app, CPU& cpu, reg32 text)
         copyUp(guest, value, from, valueLength);
         guest.setByte(value + valueLength, 0);
     }
-    const reg32 set = callImport<kSetEnvironmentVariable, &win32::kernel32::SetEnvironmentVariableA>(guest, cpu, name, value);
+    const reg32 set = callImport<kSetEnvironmentVariable, &host::setEnvironmentVariable>(guest, cpu, name, value);
     fe::direct<kNfree, watcom::clib::free>(guest.app(), guest.cpu(), name);
     fe::direct<kNfree, watcom::clib::free>(guest.app(), guest.cpu(), value);
     if (set == 0)
@@ -3323,9 +3324,9 @@ reg32 frontend::watc::beginThread(App* app, CPU& cpu, reg32 function, reg32 stac
         if (slot != 0)
             guest.setDword(slot, handle);
         else
-            callImport<kCloseHandle, &win32::kernel32::CloseHandle>(guest, cpu, handle);
+            callImport<kCloseHandle, &host::closeHandle>(guest, cpu, handle);
     }
-    callImport<kCloseHandle, &win32::kernel32::CloseHandle>(guest, cpu, guest.dword(frame + 0x2c));
+    callImport<kCloseHandle, &host::closeHandle>(guest, cpu, guest.dword(frame + 0x2c));
     return handle;
 }
 
@@ -3478,14 +3479,14 @@ reg32 frontend::watc::tapiFind(App* app, CPU& cpu, reg32 name, reg32 slot)
     constexpr reg32 kTapi = 0x56d12c, kTapiName = 0x56b9d8;
     if (guest.dword(kTapi) == 0)
     {
-        const reg32 library = callImport<kLoadLibrary, &win32::kernel32::LoadLibraryA>(guest, cpu, kTapiName);
+        const reg32 library = callImport<kLoadLibrary, &host::loadLibrary>(guest, cpu, kTapiName);
         guest.setDword(kTapi, library);
         if (library == 0)
             guest.setDword(kTapi, 0xffffffff);
     }
     if (guest.dword(kTapi) == 0xffffffff)
         return kLineUnavailable;
-    const reg32 found = callImport<kGetProcAddress, &win32::kernel32::GetProcAddress>(guest, cpu, guest.dword(kTapi), name);
+    const reg32 found = callImport<kGetProcAddress, &host::procAddress>(guest, cpu, guest.dword(kTapi), name);
     guest.leaveEcx(slot);
     guest.setDword(slot, found);
     return found == 0 ? kLineUnavailable : 0;

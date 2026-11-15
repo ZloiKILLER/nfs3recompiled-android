@@ -2,6 +2,7 @@
 #include "port_draw2d.h"
 #include "port_text.h"
 #include "port_shapes.h"
+#include "thrash_calls.h"
 
 #include <cstring>
 
@@ -138,9 +139,6 @@ constexpr Var<int32_t> kPointerKind{0x563d3c}, kPointerPicture{0x563d48}, kPoint
 constexpr Var<int32_t> kPointersLoaded{0x8b7630};
 constexpr Var<int32_t> kClock{0x79c1a4};
 constexpr reg32 kPointerTextures = 0x563b34, kPointerSpots = 0x563d4c;
-
-/* THRASH_drawquad's slot. */
-constexpr Var<reg32> kThrashDrawQuad{0x9ef94c};
 
 /* What is not rewritten: the render state (eax to edx), a 640 by 480 place
  * on the screen, the clipped quad (its corners in eax, edx, ebx, ecx) and
@@ -345,8 +343,8 @@ Result shadedRectangle(App* app, CPU& cpu, reg32 esp, int32_t left, int32_t top,
     if ((kDriverFlags(app) & kSofttria) != 0)
     {
         if (!renderState(app, cpu, at, kStateShape, 2, r)
-            || !callGame(app, cpu, at, kThrashDrawQuad(app), {}, {kQuadAt, kQuadAt + 0x20, kQuadAt + 0x40, kQuadAt + 0x60},
-                         r)
+            || !guest::driverFrom<thrash::kThrashDrawQuad, &driver::drawQuad>(app, cpu, at, kQuadAt, kQuadAt + 0x20,
+                                                                              kQuadAt + 0x40, kQuadAt + 0x60)
             || !renderState(app, cpu, at, kStateShape, 0, r))
             return {};
     }

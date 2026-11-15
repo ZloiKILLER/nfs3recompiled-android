@@ -112,7 +112,7 @@ def main():
             obj = Path(tmp) / "native_isnd.o"
             exe = Path(tmp) / "mutant"
             # Only the mutant is compiled; the rest is run.sh's, linked as it is.
-            subprocess.run(["c++", "-std=c++17", "-O1", "-fno-strict-aliasing", "-DWITH_MMX", "-w",
+            subprocess.run(["c++", "-std=c++17", "-O1", "-fno-strict-aliasing", "-DWITH_MMX", "-DNFS_SOUND_CHECKS", "-w",
                             "-I" + str(build / "generated"), "-I" + str(ROOT / "sdl3/include"),
                             "-I" + str(ROOT / "include"),
                             "-I" + str(ROOT / "src/nfs3hp"), "-c", str(source), "-o", str(obj)], check=True)

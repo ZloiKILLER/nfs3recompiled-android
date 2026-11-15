@@ -1,5 +1,6 @@
 #include "port_snd.h"
 #include "port_snd_voices.h"
+#include "isnd_calls.h"
 #include "host_threads.h"
 
 /* EA's SND library, rewritten (port_snd.h says how): its voices -- taken,
@@ -538,11 +539,11 @@ Result voiceVolume(App* app, CPU& cpu, reg32 esp, int32_t index, int32_t volume)
     Sides s;
     if (p.method == 3)
     {
-        reg32 eax;
-        if (!callGame(app, cpu, frame, kDirectVol(app), {reg32(volume), (reg32(volume) & 0xffffff00) | p.method},
-                      {reg32(index), reg32(volume)}, eax))
+        const std::optional<reg32> eax = guest::soundFrom<isnd::kDirectVol, &eacsnd::volume>(
+            app, cpu, frame, {reg32(volume), (reg32(volume) & 0xffffff00) | p.method}, reg32(index), reg32(volume));
+        if (!eax)
             return {};
-        return int32_t(eax);
+        return int32_t(*eax);
     }
     if (p.method == 0 || p.method == 2)
         s = p.panSet != 0 ? splitPan(int8_t(voice(app, index).pan), volume)
@@ -640,11 +641,11 @@ Result detuneVoice(App* app, CPU& cpu, reg32 esp, int32_t index, int32_t pitch)
     {
         const x86::Float f = fp::mul(pitchScale(app, cpu, pitch), x86::Float(int32_t(p.rate)));
         const reg32 rate = reg32(chopped<int32_t>(cpu, f));
-        reg32 eax;
-        if (!callGame(app, cpu, frame, kDirectRate(app), {p.rate, kPlatform.address(index), reg32(pitch), reg32(index)},
-                      {reg32(index), rate}, eax))
+        const std::optional<reg32> eax = guest::soundFrom<isnd::kDirectRate, &eacsnd::rate>(
+            app, cpu, frame, {p.rate, kPlatform.address(index), reg32(pitch), reg32(index)}, reg32(index), rate);
+        if (!eax)
             return {};
-        return int32_t(eax);
+        return int32_t(*eax);
     }
     if (!fail(app, cpu, frame, kDetune, 0x22, {kDetuneText}))
         return {};
@@ -664,11 +665,11 @@ Result placeVoice(App* app, CPU& cpu, reg32 esp, int32_t index, uint32_t positio
     Sides s;
     if (p.method == 3)
     {
-        reg32 eax;
-        if (!callGame(app, cpu, frame, kDirectPos3d(app), {position, reg32(elevation)},
-                      {reg32(index), position, reg32(elevation)}, eax))
+        const std::optional<reg32> eax = guest::soundFrom<isnd::kDirectPos3d, &eacsnd::position>(
+            app, cpu, frame, {position, reg32(elevation)}, reg32(index), position, reg32(elevation));
+        if (!eax)
             return {};
-        return int32_t(eax);
+        return int32_t(*eax);
     }
     if (p.method == 1)
     {
@@ -704,11 +705,11 @@ Result panVoice(App* app, CPU& cpu, reg32 esp, int32_t index, int32_t pan)
         const reg32 angle = reg32(pan - 0x40) << 8;
         if (p.method == 3)
         {
-            reg32 eax;
-            if (!callGame(app, cpu, frame, kDirectPos3d(app), {(reg32(index) & 0xffff00ff) | reg32(p.method) << 8},
-                          {reg32(index), angle, 0}, eax))
+            const std::optional<reg32> eax = guest::soundFrom<isnd::kDirectPos3d, &eacsnd::position>(
+                app, cpu, frame, {(reg32(index) & 0xffff00ff) | reg32(p.method) << 8}, reg32(index), angle, 0);
+            if (!eax)
                 return {};
-            return int32_t(eax);
+            return int32_t(*eax);
         }
         if (p.method == 1)
         {
@@ -752,10 +753,11 @@ Result stopVoice(App* app, CPU& cpu, reg32 esp, int32_t index)
         return silenceChannel(app, cpu, frame - 4, index);
     if (method == 3)
     {
-        reg32 eax;
-        if (!callGame(app, cpu, frame, kDirectStopBuf(app), {reg32(index)}, {reg32(index)}, eax))
+        const std::optional<reg32> eax =
+            guest::soundFrom<isnd::kDirectStopBuf, &eacsnd::stopBuffer>(app, cpu, frame, {reg32(index)}, reg32(index));
+        if (!eax)
             return {};
-        return int32_t(eax);
+        return int32_t(*eax);
     }
     if (!fail(app, cpu, frame, kStop, 0x3a3, {kStopText}))
         return {};

@@ -12,31 +12,19 @@ namespace nfs3hp
 namespace collide
 {
 
-// What nearest leaves: the nearest point's value, and edx as the code leaves it (the last distance's xy).
-struct Nearest
-{
-    x86::reg32 value, edx;
-};
-
-// What addCharacter and addText leave: the result, and edx as the code leaves it.
-struct Added
-{
-    x86::reg32 result, edx;
-};
-
-// The game's 0x4311d0 (a car's +0x618): car's collisions for the frame.
-bool frameCollisions(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 car);
+// The game's 0x4311d0 (a car's +0x618): car's collisions for the frame; what the code leaves in eax.
+std::optional<x86::reg32> frameCollisions(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 car);
 // The game's 0x431280: of the points it searches, the value of the one nearest (x, y, z).
-Nearest nearest(win32::WinApplication* app, x86::reg32 x, x86::reg32 y, x86::reg32 z);
-// nearest's value, what the game's callers take.
+x86::reg32 nearest(win32::WinApplication* app, x86::reg32 x, x86::reg32 y, x86::reg32 z);
+// nearest, under the name the game's callers take it by.
 inline x86::reg32 nearestValue(win32::WinApplication* app, x86::reg32 x, x86::reg32 y, x86::reg32 z)
 {
-    return nearest(app, x, y, z).value;
+    return nearest(app, x, y, z);
 }
 // The game's 0x431320: the track's COLL file named at `name` opened and its header checked: its handle, or 0.
 std::optional<x86::reg32> openColl(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 name);
-// The game's 0x4313b0: the COLL file `handle` closed.
-bool closeColl(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 handle);
+// The game's 0x4313b0: the COLL file `handle` closed; what the close gives back.
+std::optional<x86::reg32> closeColl(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 handle);
 // The game's 0x4313d0: the COLL file's size, its header's.
 x86::reg32 collSize(win32::WinApplication* app);
 // The game's 0x4313e0: the COLL file `handle` past its header read into `to`.
@@ -83,16 +71,17 @@ std::optional<x86::reg32> stateFromRecord(win32::WinApplication* app, x86::CPU& 
 bool fogColour(win32::WinApplication* app, x86::CPU& cpu);
 // The game's 0x436c40: the race's messages opened from the settings at `settings`; the copy's block.
 std::optional<x86::reg32> openChannels(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 settings);
-// The game's 0x436cf0: the race's messages closed, their blocks freed.
-bool closeChannels(win32::WinApplication* app, x86::CPU& cpu);
+// The game's 0x436cf0: the race's messages closed, their blocks freed; what the code leaves in eax
+// (`eax` where there is nothing to free).
+std::optional<x86::reg32> closeChannels(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 eax);
 // The game's 0x436d40: every channel of the messages cleared; the messages' block.
 x86::reg32 clearAllChannels(win32::WinApplication* app);
 // The game's 0x436e10: the text at `text` added to channel `channel`: 1, or 0.
-Added addText(win32::WinApplication* app, x86::reg32 channel, x86::reg32 text);
-// addText's result, what the game's callers take.
+x86::reg32 addText(win32::WinApplication* app, x86::reg32 channel, x86::reg32 text);
+// addText, under the name the game's callers take it by.
 inline x86::reg32 addTextResult(win32::WinApplication* app, x86::reg32 channel, x86::reg32 text)
 {
-    return addText(app, channel, text).result;
+    return addText(app, channel, text);
 }
 
 }  // namespace collide
@@ -100,14 +89,14 @@ inline x86::reg32 addTextResult(win32::WinApplication* app, x86::reg32 channel, 
 namespace guest
 {
 
-// The car in eax.
+// The car in eax; eax as it leaves it.
 template <>
 struct ByAddress<collide::frameCollisions>
 {
     template <x86::reg32 Address>
-    static bool call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 car)
+    static std::optional<x86::reg32> call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 car)
     {
-        return watcom(app, cpu, Address, {car});
+        return watcomEax(app, cpu, Address, {car});
     }
 };
 
@@ -134,14 +123,14 @@ struct ByAddress<collide::openColl>
     }
 };
 
-// The handle in eax.
+// The handle in eax; what the close gives back in eax.
 template <>
 struct ByAddress<collide::closeColl>
 {
     template <x86::reg32 Address>
-    static bool call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 handle)
+    static std::optional<x86::reg32> call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 handle)
     {
-        return watcom(app, cpu, Address, {handle});
+        return watcomEax(app, cpu, Address, {handle});
     }
 };
 
@@ -394,13 +383,14 @@ struct ByAddress<collide::openChannels>
     }
 };
 
+// eax as the caller has it, and as the function leaves it.
 template <>
 struct ByAddress<collide::closeChannels>
 {
     template <x86::reg32 Address>
-    static bool call(win32::WinApplication* app, x86::CPU& cpu)
+    static std::optional<x86::reg32> call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 eax)
     {
-        return watcom(app, cpu, Address, {});
+        return watcomEax(app, cpu, Address, {eax});
     }
 };
 

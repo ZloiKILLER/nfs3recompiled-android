@@ -12,14 +12,6 @@ namespace nfs3hp
 namespace track
 {
 
-/* What objectAnimation leaves in eax and edx. */
-struct MovedLeft
-{
-    x86::reg32 result;
-    // edx where no path was started: the object's record, or its state over the path's.
-    std::optional<x86::reg32> record;
-};
-
 // The game's 0x419b60: the arena allocated and none of it used; its address.
 std::optional<x86::reg32> startArena(win32::WinApplication* app, x86::CPU& cpu);
 // The game's 0x41a100: the track's geometry loaded, its colours tinted (or grey); eax as the code leaves it.
@@ -34,17 +26,15 @@ bool drawTrackBlocks(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 camer
                      x86::reg32 buckets);
 // The game's 0x41d310: view `index` the one drawn; the view's offset.
 x86::reg32 chooseView(win32::WinApplication* app, x86::reg32 index);
-// The game's 0x41d350: object `index` of the car's block set moving; what the code leaves in eax and edx.
-std::optional<MovedLeft> setObjectMoving(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 car,
-                                         x86::reg32 index);
-// setObjectMoving for a caller that reads eax alone: -1 set moving, 0 moving already, 2 one that falls, else 1.
+// The game's 0x41d350: object `index` of the car's block set moving: -1 set moving, 0 moving already, 2 one
+// that falls, else 1.
+std::optional<x86::reg32> setObjectMoving(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 car,
+                                          x86::reg32 index);
+// setObjectMoving, under the name the game's callers take it by.
 inline std::optional<x86::reg32> objectMoving(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 car,
                                               x86::reg32 index)
 {
-    const std::optional<MovedLeft> left = setObjectMoving(app, cpu, car, index);
-    if (!left)
-        return std::nullopt;
-    return left->result;
+    return setObjectMoving(app, cpu, car, index);
 }
 // The game's 0x41d610: View Distance set (0 Full .. 3 Close).
 void chooseViewDistance(win32::WinApplication* app, x86::reg32 distance);
@@ -61,8 +51,8 @@ std::optional<x86::reg32> letGoOfTrack(win32::WinApplication* app, x86::CPU& cpu
 std::optional<x86::reg32> startObjectPool(win32::WinApplication* app, x86::CPU& cpu);
 // The game's 0x41dc60: the opened textures taken by the driver and the file let go of; eax as the code leaves it.
 std::optional<x86::reg32> takeTrackTextures(win32::WinApplication* app, x86::CPU& cpu);
-// The game's 0x41dcc0: the track's .col file named `name` loaded, if it is there.
-bool loadCollisionFile(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 name);
+// The game's 0x41dcc0: the track's .col file named `name` loaded, if it is there; eax as the code leaves it.
+std::optional<x86::reg32> loadCollisionFile(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 name);
 // The game's 0x41de40: the objects' states all still.
 bool stillObjects(win32::WinApplication* app, x86::CPU& cpu);
 // The game's 0x41deb0: the views' serial started over and the four views on no block.
@@ -212,14 +202,14 @@ struct ByAddress<track::takeTrackTextures>
     }
 };
 
-// The name in eax.
+// The name in eax; eax as it leaves it.
 template <>
 struct ByAddress<track::loadCollisionFile>
 {
     template <x86::reg32 Address>
-    static bool call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 name)
+    static std::optional<x86::reg32> call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 name)
     {
-        return watcom(app, cpu, Address, {name});
+        return watcomEax(app, cpu, Address, {name});
     }
 };
 

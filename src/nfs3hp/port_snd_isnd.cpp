@@ -1,5 +1,4 @@
-#include "isnd.h"
-#include "port.h"
+#include "isnd_calls.h"
 
 #include <lib/winapp.h>
 #include <x86.h>
@@ -11,8 +10,10 @@
  * which disassemble_nfs3hp.py binds to the exports of those names, eacsnd
  * having no generated code -- with eacsnd's own data in guest memory as the
  * one copy.  Rewritten (port.h says how): each is here as C++ with arguments
- * and a result (nfs3hp::port), and as the entry the game calls through the
- * stdcall pointer it keeps (nfs3hp, the names eacsnd exports).
+ * and a result (nfs3hp::port), as the typed export native code calls through
+ * the game's pointer to it (port::eacsnd, isnd_calls.h), and as the entry the
+ * game calls through the stdcall pointer it keeps (nfs3hp, the names eacsnd
+ * exports).
  *
  * Each does what eacsnd's code does on the port: the same memory written in the
  * same order, the game's functions called with the same arguments at the same
@@ -35,8 +36,13 @@
  * either be set all the same, the core steps aside before it has done
  * anything (no answer), and the export fails (notNative).
  *
+ * Their calls of the game's functions go through eacsnd's pointers to them,
+ * guest::soundPushed: to the natives native_game.cpp has where the game's code
+ * was, as C++, when the pointers lead there.
+ *
  * tools/sound_checks compares the sound* entries with eacsnd's generated code,
- * made afresh from the DLL, on random states. */
+ * made afresh from the DLL, on random states (NFS_SOUND_CHECKS: the calls out
+ * always through the pointers, to its stand-ins). */
 
 namespace nfs3hp
 {
@@ -79,7 +85,6 @@ constexpr Records<Buffer> kBuffers{isnd::kBuffers};
 constexpr Records<Slot> kSlots{isnd::kSlots};
 constexpr Var<reg32> kCapsKept{isnd::kCapsKept};
 constexpr Table<reg32> kFunctions{isnd::kFunctionMix};   // the game's eight functions, in the order given
-constexpr Var<reg32> kBufferPosition{isnd::kFunctionBufferPosition}, kStopBuffer{isnd::kFunctionStopBuffer};
 constexpr Var<uint8_t> kDirectSoundMade{isnd::kDirectSoundMade}, kIs3d{isnd::kIs3d};
 constexpr Var<double> kPositionScale{isnd::kPositionScale};
 
@@ -157,7 +162,7 @@ Answer eacsndPosition(App* app, CPU& cpu)
     push(app, cpu, position);
     push(app, cpu, app->getMemory<reg32>(cpu.esp + 0x24));  // b
     push(app, cpu, app->getMemory<reg32>(cpu.esp + 0x24));  // a
-    if (!callOut(app, cpu, kBufferPosition(app)))
+    if (!guest::soundPushed<isnd::kFunctionBufferPosition, &acquireSoundBufferPositionOf>(app, cpu))
         return Result();
 
     const reg32 esp = cpu.esp;
@@ -253,7 +258,7 @@ Answer eacsndStop(App* app, CPU& cpu)
     record.active = 0;
     push(app, cpu, index);
     record.buffer3d = 0;
-    if (!callOut(app, cpu, kStopBuffer(app)))
+    if (!guest::soundPushed<isnd::kFunctionStopBuffer, &stopSoundBufferOf>(app, cpu))
         return Result();
 
     cpu.edi = app->getMemory<reg32>(cpu.esp);
@@ -262,12 +267,124 @@ Answer eacsndStop(App* app, CPU& cpu)
     return Result(0);
 }
 
+/* ---- The exports, typed (isnd_calls.h) ---- */
+
+namespace eacsnd
+{
+
+namespace
+{
+
+/* eacsnd's ways with DirectSound made or 3D buffers asked for, which nothing
+ * on the port takes (see the top), and of which no code is left: should one
+ * be taken all the same, the export fails as eacsnd's do -- -1 -- and says so
+ * once. */
+reg32 notNative()
+{
+    NFS2_ASSERT(false && "eacsnd with DirectSound: not native");
+    return isnd::kFailure;
+}
+
+/* A core's answer as the export gives it, for those that call nothing. */
+reg32 answered(const Answer& answer)
+{
+    return answer ? reg32(**answer) : notNative();
+}
+
+/* `words` where a stdcall caller pushes them, below esp, and esp at the
+ * return address's slot below them: the stack as the export finds it.  The
+ * caller's esp. */
+reg32 pushed(App* app, CPU& cpu, std::initializer_list<reg32> words)
+{
+    const reg32 esp = cpu.esp;
+    reg32 slot = esp - 4 * reg32(words.size());
+    cpu.esp = slot - 4;
+    for (const reg32 word : words)
+    {
+        app->getMemory<reg32>(slot) = word;
+        slot += 4;
+    }
+    return esp;
+}
+
+/* The answer of a core that ran on the stack pushed(): none, the stack as
+ * the caller had it and -1; the game stopped, nullopt. */
+std::optional<reg32> ranOn(CPU& cpu, reg32 esp, const Answer& answer)
+{
+    if (!answer)
+    {
+        cpu.esp = esp;
+        return notNative();
+    }
+    if (!*answer)
+        return std::nullopt;
+    return reg32(**answer);
+}
+
+}  // namespace
+
+reg32 recordStart(App*, CPU&, reg32, reg32, reg32, reg32)
+{
+    return isnd::kFailure;
+}
+
+reg32 recordPacket(App*, CPU&, reg32)
+{
+    return 0;
+}
+
+reg32 recordStop(App*, CPU&)
+{
+    return 0;
+}
+
+reg32 create3d(App* app, CPU&, reg32, reg32, reg32, reg32, reg32, reg32, reg32)
+{
+    return answered(eacsndCreate3d(app));
+}
+
+reg32 remove3d(App* app, CPU& cpu, reg32 slot)
+{
+    return answered(eacsndRemove3d(app, cpu.esp - 4 - 4, cpu.ebx, slot));
+}
+
+std::optional<reg32> play3d(App* app, CPU& cpu, reg32 slot, reg32 buffer, reg32 looping, reg32 rate, reg32 volume,
+                            reg32 positionA, reg32 positionB)
+{
+    const reg32 esp = pushed(app, cpu, {slot, buffer, looping, rate, volume, positionA, positionB});
+    return ranOn(cpu, esp, eacsndPlay3d(app, cpu));
+}
+
+std::optional<reg32> position(App* app, CPU& cpu, reg32 buffer, reg32 positionA, reg32 positionB)
+{
+    const reg32 esp = pushed(app, cpu, {buffer, positionA, positionB});
+    return ranOn(cpu, esp, eacsndPosition(app, cpu));
+}
+
+reg32 volume(App* app, CPU&, reg32 buffer, reg32 volume)
+{
+    return answered(eacsndSetVolume(app, buffer, volume));
+}
+
+reg32 rate(App* app, CPU&, reg32 buffer, reg32 rate)
+{
+    return answered(eacsndSetRate(app, buffer, rate));
+}
+
+std::optional<reg32> stopBuffer(App* app, CPU& cpu, reg32 buffer)
+{
+    const reg32 esp = pushed(app, cpu, {buffer});
+    return ranOn(cpu, esp, eacsndStop(app, cpu));
+}
+
+}  // namespace eacsnd
 }  // namespace port
 
 /* eacsnd's exports of these names (disassemble_nfs3hp.py) and the entries
  * tools/sound_checks holds to eacsnd's code: each its adapter around a core.
  * A core with no answer is eacsnd's way with DirectSound, which the port has
- * not: the entry says so (false), and the export fails. */
+ * not: the entry says so (false); the export, through its typed function,
+ * fails. */
 
 namespace
 {
@@ -277,6 +394,7 @@ using CPU = x86::CPU;
 using x86::reg32;
 using port::Answer;
 using port::Entry;
+namespace eacsnd = port::eacsnd;
 
 /* An entry's way out: the answer in eax and the arguments (`bytes`) off the
  * stack, unless the game stopped; false when there was none. */
@@ -297,17 +415,6 @@ bool entered(CPU& cpu, const Answer& answer)
     if (*answer)
         cpu.eax = reg32(**answer);
     return true;
-}
-
-/* eacsnd's ways with DirectSound made or 3D buffers asked for, which nothing
- * on the port takes (see the top), and of which no code is left: should one
- * be taken all the same, the export fails as eacsnd's do -- -1, its arguments
- * off the stack -- and says so once. */
-void notNative(CPU& cpu, reg32 argumentBytes)
-{
-    NFS2_ASSERT(false && "eacsnd with DirectSound: not native");
-    cpu.eax = isnd::kFailure;
-    cpu.esp += 4 + argumentBytes;
 }
 
 }  // namespace
@@ -391,6 +498,8 @@ bool soundStopBuffer(App* app, CPU& cpu)
     return entered(cpu, port::eacsndStop(app, cpu));
 }
 
+/* The exports, each a thin wrapper of its typed function: the words off the
+ * stack and popped. */
 void iSNDdllversion(App* app, CPU& cpu)
 {
     soundVersion(app, cpu);
@@ -403,59 +512,79 @@ void iSNDdirectsetfunctions(App* app, CPU& cpu)
 
 void iSNDdirectrecordstart(App* app, CPU& cpu)
 {
-    soundRecordStart(app, cpu);
+    const Entry e(cpu);
+    e.back(cpu, eacsnd::recordStart(app, cpu, e.arg(app, 0), e.arg(app, 1), e.arg(app, 2), e.arg(app, 3)), 0x10);
 }
 
 void iSNDdirectrecordpacket(App* app, CPU& cpu)
 {
-    soundRecordPacket(app, cpu);
+    const Entry e(cpu);
+    e.back(cpu, eacsnd::recordPacket(app, cpu, e.arg(app, 0)), 4);
 }
 
 void iSNDdirectrecordstop(App* app, CPU& cpu)
 {
-    soundRecordStop(app, cpu);
+    const Entry e(cpu);
+    e.back(cpu, eacsnd::recordStop(app, cpu), 0);
 }
 
 void iSNDdirectvol(App* app, CPU& cpu)
 {
-    if (!soundVolume(app, cpu))
-        notNative(cpu, 8);
-}
-
-void iSNDdirectpos3d(App* app, CPU& cpu)
-{
-    if (!soundPosition(app, cpu))
-        notNative(cpu, 0xc);
+    const Entry e(cpu);
+    e.back(cpu, eacsnd::volume(app, cpu, e.arg(app, 0), e.arg(app, 1)), 8);
 }
 
 void iSNDdirectrate(App* app, CPU& cpu)
 {
-    if (!soundRate(app, cpu))
-        notNative(cpu, 8);
+    const Entry e(cpu);
+    e.back(cpu, eacsnd::rate(app, cpu, e.arg(app, 0), e.arg(app, 1)), 8);
 }
 
 void iSNDdirectcreate3dbuf(App* app, CPU& cpu)
 {
-    if (!soundCreateBuffer(app, cpu))
-        notNative(cpu, 0x1c);
+    const Entry e(cpu);
+    e.back(cpu,
+           eacsnd::create3d(app, cpu, e.arg(app, 0), e.arg(app, 1), e.arg(app, 2), e.arg(app, 3), e.arg(app, 4),
+                            e.arg(app, 5), e.arg(app, 6)),
+           0x1c);
 }
 
+/* esp where the caller had it, for the typed function. */
 void iSNDdirectremovebuf(App* app, CPU& cpu)
 {
-    if (!soundRemoveBuffer(app, cpu))
-        notNative(cpu, 4);
+    const Entry e(cpu);
+    cpu.esp = e.esp + 4 + 4;
+    e.back(cpu, eacsnd::remove3d(app, cpu, e.arg(app, 0)), 4);
+}
+
+/* The three that are eacsnd's code to the register: esp where the caller had
+ * it, above the words, for their typed functions, which put the same words
+ * back where they are and leave esp and the registers as eacsnd's code does;
+ * only eax set. */
+void iSNDdirectpos3d(App* app, CPU& cpu)
+{
+    const Entry e(cpu);
+    cpu.esp = e.esp + 4 + 0xc;
+    if (const std::optional<reg32> result = eacsnd::position(app, cpu, e.arg(app, 0), e.arg(app, 1), e.arg(app, 2)))
+        cpu.eax = *result;
 }
 
 void iSNDdirectplay3d(App* app, CPU& cpu)
 {
-    if (!soundPlayBuffer(app, cpu))
-        notNative(cpu, 0x1c);
+    const Entry e(cpu);
+    cpu.esp = e.esp + 4 + 0x1c;
+    if (const std::optional<reg32> result =
+            eacsnd::play3d(app, cpu, e.arg(app, 0), e.arg(app, 1), e.arg(app, 2), e.arg(app, 3), e.arg(app, 4),
+                           e.arg(app, 5), e.arg(app, 6)))
+        cpu.eax = *result;
 }
 
 void iSNDdirectstopbuf(App* app, CPU& cpu)
 {
-    if (!soundStopBuffer(app, cpu))
-        notNative(cpu, 4);
+    const Entry e(cpu);
+    cpu.esp = e.esp + 4 + 4;
+    if (const std::optional<reg32> result = eacsnd::stopBuffer(app, cpu, e.arg(app, 0)))
+        cpu.eax = *result;
 }
 
 }  // namespace nfs3hp

@@ -12,7 +12,7 @@
 /* The game's calls of Windows -- its imports -- as C++ calls of the port's Windows
  * (src/lib/winapi): plan step 6's first part.
  *
- *     guest::windows<kCreateFileA, &win32::kernel32::CreateFileA>(app, cpu, name, access, ...)
+ *     guest::windows<kCreateFileA, &host::createFile>(app, cpu, name, access, ...)
  *
  * The words are what the game's code pushes, in its order.  In the game each becomes the
  * function's parameter as win32::Wrapper makes it of the same word on the stack (an address a

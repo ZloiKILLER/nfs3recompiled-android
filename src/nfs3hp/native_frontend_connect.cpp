@@ -20,7 +20,8 @@
 #include "port_snd_stream_calls.h"
 #include "port_sound_music.h"
 #include <nfs3hp.h>
-#include <winapi/kernel32.h>
+#include <lib/winapp.h>
+#include <winapi/types.h>
 #include <iterator>
 #include <optional>
 #include <type_traits>

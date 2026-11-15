@@ -13,7 +13,7 @@
 #include "native_windows.h"
 #include "port_thrash.h"
 #include "native_watcom.h"
-#include <winapi/kernel32.h>
+#include "host_system.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -2032,7 +2032,7 @@ std::optional<reg32> playerSpecs(App* app, CPU& cpu, reg32 player)
     const reg32 path = makeSpecPath(app, name);
     {
         const KeptRegisters kept(cpu);
-        if (!guest::windows<kGetModuleFileName, &win32::kernel32::GetModuleFileNameA>(app, cpu, 0, module, kModuleSize))
+        if (!guest::windows<kGetModuleFileName, &host::moduleFileName>(app, cpu, 0, module, kModuleSize))
             return std::nullopt;
     }
     const std::optional<bool> exists = guest::direct<0x4e0e60, ea::fileThere>(app, cpu, path);

@@ -1,13 +1,16 @@
 #include "native_watcom.h"
 #include "native_watcom_heap.h"
 #include "native_windows.h"
+#include "watcom_hooks.h"
 #include "host_threads.h"
 #include <lib/thread.h>
-#include <winapi/kernel32.h>
-#include <winapi/user32.h>
+#include "host_files.h"
+#include "host_system.h"
 #include <algorithm>
 #include <bitset>
 #include <cstring>
+#include <optional>
+#include <string>
 #include <utility>
 
 /* The Watcom C runtime the game was linked with, in C++: the functions of it
@@ -41,7 +44,7 @@ using guest::put;
 using guest::putByte;
 
 /* The runtime's per-thread data: [__GetThreadPtr]() -- the pointer the
- * runtime swaps for its own when a second thread starts. */
+ * runtime swaps for its own when a second thread starts (watcom_hooks.h). */
 constexpr x86::reg32 kGetThreadPtr = 0x567764;
 constexpr x86::reg32 kThreadData = 0x9f642c;  // the single thread's, what GetThreadPtr hands back
 constexpr x86::reg32 kRandomSeed = 0xc;        // rand's, in the thread's data
@@ -55,7 +58,7 @@ constexpr x86::reg8 kDigit = 0x20;
  * stopped. */
 bool threadData(win32::WinApplication* app, x86::CPU& cpu, x86::reg32& data)
 {
-    if (!call(app, cpu, at(app, kGetThreadPtr)))
+    if (!guest::runtimeHook<kGetThreadPtr>(app, cpu))
         return false;
     data = cpu.eax;
     return true;
@@ -845,7 +848,7 @@ bool setErrnoDos(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 error)
 /* __set_errno_nt's: GetLastError's error, as __set_errno_dos has it. */
 bool setErrnoNt(win32::WinApplication* app, x86::CPU& cpu)
 {
-    return windows<kGetLastError, &win32::kernel32::GetLastError>(app, cpu) && setErrnoDos(app, cpu, cpu.eax);
+    return windows<kGetLastError, &host::lastError>(app, cpu) && setErrnoDos(app, cpu, cpu.eax);
 }
 
 /* What the runtime makes of a Windows function's BOOL: 0, or errno from
@@ -942,7 +945,7 @@ bool fileAttributes(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 entry,
             return true;
     const x86::reg32 found = entry - 0x150;  // ebx, ecx, edx, esi; WIN32_FIND_DATA
     cpu.esp = found;
-    if (!windows<kFindFirstFileA, &win32::kernel32::FindFirstFileA>(app, cpu, path, found))
+    if (!windows<kFindFirstFileA, &host::findFirstFile>(app, cpu, path, found))
         return false;
     if (cpu.eax != 0xffffffff)
         attributes = at(app, found);
@@ -954,7 +957,7 @@ bool fileAttributes(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 entry,
 /* unlink (clib/handleio/c/unlnkwnt.c, 0x4e28a0): DeleteFileA. */
 void unlink(win32::WinApplication* app, x86::CPU& cpu)
 {
-    pathCall<kDeleteFileA, &win32::kernel32::DeleteFileA>(app, cpu, cpu.eax);
+    pathCall<kDeleteFileA, &host::deleteFile>(app, cpu, cpu.eax);
 }
 
 /* remove (clib/file/c/remove.c, 0x4ee2e0): unlink. */
@@ -967,19 +970,19 @@ void remove(win32::WinApplication* app, x86::CPU& cpu)
  * attributes. */
 void mkdir(win32::WinApplication* app, x86::CPU& cpu)
 {
-    pathCall<kCreateDirectoryA, &win32::kernel32::CreateDirectoryA>(app, cpu, cpu.eax, 0);
+    pathCall<kCreateDirectoryA, &host::createDirectory>(app, cpu, cpu.eax, 0);
 }
 
 /* rmdir (clib/direct/c/rmdirwnt.c, 0x4ee400): RemoveDirectoryA. */
 void rmdir(win32::WinApplication* app, x86::CPU& cpu)
 {
-    pathCall<kRemoveDirectoryA, &win32::kernel32::RemoveDirectoryA>(app, cpu, cpu.eax);
+    pathCall<kRemoveDirectoryA, &host::removeDirectory>(app, cpu, cpu.eax);
 }
 
 /* chdir (clib/direct/c/chdirwnt.c, 0x4f0260): SetCurrentDirectoryA. */
 void chdir(win32::WinApplication* app, x86::CPU& cpu)
 {
-    pathCall<kSetCurrentDirectoryA, &win32::kernel32::SetCurrentDirectoryA>(app, cpu, cpu.eax);
+    pathCall<kSetCurrentDirectoryA, &host::setCurrentDirectory>(app, cpu, cpu.eax);
 }
 
 /* chmod (clib/file/c/chmodwnt.c, 0x4ee3c0): the file read-only unless edx
@@ -1003,7 +1006,7 @@ void chmod(win32::WinApplication* app, x86::CPU& cpu)
     else
     {
         attributes = (attributes & ~x86::reg32(1)) | ((mode & 0x80) != 0 ? 0 : 1);  // FILE_ATTRIBUTE_READONLY
-        if (!windows<kSetFileAttributesA, &win32::kernel32::SetFileAttributesA>(app, cpu, path, attributes)
+        if (!windows<kSetFileAttributesA, &host::setFileAttributes>(app, cpu, path, attributes)
             || !windowsResult(app, cpu, cpu.eax, result))
             return;
     }
@@ -1017,7 +1020,7 @@ void access(win32::WinApplication* app, x86::CPU& cpu)
 {
     const Kept kept(cpu);
     const x86::reg32 mode = cpu.edx;
-    if (!windows<kGetFileAttributesA, &win32::kernel32::GetFileAttributesA>(app, cpu, cpu.eax))
+    if (!windows<kGetFileAttributesA, &host::fileAttributes>(app, cpu, cpu.eax))
         return;
     const x86::reg32 attributes = cpu.eax;
     x86::reg32 result = 0;
@@ -1059,7 +1062,7 @@ void getcwd(win32::WinApplication* app, x86::CPU& cpu)
     put(app, entry - 0x10, cpu.edi);
     const x86::reg32 local = entry - 0x114;  // MAX_PATH bytes below them
     cpu.esp = local;
-    if (!windows<kGetCurrentDirectoryA, &win32::kernel32::GetCurrentDirectoryA>(app, cpu, 0x104, local))
+    if (!windows<kGetCurrentDirectoryA, &host::currentDirectory>(app, cpu, 0x104, local))
         return;
     const x86::reg32 length = cpu.eax;
     x86::reg32 result = 0;
@@ -1122,7 +1125,7 @@ void getdiskfree(win32::WinApplication* app, x86::CPU& cpu)
     }
     cpu.esp = local;
     x86::reg32 result;
-    if (!windows<kGetDiskFreeSpaceA, &win32::kernel32::GetDiskFreeSpaceA>(app, cpu, root, local + 0x10, local + 0xc, local + 8, local + 4)
+    if (!windows<kGetDiskFreeSpaceA, &host::diskFreeSpace>(app, cpu, root, local + 0x10, local + 0xc, local + 8, local + 4)
         || !windowsResult(app, cpu, cpu.eax, result))
         return;
     if (result == 0)
@@ -1182,11 +1185,13 @@ x86::reg32 osHandle(win32::WinApplication* app, x86::reg32 handle)
     return at(app, at(app, kOsHandles) + 4 * handle);
 }
 
-/* The file's lock taken or given back. */
+/* The file's lock taken (kAccessFile) or given back (kReleaseFile), by its
+ * hook (watcom_hooks.h). */
 bool fileLock(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 slot, x86::reg32 handle)
 {
     cpu.eax = handle;
-    return call(app, cpu, at(app, slot));
+    return slot == kAccessFile ? guest::runtimeHook<kAccessFile>(app, cpu)
+                               : guest::runtimeHook<kReleaseFile>(app, cpu);
 }
 
 /* The default windowing's window for the handle, if it has one and `hook`
@@ -1212,7 +1217,7 @@ bool isTty(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 handle, x86::re
     result = 1;
     if (window == 0)
     {
-        if (!windows<kGetFileType, &win32::kernel32::GetFileType>(app, cpu, osHandle(app, handle)))
+        if (!windows<kGetFileType, &host::fileType>(app, cpu, osHandle(app, handle)))
             return false;
         result = cpu.eax == 2 ? 1 : 0;  // FILE_TYPE_CHAR
     }
@@ -1309,7 +1314,7 @@ void lseek(win32::WinApplication* app, x86::CPU& cpu)
             return;
         if (x86::sreg32(offset) > 0 && !(mode & kAppend))
             setIoMode(app, handle, mode | kExtended);
-        if (!windows<kSetFilePointer, &win32::kernel32::SetFilePointer>(app, cpu, osHandle(app, handle), offset, 0, whence))
+        if (!windows<kSetFilePointer, &host::setFilePointer>(app, cpu, osHandle(app, handle), offset, 0, whence))
             return;
         result = cpu.eax;
         if (!fileLock(app, cpu, kReleaseFile, handle) || (result == 0xffffffff && !setErrnoNt(app, cpu)))
@@ -1334,7 +1339,7 @@ void tell(win32::WinApplication* app, x86::CPU& cpu)
     {
         const x86::reg32 os = osHandle(app, handle);  // before the lock, as its code reads it
         if (!fileLock(app, cpu, kAccessFile, handle)
-            || !windows<kSetFilePointer, &win32::kernel32::SetFilePointer>(app, cpu, os, 0, 0, 1))
+            || !windows<kSetFilePointer, &host::setFilePointer>(app, cpu, os, 0, 0, 1))
             return;
         result = cpu.eax;
         if (!fileLock(app, cpu, kReleaseFile, handle) || (result == 0xffffffff && !setErrnoNt(app, cpu)))
@@ -1371,7 +1376,7 @@ bool readHandle(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 handle, x8
         return false;
     if (window != 0)
         return windowTransfer(app, cpu, kWindowsStdin, handle, window, buffer, length, result);
-    if (!windows<kReadFile, &win32::kernel32::ReadFile>(app, cpu, osHandle(app, handle), buffer, length, local, 0))
+    if (!windows<kReadFile, &host::readFile>(app, cpu, osHandle(app, handle), buffer, length, local, 0))
         return false;
     const bool done = cpu.eax != 0;
     result = done ? at(app, local) : 0xffffffff;
@@ -1389,7 +1394,7 @@ bool writeHandle(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 handle, x
         return false;
     if (mode & kAppend)
     {
-        if (!windows<kSetFilePointer, &win32::kernel32::SetFilePointer>(app, cpu, os, 0, 0, 2))
+        if (!windows<kSetFilePointer, &host::setFilePointer>(app, cpu, os, 0, 0, 2))
             return false;
         if (cpu.eax == 0xffffffff)
         {
@@ -1401,7 +1406,7 @@ bool writeHandle(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 handle, x
         return false;
     if (window != 0)
         return windowTransfer(app, cpu, kWindowsStdout, handle, window, buffer, length, result);
-    if (!windows<kWriteFile, &win32::kernel32::WriteFile>(app, cpu, os, buffer, length, local, 0))
+    if (!windows<kWriteFile, &host::writeFile>(app, cpu, os, buffer, length, local, 0))
         return false;
     if (cpu.eax == 0)
     {
@@ -2409,7 +2414,7 @@ bool syncHandle(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 handle, x8
         return badHandle(app, cpu, result);
     result = 0;
     if (!fileLock(app, cpu, kAccessFile, handle)
-        || !windows<kFlushFileBuffers, &win32::kernel32::FlushFileBuffers>(app, cpu, osHandle(app, handle)))
+        || !windows<kFlushFileBuffers, &host::flushFile>(app, cpu, osHandle(app, handle)))
         return false;
     if (cpu.eax == 0)
     {
@@ -2650,7 +2655,7 @@ bool flushAll(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 mask, x86::r
 {
     const Frame frame(cpu, 0xc);  // ebx, ecx, edx
     cpu.eax = mask;
-    if (!call(app, cpu, at(app, kAccessIob)))
+    if (!guest::runtimeHook<kAccessIob>(app, cpu))
         return false;
     count = 0;
     x86::reg32 eax = mask;
@@ -2664,7 +2669,7 @@ bool flushAll(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 mask, x86::r
             return false;
     }
     cpu.eax = eax;
-    return call(app, cpu, at(app, kReleaseIob));
+    return guest::runtimeHook<kReleaseIob>(app, cpu);
 }
 
 /* fwrite's: n of size bytes -- binary, into the buffer, or straight to
@@ -3293,7 +3298,7 @@ bool allocHandle(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 os, x86::
 {
     const Frame frame(cpu, 0x10);  // ebx, ecx, edx, esi
     cpu.eax = os;
-    if (!call(app, cpu, at(app, kAccessHandles)))
+    if (!guest::runtimeHook<kAccessHandles>(app, cpu))
         return false;
     const x86::reg32 count = at(app, kHandleCount);
     if (x86::sreg32(count) > 0)
@@ -3307,7 +3312,7 @@ bool allocHandle(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 os, x86::
             {
                 put(app, slot, os);
                 cpu.eax = offset;
-                return call(app, cpu, at(app, kReleaseHandles));
+                return guest::runtimeHook<kReleaseHandles>(app, cpu);
             }
             offset += 4;
             ++handle;
@@ -3321,7 +3326,7 @@ bool allocHandle(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 os, x86::
     put(app, kOsHandles, cpu.eax);
     put(app, cpu.eax + 4 * last, os);
     put(app, kHandleCount, last + 1);
-    if (!call(app, cpu, at(app, kReleaseHandles)))
+    if (!guest::runtimeHook<kReleaseHandles>(app, cpu))
         return false;
     handle = at(app, kHandleCount) - 1;
     return true;
@@ -3333,14 +3338,14 @@ bool freeHandle(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 handle)
 {
     const Frame frame(cpu, 4);  // edx
     cpu.eax = handle;
-    if (!call(app, cpu, at(app, kAccessHandles)))
+    if (!guest::runtimeHook<kAccessHandles>(app, cpu))
         return false;
     if (x86::sreg32(handle) > 0 && x86::sreg32(handle) < x86::sreg32(at(app, kHandleCount)))
     {
         cpu.eax = handle << 2;
         put(app, at(app, kOsHandles) + cpu.eax, 0);
     }
-    return call(app, cpu, at(app, kReleaseHandles));
+    return guest::runtimeHook<kReleaseHandles>(app, cpu);
 }
 
 /* __close's: a window's handle's window gone, by the default windowing's
@@ -3372,7 +3377,7 @@ bool closeHandle(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 handle, x
     }
     if (window == 0)
     {
-        if (!windows<kCloseHandle, &win32::kernel32::CloseHandle>(app, cpu, os))
+        if (!windows<kCloseHandle, &host::closeHandle>(app, cpu, os))
             return false;
         if (cpu.eax == 0)
         {
@@ -3427,7 +3432,7 @@ bool openHandle(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 name, x86:
             if (!nested(cpu, [&] { return fakeHandle(app, cpu, fake); }))
                 return false;
             cpu.eax = fake;
-            if (!call(app, cpu, at(app, kAllocHandle)))
+            if (!guest::runtimeHook<kAllocHandle>(app, cpu))
                 return false;
             cpu.ebx = 0;
             cpu.edx = 0x2000;
@@ -3471,13 +3476,13 @@ bool openHandle(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 name, x86:
         {
             disposition = byte(app, flags) & kOpenTruncate ? 5 : 3;  // TRUNCATE_EXISTING, OPEN_EXISTING
         }
-        if (!windows<kCreateFileA, &win32::kernel32::CreateFileA>(app, cpu, name, at(app, access), at(app, share), security,
+        if (!windows<kCreateFileA, &host::createFile>(app, cpu, name, at(app, access), at(app, share), security,
                                                                disposition, fileAttributes, 0))
             return false;
         x86::reg32 os = cpu.eax;
         if (os == 0xffffffff && (byte(app, flags) & kOpenCreate))
         {
-            if (!windows<kCreateFileA, &win32::kernel32::CreateFileA>(app, cpu, name, at(app, access), at(app, share), 0,
+            if (!windows<kCreateFileA, &host::createFile>(app, cpu, name, at(app, access), at(app, share), 0,
                                                                    at(app, retry), fileAttributes, 0))
                 return false;
             os = cpu.eax;
@@ -3485,12 +3490,12 @@ bool openHandle(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 name, x86:
         if (os == 0xffffffff)
             return setErrnoNt(app, cpu);
         cpu.eax = os;
-        if (!call(app, cpu, at(app, kAllocHandle)))
+        if (!guest::runtimeHook<kAllocHandle>(app, cpu))
             return false;
         handle = cpu.eax;
         if (handle >= at(app, kFileCount))
         {
-            if (!windows<kCloseHandle, &win32::kernel32::CloseHandle>(app, cpu, os))
+            if (!windows<kCloseHandle, &host::closeHandle>(app, cpu, os))
                 return false;
             return setThreadWord(app, cpu, kErrno, kENOMEM);
         }
@@ -3633,7 +3638,7 @@ bool doOpen(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 name, x86::reg
 bool allocateStream(win32::WinApplication* app, x86::CPU& cpu, x86::reg32& fp)
 {
     const Frame frame(cpu, 0x14);  // ebx, ecx, edx, esi, edi
-    if (!call(app, cpu, at(app, kAccessIob)))
+    if (!guest::runtimeHook<kAccessIob>(app, cpu))
         return false;
     x86::reg32 link = at(app, kClosedStreams), flag;
     if (link != 0)
@@ -3659,7 +3664,7 @@ bool allocateStream(win32::WinApplication* app, x86::CPU& cpu, x86::reg32& fp)
         if (link == 0)
         {
             fp = 0;
-            return setThreadWord(app, cpu, kErrno, kENOMEM) && call(app, cpu, at(app, kReleaseIob));
+            return setThreadWord(app, cpu, kErrno, kENOMEM) && guest::runtimeHook<kReleaseIob>(app, cpu);
         }
         if (fp == 0)
             fp = link + kLinkSize;
@@ -3676,7 +3681,7 @@ bool allocateStream(win32::WinApplication* app, x86::CPU& cpu, x86::reg32& fp)
     put(app, kOpenStreams, link);
     put(app, link + kLinkNext, head);
     cpu.eax = head;
-    return call(app, cpu, at(app, kReleaseIob));
+    return guest::runtimeHook<kReleaseIob>(app, cpu);
 }
 
 /* __freefp's: the stream's link off __OpenStreams and first on the closed
@@ -3754,7 +3759,7 @@ bool doClose(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 fp, x86::reg3
     if (!streamLock(app, cpu, kReleaseFile, fp))
         return false;
     cpu.eax = at(app, fp + kFileHandle);
-    return handleToo == 0 || call(app, cpu, at(app, kFreeHandle));
+    return handleToo == 0 || guest::runtimeHook<kFreeHandle>(app, cpu);
 }
 
 /* __shutdown_stream's: __doclose's, and __freefp. */
@@ -3774,13 +3779,13 @@ bool closeStream(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 fp, x86::
 {
     const Frame frame(cpu, 8);  // ebx, edx
     cpu.eax = fp;
-    if (!call(app, cpu, at(app, kAccessIob)))
+    if (!guest::runtimeHook<kAccessIob>(app, cpu))
         return false;
     x86::reg32 link = at(app, kOpenStreams);
     while (link != 0 && at(app, link + kLinkStream) != fp)
         link = at(app, link + kLinkNext);
     cpu.eax = link;
-    if (!call(app, cpu, at(app, kReleaseIob)))
+    if (!guest::runtimeHook<kReleaseIob>(app, cpu))
         return false;
     result = 0xffffffff;
     return link == 0 || nested(cpu, [&] { return shutdownStream(app, cpu, fp, 1, result); });
@@ -4381,12 +4386,15 @@ void ReleaseNHeap(win32::WinApplication* app, x86::CPU& cpu)
  * is every other frame a pointer into is handed out of.  The conversions it
  * has itself are integer ones; a float's (e, f, g) goes to [__EFG_printf],
  * the x87's formatter the start-up code puts there, which stays generated.
+ * Each is a typed core (fooOf) and its adapter for the calls by address; a
+ * core called from another runs at its code's depth, its pushes written where
+ * the code writes them -- what a string run past its end in __prtf's frame
+ * reads, the registers the code keeps its pointers in among them.
  *
- * es is as the code has it: what it reads and writes through es is at ees,
- * the register whole, and the offset -- a far pointer's segment ('F') added
- * to its offset, and nothing for the game's own, whose es is its ds.  les is
- * never run, NFS2_ASSERT(false) where it would be, and what the register held
- * stays. */
+ * es is as the code has it: es is ees's low word, so what is read through it
+ * is at ees with the segment loaded in it -- a far pointer's ('F'), or ds for
+ * the game's own.  les is never run, NFS2_ASSERT(false) where it would be,
+ * and what the register held stays. */
 namespace
 {
 
@@ -4422,6 +4430,52 @@ constexpr reg32 kWideCharToMultiByte = 0x534638;
 constexpr reg32 kMemPutc = 0x4df660;
 constexpr reg32 kFilePutc = 0x4ff000;
 
+/* Room on the guest's stack for what a callee is handed the address of: the code's frame (`pushed`
+ * bytes of registers under esp on entry, then `bytes`), esp under it while the core runs and back
+ * after; an address in it as the frame's base less the offset. */
+class GuestFrame
+{
+public:
+    GuestFrame(x86::CPU& cpu, reg32 pushed, reg32 bytes) : cpu_(cpu), esp_(cpu.esp), base_(cpu.esp - pushed)
+    {
+        cpu.esp = base_ - bytes;
+    }
+    /* The registers the code saves, `saved`, where its pushes put them: what a frame at this
+     * depth later finds there. */
+    GuestFrame(win32::WinApplication* app, x86::CPU& cpu, std::initializer_list<reg32> saved, reg32 bytes)
+        : cpu_(cpu), esp_(cpu.esp), base_(cpu.esp - 4 * reg32(saved.size()))
+    {
+        reg32 p = esp_;
+        for (const reg32 value : saved)
+            put(app, p -= 4, value);
+        cpu.esp = base_ - bytes;
+    }
+    ~GuestFrame() { cpu_.esp = esp_; }
+    GuestFrame(const GuestFrame&) = delete;
+    GuestFrame& operator=(const GuestFrame&) = delete;
+    reg32 operator-(reg32 offset) const { return base_ - offset; }
+
+private:
+    x86::CPU& cpu_;
+    const reg32 esp_;
+    const reg32 base_;
+};
+
+/* The return address's slot under esp, as a call makes it: a core that keeps a frame on the
+ * guest's stack is called at the code's depth. */
+class ReturnSlot
+{
+public:
+    explicit ReturnSlot(x86::CPU& cpu) : cpu_(cpu), esp_(cpu.esp) { cpu.esp -= 4; }
+    ~ReturnSlot() { cpu_.esp = esp_; }
+    ReturnSlot(const ReturnSlot&) = delete;
+    ReturnSlot& operator=(const ReturnSlot&) = delete;
+
+private:
+    x86::CPU& cpu_;
+    const reg32 esp_;
+};
+
 reg16 half(win32::WinApplication* app, reg32 address)
 {
     return app->getMemory<reg16>(address);
@@ -4452,12 +4506,27 @@ void pushed(win32::WinApplication* app, reg32 entry, std::initializer_list<reg32
     }
 }
 
-/* A native of these called from another, as the generated code calls it: the
- * return address's slot, and esp back after it. */
-bool calls(win32::WinApplication* app, x86::CPU& cpu, guest::Native function)
+/* Where es with the segment `segment` puts an offset: es is ees's low word, so a mov es leaves its
+ * high one as it was. */
+reg32 segmentBase(const x86::CPU& cpu, reg32 segment)
 {
-    return call(app, cpu, function);
+    return (cpu.ees & 0xffff0000) | reg16(segment);
 }
+
+/* es as it was, back at the end of the scope: for a function whose code loads es with a string's
+ * segment, which what it calls finds there (and pushes). */
+class KeptEs
+{
+public:
+    explicit KeptEs(x86::CPU& cpu) : cpu_(cpu), es_(cpu.es) {}
+    ~KeptEs() { cpu_.es = es_; }
+    KeptEs(const KeptEs&) = delete;
+    KeptEs& operator=(const KeptEs&) = delete;
+
+private:
+    x86::CPU& cpu_;
+    const reg16 es_;
+};
 
 /* The next argument's dword, va_arg's way: the pointer at `argp` moved on by
  * `size` and the dword `size` back read. */
@@ -4470,315 +4539,273 @@ reg32 nextArgument(win32::WinApplication* app, reg32 argp, reg32 size, reg32& mo
 
 }  // namespace
 
-/* 0x51e060 (wctomb's core): the wide character in edx as WideCharToMultiByte
- * makes it in the game's code page, into eax's two bytes; how many, or -1.  A
- * null buffer is 0. */
+/* 0x51e060 (wctomb's core): the wide character `wc` as WideCharToMultiByte makes it in the game's
+ * code page, into the two bytes at `to`; how many, or -1.  A null buffer is 0.  At its entry's
+ * depth: ecx pushed, then the character, which Windows is handed.  0 with cpu.terminate set when
+ * the game stopped. */
+reg32 wctombOf(win32::WinApplication* app, x86::CPU& cpu, reg32 to, reg32 wc)
+{
+    const GuestFrame frame(app, cpu, {cpu.ecx}, 4);
+    const reg32 character = frame - 4;
+    put(app, character, wc);
+    if (to == 0)
+        return 0;
+    const guest::KeptRegisters kept(cpu);
+    cpu.eax = to;
+    if (!windows<kWideCharToMultiByte, &host::wideToMultiByte>(app, cpu, at(app, kCodePage), 0x200, character, 1, to,
+                                                               2, 0, 0))
+        return 0;
+    return cpu.eax == 0 ? 0xffffffff : cpu.eax;
+}
+
 void wctomb_(win32::WinApplication* app, x86::CPU& cpu)
 {
-    const reg32 ecx = cpu.ecx;
-    const reg32 local = cpu.esp - 8;  // ecx, then the character
-    pushed(app, cpu.esp, {ecx});
-    put(app, local, cpu.edx);
-    if (cpu.eax != 0)
-    {
-        cpu.esp = local;
-        cpu.edx = at(app, kCodePage);
-        if (!windows<kWideCharToMultiByte, &win32::kernel32::WideCharToMultiByte>(app, cpu, cpu.edx, 0x200, local, 1, cpu.eax, 2, 0, 0))
-            return;
-        if (cpu.eax == 0)
-            cpu.eax = 0xffffffff;
-        cpu.esp = local + 8;
-    }
-    cpu.ecx = ecx;
-    cpu.esp += 4;
+    const reg32 n = wctombOf(app, cpu, cpu.eax, cpu.edx);
+    if (cpu.terminate)
+        return;
+    returns(cpu, n);
 }
 
-/* 0x51e0a0 (utoa's core, clib/convert/c/itoa.c): eax in the base in ebx, its
- * digits from kDigits, into edx; edx back.  Its digits are made in its frame
- * backwards and copied out the right way round. */
+/* `value`'s digits in `base` from the table `digits`, made backwards in the frame's 0x28 bytes under
+ * the four registers utoa's code pushes, then copied out to `out` the right way round: utoa's and
+ * __prtf's own, which keep a different word in the frame's 0x24th. */
+reg32 digitsOf(win32::WinApplication* app, x86::CPU& cpu, reg32 value, reg32 base, reg32 out, reg32 digits,
+               bool keepsRest)
+{
+    const GuestFrame frame(app, cpu, {cpu.ecx, cpu.esi, cpu.edi, cpu.ebp}, 0x28);
+    const reg32 buffer = frame - 0x28;
+    putByte(app, buffer, 0);
+    reg32 p = buffer + 1;
+    do
+    {
+        put(app, buffer + 0x24, base);
+        const reg32 rest = value % base;
+        value /= base;
+        put(app, buffer + 0x24, keepsRest ? rest : value);
+        putByte(app, p++, byte(app, digits + rest));
+    } while (value != 0);
+    reg32 to = out;
+    reg8 c;
+    do
+    {
+        c = byte(app, --p);
+        putByte(app, to++, c);
+    } while (c != 0);
+    return out;
+}
+
+/* 0x51e0a0 (utoa's core, clib/convert/c/itoa.c): `value` in `base`, its digits from kDigits, into
+ * `out`; `out` back. */
+reg32 utoaOf(win32::WinApplication* app, x86::CPU& cpu, reg32 value, reg32 out, reg32 base)
+{
+    return digitsOf(app, cpu, value, base, out, kDigits, false);
+}
+
 void utoa(win32::WinApplication* app, x86::CPU& cpu)
 {
-    const reg32 ecx = cpu.ecx, esi = cpu.esi, edi = cpu.edi, ebp = cpu.ebp;
-    const reg32 frame = cpu.esp - 0x38;  // ecx, esi, edi, ebp, and 0x28 of its own
-    const reg32 base = cpu.ebx, out = cpu.edx;
-    pushed(app, cpu.esp, {ecx, esi, edi, ebp});
-    putByte(app, frame, 0);
-    reg32 p = frame + 1, value = cpu.eax, rest = 0;
-    do
-    {
-        put(app, frame + 0x24, base);
-        rest = value % base;
-        value /= base;
-        put(app, frame + 0x24, value);
-        putByte(app, p++, byte(app, kDigits + rest));
-    } while (value != 0);
-    reg32 to = out;
-    reg8 c;
-    do
-    {
-        c = byte(app, --p);
-        putByte(app, to++, c);
-    } while (c != 0);
-    cpu.eax = out;
-    cpu.ebx = frame + 0x24;
-    cpu.edx = rest;
-    cpu.ecx = ecx;
-    cpu.esi = esi;
-    cpu.edi = edi;
-    cpu.ebp = ebp;
-    cpu.esp += 4;
+    returns(cpu, utoaOf(app, cpu, cpu.eax, cpu.edx, cpu.ebx));
 }
 
-/* 0x51e0ec (itoa, clib/convert/c/itoa.c): eax signed in base 10 -- a '-'
- * first -- unsigned in any other, into edx; edx back. */
+/* 0x51e0ec (itoa, clib/convert/c/itoa.c): `value` signed in base 10 -- a '-' first -- unsigned in
+ * any other, into `out`; `out` back.  At its entry's depth: ecx pushed. */
+reg32 itoaOf(win32::WinApplication* app, x86::CPU& cpu, reg32 value, reg32 out, reg32 base)
+{
+    const GuestFrame frame(app, cpu, {cpu.ecx}, 0);
+    reg32 to = out;
+    if (base == 10 && x86::sreg32(value) < 0)
+    {
+        value = 0 - value;
+        putByte(app, to++, '-');
+    }
+    const ReturnSlot slot(cpu);
+    utoaOf(app, cpu, value, to, base);
+    return out;
+}
+
 void itoa(win32::WinApplication* app, x86::CPU& cpu)
 {
-    const reg32 ecx = cpu.ecx, out = cpu.edx;
-    pushed(app, cpu.esp, {ecx});
-    if (cpu.ebx == 10 && x86::sreg32(cpu.eax) < 0)
-    {
-        cpu.eax = 0 - cpu.eax;
-        putByte(app, cpu.edx, '-');
-        ++cpu.edx;
-    }
-    cpu.esp -= 4;  // ecx
-    if (!calls(app, cpu, utoa))
-        return;
-    cpu.esp += 4;
-    cpu.eax = out;
-    cpu.ecx = ecx;
-    cpu.esp += 4;
+    returns(cpu, itoaOf(app, cpu, cpu.eax, cpu.edx, cpu.ebx));
 }
 
-/* 0x525d59 (__U8D, the compiler's unsigned 64-bit division): edx:eax by
- * ecx:ebx; the quotient in edx:eax, the remainder in ecx:ebx. */
+/* 0x525d59 (__U8D, the compiler's unsigned 64-bit division): `n` by `d`, the remainder into
+ * `rest`. */
+x86::reg64 u8dOf(x86::reg64 n, x86::reg64 d, x86::reg64& rest)
+{
+    rest = d == 0 ? n : n % d;
+    return d == 0 ? 0 : n / d;
+}
+
 void U8D(win32::WinApplication* app, x86::CPU& cpu)
 {
-    if (cpu.ecx == 0 && cpu.ebx == 1)
-    {
-        cpu.ebx = 0;
-        cpu.esp += 4;
-        return;
-    }
+    // Its own convention: edx:eax by ecx:ebx, the quotient in edx:eax, the remainder in ecx:ebx;
+    // the long division's pushes where it takes them.
     if (cpu.ecx != 0 && cpu.ecx < cpu.edx)
-        pushed(app, cpu.esp, {cpu.ebp, cpu.esi, cpu.edi});  // the long division's
-    const x86::reg64 n = x86::reg64(cpu.edx) << 32 | cpu.eax;
-    const x86::reg64 d = x86::reg64(cpu.ecx) << 32 | cpu.ebx;
-    const x86::reg64 q = d == 0 ? 0 : n / d, r = d == 0 ? n : n % d;
+        pushed(app, cpu.esp, {cpu.ebp, cpu.esi, cpu.edi});
+    x86::reg64 rest;
+    const x86::reg64 q = u8dOf(x86::reg64(cpu.edx) << 32 | cpu.eax, x86::reg64(cpu.ecx) << 32 | cpu.ebx, rest);
     cpu.eax = reg32(q);
     cpu.edx = reg32(q >> 32);
-    cpu.ebx = reg32(r);
-    cpu.ecx = reg32(r >> 32);
+    cpu.ebx = reg32(rest);
+    cpu.ecx = reg32(rest >> 32);
     cpu.esp += 4;
 }
 
-/* 0x51e130 (ulltoa, clib/convert/c/lltoa.c): the unsigned 64 bits at eax in
- * the base in ebx, its digits from kDigits64, into edx; edx back -- a digit
- * at a time by __U8D, the quotient and remainder in its frame. */
+/* 0x51e130 (ulltoa, clib/convert/c/lltoa.c): the unsigned 64 bits at `value` in `base`, its digits
+ * from kDigits64, into `out`; `out` back -- a digit at a time by __U8D, the number, the quotient
+ * and the remainder in its frame: ecx, esi, edi, es and ebp pushed, then 0x44 bytes. */
+reg32 ulltoaOf(win32::WinApplication* app, x86::CPU& cpu, reg32 value, reg32 out, reg32 base)
+{
+    pushed(app, cpu.esp, {cpu.ecx, cpu.esi, cpu.edi, 0, cpu.ebp}, 3, cpu.es);
+    const GuestFrame frame(cpu, 0x14, 0x44);
+    const reg32 f = frame - 0x44;
+    put(app, f + 0x3c, out);
+    put(app, f + 0x40, out);
+    // Two movsd, es its ds, as the direction flag has them.
+    const reg32 step = cpu.flags.df ? reg32(-4) : 4;
+    const reg32 es = segmentBase(cpu, cpu.ds);
+    put(app, es + f + 0x34, at(app, value));
+    put(app, es + f + 0x34 + step, at(app, value + step));
+    put(app, f + 0x24, base);
+    put(app, f + 0x28, 0);
+    putByte(app, f, 0);
+    reg32 p = f + 1;
+    x86::reg64 q;
+    do
+    {
+        x86::reg64 rest;
+        q = u8dOf(x86::reg64(at(app, f + 0x38)) << 32 | at(app, f + 0x34),
+                  x86::reg64(at(app, f + 0x28)) << 32 | at(app, f + 0x24), rest);
+        put(app, f + 0x38, reg32(q >> 32));
+        put(app, f + 0x34, reg32(q));
+        put(app, f + 0x30, reg32(rest >> 32));
+        put(app, f + 0x2c, reg32(rest));
+        putByte(app, p++, byte(app, at(app, f + 0x2c) + kDigits64));
+    } while (q != 0);
+    reg8 c;
+    do
+    {
+        const reg32 to = at(app, f + 0x40);
+        c = byte(app, --p);
+        putByte(app, to, c);
+        put(app, f + 0x40, to + 1);
+    } while (c != 0);
+    return at(app, f + 0x3c);
+}
+
 void ulltoa(win32::WinApplication* app, x86::CPU& cpu)
 {
-    const reg32 ecx = cpu.ecx, esi = cpu.esi, edi = cpu.edi, ebp = cpu.ebp;
-    const reg16 es = cpu.es;
-    const reg32 frame = cpu.esp - 0x58;  // ecx, esi, edi, es, ebp, and 0x44 of its own
-    const reg32 value = cpu.eax, out = cpu.edx;
-    pushed(app, cpu.esp, {ecx, esi, edi, 0, ebp}, 3, es);
-    put(app, frame + 0x3c, out);
-    put(app, frame + 0x40, out);
-    cpu.es = cpu.ds;
-    // Two movsd, as the direction flag has them.
-    const reg32 step = cpu.flags.df ? reg32(-4) : 4;
-    put(app, cpu.ees + frame + 0x34, at(app, value));
-    put(app, cpu.ees + frame + 0x34 + step, at(app, value + step));
-    put(app, frame + 0x24, cpu.ebx);
-    put(app, frame + 0x28, 0);
-    putByte(app, frame, 0);
-    reg32 p = frame + 1;
-    cpu.esp = frame;
-    do
-    {
-        cpu.edi = frame + 0x2c;
-        cpu.esi = frame + 0x34;
-        cpu.edx = at(app, frame + 0x38);
-        cpu.eax = at(app, frame + 0x34);
-        cpu.ecx = at(app, frame + 0x28);
-        cpu.ebx = at(app, frame + 0x24);
-        if (!calls(app, cpu, U8D))
-            return;
-        put(app, frame + 0x38, cpu.edx);
-        put(app, frame + 0x34, cpu.eax);
-        put(app, frame + 0x30, cpu.ecx);
-        put(app, frame + 0x2c, cpu.ebx);
-        putByte(app, p++, byte(app, at(app, frame + 0x2c) + kDigits64));
-        cpu.ebx = at(app, frame + 0x34);
-    } while (cpu.ebx != 0 || at(app, frame + 0x38) != 0);
-    reg8 c;
-    do
-    {
-        cpu.ebx = at(app, frame + 0x40);
-        c = byte(app, --p);
-        cpu.esi = cpu.ebx + 1;
-        putByte(app, cpu.ebx, c);
-        put(app, frame + 0x40, cpu.esi);
-    } while (c != 0);
-    cpu.eax = at(app, frame + 0x3c);
-    cpu.ecx = ecx;
-    cpu.esi = esi;
-    cpu.edi = edi;
-    cpu.ebp = ebp;
-    cpu.es = es;
-    cpu.esp = frame + 0x58 + 4;
+    returns(cpu, ulltoaOf(app, cpu, cpu.eax, cpu.edx, cpu.ebx));
 }
 
-/* 0x51e220 (__prtf's utoa): eax in the base in ebx, its digits from
- * kDigitsLow, into edx; edx back. */
+/* 0x51e220 (__prtf's utoa): `value` in `base`, its digits from kDigitsLow, into `out`; `out`
+ * back. */
+reg32 prtfUtoaOf(win32::WinApplication* app, x86::CPU& cpu, reg32 value, reg32 out, reg32 base)
+{
+    return digitsOf(app, cpu, value, base, out, kDigitsLow, true);
+}
+
 void prtfUtoa(win32::WinApplication* app, x86::CPU& cpu)
 {
-    const reg32 ecx = cpu.ecx, esi = cpu.esi, edi = cpu.edi, ebp = cpu.ebp;
-    const reg32 frame = cpu.esp - 0x38;  // ecx, esi, edi, ebp, and 0x28 of its own
-    const reg32 base = cpu.ebx, out = cpu.edx;
-    pushed(app, cpu.esp, {ecx, esi, edi, ebp});
-    putByte(app, frame, 0);
-    reg32 p = frame + 1, value = cpu.eax, rest = 0;
-    reg8 digit = 0;
-    do
-    {
-        put(app, frame + 0x24, base);
-        rest = value % base;
-        value /= base;
-        put(app, frame + 0x24, rest);
-        digit = byte(app, rest + kDigitsLow);
-        putByte(app, p++, digit);
-    } while (value != 0);
-    reg32 to = out;
-    reg8 c;
-    do
-    {
-        c = byte(app, --p);
-        putByte(app, to++, c);
-    } while (c != 0);
-    cpu.eax = out;
-    cpu.ebx = (rest & 0xffffff00) | digit;
-    cpu.edx = rest;
-    cpu.ecx = ecx;
-    cpu.esi = esi;
-    cpu.edi = edi;
-    cpu.ebp = ebp;
-    cpu.esp += 4;
+    returns(cpu, prtfUtoaOf(app, cpu, cpu.eax, cpu.edx, cpu.ebx));
 }
 
-/* 0x4fefdc (__prtf's strupr): the string at eax in capitals, by toupper. */
-void prtfUpper(win32::WinApplication* app, x86::CPU& cpu)
+/* 0x4fefdc (__prtf's strupr): the string at `p` in capitals, by toupper.  What the code leaves in
+ * eax: toupper's last, `p` for an empty string. */
+reg32 prtfUpperOf(win32::WinApplication* app, x86::CPU& cpu, reg32 p)
 {
-    const reg32 ebx = cpu.ebx, edx = cpu.edx;
-    pushed(app, cpu.esp, {ebx, edx});
-    cpu.esp -= 8;  // ebx, edx
-    reg32 p = cpu.eax;
+    pushed(app, cpu.esp, {cpu.ebx, cpu.edx});
+    reg32 last = p;
     if (byte(app, p) != 0)
-    {
-        reg8 next;
         do
         {
-            cpu.eax = byte(app, p);
-            cpu.edx = p;
-            if (!calls(app, cpu, toupper))
-                return;
-            putByte(app, p, reg8(cpu.eax));
-            next = byte(app, p + 1);
-            cpu.ebx = (cpu.ebx & 0xffffff00) | next;
-            ++p;
-        } while (next != 0);
-    }
-    cpu.ebx = ebx;
-    cpu.edx = edx;
-    cpu.esp += 8 + 4;
+            last = clib::toupper(app, byte(app, p));
+            putByte(app, p, reg8(last));
+        } while (byte(app, ++p) != 0);
+    return last;
 }
 
-/* 0x4fe734 (__prtf's strnlen): the length of the string at eax, at most ebx
- * (-1 for any); edx its segment. */
+void prtfUpper(win32::WinApplication* app, x86::CPU& cpu)
+{
+    returns(cpu, prtfUpperOf(app, cpu, cpu.eax));
+}
+
+/* 0x4fe734 (__prtf's strnlen): the length of the string at `p` in the segment `segment`, which the
+ * code loads into es, at most `limit` (-1 for any). */
+reg32 prtfLengthOf(win32::WinApplication* app, x86::CPU& cpu, reg32 p, reg32 segment, reg32 limit)
+{
+    pushed(app, cpu.esp, {cpu.ecx, cpu.esi, cpu.edi, 0}, 3, cpu.es);
+    const reg32 base = segmentBase(cpu, segment);
+    reg32 length = 0;
+    while (byte(app, base + p++) != 0 && length != limit)
+        ++length;
+    return length;
+}
+
 void prtfLength(win32::WinApplication* app, x86::CPU& cpu)
 {
-    const reg16 es = cpu.es;
-    const reg32 limit = cpu.ebx;
-    reg32 p = cpu.eax, length = 0;
-    reg8 c;
-    pushed(app, cpu.esp, {cpu.ecx, cpu.esi, cpu.edi, 0}, 3, es);
-    cpu.es = reg16(cpu.edx);
-    const reg32 base = cpu.ees;
-    cpu.es = es;
-    for (;;)
-    {
-        c = byte(app, base + p++);
-        if (c == 0 || length == limit)
-            break;
-        ++length;
-    }
-    cpu.eax = length;
-    cpu.edx = p;
-    cpu.ebx = (limit & 0xffffff00) | c;
-    cpu.esp += 4;
+    returns(cpu, prtfLengthOf(app, cpu, cpu.eax, cpu.edx, cpu.ebx));
 }
 
-/* 0x4fe758 (__prtf's wcsnlen in bytes): how many bytes the wide string at
- * eax is as wctomb makes it, at most ebx of them (-1 for any); edx its
- * segment. */
+/* 0x4fe758 (__prtf's wcsnlen in bytes): how many bytes the wide string at `p` in the segment
+ * `segment` is as wctomb makes it, at most `limit` of them (-1 for any).  At its entry's depth: ecx, esi and es pushed, then the
+ * character's bytes.  0 with cpu.terminate set when the game stopped. */
+reg32 prtfWideLengthOf(win32::WinApplication* app, x86::CPU& cpu, reg32 p, reg32 segment, reg32 limit)
+{
+    pushed(app, cpu.esp, {cpu.ecx, cpu.esi, 0}, 2, cpu.es);
+    const GuestFrame frame(cpu, 0xc, 4);
+    const reg32 base = segmentBase(cpu, segment);
+    const reg32 bytes = frame - 4;
+    auto over = [&](reg32 count) { return limit != 0xffffffff && x86::sreg32(count) > x86::sreg32(limit); };
+    reg32 count = 0;
+    for (;;)
+    {
+        const reg16 wc = half(app, base + p);
+        if (wc == 0 || over(count))
+            break;
+        p += 2;
+        reg32 n;
+        {
+            const ReturnSlot slot(cpu);
+            n = wctombOf(app, cpu, bytes, wc);
+        }
+        if (cpu.terminate)
+            return 0;
+        if (n != 0xffffffff)
+            count += n;
+    }
+    return over(count) ? limit : count;
+}
+
 void prtfWideLength(win32::WinApplication* app, x86::CPU& cpu)
 {
-    const reg32 ecx = cpu.ecx, esi = cpu.esi;
-    const reg32 limit = cpu.ebx;
-    const reg32 local = cpu.esp - 0x10;  // ecx, esi, es, and the character's bytes
-    const reg16 es = cpu.es;
-    reg32 p = cpu.eax, count = 0;
-    pushed(app, cpu.esp, {ecx, esi, 0}, 2, es);
-    cpu.es = reg16(cpu.edx);
-    cpu.esp = local;
-    for (;;)
-    {
-        const reg16 wc = half(app, cpu.ees + p);
-        if (wc == 0 || (limit != 0xffffffff && x86::sreg32(count) > x86::sreg32(limit)))
-            break;
-        cpu.edx = wc;
-        cpu.eax = local;
-        p += 2;
-        cpu.ebx = p;
-        if (!calls(app, cpu, wctomb_))
-            return;
-        if (cpu.eax != 0xffffffff)
-            count += cpu.eax;
-    }
-    cpu.eax = limit != 0xffffffff && x86::sreg32(count) > x86::sreg32(limit) ? limit : count;
-    cpu.ebx = p;
-    cpu.ecx = ecx;
-    cpu.esi = esi;
-    cpu.es = es;
-    cpu.esp = local + 0x10 + 4;
+    const reg32 n = prtfWideLengthOf(app, cpu, cpu.eax, cpu.edx, cpu.ebx);
+    if (cpu.terminate)
+        return;
+    returns(cpu, n);
 }
 
-/* 0x4fe7c4 (__prtf's pointer's digits): eax in hexadecimal, right-aligned in
- * ebx digits with zeros before, into edx. */
-void prtfHex(win32::WinApplication* app, x86::CPU& cpu)
+/* 0x4fe7c4 (__prtf's pointer's digits): `value` in hexadecimal, right-aligned in `width` digits
+ * with zeros before, into `out`.  At its entry's depth: four pushes, then the width.  What the code
+ * leaves in eax: the count of zeros it ran down, -1. */
+reg32 prtfHexOf(win32::WinApplication* app, x86::CPU& cpu, reg32 value, reg32 width, reg32 out)
 {
-    const reg32 ecx = cpu.ecx, esi = cpu.esi, edi = cpu.edi, ebp = cpu.ebp;
-    const reg32 frame = cpu.esp - 0x14;  // ecx, esi, edi, ebp, and the width
-    const reg32 out = cpu.edx, width = cpu.ebx;
-    pushed(app, cpu.esp, {ecx, esi, edi, ebp});
-    put(app, frame, width);
-    cpu.ebx = 0x10;
-    cpu.esp = frame;
-    if (!calls(app, cpu, itoa))
-        return;
-    // repne scasb from it, es its ds, as the direction flag has it.
-    const reg16 es = cpu.es;
-    putHalf(app, frame - 4, es);  // push es
-    cpu.es = cpu.ds;
+    const GuestFrame frame(app, cpu, {cpu.ecx, cpu.esi, cpu.edi, cpu.ebp}, 4);
+    const reg32 kept = frame - 4;
+    put(app, kept, width);
+    {
+        const ReturnSlot slot(cpu);
+        itoaOf(app, cpu, value, out, 0x10);
+    }
+    // repne scasb from it, es its ds, as the direction flag has it -- es pushed meanwhile.
+    putHalf(app, kept - 4, cpu.es);
     reg32 count = 0xffffffff, scan = out;
     reg8 scanned;
     do
     {
-        scanned = byte(app, cpu.ees + scan);
+        scanned = byte(app, segmentBase(cpu, cpu.ds) + scan);
         scan += cpu.flags.df ? reg32(-1) : 1;
         --count;
     } while (scanned != 0 && count != 0);
-    cpu.es = es;
     const reg32 length = ~count - 1;
     reg32 left = width - 1;
     if (length != 0)
@@ -4796,13 +4823,13 @@ void prtfHex(win32::WinApplication* app, x86::CPU& cpu)
         --left;
         putByte(app, p, '0');
     }
-    putByte(app, out + at(app, frame), 0);
-    cpu.eax = left;
-    cpu.ecx = ecx;
-    cpu.esi = esi;
-    cpu.edi = edi;
-    cpu.ebp = ebp;
-    cpu.esp = frame + 0x14 + 4;
+    putByte(app, out + at(app, kept), 0);
+    return left;
+}
+
+void prtfHex(win32::WinApplication* app, x86::CPU& cpu)
+{
+    returns(cpu, prtfHexOf(app, cpu, cpu.eax, cpu.ebx, cpu.edx));
 }
 
 /* 0x4fe81e: the end of __prtf's %p digits (0x4fe7c4), which its %hf
@@ -4818,31 +4845,27 @@ void prtfHexEnd(win32::WinApplication* app, x86::CPU& cpu)
     cpu.esp += 0x10 + 4;
 }
 
-/* 0x4fe828 (__prtf's %hf): edx a 16.16 fixed-point number, into eax -- its
- * whole part by itoa, then the precision's digits (4 for none), rounded
- * half up. */
-void prtfFixed(win32::WinApplication* app, x86::CPU& cpu)
+/* 0x4fe828 (__prtf's %hf): `value` a 16.16 fixed-point number, into `out` -- its whole part by
+ * itoa, then the precision's digits (4 for none), rounded half up.  At its entry's depth: four
+ * pushes, then the number.  What the code leaves in eax: where its digits went, past a '-'. */
+reg32 prtfFixedOf(win32::WinApplication* app, x86::CPU& cpu, reg32 out, reg32 value, reg32 specs)
 {
-    const reg32 ecx = cpu.ecx, esi = cpu.esi, edi = cpu.edi, ebp = cpu.ebp;
-    const reg32 local = cpu.esp - 0x14;  // ecx, esi, edi, ebp, and the number
-    const reg32 specs = cpu.ebx;
-    reg32 p = cpu.eax;
-    pushed(app, cpu.esp, {ecx, esi, edi, ebp});
-    put(app, local, cpu.edx);
-    if (x86::sreg32(cpu.edx) < 0)
+    const GuestFrame frame(app, cpu, {cpu.ecx, cpu.esi, cpu.edi, cpu.ebp}, 4);
+    const reg32 local = frame - 4;
+    reg32 p = out;
+    put(app, local, value);
+    if (x86::sreg32(value) < 0)
     {
         putByte(app, p, '-');
         ++p;
-        put(app, local, 0 - cpu.edx);
+        put(app, local, 0 - value);
     }
     if (at(app, specs + kPrec) == 0xffffffff)
         put(app, specs + kPrec, 4);
-    cpu.ebx = 10;
-    cpu.eax = half(app, local + 2);
-    cpu.edx = p;
-    cpu.esp = local;
-    if (!calls(app, cpu, itoa))
-        return;
+    {
+        const ReturnSlot slot(cpu);
+        itoaOf(app, cpu, half(app, local + 2), p, 10);
+    }
     const reg32 start = p;
     if (byte(app, p) != 0)
         while (byte(app, ++p) != 0)
@@ -4861,8 +4884,8 @@ void prtfFixed(win32::WinApplication* app, x86::CPU& cpu)
     }
     if (byte(app, local + 1) & 0x80)
     {
-        // Rounded up: a 9 to a 0 and the digit before up, to a 1 before
-        // them all, which moves the point and the rest one on.
+        // Rounded up: a 9 to a 0 and the digit before up, to a 1 before them all, which moves the
+        // point and the rest one on.
         for (;;)
         {
             if (p == start)
@@ -4897,27 +4920,38 @@ void prtfFixed(win32::WinApplication* app, x86::CPU& cpu)
             putByte(app, p, '0');
         }
     }
-    cpu.ecx = ecx;
-    cpu.esi = esi;
-    cpu.edi = edi;
-    cpu.ebp = ebp;
-    cpu.esp = local + 0x14 + 4;
+    return start;
 }
 
-/* 0x4fe924 (__prtf's float): [__EFG_printf] with eax the buffer, edx the
- * arguments' pointer, ebx the SPECS. */
+void prtfFixed(win32::WinApplication* app, x86::CPU& cpu)
+{
+    returns(cpu, prtfFixedOf(app, cpu, cpu.eax, cpu.edx, cpu.ebx));
+}
+
+/* 0x4fe924 (__prtf's float): [__EFG_printf] with eax the buffer, edx the arguments' pointer, ebx
+ * the SPECS -- the start-up code's formatter (watc::formatFloat, by its hook: watcom_hooks.h),
+ * called with the registers it takes; what it leaves in eax, 0 with cpu.terminate set when the
+ * game stopped. */
+reg32 prtfFloatOf(win32::WinApplication* app, x86::CPU& cpu, reg32 buffer, reg32 argp, reg32 specs)
+{
+    const guest::KeptRegisters kept(cpu);
+    cpu.eax = buffer;
+    cpu.edx = argp;
+    cpu.ebx = specs;
+    return guest::runtimeHook<kFloatFormat>(app, cpu) ? cpu.eax : 0;
+}
+
 void prtfFloat(win32::WinApplication* app, x86::CPU& cpu)
 {
-    if (!call(app, cpu, at(app, kFloatFormat)))
+    if (!guest::runtimeHook<kFloatFormat>(app, cpu))
         return;
     cpu.esp += 4;
 }
 
-/* 0x4fe92c (__prtf's zero padding): with '0' padding and not '-', what the
- * width leaves over the parts as zeros after the first. */
-void prtfZeros(win32::WinApplication* app, x86::CPU& cpu)
+/* 0x4fe92c (__prtf's zero padding): with '0' padding and not '-', what the width leaves over the
+ * parts of the SPECS at `specs` as zeros after the first. */
+void prtfZerosOf(win32::WinApplication* app, x86::CPU& cpu, reg32 specs)
 {
-    const reg32 specs = cpu.eax;
     pushed(app, cpu.esp, {cpu.ebx, cpu.ecx, cpu.edx, cpu.esi, cpu.edi, cpu.ebp});
     if (!(byte(app, specs + kFlags) & kLeft) && byte(app, specs + kPadChar) == '0')
     {
@@ -4927,15 +4961,17 @@ void prtfZeros(win32::WinApplication* app, x86::CPU& cpu)
         if (x86::sreg32(left) > 0)
             put(app, specs + kNZ0, nz0 + left);
     }
+}
+
+void prtfZeros(win32::WinApplication* app, x86::CPU& cpu)
+{
+    prtfZerosOf(app, cpu, cpu.eax);  // eax left as it was, the SPECS
     cpu.esp += 4;
 }
 
-/* 0x4fe6cc (__prtf's flags): the flags at eax into the SPECS at edx; past
- * them. */
-void prtfFlags(win32::WinApplication* app, x86::CPU& cpu)
+/* 0x4fe6cc (__prtf's flags): the flags at `p` into the SPECS at `specs`; past them. */
+reg32 prtfFlagsOf(win32::WinApplication* app, x86::CPU& cpu, reg32 p, reg32 specs)
 {
-    const reg32 specs = cpu.edx;
-    reg32 p = cpu.eax;
     pushed(app, cpu.esp, {cpu.ebx, cpu.ecx});
     putHalf(app, specs + kFlags, 0);
     for (;; ++p)
@@ -4958,25 +4994,28 @@ void prtfFlags(win32::WinApplication* app, x86::CPU& cpu)
         else
             break;
     }
-    cpu.eax = p;
-    cpu.esp += 4;
+    return p;
 }
 
-/* 0x4fe578 (__prtf's specification): what follows a '%' at eax -- flags,
- * width, precision, size -- into the SPECS at ebx, a '*' taken from the
- * arguments' pointer at edx; past it. */
-void prtfSpec(win32::WinApplication* app, x86::CPU& cpu)
+void prtfFlags(win32::WinApplication* app, x86::CPU& cpu)
 {
-    const reg32 ecx = cpu.ecx, esi = cpu.esi, edi = cpu.edi;
-    const reg32 argp = cpu.edx, specs = cpu.ebx;
-    pushed(app, cpu.esp, {ecx, esi, edi});
+    returns(cpu, prtfFlagsOf(app, cpu, cpu.eax, cpu.edx));
+}
+
+/* 0x4fe578 (__prtf's specification): what follows a '%' at `format` -- flags, width, precision,
+ * size -- into the SPECS at `specs`, a '*' taken from the arguments' pointer at `argp`; past it.
+ * `edx` what the code leaves there: the size's character in its low byte. */
+reg32 prtfSpecOf(win32::WinApplication* app, x86::CPU& cpu, reg32 format, reg32 argp, reg32 specs, reg32& edx)
+{
+    const GuestFrame frame(app, cpu, {cpu.ecx, cpu.esi, cpu.edi}, 0);
     putByte(app, specs + kPadChar, ' ');
-    cpu.edx = specs;
-    cpu.esp -= 0xc;  // ecx, esi, edi
-    if (!calls(app, cpu, prtfFlags))
-        return;
-    cpu.esp += 0xc;
-    reg32 p = cpu.eax, edx = cpu.edx, moved;
+    reg32 p;
+    {
+        const ReturnSlot slot(cpu);
+        p = prtfFlagsOf(app, cpu, format, specs);
+    }
+    edx = specs;
+    reg32 moved;
     auto digits = [&](reg32 field) {
         for (;;)
         {
@@ -5056,90 +5095,101 @@ void prtfSpec(win32::WinApplication* app, x86::CPU& cpu)
     default:
         break;
     }
-    cpu.eax = p;
-    cpu.edx = edx;
-    cpu.ecx = ecx;
-    cpu.esi = esi;
-    cpu.edi = edi;
-    cpu.esp += 4;
+    return p;
 }
 
-/* 0x4fe970 (__prtf's %ls): the wide string at eax (edx its segment) out by
- * the function in ecx, as wctomb makes each character, as many bytes as the
- * SPECS at ebx left for it. */
-void prtfWideOut(win32::WinApplication* app, x86::CPU& cpu)
+void prtfSpec(win32::WinApplication* app, x86::CPU& cpu)
 {
-    const reg32 esi = cpu.esi, edi = cpu.edi, ebp = cpu.ebp;
-    const reg16 es = cpu.es;
-    const reg32 local = cpu.esp - 0x14;  // esi, edi, es, ebp, and the character's bytes
-    const reg32 specs = cpu.ebx, out = cpu.ecx;
-    reg32 p = cpu.eax;
-    pushed(app, cpu.esp, {esi, edi, 0, ebp}, 2, es);
-    cpu.es = reg16(cpu.edx);
-    cpu.esp = local;
-    if (x86::sreg32(at(app, specs + kN1)) > 0)
+    reg32 edx;
+    const reg32 p = prtfSpecOf(app, cpu, cpu.eax, cpu.edx, cpu.ebx, edx);
+    cpu.edx = edx;  // the size's character, as the code leaves it
+    returns(cpu, p);
+}
+
+/* 0x4fe970 (__prtf's %ls): the wide string at `p` in the segment `segment` out by the function at
+ * `out`, as wctomb makes
+ * each character, as many bytes as the SPECS at `specs` left for it.  At its entry's depth: esi,
+ * edi, es and ebp pushed, then the character's bytes.  What the code leaves in eax; 0 with
+ * cpu.terminate set when the game stopped. */
+reg32 prtfWideOutOf(win32::WinApplication* app, x86::CPU& cpu, reg32 p, reg32 segment, reg32 specs, reg32 out)
+{
+    pushed(app, cpu.esp, {cpu.esi, cpu.edi, 0, cpu.ebp}, 2, cpu.es);
+    const GuestFrame frame(cpu, 0x10, 4);
+    const reg32 base = segmentBase(cpu, segment);
+    const reg32 bytes = frame - 4;
+    reg32 eax = p;
+    if (x86::sreg32(at(app, specs + kN1)) <= 0)
+        return eax;
+    for (;;)
     {
-        for (;;)
+        const reg16 wc = half(app, base + p);
+        p += 2;
+        reg32 n;
         {
-            cpu.edx = half(app, cpu.ees + p);
-            cpu.eax = local;
-            p += 2;
-            cpu.edi = p;
-            if (!calls(app, cpu, wctomb_))
-                return;
-            reg32 n = cpu.eax;
-            cpu.ecx = n;
-            if (n != 0xffffffff)
+            const ReturnSlot slot(cpu);
+            n = wctombOf(app, cpu, bytes, wc);
+        }
+        if (cpu.terminate)
+            return 0;
+        eax = n;
+        if (n != 0xffffffff)
+        {
+            if (x86::sreg32(n) > x86::sreg32(at(app, specs + kN1)))
             {
-                if (x86::sreg32(n) > x86::sreg32(at(app, specs + kN1)))
+                put(app, specs + kN1, 0);
+                break;
+            }
+            for (reg32 from = bytes; --n != 0xffffffff; ++from)
+            {
                 {
-                    put(app, specs + kN1, 0);
-                    break;
-                }
-                for (reg32 from = local; --n != 0xffffffff; ++from)
-                {
-                    cpu.edx = byte(app, from);
+                    const guest::KeptRegisters kept(cpu);
                     cpu.eax = specs;
+                    cpu.edx = byte(app, from);
                     cpu.ecx = n;
                     cpu.esi = from;
                     cpu.edi = p;
                     cpu.ebp = out;
                     if (!call(app, cpu, out))
-                        return;
-                    cpu.eax = at(app, specs + kN1) - 1;
-                    put(app, specs + kN1, cpu.eax);
+                        return 0;
                 }
-                cpu.ecx = n;
+                eax = at(app, specs + kN1) - 1;
+                put(app, specs + kN1, eax);
             }
-            if (x86::sreg32(at(app, specs + kN1)) <= 0)
-                break;
         }
+        if (x86::sreg32(at(app, specs + kN1)) <= 0)
+            break;
     }
-    cpu.esi = esi;
-    cpu.edi = edi;
-    cpu.ebp = ebp;
-    cpu.es = es;
-    cpu.esp = local + 0x14 + 4;
+    return eax;
 }
 
-/* 0x4fe9d4 (__prtf's conversion): the argument the SPECS at ebx's conversion
- * takes, by the arguments' pointer at edx, made into the buffer at eax -- a
- * prefix (sign, 0x, 0) and the parts' lengths in the SPECS; the string to
- * write back, its segment in edx. */
-void prtfConvert(win32::WinApplication* app, x86::CPU& cpu)
+void prtfWideOut(win32::WinApplication* app, x86::CPU& cpu)
 {
-    const reg32 esi = cpu.esi, edi = cpu.edi, ebp = cpu.ebp;
-    const reg16 savedEs = cpu.es;
-    const reg32 local = cpu.esp - 0x20;  // esi, edi, es, ebp, and 0x10 of its own
-    const reg32 buffer = cpu.eax, argp = cpu.edx, specs = cpu.ebx;
+    const reg32 eax = prtfWideOutOf(app, cpu, cpu.eax, cpu.edx, cpu.ebx, cpu.ecx);
+    if (cpu.terminate)
+        return;
+    returns(cpu, eax);
+}
+
+/* 0x4fe9d4 (__prtf's conversion): the argument the SPECS at `specs`'s conversion takes, by the
+ * arguments' pointer at `argp`, made into the buffer at `buffer` -- a prefix (sign, 0x, 0) and the
+ * parts' lengths in the SPECS; the string to write, its segment into `segment`.  At its entry's
+ * depth: esi, edi, es and ebp pushed, then 0x10 bytes, the integer's argument and wctomb's bytes.
+ * 0 with cpu.terminate set when the game stopped. */
+reg32 prtfConvertOf(win32::WinApplication* app, x86::CPU& cpu, reg32 buffer, reg32 argp, reg32 specs,
+                    reg16& segment)
+{
+    pushed(app, cpu.esp, {cpu.esi, cpu.edi, 0, cpu.ebp}, 2, cpu.es);
+    const GuestFrame frame(cpu, 0x10, 0x10);
+    const KeptEs kept(cpu);
+    const reg32 local = frame - 0x10;
     reg32 moved;
-    pushed(app, cpu.esp, {esi, edi, 0, ebp}, 2, savedEs);
-    cpu.es = cpu.ds;
+    segment = cpu.es = reg16(cpu.ds);
     for (const reg32 field : {kN0, kNZ0, kN1, kNZ1, kN2})
         put(app, specs + field, 0);
     reg32 string = buffer;
     put(app, specs + kNZ2, 0);
-    cpu.esp = local;
+    // The registers the code keeps the SPECS and the buffer in, which what it calls pushes.
+    const guest::KeptRegisters registers(cpu);
     cpu.ecx = specs;
     cpu.esi = buffer;
     cpu.edi = buffer;
@@ -5149,24 +5199,10 @@ void prtfConvert(win32::WinApplication* app, x86::CPU& cpu)
         put(app, specs + kN0, n + 1);
         putByte(app, buffer + n, c);
     };
-    auto finish = [&] {
-        cpu.edx = cpu.es;
-        cpu.eax = string;
-        cpu.esi = esi;
-        cpu.edi = edi;
-        cpu.ebp = ebp;
-        cpu.es = savedEs;
-        cpu.esp = local + 0x20 + 4;
-    };
-    // The length of what is at `from` in `segment`, by __prtf's strnlen.
-    auto length = [&](reg32 from, reg32 segment, reg32 limit, reg32& result) {
-        cpu.ebx = limit;
-        cpu.edx = segment;
-        cpu.eax = from;
-        if (!calls(app, cpu, prtfLength))
-            return false;
-        result = cpu.eax;
-        return true;
+    // Each of the others' cores at this one's depth.
+    auto length = [&](reg32 from, reg32 limit) {
+        const ReturnSlot slot(cpu);
+        return prtfLengthOf(app, cpu, from, cpu.ds, limit);
     };
 
     // The integer's argument: 64 bits at local, 32 at local + 8.
@@ -5232,30 +5268,30 @@ void prtfConvert(win32::WinApplication* app, x86::CPU& cpu)
         {
             const reg32 value = nextArgument(app, argp, 4, moved);
             put(app, local + 8, value);
-            cpu.ebx = specs;
-            cpu.edx = value;
-            cpu.eax = buffer;
-            if (!calls(app, cpu, prtfFixed) || !length(buffer, cpu.ds, 0xffffffff, result))
-                return;
-            put(app, specs + kN1, result);
-            return finish();
+            {
+                const ReturnSlot slot(cpu);
+                prtfFixedOf(app, cpu, buffer, value, specs);
+            }
+            put(app, specs + kN1, length(buffer, 0xffffffff));
+            return string;
         }
         [[fallthrough]];
     case 'e':
     case 'E':
     case 'g':
     case 'G':
-        cpu.ebx = specs;
-        cpu.eax = buffer;
-        cpu.edx = argp;
-        if (!calls(app, cpu, prtfFloat))
-            return;
-        cpu.eax = specs;
-        if (!calls(app, cpu, prtfZeros))
-            return;
-        cpu.es = cpu.ds;
-        string = buffer + 1;
-        return finish();
+        {
+            const ReturnSlot slot(cpu);
+            prtfFloatOf(app, cpu, buffer, argp, specs);
+        }
+        if (cpu.terminate)
+            return 0;
+        {
+            const ReturnSlot slot(cpu);
+            prtfZerosOf(app, cpu, specs);
+        }
+        segment = cpu.es = reg16(cpu.ds);
+        return buffer + 1;
     case 's':
     case 'S':
     {
@@ -5264,10 +5300,10 @@ void prtfConvert(win32::WinApplication* app, x86::CPU& cpu)
         if (flags & kFar)
         {
             const reg32 offset = nextArgument(app, argp, 8, moved);
-            const reg16 segment = half(app, moved - 4);
-            if (offset != 0 || segment != 0)
+            const reg16 far = half(app, moved - 4);
+            if (offset != 0 || far != 0)
             {
-                cpu.es = segment;
+                segment = cpu.es = far;
                 string = offset;
             }
         }
@@ -5276,22 +5312,25 @@ void prtfConvert(win32::WinApplication* app, x86::CPU& cpu)
             const reg32 pointer = nextArgument(app, argp, 4, moved);
             if (pointer != 0)
             {
-                cpu.es = cpu.ds;
+                segment = cpu.es = reg16(cpu.ds);
                 string = pointer;
             }
         }
         const bool wide = byte(app, specs + kCharacter) == 'S' ? !(byte(app, specs + kFlags) & kShort)
                                                                : (byte(app, specs + kFlags) & kLong) != 0;
-        cpu.edx = cpu.es;
-        cpu.eax = string;
-        cpu.ebx = at(app, specs + kPrec);
-        if (!calls(app, cpu, wide ? prtfWideLength : prtfLength))
-            return;
+        reg32 n;
+        {
+            const ReturnSlot slot(cpu);
+            n = wide ? prtfWideLengthOf(app, cpu, string, segment, at(app, specs + kPrec))
+                     : prtfLengthOf(app, cpu, string, segment, at(app, specs + kPrec));
+        }
+        if (cpu.terminate)
+            return 0;
         const reg32 precision = at(app, specs + kPrec);
-        put(app, specs + kN1, cpu.eax);
-        if (x86::sreg32(precision) >= 0 && x86::sreg32(cpu.eax) > x86::sreg32(precision))
+        put(app, specs + kN1, n);
+        if (x86::sreg32(precision) >= 0 && x86::sreg32(n) > x86::sreg32(precision))
             put(app, specs + kN1, precision);
-        return finish();
+        return string;
     }
     case 'x':
     case 'X':
@@ -5327,30 +5366,25 @@ void prtfConvert(win32::WinApplication* app, x86::CPU& cpu)
         reg32 to = buffer;
         if (byte(app, specs + kFlags) & kFar)
         {
-            const reg32 segment = nextArgument(app, argp, 4, moved) & 0xffff;
-            cpu.ebx = 4;
-            cpu.edx = buffer;
-            cpu.eax = segment;
-            if (!calls(app, cpu, prtfHex))
-                return;
+            const reg32 far = nextArgument(app, argp, 4, moved) & 0xffff;
+            {
+                const ReturnSlot slot(cpu);
+                prtfHexOf(app, cpu, far, 4, buffer);
+            }
             putByte(app, buffer + 4, ':');
             to = buffer + 5;
         }
-        cpu.ebx = 8;
-        cpu.edx = to;
-        cpu.eax = offset;
-        if (!calls(app, cpu, prtfHex))
-            return;
+        {
+            const ReturnSlot slot(cpu);
+            prtfHexOf(app, cpu, offset, 8, to);
+        }
         if (byte(app, specs + kCharacter) == 'P')
         {
-            cpu.eax = buffer;
-            if (!calls(app, cpu, prtfUpper))
-                return;
+            const ReturnSlot slot(cpu);
+            prtfUpperOf(app, cpu, buffer);
         }
-        if (!length(string, cpu.es, 0xffffffff, result))
-            return;
-        put(app, specs + kN0, result);
-        return finish();
+        put(app, specs + kN0, length(string, 0xffffffff));
+        return string;
     }
     case 'c':
     {
@@ -5358,86 +5392,87 @@ void prtfConvert(win32::WinApplication* app, x86::CPU& cpu)
         if (byte(app, specs + kFlags) & kLong)
         {
             const reg32 wc = nextArgument(app, argp, 4, moved) & 0xffff;
-            cpu.edx = wc;
-            cpu.eax = local + 0xc;
-            if (!calls(app, cpu, wctomb_))
-                return;
-            if (cpu.eax == 0xffffffff)
-                return finish();
+            reg32 n;
+            {
+                const ReturnSlot slot(cpu);
+                n = wctombOf(app, cpu, local + 0xc, wc);
+            }
+            if (cpu.terminate)
+                return 0;
+            if (n == 0xffffffff)
+                return string;
             putByte(app, buffer, byte(app, local + 0xc));
             if (at(app, kMbcsOn) == 0 || !(byte(app, kMbcsLead + byte(app, local + 0xc)) & 1))
-                return finish();
+                return string;
             putByte(app, buffer + 1, byte(app, local + 0xd));
             put(app, specs + kN0, at(app, specs + kN0) + 1);
-            return finish();
+            return string;
         }
         putByte(app, buffer, reg8(nextArgument(app, argp, 4, moved)));
-        return finish();
+        return string;
     }
     case 'C':
     {
-        cpu.edx = nextArgument(app, argp, 4, moved) & 0xffff;
-        cpu.eax = buffer;
-        if (!calls(app, cpu, wctomb_))
-            return;
-        put(app, specs + kN0, cpu.eax == 0xffffffff ? 0 : cpu.eax);
-        return finish();
+        const reg32 wc = nextArgument(app, argp, 4, moved) & 0xffff;
+        reg32 n;
+        {
+            const ReturnSlot slot(cpu);
+            n = wctombOf(app, cpu, buffer, wc);
+        }
+        if (cpu.terminate)
+            return 0;
+        put(app, specs + kN0, n == 0xffffffff ? 0 : n);
+        return string;
     }
     default:
         put(app, specs + kWidth, 0);
         putByte(app, buffer, byte(app, specs + kCharacter));
         put(app, specs + kN0, 1);
-        return finish();
+        return string;
     }
 
     // The integer's digits after the prefix, by utoa or ulltoa: none for 0
     // with a precision of 0.
-    cpu.es = cpu.ds;
+    segment = cpu.es = reg16(cpu.ds);
     string = buffer + at(app, specs + kN0);
     if (byte(app, specs + kFlags2) & kLongLong)
     {
         if (at(app, specs + kPrec) == 0 && at(app, local) == 0 && at(app, local + 4) == 0)
         {
-            putByte(app, cpu.ees + string, 0);
+            putByte(app, segmentBase(cpu, cpu.ds) + string, 0);
             result = 0;
         }
         else
         {
-            cpu.ebx = base;
-            cpu.edx = at(app, specs + kN0) + buffer;
-            cpu.eax = local;
-            if (!calls(app, cpu, ulltoa))
-                return;
+            {
+                const ReturnSlot slot(cpu);
+                ulltoaOf(app, cpu, local, at(app, specs + kN0) + buffer, base);
+            }
             if (byte(app, specs + kCharacter) == 'X')
             {
-                cpu.eax = buffer;
-                if (!calls(app, cpu, prtfUpper))
-                    return;
+                const ReturnSlot slot(cpu);
+                prtfUpperOf(app, cpu, buffer);
             }
-            if (!length(string, cpu.es, 0xffffffff, result))
-                return;
+            result = length(string, 0xffffffff);
         }
     }
     else if (at(app, specs + kPrec) == 0 && at(app, local + 8) == 0)
     {
-        putByte(app, cpu.ees + string, 0);
+        putByte(app, segmentBase(cpu, cpu.ds) + string, 0);
         result = 0;
     }
     else
     {
-        cpu.ebx = base;
-        cpu.edx = at(app, specs + kN0) + buffer;
-        cpu.eax = at(app, local + 8);
-        if (!calls(app, cpu, prtfUtoa))
-            return;
+        {
+            const ReturnSlot slot(cpu);
+            prtfUtoaOf(app, cpu, at(app, local + 8), at(app, specs + kN0) + buffer, base);
+        }
         if (byte(app, specs + kCharacter) == 'X')
         {
-            cpu.eax = buffer;
-            if (!calls(app, cpu, prtfUpper))
-                return;
+            const ReturnSlot slot(cpu);
+            prtfUpperOf(app, cpu, buffer);
         }
-        if (!length(string, cpu.es, 0xffffffff, result))
-            return;
+        result = length(string, 0xffffffff);
     }
     put(app, specs + kN1, result);
     const reg32 precision = at(app, specs + kPrec);
@@ -5445,35 +5480,49 @@ void prtfConvert(win32::WinApplication* app, x86::CPU& cpu)
         put(app, specs + kNZ0, precision - result);
     if (at(app, specs + kPrec) == 0xffffffff)
     {
-        cpu.eax = specs;
-        if (!calls(app, cpu, prtfZeros))
-            return;
+        const ReturnSlot slot(cpu);
+        prtfZerosOf(app, cpu, specs);
     }
-    finish();
+    return string;
 }
 
-/* __prtf (0x4fe1d0): the format at edx with the
- * arguments' pointer at ebx, each character it makes handed to the function
- * in ecx with eax its SPECS, whose first dword is eax; how many went. */
-void prtf(win32::WinApplication* app, x86::CPU& cpu)
+void prtfConvert(win32::WinApplication* app, x86::CPU& cpu)
 {
-    const reg32 esi = cpu.esi, edi = cpu.edi, ebp = cpu.ebp;
-    const reg16 savedEs = cpu.es;
-    const reg32 specs = cpu.esp - 0x80;  // esi, edi, es, ebp, and 0x70 of its own
-    const reg32 argp = cpu.ebx, out = cpu.ecx;
+    reg16 segment;
+    const reg32 string = prtfConvertOf(app, cpu, cpu.eax, cpu.edx, cpu.ebx, segment);
+    if (cpu.terminate)
+        return;
+    cpu.edx = segment;
+    returns(cpu, string);
+}
+
+/* __prtf (0x4fe1d0): the format at `format` with the arguments' pointer at `argp`, each character
+ * it makes handed to the function at `out` with eax its SPECS, whose first dword is `dest`; how
+ * many went.  At its entry's depth: esi, edi, es and ebp pushed, then the SPECS' 0x70 bytes, which
+ * the functions it calls are handed.  0 with cpu.terminate set when the game stopped. */
+reg32 prtfOf(win32::WinApplication* app, x86::CPU& cpu, reg32 dest, reg32 format, reg32 argp, reg32 out)
+{
     constexpr reg32 kArgCopy = 0x60, kArgCopy2 = 0x64, kFormat = 0x68, kNullChar = 0x6c, kBuffer = 0x38;
-    pushed(app, cpu.esp, {esi, edi, 0, ebp}, 2, savedEs);
-    putByte(app, specs + kNullChar, 0);
-    putHalf(app, specs + kFlags, 0);
-    put(app, specs + kDest, cpu.eax);
-    putHalf(app, specs + kSpecs1C, 100);
-    put(app, specs + kOutCount, 0);
-    put(app, specs + kFormat, cpu.edx);
-    cpu.esp = specs;
+    pushed(app, cpu.esp, {cpu.esi, cpu.edi, 0, cpu.ebp}, 2, cpu.es);
+    const GuestFrame frame(cpu, 0x10, 0x70);
+    const reg32 specs = frame - 0x70;
+    const KeptEs kept(cpu);
+    reg16 es = cpu.es;  // the last conversion's string's segment, es as the code loads it
+    // The registers the code keeps the arguments' pointer and the function in, and the SPECS,
+    // which what it calls pushes -- and a string run past its end reads.
+    const guest::KeptRegisters registers(cpu);
     cpu.esi = argp;
     cpu.edi = out;
+    putByte(app, specs + kNullChar, 0);
+    putHalf(app, specs + kFlags, 0);
+    put(app, specs + kDest, dest);
+    putHalf(app, specs + kSpecs1C, 100);
+    put(app, specs + kOutCount, 0);
+    put(app, specs + kFormat, format);
 
+    // A character to the caller's function, the SPECS in eax, the character in edx.
     auto put1 = [&](reg32 c) {
+        const guest::KeptRegisters kept(cpu);
         cpu.eax = specs;
         cpu.edx = c;
         return call(app, cpu, out);
@@ -5499,7 +5548,7 @@ void prtf(win32::WinApplication* app, x86::CPU& cpu)
         return true;
     };
 
-    if (byte(app, cpu.edx) != 0)
+    if (byte(app, format) != 0)
         do
         {
             const reg32 at_ = at(app, specs + kFormat);
@@ -5508,17 +5557,16 @@ void prtf(win32::WinApplication* app, x86::CPU& cpu)
             {
                 put(app, specs + kFormat, at_ + 1);
                 if (!put1(c))
-                    return;
+                    return 0;
                 continue;
             }
-            cpu.ebx = specs;
             put(app, specs + kArgCopy, at(app, argp));
-            cpu.edx = specs + kArgCopy;
-            cpu.eax = at_ + 1;
-            if (!calls(app, cpu, prtfSpec))
-                return;
-            const reg32 edx = cpu.edx;
-            const reg32 next = cpu.eax + 1;
+            cpu.ebx = specs;
+            reg32 edx, next;
+            {
+                const ReturnSlot slot(cpu);
+                next = prtfSpecOf(app, cpu, at_ + 1, specs + kArgCopy, specs, edx) + 1;
+            }
             put(app, argp, at(app, specs + kArgCopy));
             const reg8 conversion = byte(app, next - 1);
             put(app, specs + kFormat, next);
@@ -5542,7 +5590,7 @@ void prtf(win32::WinApplication* app, x86::CPU& cpu)
                 else
                     target = nextArgument(app, argp, 4, moved);
                 if (flags & kFar)
-                    target += cpu.ees;
+                    target += segmentBase(cpu, es);
                 if (word)
                     putHalf(app, target, reg16(count));
                 else
@@ -5553,142 +5601,159 @@ void prtf(win32::WinApplication* app, x86::CPU& cpu)
             put(app, specs + kArgCopy2, at(app, argp));
             cpu.ecx = specs + kNullChar;
             cpu.ebx = specs;
-            cpu.edx = specs + kArgCopy2;
-            cpu.eax = specs + kBuffer;
-            if (!calls(app, cpu, prtfConvert))
-                return;
-            reg32 string = cpu.eax;
-            cpu.es = reg16(cpu.edx);
+            reg32 string;
+            {
+                const ReturnSlot slot(cpu);
+                string = prtfConvertOf(app, cpu, specs + kBuffer, specs + kArgCopy2, specs, es);
+            }
+            cpu.es = es;
+            if (cpu.terminate)
+                return 0;
             put(app, argp, at(app, specs + kArgCopy2));
             const reg32 parts = at(app, specs + kN0) + at(app, specs + kNZ0) + at(app, specs + kN1)
                                 + at(app, specs + kNZ1) + at(app, specs + kN2) + at(app, specs + kNZ2);
             put(app, specs + kWidth, at(app, specs + kWidth) - parts);
             if (!(byte(app, specs + kFlags) & kLeft) && byte(app, specs + kPadChar) == ' '
                 && !repeat(kWidth, ' '))
-                return;
+                return 0;
             reg32 prefix = specs + kBuffer;
             if (!bytes(kN0, 0, prefix) || !repeat(kNZ0, '0'))
-                return;
+                return 0;
             const reg8 kind = byte(app, specs + kCharacter);
             if ((kind == 's' && (byte(app, specs + kFlags) & kLong)) || kind == 'S')
             {
-                cpu.ebx = specs;
-                cpu.ecx = out;
-                cpu.edx = cpu.es;
-                cpu.eax = string;
-                if (!calls(app, cpu, prtfWideOut))
-                    return;
+                const ReturnSlot slot(cpu);
+                prtfWideOutOf(app, cpu, string, es, specs, out);
+                if (cpu.terminate)
+                    return 0;
             }
-            else if (!bytes(kN1, cpu.ees, string))
-                return;
-            if (!repeat(kNZ1, '0') || !bytes(kN2, cpu.ees, string) || !repeat(kNZ2, '0'))
-                return;
+            else if (!bytes(kN1, segmentBase(cpu, es), string))
+                return 0;
+            if (!repeat(kNZ1, '0') || !bytes(kN2, segmentBase(cpu, es), string) || !repeat(kNZ2, '0'))
+                return 0;
             if ((byte(app, specs + kFlags) & kLeft) && !repeat(kWidth, ' '))
-                return;
+                return 0;
         } while (byte(app, at(app, specs + kFormat)) != 0);
-    cpu.eax = at(app, specs + kOutCount);
-    cpu.esi = esi;
-    cpu.edi = edi;
-    cpu.ebp = ebp;
-    cpu.es = savedEs;
-    cpu.esp = specs + 0x80 + 4;
+    return at(app, specs + kOutCount);
 }
 
-/* mem_putc (0x4df660): sprintf's: edx's character
- * at the SPECS at eax's destination, which moves on, and counted. */
-void mem_putc(win32::WinApplication* app, x86::CPU& cpu)
+void prtf(win32::WinApplication* app, x86::CPU& cpu)
+{
+    const reg32 count = prtfOf(app, cpu, cpu.eax, cpu.edx, cpu.ebx, cpu.ecx);
+    if (cpu.terminate)
+        return;
+    returns(cpu, count);
+}
+
+/* mem_putc (0x4df660): sprintf's: the character `c` at the SPECS at `specs`'s destination, which
+ * moves on, and counted. */
+void memPutcOf(win32::WinApplication* app, x86::CPU& cpu, reg32 specs, reg32 c)
 {
     pushed(app, cpu.esp, {cpu.ebx, cpu.ecx});
-    const reg32 p = at(app, cpu.eax);
-    put(app, cpu.eax, p + 1);
-    putByte(app, p, reg8(cpu.edx));
-    put(app, cpu.eax + kOutCount, at(app, cpu.eax + kOutCount) + 1);
+    const reg32 p = at(app, specs);
+    put(app, specs, p + 1);
+    putByte(app, p, reg8(c));
+    put(app, specs + kOutCount, at(app, specs + kOutCount) + 1);
+}
+
+void mem_putc(win32::WinApplication* app, x86::CPU& cpu)
+{
+    memPutcOf(app, cpu, cpu.eax, cpu.edx);  // eax left as it was, the SPECS
     cpu.esp += 4;
 }
 
-/* file_putc (0x4ff000): vfprintf's: edx's
- * character to the stream in the SPECS at eax by fputc, and counted. */
+/* file_putc (0x4ff000): vfprintf's: the character `c` to the stream in the SPECS at `specs` by
+ * fputc, and counted.  At its entry's depth: ebx pushed.  fputc's say; 0 with cpu.terminate set
+ * when the game stopped. */
+reg32 filePutcOf(win32::WinApplication* app, x86::CPU& cpu, reg32 specs, reg32 c)
+{
+    const GuestFrame frame(app, cpu, {cpu.ebx}, 0);
+    reg32 result;
+    {
+        const ReturnSlot slot(cpu);
+        const guest::KeptRegisters kept(cpu);
+        if (!putChar(app, cpu, c, at(app, specs + kDest), result))
+            return 0;
+    }
+    put(app, specs + kOutCount, at(app, specs + kOutCount) + 1);
+    return result;
+}
+
 void file_putc(win32::WinApplication* app, x86::CPU& cpu)
 {
-    const reg32 ebx = cpu.ebx, specs = cpu.eax;
-    pushed(app, cpu.esp, {ebx});
-    cpu.esp -= 4;  // ebx
-    cpu.ebx = specs;
-    cpu.eax = cpu.edx;
-    cpu.edx = at(app, specs + kDest);
-    if (!calls(app, cpu, fputc))
+    const reg32 result = filePutcOf(app, cpu, cpu.eax, cpu.edx);
+    if (cpu.terminate)
         return;
-    put(app, specs + kOutCount, at(app, specs + kOutCount) + 1);
-    cpu.ebx = ebx;
-    cpu.esp += 4 + 4;
+    returns(cpu, result);
 }
 
-/* vsprintf (clib/string/c/vsprintf.c, 0x4df674): the format at edx with the
- * arguments' pointer at ebx into eax, a 0 after; how many. */
+/* vsprintf (clib/string/c/vsprintf.c, 0x4df674): the format at `format` with the arguments'
+ * pointer at `argp` into `buffer`, a 0 after; how many.  At its entry's depth: ecx and esi
+ * pushed.  0 with cpu.terminate set when the game stopped. */
+reg32 vsprintfOf(win32::WinApplication* app, x86::CPU& cpu, reg32 buffer, reg32 format, reg32 argp)
+{
+    const GuestFrame frame(app, cpu, {cpu.ecx, cpu.esi}, 0);
+    reg32 n;
+    {
+        const ReturnSlot slot(cpu);
+        n = prtfOf(app, cpu, buffer, format, argp, kMemPutc);
+    }
+    if (cpu.terminate)
+        return 0;
+    putByte(app, buffer + n, 0);
+    return n;
+}
+
 void vsprintf(win32::WinApplication* app, x86::CPU& cpu)
 {
-    const reg32 ecx = cpu.ecx, esi = cpu.esi, buffer = cpu.eax;
-    pushed(app, cpu.esp, {ecx, esi});
-    cpu.esp -= 8;  // ecx, esi
-    cpu.esi = buffer;
-    cpu.ecx = kMemPutc;
-    if (!calls(app, cpu, prtf))
+    const reg32 n = vsprintfOf(app, cpu, cpu.eax, cpu.edx, cpu.ebx);
+    if (cpu.terminate)
         return;
-    putByte(app, buffer + cpu.eax, 0);
-    cpu.ecx = ecx;
-    cpu.esi = esi;
-    cpu.esp += 8 + 4;
+    returns(cpu, n);
 }
 
-/* sprintf (clib/string/c/sprintf.c, 0x4df690): cdecl, the buffer and the
- * format on the stack, the arguments after. */
+/* sprintf (clib/string/c/sprintf.c, 0x4df690): cdecl, the buffer and the format on the stack, the
+ * arguments after, from `arguments` on.  At its entry's depth: ebx and edx pushed, then the
+ * va_list. */
+reg32 sprintfOf(win32::WinApplication* app, x86::CPU& cpu, reg32 buffer, reg32 format, reg32 arguments)
+{
+    const GuestFrame frame(app, cpu, {cpu.ebx, cpu.edx}, 4);
+    const reg32 list = frame - 4;
+    put(app, list, arguments);
+    const ReturnSlot slot(cpu);
+    return vsprintfOf(app, cpu, buffer, format, list);
+}
+
 void sprintf(win32::WinApplication* app, x86::CPU& cpu)
 {
-    const reg32 ebx = cpu.ebx, edx = cpu.edx, entry = cpu.esp;
-    const reg32 list = entry - 0xc;  // ebx, edx, and the va_list
-    pushed(app, entry, {ebx, edx});
-    put(app, list, entry + 0xc);
-    cpu.ebx = list;
-    cpu.edx = at(app, entry + 8);
-    cpu.eax = at(app, entry + 4);
-    cpu.esp = list;
-    if (!calls(app, cpu, vsprintf))
+    const reg32 n = sprintfOf(app, cpu, at(app, cpu.esp + 4), at(app, cpu.esp + 8), cpu.esp + 0xc);
+    if (cpu.terminate)
         return;
-    cpu.edx = edx;
-    cpu.ebx = ebx;
-    cpu.esp = entry + 4;
+    returns(cpu, n);
 }
 
-/* vfprintf (0x4ff014): the format at edx with the
- * arguments' pointer at ebx to the stream at eax, under the file's lock: none
- * to a stream of wide characters, an unbuffered one buffered while it goes;
- * how many, or -1 for an error. */
-void vfprintf(win32::WinApplication* app, x86::CPU& cpu)
+/* vfprintf (0x4ff014): the format at `format` with the arguments' pointer at `argp` to the stream
+ * at `fp`, under the file's lock: none to a stream of wide characters, an unbuffered one buffered
+ * while it goes; how many, or -1 for an error.  At its entry's depth: four pushes.  0 with
+ * cpu.terminate set when the game stopped. */
+reg32 vfprintfOf(win32::WinApplication* app, x86::CPU& cpu, reg32 fp, reg32 format, reg32 argp)
 {
-    const reg32 ecx = cpu.ecx, esi = cpu.esi, edi = cpu.edi, ebp = cpu.ebp;
-    const reg32 fp = cpu.eax, format = cpu.edx, argp = cpu.ebx;
-    pushed(app, cpu.esp, {ecx, esi, edi, ebp});
-    cpu.esp -= 0x10;  // ecx, esi, edi, ebp
-    cpu.esi = fp;
-    auto back = [&](reg32 result) {
-        cpu.eax = result;
-        cpu.ecx = ecx;
-        cpu.esi = esi;
-        cpu.edi = edi;
-        cpu.ebp = ebp;
-        cpu.esp += 0x10 + 4;
+    const GuestFrame frame(app, cpu, {cpu.ecx, cpu.esi, cpu.edi, cpu.ebp}, 0);
+    // The file's lock and its release, every register kept.
+    auto lock = [&](reg32 slot) {
+        const guest::KeptRegisters kept(cpu);
+        return streamLock(app, cpu, slot, fp);
     };
-    if (!streamLock(app, cpu, kAccessFile, fp))
-        return;
+    if (!lock(kAccessFile))
+        return 0;
     const reg32 link = linkOf(app, fp);
     const reg32 orientation = at(app, link + kOrientation);
     if (orientation != 1)
     {
         if (orientation != 0)
         {
-            if (!streamLock(app, cpu, kReleaseFile, fp))
-                return;
-            return back(0);
+            lock(kReleaseFile);
+            return 0;
         }
         put(app, link + kOrientation, 1);
     }
@@ -5696,57 +5761,66 @@ void vfprintf(win32::WinApplication* app, x86::CPU& cpu)
     putByte(app, fp + kFlag, byte(app, fp + kFlag) & 0xcf);
     if (bufferOf(app, fp) == 0)
     {
-        cpu.eax = fp;
-        if (!calls(app, cpu, ioalloc))
-            return;
+        const ReturnSlot slot(cpu);
+        const guest::KeptRegisters registers(cpu);
+        if (!allocateBuffer(app, cpu, fp))
+            return 0;
     }
     const bool unbuffered = byte(app, fp + kFlag + 1) & 4;
     if (unbuffered)
         putByte(app, fp + kFlag + 1, reg8((byte(app, fp + kFlag + 1) & 0xfa) | 1));
-    cpu.ecx = kFilePutc;
-    cpu.eax = fp;
-    cpu.edx = format;
-    cpu.ebx = argp;
-    if (!calls(app, cpu, prtf))
-        return;
-    reg32 result = cpu.eax;
+    reg32 result;
+    {
+        const ReturnSlot slot(cpu);
+        result = prtfOf(app, cpu, fp, format, argp, kFilePutc);
+    }
+    if (cpu.terminate)
+        return 0;
     if (unbuffered)
     {
         const reg8 restored = reg8((byte(app, fp + kFlag + 1) & 0xfa) | 4);
         putByte(app, fp + kFlag + 1, reg8(byte(app, fp + kFlag + 1) & 0xfa));
-        cpu.ebx = (cpu.ebx & 0xffffff00) | restored;
         putByte(app, fp + kFlag + 1, restored);
-        cpu.eax = fp;
-        if (!calls(app, cpu, flush))
-            return;
+        const ReturnSlot slot(cpu);
+        const guest::KeptRegisters registers(cpu);
+        reg32 flushed;
+        if (!flushStream(app, cpu, fp, flushed))
+            return 0;
     }
     if (byte(app, fp + kFlag) & 0x20)
         result = 0xffffffff;
     put(app, fp + kFlag, at(app, fp + kFlag) | kept);
-    cpu.edx = result;
-    if (!streamLock(app, cpu, kReleaseFile, fp))
-        return;
-    cpu.edx = result;
-    back(result);
+    if (!lock(kReleaseFile))
+        return 0;
+    return result;
 }
 
-/* fprintf (clib/streamio/c/fprintf.c, 0x4f4b80): cdecl, the stream and the
- * format on the stack, the arguments after. */
+void vfprintf(win32::WinApplication* app, x86::CPU& cpu)
+{
+    const reg32 n = vfprintfOf(app, cpu, cpu.eax, cpu.edx, cpu.ebx);
+    if (cpu.terminate)
+        return;
+    returns(cpu, n);
+}
+
+/* fprintf (clib/streamio/c/fprintf.c, 0x4f4b80): cdecl, the stream and the format on the stack, the
+ * arguments after, from `arguments` on.  At its entry's depth: ebx and edx pushed, then the
+ * va_list. */
+reg32 fprintfOf(win32::WinApplication* app, x86::CPU& cpu, reg32 fp, reg32 format, reg32 arguments)
+{
+    const GuestFrame frame(app, cpu, {cpu.ebx, cpu.edx}, 4);
+    const reg32 list = frame - 4;
+    put(app, list, arguments);
+    const ReturnSlot slot(cpu);
+    return vfprintfOf(app, cpu, fp, format, list);
+}
+
 void fprintf(win32::WinApplication* app, x86::CPU& cpu)
 {
-    const reg32 ebx = cpu.ebx, edx = cpu.edx, entry = cpu.esp;
-    const reg32 list = entry - 0xc;  // ebx, edx, and the va_list
-    pushed(app, entry, {ebx, edx});
-    put(app, list, entry + 0xc);
-    cpu.ebx = list;
-    cpu.edx = at(app, entry + 8);
-    cpu.eax = at(app, entry + 4);
-    cpu.esp = list;
-    if (!calls(app, cpu, vfprintf))
+    const reg32 n = fprintfOf(app, cpu, at(app, cpu.esp + 4), at(app, cpu.esp + 8), cpu.esp + 0xc);
+    if (cpu.terminate)
         return;
-    cpu.edx = edx;
-    cpu.ebx = ebx;
-    cpu.esp = entry + 4;
+    returns(cpu, n);
 }
 
 
@@ -5837,11 +5911,6 @@ void setLow8(reg32& r, reg32 value)
     r = (r & 0xffffff00) | (value & 0xff);
 }
 
-void setHigh8(reg32& r, reg32 value)
-{
-    r = (r & 0xffff00ff) | (value & 0xff) << 8;
-}
-
 bool multibyte(win32::WinApplication* app)
 {
     return at(app, kMbcsOn) != 0;
@@ -5865,20 +5934,6 @@ void scanBytes(win32::WinApplication* app, x86::CPU& cpu)
     }
 }
 
-/* The length of the string at edi as the runtime's inline strlen takes it:
- * es pushed and made ds, repne scasb for 0 from -1, not and dec. */
-void inlineStrlen(win32::WinApplication* app, x86::CPU& cpu)
-{
-    pushEs(app, cpu);
-    cpu.eax = cpu.ds;
-    cpu.es = reg16(cpu.eax);
-    cpu.ecx = 0xffffffff;
-    cpu.eax = 0;
-    scanBytes(app, cpu);
-    cpu.ecx = ~cpu.ecx - 1;
-    popEs(app, cpu);
-}
-
 /* rep movs of `size` bytes each, from esi to es:edi. */
 void repMove(win32::WinApplication* app, x86::CPU& cpu, reg32 size)
 {
@@ -5895,891 +5950,662 @@ void repMove(win32::WinApplication* app, x86::CPU& cpu, reg32 size)
     }
 }
 
-/* The runtime's inline memcpy: ecx bytes from esi to es:edi, es pushed and
- * made ds, edi kept: rep movsd, then the rest by rep movsb. */
-void inlineMemcpy(win32::WinApplication* app, x86::CPU& cpu)
-{
-    pushEs(app, cpu);
-    cpu.eax = cpu.ds;
-    cpu.es = reg16(cpu.eax);
-    push(app, cpu, cpu.edi);
-    cpu.eax = cpu.ecx;
-    cpu.ecx >>= 2;
-    repMove(app, cpu, 4);
-    setLow8(cpu.ecx, cpu.eax & 3);
-    repMove(app, cpu, 1);
-    cpu.edi = pop(app, cpu);
-    popEs(app, cpu);
-}
-
 }  // namespace
 
-/* 0x5250c0 (_mbterm): whether the character at eax ends a string -- 1 for
- * its 0, 2 for a lead byte with a 0 after it -- or 0. */
+/* ---- The multibyte characters' functions: each a typed core (fooOf) and, under the runtime's
+ * name, its adapter for the calls by address, which takes the registers and keeps every one the
+ * runtime's code kept.  A core that hands an address in its frame to another (CharUpperBuffA's
+ * buffer) keeps that frame where the code had it, and is called at the code's depth. ---- */
+
+/* 0x5250c0 (_mbterm): whether the character at `p` ends a string -- 1 for its 0, 2 for a lead
+ * byte with a 0 after it -- or 0. */
+reg32 mbtermOf(win32::WinApplication* app, reg32 p)
+{
+    if (byte(app, p) == 0)
+        return 1;
+    if (multibyte(app) && leadByte(app, byte(app, p)) && byte(app, p + 1) == 0)
+        return 2;
+    return 0;
+}
+
 void mbterm(win32::WinApplication* app, x86::CPU& cpu)
 {
-    push(app, cpu, cpu.edx);
-    const reg32 p = cpu.eax;
-    if (byte(app, p) == 0)
-        cpu.eax = 1;
-    else if (multibyte(app) && leadByte(app, byte(app, p)) && byte(app, p + 1) == 0)
-        cpu.eax = 2;
-    else
-        cpu.eax = 0;
-    cpu.edx = pop(app, cpu);
-    cpu.esp += 4;
+    returns(cpu, mbtermOf(app, cpu.eax));
 }
 
-/* 0x525100 (_mbsinc): past the character at eax. */
+/* 0x525100 (_mbsinc): past the character at `p`. */
+reg32 mbsincOf(win32::WinApplication* app, reg32 p)
+{
+    return multibyte(app) && leadByte(app, byte(app, p)) && byte(app, p + 1) != 0 ? p + 2 : p + 1;
+}
+
 void mbsinc(win32::WinApplication* app, x86::CPU& cpu)
 {
-    push(app, cpu, cpu.edx);
-    const reg32 p = cpu.eax;
-    cpu.eax = multibyte(app) && leadByte(app, byte(app, p)) && byte(app, p + 1) != 0 ? p + 2 : p + 1;
-    cpu.edx = pop(app, cpu);
-    cpu.esp += 4;
+    returns(cpu, mbsincOf(app, cpu.eax));
 }
 
-/* 0x52b5b0 (_mbclen): the character at eax's bytes, 1 or 2. */
+/* 0x52b5b0 (_mbclen): the character at `p`'s bytes, 1 or 2. */
+reg32 mbclenOf(win32::WinApplication* app, reg32 p)
+{
+    return multibyte(app) && leadByte(app, byte(app, p)) ? 2 : 1;
+}
+
 void mbclen(win32::WinApplication* app, x86::CPU& cpu)
 {
-    cpu.eax = multibyte(app) && leadByte(app, byte(app, cpu.eax)) ? 2 : 1;
-    cpu.esp += 4;
+    returns(cpu, mbclenOf(app, cpu.eax));
 }
 
-/* 0x52e310 (_mbccpy): the character at edx to eax. */
+/* 0x52e310 (_mbccpy): the character at `from` to `to`. */
+void mbccpyOf(win32::WinApplication* app, reg32 to, reg32 from)
+{
+    putByte(app, to, byte(app, from));
+    if (multibyte(app) && leadByte(app, byte(app, from)))
+        putByte(app, to + 1, byte(app, from + 1));
+}
+
 void mbccpy(win32::WinApplication* app, x86::CPU& cpu)
 {
-    push(app, cpu, cpu.ebx);
-    const reg32 to = cpu.eax, from = cpu.edx;
-    if (multibyte(app) && leadByte(app, byte(app, from)))
-    {
-        putByte(app, to, byte(app, from));
-        setLow8(cpu.edx, byte(app, from + 1));
-        putByte(app, to + 1, reg8(cpu.edx));
-    }
-    else
-    {
-        setLow8(cpu.edx, byte(app, from));
-        putByte(app, to, reg8(cpu.edx));
-    }
-    cpu.ebx = pop(app, cpu);
+    mbccpyOf(app, cpu.eax, cpu.edx);  // eax left as it was, the destination
     cpu.esp += 4;
 }
 
-/* 0x52e3a0 (_mbccmp): the characters at eax and edx compared, their bytes'
- * difference. */
+/* 0x52e3a0 (_mbccmp): the characters at `a` and `b` compared, their bytes' difference. */
+reg32 mbccmpOf(win32::WinApplication* app, reg32 a, reg32 b)
+{
+    if (byte(app, a) != byte(app, b))
+        return reg32(byte(app, a)) - byte(app, b);
+    if (multibyte(app) && leadByte(app, byte(app, a)) && byte(app, a + 1) != byte(app, b + 1))
+        return reg32(byte(app, a + 1)) - byte(app, b + 1);
+    return 0;
+}
+
 void mbccmp(win32::WinApplication* app, x86::CPU& cpu)
 {
-    push(app, cpu, cpu.ebx);
-    push(app, cpu, cpu.ecx);
-    const reg32 a = cpu.eax, b = cpu.edx;
-    if (byte(app, a) != byte(app, b))
-        cpu.eax = reg32(byte(app, a)) - byte(app, b);
-    else if (multibyte(app) && leadByte(app, byte(app, a)) && byte(app, a + 1) != byte(app, b + 1))
-    {
-        cpu.edx = byte(app, b + 1);
-        cpu.eax = reg32(byte(app, a + 1)) - cpu.edx;
-    }
-    else
-        cpu.eax = 0;
-    cpu.ecx = pop(app, cpu);
-    cpu.ebx = pop(app, cpu);
-    cpu.esp += 4;
+    returns(cpu, mbccmpOf(app, cpu.eax, cpu.edx));
 }
 
-/* 0x52ed30 (_mbsnextc): the character at eax, a lead byte's two as one. */
+/* 0x52ed30 (_mbsnextc): the character at `p`, a lead byte's two as one. */
+reg32 mbsnextcOf(win32::WinApplication* app, reg32 p)
+{
+    if (multibyte(app) && leadByte(app, byte(app, p)))
+        return reg32(byte(app, p)) << 8 | byte(app, p + 1);
+    return byte(app, p);
+}
+
 void mbsnextc(win32::WinApplication* app, x86::CPU& cpu)
 {
-    push(app, cpu, cpu.edx);
-    const reg32 p = cpu.eax;
-    if (multibyte(app) && leadByte(app, byte(app, p)))
-        cpu.eax = reg32(byte(app, p)) << 8 | byte(app, p + 1);
-    else
-        cpu.eax = byte(app, p);
-    cpu.edx = pop(app, cpu);
-    cpu.esp += 4;
+    returns(cpu, mbsnextcOf(app, cpu.eax));
 }
 
-/* 0x52ede0 (_mbvtop): the character eax into the bytes at edx; edx back. */
-void mbvtop(win32::WinApplication* app, x86::CPU& cpu)
+/* 0x52ede0 (_mbvtop): the character `c` into the bytes at `to`; `to` back. */
+reg32 mbvtopOf(win32::WinApplication* app, reg32 c, reg32 to)
 {
-    push(app, cpu, cpu.ebx);
-    const reg32 c = cpu.eax, to = cpu.edx;
-    cpu.eax = to;
     if (c & 0xff00)
     {
         putByte(app, to + 1, reg8(c));
-        cpu.edx = c >> 8;
-        putByte(app, to, reg8(cpu.edx));
+        putByte(app, to, reg8(c >> 8));
     }
     else
         putByte(app, to, reg8(c));
-    cpu.ebx = pop(app, cpu);
-    cpu.esp += 4;
+    return to;
 }
 
-/* 0x52ef70 (_ismbbtrail, as the runtime has it): whether the byte eax may
- * follow a lead byte. */
-void mbbtrail(win32::WinApplication* app, x86::CPU& cpu)
+void mbvtop(win32::WinApplication* app, x86::CPU& cpu)
+{
+    returns(cpu, mbvtopOf(app, cpu.eax, cpu.edx));
+}
+
+/* 0x52ef70 (_ismbbtrail, as the runtime has it): whether the byte `c` may follow a lead byte. */
+reg32 mbbtrailOf(win32::WinApplication* app, reg32 c)
 {
     if (!multibyte(app))
-        cpu.eax = 0;
-    else if (at(app, kCodePage) == 932)
-        cpu.eax = byte(app, kSjisTrail + (cpu.eax & 0xff)) & 8;
-    else if (cpu.eax != 0)
-        cpu.eax = 1;
-    cpu.esp += 4;
+        return 0;
+    if (at(app, kCodePage) == 932)
+        return byte(app, kSjisTrail + (c & 0xff)) & 8;
+    return c != 0 ? 1 : 0;
 }
 
-/* 0x52ef30 (_ismbclegal's): whether eax is a character of two bytes. */
+void mbbtrail(win32::WinApplication* app, x86::CPU& cpu)
+{
+    returns(cpu, mbbtrailOf(app, cpu.eax));
+}
+
+/* 0x52ef30 (_ismbclegal's): whether `c` is a character of two bytes. */
+reg32 mbclegalOf(win32::WinApplication* app, reg32 c)
+{
+    if (multibyte(app) && leadByte(app, c >> 8 & 0xff))
+        return mbbtrailOf(app, c & 0xff) != 0 ? 1 : 0;
+    return 0;
+}
+
 void mbclegal(win32::WinApplication* app, x86::CPU& cpu)
 {
-    push(app, cpu, cpu.edx);
-    cpu.edx = cpu.eax >> 8 & 0xff;
-    if (multibyte(app) && leadByte(app, cpu.edx))
-    {
-        cpu.edx = 1;
-        cpu.eax &= 0xff;
-        if (!direct(app, cpu, mbbtrail))
-            return;
-        cpu.eax = cpu.eax != 0 ? 1 : 0;
-    }
-    else
-    {
-        if (multibyte(app))
-            cpu.edx = 0;
-        cpu.eax = 0;
-    }
-    cpu.edx = pop(app, cpu);
-    cpu.esp += 4;
+    returns(cpu, mbclegalOf(app, cpu.eax));
 }
 
-/* 0x52eee0 (_ismbclower's, code page 932): whether eax is a small letter --
- * a full-width one of two bytes, or one of _IsTable's. */
+/* 0x52eee0 (_ismbclower's, code page 932): whether `c` is a small letter -- a full-width one of
+ * two bytes, or one of _IsTable's. */
+reg32 mbclowerOf(win32::WinApplication* app, reg32 c)
+{
+    if (mbclegalOf(app, c) == 0)
+        return byte(app, kIsTable + ((c + 1) & 0xff)) & 0x80;
+    return c >= 0x8281 && c <= 0x829a ? 1 : 0;
+}
+
 void mbclower(win32::WinApplication* app, x86::CPU& cpu)
 {
-    push(app, cpu, cpu.edx);
-    cpu.edx = cpu.eax;
-    if (!direct(app, cpu, mbclegal))
-        return;
-    if (cpu.eax == 0)
-    {
-        cpu.eax = (cpu.edx + 1) & 0xff;
-        cpu.eax = byte(app, kIsTable + cpu.eax) & 0x80;
-        cpu.edx = cpu.eax;
-    }
-    else
-    {
-        cpu.edx = cpu.edx >= 0x8281 && cpu.edx <= 0x829a ? 1 : 0;
-        cpu.eax = cpu.edx;
-    }
-    cpu.edx = pop(app, cpu);
-    cpu.esp += 4;
+    returns(cpu, mbclowerOf(app, cpu.eax));
 }
 
-/* 0x52eec0 (_mbctoupper's, code page 932): a full-width small letter as a
- * capital. */
+/* 0x52eec0 (_mbctoupper's, code page 932): a full-width small letter as a capital. */
+reg32 mbcupper932Of(win32::WinApplication* app, reg32 c)
+{
+    return mbclowerOf(app, c) != 0 ? c - 0x21 : c;
+}
+
 void mbcupper932(win32::WinApplication* app, x86::CPU& cpu)
 {
-    push(app, cpu, cpu.edx);
-    cpu.edx = cpu.eax;
-    if (!direct(app, cpu, mbclower))
-        return;
-    if (cpu.eax != 0)
-        cpu.edx -= 0x21;
-    cpu.eax = cpu.edx;
-    cpu.edx = pop(app, cpu);
-    cpu.esp += 4;
+    returns(cpu, mbcupper932Of(app, cpu.eax));
 }
 
-/* 0x52ed70 (_mbctoupper): the character eax as a capital, by CharUpperBuffA
- * -- or, a full-width one of code page 932, by the runtime's own. */
+/* 0x52ed70 (_mbctoupper): the character `c` as a capital, by CharUpperBuffA on its bytes in the
+ * frame -- or, a full-width one of code page 932, by the runtime's own.  Called at its entry's
+ * depth (esp at the return address's slot): three pushes, then the bytes.  0 with cpu.terminate
+ * set when the game stopped. */
+reg32 mbctoupperOf(win32::WinApplication* app, x86::CPU& cpu, reg32 c)
+{
+    const GuestFrame frame(cpu, 0xc, 4);
+    const reg32 bytes = frame - 4;
+    mbvtopOf(app, c, bytes);
+    putByte(app, bytes + mbclenOf(app, bytes), 0);
+    if (at(app, kCodePage) == 932 && multibyte(app) && leadByte(app, byte(app, bytes)))
+        return mbcupper932Of(app, c);
+    {
+        // Every register but eax as _mbctoupper kept them, whatever CharUpperBuffA leaves.
+        const guest::KeptRegisters kept(cpu);
+        if (!windows<kCharUpperBuffA, &host::charUpperBuffer>(app, cpu, bytes, 1))
+            return 0;
+    }
+    return mbsnextcOf(app, bytes);
+}
+
 void mbctoupper(win32::WinApplication* app, x86::CPU& cpu)
 {
-    push(app, cpu, cpu.ebx);
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.edx);
-    cpu.esp -= 4;
-    const reg32 local = cpu.esp;
-    cpu.ebx = cpu.eax;
-    cpu.edx = local;
-    if (!direct(app, cpu, mbvtop))
-        return;
-    cpu.eax = local;
-    setLow8(cpu.edx, 0);
-    if (!direct(app, cpu, mbclen))
-        return;
-    putByte(app, local + cpu.eax, reg8(cpu.edx));
-    if (at(app, kCodePage) == 932 && multibyte(app) && leadByte(app, byte(app, local)))
+    reg32 upper;
     {
-        cpu.eax = cpu.ebx;
-        if (!direct(app, cpu, mbcupper932))
-            return;
+        const guest::KeptRegisters kept(cpu);
+        upper = mbctoupperOf(app, cpu, cpu.eax);
     }
-    else
-    {
-        cpu.eax = local;
-        if (!windows<kCharUpperBuffA, &win32::user32::CharUpperBuffA>(app, cpu, cpu.eax, 1))
-            return;
-        cpu.eax = local;
-        if (!direct(app, cpu, mbsnextc))
-            return;
-    }
-    cpu.esp = local + 4;
-    cpu.edx = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
-    cpu.ebx = pop(app, cpu);
-    cpu.esp += 4;
+    if (cpu.terminate)
+        return;
+    returns(cpu, upper);
 }
 
-/* 0x52e350 (_mbsupr): the string at eax in capitals, a character at a time;
- * eax back. */
+/* 0x52e350 (_mbsupr): the string `s` in capitals, a character at a time; `s` back.  At its
+ * entry's depth: three pushes, then a character's bytes.  0 with cpu.terminate set when the game
+ * stopped. */
+reg32 mbsuprOf(win32::WinApplication* app, x86::CPU& cpu, reg32 s)
+{
+    const GuestFrame frame(cpu, 0xc, 4);
+    const reg32 bytes = frame - 4;
+    for (reg32 p = s; mbtermOf(app, p) == 0; p = mbsincOf(app, p))
+    {
+        reg32 upper;
+        {
+            const ReturnSlot call(cpu);
+            upper = mbctoupperOf(app, cpu, mbsnextcOf(app, p));
+        }
+        if (cpu.terminate)
+            return 0;
+        mbvtopOf(app, upper, bytes);
+        putByte(app, bytes + mbclenOf(app, bytes), 0);
+        mbccpyOf(app, p, bytes);
+    }
+    return s;
+}
+
 void mbsupr(win32::WinApplication* app, x86::CPU& cpu)
 {
-    push(app, cpu, cpu.ebx);
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.edx);
-    cpu.esp -= 4;
-    const reg32 local = cpu.esp;
-    cpu.ecx = cpu.eax;
-    for (;;)
+    reg32 s;
     {
-        cpu.ebx = cpu.eax;
-        cpu.eax = cpu.ebx;
-        if (!direct(app, cpu, mbterm))
-            return;
-        if (cpu.eax != 0)
-            break;
-        cpu.eax = cpu.ebx;
-        cpu.edx = local;
-        if (!direct(app, cpu, mbsnextc) || !direct(app, cpu, mbctoupper) || !direct(app, cpu, mbvtop))
-            return;
-        cpu.eax = local;
-        setLow8(cpu.edx, 0);
-        if (!direct(app, cpu, mbclen))
-            return;
-        putByte(app, local + cpu.eax, reg8(cpu.edx));
-        cpu.edx = local;
-        cpu.eax = cpu.ebx;
-        if (!direct(app, cpu, mbccpy))
-            return;
-        cpu.eax = cpu.ebx;
-        if (!direct(app, cpu, mbsinc))
-            return;
+        const guest::KeptRegisters kept(cpu);
+        s = mbsuprOf(app, cpu, cpu.eax);
     }
-    cpu.eax = cpu.ecx;
-    cpu.esp = local + 4;
-    cpu.edx = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
-    cpu.ebx = pop(app, cpu);
-    cpu.esp += 4;
+    if (cpu.terminate)
+        return;
+    returns(cpu, s);
 }
 
-/* 0x52b5e0 (_mbcicmp): the characters at eax and edx compared as capitals. */
+/* 0x52b5e0 (_mbcicmp): the characters at `a` and `b` compared as capitals: each copied into the
+ * frame, put in capitals there, and compared.  At its entry's depth: two pushes, then the two
+ * characters' 4 bytes each.  0 with cpu.terminate set when the game stopped. */
+reg32 mbcicmpOf(win32::WinApplication* app, x86::CPU& cpu, reg32 a, reg32 b)
+{
+    const GuestFrame frame(cpu, 8, 8);
+    const reg32 first = frame - 8, second = frame - 4;
+    mbccpyOf(app, first, a);
+    putByte(app, first + mbclenOf(app, a), 0);
+    mbccpyOf(app, second, b);
+    putByte(app, second + mbclenOf(app, b), 0);
+    for (const reg32 s : {first, second})
+    {
+        const ReturnSlot call(cpu);
+        mbsuprOf(app, cpu, s);
+        if (cpu.terminate)
+            return 0;
+    }
+    return mbccmpOf(app, first, second);
+}
+
 void mbcicmp(win32::WinApplication* app, x86::CPU& cpu)
 {
-    push(app, cpu, cpu.ebx);
-    push(app, cpu, cpu.ecx);
-    cpu.esp -= 8;
-    const reg32 local = cpu.esp;
-    cpu.ebx = cpu.eax;
-    cpu.ecx = cpu.edx;
-    cpu.edx = cpu.eax;
-    cpu.eax = local;
-    if (!direct(app, cpu, mbccpy))
+    reg32 differs;
+    {
+        const guest::KeptRegisters kept(cpu);
+        differs = mbcicmpOf(app, cpu, cpu.eax, cpu.edx);
+    }
+    if (cpu.terminate)
         return;
-    cpu.eax = cpu.ebx;
-    setLow8(cpu.edx, 0);
-    if (!direct(app, cpu, mbclen))
-        return;
-    putByte(app, local + cpu.eax, reg8(cpu.edx));
-    cpu.eax = local + 4;
-    cpu.edx = cpu.ecx;
-    if (!direct(app, cpu, mbccpy))
-        return;
-    cpu.eax = cpu.ecx;
-    setHigh8(cpu.edx, 0);
-    if (!direct(app, cpu, mbclen))
-        return;
-    putByte(app, local + cpu.eax + 4, reg8(cpu.edx >> 8));
-    cpu.eax = local;
-    if (!direct(app, cpu, mbsupr))
-        return;
-    cpu.eax = local + 4;
-    cpu.edx = local + 4;
-    if (!direct(app, cpu, mbsupr))
-        return;
-    cpu.eax = local;
-    if (!direct(app, cpu, mbccmp))
-        return;
-    cpu.esp = local + 8;
-    cpu.ecx = pop(app, cpu);
-    cpu.ebx = pop(app, cpu);
-    cpu.esp += 4;
+    returns(cpu, differs);
 }
 
-/* 0x523d10 (_mbsnicmp): at most ebx characters of the strings at eax and
- * edx compared as capitals. */
+/* 0x523d10 (_mbsnicmp): at most `count` characters of the strings at `a` and `b` compared as
+ * capitals: the first difference, or that of the bytes where one ended first, or 0.  At its
+ * entry's depth: two pushes.  0 with cpu.terminate set when the game stopped. */
+reg32 mbsnicmpOf(win32::WinApplication* app, x86::CPU& cpu, reg32 a, reg32 b, reg32 count)
+{
+    const GuestFrame frame(cpu, 8, 0);
+    for (; count != 0; --count, a = mbsincOf(app, a), b = mbsincOf(app, b))
+    {
+        if (mbtermOf(app, a) != 0 || mbtermOf(app, b) != 0)
+            break;
+        reg32 differs;
+        {
+            const ReturnSlot call(cpu);
+            differs = mbcicmpOf(app, cpu, a, b);
+        }
+        if (cpu.terminate)
+            return 0;
+        if (differs != 0)
+            return differs;
+    }
+    if (count != 0 && (mbtermOf(app, a) != 0 || mbtermOf(app, b) != 0))
+        return reg32(byte(app, a)) - byte(app, b);
+    return 0;
+}
+
 void mbsnicmp(win32::WinApplication* app, x86::CPU& cpu)
 {
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.esi);
-    cpu.ecx = cpu.eax;
-    cpu.esi = cpu.edx;
-    cpu.edx = 0;
-    auto back = [&] {
-        cpu.eax = cpu.edx;
-        cpu.esi = pop(app, cpu);
-        cpu.ecx = pop(app, cpu);
-        cpu.esp += 4;
-    };
-    while (cpu.ebx != 0)
+    reg32 differs;
     {
-        cpu.eax = cpu.ecx;
-        if (!direct(app, cpu, mbterm))
-            return;
-        if (cpu.eax != 0)
-            break;
-        cpu.eax = cpu.esi;
-        if (!direct(app, cpu, mbterm))
-            return;
-        if (cpu.eax != 0)
-            break;
-        cpu.edx = cpu.esi;
-        cpu.eax = cpu.ecx;
-        if (!direct(app, cpu, mbcicmp))
-            return;
-        cpu.edx = cpu.eax;
-        if (cpu.eax != 0)
-            return back();
-        cpu.eax = cpu.ecx;
-        if (!direct(app, cpu, mbsinc))
-            return;
-        cpu.ecx = cpu.eax;
-        cpu.eax = cpu.esi;
-        --cpu.ebx;
-        if (!direct(app, cpu, mbsinc))
-            return;
-        cpu.esi = cpu.eax;
+        const guest::KeptRegisters kept(cpu);
+        differs = mbsnicmpOf(app, cpu, cpu.eax, cpu.edx, cpu.ebx);
     }
-    if (cpu.ebx != 0)
+    if (cpu.terminate)
+        return;
+    returns(cpu, differs);
+}
+
+namespace
+{
+
+reg32 runs(win32::WinApplication* app, x86::CPU& cpu, guest::Native function,
+           std::initializer_list<x86::reg32> registers);
+
+}  // namespace
+
+/* getenv's work from the function's entry, esp at its return address's slot: the six registers it
+ * keeps pushed and popped as its code does, so _mbsnicmp's are made at the depth the
+ * runtime's were.  0 with cpu.terminate set when the game stopped. */
+reg32 getenvOf(win32::WinApplication* app, x86::CPU& cpu, reg32 name)
+{
+    for (const reg32 r : {cpu.ebx, cpu.ecx, cpu.edx, cpu.esi, cpu.edi, cpu.ebp})
+        push(app, cpu, r);
+    reg32 entry = at(app, kEnviron);
+    reg32 value = 0;
+    if (entry != 0 && name != 0)
     {
-        cpu.eax = cpu.ecx;
-        if (!direct(app, cpu, mbterm))
-            return;
-        bool ended = cpu.eax != 0;
-        if (!ended)
+        reg32 length = 0;
+        while (byte(app, name + length) != 0)
+            ++length;
+        for (reg32 string = at(app, entry); string != 0; entry += 4, string = at(app, entry))
         {
-            cpu.eax = cpu.esi;
-            if (!direct(app, cpu, mbterm))
-                return;
-            ended = cpu.eax != 0;
-        }
-        if (ended)
-        {
-            cpu.edx = reg32(byte(app, cpu.ecx)) - byte(app, cpu.esi);
-            cpu.eax = byte(app, cpu.esi);
+            reg32 differs;
+            {
+                const ReturnSlot call(cpu);
+                differs = mbsnicmpOf(app, cpu, string, name, length);
+            }
+            if (cpu.terminate)
+                return 0;
+            if (differs == 0 && byte(app, string + length) == '=')
+            {
+                value = string + length + 1;
+                break;
+            }
         }
     }
-    back();
+    cpu.esp += 0x18;
+    return value;
 }
 
 /* getenv (clib/environ/c/getenv.c, 0x50ead0): the value of the variable named
  * at eax, its name matched as capitals -- or 0. */
 void getenv(win32::WinApplication* app, x86::CPU& cpu)
 {
-    for (const reg32 r : {cpu.ebx, cpu.ecx, cpu.edx, cpu.esi, cpu.edi, cpu.ebp})
-        push(app, cpu, r);
-    cpu.ebp = cpu.eax;
-    cpu.esi = at(app, kEnviron);
-    reg32 result = 0;
-    if (cpu.esi != 0 && cpu.eax != 0)
-    {
-        cpu.edi = cpu.eax;
-        inlineStrlen(app, cpu);
-        cpu.edi = cpu.ecx;
-        for (cpu.ecx = at(app, cpu.esi); cpu.ecx != 0; cpu.ecx = at(app, cpu.esi))
-        {
-            cpu.ebx = cpu.edi;
-            cpu.edx = cpu.ebp;
-            cpu.eax = cpu.ecx;
-            if (!direct(app, cpu, mbsnicmp))
-                return;
-            if (cpu.eax == 0 && byte(app, cpu.ecx + cpu.edi) == '=')
-            {
-                result = cpu.edi + 1 + cpu.ecx;
-                break;
-            }
-            cpu.esi += 4;
-        }
-    }
-    cpu.eax = result;
-    cpu.ebp = pop(app, cpu);
-    cpu.edi = pop(app, cpu);
-    cpu.esi = pop(app, cpu);
-    cpu.edx = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
-    cpu.ebx = pop(app, cpu);
-    cpu.esp += 4;
+    const reg32 value = getenvOf(app, cpu, cpu.eax);
+    if (cpu.terminate)
+        return;
+    returns(cpu, value);
 }
 
-/* wcstombs (clib/mbyte/c/wcstombs.c, 0x5242f0): the wide string at edx into
- * eax as wctomb makes each character, at most ebx bytes -- or, for no buffer,
- * how many it would take; -1 for one wctomb cannot make. */
+/* wcstombs (clib/mbyte/c/wcstombs.c, 0x5242f0): the wide string at `from` into `to` as wctomb
+ * makes each character, at most `most` bytes -- or, for no buffer, how many it would take; -1 for
+ * one wctomb cannot make.  At its entry's depth: four pushes, then 0xc bytes, wctomb's character
+ * at +8 of them (WideCharToMultiByte is handed it).  0 with cpu.terminate set when the game
+ * stopped. */
+reg32 wcstombsOf(win32::WinApplication* app, x86::CPU& cpu, reg32 to, reg32 from, reg32 most)
+{
+    const GuestFrame frame(cpu, 0x10, 0xc);
+    const reg32 character = frame - 4;
+    reg32 total = 0;
+    if (to == 0)
+    {
+        for (; half(app, from) != 0; from += 2)
+        {
+            const reg32 bytes = runs(app, cpu, &wctomb_, {character, half(app, from)});
+            if (cpu.terminate)
+                return 0;
+            if (bytes == 0xffffffff)
+                return bytes;
+            total += bytes;
+        }
+        return total;
+    }
+    for (reg32 room = most; room != 0; from += 2)
+    {
+        const reg32 c = half(app, from);
+        if (c == 0)
+        {
+            putByte(app, to, 0);
+            break;
+        }
+        const reg32 bytes = runs(app, cpu, &wctomb_, {character, c});
+        if (cpu.terminate)
+            return 0;
+        if (bytes == 0xffffffff)
+            return bytes;
+        if (bytes > room)
+            break;
+        for (reg32 i = 0; i < bytes; ++i)
+            putByte(app, to + i, byte(app, character + i));
+        total += bytes;
+        room -= bytes;
+        to += bytes;
+    }
+    return total;
+}
+
 void wcstombs(win32::WinApplication* app, x86::CPU& cpu)
 {
-    for (const reg32 r : {cpu.ecx, cpu.esi, cpu.edi, cpu.ebp})
-        push(app, cpu, r);
-    cpu.esp -= 0xc;
-    const reg32 local = cpu.esp;
-    put(app, local + 4, cpu.eax);
-    cpu.ebp = cpu.edx;
-    put(app, local, cpu.ebx);
-    cpu.ebx = 0;
-    auto back = [&] {
-        cpu.esp = local + 0xc;
-        cpu.ebp = pop(app, cpu);
-        cpu.edi = pop(app, cpu);
-        cpu.esi = pop(app, cpu);
-        cpu.ecx = pop(app, cpu);
-        cpu.esp += 4;
-    };
-    if (cpu.eax == 0)
+    reg32 result;
     {
-        while (half(app, cpu.ebp) != 0)
-        {
-            cpu.edx = half(app, cpu.ebp);
-            cpu.eax = local + 8;
-            if (!direct(app, cpu, wctomb_))
-                return;
-            if (cpu.eax == 0xffffffff)
-                return back();
-            cpu.ebp += 2;
-            cpu.ebx += cpu.eax;
-        }
-        cpu.eax = cpu.ebx;
-        return back();
+        const guest::KeptRegisters kept(cpu);
+        result = wcstombsOf(app, cpu, cpu.eax, cpu.edx, cpu.ebx);
     }
-    while (at(app, local) != 0)
-    {
-        cpu.ecx = (cpu.ecx & 0xffff0000) | half(app, cpu.ebp);
-        if ((cpu.ecx & 0xffff) == 0)
-        {
-            putByte(app, at(app, local + 4), 0);
-            break;
-        }
-        cpu.edx = cpu.ecx & 0xffff;
-        cpu.eax = local + 8;
-        if (!direct(app, cpu, wctomb_))
-            return;
-        cpu.edx = cpu.eax;
-        if (cpu.eax == 0xffffffff)
-            return back();
-        if (cpu.eax > at(app, local))
-            break;
-        cpu.esi = local + 8;
-        cpu.edi = at(app, local + 4);
-        cpu.ecx = cpu.eax;
-        inlineMemcpy(app, cpu);
-        cpu.ebp += 2;
-        cpu.ebx += cpu.edx;
-        cpu.eax = at(app, local) - cpu.edx;
-        cpu.edi += cpu.edx;
-        put(app, local + 4, cpu.edi);
-        put(app, local, cpu.eax);
-    }
-    cpu.eax = cpu.ebx;
-    back();
+    if (cpu.terminate)
+        return;
+    returns(cpu, result);
 }
 
-/* 0x515c90 (__tzset's number): the decimal digits at eax into the dword at
- * edx; past them. */
+/* ---- __tzset (clib/time/c/tzset.c) in its parts: TZ's zone and its daylight saving's name and
+ * rules parsed, or the zone asked of Windows.  The zone's and the rules' numbers are C++ locals;
+ * what each part leaves in eax, which the checks hold too, is worked out from what it did. ---- */
+
+/* 0x515c90 (__tzset's number): the decimal digits at `p` into `value`; past them. */
+reg32 tzNumberOf(win32::WinApplication* app, reg32 p, reg32& value)
+{
+    value = 0;
+    for (; byte(app, p) >= '0' && byte(app, p) <= '9'; ++p)
+        value = value * 10 + byte(app, p) - '0';
+    return p;
+}
+
 void tzNumber(win32::WinApplication* app, x86::CPU& cpu)
 {
-    push(app, cpu, cpu.ebx);
-    push(app, cpu, cpu.ecx);
-    cpu.ecx = cpu.edx;
-    setLow8(cpu.ebx, byte(app, cpu.eax));
-    cpu.edx = 0;
-    if ((cpu.ebx & 0xff) >= '0')
-        while (byte(app, cpu.eax) <= '9')
-        {
-            cpu.edx *= 10;
-            cpu.ebx = byte(app, cpu.eax);
-            ++cpu.eax;
-            cpu.edx += cpu.ebx;
-            setHigh8(cpu.ebx, byte(app, cpu.eax));
-            cpu.edx -= '0';
-            if (((cpu.ebx >> 8) & 0xff) < '0')
-                break;
-        }
-    put(app, cpu.ecx, cpu.edx);
-    cpu.ecx = pop(app, cpu);
-    cpu.ebx = pop(app, cpu);
-    cpu.esp += 4;
+    reg32 value;
+    const reg32 past = tzNumberOf(app, cpu.eax, value);
+    put(app, cpu.edx, value);
+    returns(cpu, past);
 }
 
-/* 0x515cbc (__tzset's zone): TZ's name at eax -- up to a sign, a digit or a
- * comma, at most 0x80 of it -- into edx, and the hours[:minutes[:seconds]]
- * after it, as seconds west, into the dword at ebx; past them. */
-void tzName(win32::WinApplication* app, x86::CPU& cpu)
+/* 0x515cbc (__tzset's zone): TZ's name at `p` -- up to a sign, a digit or a comma, at most 0x80
+ * of it -- into `name`, and the hours[:minutes[:seconds]] after it, as seconds west, into the
+ * dword at `seconds`; past them. */
+reg32 tzNameOf(win32::WinApplication* app, reg32 p, reg32 name, reg32 seconds)
 {
-    for (const reg32 r : {cpu.ecx, cpu.esi, cpu.edi, cpu.ebp})
-        push(app, cpu, r);
-    cpu.esp -= 0x14;
-    const reg32 local = cpu.esp;
-    cpu.ebp = cpu.eax;
-    put(app, local, cpu.edx);
-    put(app, local + 0x10, cpu.ebx);
-    if (byte(app, cpu.eax) == ':')
-        ++cpu.ebp;
-    cpu.esi = cpu.ebp;
-    for (;; ++cpu.ebp)
+    if (byte(app, p) == ':')
+        ++p;
+    const reg32 start = p;
+    for (;; ++p)
     {
-        setLow8(cpu.edx, byte(app, cpu.ebp));
-        const reg8 c = reg8(cpu.edx);
+        const reg8 c = byte(app, p);
         if (c == 0 || c == ',' || c == '-' || c == '+' || (c >= '0' && c <= '9'))
             break;
     }
-    cpu.ebx = cpu.ebp - cpu.esi;
-    if (x86::sreg32(cpu.ebx) > 0x80)
-        cpu.ebx = 0x80;
-    cpu.edi = at(app, local);
-    cpu.ecx = cpu.ebx;
-    inlineMemcpy(app, cpu);
-    cpu.ebx += cpu.edi;
-    cpu.eax = cpu.ebp + 1;
-    cpu.esi = 0;
-    putByte(app, cpu.ebx, 0);
-    if (reg8(cpu.edx) == '-')
+    reg32 length = p - start;
+    if (x86::sreg32(length) > 0x80)
+        length = 0x80;
+    for (reg32 i = 0; i < length; ++i)
+        putByte(app, name + i, byte(app, start + i));
+    putByte(app, name + length, 0);
+    const reg8 sign = byte(app, p);
+    if (sign == '-' || sign == '+')
+        ++p;
+    if (byte(app, p) >= '0' && byte(app, p) <= '9')
     {
-        cpu.esi = 1;
-        cpu.ebp = cpu.eax;
-    }
-    else if (reg8(cpu.edx) == '+')
-        cpu.ebp = cpu.eax;
-    setLow8(cpu.eax, byte(app, cpu.ebp));
-    if (reg8(cpu.eax) >= '0' && reg8(cpu.eax) <= '9')
-    {
-        cpu.edx = local + 0xc;
-        cpu.edi = 0;
-        cpu.eax = cpu.ebp;
-        put(app, local + 4, 0);
-        put(app, local + 8, 0);
-        put(app, local + 0xc, 0);
-        if (!direct(app, cpu, tzNumber))
-            return;
-        setLow8(cpu.edx, byte(app, cpu.eax));
-        cpu.ebp = cpu.eax;
-        if (reg8(cpu.edx) == ':')
+        reg32 hours, minutes = 0, rest = 0;
+        p = tzNumberOf(app, p, hours);
+        if (byte(app, p) == ':')
         {
-            cpu.edx = local + 8;
-            ++cpu.eax;
-            if (!direct(app, cpu, tzNumber))
-                return;
-            setHigh8(cpu.edx, byte(app, cpu.eax));
-            cpu.ebp = cpu.eax;
-            if (reg8(cpu.edx >> 8) == ':')
-            {
-                cpu.edx = local + 4;
-                ++cpu.eax;
-                if (!direct(app, cpu, tzNumber))
-                    return;
-                cpu.ebp = cpu.eax;
-            }
+            p = tzNumberOf(app, p + 1, minutes);
+            if (byte(app, p) == ':')
+                p = tzNumberOf(app, p + 1, rest);
         }
-        cpu.ebx = at(app, local + 0xc);
-        cpu.edx = at(app, local + 8) + cpu.ebx * 60;
-        cpu.edx = at(app, local + 4) + cpu.edx * 60;
-        cpu.eax = at(app, local + 0x10);
-        put(app, cpu.eax, cpu.edx);
-        if (cpu.esi != 0)
-        {
-            cpu.ebx = 0 - cpu.edx;
-            put(app, cpu.eax, cpu.ebx);
-        }
+        const reg32 west = rest + (minutes + hours * 60) * 60;
+        put(app, seconds, sign == '-' ? 0 - west : west);
     }
-    cpu.eax = cpu.ebp;
-    cpu.esp = local + 0x14;
-    cpu.ebp = pop(app, cpu);
-    cpu.edi = pop(app, cpu);
-    cpu.esi = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
-    cpu.esp += 4;
+    return p;
 }
 
-/* 0x515dd4 (__tzset's rule): daylight saving's start or end at eax -- Jn,
- * n or Mm.w.d, then /hours[:minutes[:seconds]] -- into the struct tm at edx;
- * past it. */
+void tzName(win32::WinApplication* app, x86::CPU& cpu)
+{
+    returns(cpu, tzNameOf(app, cpu.eax, cpu.edx, cpu.ebx));
+}
+
+/* 0x515dd4 (__tzset's rule): daylight saving's start or end at `p` -- Jn, n or Mm.w.d, then
+ * /hours[:minutes[:seconds]] -- into the struct tm at `tm`; past it. */
+reg32 tzRuleOf(win32::WinApplication* app, reg32 p, reg32 tm)
+{
+    reg32 kind = 0xffffffff;  // -1 a day of the year from 0, 1 from 1 (J), 0 a week's day (M)
+    if (byte(app, p) == 'J')
+    {
+        kind = 1;
+        ++p;
+    }
+    if (byte(app, p) == 'M')
+    {
+        ++p;
+        kind = 0;
+    }
+    put(app, tm + 0x20, kind);
+    reg32 n;
+    p = tzNumberOf(app, p, n);
+    if (kind != 0)
+        put(app, tm + 0x1c, n);
+    else
+    {
+        put(app, tm + 0x10, n - 1);
+        if (byte(app, p) == '.')
+        {
+            p = tzNumberOf(app, p + 1, n);
+            put(app, tm + 0xc, n);
+            if (byte(app, p) == '.')
+            {
+                p = tzNumberOf(app, p + 1, n);
+                put(app, tm + 0x18, n);
+            }
+        }
+        put(app, tm + 0x1c, 0);
+    }
+    reg32 hours = 2, minutes = 0, seconds = 0;
+    if (byte(app, p) == '/')
+    {
+        p = tzNumberOf(app, p + 1, hours);
+        if (byte(app, p) == ':')
+        {
+            p = tzNumberOf(app, p + 1, minutes);
+            if (byte(app, p) == ':')
+                p = tzNumberOf(app, p + 1, seconds);
+        }
+    }
+    put(app, tm, seconds);
+    put(app, tm + 4, minutes);
+    put(app, tm + 8, hours);
+    return p;
+}
+
 void tzRule(win32::WinApplication* app, x86::CPU& cpu)
 {
-    for (const reg32 r : {cpu.ebx, cpu.ecx, cpu.esi})
-        push(app, cpu, r);
-    cpu.esp -= 0x10;
-    const reg32 local = cpu.esp;
-    cpu.ebx = cpu.eax;
-    cpu.ecx = cpu.edx;
-    setHigh8(cpu.eax, byte(app, cpu.eax));
-    cpu.esi = 0xffffffff;
-    if (byte(app, cpu.ebx) == 'J')
-    {
-        cpu.esi = 1;
-        cpu.ebx += 1;
-    }
-    if (byte(app, cpu.ebx) == 'M')
-    {
-        ++cpu.ebx;
-        cpu.esi = 0;
-    }
-    cpu.edx = local + 0xc;
-    cpu.eax = cpu.ebx;
-    put(app, cpu.ecx + 0x20, cpu.esi);
-    if (!direct(app, cpu, tzNumber))
-        return;
-    cpu.edx = cpu.eax;
-    cpu.ebx = cpu.eax;
-    if (cpu.esi != 0)
-    {
-        cpu.eax = at(app, local + 0xc);
-        put(app, cpu.ecx + 0x1c, cpu.eax);
-    }
-    else
-    {
-        cpu.eax = at(app, local + 0xc) - 1;
-        put(app, cpu.ecx + 0x10, cpu.eax);
-        if (byte(app, cpu.edx) == '.')
-        {
-            cpu.eax = cpu.edx + 1;
-            cpu.edx = local + 0xc;
-            if (!direct(app, cpu, tzNumber))
-                return;
-            cpu.esi = cpu.eax;
-            cpu.ebx = cpu.eax;
-            cpu.eax = at(app, local + 0xc);
-            put(app, cpu.ecx + 0xc, cpu.eax);
-            if (byte(app, cpu.esi) == '.')
-            {
-                cpu.edx = local + 0xc;
-                cpu.eax = cpu.esi + 1;
-                if (!direct(app, cpu, tzNumber))
-                    return;
-                cpu.ebx = cpu.eax;
-                cpu.eax = at(app, local + 0xc);
-                put(app, cpu.ecx + 0x18, cpu.eax);
-            }
-        }
-        put(app, cpu.ecx + 0x1c, 0);
-    }
-    cpu.edx = 2;
-    cpu.esi = 0;
-    put(app, local + 8, cpu.edx);
-    put(app, local, cpu.esi);
-    put(app, local + 4, cpu.esi);
-    if (byte(app, cpu.ebx) == '/')
-    {
-        cpu.edx = local + 8;
-        cpu.eax = cpu.ebx + 1;
-        if (!direct(app, cpu, tzNumber))
-            return;
-        setHigh8(cpu.edx, byte(app, cpu.eax));
-        cpu.ebx = cpu.eax;
-        if (reg8(cpu.edx >> 8) == ':')
-        {
-            cpu.edx = local + 4;
-            ++cpu.eax;
-            if (!direct(app, cpu, tzNumber))
-                return;
-            setLow8(cpu.edx, byte(app, cpu.eax));
-            cpu.ebx = cpu.eax;
-            if (reg8(cpu.edx) == ':')
-            {
-                cpu.edx = local;
-                ++cpu.eax;
-                if (!direct(app, cpu, tzNumber))
-                    return;
-                cpu.ebx = cpu.eax;
-            }
-        }
-    }
-    put(app, cpu.ecx, at(app, local));
-    put(app, cpu.ecx + 4, at(app, local + 4));
-    cpu.eax = at(app, local + 8);
-    put(app, cpu.ecx + 8, cpu.eax);
-    cpu.eax = cpu.ebx;
-    cpu.esp = local + 0x10;
-    cpu.esi = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
-    cpu.ebx = pop(app, cpu);
-    cpu.esp += 4;
+    returns(cpu, tzRuleOf(app, cpu.eax, cpu.edx));
 }
 
-/* 0x515b34 (__tzset's without TZ): the zone, daylight saving and the zones'
- * names as GetTimeZoneInformation has them, once. */
-void tzWindows(win32::WinApplication* app, x86::CPU& cpu)
+/* 0x515b34 (__tzset's without TZ): the zone, daylight saving and the zones' names as
+ * GetTimeZoneInformation has them, once.  At its entry's depth: four pushes, then the
+ * TIME_ZONE_INFORMATION Windows fills.  What the code leaves in eax, given `eax` on entry; 0 with
+ * cpu.terminate set when the game stopped. */
+reg32 tzWindowsOf(win32::WinApplication* app, x86::CPU& cpu, reg32 eax)
 {
-    for (const reg32 r : {cpu.ebx, cpu.ecx, cpu.edx, cpu.esi})
-        push(app, cpu, r);
-    cpu.esp -= 0xac;
-    const reg32 local = cpu.esp;  // a TIME_ZONE_INFORMATION
-    auto back = [&] {
-        cpu.esp = local + 0xac;
-        cpu.esi = pop(app, cpu);
-        cpu.edx = pop(app, cpu);
-        cpu.ecx = pop(app, cpu);
-        cpu.ebx = pop(app, cpu);
-        cpu.esp += 4;
-    };
-    setHigh8(cpu.eax, byte(app, kZoneDone));
-    if ((byte(app, kZoneDone) & 1) && (byte(app, kZoneDone) & 2))
-        return back();
-    setHigh8(cpu.edx, byte(app, kZoneDone) | 2);
-    cpu.eax = local;
-    putByte(app, kZoneDone, reg8(cpu.edx >> 8));
-    if (!windows<kGetTimeZoneInformation, &host::timeZone>(app, cpu, cpu.eax))
-        return;
-    if (cpu.eax == 0 || cpu.eax > 2)
-        return back();
-    if (cpu.eax == 2)
+    const GuestFrame frame(cpu, 0x10, 0xac);
+    const reg32 information = frame - 0xac;
+    const reg8 done = byte(app, kZoneDone);
+    if ((done & 1) && (done & 2))
+        return (eax & 0xffff00ff) | reg32(done) << 8;
+    putByte(app, kZoneDone, done | 2);
+    reg32 answer;
+    {
+        const guest::KeptRegisters kept(cpu);
+        if (!windows<kGetTimeZoneInformation, &host::timeZone>(app, cpu, information))
+            return 0;
+        answer = cpu.eax;
+    }
+    if (answer == 0 || answer > 2)
+        return answer;
+    if (answer == 2)
     {
         put(app, kDaylightOn, 1);
-        cpu.edx = at(app, local + 0xa8);
-        cpu.eax = cpu.edx * 60;
-        cpu.ebx = cpu.eax;
-        put(app, kDstSeconds, cpu.eax);
-        cpu.ebx = 0 - cpu.ebx;
-        put(app, kDstSeconds, cpu.ebx);
+        put(app, kDstSeconds, 0 - at(app, information + 0xa8) * 60);
     }
     else
+        put(app, kDaylightOn, 0);
+    put(app, kTimezoneSeconds, (at(app, information + 0x54) + at(app, information)) * 60);
+    reg32 made = 0;
+    for (const auto& [name, wide] : {std::pair<reg32, reg32>{kTzName0, 4}, {kTzName1, 0x58}})
     {
-        cpu.ecx = 0;
-        put(app, kDaylightOn, cpu.ecx);
+        {
+            const ReturnSlot call(cpu);
+            made = wcstombsOf(app, cpu, name, information + wide, 0x80);
+        }
+        if (cpu.terminate)
+            return 0;
+        putByte(app, made == 0xffffffff ? name : name + 0x80, 0);
     }
-    cpu.esi = at(app, local);
-    cpu.edx = at(app, local + 0x54) + cpu.esi;
-    cpu.eax = cpu.edx * 60;
-    cpu.ebx = 0x80;
-    cpu.edx = local + 4;
-    put(app, kTimezoneSeconds, cpu.eax);
-    cpu.eax = kTzName0;
-    if (!direct(app, cpu, wcstombs))
-        return;
-    if (cpu.eax == 0xffffffff)
-    {
-        setHigh8(cpu.ebx, 0);
-        putByte(app, kTzName0, 0);
-    }
-    else
-    {
-        setLow8(cpu.ebx, 0);
-        putByte(app, kTzName0 + 0x80, 0);
-    }
-    cpu.ebx = 0x80;
-    cpu.edx = local + 0x58;
-    cpu.eax = kTzName1;
-    if (!direct(app, cpu, wcstombs))
-        return;
-    if (cpu.eax == 0xffffffff)
-    {
-        setHigh8(cpu.ecx, 0);
-        putByte(app, kTzName1, 0);
-    }
-    else
-    {
-        setLow8(cpu.ecx, 0);
-        putByte(app, kTzName1 + 0x80, 0);
-    }
-    back();
+    return made;
 }
 
-/* 0x515ec2: __tzset's after a TZ zone with a daylight name -- its own offset
- * or an hour less, and the rules after commas, the end rule's time made
- * standard time -- in __tzset's frame, ecx where the zone's name ended. */
+void tzWindows(win32::WinApplication* app, x86::CPU& cpu)
+{
+    reg32 eax;
+    {
+        const guest::KeptRegisters kept(cpu);
+        eax = tzWindowsOf(app, cpu, cpu.eax);
+    }
+    if (cpu.terminate)
+        return;
+    returns(cpu, eax);
+}
+
+/* 0x515ec2: __tzset's after a TZ zone with a daylight name -- its own offset or an hour less, and
+ * the rules after commas, the end rule's time made standard time -- in __tzset's frame: `local`
+ * its dword (the daylight zone's offset is parsed into it), `nameEnd` where the zone's name ended.
+ * What the code leaves in eax. */
+reg32 tzDaylightOf(win32::WinApplication* app, reg32 nameEnd, reg32 local)
+{
+    put(app, kDaylightOn, 1);
+    put(app, local, at(app, kTimezoneSeconds) - 3600);
+    const reg32 p = tzNameOf(app, nameEnd, kTzName1, local);
+    put(app, kDstSeconds, at(app, kTimezoneSeconds) - at(app, local));
+    reg32 eax = p, rules = p;
+    if (byte(app, p) == ',')
+        eax = rules = tzRuleOf(app, p + 1, kDstStart);
+    const reg32 dst = at(app, kDstSeconds);
+    if (byte(app, rules) == ',')
+    {
+        tzRuleOf(app, rules + 1, kDstEnd);
+        const x86::sreg32 seconds = x86::sreg32(at(app, kDstSeconds));
+        const x86::sreg32 minutes = seconds / 60;
+        const reg32 hour = at(app, kDstEnd + 8) - reg32(seconds / 3600);
+        const reg32 minute = at(app, kDstEnd + 4) - reg32(minutes % 60);
+        eax = at(app, kDstEnd) - reg32(seconds % 60);
+        put(app, kDstEnd + 8, hour);
+        put(app, kDstEnd + 4, minute);
+        put(app, kDstEnd, eax);
+        put(app, kDstSeconds, reg32(seconds));
+        return eax;
+    }
+    put(app, kDstSeconds, dst);
+    return eax;
+}
+
 void tzDaylight(win32::WinApplication* app, x86::CPU& cpu)
 {
-    cpu.ebx = 1;
-    cpu.edx = kTzName1;
-    cpu.eax = at(app, kTimezoneSeconds);
-    put(app, kDaylightOn, cpu.ebx);
-    cpu.eax -= 3600;
-    cpu.ebx = cpu.esp;
-    put(app, cpu.esp, cpu.eax);
-    cpu.eax = cpu.ecx;
-    if (!direct(app, cpu, tzName))
-        return;
-    cpu.ecx = at(app, cpu.esp);
-    cpu.esi = at(app, kTimezoneSeconds);
-    cpu.edx = cpu.eax;
-    cpu.esi -= cpu.ecx;
-    setLow8(cpu.ebx, byte(app, cpu.eax));
-    put(app, kDstSeconds, cpu.esi);
-    if (reg8(cpu.ebx) == ',')
-    {
-        cpu.edx = kDstStart;
-        ++cpu.eax;
-        if (!direct(app, cpu, tzRule))
-            return;
-        cpu.edx = cpu.eax;
-    }
-    setHigh8(cpu.ebx, byte(app, cpu.edx));
-    cpu.esi = at(app, kDstSeconds);
-    if (reg8(cpu.ebx >> 8) == ',')
-    {
-        cpu.eax = cpu.edx + 1;
-        cpu.edx = kDstEnd;
-        if (!direct(app, cpu, tzRule))
-            return;
-        cpu.esi = at(app, kDstSeconds);
-        const x86::sreg32 seconds = x86::sreg32(cpu.esi);
-        cpu.ebx = 60;
-        cpu.edi = at(app, kDstEnd + 8) - reg32(seconds / 3600);
-        const x86::sreg32 minutes = seconds / 60;
-        cpu.eax = reg32(minutes / 60);
-        cpu.edx = reg32(minutes % 60);
-        cpu.ebp = at(app, kDstEnd + 4) - cpu.edx;
-        cpu.edx = reg32(seconds % 60);
-        cpu.eax = at(app, kDstEnd) - cpu.edx;
-        put(app, kDstEnd + 8, cpu.edi);
-        put(app, kDstEnd + 4, cpu.ebp);
-        put(app, kDstEnd, cpu.eax);
-    }
-    put(app, kDstSeconds, cpu.esi);
-    cpu.esp += 4;
+    const reg32 local = cpu.esp;  // __tzset's dword, its six registers above
+    const reg32 eax = tzDaylightOf(app, cpu.ecx, local);
+    cpu.esp = local + 4;
     cpu.ebp = pop(app, cpu);
     cpu.edi = pop(app, cpu);
     cpu.esi = pop(app, cpu);
     cpu.edx = pop(app, cpu);
     cpu.ecx = pop(app, cpu);
     cpu.ebx = pop(app, cpu);
-    cpu.esp += 4;
+    returns(cpu, eax);
 }
 
-/* __tzset (clib/time/c/tzset.c, 0x515c2c): the zone from TZ -- its name,
- * offset, daylight saving's name and rules -- or from Windows. */
+/* __tzset (clib/time/c/tzset.c, 0x515c2c): the zone from TZ -- its name, offset, daylight
+ * saving's name and rules -- or from Windows.  Its frame -- the six registers it keeps and a
+ * dword -- is where tzDaylight finishes, as the code jumps there. */
 void tzset(win32::WinApplication* app, x86::CPU& cpu)
 {
-    cpu.eax = kTzString;
-    if (!direct(app, cpu, getenv))
+    reg32 tz;
+    {
+        const ReturnSlot call(cpu);
+        tz = getenvOf(app, cpu, kTzString);
+    }
+    if (cpu.terminate)
         return;
-    if (cpu.eax == 0)
+    cpu.eax = tz;
+    if (tz == 0)
         return tzWindows(app, cpu);
     for (const reg32 r : {cpu.ebx, cpu.ecx, cpu.edx, cpu.esi, cpu.edi, cpu.ebp})
         push(app, cpu, r);
     cpu.esp -= 4;
-    cpu.esi = at(app, kDstSeconds);
-    cpu.edx = 0;
-    cpu.ebx = kTimezoneSeconds;
-    put(app, kDaylightOn, cpu.edx);
-    cpu.edx = kTzName0;
-    if (!direct(app, cpu, tzName))
-        return;
-    cpu.ecx = cpu.eax;
-    setHigh8(cpu.eax, byte(app, cpu.eax));
-    if (reg8(cpu.eax >> 8) != 0)
+    put(app, kDaylightOn, 0);
+    const reg32 p = tzNameOf(app, tz, kTzName0, kTimezoneSeconds);
+    if (byte(app, p) != 0)
+    {
+        cpu.ecx = p;
         return tzDaylight(app, cpu);
-    cpu.esi = at(app, kDstSeconds);
+    }
     putByte(app, kTzName1, 0);
-    put(app, kDstSeconds, cpu.esi);
     cpu.esp += 4;
     cpu.ebp = pop(app, cpu);
     cpu.edi = pop(app, cpu);
@@ -6787,71 +6613,80 @@ void tzset(win32::WinApplication* app, x86::CPU& cpu)
     cpu.edx = pop(app, cpu);
     cpu.ecx = pop(app, cpu);
     cpu.ebx = pop(app, cpu);
-    cpu.esp += 4;
+    returns(cpu, p & 0xffff00ff);
 }
 
-/* 0x4ff410 (__FiniRtns' call): the routine at the pointer at eax, if any,
- * with es its ds. */
+/* 0x4ff410 (__FiniRtns' call): the routine at the pointer at `p`, if any, with es its ds -- es
+ * pushed meanwhile, and ds pushed and popped into it.  False when the game stopped. */
+bool callRoutineOf(win32::WinApplication* app, x86::CPU& cpu, reg32 p)
+{
+    putHalf(app, cpu.esp - 4, cpu.es);
+    const GuestFrame frame(cpu, 4, 0);
+    if (at(app, p) == 0)
+        return true;
+    putHalf(app, cpu.esp - 4, reg16(cpu.ds));
+    const reg16 es = cpu.es;
+    cpu.es = reg16(cpu.ds);
+    bool ok;
+    {
+        const guest::KeptRegisters kept(cpu);
+        cpu.eax = p;
+        ok = call(app, cpu, at(app, p));
+    }
+    cpu.es = es;
+    return ok;
+}
+
 void callRoutine(win32::WinApplication* app, x86::CPU& cpu)
 {
-    pushEs(app, cpu);
-    if (at(app, cpu.eax) != 0)
-    {
-        cpu.esp -= 4;
-        putHalf(app, cpu.esp, cpu.ds);  // push ds
-        cpu.es = half(app, cpu.esp);    // pop es
-        cpu.esp += 4;
-        if (!indirect(app, cpu, at(app, cpu.eax)))
-            return;
-    }
-    popEs(app, cpu);
-    cpu.esp += 4;
+    if (!callRoutineOf(app, cpu, cpu.eax))
+        return;
+    cpu.esp += 4;  // eax left as it was, the pointer
 }
 
-/* __FiniRtns (clib/startup/c/initrtns.c, 0x4ff46c): the runtime's
- * finalizers of priority al to dl not yet run, the highest first. */
-void FiniRtns(win32::WinApplication* app, x86::CPU& cpu)
+/* __FiniRtns (clib/startup/c/initrtns.c, 0x4ff46c): the runtime's finalizers of priority `low` to
+ * `high` not yet run, the highest first, each marked done.  At its entry's depth: three pushes and
+ * es.  What the code leaves in eax (its table's end); 0 with cpu.terminate set when the game
+ * stopped. */
+reg32 finiRtnsOf(win32::WinApplication* app, x86::CPU& cpu, reg8 low, reg8 high)
 {
-    for (const reg32 r : {cpu.ebx, cpu.ecx, cpu.esi})
-        push(app, cpu, r);
-    pushEs(app, cpu);
-    cpu.esi = kFiniEnd;
-    setLow8(cpu.ecx, cpu.eax);
-    setHigh8(cpu.edx, cpu.edx);
+    const GuestFrame frame(cpu, 0x10, 0);
     for (;;)
     {
-        cpu.eax = kFiniStart;
-        cpu.ebx = cpu.esi;
-        setLow8(cpu.edx, cpu.ecx);
-        if (cpu.esi > cpu.eax)
-            do
+        reg32 chosen = kFiniEnd;
+        reg8 best = low;
+        for (reg32 entry = kFiniStart; entry < kFiniEnd; entry += 6)
+            if (byte(app, entry) != 2 && best <= byte(app, entry + 1))
             {
-                if (byte(app, cpu.eax) != 2)
-                {
-                    setHigh8(cpu.ecx, byte(app, cpu.eax + 1));
-                    if (reg8(cpu.edx) <= reg8(cpu.ecx >> 8))
-                    {
-                        cpu.ebx = cpu.eax;
-                        setLow8(cpu.edx, cpu.ecx >> 8);
-                    }
-                }
-                cpu.eax += 6;
-            } while (cpu.eax < kFiniEnd);
-        if (cpu.ebx == kFiniEnd)
+                chosen = entry;
+                best = byte(app, entry + 1);
+            }
+        if (chosen == kFiniEnd)
             break;
-        if (reg8(cpu.edx >> 8) >= byte(app, cpu.ebx + 1))
+        if (high >= byte(app, chosen + 1))
         {
-            cpu.eax = cpu.ebx + 2;
-            if (!direct(app, cpu, callRoutine))
-                return;
+            runs(app, cpu, &callRoutine, {chosen + 2});
+            if (cpu.terminate)
+                return 0;
         }
-        putByte(app, cpu.ebx, 2);
+        putByte(app, chosen, 2);
     }
-    popEs(app, cpu);
-    cpu.esi = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
-    cpu.ebx = pop(app, cpu);
-    cpu.esp += 4;
+    return kFiniEnd;
+}
+
+void FiniRtns(win32::WinApplication* app, x86::CPU& cpu)
+{
+    const reg8 low = reg8(cpu.eax), high = reg8(cpu.edx);
+    reg32 eax;
+    {
+        const guest::KeptRegisters kept(cpu);
+        eax = finiRtnsOf(app, cpu, low, high);
+    }
+    if (cpu.terminate)
+        return;
+    // dh the highest priority, dl the lowest, as the code leaves them (exit_ is stopped with them).
+    cpu.edx = (cpu.edx & 0xffff0000) | reg32(high) << 8 | low;
+    returns(cpu, eax);
 }
 
 /* 0x51f11c (__DoneExceptionHandler): the thread's exception record off fs's
@@ -6859,7 +6694,7 @@ void FiniRtns(win32::WinApplication* app, x86::CPU& cpu)
 void DoneExceptionHandler(win32::WinApplication* app, x86::CPU& cpu)
 {
     push(app, cpu, cpu.edx);
-    if (!indirect(app, cpu, at(app, kThreadPtr)))
+    if (!guest::runtimeHook<kThreadPtr>(app, cpu))
         return;
     cpu.eax = at(app, cpu.eax + 0x54);
     if (cpu.eax != 0)
@@ -6868,42 +6703,35 @@ void DoneExceptionHandler(win32::WinApplication* app, x86::CPU& cpu)
         cpu.edx = 0;
         put(app, cpu.efs + cpu.edx, cpu.eax);
     }
-    if (!indirect(app, cpu, at(app, kThreadPtr)))
+    if (!guest::runtimeHook<kThreadPtr>(app, cpu))
         return;
     put(app, cpu.eax + 0x54, 0);
     cpu.edx = pop(app, cpu);
     cpu.esp += 4;
 }
 
-/* 0x4ff3d0 (the environment's copies given back): what the start-up code made
- * of it, narrow and wide, to _nfree. */
+/* 0x4ff3d0 (the environment's copies given back): what the start-up code made of it, narrow and
+ * wide, to _nfree.  What the code leaves in eax, given `eax` on entry: _nfree's last answer, if
+ * any.  0 with cpu.terminate set when the game stopped. */
+reg32 freeEnvironmentOf(win32::WinApplication* app, x86::CPU& cpu, reg32 eax)
+{
+    for (const reg32 copy : {kEnvironCopy, kWideEnvironCopy})
+        if (at(app, copy) != 0)
+        {
+            eax = clib::free(app, cpu, at(app, copy));
+            if (cpu.terminate)
+                return 0;
+            put(app, copy, 0);
+        }
+    return eax;
+}
+
 void freeEnvironment(win32::WinApplication* app, x86::CPU& cpu)
 {
-    for (const reg32 r : {cpu.ebx, cpu.ecx, cpu.edx, cpu.esi})
-        push(app, cpu, r);
-    cpu.edx = at(app, kEnvironCopy);
-    if (cpu.edx != 0)
-    {
-        cpu.eax = cpu.edx;
-        cpu.ebx = 0;
-        if (!direct(app, cpu, nfree))
-            return;
-        put(app, kEnvironCopy, cpu.ebx);
-    }
-    cpu.ecx = at(app, kWideEnvironCopy);
-    if (cpu.ecx != 0)
-    {
-        cpu.eax = cpu.ecx;
-        cpu.esi = 0;
-        if (!direct(app, cpu, nfree))
-            return;
-        put(app, kWideEnvironCopy, cpu.esi);
-    }
-    cpu.esi = pop(app, cpu);
-    cpu.edx = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
-    cpu.ebx = pop(app, cpu);
-    cpu.esp += 4;
+    const reg32 eax = freeEnvironmentOf(app, cpu, cpu.eax);
+    if (cpu.terminate)
+        return;
+    returns(cpu, eax);
 }
 
 /* __exit (clib/startup/c/exit.c, 0x4ff38c): ExitProcess with eax -- the
@@ -6929,10 +6757,10 @@ void exit_(win32::WinApplication* app, x86::CPU& cpu)
             return;
         cpu.edx = 0xf;
         cpu.eax = 0;
-        if (!direct(app, cpu, FiniRtns) || !indirect(app, cpu, at(app, kExitDone)))
+        if (!direct(app, cpu, FiniRtns) || !guest::runtimeHook<kExitDone>(app, cpu))
             return;
     }
-    if (!windows<kExitProcess, &win32::kernel32::ExitProcess>(app, cpu, cpu.ebx))
+    if (!windows<kExitProcess, &host::exitProcess>(app, cpu, cpu.ebx))
         return;
     freeEnvironment(app, cpu);
 }
@@ -6943,7 +6771,7 @@ void _exit(win32::WinApplication* app, x86::CPU& cpu)
 {
     push(app, cpu, cpu.edx);
     cpu.edx = cpu.eax;
-    if (!indirect(app, cpu, at(app, kExitHook)) || !indirect(app, cpu, at(app, kExitHook2)))
+    if (!guest::runtimeHook<kExitHook>(app, cpu) || !guest::runtimeHook<kExitHook2>(app, cpu))
         return;
     if (at(app, kExitUser) != 0 && !indirect(app, cpu, at(app, kExitUser)))
         return;
@@ -6958,7 +6786,7 @@ void exit(win32::WinApplication* app, x86::CPU& cpu)
     push(app, cpu, cpu.ebx);
     push(app, cpu, cpu.edx);
     cpu.ebx = cpu.eax;
-    if (!indirect(app, cpu, at(app, kExitHook)))
+    if (!guest::runtimeHook<kExitHook>(app, cpu))
         return;
     if (byte(app, kExitStarted) == 0)
     {
@@ -6975,23 +6803,21 @@ void exit(win32::WinApplication* app, x86::CPU& cpu)
     cpu.esp += 4;
 }
 
-/* atexit (clib/startup/c/atexit.c, 0x4f7c20): eax to the 32 run at exit; 0,
- * or -1 when they are taken. */
+/* atexit (clib/startup/c/atexit.c, 0x4f7c20): `function` to the 32 run at exit; 0, or -1 when
+ * they are taken. */
+reg32 atexitOf(win32::WinApplication* app, reg32 function)
+{
+    const reg32 count = at(app, kAtexitCount);
+    if (x86::sreg32(count) >= 0x20)
+        return 0xffffffff;
+    put(app, (count + 1) * 4 + kAtexitTable, function);
+    put(app, kAtexitCount, count + 1);
+    return 0;
+}
+
 void atexit(win32::WinApplication* app, x86::CPU& cpu)
 {
-    push(app, cpu, cpu.edx);
-    cpu.edx = at(app, kAtexitCount);
-    if (x86::sreg32(cpu.edx) >= 0x20)
-        cpu.eax = 0xffffffff;
-    else
-    {
-        ++cpu.edx;
-        put(app, cpu.edx * 4 + kAtexitTable, cpu.eax);
-        put(app, kAtexitCount, cpu.edx);
-        cpu.eax = 0;
-    }
-    cpu.edx = pop(app, cpu);
-    cpu.esp += 4;
+    returns(cpu, atexitOf(app, cpu.eax));
 }
 
 /* 0x524190 (__EnterWVIDEO): a message to a debugger, by its int3, if there
@@ -7012,31 +6838,26 @@ void EnterWVIDEO(win32::WinApplication* app, x86::CPU& cpu)
     cpu.esp += 8 + 4;
 }
 
-/* 0x511cd0 (__fatal_runtime_error's): the message at eax to stderr's handle,
- * then __exit with edx -- jumped to, its frame still there. */
+/* 0x511cd0 (__fatal_runtime_error's): the message at eax to stderr's handle, then __exit with
+ * edx -- jumped to, its frame still there: four pushes and the dword WriteFile counts into. */
 void fatalWrite(win32::WinApplication* app, x86::CPU& cpu)
 {
+    const reg32 message = cpu.eax, code = cpu.edx;
     for (const reg32 r : {cpu.ebx, cpu.ecx, cpu.esi, cpu.edi})
         push(app, cpu, r);
     cpu.esp -= 4;
-    cpu.edi = cpu.eax;
-    cpu.esi = cpu.edx;
-    cpu.edx = 0;
-    for (;;)
-    {
-        cpu.ebx = cpu.eax;
-        setLow8(cpu.ecx, byte(app, cpu.ebx));
-        ++cpu.eax;
-        if (reg8(cpu.ecx) == 0)
-            break;
-        ++cpu.edx;
-    }
-    const reg32 written = cpu.esp, length = cpu.edx;  // how many WriteFile wrote: the dword below them
-    cpu.eax = at(app, kOsHandleTable);
-    cpu.edx = at(app, cpu.eax + 8);
-    if (!windows<kWriteFileSlot, &win32::kernel32::WriteFile>(app, cpu, cpu.edx, cpu.edi, length, written, 0))
+    reg32 length = 0;
+    while (byte(app, message + length) != 0)
+        ++length;
+    // The registers as the code leaves them on its way out: they are what the game stops with.
+    cpu.ebx = message + length;
+    cpu.ecx &= 0xffffff00;
+    cpu.edi = message;
+    cpu.esi = code;
+    cpu.edx = at(app, at(app, kOsHandleTable) + 8);
+    if (!windows<kWriteFileSlot, &host::writeFile>(app, cpu, cpu.edx, message, length, cpu.esp, 0))
         return;
-    cpu.eax = cpu.esi;
+    cpu.eax = code;
     exit_(app, cpu);
 }
 
@@ -7063,30 +6884,43 @@ void fatal_runtime_error(win32::WinApplication* app, x86::CPU& cpu)
     cpu.esp += 4;
 }
 
-/* sleep (clib/process/c/sleepwnt.c, 0x4f0710): SleepEx for eax seconds. */
-void sleep(win32::WinApplication* app, x86::CPU& cpu)
+/* sleep (clib/process/c/sleepwnt.c, 0x4f0710): SleepEx for `seconds`; its answer.  At its entry's
+ * depth: two pushes.  0 with cpu.terminate set when the game stopped. */
+reg32 sleepOf(win32::WinApplication* app, x86::CPU& cpu, reg32 seconds)
 {
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.edx);
-    cpu.edx = cpu.eax;
-    cpu.eax *= 1000;
-    if (!windows<kSleepEx, &host::sleep>(app, cpu, cpu.eax, 0))
-        return;
-    cpu.edx = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
-    cpu.esp += 4;
+    const GuestFrame frame(cpu, 8, 0);
+    const guest::KeptRegisters kept(cpu);
+    cpu.eax = seconds * 1000;  // as the code has it at the call
+    if (!windows<kSleepEx, &host::sleep>(app, cpu, seconds * 1000, 0))
+        return 0;
+    return cpu.eax;
 }
 
-/* getpid (clib/environ/c/gtpidwnt.c, 0x5093c0): GetCurrentProcessId. */
+void sleep(win32::WinApplication* app, x86::CPU& cpu)
+{
+    const reg32 answer = sleepOf(app, cpu, cpu.eax);
+    if (cpu.terminate)
+        return;
+    returns(cpu, answer);
+}
+
+/* getpid (clib/environ/c/gtpidwnt.c, 0x5093c0): GetCurrentProcessId.  At its entry's depth: two
+ * pushes.  0 with cpu.terminate set when the game stopped. */
+reg32 getpidOf(win32::WinApplication* app, x86::CPU& cpu)
+{
+    const GuestFrame frame(cpu, 8, 0);
+    const guest::KeptRegisters kept(cpu);
+    if (!windows<kGetCurrentProcessId, &host::currentProcessId>(app, cpu))
+        return 0;
+    return cpu.eax;
+}
+
 void getpid(win32::WinApplication* app, x86::CPU& cpu)
 {
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.edx);
-    if (!windows<kGetCurrentProcessId, &win32::kernel32::GetCurrentProcessId>(app, cpu))
+    const reg32 id = getpidOf(app, cpu);
+    if (cpu.terminate)
         return;
-    cpu.edx = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
-    cpu.esp += 4;
+    returns(cpu, id);
 }
 
 /* stackavail (clib/startup/c/stackwnt.c, 0x4f45c0): how far esp is above the
@@ -7094,7 +6928,7 @@ void getpid(win32::WinApplication* app, x86::CPU& cpu)
 void stackavail(win32::WinApplication* app, x86::CPU& cpu)
 {
     push(app, cpu, cpu.edx);
-    if (!indirect(app, cpu, at(app, kThreadPtr)))
+    if (!guest::runtimeHook<kThreadPtr>(app, cpu))
         return;
     cpu.edx = cpu.eax;
     cpu.eax = cpu.esp - at(app, cpu.edx);
@@ -7121,238 +6955,209 @@ void GRO(win32::WinApplication* app, x86::CPU& cpu)
     cpu.esp += 4 + 4;
 }
 
-/* 0x4ee15c (__MkTmpFile's digit): eax, 0 to 15, as a hexadecimal digit. */
+/* 0x4ee15c (__MkTmpFile's digit): `n`, 0 to 15, as a hexadecimal digit. */
+reg32 hexDigitOf(reg32 n)
+{
+    n += '0';
+    return x86::sreg32(n) > '9' ? n + 0x27 : n;
+}
+
 void hexDigit(win32::WinApplication* app, x86::CPU& cpu)
 {
     NFS2_USE(app);
-    cpu.eax += '0';
-    if (x86::sreg32(cpu.eax) > '9')
-        cpu.eax += 0x27;
-    cpu.esp += 4;
+    returns(cpu, hexDigitOf(cpu.eax));
 }
 
-/* _fullpath (clib/misc/c/fullpath.c, 0x523610): the path at edx made whole
- * into eax, ebx bytes of it -- 0x104 from _nmalloc for no buffer -- by
- * GetFullPathNameA; "con" as it is, no path or an empty one the current
- * directory.  0 for an error. */
+/* _fullpath (clib/misc/c/fullpath.c, 0x523610): the path `path` made whole into `buffer`, `size`
+ * bytes of it -- 0x104 from _nmalloc for no buffer -- by GetFullPathNameA; "con" as it is, no path
+ * or an empty one the current directory.  0 for an error.  For "con" in fewer than 4 bytes the
+ * code frees what it holds in edi -- the block it took, or, given a buffer, `edi` as the caller
+ * left it.  At its entry's depth: three pushes, then the dword GetFullPathNameA points at the
+ * name in.  0 with cpu.terminate set when the game stopped. */
+reg32 fullpathOf(win32::WinApplication* app, x86::CPU& cpu, reg32 buffer, reg32 path, reg32 size, reg32 edi)
+{
+    const GuestFrame frame(cpu, 0xc, 4);
+    const reg32 namePart = frame - 4;
+    if (buffer == 0)
+    {
+        size = 0x104;
+        buffer = edi = clib::malloc(app, cpu, size);
+        if (cpu.terminate)
+            return 0;
+        if (buffer == 0)
+        {
+            runs(app, cpu, &set_errno, {5});  // ENOMEM
+            return 0;
+        }
+    }
+    if (path == 0 || byte(app, path) == 0)
+        return runs(app, cpu, &getcwd, {buffer, size});
+    if (clib::stricmp(app, path, kConsoleName) == 0)
+    {
+        if (size < 4)
+        {
+            clib::free(app, cpu, edi);
+            if (cpu.terminate)
+                return 0;
+            runs(app, cpu, &set_errno, {0xe});  // ERANGE
+            return 0;
+        }
+        put(app, buffer, at(app, kConsoleName));
+        return buffer;
+    }
+    reg32 length;
+    {
+        const guest::KeptRegisters kept(cpu);
+        if (!windows<kGetFullPathNameA, &host::fullPathName>(app, cpu, path, size, buffer, namePart))
+            return 0;
+        length = cpu.eax;
+    }
+    if (length == 0)
+    {
+        runs(app, cpu, &set_errno_nt, {});
+        return 0;
+    }
+    return buffer;
+}
+
 void fullpath(win32::WinApplication* app, x86::CPU& cpu)
 {
-    for (const reg32 r : {cpu.ecx, cpu.esi, cpu.edi})
-        push(app, cpu, r);
-    cpu.esp -= 4;
-    const reg32 local = cpu.esp;
-    cpu.esi = cpu.eax;
-    cpu.ecx = cpu.edx;
-    auto back = [&] {
-        cpu.esp = local + 4;
-        cpu.edi = pop(app, cpu);
-        cpu.esi = pop(app, cpu);
-        cpu.ecx = pop(app, cpu);
-        cpu.esp += 4;
-    };
-    if (cpu.eax == 0)
+    reg32 result;
     {
-        cpu.ebx = 0x104;
-        cpu.eax = cpu.ebx;
-        if (!direct(app, cpu, nmalloc))
-            return;
-        cpu.edi = cpu.eax;
-        if (cpu.eax == 0)
-        {
-            cpu.eax = 5;  // ENOMEM
-            if (!direct(app, cpu, set_errno))
-                return;
-            cpu.eax = 0;
-            return back();
-        }
-        cpu.esi = cpu.eax;
+        const guest::KeptRegisters kept(cpu);
+        result = fullpathOf(app, cpu, cpu.eax, cpu.edx, cpu.ebx, cpu.edi);
     }
-    if (cpu.ecx == 0 || byte(app, cpu.ecx) == 0)
-    {
-        cpu.edx = cpu.ebx;
-        cpu.eax = cpu.esi;
-        if (!direct(app, cpu, getcwd))
-            return;
-        return back();
-    }
-    cpu.edx = kConsoleName;
-    cpu.eax = cpu.ecx;
-    if (!direct(app, cpu, stricmp))
+    if (cpu.terminate)
         return;
-    if (cpu.eax == 0)
-    {
-        if (cpu.ebx < 4)
-        {
-            cpu.eax = cpu.edi;
-            if (!direct(app, cpu, nfree))
-                return;
-            cpu.eax = 0xe;  // ERANGE
-            if (!direct(app, cpu, set_errno))
-                return;
-            cpu.eax = 0;
-            return back();
-        }
-        cpu.eax = at(app, kConsoleName);
-        put(app, cpu.esi, cpu.eax);
-        cpu.eax = cpu.esi;
-        return back();
-    }
-    cpu.eax = local;
-    if (!windows<kGetFullPathNameA, &win32::kernel32::GetFullPathNameA>(app, cpu, cpu.ecx, cpu.ebx, cpu.esi, cpu.eax))
-        return;
-    if (cpu.eax == 0)
-    {
-        if (!direct(app, cpu, set_errno_nt))
-            return;
-        cpu.eax = 0;
-        return back();
-    }
-    cpu.eax = cpu.esi;
-    back();
+    returns(cpu, result);
 }
 
-/* 0x5094e0 (__tmpdir): the directory of temporary files, once: the first of
- * TMP, TEMP, TMPDIR, TEMPDIR that fits, made whole by _fullpath, or the
- * current one; a '\\' after it. */
-void tmpdir(win32::WinApplication* app, x86::CPU& cpu)
+/* 0x5094e0 (__tmpdir): the directory of temporary files, once: the first of TMP, TEMP, TMPDIR,
+ * TEMPDIR that fits, made whole by _fullpath, or the current one; a '\\' after it.  At its entry's
+ * depth: five pushes.  0 with cpu.terminate set when the game stopped. */
+reg32 tmpdirOf(win32::WinApplication* app, x86::CPU& cpu)
 {
-    for (const reg32 r : {cpu.ebx, cpu.ecx, cpu.edx, cpu.esi, cpu.edi})
-        push(app, cpu, r);
+    const GuestFrame frame(cpu, 0x14, 0);
+    auto length = [&](reg32 s) {
+        reg32 n = 0;
+        while (byte(app, s + n) != 0)
+            ++n;
+        return n;
+    };
+    if (byte(app, kTmpDir) != 0)
+        return kTmpDir;
+    for (reg32 variable = kTmpVariables; byte(app, at(app, variable)) != 0; variable += 4)
+    {
+        reg32 value;
+        {
+            const ReturnSlot call(cpu);
+            value = getenvOf(app, cpu, at(app, variable));
+        }
+        if (cpu.terminate)
+            return 0;
+        if (value == 0 || length(value) > 0x103)
+            continue;
+        {
+            const ReturnSlot call(cpu);
+            // edi past the value, as the inline strlen left it
+            fullpathOf(app, cpu, kTmpDir, value, 0x103, value + length(value) + 1);
+        }
+        if (cpu.terminate)
+            return 0;
+        break;
+    }
     if (byte(app, kTmpDir) == 0)
     {
-        for (cpu.ebx = kTmpVariables; ; cpu.ebx += 4)
+        // The current directory, in a block of getcwd's, copied in (the block kept, as the code
+        // keeps it).
+        const reg32 current = runs(app, cpu, &getcwd, {0, 0});
+        if (cpu.terminate)
+            return 0;
+        for (reg32 i = 0;; ++i)
         {
-            cpu.eax = at(app, cpu.ebx);
-            if (byte(app, cpu.eax) == 0)
+            const reg8 c = byte(app, current + i);
+            putByte(app, kTmpDir + i, c);
+            if (c == 0)
                 break;
-            if (!direct(app, cpu, getenv))
-                return;
-            cpu.edx = cpu.eax;
-            if (cpu.eax == 0)
-                continue;
-            cpu.edi = cpu.eax;
-            inlineStrlen(app, cpu);
-            if (cpu.ecx > 0x103)
-                continue;
-            cpu.ebx = 0x103;
-            cpu.eax = kTmpDir;
-            if (!direct(app, cpu, fullpath))
-                return;
-            break;
-        }
-        if (byte(app, kTmpDir) == 0)
-        {
-            cpu.edx = 0;
-            cpu.eax = 0;
-            cpu.edi = kTmpDir;
-            if (!direct(app, cpu, getcwd))
-                return;
-            cpu.esi = cpu.eax;
-            push(app, cpu, cpu.edi);
-            for (;;)
-            {
-                setLow8(cpu.eax, byte(app, cpu.esi));
-                putByte(app, cpu.edi, reg8(cpu.eax));
-                if (reg8(cpu.eax) == 0)
-                    break;
-                setLow8(cpu.eax, byte(app, cpu.esi + 1));
-                cpu.esi += 2;
-                putByte(app, cpu.edi + 1, reg8(cpu.eax));
-                cpu.edi += 2;
-                if (reg8(cpu.eax) == 0)
-                    break;
-            }
-            cpu.edi = pop(app, cpu);
-        }
-        cpu.edi = kTmpDir;
-        inlineStrlen(app, cpu);
-        cpu.eax = cpu.ecx - 1 + kTmpDir;
-        setLow8(cpu.ebx, byte(app, cpu.eax));
-        if (reg8(cpu.ebx) != '\\' && reg8(cpu.ebx) != '/')
-        {
-            ++cpu.eax;
-            putByte(app, cpu.eax, '\\');
-            ++cpu.eax;
-            putByte(app, cpu.eax, 0);
         }
     }
-    cpu.eax = kTmpDir;
-    cpu.edi = pop(app, cpu);
-    cpu.esi = pop(app, cpu);
-    cpu.edx = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
-    cpu.ebx = pop(app, cpu);
-    cpu.esp += 4;
+    const reg32 last = kTmpDir + length(kTmpDir) - 1;
+    if (byte(app, last) != '\\' && byte(app, last) != '/')
+    {
+        putByte(app, last + 1, '\\');
+        putByte(app, last + 2, 0);
+    }
+    return kTmpDir;
 }
 
-/* __MkTmpFile (clib/streamio/c/tmputil.c, 0x4ee168): a temporary file's name
- * into eax -- the directory, then t, the process's id in four hexadecimal
- * digits, _, two of edx's, .tmp. */
-void MkTmpFile(win32::WinApplication* app, x86::CPU& cpu)
+void tmpdir(win32::WinApplication* app, x86::CPU& cpu)
 {
-    for (const reg32 r : {cpu.ebx, cpu.ecx, cpu.esi, cpu.edi, cpu.ebp})
-        push(app, cpu, r);
-    cpu.esp -= 4;
-    const reg32 local = cpu.esp;
-    cpu.ebp = cpu.eax;
-    put(app, local, cpu.edx);
-    if (!direct(app, cpu, getpid))
-        return;
-    cpu.ebx = cpu.eax >> 16 | cpu.eax;
-    cpu.edi = cpu.ebp;
-    if (!direct(app, cpu, tmpdir))
-        return;
-    cpu.esi = cpu.eax;
-    push(app, cpu, cpu.edi);
-    for (;;)
+    reg32 directory;
     {
-        setLow8(cpu.eax, byte(app, cpu.esi));
-        putByte(app, cpu.edi, reg8(cpu.eax));
-        if (reg8(cpu.eax) == 0)
-            break;
-        setLow8(cpu.eax, byte(app, cpu.esi + 1));
-        cpu.esi += 2;
-        putByte(app, cpu.edi + 1, reg8(cpu.eax));
-        cpu.edi += 2;
-        if (reg8(cpu.eax) == 0)
+        const guest::KeptRegisters kept(cpu);
+        directory = tmpdirOf(app, cpu);
+    }
+    if (cpu.terminate)
+        return;
+    returns(cpu, directory);
+}
+
+/* __MkTmpFile (clib/streamio/c/tmputil.c, 0x4ee168): a temporary file's name into `name` -- the
+ * directory, then t, the process's id in four hexadecimal digits, _, two of `number`'s, .tmp.
+ * At its entry's depth: five pushes and a dword.  What the code leaves in eax (the last digit);
+ * 0 with cpu.terminate set when the game stopped. */
+reg32 mkTmpFileOf(win32::WinApplication* app, x86::CPU& cpu, reg32 name, reg32 number)
+{
+    const GuestFrame frame(cpu, 0x14, 4);
+    reg32 id;
+    {
+        const ReturnSlot call(cpu);
+        id = getpidOf(app, cpu);
+    }
+    if (cpu.terminate)
+        return 0;
+    reg32 directory;
+    {
+        const ReturnSlot call(cpu);
+        directory = tmpdirOf(app, cpu);
+    }
+    if (cpu.terminate)
+        return 0;
+    reg32 length = 0;
+    for (;; ++length)
+    {
+        const reg8 c = byte(app, directory + length);
+        putByte(app, name + length, c);
+        if (c == 0)
             break;
     }
-    cpu.edi = pop(app, cpu);
-    inlineStrlen(app, cpu);
-    cpu.esi = cpu.ecx + cpu.ebp;
-    cpu.edx = cpu.esi + 4;
-    putByte(app, cpu.esi, 't');
-    cpu.ecx = cpu.esi;
-    do
+    const reg32 p = name + length;
+    putByte(app, p, 't');
+    reg32 digits = id >> 16 | id;
+    for (reg32 at = p + 4; at != p; --at, digits >>= 4)
+        putByte(app, at, reg8(hexDigitOf(digits & 0xf)));
+    putByte(app, p + 5, '_');
+    putByte(app, p + 6, reg8(hexDigitOf(reg32(x86::sreg32(number) >> 4) & 0xf)));
+    const reg32 last = hexDigitOf(number & 0xf);
+    putByte(app, p + 7, reg8(last));
+    putByte(app, p + 8, '.');
+    putByte(app, p + 9, 't');
+    putByte(app, p + 0xa, 'm');
+    putByte(app, p + 0xb, 'p');
+    putByte(app, p + 0xc, 0);
+    return last;
+}
+
+void MkTmpFile(win32::WinApplication* app, x86::CPU& cpu)
+{
+    reg32 eax;
     {
-        cpu.eax = cpu.ebx & 0xf;
-        --cpu.edx;
-        if (!direct(app, cpu, hexDigit))
-            return;
-        cpu.ebx >>= 4;
-        putByte(app, cpu.edx + 1, reg8(cpu.eax));
-    } while (cpu.edx != cpu.ecx);
-    cpu.eax = reg32(x86::sreg32(at(app, local)) >> 4) & 0xf;
-    putByte(app, cpu.esi + 5, '_');
-    if (!direct(app, cpu, hexDigit))
+        const guest::KeptRegisters kept(cpu);
+        eax = mkTmpFileOf(app, cpu, cpu.eax, cpu.edx);
+    }
+    if (cpu.terminate)
         return;
-    putByte(app, cpu.esi + 6, reg8(cpu.eax));
-    cpu.eax = at(app, local) & 0xf;
-    if (!direct(app, cpu, hexDigit))
-        return;
-    putByte(app, cpu.esi + 8, '.');
-    putByte(app, cpu.esi + 9, 't');
-    putByte(app, cpu.esi + 0xa, 'm');
-    putByte(app, cpu.esi + 0xb, 'p');
-    putByte(app, cpu.esi + 0xc, 0);
-    putByte(app, cpu.esi + 7, reg8(cpu.eax));
-    cpu.esp = local + 4;
-    cpu.ebp = pop(app, cpu);
-    cpu.edi = pop(app, cpu);
-    cpu.esi = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
-    cpu.ebx = pop(app, cpu);
-    cpu.esp += 4;
+    returns(cpu, eax);
 }
 
 
@@ -7372,486 +7177,324 @@ constexpr reg32 kHeapClean = 0xa0b141;    // __nheap_clean
 constexpr reg32 kHeapLock = 0x567780, kHeapUnlock = 0x567788;
 constexpr reg32 kSetEnvironmentVariableA = 0x5345dc, kMultiByteToWideChar = 0x534598;
 
-/* rep movs of `size` bytes each -- 1, 2 or 4 -- from esi to es:edi. */
-void repMoveSized(win32::WinApplication* app, x86::CPU& cpu, reg32 size)
+/* The miniheap that has the block at `block`, as __HeapManager_expand finds it: from __nheapbeg on,
+ * the last one if none; for another segment than ds, `esi` as it was. */
+reg32 heapOf(win32::WinApplication* app, const x86::CPU& cpu, reg16 segment, reg32 block, reg32 esi)
 {
-    const reg32 step = cpu.flags.df ? reg32(0) - size : size;
-    while (cpu.ecx != 0)
-    {
-        if (size == 4)
-            put(app, cpu.ees + cpu.edi, at(app, cpu.esi));
-        else if (size == 2)
-            putHalf(app, cpu.ees + cpu.edi, half(app, cpu.esi));
-        else
-            putByte(app, cpu.ees + cpu.edi, byte(app, cpu.esi));
-        cpu.edi += step;
-        cpu.esi += step;
-        --cpu.ecx;
-    }
-}
-
-/* The runtime's inline strcpy: esi to edi, two bytes at a time, edi kept. */
-void inlineStrcpy(win32::WinApplication* app, x86::CPU& cpu)
-{
-    push(app, cpu, cpu.edi);
-    for (;;)
-    {
-        setLow8(cpu.eax, byte(app, cpu.esi));
-        putByte(app, cpu.edi, reg8(cpu.eax));
-        if (reg8(cpu.eax) == 0)
-            break;
-        setLow8(cpu.eax, byte(app, cpu.esi + 1));
-        cpu.esi += 2;
-        putByte(app, cpu.edi + 1, reg8(cpu.eax));
-        cpu.edi += 2;
-        if (reg8(cpu.eax) == 0)
-            break;
-    }
-    cpu.edi = pop(app, cpu);
-}
-
-/* The miniheap that has the block at edi, as __HeapManager_expand finds it:
- * from __nheapbeg on, the last one if none; for another segment than ds,
- * esi as it was. */
-void heapOf(win32::WinApplication* app, x86::CPU& cpu, reg16 segment)
-{
-    cpu.edx = cpu.ds;
-    cpu.eax = kHeapFirstBlock;
-    if (reg16(cpu.edx) != segment)
-        return;
-    cpu.esi = at(app, kHeapFirstBlock);
-    while (at(app, cpu.esi + 8) != 0)
-    {
-        if (cpu.esi <= cpu.edi)
-        {
-            cpu.eax = at(app, cpu.esi) + cpu.esi;
-            if (cpu.eax > cpu.edi)
-                return;
-        }
-        cpu.esi = at(app, cpu.esi + 8);
-    }
+    if (reg16(cpu.ds) != segment)
+        return esi;
+    reg32 heap = at(app, kHeapFirstBlock);
+    for (; at(app, heap + 8) != 0; heap = at(app, heap + 8))
+        if (heap <= block && at(app, heap) + heap > block)
+            return heap;
+    return heap;
 }
 
 }  // namespace
 
-/* _mbslen (clib/mbyte/c/mbslen.c, 0x518050): the characters in the string at
- * eax. */
+/* _mbslen (clib/mbyte/c/mbslen.c, 0x518050): the characters in the string `s`. */
+reg32 mbslenOf(win32::WinApplication* app, reg32 s)
+{
+    reg32 n = 0;
+    for (; mbtermOf(app, s) == 0; s = mbsincOf(app, s))
+        ++n;
+    return n;
+}
+
 void mbslen(win32::WinApplication* app, x86::CPU& cpu)
 {
-    push(app, cpu, cpu.ebx);
-    push(app, cpu, cpu.edx);
-    cpu.edx = cpu.eax;
-    cpu.ebx = 0;
-    for (;;)
-    {
-        cpu.eax = cpu.edx;
-        if (!direct(app, cpu, mbterm))
-            return;
-        if (cpu.eax != 0)
-            break;
-        cpu.eax = cpu.edx;
-        if (!direct(app, cpu, mbsinc))
-            return;
-        ++cpu.ebx;
-        cpu.edx = cpu.eax;
-    }
-    cpu.eax = cpu.ebx;
-    cpu.edx = pop(app, cpu);
-    cpu.ebx = pop(app, cpu);
-    cpu.esp += 4;
+    returns(cpu, mbslenOf(app, cpu.eax));
 }
 
-/* mbtowc (clib/mbyte/c/mbtowc.c, 0x523c00): the character at edx, at most
- * ebx bytes of it, by MultiByteToWideChar into the word at eax; its bytes,
- * 0 for none, -1 for one it cannot make. */
+/* mbtowc (clib/mbyte/c/mbtowc.c, 0x523c00): the character at `from`, at most `most` bytes of it,
+ * by MultiByteToWideChar into the word at `to`; its bytes, 0 for none, -1 for one it cannot make.
+ * At its entry's depth: four pushes, then the dword MultiByteToWideChar writes the character into.
+ * 0 with cpu.terminate set when the game stopped. */
+reg32 mbtowcOf(win32::WinApplication* app, x86::CPU& cpu, reg32 to, reg32 from, reg32 most)
+{
+    const GuestFrame frame(cpu, 0x10, 4);
+    const reg32 wide = frame - 4;
+    if (from == 0)
+        return 0;
+    if (most == 0)
+        return 0xffffffff;
+    if (byte(app, from) == 0)
+    {
+        if (to != 0)
+            putHalf(app, to, 0);
+        return 0;
+    }
+    if (multibyte(app) && leadByte(app, byte(app, from)) && byte(app, from + 1) == 0)
+        return 0xffffffff;
+    const reg32 bytes = mbclenOf(app, from);
+    reg32 made;
+    {
+        const guest::KeptRegisters kept(cpu);
+        // MB_ERR_INVALID_CHARS
+        if (!windows<kMultiByteToWideChar, &host::multiByteToWide>(app, cpu, at(app, kCodePage), 8, from,
+                                                                   most < bytes ? most : bytes, wide, 1))
+            return 0;
+        made = cpu.eax;
+    }
+    if (made == 0)
+        return 0xffffffff;
+    if (to != 0)
+        putHalf(app, to, reg16(at(app, wide)));
+    return bytes;
+}
+
 void mbtowc(win32::WinApplication* app, x86::CPU& cpu)
 {
-    for (const reg32 r : {cpu.ecx, cpu.esi, cpu.edi, cpu.ebp})
-        push(app, cpu, r);
-    cpu.ebp = cpu.esp;
-    cpu.esp -= 4;
-    cpu.esi = cpu.eax;
-    auto back = [&] {
-        cpu.esp = cpu.ebp;
-        cpu.ebp = pop(app, cpu);
-        cpu.edi = pop(app, cpu);
-        cpu.esi = pop(app, cpu);
-        cpu.ecx = pop(app, cpu);
-        cpu.esp += 4;
-    };
-    if (cpu.edx == 0)
+    reg32 bytes;
     {
-        cpu.eax = 0;
-        return back();
+        const guest::KeptRegisters kept(cpu);
+        bytes = mbtowcOf(app, cpu, cpu.eax, cpu.edx, cpu.ebx);
     }
-    if (cpu.ebx == 0)
-    {
-        cpu.eax = 0xffffffff;
-        return back();
-    }
-    if (byte(app, cpu.edx) == 0)
-    {
-        if (cpu.esi != 0)
-            putHalf(app, cpu.esi, 0);
-        cpu.eax = 0;
-        return back();
-    }
-    if (multibyte(app))
-    {
-        cpu.eax = byte(app, kMbcsLead + byte(app, cpu.edx)) & 1;
-        if (cpu.eax != 0 && byte(app, cpu.edx + 1) == 0)
-        {
-            cpu.eax = 0xffffffff;
-            return back();
-        }
-    }
-    cpu.eax = cpu.edx;
-    if (!direct(app, cpu, mbclen))
+    if (cpu.terminate)
         return;
-    cpu.ecx = cpu.ebp - 4;
-    cpu.edi = cpu.eax;
-    if (cpu.ebx < cpu.eax)
-        cpu.eax = cpu.ebx;
-    const reg32 count = cpu.eax;
-    cpu.eax = at(app, kCodePage);
-    // MB_ERR_INVALID_CHARS
-    if (!windows<kMultiByteToWideChar, &win32::kernel32::MultiByteToWideChar>(app, cpu, cpu.eax, 8, cpu.edx, count, cpu.ecx, 1))
-        return;
-    if (cpu.eax == 0)
-    {
-        cpu.eax = 0xffffffff;
-        return back();
-    }
-    if (cpu.esi != 0)
-    {
-        cpu.eax = at(app, cpu.ebp - 4);
-        putHalf(app, cpu.esi, reg16(cpu.eax));
-    }
-    cpu.eax = cpu.edi;
-    back();
+    returns(cpu, bytes);
 }
 
-/* mbstowcs (clib/mbyte/c/mbstowcs.c, 0x518080): the string at edx into the
- * wide string at eax, at most ebx characters -- or, for no buffer, how many
- * it would take; -1 for one mbtowc cannot make. */
-void mbstowcs(win32::WinApplication* app, x86::CPU& cpu)
+/* mbstowcs (clib/mbyte/c/mbstowcs.c, 0x518080): the string at `from` into the wide string at `to`,
+ * at most `most` characters -- or, for no buffer, how many it would take; -1 for one mbtowc cannot
+ * make.  At its entry's depth: four pushes.  0 with cpu.terminate set when the game stopped. */
+reg32 mbstowcsOf(win32::WinApplication* app, x86::CPU& cpu, reg32 to, reg32 from, reg32 most)
 {
-    for (const reg32 r : {cpu.ecx, cpu.esi, cpu.edi, cpu.ebp})
-        push(app, cpu, r);
-    cpu.esi = cpu.eax;
-    cpu.ecx = cpu.edx;
-    cpu.ebp = cpu.ebx;
-    cpu.edi = 0;
-    auto back = [&] {
-        cpu.ebp = pop(app, cpu);
-        cpu.edi = pop(app, cpu);
-        cpu.esi = pop(app, cpu);
-        cpu.ecx = pop(app, cpu);
-        cpu.esp += 4;
+    const GuestFrame frame(cpu, 0x10, 0);
+    reg32 made = 0;
+    auto one = [&](reg32 into) {
+        const ReturnSlot call(cpu);
+        return mbtowcOf(app, cpu, into, from, 2);
     };
-    if (cpu.eax != 0)
+    if (to != 0)
     {
-        while (cpu.ebp != 0)
+        for (; most != 0; --most, from = mbsincOf(app, from), to += 2, ++made)
         {
-            if (byte(app, cpu.ecx) == 0)
+            if (byte(app, from) == 0)
             {
-                putHalf(app, cpu.esi, 0);
+                putHalf(app, to, 0);
                 break;
             }
-            cpu.ebx = 2;
-            cpu.edx = cpu.ecx;
-            cpu.eax = cpu.esi;
-            if (!direct(app, cpu, mbtowc))
-                return;
-            if (cpu.eax == 0xffffffff)
-                return back();
-            cpu.eax = cpu.ecx;
-            --cpu.ebp;
-            if (!direct(app, cpu, mbsinc))
-                return;
-            cpu.esi += 2;
-            ++cpu.edi;
-            cpu.ecx = cpu.eax;
+            const reg32 bytes = one(to);
+            if (cpu.terminate)
+                return 0;
+            if (bytes == 0xffffffff)
+                return bytes;
         }
-        cpu.eax = cpu.edi;
-        return back();
+        return made;
     }
-    cpu.esi = 2;
-    while (byte(app, cpu.ecx) != 0)
+    for (; byte(app, from) != 0; from = mbsincOf(app, from), ++made)
     {
-        cpu.ebx = cpu.esi;
-        cpu.edx = cpu.ecx;
-        cpu.eax = 0;
-        if (!direct(app, cpu, mbtowc))
-            return;
-        if (cpu.eax == 0xffffffff)
-            return back();
-        cpu.eax = cpu.ecx;
-        if (!direct(app, cpu, mbsinc))
-            return;
-        ++cpu.edi;
-        cpu.ecx = cpu.eax;
+        const reg32 bytes = one(0);
+        if (cpu.terminate)
+            return 0;
+        if (bytes == 0xffffffff)
+            return bytes;
     }
-    cpu.eax = cpu.edi;
-    back();
+    return made;
 }
 
-/* 0x525300 (wcslen): the characters in the wide string at eax. */
+void mbstowcs(win32::WinApplication* app, x86::CPU& cpu)
+{
+    reg32 made;
+    {
+        const guest::KeptRegisters kept(cpu);
+        made = mbstowcsOf(app, cpu, cpu.eax, cpu.edx, cpu.ebx);
+    }
+    if (cpu.terminate)
+        return;
+    returns(cpu, made);
+}
+
+/* 0x525300 (wcslen): the characters in the wide string `s`. */
+reg32 wcslenOf(win32::WinApplication* app, reg32 s)
+{
+    reg32 n = 0;
+    while (half(app, s + 2 * n) != 0)
+        ++n;
+    return n;
+}
+
 void wcslen(win32::WinApplication* app, x86::CPU& cpu)
 {
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.edx);
-    cpu.edx = cpu.eax;
-    if (half(app, cpu.eax) != 0)
-        do
-        {
-            cpu.ecx = (cpu.ecx & 0xffff0000) | half(app, cpu.eax + 2);
-            cpu.eax += 2;
-        } while ((cpu.ecx & 0xffff) != 0);
-    cpu.eax = reg32(x86::sreg32(cpu.eax - cpu.edx) >> 1);
-    cpu.edx = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
-    cpu.esp += 4;
+    returns(cpu, wcslenOf(app, cpu.eax));
 }
 
-/* 0x525320 (memcpy): ebx bytes from edx to eax; eax back. */
+/* The runtime's inline copy of `count` bytes from `from` to `to`: dwords, then the bytes left, each
+ * read before it is written, as rep movsd and rep movsb take them. */
+void copyForward(win32::WinApplication* app, reg32 to, reg32 from, reg32 count)
+{
+    for (reg32 i = 0; i < count >> 2; ++i, to += 4, from += 4)
+        put(app, to, at(app, from));
+    for (reg32 i = 0; i < (count & 3); ++i, ++to, ++from)
+        putByte(app, to, byte(app, from));
+}
+
+/* 0x525320 (memcpy): `count` bytes from `from` to `to`; `to` back. */
+reg32 memcpyOf(win32::WinApplication* app, reg32 to, reg32 from, reg32 count)
+{
+    copyForward(app, to, from, count);
+    return to;
+}
+
 void memcpy(win32::WinApplication* app, x86::CPU& cpu)
 {
-    for (const reg32 r : {cpu.ecx, cpu.esi, cpu.edi})
-        push(app, cpu, r);
-    cpu.ecx = cpu.ebx;
-    cpu.esi = cpu.edx;
-    cpu.edi = cpu.eax;
-    inlineMemcpy(app, cpu);
-    cpu.eax = cpu.edi;
-    cpu.edi = pop(app, cpu);
-    cpu.esi = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
-    cpu.esp += 4;
+    returns(cpu, memcpyOf(app, cpu.eax, cpu.edx, cpu.ebx));
 }
 
-/* 0x525350 (wcscpy): the wide string at edx to eax; eax back. */
+/* 0x525350 (wcscpy): the wide string at `from` to `to`; `to` back. */
+reg32 wcscpyOf(win32::WinApplication* app, reg32 to, reg32 from)
+{
+    for (reg32 i = 0;; i += 2)
+    {
+        const reg16 c = half(app, from + i);
+        putHalf(app, to + i, c);
+        if (c == 0)
+            break;
+    }
+    return to;
+}
+
 void wcscpy(win32::WinApplication* app, x86::CPU& cpu)
 {
-    push(app, cpu, cpu.ebx);
-    push(app, cpu, cpu.ecx);
-    cpu.ecx = cpu.eax;
-    do
-    {
-        cpu.eax += 2;
-        cpu.ebx = (cpu.ebx & 0xffff0000) | half(app, cpu.edx);
-        cpu.edx += 2;
-        putHalf(app, cpu.eax - 2, reg16(cpu.ebx));
-    } while ((cpu.ebx & 0xffff) != 0);
-    cpu.eax = cpu.ecx;
-    cpu.ecx = pop(app, cpu);
-    cpu.ebx = pop(app, cpu);
-    cpu.esp += 4;
+    returns(cpu, wcscpyOf(app, cpu.eax, cpu.edx));
 }
 
-/* 0x525370 (towupper, as the environment's functions have it): ax's ASCII
- * small letters as capitals. */
+/* 0x525370 (towupper, as the environment's functions have it): `c`'s ASCII small letters, in its
+ * low word, as capitals -- the dword less 0x20. */
+reg32 towupperOf(reg32 c)
+{
+    const reg16 low = reg16(c);
+    return low >= 'a' && low <= 'z' ? c - 0x20 : c;
+}
+
 void towupper(win32::WinApplication* app, x86::CPU& cpu)
 {
     NFS2_USE(app);
-    const reg16 c = reg16(cpu.eax);
-    if (c >= 'a' && c <= 'z')
-        cpu.eax -= 0x20;
-    cpu.esp += 4;
+    returns(cpu, towupperOf(cpu.eax));
 }
 
-/* 0x518640 (memmove): ebx bytes from edx to eax, backwards -- words, then a
- * byte -- where they overlap the wrong way; eax kept. */
+/* 0x518640 (memmove): `count` bytes from `from` to `to` -- where they overlap the wrong way
+ * backwards, words from the end, then the first byte; else forwards as memcpy does; `to` back. */
+reg32 memmoveOf(win32::WinApplication* app, reg32 to, reg32 from, reg32 count)
+{
+    if (from == to)
+        return to;
+    if (from < to && from + count > to)
+    {
+        reg32 s = from + count - 2, d = to + count - 2;
+        for (reg32 i = 0; i < count >> 1; ++i, s -= 2, d -= 2)
+            putHalf(app, d, half(app, s));
+        if (count & 1)
+            putByte(app, d + 1, byte(app, s + 1));
+        return to;
+    }
+    copyForward(app, to, from, count);
+    return to;
+}
+
 void memmove(win32::WinApplication* app, x86::CPU& cpu)
 {
-    for (const reg32 r : {cpu.ecx, cpu.esi, cpu.edi})
-        push(app, cpu, r);
-    cpu.ecx = cpu.ebx;
-    if (cpu.edx != cpu.eax)
-    {
-        if (cpu.edx < cpu.eax && cpu.edx + cpu.ebx > cpu.eax)
-        {
-            cpu.esi = cpu.edx + cpu.ebx - 1;
-            cpu.edi = cpu.eax + cpu.ebx - 1;
-            cpu.edx = cpu.ds;
-            pushEs(app, cpu);
-            cpu.es = reg16(cpu.edx);
-            cpu.flags.df = 1;
-            --cpu.esi;
-            --cpu.edi;
-            const reg32 odd = cpu.ecx & 1;
-            cpu.ecx >>= 1;
-            repMoveSized(app, cpu, 2);
-            cpu.ecx = odd;
-            ++cpu.esi;
-            ++cpu.edi;
-            repMoveSized(app, cpu, 1);
-            popEs(app, cpu);
-            cpu.flags.df = 0;
-        }
-        else
-        {
-            cpu.esi = cpu.edx;
-            cpu.edi = cpu.eax;
-            cpu.edx = cpu.ds;
-            pushEs(app, cpu);
-            cpu.es = reg16(cpu.edx);
-            push(app, cpu, cpu.ecx);
-            cpu.ecx >>= 2;
-            repMoveSized(app, cpu, 4);
-            cpu.ecx = pop(app, cpu) & 3;
-            repMoveSized(app, cpu, 1);
-            popEs(app, cpu);
-        }
-    }
-    cpu.edi = pop(app, cpu);
-    cpu.esi = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
-    cpu.esp += 4;
+    returns(cpu, memmoveOf(app, cpu.eax, cpu.edx, cpu.ebx));
 }
 
-/* 0x525380 (_msize): the block at eax's size, as its header has it. */
+/* 0x525380 (_msize): the block at `block`'s size, as its header has it. */
+reg32 msizeOf(win32::WinApplication* app, reg32 block)
+{
+    return (at(app, block - 4) & 0xfffffffe) - 4;
+}
+
 void msize(win32::WinApplication* app, x86::CPU& cpu)
 {
-    cpu.eax = (at(app, cpu.eax - 4) & 0xfffffffe) - 4;
-    cpu.esp += 4;
+    returns(cpu, msizeOf(app, cpu.eax));
 }
 
-/* 0x5253cc (__HeapManager_expand): the block at edx in the heap of segment ax
- * made ebx bytes, from the free block after it or by giving its end back;
- * how much more it still needs into the dword at ecx.  0, 1 for a block
- * after it in use, 2 for the heap's end. */
-void HeapManager_expand(win32::WinApplication* app, x86::CPU& cpu)
+/* 0x5253cc (__HeapManager_expand): the block at `block` in the heap of segment `segment` made
+ * `size` bytes, from the free blocks after it or by giving its end back; how much more it still
+ * needs into the dword at `more`.  0, 1 for a block after it in use, 2 for the heap's end.  `esi`
+ * the caller's, which the miniheap stands for in another segment than ds.  At its entry's depth:
+ * three pushes, then 0x10 bytes.  0 with cpu.terminate set when the game stopped. */
+reg32 heapExpandOf(win32::WinApplication* app, x86::CPU& cpu, reg32 segment, reg32 block, reg32 size, reg32 more,
+                   reg32 esi)
 {
-    for (const reg32 r : {cpu.esi, cpu.edi, cpu.ebp})
-        push(app, cpu, r);
-    cpu.esp -= 0x10;
-    const reg32 local = cpu.esp;
-    put(app, local + 0xc, cpu.eax);
-    cpu.edi = cpu.edx;
-    cpu.ebp = cpu.ecx;
-    auto back = [&] {
-        cpu.eax = cpu.ebx;
-        cpu.esp = local + 0x10;
-        cpu.ebp = pop(app, cpu);
-        cpu.edi = pop(app, cpu);
-        cpu.esi = pop(app, cpu);
-        cpu.esp += 4;
-    };
-    cpu.eax = cpu.ebx + 0xb;
-    setLow8(cpu.eax, cpu.eax & 0xf8);
-    if (cpu.eax < cpu.ebx)
-        cpu.eax = 0xffffffff;
-    else if (cpu.eax < 0x10)
-        cpu.eax = 0x10;
-    cpu.edx = cpu.edi - 4;
-    put(app, local, cpu.edx);
-    cpu.edx = at(app, cpu.edx);
-    setLow8(cpu.edx, cpu.edx & 0xfe);
-    if (cpu.eax <= cpu.edx)
+    const GuestFrame frame(cpu, 0xc, 0x10);
+    reg32 need = (size + 0xb) & 0xfffffff8;
+    if (need < size)
+        need = 0xffffffff;
+    else if (need < 0x10)
+        need = 0x10;
+    const reg32 header = block - 4;
+    const reg32 has = at(app, header) & 0xfffffffe;
+    if (need <= has)
     {
         // Smaller: what it no longer needs freed, if it is a block's worth.
-        cpu.edx -= cpu.eax;
-        if (cpu.edx >= 0x10)
+        const reg32 rest = has - need;
+        if (rest >= 0x10)
         {
-            cpu.ebx = cpu.eax;
-            cpu.ecx = at(app, local);
-            setLow8(cpu.ebx, cpu.ebx | 1);
-            setLow8(cpu.edx, cpu.edx | 1);
-            put(app, cpu.ecx, cpu.ebx);
-            cpu.ebx = cpu.ecx + cpu.eax;
-            put(app, local, cpu.ebx);
-            put(app, cpu.ebx, cpu.edx);
-            cpu.ebx = at(app, local + 0xc);
-            heapOf(app, cpu, reg16(cpu.ebx));
-            put(app, cpu.esi + 0x18, at(app, cpu.esi + 0x18) + 1);
-            cpu.eax = at(app, local) + 4;
-            if (!direct(app, cpu, nfree))
-                return;
+            put(app, header, need | 1);
+            const reg32 end = header + need;
+            put(app, end, rest | 1);
+            const reg32 heap = heapOf(app, cpu, reg16(segment), block, esi);
+            put(app, heap + 0x18, at(app, heap + 0x18) + 1);
+            clib::free(app, cpu, end + 4);
+            if (cpu.terminate)
+                return 0;
         }
-        cpu.ebx = 0;
-        return back();
+        return 0;
     }
-    cpu.ecx = at(app, local);
-    cpu.eax -= cpu.edx;
-    cpu.ecx += cpu.edx;
-    for (;;)
+    reg32 wanted = need - has;
+    for (reg32 next = header + has;;)
     {
-        put(app, cpu.ebp, cpu.eax);
-        cpu.ebx = at(app, cpu.ecx);
-        if (cpu.ebx == 0xffffffff)
+        put(app, more, wanted);
+        const reg32 free = at(app, next);
+        if (free == 0xffffffff)
+            return 2;
+        if (free & 1)
+            return 1;
+        const reg32 after = at(app, next + 8), before = at(app, next + 4);
+        const reg32 heap = heapOf(app, cpu, reg16(segment), block, esi);
+        if (next == at(app, heap + 0xc))
+            put(app, heap + 0xc, at(app, next + 4));
+        if (free >= at(app, more) && free - at(app, more) >= 0x10)
         {
-            cpu.ebx = 2;
-            return back();
-        }
-        if (cpu.ebx & 1)
-        {
-            cpu.ebx = 1;
-            return back();
-        }
-        cpu.eax = at(app, cpu.ecx + 8);
-        put(app, local + 8, cpu.eax);
-        cpu.eax = at(app, cpu.ecx + 4);
-        put(app, local + 4, cpu.eax);
-        heapOf(app, cpu, half(app, local + 0xc));
-        cpu.edx = at(app, cpu.esi + 0xc);
-        if (cpu.ecx == cpu.edx)
-        {
-            cpu.eax = at(app, cpu.edx + 4);
-            put(app, cpu.esi + 0xc, cpu.eax);
-        }
-        if (cpu.ebx >= at(app, cpu.ebp))
-        {
-            cpu.eax = cpu.ebx - at(app, cpu.ebp);
-            if (cpu.eax >= 0x10)
-            {
-                // Split: the rest of the free block stays free after it.
-                cpu.edx = at(app, cpu.ebp);
-                cpu.ecx += cpu.edx;
-                put(app, cpu.ecx, cpu.eax);
-                put(app, cpu.ecx + 4, at(app, local + 4));
-                put(app, cpu.ecx + 8, at(app, local + 8));
-                put(app, at(app, local + 4) + 8, cpu.ecx);
-                put(app, at(app, local + 8) + 4, cpu.ecx);
-                cpu.edx = at(app, local);
-                cpu.eax = at(app, cpu.ebp);
-                cpu.ecx = at(app, cpu.edx) + cpu.eax;
-                cpu.ebx = 0;
-                setHigh8(cpu.eax, 0);
-                put(app, cpu.edx, cpu.ecx);
-                putByte(app, kHeapClean, 0);
-                return back();
-            }
+            // Split: the rest of the free block stays free after it.
+            const reg32 taken = at(app, more);
+            const reg32 rest = next + taken;
+            put(app, rest, free - taken);
+            put(app, rest + 4, before);
+            put(app, rest + 8, after);
+            put(app, before + 8, rest);
+            put(app, after + 4, rest);
+            put(app, header, at(app, header) + taken);
+            putByte(app, kHeapClean, 0);
+            return 0;
         }
         // All of the free block: off the free list, onto the block.
-        cpu.eax = at(app, local + 4);
-        cpu.edx = at(app, local + 8);
-        put(app, cpu.eax + 8, cpu.edx);
-        cpu.eax = cpu.edx;
-        cpu.edx = at(app, local + 4);
-        put(app, cpu.eax + 4, cpu.edx);
-        cpu.eax = at(app, local);
-        put(app, cpu.eax, at(app, cpu.eax) + cpu.ebx);
-        cpu.eax = at(app, cpu.esi + 0x1c) - 1;
-        setLow8(cpu.edx, 0);
-        put(app, cpu.esi + 0x1c, cpu.eax);
+        put(app, before + 8, after);
+        put(app, after + 4, before);
+        put(app, header, at(app, header) + free);
+        put(app, heap + 0x1c, at(app, heap + 0x1c) - 1);
         putByte(app, kHeapClean, 0);
-        cpu.edx = at(app, cpu.ebp);
-        if (cpu.ebx >= cpu.edx)
-        {
-            cpu.ebx = 0;
-            return back();
-        }
-        cpu.eax = cpu.edx - cpu.ebx;
-        cpu.ecx += cpu.ebx;
+        if (free >= at(app, more))
+            return 0;
+        wanted = at(app, more) - free;
+        next += free;
     }
+}
+
+void HeapManager_expand(win32::WinApplication* app, x86::CPU& cpu)
+{
+    const reg32 result = heapExpandOf(app, cpu, cpu.eax, cpu.edx, cpu.ebx, cpu.ecx, cpu.esi);
+    if (cpu.terminate)
+        return;
+    returns(cpu, result);
 }
 
 /* 0x525578 (_nexpand's way out when it could not): the heap's lock given
  * back, 0, in _nexpand's frame. */
 void nexpandFailed(win32::WinApplication* app, x86::CPU& cpu)
 {
-    if (!indirect(app, cpu, at(app, kHeapUnlock)))
+    if (!guest::runtimeHook<kHeapUnlock>(app, cpu))
         return;
     cpu.eax = 0;
     cpu.esp += 4;
@@ -7861,1014 +7504,747 @@ void nexpandFailed(win32::WinApplication* app, x86::CPU& cpu)
     cpu.esp += 4;
 }
 
-/* _nexpand (clib/heap/c/nexpand.c, 0x525390): the block at eax made edx bytes
- * where it is, under the heap's lock; the block, or 0. */
+/* _nexpand (clib/heap/c/nexpand.c, 0x525390): the block `block` made `size` bytes where it is,
+ * under the heap's lock; the block, or 0.  At its entry's depth: three pushes, then the dword
+ * __HeapManager_expand counts what it still needs into.  0 with cpu.terminate set when the game
+ * stopped. */
+reg32 nexpandOf(win32::WinApplication* app, x86::CPU& cpu, reg32 block, reg32 size)
+{
+    const GuestFrame frame(cpu, 0xc, 4);
+    const reg32 more = frame - 4;
+    if (!guest::runtimeHook<kHeapLock>(app, cpu))
+        return 0;
+    reg32 failed;
+    {
+        const ReturnSlot slot(cpu);
+        failed = heapExpandOf(app, cpu, cpu.ds & 0xffff, block, size, more, block);
+    }
+    if (cpu.terminate || !guest::runtimeHook<kHeapUnlock>(app, cpu))
+        return 0;
+    return failed != 0 ? 0 : block;
+}
+
 void nexpand(win32::WinApplication* app, x86::CPU& cpu)
 {
-    for (const reg32 r : {cpu.ebx, cpu.ecx, cpu.esi})
-        push(app, cpu, r);
-    cpu.esp -= 4;
-    cpu.esi = cpu.eax;
-    cpu.ebx = cpu.edx;
-    if (!indirect(app, cpu, at(app, kHeapLock)))
+    const reg32 block = nexpandOf(app, cpu, cpu.eax, cpu.edx);
+    if (cpu.terminate)
         return;
-    cpu.edx = cpu.ds;
-    cpu.eax = cpu.edx & 0xffff;
-    cpu.ecx = cpu.esp;
-    cpu.edx = cpu.esi;
-    if (!direct(app, cpu, HeapManager_expand))
-        return;
-    if (cpu.eax != 0)
-        return nexpandFailed(app, cpu);
-    if (!indirect(app, cpu, at(app, kHeapUnlock)))
-        return;
-    cpu.eax = cpu.esi;
-    cpu.esp += 4;
-    cpu.esi = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
-    cpu.ebx = pop(app, cpu);
-    cpu.esp += 4;
+    returns(cpu, block);
 }
 
-/* _nrealloc (clib/heap/c/nrealloc.c, 0x5185c0): the block at eax made edx
- * bytes -- where it is if it can, else a new one with it copied -- _nmalloc's
- * for none, _nfree's for 0 bytes; the block, or 0. */
+/* _nrealloc (clib/heap/c/nrealloc.c, 0x5185c0): the block `block` made `size` bytes -- where it is
+ * if it can, else a new one with it copied, given back as it was where there is none -- _nmalloc's
+ * for none, _nfree's for 0 bytes; the block, or 0.  At its entry's depth: five pushes.  0 with
+ * cpu.terminate set when the game stopped. */
+reg32 nreallocOf(win32::WinApplication* app, x86::CPU& cpu, reg32 block, reg32 size)
+{
+    const GuestFrame frame(cpu, 0x14, 0);
+    if (block == 0)
+        return clib::malloc(app, cpu, size);
+    if (size == 0)
+    {
+        clib::free(app, cpu, block);
+        return 0;
+    }
+    const reg32 had = msizeOf(app, block);
+    auto expand = [&](reg32 bytes) {
+        const ReturnSlot slot(cpu);
+        return nexpandOf(app, cpu, block, bytes);
+    };
+    const reg32 there = expand(size);
+    if (cpu.terminate || there != 0)
+        return there;
+    const reg32 moved = clib::malloc(app, cpu, size);
+    if (cpu.terminate)
+        return 0;
+    if (moved != 0)
+    {
+        copyForward(app, moved, block, had);
+        clib::free(app, cpu, block);
+        return moved;
+    }
+    expand(had);
+    return 0;
+}
+
 void nrealloc(win32::WinApplication* app, x86::CPU& cpu)
 {
-    for (const reg32 r : {cpu.ebx, cpu.ecx, cpu.esi, cpu.edi, cpu.ebp})
-        push(app, cpu, r);
-    cpu.ebx = cpu.eax;
-    cpu.ecx = cpu.edx;
-    auto back = [&] {
-        cpu.ebp = pop(app, cpu);
-        cpu.edi = pop(app, cpu);
-        cpu.esi = pop(app, cpu);
-        cpu.ecx = pop(app, cpu);
-        cpu.ebx = pop(app, cpu);
-        cpu.esp += 4;
-    };
-    if (cpu.eax == 0)
-    {
-        cpu.eax = cpu.edx;
-        if (!direct(app, cpu, nmalloc))
-            return;
-        return back();
-    }
-    if (cpu.edx == 0)
-    {
-        if (!direct(app, cpu, nfree))
-            return;
-        cpu.eax = 0;
-        return back();
-    }
-    if (!direct(app, cpu, msize))
+    const reg32 block = nreallocOf(app, cpu, cpu.eax, cpu.edx);
+    if (cpu.terminate)
         return;
-    cpu.esi = cpu.eax;
-    cpu.eax = cpu.ebx;
-    if (!direct(app, cpu, nexpand))
-        return;
-    cpu.ebp = cpu.eax;
-    if (cpu.eax == 0)
-    {
-        cpu.eax = cpu.ecx;
-        if (!direct(app, cpu, nmalloc))
-            return;
-        cpu.ebp = cpu.eax;
-        if (cpu.eax != 0)
-        {
-            cpu.ecx = cpu.esi;
-            cpu.edi = cpu.eax;
-            cpu.esi = cpu.ebx;
-            inlineMemcpy(app, cpu);
-            cpu.eax = cpu.ebx;
-            if (!direct(app, cpu, nfree))
-                return;
-        }
-        else
-        {
-            cpu.edx = cpu.esi;
-            cpu.eax = cpu.ebx;
-            if (!direct(app, cpu, nexpand))
-                return;
-        }
-    }
-    cpu.eax = cpu.ebp;
-    back();
+    returns(cpu, block);
 }
 
-/* 0x4f8f38 (__findenv): the variable named at eax in _environ, its name
- * matched as capitals: its index + 1 -- or, with no value (edx 0), taken out
- * of _environ and __env_mask, the runtime's string freed -- or, not there,
- * minus how many there are. */
+/* 0x4f8f38 (__findenv): the variable named `name` in _environ, its name
+ * matched as capitals: its index + 1 -- or, for no `value`, taken out of
+ * _environ and __env_mask, the runtime's string freed, and the search going on
+ * past the entry that moved into its place -- or, not there, minus how many
+ * there are.  0 with cpu.terminate set when the game stopped. */
+reg32 findenvOf(win32::WinApplication* app, x86::CPU& cpu, reg32 name, reg32 value)
+{
+    reg32 entry = at(app, kEnviron);
+    for (reg32 string = at(app, entry); string != 0; entry += 4, string = at(app, entry))
+    {
+        for (reg32 s = string, n = name;; ++s, ++n)
+        {
+            if (byte(app, s) == '=' && byte(app, n) == 0)
+            {
+                const reg32 index = reg32(x86::sreg32(entry - at(app, kEnviron)) >> 2);
+                if (value != 0)
+                    return index + 1;
+                // Taken out: the entries after it one down, the terminator too.
+                reg32 end = entry, moved;
+                do
+                {
+                    moved = at(app, end + 4);
+                    put(app, end, moved);
+                    end += 4;
+                } while (moved != 0);
+                const reg32 mask = at(app, kEnvMask);
+                if (mask != 0)
+                {
+                    if (byte(app, index + mask) != 0)
+                    {
+                        clib::free(app, cpu, string);
+                        if (cpu.terminate)
+                            return 0;
+                    }
+                    // __env_mask, which follows the entries, after them again, its byte taken out.
+                    const reg32 count = reg32(x86::sreg32(end - at(app, kEnviron)) >> 2);
+                    runs(app, cpu, &memmove, {end, at(app, kEnvMask), count});
+                    if (cpu.terminate)
+                        return 0;
+                    put(app, kEnvMask, end);
+                    for (reg32 i = index; x86::sreg32(i) < x86::sreg32(count); ++i)
+                        putByte(app, end + i, byte(app, end + i + 1));
+                }
+                break;  // '=' and the name's end: no capital alike, as the runtime goes on
+            }
+            if (clib::toupper(app, byte(app, s)) != clib::toupper(app, byte(app, n)) || byte(app, n) == 0)
+                break;
+        }
+    }
+    return reg32(x86::sreg32(at(app, kEnviron) - entry) >> 2);
+}
+
 void findenv(win32::WinApplication* app, x86::CPU& cpu)
 {
-    for (const reg32 r : {cpu.ebx, cpu.ecx, cpu.esi, cpu.edi, cpu.ebp})
-        push(app, cpu, r);
-    cpu.esp -= 0x10;
-    const reg32 local = cpu.esp;
-    put(app, local, cpu.eax);
-    put(app, local + 8, cpu.edx);
-    cpu.eax = at(app, kEnviron);
-    put(app, local + 4, cpu.eax);
-    auto back = [&] {
-        cpu.esp = local + 0x10;
-        cpu.ebp = pop(app, cpu);
-        cpu.edi = pop(app, cpu);
-        cpu.esi = pop(app, cpu);
-        cpu.ecx = pop(app, cpu);
-        cpu.ebx = pop(app, cpu);
-        cpu.esp += 4;
-    };
-    for (;;)
-    {
-        cpu.eax = at(app, at(app, local + 4));
-        put(app, local + 0xc, cpu.eax);
-        if (cpu.eax == 0)
-            break;
-        cpu.ebp = at(app, local);
-        for (;;)
-        {
-            cpu.eax = at(app, local + 0xc);
-            if (byte(app, cpu.eax) == '=' && byte(app, cpu.ebp) == 0)
-            {
-                cpu.esi = reg32(x86::sreg32(at(app, local + 4) - at(app, kEnviron)) >> 2);
-                cpu.edi = at(app, local + 8);
-                if (cpu.edi != 0)
-                {
-                    cpu.eax = cpu.esi + 1;
-                    return back();
-                }
-                cpu.edi = at(app, at(app, local + 4));
-                cpu.ecx = at(app, local + 4);
-                if (cpu.edi != 0)
-                    do
-                    {
-                        cpu.eax = at(app, cpu.ecx + 4);
-                        put(app, cpu.ecx, cpu.eax);
-                        cpu.eax = at(app, cpu.ecx + 4);
-                        cpu.ecx += 4;
-                    } while (cpu.eax != 0);
-                cpu.edx = at(app, kEnvMask);
-                if (cpu.edx != 0)
-                {
-                    cpu.eax = cpu.edx;
-                    if (byte(app, cpu.esi + cpu.eax) != 0)
-                    {
-                        cpu.eax = cpu.edi;
-                        if (!direct(app, cpu, nfree))
-                            return;
-                    }
-                    cpu.ebx = at(app, kEnviron);
-                    cpu.edi = cpu.ecx - cpu.ebx;
-                    cpu.edx = at(app, kEnvMask);
-                    cpu.edi = reg32(x86::sreg32(cpu.edi) >> 2);
-                    cpu.eax = cpu.ecx;
-                    cpu.ebx = cpu.edi;
-                    if (!direct(app, cpu, memmove))
-                        return;
-                    put(app, kEnvMask, cpu.ecx);
-                    if (x86::sreg32(cpu.esi) < x86::sreg32(cpu.edi))
-                    {
-                        cpu.ecx += cpu.esi;
-                        do
-                        {
-                            ++cpu.ecx;
-                            setLow8(cpu.eax, byte(app, cpu.ecx));
-                            ++cpu.esi;
-                            putByte(app, cpu.ecx - 1, reg8(cpu.eax));
-                        } while (x86::sreg32(cpu.esi) < x86::sreg32(cpu.edi));
-                    }
-                }
-            }
-            cpu.edx = at(app, local + 0xc);
-            cpu.eax = byte(app, cpu.edx);
-            if (!direct(app, cpu, toupper))
-                return;
-            cpu.edx = cpu.eax;
-            cpu.eax = byte(app, cpu.ebp);
-            if (!direct(app, cpu, toupper))
-                return;
-            if (cpu.edx != cpu.eax || byte(app, cpu.ebp) == 0)
-                break;
-            cpu.ecx = at(app, local + 0xc) + 1;
-            ++cpu.ebp;
-            put(app, local + 0xc, cpu.ecx);
-        }
-        put(app, local + 4, at(app, local + 4) + 4);
-    }
-    cpu.ebx = at(app, local + 4);
-    cpu.eax = reg32(x86::sreg32(at(app, kEnviron) - cpu.ebx) >> 2);
-    back();
+    const reg32 found = findenvOf(app, cpu, cpu.eax, cpu.edx);
+    if (cpu.terminate)
+        return;
+    returns(cpu, found);
 }
 
-/* __setenv (clib/environ/c/setenv.c, 0x4f8ce8): the variable named at eax
- * set to the string at edx in _environ -- replaced if ebx says so, taken out
- * for none -- as a string of the runtime's, _environ and __env_mask grown as
- * it takes; 0, or -1. */
-void setenv_(win32::WinApplication* app, x86::CPU& cpu)
+/* __setenv (clib/environ/c/setenv.c, 0x4f8ce8): the variable named `name`
+ * set to the string `value` in _environ -- replaced if `replace` says so,
+ * taken out for none -- as a string of the runtime's, _environ and __env_mask
+ * grown as it takes; 0, or -1.  0 with cpu.terminate set when the game
+ * stopped. */
+reg32 setenvOf(win32::WinApplication* app, x86::CPU& cpu, reg32 name, reg32 value, reg32 replace)
 {
-    for (const reg32 r : {cpu.ecx, cpu.esi, cpu.edi, cpu.ebp})
-        push(app, cpu, r);
-    cpu.esp -= 0x10;
-    const reg32 local = cpu.esp;
-    put(app, local + 4, cpu.eax);
-    put(app, local + 8, cpu.edx);
-    auto back = [&](reg32 result) {
-        cpu.eax = result;
-        cpu.esp = local + 0x10;
-        cpu.ebp = pop(app, cpu);
-        cpu.edi = pop(app, cpu);
-        cpu.esi = pop(app, cpu);
-        cpu.ecx = pop(app, cpu);
-        cpu.esp += 4;
-    };
-    if (cpu.eax == 0 || byte(app, cpu.eax) == 0)
-        return back(0xffffffff);
-    cpu.eax = at(app, kEnviron);
-    put(app, local + 0xc, cpu.eax);
-    if (cpu.eax == 0)
+    if (name == 0 || byte(app, name) == 0)
+        return 0xffffffff;
+    reg32 environ = at(app, kEnviron);
+    reg32 index;
+    if (environ == 0)
     {
-        if (at(app, local + 8) == 0)
-            return back(cpu.eax);
-        cpu.eax = 9;
-        if (!direct(app, cpu, nmalloc))
-            return;
-        put(app, local + 0xc, cpu.eax);
-        if (cpu.eax == 0)
-            return back(0xffffffff);
-        put(app, cpu.eax, 0);
-        put(app, kEnviron, cpu.eax);
-        put(app, cpu.eax + 4, 0);
-        cpu.eax += 8;
-        cpu.ebp = 0;
-        put(app, kEnvMask, cpu.eax);
+        if (value == 0)
+            return 0;
+        // _environ made: no entry, its terminator, and __env_mask after it.
+        environ = clib::malloc(app, cpu, 9);
+        if (cpu.terminate)
+            return 0;
+        if (environ == 0)
+            return 0xffffffff;
+        put(app, environ, 0);
+        put(app, kEnviron, environ);
+        put(app, environ + 4, 0);
+        put(app, kEnvMask, environ + 8);
+        index = 0;
     }
     else
     {
-        cpu.edx = at(app, local + 8);
-        cpu.eax = at(app, local + 4);
-        cpu.esi = at(app, local + 8);
-        if (!direct(app, cpu, findenv))
-            return;
-        if (cpu.esi == 0)
-            return back(0);
-        if (x86::sreg32(cpu.eax) > 0)
+        const reg32 found = findenvOf(app, cpu, name, value);
+        if (cpu.terminate)
+            return 0;
+        if (value == 0)
+            return 0;
+        if (x86::sreg32(found) > 0)
         {
-            if (cpu.ebx == 0)
-                return back(0);
-            cpu.ebp = cpu.eax - 1;
+            if (replace == 0)
+                return 0;
+            index = found - 1;
         }
         else
         {
             // Not there: _environ one longer, __env_mask after it.
-            cpu.eax = 0 - cpu.eax;
-            cpu.ebp = cpu.eax;
-            cpu.edi = at(app, kEnvMask);
-            cpu.ecx = cpu.ebp * 4;
-            ++cpu.eax;
-            cpu.ebx = cpu.ecx + 8;
-            put(app, local, cpu.eax);
-            cpu.eax += cpu.ebx;
-            if (cpu.edi == 0)
+            index = 0 - found;
+            const reg32 entries = index + 1;
+            const reg32 masked = index * 4 + 8;  // where __env_mask goes in the block
+            const reg32 bytes = entries + masked;
+            if (at(app, kEnvMask) == 0)
             {
-                if (!direct(app, cpu, nmalloc))
-                    return;
-                cpu.edx = cpu.eax;
-                put(app, local + 0xc, cpu.eax);
-                if (cpu.eax == 0)
-                    return back(0xffffffff);
-                cpu.esi = at(app, kEnviron);
-                cpu.edi = cpu.eax;
-                inlineMemcpy(app, cpu);
-                cpu.edx += cpu.ebx;
-                cpu.ebx = at(app, local);
-                put(app, kEnvMask, cpu.edx);
-                cpu.eax = cpu.edx;
-                cpu.edx = 0;
-                if (!direct(app, cpu, memset))
-                    return;
+                const reg32 old = environ;
+                environ = clib::malloc(app, cpu, bytes);
+                if (cpu.terminate)
+                    return 0;
+                if (environ == 0)
+                    return 0xffffffff;
+                for (reg32 i = 0; i < index * 4; ++i)
+                    putByte(app, environ + i, byte(app, old + i));
+                put(app, kEnvMask, environ + masked);
+                clib::memset(app, environ + masked, 0, entries);
             }
             else
             {
-                cpu.edx = cpu.eax;
-                cpu.eax = at(app, local + 0xc);
-                if (!direct(app, cpu, nrealloc))
-                    return;
-                put(app, local + 0xc, cpu.eax);
-                if (cpu.eax == 0)
-                    return back(0xffffffff);
-                cpu.edx = at(app, kEnvMask);
-                cpu.ecx = cpu.eax + cpu.ebx;
-                cpu.ebx = cpu.ebp;
-                cpu.eax = cpu.ecx;
-                if (!direct(app, cpu, memmove))
-                    return;
-                put(app, kEnvMask, cpu.ecx);
+                environ = clib::realloc(app, cpu, environ, bytes);
+                if (cpu.terminate)
+                    return 0;
+                if (environ == 0)
+                    return 0xffffffff;
+                runs(app, cpu, &memmove, {environ + masked, at(app, kEnvMask), index});
+                if (cpu.terminate)
+                    return 0;
+                put(app, kEnvMask, environ + masked);
             }
-            cpu.edx = at(app, local + 0xc);
-            cpu.eax = cpu.ebp * 4 + cpu.edx;
-            put(app, cpu.eax + 4, 0);
-            cpu.eax = at(app, kEnvMask);
-            put(app, kEnviron, cpu.edx);
-            putByte(app, cpu.eax + cpu.ebp, 0);
+            put(app, environ + index * 4 + 4, 0);
+            put(app, kEnviron, environ);
+            putByte(app, at(app, kEnvMask) + index, 0);
         }
     }
     // name=value into a string of the runtime's: the old one grown, or anew.
-    cpu.edi = at(app, local + 4);
-    inlineStrlen(app, cpu);
-    cpu.eax = at(app, kEnvMask);
-    setHigh8(cpu.edx, byte(app, cpu.eax + cpu.ebp));
-    cpu.ebx = cpu.ecx;
-    if (reg8(cpu.edx >> 8) != 0)
+    auto length = [&](reg32 string) {
+        reg32 n = 0;
+        while (byte(app, string + n) != 0)
+            ++n;
+        return n;
+    };
+    const reg32 nameLength = length(name);
+    const reg32 old = byte(app, at(app, kEnvMask) + index) != 0 ? at(app, environ + index * 4) : 0;
+    const reg32 string = clib::realloc(app, cpu, old, nameLength + length(value) + 2);
+    if (cpu.terminate)
+        return 0;
+    if (string == 0)
+        return 0xffffffff;
+    for (reg32 i = 0; i < nameLength; ++i)
+        putByte(app, string + i, byte(app, name + i));
+    putByte(app, string + nameLength, '=');
+    for (reg32 i = 0;; ++i)
     {
-        cpu.ecx = at(app, local + 0xc);
-        cpu.esi = at(app, cpu.ebp * 4 + cpu.ecx);
+        const reg8 c = byte(app, value + i);
+        putByte(app, string + nameLength + 1 + i, c);
+        if (c == 0)
+            break;
     }
-    else
-        cpu.esi = 0;
-    cpu.edi = at(app, local + 8);
-    inlineStrlen(app, cpu);
-    cpu.edx = cpu.ebx + cpu.ecx + 2;
-    cpu.eax = cpu.esi;
-    if (!direct(app, cpu, nrealloc))
-        return;
-    cpu.edx = cpu.eax;
-    if (cpu.eax == 0)
-        return back(0xffffffff);
-    cpu.esi = at(app, local + 4);
-    cpu.ecx = cpu.ebx;
-    cpu.edi = cpu.eax;
-    inlineMemcpy(app, cpu);
-    putByte(app, cpu.edx + cpu.ebx, '=');
-    ++cpu.ebx;
-    cpu.esi = at(app, local + 8);
-    cpu.edi = cpu.edx + cpu.ebx;
-    inlineStrcpy(app, cpu);
-    cpu.esi = at(app, local + 0xc);
-    cpu.eax = cpu.ebp * 4 + cpu.esi;
-    put(app, cpu.eax, cpu.edx);
-    cpu.eax = at(app, kEnvMask);
-    putByte(app, cpu.eax + cpu.ebp, 1);
-    back(0);
+    put(app, environ + index * 4, string);
+    putByte(app, at(app, kEnvMask) + index, 1);
+    return 0;
 }
 
-/* 0x518498 (__wfindenv): __findenv's for _wenviron. */
+void setenv_(win32::WinApplication* app, x86::CPU& cpu)
+{
+    const reg32 result = setenvOf(app, cpu, cpu.eax, cpu.edx, cpu.ebx);
+    if (cpu.terminate)
+        return;
+    returns(cpu, result);
+}
+
+/* 0x518498 (__wfindenv): __findenv's for _wenviron, the wide name `name`: its index + 1 -- or,
+ * for no `value`, taken out, the search going on past the entry that moved into its place -- or,
+ * not there, minus how many there are.  0 with cpu.terminate set when the game stopped. */
+reg32 wfindenvOf(win32::WinApplication* app, x86::CPU& cpu, reg32 name, reg32 value)
+{
+    reg32 entry = at(app, kWideEnviron);
+    for (reg32 string = at(app, entry); string != 0; entry += 4, string = at(app, entry))
+    {
+        for (reg32 s = string, n = name;; s += 2, n += 2)
+        {
+            if (half(app, s) == '=' && half(app, n) == 0)
+            {
+                const reg32 index = reg32(x86::sreg32(entry - at(app, kWideEnviron)) >> 2);
+                if (value != 0)
+                    return index + 1;
+                reg32 end = entry, moved;
+                do
+                {
+                    moved = at(app, end + 4);
+                    put(app, end, moved);
+                    end += 4;
+                } while (moved != 0);
+                const reg32 mask = at(app, kEnvMask);
+                if (mask != 0)
+                {
+                    if (byte(app, index + mask) != 0)
+                    {
+                        clib::free(app, cpu, string);
+                        if (cpu.terminate)
+                            return 0;
+                    }
+                    const reg32 count = reg32(x86::sreg32(end - at(app, kWideEnviron)) >> 2);
+                    memmoveOf(app, end, at(app, kEnvMask), count);
+                    put(app, kEnvMask, end);
+                    for (reg32 i = index; x86::sreg32(i) < x86::sreg32(count); ++i)
+                        putByte(app, end + i, byte(app, end + i + 1));
+                }
+                break;  // '=' and the name's end: no capital alike, as the runtime goes on
+            }
+            if (reg16(towupperOf(half(app, s))) != reg16(towupperOf(half(app, n))) || half(app, n) == 0)
+                break;
+        }
+    }
+    return reg32(x86::sreg32(at(app, kWideEnviron) - entry) >> 2);
+}
+
 void wfindenv(win32::WinApplication* app, x86::CPU& cpu)
 {
-    for (const reg32 r : {cpu.ebx, cpu.ecx, cpu.esi, cpu.edi, cpu.ebp})
-        push(app, cpu, r);
-    cpu.esp -= 0x10;
-    const reg32 local = cpu.esp;
-    put(app, local + 4, cpu.eax);
-    put(app, local + 8, cpu.edx);
-    cpu.eax = at(app, kWideEnviron);
-    put(app, local, cpu.eax);
-    auto back = [&] {
-        cpu.esp = local + 0x10;
-        cpu.ebp = pop(app, cpu);
-        cpu.edi = pop(app, cpu);
-        cpu.esi = pop(app, cpu);
-        cpu.ecx = pop(app, cpu);
-        cpu.ebx = pop(app, cpu);
-        cpu.esp += 4;
-    };
-    for (;;)
-    {
-        cpu.eax = at(app, at(app, local));
-        put(app, local + 0xc, cpu.eax);
-        if (cpu.eax == 0)
-            break;
-        cpu.ebp = at(app, local + 4);
-        for (;;)
-        {
-            cpu.eax = at(app, local + 0xc);
-            if (half(app, cpu.eax) == '=' && half(app, cpu.ebp) == 0)
-            {
-                cpu.esi = reg32(x86::sreg32(at(app, local) - at(app, kWideEnviron)) >> 2);
-                cpu.edi = at(app, local + 8);
-                if (cpu.edi != 0)
-                {
-                    cpu.eax = cpu.esi + 1;
-                    return back();
-                }
-                cpu.edi = at(app, at(app, local));
-                cpu.ecx = at(app, local);
-                if (cpu.edi != 0)
-                    do
-                    {
-                        cpu.eax = at(app, cpu.ecx + 4);
-                        put(app, cpu.ecx, cpu.eax);
-                        cpu.eax = at(app, cpu.ecx + 4);
-                        cpu.ecx += 4;
-                    } while (cpu.eax != 0);
-                cpu.edx = at(app, kEnvMask);
-                if (cpu.edx != 0)
-                {
-                    cpu.eax = cpu.edx;
-                    if (byte(app, cpu.esi + cpu.eax) != 0)
-                    {
-                        cpu.eax = cpu.edi;
-                        if (!direct(app, cpu, nfree))
-                            return;
-                    }
-                    cpu.ebx = at(app, kWideEnviron);
-                    cpu.edi = cpu.ecx - cpu.ebx;
-                    cpu.edx = at(app, kEnvMask);
-                    cpu.edi = reg32(x86::sreg32(cpu.edi) >> 2);
-                    cpu.eax = cpu.ecx;
-                    cpu.ebx = cpu.edi;
-                    if (!direct(app, cpu, memmove))
-                        return;
-                    put(app, kEnvMask, cpu.ecx);
-                    if (x86::sreg32(cpu.esi) < x86::sreg32(cpu.edi))
-                    {
-                        cpu.ecx += cpu.esi;
-                        do
-                        {
-                            ++cpu.ecx;
-                            setLow8(cpu.eax, byte(app, cpu.ecx));
-                            ++cpu.esi;
-                            putByte(app, cpu.ecx - 1, reg8(cpu.eax));
-                        } while (x86::sreg32(cpu.esi) < x86::sreg32(cpu.edi));
-                    }
-                }
-            }
-            cpu.edx = at(app, local + 0xc);
-            cpu.eax = half(app, cpu.edx);
-            if (!direct(app, cpu, towupper))
-                return;
-            cpu.edx = cpu.eax;
-            cpu.eax = half(app, cpu.ebp);
-            if (!direct(app, cpu, towupper))
-                return;
-            if (reg16(cpu.edx) != reg16(cpu.eax) || half(app, cpu.ebp) == 0)
-                break;
-            cpu.ecx = at(app, local + 0xc) + 2;
-            cpu.ebp += 2;
-            put(app, local + 0xc, cpu.ecx);
-        }
-        put(app, local, at(app, local) + 4);
-    }
-    cpu.ebx = at(app, local);
-    cpu.eax = reg32(x86::sreg32(at(app, kWideEnviron) - cpu.ebx) >> 2);
-    back();
+    const reg32 found = wfindenvOf(app, cpu, cpu.eax, cpu.edx);
+    if (cpu.terminate)
+        return;
+    returns(cpu, found);
 }
 
-/* 0x52c300 (__wputenv's find): the wide "name=value" at eax's name in
- * _wenviron, matched as capitals: its index + 1, or -- edx 0 -- taken out, or
- * minus how many there are. */
+/* 0x52c300 (__wputenv's find): the wide "name=value" `pair`'s name in _wenviron, matched as
+ * capitals: its index + 1 -- or, for `remove`, taken out, and 0 -- or minus how many there are.
+ * 0 with cpu.terminate set when the game stopped. */
+reg32 wputenvFindOf(win32::WinApplication* app, x86::CPU& cpu, reg32 pair, reg32 remove)
+{
+    reg32 entry = at(app, kWideEnviron);
+    for (; at(app, entry) != 0; entry += 4)
+    {
+        if (half(app, pair) == 0)
+            continue;
+        for (reg32 s = at(app, entry), n = pair;; s += 2, n += 2)
+        {
+            if (reg16(towupperOf(half(app, s))) != reg16(towupperOf(half(app, n))))
+                break;
+            if (half(app, s) == '=')
+            {
+                const reg32 index = reg32(x86::sreg32(entry - at(app, kWideEnviron)) >> 2);
+                if (remove == 0)
+                    return index + 1;
+                const reg32 removed = at(app, entry);
+                reg32 end = entry;
+                if (removed != 0)
+                {
+                    reg32 moved;
+                    do
+                    {
+                        put(app, end, at(app, end + 4));
+                        moved = at(app, end + 4);
+                        end += 4;
+                    } while (moved != 0);
+                }
+                const reg32 mask = at(app, kEnvMask);
+                if (mask != 0)
+                {
+                    if (byte(app, index + mask) != 0)
+                    {
+                        clib::free(app, cpu, removed);
+                        if (cpu.terminate)
+                            return 0;
+                    }
+                    const reg32 count = reg32(x86::sreg32(end - at(app, kWideEnviron)) >> 2);
+                    memmoveOf(app, end, at(app, kEnvMask), count);
+                    put(app, kEnvMask, end);
+                    for (reg32 i = index; x86::sreg32(i) < x86::sreg32(count); ++i)
+                        putByte(app, end + i, byte(app, end + i + 1));
+                }
+                return 0;
+            }
+            if (half(app, n + 2) == 0)
+                break;
+        }
+    }
+    return reg32(x86::sreg32(at(app, kWideEnviron) - entry) >> 2);
+}
+
 void wputenvFind(win32::WinApplication* app, x86::CPU& cpu)
 {
-    for (const reg32 r : {cpu.ebx, cpu.ecx, cpu.esi, cpu.edi, cpu.ebp})
-        push(app, cpu, r);
-    cpu.edi = cpu.eax;
-    cpu.ebp = cpu.edx;
-    auto back = [&] {
-        cpu.ebp = pop(app, cpu);
-        cpu.edi = pop(app, cpu);
-        cpu.esi = pop(app, cpu);
-        cpu.ecx = pop(app, cpu);
-        cpu.ebx = pop(app, cpu);
-        cpu.esp += 4;
-    };
-    for (cpu.esi = at(app, kWideEnviron); (cpu.edx = at(app, cpu.esi)) != 0; cpu.esi += 4)
-    {
-        cpu.ecx = (cpu.ecx & 0xffff0000) | half(app, cpu.edi);
-        cpu.ebx = cpu.edi;
-        if ((cpu.ecx & 0xffff) == 0)
-            continue;
-        for (;;)
-        {
-            cpu.eax = half(app, cpu.edx);
-            if (!direct(app, cpu, towupper))
-                return;
-            cpu.ecx = cpu.eax;
-            cpu.eax = half(app, cpu.ebx);
-            if (!direct(app, cpu, towupper))
-                return;
-            if (reg16(cpu.ecx) != reg16(cpu.eax))
-                break;
-            if (half(app, cpu.edx) == '=')
-            {
-                cpu.edx = at(app, kWideEnviron);
-                cpu.edi = reg32(x86::sreg32(cpu.esi - cpu.edx) >> 2);
-                if (cpu.ebp == 0)
-                {
-                    cpu.eax = cpu.edi + 1;
-                    return back();
-                }
-                cpu.edx = at(app, cpu.esi);
-                cpu.ecx = cpu.esi;
-                if (cpu.edx != 0)
-                    do
-                    {
-                        cpu.eax = at(app, cpu.ecx + 4);
-                        put(app, cpu.ecx, cpu.eax);
-                        cpu.ebx = at(app, cpu.ecx + 4);
-                        cpu.ecx += 4;
-                    } while (cpu.ebx != 0);
-                cpu.esi = at(app, kEnvMask);
-                if (cpu.esi != 0)
-                {
-                    cpu.eax = cpu.esi;
-                    if (byte(app, cpu.edi + cpu.eax) != 0)
-                    {
-                        cpu.eax = cpu.edx;
-                        if (!direct(app, cpu, nfree))
-                            return;
-                    }
-                    cpu.ebp = at(app, kWideEnviron);
-                    cpu.esi = cpu.ecx - cpu.ebp;
-                    cpu.edx = at(app, kEnvMask);
-                    cpu.esi = reg32(x86::sreg32(cpu.esi) >> 2);
-                    cpu.eax = cpu.ecx;
-                    cpu.ebx = cpu.esi;
-                    if (!direct(app, cpu, memmove))
-                        return;
-                    put(app, kEnvMask, cpu.ecx);
-                    if (x86::sreg32(cpu.edi) < x86::sreg32(cpu.esi))
-                        do
-                        {
-                            cpu.eax = cpu.edi + cpu.ecx + 1;
-                            setLow8(cpu.edx, byte(app, cpu.eax));
-                            ++cpu.edi;
-                            putByte(app, cpu.eax - 1, reg8(cpu.edx));
-                        } while (x86::sreg32(cpu.edi) < x86::sreg32(cpu.esi));
-                }
-                cpu.eax = 0;
-                return back();
-            }
-            cpu.edx += 2;
-            cpu.eax = (cpu.eax & 0xffff0000) | half(app, cpu.ebx + 2);
-            cpu.ebx += 2;
-            if (reg16(cpu.eax) == 0)
-                break;
-        }
-    }
-    cpu.eax = reg32(x86::sreg32(at(app, kWideEnviron) - cpu.esi) >> 2);
-    back();
-}
-
-/* 0x52c178 (__wputenv): the wide "name=value" at eax into _wenviron as it is
- * -- "name=" takes it out -- _wenviron and __env_mask grown as it takes; 0,
- * or -1. */
-void wputenv(win32::WinApplication* app, x86::CPU& cpu)
-{
-    for (const reg32 r : {cpu.ebx, cpu.ecx, cpu.edx, cpu.esi, cpu.edi, cpu.ebp})
-        push(app, cpu, r);
-    cpu.esp -= 8;
-    const reg32 local = cpu.esp;
-    cpu.edi = cpu.eax;
-    auto back = [&](reg32 result) {
-        cpu.eax = result;
-        cpu.esp = local + 8;
-        cpu.ebp = pop(app, cpu);
-        cpu.edi = pop(app, cpu);
-        cpu.esi = pop(app, cpu);
-        cpu.edx = pop(app, cpu);
-        cpu.ecx = pop(app, cpu);
-        cpu.ebx = pop(app, cpu);
-        cpu.esp += 4;
-    };
-    if (cpu.eax == 0)
-        return back(0xffffffff);
-    if (half(app, cpu.eax) != 0)
-    {
-        cpu.edx = cpu.eax + 2;
-        while (half(app, cpu.edx) != 0 && half(app, cpu.edx) != '=')
-        {
-            cpu.esi = (cpu.esi & 0xffff0000) | half(app, cpu.edx + 2);
-            cpu.edx += 2;
-            if ((cpu.esi & 0xffff) == 0)
-                break;
-        }
-    }
-    if (half(app, cpu.edx) == 0)
-        return back(0xffffffff);
-    setLow8(cpu.eax, half(app, cpu.edx + 2) == 0 ? 1 : 0);
-    cpu.ebx = 0;
-    cpu.ecx = at(app, kWideEnviron);
-    setLow8(cpu.ebx, cpu.eax);
-    if (cpu.ecx == 0)
-    {
-        if (cpu.ebx != 0)
-            return back(0);
-        cpu.eax = 9;
-        if (!direct(app, cpu, nmalloc))
-            return;
-        cpu.ecx = cpu.eax;
-        if (cpu.eax == 0)
-            return back(0xffffffff);
-        put(app, kWideEnviron, cpu.eax);
-        cpu.eax += 8;
-        put(app, cpu.eax - 8, cpu.ebx);
-        cpu.esi = 0;
-        put(app, cpu.eax - 4, cpu.ebx);
-        put(app, kEnvMask, cpu.eax);
-    }
-    else
-    {
-        cpu.edx = cpu.ebx;
-        cpu.eax = cpu.edi;
-        if (!direct(app, cpu, wputenvFind))
-            return;
-        if (cpu.ebx != 0)
-            return back(0);
-        if (x86::sreg32(cpu.eax) > 0)
-            cpu.esi = cpu.eax - 1;
-        else
-        {
-            cpu.eax = 0 - cpu.eax;
-            cpu.ebp = at(app, kEnvMask);
-            cpu.esi = cpu.eax;
-            ++cpu.eax;
-            cpu.ebx = cpu.esi * 4;
-            put(app, local, cpu.eax);
-            cpu.eax = cpu.ebx + 8;
-            cpu.edx = at(app, local);
-            put(app, local + 4, cpu.eax);
-            cpu.eax += cpu.edx;
-            if (cpu.ebp == 0)
-            {
-                if (!direct(app, cpu, nmalloc))
-                    return;
-                cpu.ebp = cpu.eax;
-                cpu.ecx = cpu.eax;
-                if (cpu.eax == 0)
-                    return back(0xffffffff);
-                cpu.edx = at(app, kWideEnviron);
-                if (!direct(app, cpu, memcpy))
-                    return;
-                cpu.eax = at(app, local + 4);
-                cpu.ebx = at(app, local);
-                cpu.eax += cpu.ebp;
-                cpu.edx = 0;
-                put(app, kEnvMask, cpu.eax);
-                if (!direct(app, cpu, memset))
-                    return;
-            }
-            else
-            {
-                cpu.edx = cpu.eax;
-                cpu.eax = cpu.ecx;
-                if (!direct(app, cpu, nrealloc))
-                    return;
-                cpu.ecx = cpu.eax;
-                if (cpu.eax == 0)
-                    return back(0xffffffff);
-                cpu.ebp = at(app, local + 4);
-                cpu.edx = at(app, kEnvMask);
-                cpu.ebp += cpu.eax;
-                cpu.ebx = cpu.esi;
-                cpu.eax = cpu.ebp;
-                if (!direct(app, cpu, memmove))
-                    return;
-                put(app, kEnvMask, cpu.ebp);
-            }
-            put(app, kWideEnviron, cpu.ecx);
-            put(app, cpu.ecx + cpu.esi * 4 + 4, 0);
-        }
-    }
-    cpu.eax = at(app, kEnvMask);
-    put(app, cpu.ecx + cpu.esi * 4, cpu.edi);
-    putByte(app, cpu.esi + cpu.eax, 0);
-    back(0);
-}
-
-/* 0x5252a0 (__create_wide_environment): _wenviron made from _environ, a
- * string at a time by mbstowcs into a block of _nmalloc's. */
-void create_wide_environment(win32::WinApplication* app, x86::CPU& cpu)
-{
-    for (const reg32 r : {cpu.ebx, cpu.ecx, cpu.edx, cpu.esi})
-        push(app, cpu, r);
-    cpu.esi = at(app, kEnviron);
-    if (cpu.esi != 0)
-        for (;;)
-        {
-            cpu.edx = at(app, cpu.esi);
-            cpu.esi += 4;
-            if (cpu.edx == 0)
-                break;
-            cpu.eax = cpu.edx;
-            if (!direct(app, cpu, mbslen))
-                return;
-            cpu.ebx = cpu.eax + 1;
-            cpu.eax = cpu.ebx * 2;
-            if (!direct(app, cpu, nmalloc))
-                return;
-            cpu.ecx = cpu.eax;
-            if (cpu.eax == 0)
-                continue;
-            if (!direct(app, cpu, mbstowcs))
-                return;
-            const bool made = cpu.eax != 0xffffffff;
-            cpu.eax = cpu.ecx;
-            if (!direct(app, cpu, made ? wputenv : nfree))
-                return;
-        }
-    cpu.esi = pop(app, cpu);
-    cpu.edx = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
-    cpu.ebx = pop(app, cpu);
-    cpu.esp += 4;
-}
-
-/* __wsetenv (clib/environ/c/wsetenv.c, 0x518290): __setenv's for _wenviron,
- * made from _environ first if there is none. */
-void wsetenv(win32::WinApplication* app, x86::CPU& cpu)
-{
-    for (const reg32 r : {cpu.ecx, cpu.esi, cpu.edi, cpu.ebp})
-        push(app, cpu, r);
-    cpu.esp -= 0x14;
-    const reg32 local = cpu.esp;
-    cpu.ebp = cpu.eax;
-    cpu.edi = cpu.edx;
-    auto back = [&](reg32 result) {
-        cpu.eax = result;
-        cpu.esp = local + 0x14;
-        cpu.ebp = pop(app, cpu);
-        cpu.edi = pop(app, cpu);
-        cpu.esi = pop(app, cpu);
-        cpu.ecx = pop(app, cpu);
-        cpu.esp += 4;
-    };
-    if (cpu.eax == 0 || half(app, cpu.eax) == 0)
-        return back(0xffffffff);
-    if (at(app, kWideEnviron) == 0 && !direct(app, cpu, create_wide_environment))
+    const reg32 found = wputenvFindOf(app, cpu, cpu.eax, cpu.edx);
+    if (cpu.terminate)
         return;
-    cpu.esi = at(app, kWideEnviron);
-    if (cpu.esi == 0)
+    returns(cpu, found);
+}
+
+/* 0x52c178 (__wputenv): the wide "name=value" `pair` into _wenviron as it is -- "name=" takes it
+ * out -- _wenviron and __env_mask grown as it takes; 0, or -1.  For an empty `pair` the code looks
+ * for its '=' at `edx` as the caller left it.  At its entry's depth: six pushes, then 8 bytes.  0
+ * with cpu.terminate set when the game stopped. */
+reg32 wputenvOf(win32::WinApplication* app, x86::CPU& cpu, reg32 pair, reg32 edx)
+{
+    const GuestFrame frame(cpu, 0x18, 8);
+    if (pair == 0)
+        return 0xffffffff;
+    reg32 equals = edx;
+    if (half(app, pair) != 0)
+        for (equals = pair + 2; half(app, equals) != 0 && half(app, equals) != '='; equals += 2)
+            if (half(app, equals + 2) == 0)
+            {
+                equals += 2;
+                break;
+            }
+    if (half(app, equals) == 0)
+        return 0xffffffff;
+    const reg32 remove = half(app, equals + 2) == 0 ? 1 : 0;
+    reg32 environ = at(app, kWideEnviron);
+    reg32 index;
+    if (environ == 0)
     {
-        if (cpu.edi == 0)
-            return back(0);
-        cpu.eax = 9;
-        if (!direct(app, cpu, nmalloc))
-            return;
-        cpu.esi = cpu.eax;
-        if (cpu.eax == 0)
-            return back(0xffffffff);
-        put(app, cpu.eax, 0);
-        put(app, kWideEnviron, cpu.eax);
-        put(app, cpu.eax + 4, 0);
-        cpu.eax += 8;
-        cpu.ecx = 0;
-        put(app, kEnvMask, cpu.eax);
+        if (remove != 0)
+            return 0;
+        environ = clib::malloc(app, cpu, 9);
+        if (cpu.terminate)
+            return 0;
+        if (environ == 0)
+            return 0xffffffff;
+        put(app, kWideEnviron, environ);
+        put(app, environ, 0);
+        put(app, environ + 4, 0);
+        put(app, kEnvMask, environ + 8);
+        index = 0;
     }
     else
     {
-        cpu.edx = cpu.edi;
-        cpu.eax = cpu.ebp;
-        if (!direct(app, cpu, wfindenv))
-            return;
-        if (cpu.edi == 0)
-            return back(0);
-        if (x86::sreg32(cpu.eax) > 0)
+        reg32 found;
         {
-            if (cpu.ebx == 0)
-                return back(0);
-            cpu.ecx = cpu.eax - 1;
+            const ReturnSlot slot(cpu);
+            found = wputenvFindOf(app, cpu, pair, remove);
         }
+        if (cpu.terminate)
+            return 0;
+        if (remove != 0)
+            return 0;
+        if (x86::sreg32(found) > 0)
+            index = found - 1;
         else
         {
-            cpu.eax = 0 - cpu.eax;
-            cpu.ecx = cpu.eax;
-            ++cpu.eax;
-            cpu.ebx = cpu.ecx * 4;
-            put(app, local + 8, cpu.eax);
-            cpu.eax = cpu.ebx + 8;
-            cpu.edx = at(app, local + 8);
-            put(app, local + 0xc, cpu.eax);
-            cpu.eax += cpu.edx;
+            index = 0 - found;
+            const reg32 entries = index + 1, masked = index * 4 + 8, bytes = masked + entries;
             if (at(app, kEnvMask) == 0)
             {
-                if (!direct(app, cpu, nmalloc))
-                    return;
-                cpu.esi = cpu.eax;
-                if (cpu.eax == 0)
-                    return back(0xffffffff);
-                cpu.edx = at(app, kWideEnviron);
-                if (!direct(app, cpu, memcpy))
-                    return;
-                cpu.edx = at(app, local + 0xc);
-                cpu.eax = cpu.esi;
-                cpu.ebx = at(app, local + 8);
-                cpu.eax += cpu.edx;
-                cpu.edx = 0;
-                put(app, kEnvMask, cpu.eax);
-                if (!direct(app, cpu, memset))
-                    return;
+                const reg32 old = environ;
+                environ = clib::malloc(app, cpu, bytes);
+                if (cpu.terminate)
+                    return 0;
+                if (environ == 0)
+                    return 0xffffffff;
+                memcpyOf(app, environ, old, index * 4);
+                put(app, kEnvMask, environ + masked);
+                clib::memset(app, environ + masked, 0, entries);
             }
             else
             {
-                cpu.edx = cpu.eax;
-                cpu.eax = cpu.esi;
-                if (!direct(app, cpu, nrealloc))
-                    return;
-                cpu.esi = cpu.eax;
-                if (cpu.eax == 0)
-                    return back(0xffffffff);
-                cpu.ebx = at(app, local + 0xc) + cpu.eax;
-                put(app, local, cpu.ebx);
-                cpu.edx = at(app, kEnvMask);
-                cpu.eax = at(app, local);
-                cpu.ebx = cpu.ecx;
-                if (!direct(app, cpu, memmove))
-                    return;
-                cpu.eax = at(app, local);
-                put(app, kEnvMask, cpu.eax);
+                {
+                    const ReturnSlot slot(cpu);
+                    environ = nreallocOf(app, cpu, environ, bytes);
+                }
+                if (cpu.terminate)
+                    return 0;
+                if (environ == 0)
+                    return 0xffffffff;
+                memmoveOf(app, environ + masked, at(app, kEnvMask), index);
+                put(app, kEnvMask, environ + masked);
             }
-            cpu.eax = at(app, kEnvMask);
-            put(app, cpu.esi + cpu.ecx * 4 + 4, 0);
-            put(app, kWideEnviron, cpu.esi);
-            putByte(app, cpu.ecx + cpu.eax, 0);
+            put(app, kWideEnviron, environ);
+            put(app, environ + index * 4 + 4, 0);
         }
     }
-    // name=value into a wide string of the runtime's.
-    cpu.eax = cpu.ebp;
-    if (!direct(app, cpu, wcslen))
-        return;
-    put(app, local + 4, cpu.eax);
-    cpu.eax = at(app, kEnvMask);
-    cpu.ebx = byte(app, cpu.ecx + cpu.eax) != 0 ? at(app, cpu.esi + cpu.ecx * 4) : 0;
-    cpu.eax = cpu.edi;
-    cpu.edx = at(app, local + 4);
-    if (!direct(app, cpu, wcslen))
-        return;
-    cpu.eax += cpu.edx;
-    cpu.edx = cpu.eax * 2 + 4;
-    cpu.eax = cpu.ebx;
-    if (!direct(app, cpu, nrealloc))
-        return;
-    put(app, local + 0x10, cpu.eax);
-    if (cpu.eax == 0)
-        return back(0xffffffff);
-    cpu.eax = at(app, local + 4) * 2;
-    cpu.edx = cpu.ebp;
-    put(app, local, cpu.eax);
-    cpu.ebx = cpu.eax;
-    cpu.eax = at(app, local + 0x10);
-    cpu.ebp = at(app, local);
-    if (!direct(app, cpu, memcpy))
-        return;
-    cpu.eax = at(app, local + 0x10) + cpu.ebp;
-    cpu.edx = at(app, local + 0x10);
-    putHalf(app, cpu.eax, '=');
-    cpu.eax = cpu.ebp + 2 + cpu.edx;
-    cpu.edx = cpu.edi;
-    if (!direct(app, cpu, wcscpy))
-        return;
-    cpu.edx = at(app, local + 0x10);
-    cpu.eax = at(app, kEnvMask);
-    put(app, cpu.esi + cpu.ecx * 4, cpu.edx);
-    putByte(app, cpu.ecx + cpu.eax, 1);
-    back(0);
+    put(app, environ + index * 4, pair);
+    putByte(app, index + at(app, kEnvMask), 0);
+    return 0;
 }
 
-/* setenv (clib/environ/c/setenv.c, 0x4f8b50): the variable named at eax set
- * to the string at edx -- replaced if ebx says so, an empty one taking it out
- * -- in Windows' environment by SetEnvironmentVariableA, in _environ, and in
- * _wenviron if there is one; 0, or -1. */
-void setenv(win32::WinApplication* app, x86::CPU& cpu)
+void wputenv(win32::WinApplication* app, x86::CPU& cpu)
 {
-    for (const reg32 r : {cpu.ecx, cpu.esi, cpu.edi, cpu.ebp})
-        push(app, cpu, r);
-    cpu.esp -= 0x10;
-    const reg32 local = cpu.esp;
-    cpu.edi = cpu.eax;
-    cpu.esi = cpu.edx;
-    put(app, local + 0xc, cpu.ebx);
-    cpu.edx = 2;
-    cpu.ebx = 1;
-    put(app, local + 4, cpu.edx);
-    put(app, local, cpu.ebx);
-    auto back = [&](reg32 result) {
-        cpu.eax = result;
-        cpu.esp = local + 0x10;
-        cpu.ebp = pop(app, cpu);
-        cpu.edi = pop(app, cpu);
-        cpu.esi = pop(app, cpu);
-        cpu.ecx = pop(app, cpu);
-        cpu.esp += 4;
-    };
-    if (cpu.esi != 0 && byte(app, cpu.esi) == 0)
+    const reg32 result = wputenvOf(app, cpu, cpu.eax, cpu.edx);
+    if (cpu.terminate)
+        return;
+    returns(cpu, result);
+}
+
+/* 0x5252a0 (__create_wide_environment): _wenviron made from _environ, a string at a time by
+ * mbstowcs into a block of _nmalloc's, which __wputenv takes -- or, one mbstowcs cannot make,
+ * _nfree.  At its entry's depth: four pushes.  What the code leaves in eax, given `eax` on entry;
+ * 0 with cpu.terminate set when the game stopped. */
+reg32 createWideEnvironmentOf(win32::WinApplication* app, x86::CPU& cpu, reg32 eax)
+{
+    const GuestFrame frame(cpu, 0x10, 0);
+    const reg32 environ = at(app, kEnviron);
+    if (environ == 0)
+        return eax;
+    for (reg32 entry = environ; at(app, entry) != 0; entry += 4)
     {
-        bool none = at(app, local + 0xc) != 0;
+        const reg32 string = at(app, entry);
+        const reg32 characters = mbslenOf(app, string) + 1;
+        const reg32 wide = clib::malloc(app, cpu, characters * 2);
+        if (cpu.terminate)
+            return 0;
+        eax = wide;
+        if (wide == 0)
+            continue;
+        reg32 made;
+        {
+            const ReturnSlot slot(cpu);
+            made = mbstowcsOf(app, cpu, wide, string, characters);
+        }
+        if (cpu.terminate)
+            return 0;
+        if (made != 0xffffffff)
+        {
+            const ReturnSlot slot(cpu);
+            eax = wputenvOf(app, cpu, wide, string);
+        }
+        else
+            eax = clib::free(app, cpu, wide);
+        if (cpu.terminate)
+            return 0;
+    }
+    return eax;
+}
+
+void create_wide_environment(win32::WinApplication* app, x86::CPU& cpu)
+{
+    const reg32 eax = createWideEnvironmentOf(app, cpu, cpu.eax);
+    if (cpu.terminate)
+        return;
+    returns(cpu, eax);
+}
+
+/* __wsetenv (clib/environ/c/wsetenv.c, 0x518290): __setenv's for _wenviron -- the wide variable
+ * `name` set to `value`, replaced if `replace` says so, taken out for none -- made from _environ
+ * first if there is none; 0, or -1.  At its entry's depth: four pushes, then 0x14 bytes.  0 with
+ * cpu.terminate set when the game stopped. */
+reg32 wsetenvOf(win32::WinApplication* app, x86::CPU& cpu, reg32 name, reg32 value, reg32 replace)
+{
+    const GuestFrame frame(cpu, 0x10, 0x14);
+    if (name == 0 || half(app, name) == 0)
+        return 0xffffffff;
+    if (at(app, kWideEnviron) == 0)
+    {
+        {
+            const ReturnSlot slot(cpu);
+            createWideEnvironmentOf(app, cpu, 0);
+        }
+        if (cpu.terminate)
+            return 0;
+    }
+    reg32 environ = at(app, kWideEnviron);
+    reg32 index;
+    if (environ == 0)
+    {
+        if (value == 0)
+            return 0;
+        environ = clib::malloc(app, cpu, 9);
+        if (cpu.terminate)
+            return 0;
+        if (environ == 0)
+            return 0xffffffff;
+        put(app, environ, 0);
+        put(app, kWideEnviron, environ);
+        put(app, environ + 4, 0);
+        put(app, kEnvMask, environ + 8);
+        index = 0;
+    }
+    else
+    {
+        const reg32 found = wfindenvOf(app, cpu, name, value);
+        if (cpu.terminate)
+            return 0;
+        if (value == 0)
+            return 0;
+        if (x86::sreg32(found) > 0)
+        {
+            if (replace == 0)
+                return 0;
+            index = found - 1;
+        }
+        else
+        {
+            index = 0 - found;
+            const reg32 entries = index + 1, masked = index * 4 + 8, bytes = masked + entries;
+            if (at(app, kEnvMask) == 0)
+            {
+                const reg32 old = environ;
+                environ = clib::malloc(app, cpu, bytes);
+                if (cpu.terminate)
+                    return 0;
+                if (environ == 0)
+                    return 0xffffffff;
+                memcpyOf(app, environ, old, index * 4);
+                put(app, kEnvMask, environ + masked);
+                clib::memset(app, environ + masked, 0, entries);
+            }
+            else
+            {
+                {
+                    const ReturnSlot slot(cpu);
+                    environ = nreallocOf(app, cpu, environ, bytes);
+                }
+                if (cpu.terminate)
+                    return 0;
+                if (environ == 0)
+                    return 0xffffffff;
+                memmoveOf(app, environ + masked, at(app, kEnvMask), index);
+                put(app, kEnvMask, environ + masked);
+            }
+            put(app, environ + index * 4 + 4, 0);
+            put(app, kWideEnviron, environ);
+            putByte(app, index + at(app, kEnvMask), 0);
+        }
+    }
+    // name=value into a wide string of the runtime's: the old one grown, or anew.
+    const reg32 nameLength = wcslenOf(app, name);
+    const reg32 old = byte(app, index + at(app, kEnvMask)) != 0 ? at(app, environ + index * 4) : 0;
+    reg32 string;
+    {
+        const ReturnSlot slot(cpu);
+        string = nreallocOf(app, cpu, old, (wcslenOf(app, value) + nameLength) * 2 + 4);
+    }
+    if (cpu.terminate)
+        return 0;
+    if (string == 0)
+        return 0xffffffff;
+    memcpyOf(app, string, name, nameLength * 2);
+    putHalf(app, string + nameLength * 2, '=');
+    wcscpyOf(app, string + nameLength * 2 + 2, value);
+    put(app, environ + index * 4, string);
+    putByte(app, index + at(app, kEnvMask), 1);
+    return 0;
+}
+
+void wsetenv(win32::WinApplication* app, x86::CPU& cpu)
+{
+    const reg32 result = wsetenvOf(app, cpu, cpu.eax, cpu.edx, cpu.ebx);
+    if (cpu.terminate)
+        return;
+    returns(cpu, result);
+}
+
+/* setenv (clib/environ/c/setenv.c, 0x4f8b50): the variable `name` set to the string `value` --
+ * replaced if `replace` says so, an empty one taking it out -- in Windows' environment by
+ * SetEnvironmentVariableA, in _environ, and in _wenviron if there is one, its name and value made
+ * wide by mbstowcs; 0, or -1.  At its entry's depth: four pushes, then 0x10 bytes.  0 with
+ * cpu.terminate set when the game stopped. */
+reg32 setenvTopOf(win32::WinApplication* app, x86::CPU& cpu, reg32 name, reg32 value, reg32 replace)
+{
+    const GuestFrame frame(cpu, 0x10, 0x10);
+    auto lookup = [&] {
+        const ReturnSlot slot(cpu);
+        return getenvOf(app, cpu, name);
+    };
+    if (value != 0 && byte(app, value) == 0)
+    {
+        bool none = replace != 0;
         if (!none)
         {
-            cpu.eax = cpu.edi;
-            if (!direct(app, cpu, getenv))
-                return;
-            none = cpu.eax == 0;
+            none = lookup() == 0;
+            if (cpu.terminate)
+                return 0;
         }
         if (none)
-            cpu.esi = 0;
+            value = 0;
     }
     bool toWindows = true;
-    if (at(app, local + 0xc) == 0)
+    if (replace == 0)
     {
-        cpu.eax = cpu.edi;
-        if (!direct(app, cpu, getenv))
-            return;
-        toWindows = cpu.eax == 0;
+        toWindows = lookup() == 0;
+        if (cpu.terminate)
+            return 0;
     }
     if (toWindows)
     {
-        if (!windows<kSetEnvironmentVariableA, &win32::kernel32::SetEnvironmentVariableA>(app, cpu, cpu.edi, cpu.esi))
-            return;
-        if (cpu.eax == 0)
-            return back(0xffffffff);
-    }
-    cpu.ebx = at(app, local + 0xc);
-    cpu.edx = cpu.esi;
-    cpu.eax = cpu.edi;
-    if (!direct(app, cpu, setenv_))
-        return;
-    if (cpu.eax != 0)
-        return back(0xffffffff);
-    cpu.eax = at(app, kWideEnviron);
-    if (cpu.eax == 0)
-        return back(cpu.eax);
-    cpu.eax = cpu.edi;
-    if (!direct(app, cpu, mbslen))
-        return;
-    cpu.ebx = cpu.eax + 1;
-    cpu.eax = at(app, local + 4) * cpu.ebx;
-    if (!direct(app, cpu, nmalloc))
-        return;
-    cpu.edx = cpu.eax;
-    cpu.ebp = cpu.eax;
-    auto noMemory = [&] {
-        cpu.eax = 5;  // ENOMEM
-        if (!direct(app, cpu, set_errno_dos))
-            return;
-        back(0xffffffff);
-    };
-    if (cpu.eax == 0)
-        return noMemory();
-    if (cpu.esi != 0)
-    {
-        cpu.eax = cpu.esi;
-        if (!direct(app, cpu, mbslen))
-            return;
-        ++cpu.eax;
-        cpu.ecx = at(app, local + 4);
-        put(app, local + 8, cpu.eax);
-        cpu.eax *= cpu.ecx;
-        if (!direct(app, cpu, nmalloc))
-            return;
-        cpu.ecx = cpu.eax;
-        if (cpu.eax == 0)
+        reg32 set;
         {
-            cpu.eax = cpu.edx;
-            if (!direct(app, cpu, nfree))
-                return;
+            const guest::KeptRegisters kept(cpu);
+            if (!windows<kSetEnvironmentVariableA, &host::setEnvironmentVariable>(app, cpu, name, value))
+                return 0;
+            set = cpu.eax;
+        }
+        if (set == 0)
+            return 0xffffffff;
+    }
+    reg32 failed;
+    {
+        const ReturnSlot slot(cpu);
+        failed = setenvOf(app, cpu, name, value, replace);
+    }
+    if (cpu.terminate)
+        return 0;
+    if (failed != 0)
+        return 0xffffffff;
+    if (at(app, kWideEnviron) == 0)
+        return 0;
+    auto noMemory = [&] {
+        runs(app, cpu, &set_errno_dos, {5});  // ENOMEM
+        return cpu.terminate ? 0 : 0xffffffff;
+    };
+    const reg32 nameCharacters = mbslenOf(app, name) + 1;
+    const reg32 wideName = clib::malloc(app, cpu, nameCharacters * 2);
+    if (cpu.terminate)
+        return 0;
+    if (wideName == 0)
+        return noMemory();
+    reg32 valueCharacters = 0, wideValue = 0;
+    if (value != 0)
+    {
+        valueCharacters = mbslenOf(app, value) + 1;
+        wideValue = clib::malloc(app, cpu, valueCharacters * 2);
+        if (cpu.terminate)
+            return 0;
+        if (wideValue == 0)
+        {
+            clib::free(app, cpu, wideName);
+            if (cpu.terminate)
+                return 0;
             return noMemory();
         }
     }
-    else
-        cpu.ecx = 0;
     auto freeBoth = [&] {
-        cpu.eax = cpu.ebp;
-        if (!direct(app, cpu, nfree))
-            return;
-        cpu.eax = cpu.ecx;
-        if (!direct(app, cpu, nfree))
-            return;
-        back(0xffffffff);
+        clib::free(app, cpu, wideName);
+        if (!cpu.terminate)
+            clib::free(app, cpu, wideValue);
+        return cpu.terminate ? 0 : 0xffffffff;
     };
-    cpu.ebx *= at(app, local);
-    cpu.edx = cpu.edi;
-    cpu.eax = cpu.ebp;
-    if (!direct(app, cpu, mbstowcs))
-        return;
-    if (cpu.eax == 0xffffffff)
+    auto widen = [&](reg32 into, reg32 from, reg32 characters) {
+        const ReturnSlot slot(cpu);
+        return mbstowcsOf(app, cpu, into, from, characters);
+    };
+    if (widen(wideName, name, nameCharacters) == 0xffffffff)
         return freeBoth();
-    if (cpu.ecx != 0)
+    if (cpu.terminate)
+        return 0;
+    if (wideValue != 0)
     {
-        cpu.ebx = at(app, local + 8) * at(app, local);
-        cpu.eax = cpu.ecx;
-        cpu.edx = cpu.esi;
-        if (!direct(app, cpu, mbstowcs))
-            return;
-        if (cpu.eax == 0xffffffff)
+        if (widen(wideValue, value, valueCharacters) == 0xffffffff)
             return freeBoth();
+        if (cpu.terminate)
+            return 0;
     }
-    cpu.ebx = at(app, local + 0xc);
-    cpu.edx = cpu.ecx;
-    cpu.eax = cpu.ebp;
-    if (!direct(app, cpu, wsetenv))
-        return;
-    cpu.edx = cpu.eax;
-    cpu.eax = cpu.ebp;
-    if (!direct(app, cpu, nfree))
-        return;
-    if (cpu.ecx != 0)
+    reg32 result;
     {
-        cpu.eax = cpu.ecx;
-        if (!direct(app, cpu, nfree))
-            return;
+        const ReturnSlot slot(cpu);
+        result = wsetenvOf(app, cpu, wideName, wideValue, replace);
     }
-    back(cpu.edx);
+    if (cpu.terminate)
+        return 0;
+    clib::free(app, cpu, wideName);
+    if (cpu.terminate)
+        return 0;
+    if (wideValue != 0)
+    {
+        clib::free(app, cpu, wideValue);
+        if (cpu.terminate)
+            return 0;
+    }
+    return result;
+}
+
+void setenv(win32::WinApplication* app, x86::CPU& cpu)
+{
+    const reg32 result = setenvTopOf(app, cpu, cpu.eax, cpu.edx, cpu.ebx);
+    if (cpu.terminate)
+        return;
+    returns(cpu, result);
 }
 
 
@@ -8878,15 +8254,15 @@ void setenv(win32::WinApplication* app, x86::CPU& cpu)
  *
  * __scnf reads through the two routines its specs hold -- sscanf's take the
  * string's characters, and put one back -- and each conversion takes its
- * argument's pointer as the code does: the va_list moved on, es made ds (or,
- * for an 'F' one, les, which the generated code has not either), the store
- * through es.  These are written as the code is, as the environment's are:
- * each push and pop to the guest's stack, each call with the return address's
- * slot, the registers as the code leaves them -- a width the format gives no
- * limit to lets the float's conversion run over its buffer on the stack, and
- * that is the code's too.  Their x87 instructions are the same operations of
- * the port's x87 as the generated code has for them, so a number comes out to
- * the bit as the game's code makes it. ---- */
+ * argument's pointer as the code does: the va_list moved on, the store
+ * through ds (an 'F' one's les the generated code has not either).  Each is a
+ * typed core (fooOf) and its adapter for the calls by address; a core keeps
+ * the frame the code had where it hands the frame's addresses on -- a width
+ * the format gives no limit to lets the float's conversion run over its buffer
+ * on the stack, and that is the code's too -- and is called at its code's
+ * depth.  The long double is the port's IEEEf80, its x87 operations the same
+ * the generated code has for them, so a number comes out to the bit as the
+ * game's code makes it. ---- */
 namespace
 {
 
@@ -8906,20 +8282,11 @@ reg8 scanFlags(win32::WinApplication* app, reg32 specs)
     return byte(app, specs + kScanFlags);
 }
 
-/* Whether _IsTable says the character, eax as it is, is `kind`: the code's
- * inc al and and eax, 0xff, which leave eax the table's index. */
-bool isKind(win32::WinApplication* app, x86::CPU& cpu, reg8 kind)
-{
-    cpu.eax = (cpu.eax + 1) & 0xff;
-    return (byte(app, kIsTable + cpu.eax) & kind) != 0;
-}
-
-/* The pointer a conversion stores through, from the va_list at `argp`: the
- * va_list moved on into `step`, then a far pointer's les -- not the generated
- * code's either -- or es made ds through `ds` and the pointer into
- * `target`. */
-void scanTarget(win32::WinApplication* app, x86::CPU& cpu, reg32 argp, bool far, reg32& step, reg32& target,
-                reg32& ds)
+/* The va_list at `argp` moved on past a conversion's pointer: `step` its new place; the pointer in
+ * `target` -- unless it is a far one, whose les is not the generated code's either, `target` then
+ * left as it is.  The code keeps the two in registers, and where they are the same register the
+ * pointer is the va_list's place: callers alias them as their code does. */
+void scanArgument(win32::WinApplication* app, reg32 argp, bool far, reg32& step, reg32& target)
 {
     step = at(app, argp) + (far ? 8 : 4);
     put(app, argp, step);
@@ -8928,18 +8295,16 @@ void scanTarget(win32::WinApplication* app, x86::CPU& cpu, reg32 argp, bool far,
         NFS2_ASSERT(false);  // les
         return;
     }
-    ds = cpu.ds;
-    cpu.es = reg16(ds);
     target = at(app, step - 4);
 }
 
-/* movsd: a dword from esi to es:edi. */
-void moveDword(win32::WinApplication* app, x86::CPU& cpu)
+/* A conversion's pointer as scan_char's and scan_string's code takes it: the far one's register
+ * left as it was (`esi`). */
+reg32 scanPointer(win32::WinApplication* app, reg8 flags, reg32 argp, reg32 esi)
 {
-    put(app, cpu.ees + cpu.edi, at(app, cpu.esi));
-    const reg32 step = cpu.flags.df ? reg32(-4) : 4;
-    cpu.edi += step;
-    cpu.esi += step;
+    reg32 step, target = esi;
+    scanArgument(app, argp, (flags & kFarPointer) != 0, step, target);
+    return target;
 }
 
 void scanEpilogue(win32::WinApplication* app, x86::CPU& cpu, std::initializer_list<reg32*> registers)
@@ -8973,1462 +8338,1230 @@ bool add96(reg32& high, reg32& middle, reg32& low, reg32 high2, reg32 middle2, r
 
 }  // namespace
 
-/* 0x4f04f0 (cget_string): sscanf's next character, from the string in its
- * specs, or -1 at its end, which the specs' flags note. */
+/* 0x4f04f0 (cget_string): sscanf's next character, from the string in its specs `specs`, or -1 at
+ * its end, which the specs' flags note. */
+reg32 cgetStringOf(win32::WinApplication* app, reg32 specs)
+{
+    const reg32 s = at(app, specs + kScanString);
+    if (const reg8 c = byte(app, s))
+    {
+        put(app, specs + kScanString, s + 1);
+        return c;
+    }
+    putByte(app, specs + kScanFlags, byte(app, specs + kScanFlags) | kEndOfInput);
+    return 0xffffffff;
+}
+
 void cget_string(win32::WinApplication* app, x86::CPU& cpu)
 {
-    push(app, cpu, cpu.ebx);
-    push(app, cpu, cpu.edx);
-    cpu.ebx = at(app, cpu.eax + kScanString);
-    cpu.edx = byte(app, cpu.ebx);
-    if (cpu.edx != 0)
-    {
-        ++cpu.ebx;
-        put(app, cpu.eax + kScanString, cpu.ebx);
-        cpu.eax = cpu.edx;
-    }
-    else
-    {
-        setLow8(cpu.ebx, byte(app, cpu.eax + kScanFlags) | kEndOfInput);
-        cpu.edx = 0xffffffff;
-        putByte(app, cpu.eax + kScanFlags, reg8(cpu.ebx));
-        cpu.eax = cpu.edx;
-    }
-    scanEpilogue(app, cpu, {&cpu.edx, &cpu.ebx});
+    returns(cpu, cgetStringOf(app, cpu.eax));
 }
 
-/* 0x4f051c (uncget_string): the character back -- the string's pointer back
- * by one. */
+/* 0x4f051c (uncget_string): the character back -- the string's pointer in the specs `specs` back by
+ * one. */
+void uncgetStringOf(win32::WinApplication* app, reg32 specs)
+{
+    put(app, specs + kScanString, at(app, specs + kScanString) - 1);
+}
+
 void uncget_string(win32::WinApplication* app, x86::CPU& cpu)
 {
-    put(app, cpu.edx + kScanString, at(app, cpu.edx + kScanString) - 1);
+    uncgetStringOf(app, cpu.edx);  // eax left as it was, the character
     cpu.esp += 4;
 }
 
-/* 0x50c640 (cgetc): the next character, by the specs' routine. */
+/* 0x50c640 (cgetc): the next character, by the specs' routine -- the game's, by address, eax and
+ * edx the specs as the code hands them.  At its entry's depth: a push.  0 with cpu.terminate set
+ * when the game stopped. */
+reg32 cgetcOf(win32::WinApplication* app, x86::CPU& cpu, reg32 specs)
+{
+    const GuestFrame frame(cpu, 4, 0);
+    const guest::KeptRegisters kept(cpu);
+    cpu.eax = cpu.edx = specs;
+    return call(app, cpu, at(app, specs + kScanGet)) ? cpu.eax : 0;
+}
+
 void cgetc(win32::WinApplication* app, x86::CPU& cpu)
 {
-    push(app, cpu, cpu.edx);
-    cpu.edx = cpu.eax;
-    if (!indirect(app, cpu, at(app, cpu.edx + kScanGet)))
+    const reg32 c = cgetcOf(app, cpu, cpu.eax);
+    if (cpu.terminate)
         return;
-    scanEpilogue(app, cpu, {&cpu.edx});
+    returns(cpu, c);
 }
 
-/* 0x50c648 (uncget): the character in eax back, by the specs' routine. */
+/* 0x50c648 (uncget): the character `c` back, by the specs' routine -- the game's, by address, ebx
+ * and edx the specs.  At its entry's depth: a push.  What the routine leaves in eax; 0 with
+ * cpu.terminate set when the game stopped. */
+reg32 uncgetOf(win32::WinApplication* app, x86::CPU& cpu, reg32 c, reg32 specs)
+{
+    const GuestFrame frame(cpu, 4, 0);
+    const guest::KeptRegisters kept(cpu);
+    cpu.eax = c;
+    cpu.ebx = cpu.edx = specs;
+    return call(app, cpu, at(app, specs + kScanUnget)) ? cpu.eax : 0;
+}
+
 void uncget(win32::WinApplication* app, x86::CPU& cpu)
 {
-    push(app, cpu, cpu.ebx);
-    cpu.ebx = cpu.edx;
-    if (!indirect(app, cpu, at(app, cpu.ebx + kScanUnget)))
+    const reg32 eax = uncgetOf(app, cpu, cpu.eax, cpu.edx);
+    if (cpu.terminate)
         return;
-    scanEpilogue(app, cpu, {&cpu.ebx});
+    returns(cpu, eax);
 }
 
-/* 0x50d538 (chktrm): the next character while the field's width lasts -- -1
- * when it is over, or the input is. */
+/* 0x50d538 (chktrm): the next character while the field's width lasts -- -1 when it is over, or
+ * the input is.  At its entry's depth: two pushes.  0 with cpu.terminate set when the game
+ * stopped. */
+reg32 chktrmOf(win32::WinApplication* app, x86::CPU& cpu, reg32 specs)
+{
+    const GuestFrame frame(cpu, 8, 0);
+    const reg32 width = at(app, specs + kScanWidth);
+    put(app, specs + kScanWidth, width - 1);
+    if (width == 0)
+        return 0xffffffff;
+    reg32 c;
+    {
+        const ReturnSlot slot(cpu);
+        c = cgetcOf(app, cpu, specs);
+    }
+    if (cpu.terminate)
+        return 0;
+    return scanFlags(app, specs) & kEndOfInput ? 0xffffffff : c;
+}
+
 void chktrm(win32::WinApplication* app, x86::CPU& cpu)
 {
-    push(app, cpu, cpu.ebx);
-    push(app, cpu, cpu.edx);
-    cpu.edx = cpu.eax;
-    cpu.eax = at(app, cpu.eax + kScanWidth);
-    cpu.ebx = cpu.eax - 1;
-    put(app, cpu.edx + kScanWidth, cpu.ebx);
-    bool over = cpu.eax == 0;
-    if (!over)
-    {
-        cpu.eax = cpu.edx;
-        if (!direct(app, cpu, cgetc))
-            return;
-        over = (scanFlags(app, cpu.edx) & kEndOfInput) != 0;
-    }
-    if (over)
-        cpu.eax = 0xffffffff;
-    scanEpilogue(app, cpu, {&cpu.edx, &cpu.ebx});
+    const reg32 c = chktrmOf(app, cpu, cpu.eax);
+    if (cpu.terminate)
+        return;
+    returns(cpu, c);
 }
 
-/* 0x50d510 (radix_value): the digit eax is, in any base up to 16; 16 for
- * none. */
+/* 0x50d510 (radix_value): the digit `c` is, in any base up to 16; 16 for none. */
+reg32 radixValueOf(win32::WinApplication* app, reg32 c)
+{
+    if (x86::sreg32(c) >= 0x30 && x86::sreg32(c) <= 0x39)
+        return c - 0x30;
+    c = clib::tolower(app, c);
+    if (x86::sreg32(c) >= 0x61 && x86::sreg32(c) <= 0x66)
+        return c - 0x57;
+    return 0x10;
+}
+
 void radix_value(win32::WinApplication* app, x86::CPU& cpu)
 {
-    if (x86::sreg32(cpu.eax) >= 0x30 && x86::sreg32(cpu.eax) <= 0x39)
-        return returns(cpu, cpu.eax - 0x30);
-    if (!direct(app, cpu, tolower))
-        return;
-    if (x86::sreg32(cpu.eax) >= 0x61 && x86::sreg32(cpu.eax) <= 0x66)
-        return returns(cpu, cpu.eax - 0x57);
-    returns(cpu, 0x10);
+    returns(cpu, radixValueOf(app, cpu.eax));
 }
 
-/* 0x50c904 (get_opt): the format's options after a '%', at eax, into the
- * specs at edx -- '*', the width, N or F, then h, l, w, L or I64; past them. */
+/* 0x50c904 (get_opt): the format's options after a '%', at `p`, into the specs `specs` -- '*', the
+ * width, N or F, then h, l, w, L or I64; past them. */
+reg32 getOptOf(win32::WinApplication* app, reg32 p, reg32 specs)
+{
+    reg8 flags = (byte(app, specs + kScanFlags) | kAssign) & 3;
+    put(app, specs + kScanWidth, 0xffffffff);
+    putByte(app, specs + kScanFlags, flags);
+    if (byte(app, p) == '*')
+    {
+        flags &= 0xfe;
+        ++p;
+        putByte(app, specs + kScanFlags, flags);
+    }
+    auto digit = [&](reg32 c) { return (byte(app, kIsTable + ((c + 1) & 0xff)) & kDigit) != 0; };
+    if (digit(byte(app, p)))
+    {
+        reg32 width = 0;
+        for (reg32 c = byte(app, p); digit(c); c = byte(app, ++p))
+            width = width * 10 + (c - 0x30);
+        put(app, specs + kScanWidth, width);
+    }
+    auto add = [&](reg8 flag, reg32 past) {
+        putByte(app, specs + kScanFlags, byte(app, specs + kScanFlags) | flag);
+        p += past;
+    };
+    if (byte(app, p) == 'N')
+        add(kNearPointer, 1);
+    else if (byte(app, p) == 'F')
+        add(kFarPointer, 1);
+    const reg8 size = byte(app, p);
+    if (size == 'h')
+        add(kShortVar, 1);
+    else if (size == 'l' || size == 'w')
+        add(kLongVar, 1);
+    else if (size == 'L')
+        add(kLongLongVar, 1);
+    else if (size == 'I' && byte(app, p + 1) == '6' && byte(app, p + 2) == '4')
+        add(kLongLongVar, 3);
+    return p;
+}
+
 void get_opt(win32::WinApplication* app, x86::CPU& cpu)
 {
-    push(app, cpu, cpu.ebx);
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.esi);
-    push(app, cpu, cpu.edi);
-    auto done = [&] { scanEpilogue(app, cpu, {&cpu.edi, &cpu.esi, &cpu.ecx, &cpu.ebx}); };
-    cpu.edi = cpu.edx;
-    setLow8(cpu.edx, byte(app, cpu.edx + kScanFlags) | kAssign);
-    putByte(app, cpu.edi + kScanFlags, reg8(cpu.edx));
-    setHigh8(cpu.edx, reg8(cpu.edx));
-    put(app, cpu.edi + kScanWidth, 0xffffffff);
-    setHigh8(cpu.edx, (cpu.edx >> 8) & 3);
-    putByte(app, cpu.edi + kScanFlags, reg8(cpu.edx >> 8));
-    if (byte(app, cpu.eax) == '*')
-    {
-        setHigh8(cpu.ebx, byte(app, cpu.edi + kScanFlags) & 0xfe);
-        ++cpu.eax;
-        putByte(app, cpu.edi + kScanFlags, reg8(cpu.ebx >> 8));
-    }
-    cpu.ebx = byte(app, cpu.eax);
-    cpu.edx = (cpu.ebx + 1) & 0xff;
-    if (byte(app, kIsTable + cpu.edx) & kDigit)
-    {
-        cpu.edx = 0;
-        for (;;)
-        {
-            cpu.edx = cpu.edx * 10 + (cpu.ebx - 0x30);
-            cpu.ebx = byte(app, cpu.eax + 1);
-            setLow8(cpu.ecx, cpu.ebx + 1);
-            cpu.esi = reg8(cpu.ecx);
-            setHigh8(cpu.ecx, byte(app, kIsTable + cpu.esi));
-            ++cpu.eax;
-            if (!(reg8(cpu.ecx >> 8) & kDigit))
-                break;
-        }
-        put(app, cpu.edi + kScanWidth, cpu.edx);
-    }
-    setLow8(cpu.ebx, byte(app, cpu.eax));
-    cpu.edx = cpu.eax + 1;
-    if (reg8(cpu.ebx) == 'N')
-    {
-        setHigh8(cpu.ecx, byte(app, cpu.edi + kScanFlags) | kNearPointer);
-        cpu.eax = cpu.edx;
-        putByte(app, cpu.edi + kScanFlags, reg8(cpu.ecx >> 8));
-    }
-    else if (reg8(cpu.ebx) == 'F')
-    {
-        setLow8(cpu.ecx, byte(app, cpu.edi + kScanFlags) | kFarPointer);
-        cpu.eax = cpu.edx;
-        putByte(app, cpu.edi + kScanFlags, reg8(cpu.ecx));
-    }
-    setLow8(cpu.edx, byte(app, cpu.eax));
-    cpu.ebx = cpu.eax + 1;
-    const reg8 dl = reg8(cpu.edx);
-    if (dl == 'h')
-    {
-        setHigh8(cpu.edx, byte(app, cpu.edi + kScanFlags) | kShortVar);
-        cpu.eax = cpu.ebx;
-        putByte(app, cpu.edi + kScanFlags, reg8(cpu.edx >> 8));
-    }
-    else if (dl == 'l' || dl == 'w')
-    {
-        setLow8(cpu.edx, byte(app, cpu.edi + kScanFlags) | kLongVar);
-        ++cpu.eax;
-        putByte(app, cpu.edi + kScanFlags, reg8(cpu.edx));
-    }
-    else if (dl == 'L')
-    {
-        setLow8(cpu.ecx, byte(app, cpu.edi + kScanFlags) | kLongLongVar);
-        cpu.eax = cpu.ebx;
-        putByte(app, cpu.edi + kScanFlags, reg8(cpu.ecx));
-    }
-    else if (dl == 'I' && byte(app, cpu.eax + 1) == '6' && byte(app, cpu.eax + 2) == '4')
-    {
-        setHigh8(cpu.edx, byte(app, cpu.edi + kScanFlags) | kLongLongVar);
-        cpu.eax += 3;
-        putByte(app, cpu.edi + kScanFlags, reg8(cpu.edx >> 8));
-    }
-    done();
+    returns(cpu, getOptOf(app, cpu.eax, cpu.edx));
 }
 
-/* 0x50ca08 (scan_white): white space skipped: how much; the character after
- * it put back, unless the input is over. */
+/* 0x50ca08 (scan_white): white space skipped: how much; the character after it put back, unless
+ * the input is over.  At its entry's depth: four pushes and a dword.  0 with cpu.terminate set when
+ * the game stopped. */
+reg32 scanWhiteOf(win32::WinApplication* app, x86::CPU& cpu, reg32 specs)
+{
+    const GuestFrame frame(cpu, 0x10, 4);
+    reg32 skipped = 0, c;
+    for (;; ++skipped)
+    {
+        {
+            const ReturnSlot slot(cpu);
+            c = cgetcOf(app, cpu, specs);
+        }
+        if (cpu.terminate)
+            return 0;
+        if (!(byte(app, kIsTable + ((c + 1) & 0xff)) & kSpace))
+            break;
+    }
+    if (!(scanFlags(app, specs) & kEndOfInput))
+    {
+        {
+            const ReturnSlot slot(cpu);
+            uncgetOf(app, cpu, c, specs);
+        }
+        if (cpu.terminate)
+            return 0;
+    }
+    return skipped;
+}
+
 void scan_white(win32::WinApplication* app, x86::CPU& cpu)
 {
-    push(app, cpu, cpu.ebx);
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.edx);
-    push(app, cpu, cpu.esi);
-    cpu.esp -= 4;
-    cpu.edx = cpu.eax;
-    cpu.ebx = 0;
-    for (;;)
-    {
-        cpu.eax = cpu.edx;
-        if (!direct(app, cpu, cgetc))
-            return;
-        put(app, cpu.esp, cpu.eax);
-        setLow8(cpu.ecx, byte(app, cpu.esp) + 1);
-        cpu.esi = reg8(cpu.ecx);
-        if (!(byte(app, kIsTable + cpu.esi) & kSpace))
-            break;
-        ++cpu.ebx;
-    }
-    if (!(scanFlags(app, cpu.edx) & kEndOfInput) && !direct(app, cpu, uncget))
+    const reg32 skipped = scanWhiteOf(app, cpu, cpu.eax);
+    if (cpu.terminate)
         return;
-    cpu.eax = cpu.ebx;
-    cpu.esp += 4;
-    scanEpilogue(app, cpu, {&cpu.esi, &cpu.edx, &cpu.ecx, &cpu.ebx});
+    returns(cpu, skipped);
 }
 
-/* 0x50ca48 (scan_char): %c and %C: the field's width of characters, 1 for
- * none, into the argument -- %C's made wide characters by mbtowc.  How many
- * were read; 0 for a character mbtowc could not make. */
+/* 0x50ca48 (scan_char): %c and %C: the field's width of characters, 1 for none, into the argument
+ * from the va_list at `argp` -- %C's made wide characters by mbtowc.  How many were read; 0 for a
+ * character mbtowc could not make.  `esi` as the caller left it, which a far pointer leaves the
+ * target.  At its entry's depth: four pushes, es, a push, then 8 bytes: mbtowc's character and
+ * its bytes.  0 with cpu.terminate set when the game stopped. */
+reg32 scanCharOf(win32::WinApplication* app, x86::CPU& cpu, reg32 specs, reg32 argp, reg32 esi)
+{
+    const GuestFrame frame(cpu, 0x18, 8);
+    const reg32 wide = frame - 8, bytes = frame - 4;
+    reg32 target = esi;
+    if (scanFlags(app, specs) & kAssign)
+        target = scanPointer(app, scanFlags(app, specs), argp, esi);
+    reg32 width = at(app, specs + kScanWidth);
+    if (width == 0xffffffff)
+        width = 1;
+    reg32 read = 0;
+    auto next = [&] {
+        const ReturnSlot slot(cpu);
+        return cgetcOf(app, cpu, specs);
+    };
+    for (; x86::sreg32(width) > 0; --width)
+    {
+        const reg32 c = next();
+        if (cpu.terminate)
+            return 0;
+        const reg8 flags = scanFlags(app, specs);
+        if (flags & kEndOfInput)
+            break;
+        ++read;
+        if (!(flags & kAssign))
+            continue;
+        if (!(flags & kLongVar))
+        {
+            putByte(app, target++, reg8(c));
+            continue;
+        }
+        putByte(app, bytes, reg8(c));
+        if (multibyte(app) && leadByte(app, c))
+        {
+            const reg32 trail = next();
+            if (cpu.terminate)
+                return 0;
+            putByte(app, bytes + 1, reg8(trail));
+        }
+        reg32 made;
+        {
+            const ReturnSlot slot(cpu);
+            made = mbtowcOf(app, cpu, wide, bytes, 2);
+        }
+        if (cpu.terminate)
+            return 0;
+        if (made == 0xffffffff)
+            return 0;
+        putHalf(app, target, reg16(at(app, wide)));
+        target += 2;
+    }
+    return read;
+}
+
 void scan_char(win32::WinApplication* app, x86::CPU& cpu)
 {
-    push(app, cpu, cpu.ebx);
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.esi);
-    push(app, cpu, cpu.edi);
-    pushEs(app, cpu);
-    push(app, cpu, cpu.ebp);
-    cpu.esp -= 8;
-    const reg32 local = cpu.esp;
-    cpu.ecx = cpu.eax;
-    if (scanFlags(app, cpu.eax) & kAssign)
-    {
-        setLow8(cpu.ebx, scanFlags(app, cpu.ecx));
-        if (reg8(cpu.ebx) & kFarPointer)
-            scanTarget(app, cpu, cpu.edx, true, cpu.edi, cpu.esi, cpu.eax);
-        else if (reg8(cpu.ebx) & kNearPointer)
-            scanTarget(app, cpu, cpu.edx, false, cpu.esi, cpu.esi, cpu.eax);
-        else
-            scanTarget(app, cpu, cpu.edx, false, cpu.ebx, cpu.esi, cpu.eax);
-    }
-    cpu.edi = at(app, cpu.ecx + kScanWidth);
-    cpu.ebp = 0;
-    if (cpu.edi == 0xffffffff)
-        cpu.edi = 1;
-    while (x86::sreg32(cpu.edi) > 0)
-    {
-        cpu.eax = cpu.ecx;
-        if (!direct(app, cpu, cgetc))
-            return;
-        setLow8(cpu.edx, scanFlags(app, cpu.ecx));
-        if (reg8(cpu.edx) & kEndOfInput)
-            break;
-        ++cpu.ebp;
-        --cpu.edi;
-        if (!(reg8(cpu.edx) & kAssign))
-            continue;
-        if (!(reg8(cpu.edx) & kLongVar))
-        {
-            ++cpu.esi;
-            putByte(app, cpu.ees + cpu.esi - 1, reg8(cpu.eax));
-            continue;
-        }
-        cpu.edx = at(app, kMbcsOn);
-        putByte(app, local + 4, reg8(cpu.eax));
-        if (cpu.edx != 0)
-        {
-            cpu.eax = byte(app, kMbcsLead + (cpu.eax & 0xff)) & 1;
-            if (cpu.eax != 0)
-            {
-                cpu.eax = cpu.ecx;
-                if (!direct(app, cpu, cgetc))
-                    return;
-                putByte(app, local + 5, reg8(cpu.eax));
-            }
-        }
-        cpu.ebx = 2;
-        cpu.edx = local + 4;
-        cpu.eax = local;
-        if (!direct(app, cpu, mbtowc))
-            return;
-        if (cpu.eax == 0xffffffff)
-        {
-            cpu.eax = 0;
-            goto out;
-        }
-        cpu.esi += 2;
-        cpu.eax = at(app, local);
-        putHalf(app, cpu.ees + cpu.esi - 2, reg16(cpu.eax));
-    }
-    cpu.eax = cpu.ebp;
-out:
-    cpu.esp += 8;
-    cpu.ebp = pop(app, cpu);
-    popEs(app, cpu);
-    scanEpilogue(app, cpu, {&cpu.edi, &cpu.esi, &cpu.ecx, &cpu.ebx});
+    const reg32 read = scanCharOf(app, cpu, cpu.eax, cpu.edx, cpu.esi);
+    if (cpu.terminate)
+        return;
+    returns(cpu, read);
 }
 
-/* 0x50cb30 (scan_string): %s and %S: white space skipped, then characters to
- * the next, the field's width at most, into the argument with a 0 after --
- * %S's wide.  How many were read; 0 for a character mbtowc could not make. */
+/* 0x50cb30 (scan_string): %s and %S: white space skipped, then characters to the next, the field's
+ * width at most, into the argument from the va_list at `argp` with a 0 after -- %S's wide.  How
+ * many were read; 0 for a character mbtowc could not make.  `esi` as for scan_char.  At its entry's
+ * depth: four pushes, es, a push, then 0xc bytes: mbtowc's character, its bytes, the size.  0 with
+ * cpu.terminate set when the game stopped. */
+reg32 scanStringOf(win32::WinApplication* app, x86::CPU& cpu, reg32 specs, reg32 argp, reg32 esi)
+{
+    const GuestFrame frame(cpu, 0x18, 0xc);
+    const reg32 wide = frame - 0xc, bytes = frame - 8;
+    const reg32 size = scanFlags(app, specs) & kLongVar ? 2 : 1;
+    putByte(app, frame - 4, reg8(size));
+    reg32 target = esi;
+    if (scanFlags(app, specs) & kAssign)
+        target = scanPointer(app, scanFlags(app, specs), argp, esi);
+    auto next = [&] {
+        const ReturnSlot slot(cpu);
+        return cgetcOf(app, cpu, specs);
+    };
+    auto space = [&](reg32 c) { return (byte(app, kIsTable + ((c + 1) & 0xff)) & kSpace) != 0; };
+    reg32 read = 0, c;
+    for (;; ++read)
+    {
+        c = next();
+        if (cpu.terminate)
+            return 0;
+        if (!space(c))
+            break;
+    }
+    bool putBack = false;
+    if (scanFlags(app, specs) & kEndOfInput)
+        read = 0;
+    else
+    {
+        putBack = true;
+        const reg32 width = at(app, specs + kScanWidth);
+        put(app, specs + kScanWidth, width - 1);
+        if (width != 0)
+            for (;;)
+            {
+                ++read;
+                if (scanFlags(app, specs) & kAssign)
+                {
+                    if (size == 1)
+                        putByte(app, target, reg8(c));
+                    else
+                    {
+                        putByte(app, bytes, reg8(c));
+                        if (multibyte(app) && leadByte(app, c))
+                        {
+                            const reg32 trail = next();
+                            if (cpu.terminate)
+                                return 0;
+                            putByte(app, bytes + 1, reg8(trail));
+                        }
+                        reg32 made;
+                        {
+                            const ReturnSlot slot(cpu);
+                            made = mbtowcOf(app, cpu, wide, bytes, 2);
+                        }
+                        if (cpu.terminate)
+                            return 0;
+                        if (made == 0xffffffff)
+                            return 0;
+                        putHalf(app, target, reg16(at(app, wide)));
+                    }
+                    target += size;
+                }
+                {
+                    const ReturnSlot slot(cpu);
+                    c = chktrmOf(app, cpu, specs);
+                }
+                if (cpu.terminate)
+                    return 0;
+                if (c == 0xffffffff)
+                {
+                    putBack = false;
+                    break;
+                }
+                if (space(c))
+                    break;
+            }
+    }
+    if (putBack)
+    {
+        {
+            const ReturnSlot slot(cpu);
+            uncgetOf(app, cpu, c, specs);
+        }
+        if (cpu.terminate)
+            return 0;
+    }
+    if ((scanFlags(app, specs) & kAssign) && x86::sreg32(read) > 0)
+    {
+        if (size == 1)
+            putByte(app, target, 0);
+        else
+            putHalf(app, target, 0);
+    }
+    return read;
+}
+
 void scan_string(win32::WinApplication* app, x86::CPU& cpu)
 {
-    push(app, cpu, cpu.ebx);
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.esi);
-    push(app, cpu, cpu.edi);
-    pushEs(app, cpu);
-    push(app, cpu, cpu.ebp);
-    cpu.esp -= 0xc;
-    const reg32 local = cpu.esp;
-    cpu.ecx = cpu.eax;
-    putByte(app, local + 8, scanFlags(app, cpu.eax) & kLongVar ? 2 : 1);
-    auto size = [&] { return byte(app, local + 8); };
-    setLow8(cpu.ebx, scanFlags(app, cpu.ecx));
-    if (reg8(cpu.ebx) & kAssign)
-    {
-        if (reg8(cpu.ebx) & kFarPointer)
-            scanTarget(app, cpu, cpu.edx, true, cpu.edi, cpu.esi, cpu.eax);
-        else if (reg8(cpu.ebx) & kNearPointer)
-            scanTarget(app, cpu, cpu.edx, false, cpu.esi, cpu.esi, cpu.eax);
-        else
-            scanTarget(app, cpu, cpu.edx, false, cpu.ebx, cpu.esi, cpu.eax);
-    }
-    cpu.edi = 0;
-    for (;;)
-    {
-        cpu.eax = cpu.ecx;
-        if (!direct(app, cpu, cgetc))
-            return;
-        cpu.ebx = cpu.eax;
-        if (!isKind(app, cpu, kSpace))
-            break;
-        ++cpu.edi;
-    }
-    if (scanFlags(app, cpu.ecx) & kEndOfInput)
-    {
-        cpu.edi = 0;
-        goto end;
-    }
-    cpu.eax = at(app, cpu.ecx + kScanWidth);
-    cpu.edx = cpu.eax - 1;
-    put(app, cpu.ecx + kScanWidth, cpu.edx);
-    if (cpu.eax != 0)
-    {
-        for (;;)
-        {
-            setLow8(cpu.eax, scanFlags(app, cpu.ecx));
-            ++cpu.edi;
-            if (reg8(cpu.eax) & kAssign)
-            {
-                if (size() == 1)
-                    putByte(app, cpu.ees + cpu.esi, reg8(cpu.ebx));
-                else
-                {
-                    cpu.ebp = at(app, kMbcsOn);
-                    putByte(app, local + 4, reg8(cpu.ebx));
-                    if (cpu.ebp != 0)
-                    {
-                        cpu.eax = byte(app, kMbcsLead + reg8(cpu.ebx)) & 1;
-                        if (cpu.eax != 0)
-                        {
-                            cpu.eax = cpu.ecx;
-                            if (!direct(app, cpu, cgetc))
-                                return;
-                            putByte(app, local + 5, reg8(cpu.eax));
-                        }
-                    }
-                    cpu.ebx = 2;
-                    cpu.edx = local + 4;
-                    cpu.eax = local;
-                    if (!direct(app, cpu, mbtowc))
-                        return;
-                    if (cpu.eax == 0xffffffff)
-                    {
-                        cpu.eax = 0;
-                        goto out;
-                    }
-                    cpu.eax = at(app, local);
-                    putHalf(app, cpu.ees + cpu.esi, reg16(cpu.eax));
-                }
-                cpu.eax = size();
-                cpu.esi += cpu.eax;
-            }
-            cpu.eax = cpu.ecx;
-            if (!direct(app, cpu, chktrm))
-                return;
-            cpu.ebx = cpu.eax;
-            if (cpu.eax == 0xffffffff)
-                goto end;
-            if (isKind(app, cpu, kSpace))
-                break;
-        }
-    }
-    cpu.edx = cpu.ecx;
-    cpu.eax = cpu.ebx;
-    if (!direct(app, cpu, uncget))
+    const reg32 read = scanStringOf(app, cpu, cpu.eax, cpu.edx, cpu.esi);
+    if (cpu.terminate)
         return;
-end:
-    if ((scanFlags(app, cpu.ecx) & kAssign) && x86::sreg32(cpu.edi) > 0)
-    {
-        if (size() == 1)
-            putByte(app, cpu.ees + cpu.esi, 0);
-        else
-            putHalf(app, cpu.ees + cpu.esi, 0);
-    }
-    cpu.eax = cpu.edi;
-out:
-    cpu.esp += 0xc;
-    cpu.ebp = pop(app, cpu);
-    popEs(app, cpu);
-    scanEpilogue(app, cpu, {&cpu.edi, &cpu.esi, &cpu.ecx, &cpu.ebx});
+    returns(cpu, read);
 }
 
-/* 0x50cc88 (report_scan): %n: the characters read so far, ebx, into the
- * argument -- a short for h. */
+/* 0x50cc88 (report_scan): %n: the characters read so far, `read`, into the argument from the va_list
+ * at `argp` -- a short for h.  A far pointer's register is the va_list's place, which the code
+ * then stores through. */
+void reportScanOf(win32::WinApplication* app, reg32 specs, reg32 argp, reg32 read)
+{
+    const reg8 flags = scanFlags(app, specs);
+    if (!(flags & kAssign))
+        return;
+    reg32 step, target = argp;
+    scanArgument(app, argp, (flags & kFarPointer) != 0, step, target);
+    if (scanFlags(app, specs) & kShortVar)
+        putHalf(app, target, reg16(read));
+    else
+        put(app, target, read);
+}
+
 void report_scan(win32::WinApplication* app, x86::CPU& cpu)
 {
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.esi);
-    push(app, cpu, cpu.edi);
-    pushEs(app, cpu);
-    setLow8(cpu.ecx, scanFlags(app, cpu.eax));
-    if (reg8(cpu.ecx) & kAssign)
-    {
-        if (reg8(cpu.ecx) & kFarPointer)
-            scanTarget(app, cpu, cpu.edx, true, cpu.edi, cpu.edx, cpu.ecx);
-        else if (reg8(cpu.ecx) & kNearPointer)
-            scanTarget(app, cpu, cpu.edx, false, cpu.esi, cpu.edx, cpu.ecx);
-        else
-        {
-            cpu.ecx = at(app, cpu.edx) + 4;
-            put(app, cpu.edx, cpu.ecx);
-            cpu.edx = cpu.ecx;
-            cpu.ecx = cpu.ds;
-            cpu.es = reg16(cpu.ecx);
-            cpu.edx = at(app, cpu.edx - 4);
-        }
-        setHigh8(cpu.ecx, scanFlags(app, cpu.eax));
-        if (reg8(cpu.ecx >> 8) & kShortVar)
-            putHalf(app, cpu.ees + cpu.edx, reg16(cpu.ebx));
-        else
-            put(app, cpu.ees + cpu.edx, cpu.ebx);
-    }
-    popEs(app, cpu);
-    scanEpilogue(app, cpu, {&cpu.edi, &cpu.esi, &cpu.ecx});
-}
-
-/* 0x50cce8 (makelist): a [set]'s characters, the format's at eax, as bits of
- * the 32 bytes at edx; past its ']' -- one first is the set's. */
-void makelist(win32::WinApplication* app, x86::CPU& cpu)
-{
-    push(app, cpu, cpu.ebx);
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.esi);
-    cpu.ecx = cpu.eax;
-    cpu.esi = cpu.edx;
-    cpu.ebx = 0x20;
-    cpu.eax = cpu.esi;
-    cpu.edx = 0;
-    if (!direct(app, cpu, memset))
-        return;
-    cpu.eax = byte(app, cpu.ecx);
-    ++cpu.ecx;
-    while (cpu.eax != 0)
-    {
-        cpu.edx = cpu.eax;
-        cpu.eax &= 7;
-        cpu.edx = reg32(x86::sreg32(cpu.edx) >> 3);
-        cpu.eax = byte(app, kBitMasks + cpu.eax);
-        putByte(app, cpu.edx + cpu.esi, byte(app, cpu.edx + cpu.esi) | reg8(cpu.eax));
-        cpu.eax = byte(app, cpu.ecx);
-        if (cpu.eax == 0)
-            break;
-        ++cpu.ecx;
-        if (cpu.eax == ']')
-            break;
-    }
-    cpu.eax = cpu.ecx;
-    scanEpilogue(app, cpu, {&cpu.esi, &cpu.ecx, &cpu.ebx});
-}
-
-/* 0x50cd2c (scan_arb): %[: characters in the set -- out of it, for a '^'
- * first -- the field's width at most, into the argument with a 0 after; ebx
- * the format's pointer, moved past the set.  How many were read. */
-void scan_arb(win32::WinApplication* app, x86::CPU& cpu)
-{
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.esi);
-    push(app, cpu, cpu.edi);
-    pushEs(app, cpu);
-    push(app, cpu, cpu.ebp);
-    cpu.esp -= 0x30;
-    const reg32 local = cpu.esp;
-    cpu.ecx = cpu.eax;
-    cpu.edi = cpu.edx;
-    cpu.eax = at(app, cpu.ebx);
-    cpu.edx = byte(app, cpu.eax) == '^' ? 1 : 0;
-    put(app, local + 0x24, cpu.edx);
-    if (cpu.edx != 0)
-    {
-        ++cpu.eax;
-        put(app, cpu.ebx, cpu.eax);
-    }
-    cpu.edx = local;
-    cpu.eax = at(app, cpu.ebx);
-    if (!direct(app, cpu, makelist))
-        return;
-    put(app, cpu.ebx, cpu.eax);
-    setLow8(cpu.ebx, scanFlags(app, cpu.ecx));
-    if (reg8(cpu.ebx) & kAssign)
-    {
-        if (reg8(cpu.ebx) & kFarPointer)
-            scanTarget(app, cpu, cpu.edi, true, cpu.esi, cpu.esi, cpu.eax);
-        else if (reg8(cpu.ebx) & kNearPointer)
-            scanTarget(app, cpu, cpu.edi, false, cpu.ebx, cpu.esi, cpu.eax);
-        else
-            scanTarget(app, cpu, cpu.edi, false, cpu.edx, cpu.esi, cpu.eax);
-    }
-    cpu.edx = at(app, cpu.ecx + kScanWidth);
-    cpu.ebx = 0;
-    while (cpu.edx != 0)
-    {
-        cpu.eax = cpu.ecx;
-        if (!direct(app, cpu, cgetc))
-            return;
-        put(app, local + 0x28, cpu.eax);
-        if (scanFlags(app, cpu.ecx) & kEndOfInput)
-            break;
-        cpu.edi = byte(app, local + reg32(x86::sreg32(cpu.eax) >> 3));
-        put(app, local + 0x20, cpu.edi);
-        cpu.edi = cpu.eax & 7;
-        cpu.ebp = at(app, local + 0x20);
-        cpu.edi = byte(app, kBitMasks + cpu.edi);
-        putByte(app, local + 0x2c, (cpu.edi & cpu.ebp) == 0 ? 1 : 0);
-        cpu.edi = byte(app, local + 0x2c);
-        if (cpu.edi != at(app, local + 0x24))
-        {
-            cpu.edx = cpu.ecx;
-            if (!direct(app, cpu, uncget))
-                return;
-            break;
-        }
-        ++cpu.ebx;
-        setHigh8(cpu.eax, scanFlags(app, cpu.ecx));
-        --cpu.edx;
-        if (reg8(cpu.eax >> 8) & kAssign)
-        {
-            ++cpu.esi;
-            setLow8(cpu.eax, byte(app, local + 0x28));
-            putByte(app, cpu.ees + cpu.esi - 1, reg8(cpu.eax));
-        }
-    }
-    if ((scanFlags(app, cpu.ecx) & kAssign) && x86::sreg32(cpu.ebx) > 0)
-        putByte(app, cpu.ees + cpu.esi, 0);
-    cpu.eax = cpu.ebx;
-    cpu.esp += 0x30;
-    cpu.ebp = pop(app, cpu);
-    popEs(app, cpu);
-    scanEpilogue(app, cpu, {&cpu.edi, &cpu.esi, &cpu.ecx});
-}
-
-/* 0x523ca0 (__FDFS): the double in edx:eax as a float, in eax: 0 for one too
- * small, its sign and infinity for one too big. */
-void FDFS(win32::WinApplication* app, x86::CPU& cpu)
-{
-    push(app, cpu, cpu.ebx);
-    auto done = [&] { scanEpilogue(app, cpu, {&cpu.ebx}); };
-    if (!(cpu.edx & 0x7ff00000))
-    {
-        cpu.eax = 0;
-        return done();
-    }
-    cpu.ebx = 0;
-    x86::reg64 value = x86::reg64(cpu.edx) << 32 | cpu.eax;
-    cpu.ebx = reg32(value >> 63) << 31;
-    value = (value << 1) + 0x20000000;
-    cpu.eax = reg32(value);
-    cpu.edx = reg32(value >> 32);
-    if (cpu.edx == 0 || cpu.edx >= 0x8fe00000)
-    {
-        cpu.eax = 0x7f800000 | cpu.ebx;
-        return done();
-    }
-    if (cpu.edx < 0x70200000)
-    {
-        cpu.eax = 0;
-        return done();
-    }
-    cpu.edx -= 0x70000000;
-    value = (x86::reg64(cpu.edx) << 32 | cpu.eax) << 2;
-    cpu.eax = reg32(value);
-    cpu.edx = reg32(value >> 32) | cpu.ebx;
-    cpu.eax = cpu.edx;
-    done();
-}
-
-/* 0x523cec (__U8M): edx:eax times ecx:ebx, in edx:eax; ecx left the cross
- * products' sum. */
-void U8M(win32::WinApplication* app, x86::CPU& cpu)
-{
-    if (cpu.edx == 0 && cpu.ecx == 0)
-    {
-        const x86::reg64 product = x86::reg64(cpu.eax) * cpu.ebx;
-        cpu.eax = reg32(product);
-        cpu.edx = reg32(product >> 32);
-        cpu.esp += 4;
-        return;
-    }
-    push(app, cpu, cpu.eax);
-    push(app, cpu, cpu.edx);
-    x86::reg64 product = x86::reg64(cpu.eax) * cpu.ecx;
-    cpu.ecx = reg32(product);
-    cpu.eax = pop(app, cpu);
-    product = x86::reg64(cpu.eax) * cpu.ebx;
-    cpu.ecx += reg32(product);
-    cpu.eax = pop(app, cpu);
-    product = x86::reg64(cpu.eax) * cpu.ebx;
-    cpu.eax = reg32(product);
-    cpu.edx = reg32(product >> 32) + cpu.ecx;
+    reportScanOf(app, cpu.eax, cpu.edx, cpu.ebx);  // eax left as it was, the specs
     cpu.esp += 4;
 }
 
-/* 0x50ce18 (scan_float): %e, %f, %g, %E and %G: a number's characters --
- * sign, digits, a point, digits, an exponent -- gathered on the stack, then
- * made a double by __EFG_scanf and stored, as a float but for l and L; with
- * h, the code's fixed point, a short whole part and a short fraction.  How
- * many characters were read; 0 for none of a number. */
-void scan_float(win32::WinApplication* app, x86::CPU& cpu)
+/* 0x50cce8 (makelist): a [set]'s characters, the format's at `p`, as bits of the 32 bytes at
+ * `set`; past its ']' -- one first is the set's. */
+reg32 makelistOf(win32::WinApplication* app, reg32 p, reg32 set)
 {
-    push(app, cpu, cpu.ebx);
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.esi);
-    push(app, cpu, cpu.edi);
-    pushEs(app, cpu);
-    push(app, cpu, cpu.ebp);
-    cpu.esp -= 0x6c;
-    const reg32 local = cpu.esp;
-    cpu.ecx = cpu.eax;
-    put(app, local + 0x58, cpu.edx);
-    cpu.edi = 0;
-    cpu.esi = local;
-    put(app, local + 0x68, cpu.edi);
+    clib::memset(app, set, 0, 0x20);
+    for (reg32 c = byte(app, p++); c != 0;)
+    {
+        const reg32 at = set + reg32(x86::sreg32(c) >> 3);
+        putByte(app, at, byte(app, at) | byte(app, kBitMasks + (c & 7)));
+        c = byte(app, p);
+        if (c == 0)
+            break;
+        ++p;
+        if (c == ']')
+            break;
+    }
+    return p;
+}
+
+void makelist(win32::WinApplication* app, x86::CPU& cpu)
+{
+    returns(cpu, makelistOf(app, cpu.eax, cpu.edx));
+}
+
+/* 0x50cd2c (scan_arb): %[: characters in the set -- out of it, for a '^' first -- the field's width
+ * at most, into the argument from the va_list at `argp` with a 0 after; the format's pointer, in
+ * the dword at `format`, moved past the set.  How many were read.  A far pointer's register is the
+ * va_list's new place, which the code then stores through.  At its entry's depth: three pushes,
+ * es, a push, then 0x30 bytes, the set's 32 first.  0 with cpu.terminate set when the game
+ * stopped. */
+reg32 scanArbOf(win32::WinApplication* app, x86::CPU& cpu, reg32 specs, reg32 argp, reg32 format)
+{
+    const GuestFrame frame(cpu, 0x14, 0x30);
+    const reg32 set = frame - 0x30;
+    const reg32 outside = byte(app, at(app, format)) == '^' ? 1 : 0;
+    if (outside)
+        put(app, format, at(app, format) + 1);
+    put(app, format, makelistOf(app, at(app, format), set));
+    reg32 target = 0;
+    if (scanFlags(app, specs) & kAssign)
+    {
+        reg32 step;
+        if (scanFlags(app, specs) & kFarPointer)
+        {
+            scanArgument(app, argp, true, step, target);
+            target = step;
+        }
+        else
+            scanArgument(app, argp, false, step, target);
+    }
+    reg32 read = 0;
+    for (reg32 width = at(app, specs + kScanWidth); width != 0; --width)
+    {
+        reg32 c;
+        {
+            const ReturnSlot slot(cpu);
+            c = cgetcOf(app, cpu, specs);
+        }
+        if (cpu.terminate)
+            return 0;
+        if (scanFlags(app, specs) & kEndOfInput)
+            break;
+        const bool in = (byte(app, set + reg32(x86::sreg32(c) >> 3)) & byte(app, kBitMasks + (c & 7))) != 0;
+        if ((in ? 0 : 1) != outside)
+        {
+            {
+                const ReturnSlot slot(cpu);
+                uncgetOf(app, cpu, c, specs);
+            }
+            if (cpu.terminate)
+                return 0;
+            break;
+        }
+        ++read;
+        if (scanFlags(app, specs) & kAssign)
+            putByte(app, target++, reg8(c));
+    }
+    if ((scanFlags(app, specs) & kAssign) && x86::sreg32(read) > 0)
+        putByte(app, target, 0);
+    return read;
+}
+
+void scan_arb(win32::WinApplication* app, x86::CPU& cpu)
+{
+    const reg32 read = scanArbOf(app, cpu, cpu.eax, cpu.edx, cpu.ebx);
+    if (cpu.terminate)
+        return;
+    returns(cpu, read);
+}
+
+/* 0x523ca0 (__FDFS): the double `bits` as a float's bits: 0 for one too small, its sign and
+ * infinity for one too big. */
+reg32 fdfsOf(x86::reg64 bits)
+{
+    if (!(reg32(bits >> 32) & 0x7ff00000))
+        return 0;
+    const reg32 sign = reg32(bits >> 63) << 31;
+    const x86::reg64 shifted = (bits << 1) + 0x20000000;
+    const reg32 high = reg32(shifted >> 32);
+    if (high == 0 || high >= 0x8fe00000)
+        return 0x7f800000 | sign;
+    if (high < 0x70200000)
+        return 0;
+    return reg32(((x86::reg64(high - 0x70000000) << 32 | reg32(shifted)) << 2) >> 32) | sign;
+}
+
+void FDFS(win32::WinApplication* app, x86::CPU& cpu)
+{
+    NFS2_USE(app);
+    returns(cpu, fdfsOf(x86::reg64(cpu.edx) << 32 | cpu.eax));
+}
+
+/* 0x523cec (__U8M): `a` times `b`, 64 bits of it; `cross` the cross products' sum, which the code
+ * leaves in ecx. */
+x86::reg64 u8mOf(x86::reg64 a, x86::reg64 b, reg32& cross)
+{
+    cross = reg32(a) * reg32(b >> 32) + reg32(a >> 32) * reg32(b);
+    return x86::reg64(reg32(a)) * reg32(b) + (x86::reg64(cross) << 32);
+}
+
+void U8M(win32::WinApplication* app, x86::CPU& cpu)
+{
+    NFS2_USE(app);
+    // Its own convention: edx:eax and ecx:ebx in, edx:eax out -- ecx the cross products' sum, but
+    // for two numbers of 32 bits, which leave it as it was.
+    reg32 cross;
+    const x86::reg64 product = u8mOf(x86::reg64(cpu.edx) << 32 | cpu.eax, x86::reg64(cpu.ecx) << 32 | cpu.ebx, cross);
+    if (cpu.edx != 0 || cpu.ecx != 0)
+        cpu.ecx = cross;
+    cpu.eax = reg32(product);
+    cpu.edx = reg32(product >> 32);
+    cpu.esp += 4;
+}
+
+/* 0x50ce18 (scan_float): %e, %f, %g, %E and %G: a number's characters -- sign, digits, a point,
+ * digits, an exponent -- gathered in the frame, then made a double by __EFG_scanf and stored, as a
+ * float but for l and L, into the argument from the va_list at `argp`; with h, the code's fixed
+ * point, a short whole part and a short fraction.  How many characters were read; 0 for none of a
+ * number.  At its entry's depth: four pushes, es, a push, then 0x6c bytes: the characters from the
+ * bottom -- as many as the field gives, its end the code's to overrun -- the double at +0x50, and
+ * the fixed point's words, which overlap as the code has them, at +0x5c on.  0 with cpu.terminate
+ * set when the game stopped. */
+reg32 scanFloatOf(win32::WinApplication* app, x86::CPU& cpu, reg32 specs, reg32 argp)
+{
+    const GuestFrame frame(cpu, 0x18, 0x6c);
+    const reg32 local = frame - 0x6c;
+    const reg32 number = local + 0x50, ten = local + 0x5c, fraction = local + 0x60, digit = local + 0x62;
+    const reg32 fixed = local + 0x64, whole = local + 0x66, skipped = local + 0x68;
+    auto isDigit = [&](reg32 c) { return (byte(app, kIsTable + ((c + 1) & 0xff)) & kDigit) != 0; };
+    reg32 p = local, read = 0, c;
+    put(app, skipped, 0);
     // The character into the buffer, the next one taken; false at -1.
-    auto keep = [&](bool& ok) {
-        putByte(app, cpu.esi, reg8(cpu.ebx));
-        ++cpu.esi;
-        cpu.eax = cpu.ecx;
-        ok = direct(app, cpu, chktrm);
-        cpu.ebx = cpu.eax;
-        return ok && cpu.eax != 0xffffffff;
+    auto keep = [&] {
+        putByte(app, p++, reg8(c));
+        const ReturnSlot slot(cpu);
+        c = chktrmOf(app, cpu, specs);
+        return c != 0xffffffff;
     };
-    bool ok = true;
+    auto next = [&] {
+        const ReturnSlot slot(cpu);
+        c = chktrmOf(app, cpu, specs);
+        return c != 0xffffffff;
+    };
+    bool digits = false;
     for (;;)
     {
-        cpu.eax = cpu.ecx;
-        if (!direct(app, cpu, cgetc))
-            return;
-        setLow8(cpu.edx, cpu.eax + 1);
-        cpu.ebp = reg8(cpu.edx);
-        setLow8(cpu.edx, byte(app, kIsTable + cpu.ebp));
-        cpu.ebx = cpu.eax;
-        if (!(reg8(cpu.edx) & kSpace))
+        {
+            const ReturnSlot slot(cpu);
+            c = cgetcOf(app, cpu, specs);
+        }
+        if (cpu.terminate)
+            return 0;
+        if (!(byte(app, kIsTable + ((c + 1) & 0xff)) & kSpace))
             break;
-        put(app, local + 0x68, at(app, local + 0x68) + 1);
+        put(app, skipped, at(app, skipped) + 1);
     }
-    if (scanFlags(app, cpu.ecx) & kEndOfInput)
-        goto L_d031;
-    cpu.edx = at(app, cpu.ecx + kScanWidth);
-    cpu.ebp = cpu.edx - 1;
-    put(app, cpu.ecx + kScanWidth, cpu.ebp);
-    if (cpu.edx == 0)
-        goto L_d028;
-    if (cpu.eax == '+' || cpu.eax == '-')
+    if (scanFlags(app, specs) & kEndOfInput)
+        goto stored;
     {
-        cpu.ebp = at(app, local + 0x68);
-        putByte(app, cpu.esi, reg8(cpu.ebx));
-        ++cpu.esi;
-        cpu.eax = cpu.ecx;
-        if (!direct(app, cpu, chktrm))
-            return;
-        ++cpu.ebp;
-        cpu.ebx = cpu.eax;
-        put(app, local + 0x68, cpu.ebp);
-        if (cpu.eax == 0xffffffff)
-            goto L_d031;
+        const reg32 width = at(app, specs + kScanWidth);
+        put(app, specs + kScanWidth, width - 1);
+        if (width == 0)
+            goto putBack;
     }
-    cpu.eax = cpu.ebx;
-    if (!isKind(app, cpu, kDigit) && cpu.ebx != '.')
-        goto L_d028;
-    cpu.eax = 0;
-    put(app, local + 0x64, cpu.eax);
-    cpu.eax = cpu.ebx;
-    cpu.ebp = 0;
-    if (isKind(app, cpu, kDigit))
+    if (c == '+' || c == '-')
     {
-        cpu.ebp = 1;
+        putByte(app, p++, reg8(c));
+        const bool more = next();
+        if (cpu.terminate)
+            return 0;
+        put(app, skipped, at(app, skipped) + 1);
+        if (!more)
+            goto stored;
+    }
+    if (!isDigit(c) && c != '.')
+        goto putBack;
+    put(app, fixed, 0);
+    if (isDigit(c))
+    {
+        digits = true;
         do
         {
-            putByte(app, cpu.esi, reg8(cpu.ebx));
-            setLow8(cpu.eax, scanFlags(app, cpu.ecx));
-            ++cpu.esi;
-            if (reg8(cpu.eax) & kShortVar)
-            {
-                cpu.eax = at(app, local + 0x66) * 10;
-                cpu.ebx = cpu.ebx + cpu.eax - 0x30;
-                putHalf(app, local + 0x66, reg16(cpu.ebx));
-            }
-            cpu.eax = cpu.ecx;
-            ++cpu.edi;
-            if (!direct(app, cpu, chktrm))
-                return;
-            cpu.ebx = cpu.eax;
-            if (cpu.eax == 0xffffffff)
-                goto L_d031;
-        } while (isKind(app, cpu, kDigit));
+            putByte(app, p++, reg8(c));
+            if (scanFlags(app, specs) & kShortVar)
+                putHalf(app, whole, reg16(c + at(app, whole) * 10 - 0x30));
+            ++read;
+            const bool more = next();
+            if (cpu.terminate)
+                return 0;
+            if (!more)
+                goto stored;
+        } while (isDigit(c));
     }
-    if (cpu.ebx == '.')
+    if (c == '.')
     {
-        if (!keep(ok))
+        bool more = keep();
+        if (cpu.terminate)
+            return 0;
+        if (!more)
+            goto stored;
+        if (!digits && !isDigit(c))
+            goto putBack;
+        ++read;
+        while (isDigit(c))
         {
-            if (!ok)
-                return;
-            goto L_d031;
-        }
-        if (cpu.ebp == 0 && !isKind(app, cpu, kDigit))
-            goto L_d028;
-        ++cpu.edi;
-        for (;;)
-        {
-            cpu.eax = cpu.ebx;
-            if (!isKind(app, cpu, kDigit))
+            ++read;
+            more = keep();
+            if (cpu.terminate)
+                return 0;
+            if (!more)
                 break;
-            ++cpu.edi;
-            if (!keep(ok))
-            {
-                if (!ok)
-                    return;
-                break;
-            }
         }
-        if (scanFlags(app, cpu.ecx) & kShortVar)
+        if (scanFlags(app, specs) & kShortVar)
         {
-            // The fraction's digits, back from the last to the point, made a
-            // short's fraction: each over 10, as the code divides them.
-            cpu.edx = 0;
-            cpu.ebp = cpu.esi;
-            put(app, local + 0x60, cpu.edx);
-            for (;;)
+            // The fraction's digits, back from the last to the point, made a short's fraction:
+            // each into the third byte of the dword, over 10, as the code divides them.
+            put(app, fraction, 0);
+            for (reg32 q = p; byte(app, q - 1) != '.'; --q)
             {
-                setLow8(cpu.eax, byte(app, cpu.ebp - 1));
-                --cpu.ebp;
-                if (reg8(cpu.eax) == '.')
-                    break;
-                setLow8(cpu.eax, reg8(cpu.eax) - 0x30);
-                put(app, local + 0x5c, 10);
-                putByte(app, local + 0x62, reg8(cpu.eax));
-                cpu.edx = 0;
-                cpu.eax = at(app, local + 0x60);
-                cpu.edx = cpu.eax % 10;
-                cpu.eax /= 10;
-                put(app, local + 0x60, cpu.eax);
+                put(app, ten, 10);
+                putByte(app, digit, reg8(byte(app, q - 1) - 0x30));
+                put(app, fraction, at(app, fraction) / 10);
             }
-            cpu.eax = at(app, local + 0x60);
-            putHalf(app, local + 0x64, reg16(cpu.eax));
+            putHalf(app, fixed, reg16(at(app, fraction)));
         }
-        if (cpu.ebx == 0xffffffff)
-            goto L_d031;
+        if (c == 0xffffffff)
+            goto stored;
     }
-    if (scanFlags(app, cpu.ecx) & kShortVar)
-        goto L_d028;
-    if (cpu.ebx != 'e' && cpu.ebx != 'E')
-        goto L_d028;
-    ++cpu.edi;
-    if (!keep(ok))
+    if (scanFlags(app, specs) & kShortVar)
+        goto putBack;
+    if (c != 'e' && c != 'E')
+        goto putBack;
+    ++read;
     {
-        if (!ok)
-            return;
-        goto L_d031;
-    }
-    if (cpu.eax == '+' || cpu.eax == '-')
-    {
-        ++cpu.edi;
-        if (!keep(ok))
+        bool more = keep();
+        if (cpu.terminate)
+            return 0;
+        if (!more)
+            goto stored;
+        if (c == '+' || c == '-')
         {
-            if (!ok)
-                return;
-            goto L_d031;
+            ++read;
+            more = keep();
+            if (cpu.terminate)
+                return 0;
+            if (!more)
+                goto stored;
         }
     }
-    cpu.eax = cpu.ebx;
-    if (!isKind(app, cpu, kDigit))
+    if (!isDigit(c))
     {
-        cpu.edi = 0;
-        goto L_d028;
+        read = 0;
+        goto putBack;
     }
     do
     {
-        ++cpu.edi;
-        if (!keep(ok))
-        {
-            if (!ok)
-                return;
-            goto L_d031;
-        }
-    } while (isKind(app, cpu, kDigit));
-L_d028:
-    cpu.edx = cpu.ecx;
-    cpu.eax = cpu.ebx;
-    if (!direct(app, cpu, uncget))
-        return;
-L_d031:
-    if (x86::sreg32(cpu.edi) > 0)
+        ++read;
+        const bool more = keep();
+        if (cpu.terminate)
+            return 0;
+        if (!more)
+            goto stored;
+    } while (isDigit(c));
+putBack:
     {
-        cpu.edi += at(app, local + 0x68);
-        if (scanFlags(app, cpu.ecx) & kAssign)
+        const ReturnSlot slot(cpu);
+        uncgetOf(app, cpu, c, specs);
+    }
+    if (cpu.terminate)
+        return 0;
+stored:
+    if (x86::sreg32(read) > 0)
+    {
+        read += at(app, skipped);
+        if (scanFlags(app, specs) & kAssign)
         {
-            putByte(app, cpu.esi, 0);
-            if (scanFlags(app, cpu.ecx) & kShortVar)
+            putByte(app, p, 0);
+            if (scanFlags(app, specs) & kShortVar)
             {
                 if (byte(app, local) == '-')
-                    put(app, local + 0x64, 0 - at(app, local + 0x64));
+                    put(app, fixed, 0 - at(app, fixed));
             }
             else
             {
-                cpu.edx = local + 0x50;
+                const guest::KeptRegisters kept(cpu);
                 cpu.eax = local;
-                if (!indirect(app, cpu, at(app, kScanFloat)))
-                    return;
+                cpu.edx = number;
+                if (!guest::runtimeHook<kScanFloat>(app, cpu))
+                    return 0;
             }
-            setHigh8(cpu.eax, scanFlags(app, cpu.ecx));
-            const reg8 flags = reg8(cpu.eax >> 8);
-            cpu.eax = at(app, local + 0x58);
+            const reg8 flags = scanFlags(app, specs);
+            reg32 step, target = 0;
+            scanArgument(app, argp, (flags & kFarPointer) != 0, step, target);
             if (flags & kFarPointer)
-                scanTarget(app, cpu, cpu.eax, true, cpu.ebx, cpu.ebx, cpu.eax);
-            else if (flags & kNearPointer)
-                scanTarget(app, cpu, cpu.eax, false, cpu.edx, cpu.ebx, cpu.eax);
-            else
-                scanTarget(app, cpu, cpu.eax, false, cpu.ebp, cpu.ebx, cpu.eax);
-            setHigh8(cpu.edx, scanFlags(app, cpu.ecx));
-            const reg8 dh = reg8(cpu.edx >> 8);
-            if (dh & kShortVar)
+                target = step;
+            const reg8 size = scanFlags(app, specs);
+            const reg16 es = cpu.es;
+            if (!(flags & kFarPointer))
+                cpu.es = reg16(cpu.ds);
+            const reg32 to = cpu.ees + target;
+            cpu.es = es;
+            if (size & kShortVar)
+                put(app, to, at(app, fixed));
+            else if (size & (kLongVar | kLongLongVar))
             {
-                cpu.eax = at(app, local + 0x64);
-                put(app, cpu.ees + cpu.ebx, cpu.eax);
-            }
-            else if (dh & (kLongVar | kLongLongVar))
-            {
-                cpu.eax = at(app, local + 0x50);
-                put(app, cpu.ees + cpu.ebx, cpu.eax);
-                cpu.eax = at(app, local + 0x54);
-                put(app, cpu.ees + cpu.ebx + 4, cpu.eax);
+                put(app, to, at(app, number));
+                put(app, to + 4, at(app, number + 4));
             }
             else
-            {
-                cpu.eax = at(app, local + 0x50);
-                cpu.edx = at(app, local + 0x54);
-                if (!direct(app, cpu, FDFS))
-                    return;
-                put(app, cpu.ees + cpu.ebx, cpu.eax);
-            }
+                put(app, to, fdfsOf(x86::reg64(at(app, number + 4)) << 32 | at(app, number)));
         }
     }
-    cpu.eax = cpu.edi;
-    cpu.esp += 0x6c;
-    cpu.ebp = pop(app, cpu);
-    popEs(app, cpu);
-    scanEpilogue(app, cpu, {&cpu.edi, &cpu.esi, &cpu.ecx, &cpu.ebx});
+    return read;
 }
 
-/* 0x50d0f0 (scan_int): %d, %i, %o, %u, %x and %p: white space skipped, a
- * sign where ecx says the number has one, a base's digits -- ebx's base, 0
- * for the number's own: 0x for 16, 0 for 8 -- and for a segmented one a ':'
- * and an offset; stored as the flags say, a long long for L and I64.  How
- * many characters were read. */
-void scan_int(win32::WinApplication* app, x86::CPU& cpu)
+void scan_float(win32::WinApplication* app, x86::CPU& cpu)
 {
-    push(app, cpu, cpu.esi);
-    push(app, cpu, cpu.edi);
-    pushEs(app, cpu);
-    push(app, cpu, cpu.ebp);
-    cpu.esp -= 0x30;
-    const reg32 local = cpu.esp;
-    cpu.edi = cpu.eax;
-    put(app, local + 0x1c, cpu.edx);
-    put(app, local + 0x28, cpu.ebx);
-    cpu.edx = 0;
-    cpu.ebp = 0;
-    put(app, local + 8, cpu.edx);
-    put(app, local + 0xc, cpu.edx);
-    put(app, local + 0x24, cpu.edx);
-    put(app, local + 0x20, cpu.edx);
-    auto character = [&] { return at(app, local + 0x2c); };
-    // The next character, kept; false at -1, `ok` false if the game stopped.
-    bool ok = true;
+    const reg32 read = scanFloatOf(app, cpu, cpu.eax, cpu.edx);
+    if (cpu.terminate)
+        return;
+    returns(cpu, read);
+}
+
+/* 0x50d0f0 (scan_int): %d, %i, %o, %u, %x and %p: white space skipped, a sign where `sign` says the
+ * number has one, `base`'s digits -- 0 for the number's own: 0x for 16, 0 for 8 -- and for a
+ * segmented one a ':' and an offset; stored as the flags say into the argument from the va_list at
+ * `argp`, a long long for L and I64.  How many characters were read.  At its entry's depth: two
+ * pushes, es, a push, then 0x30 bytes.  0 with cpu.terminate set when the game stopped. */
+reg32 scanIntOf(win32::WinApplication* app, x86::CPU& cpu, reg32 specs, reg32 argp, reg32 base, reg32 sign)
+{
+    const GuestFrame frame(cpu, 0x10, 0x30);
+    x86::reg64 value = 0;
+    reg32 small = 0, skipped = 0, read = 0, minus = '+', c;
     auto next = [&] {
-        cpu.eax = cpu.edi;
-        ok = direct(app, cpu, chktrm);
-        put(app, local + 0x2c, cpu.eax);
-        return ok && cpu.eax != 0xffffffff;
+        const ReturnSlot slot(cpu);
+        c = chktrmOf(app, cpu, specs);
+        return c != 0xffffffff;
     };
-    // The 64-bit value times the base, plus the digit in eax.
-    auto accumulate = [&] {
-        cpu.esi = local + 8;
-        put(app, local, cpu.eax);
-        put(app, local + 4, 0);
-        cpu.ebx = local + 0x10;
-        cpu.eax = local + 8;
-        cpu.edx = at(app, cpu.eax + 4);
-        cpu.eax = at(app, cpu.eax);
-        cpu.ecx = at(app, cpu.ebx + 4);
-        cpu.ebx = at(app, cpu.ebx);
-        if (!direct(app, cpu, U8M))
-            return false;
-        put(app, cpu.esi + 4, cpu.edx);
-        put(app, cpu.esi, cpu.eax);
-        cpu.esi = local + 8;
-        cpu.ebx = local;
-        cpu.eax = local + 8;
-        cpu.edx = at(app, cpu.eax + 4);
-        cpu.eax = at(app, cpu.eax);
-        cpu.ecx = at(app, cpu.ebx + 4);
-        cpu.ebx = at(app, cpu.ebx);
-        const x86::reg64 sum = (x86::reg64(cpu.edx) << 32 | cpu.eax) + (x86::reg64(cpu.ecx) << 32 | cpu.ebx);
-        cpu.eax = reg32(sum);
-        cpu.edx = reg32(sum >> 32);
-        put(app, cpu.esi + 4, cpu.edx);
-        put(app, cpu.esi, cpu.eax);
-        return true;
-    };
-    for (;;)
-    {
-        cpu.eax = cpu.edi;
-        if (!direct(app, cpu, cgetc))
-            return;
-        put(app, local + 0x2c, cpu.eax);
-        setLow8(cpu.ebx, byte(app, local + 0x2c) + 1);
-        cpu.ebx &= 0xff;
-        if (!(byte(app, kIsTable + cpu.ebx) & kSpace))
-            break;
-        put(app, local + 0x20, at(app, local + 0x20) + 1);
-    }
-    if (scanFlags(app, cpu.edi) & kEndOfInput)
-        goto L_d3d5;
-    cpu.ebx = at(app, cpu.edi + kScanWidth);
-    cpu.esi = cpu.ebx - 1;
-    put(app, cpu.edi + kScanWidth, cpu.esi);
-    if (cpu.ebx == 0)
-        goto L_d3ca;
-    cpu.ebx = '+';
-    put(app, local + 0x18, cpu.ebx);
-    if (cpu.ecx != 0 && (cpu.eax == cpu.ebx || cpu.eax == '-'))
-    {
-        cpu.eax = character();
-        cpu.ecx = at(app, local + 0x20);
-        put(app, local + 0x18, cpu.eax);
-        ++cpu.ecx;
-        put(app, local + 0x20, cpu.ecx);
-        if (!next())
+    const bool longLong = (scanFlags(app, specs) & kLongLongVar) != 0;
+    auto take = [&](reg32 d) {
+        if (longLong)
         {
-            if (!ok)
-                return;
-            goto L_d3d5;
-        }
-    }
-    cpu.esi = at(app, local + 0x28);
-    if (cpu.esi == 0 || (cpu.esi == 16 && character() == '0'))
-    {
-        const bool any = cpu.esi == 0;
-        if (character() == '0')
-        {
-            cpu.ebp = 1;
-            if (!next())
-            {
-                if (!ok)
-                    return;
-                goto L_d3d5;
-            }
-            if (cpu.eax == 'x' || cpu.eax == 'X')
-            {
-                reg32& count = any ? cpu.edx : cpu.ebx;
-                count = at(app, local + 0x20);
-                cpu.eax = cpu.edi;
-                if (!direct(app, cpu, chktrm))
-                    return;
-                cpu.ebp = 0;
-                count += 2;
-                put(app, local + 0x2c, cpu.eax);
-                put(app, local + 0x20, count);
-                if (cpu.eax == 0xffffffff)
-                    goto L_d3d5;
-                if (any)
-                    put(app, local + 0x28, 16);
-            }
-            else if (any)
-                put(app, local + 0x28, 8);
+            reg32 cross;
+            value = u8mOf(value, base, cross) + d;
         }
         else
-            put(app, local + 0x28, 10);
-    }
-    if (scanFlags(app, cpu.edi) & kLongLongVar)
+            small = small * base + d;
+    };
+    auto digitOf = [&](reg32 ch, reg32& d) {
+        d = radixValueOf(app, ch);
+        return x86::sreg32(d) < x86::sreg32(base);
+    };
+    reg32 d;
+    for (;;)
     {
-        cpu.eax = at(app, local + 0x28);
-        cpu.ecx = 0;
-        put(app, local + 0x10, cpu.eax);
-        put(app, local + 0x14, cpu.ecx);
-        for (;;)
         {
-            cpu.eax = character();
-            cpu.edx = at(app, local + 0x28);
-            if (!direct(app, cpu, radix_value))
-                return;
-            if (x86::sreg32(cpu.eax) >= x86::sreg32(cpu.edx))
-                break;
-            if (!accumulate())
-                return;
-            ++cpu.ebp;
-            if (!next())
-            {
-                if (!ok)
-                    return;
-                goto L_d3d5;
-            }
+            const ReturnSlot slot(cpu);
+            c = cgetcOf(app, cpu, specs);
         }
-        if (character() != ':' || !(scanFlags(app, cpu.edi) & kSegmented))
-            goto L_d3ca;
-        for (;;)
-        {
-            ++cpu.ebp;
-            if (!next())
-            {
-                if (!ok)
-                    return;
-                goto L_d3d5;
-            }
-            cpu.esi = at(app, local + 0x28);
-            if (!direct(app, cpu, radix_value))
-                return;
-            if (x86::sreg32(cpu.eax) >= x86::sreg32(cpu.esi))
-                break;
-            if (!accumulate())
-                return;
-        }
+        if (cpu.terminate)
+            return 0;
+        if (!(byte(app, kIsTable + ((c + 1) & 0xff)) & kSpace))
+            break;
+        ++skipped;
     }
-    else
+    if (scanFlags(app, specs) & kEndOfInput)
+        goto stored;
     {
-        for (;;)
-        {
-            cpu.esi = at(app, local + 0x28);
-            cpu.eax = character();
-            if (!direct(app, cpu, radix_value))
-                return;
-            if (x86::sreg32(cpu.eax) >= x86::sreg32(cpu.esi))
-                break;
-            cpu.ebx = at(app, local + 0x24) * cpu.esi;
-            ++cpu.ebp;
-            cpu.ebx += cpu.eax;
-            put(app, local + 0x24, cpu.ebx);
-            if (!next())
-            {
-                if (!ok)
-                    return;
-                goto L_d3d5;
-            }
-        }
-        if (character() != ':' || !(scanFlags(app, cpu.edi) & kSegmented))
-            goto L_d3ca;
-        cpu.ecx = at(app, local + 0x28);
-        for (;;)
-        {
-            ++cpu.ebp;
-            if (!next())
-            {
-                if (!ok)
-                    return;
-                goto L_d3d5;
-            }
-            if (!direct(app, cpu, radix_value))
-                return;
-            if (x86::sreg32(cpu.eax) >= x86::sreg32(cpu.ecx))
-                break;
-            cpu.ebx = at(app, local + 0x24) * cpu.ecx + cpu.eax;
-            put(app, local + 0x24, cpu.ebx);
-        }
+        const reg32 width = at(app, specs + kScanWidth);
+        put(app, specs + kScanWidth, width - 1);
+        if (width == 0)
+            goto putBack;
     }
-L_d3ca:
-    cpu.eax = character();
-    cpu.edx = cpu.edi;
-    if (!direct(app, cpu, uncget))
-        return;
-L_d3d5:
-    if (scanFlags(app, cpu.edi) & kLongLongVar)
+    if (sign != 0 && (c == '+' || c == '-'))
     {
-        if (at(app, local + 0x18) == '-')
+        minus = c;
+        ++skipped;
+        const bool more = next();
+        if (cpu.terminate)
+            return 0;
+        if (!more)
+            goto stored;
+    }
+    if (base == 0 || (base == 16 && c == '0'))
+    {
+        const bool any = base == 0;
+        if (c == '0')
         {
-            cpu.esi = ~at(app, local + 8);
-            cpu.eax = ~at(app, local + 0xc);
-            put(app, local + 8, cpu.esi);
-            cpu.edx = cpu.esi + 1;
-            put(app, local + 0xc, cpu.eax);
-            put(app, local + 8, cpu.edx);
-            if (cpu.edx == 0)
-                ++cpu.eax;
-            put(app, local + 0xc, cpu.eax);
-        }
-        if (x86::sreg32(cpu.ebp) > 0)
-        {
-            cpu.ecx = at(app, local + 0x20);
-            setHigh8(cpu.ebx, scanFlags(app, cpu.edi));
-            cpu.ebp += cpu.ecx;
-            const reg8 bh = reg8(cpu.ebx >> 8);
-            if (bh & kAssign)
+            read = 1;
+            const bool more = next();
+            if (cpu.terminate)
+                return 0;
+            if (!more)
+                goto stored;
+            if (c == 'x' || c == 'X')
             {
-                bool move = true;
-                if (bh & kFarPointer)
+                skipped += 2;
+                read = 0;
+                const bool after = next();
+                if (cpu.terminate)
+                    return 0;
+                if (!after)
+                    goto stored;
+                if (any)
+                    base = 16;
+            }
+            else if (any)
+                base = 8;
+        }
+        else
+            base = 10;
+    }
+    while (digitOf(c, d))
+    {
+        take(d);
+        ++read;
+        const bool more = next();
+        if (cpu.terminate)
+            return 0;
+        if (!more)
+            goto stored;
+    }
+    if (c == ':' && (scanFlags(app, specs) & kSegmented))
+        for (;;)
+        {
+            ++read;
+            const bool more = next();
+            if (cpu.terminate)
+                return 0;
+            if (!more)
+                goto stored;
+            if (!digitOf(c, d))
+                break;
+            take(d);
+        }
+putBack:
+    {
+        const ReturnSlot slot(cpu);
+        uncgetOf(app, cpu, c, specs);
+    }
+    if (cpu.terminate)
+        return 0;
+stored:
+    if (longLong)
+    {
+        if (minus == '-')
+            value = 0 - value;
+        if (x86::sreg32(read) > 0)
+        {
+            read += skipped;
+            const reg8 flags = scanFlags(app, specs);
+            if (flags & kAssign)
+            {
+                // The far one through its own segment (es as its pointer has it), else through ds.
+                const reg32 step = at(app, argp) + ((flags & kFarPointer) ? 8 : 4);
+                put(app, argp, step);
+                const reg16 es = cpu.es;
+                reg32 to;
+                if (flags & kFarPointer)
                 {
-                    cpu.eax = at(app, local + 0x1c);
-                    cpu.edx = at(app, cpu.eax) + 8;
-                    put(app, cpu.eax, cpu.edx);
-                    cpu.eax = (cpu.eax & 0xffff0000) | half(app, cpu.edx - 4);
-                    cpu.edi = at(app, cpu.edx - 8);
-                }
-                else if (bh & kNearPointer)
-                {
-                    // The far one's segment is not taken: es made ds, the
-                    // two moved, and on to the end without esi's lea after.
-                    cpu.eax = at(app, local + 0x1c);
-                    cpu.edi = at(app, cpu.eax) + 4;
-                    put(app, cpu.eax, cpu.edi);
-                    cpu.eax = cpu.ds;
-                    cpu.edi = at(app, cpu.edi - 4);
-                    cpu.esi = local + 8;
-                    cpu.es = reg16(cpu.eax);
-                    move = false;
-                    moveDword(app, cpu);
-                    moveDword(app, cpu);
+                    cpu.es = half(app, step - 4);
+                    to = at(app, step - 8);
                 }
                 else
                 {
-                    cpu.eax = at(app, local + 0x1c);
-                    cpu.esi = at(app, cpu.eax) + 4;
-                    put(app, cpu.eax, cpu.esi);
-                    cpu.eax = cpu.ds;
-                    cpu.edi = at(app, cpu.esi - 4);
+                    cpu.es = reg16(cpu.ds);
+                    to = at(app, step - 4);
                 }
-                if (move)
-                {
-                    cpu.esi = local + 8;
-                    cpu.es = reg16(cpu.eax);
-                    moveDword(app, cpu);
-                    moveDword(app, cpu);
-                }
+                to += cpu.ees;
+                cpu.es = es;
+                put(app, to, reg32(value));
+                put(app, to + 4, reg32(value >> 32));
             }
         }
     }
     else
     {
-        if (at(app, local + 0x18) == '-')
-            put(app, local + 0x24, 0 - at(app, local + 0x24));
-        if (x86::sreg32(cpu.ebp) > 0)
+        if (minus == '-')
+            small = 0 - small;
+        if (x86::sreg32(read) > 0)
         {
-            cpu.ecx = at(app, local + 0x20);
-            setLow8(cpu.eax, scanFlags(app, cpu.edi));
-            cpu.ebp += cpu.ecx;
-            const reg8 al = reg8(cpu.eax);
-            if (al & kAssign)
+            read += skipped;
+            const reg8 flags = scanFlags(app, specs);
+            if (flags & kAssign)
             {
-                cpu.eax = at(app, local + 0x1c);
-                if (al & kFarPointer)
-                    scanTarget(app, cpu, cpu.eax, true, cpu.ebx, cpu.eax, cpu.ebx);
-                else if (al & kNearPointer)
-                    scanTarget(app, cpu, cpu.eax, false, cpu.edx, cpu.eax, cpu.ebx);
+                reg32 step, target = argp;
+                scanArgument(app, argp, (flags & kFarPointer) != 0, step, target);
+                const reg16 es = cpu.es;
+                if (!(flags & kFarPointer))
+                    cpu.es = reg16(cpu.ds);
+                const reg32 to = cpu.ees + target;
+                cpu.es = es;
+                if (scanFlags(app, specs) & kShortVar)
+                    putHalf(app, to, reg16(small));
                 else
-                    scanTarget(app, cpu, cpu.eax, false, cpu.esi, cpu.eax, cpu.ebx);
-                setHigh8(cpu.edx, scanFlags(app, cpu.edi));
-                cpu.ebx = at(app, local + 0x24);
-                if (reg8(cpu.edx >> 8) & kShortVar)
-                    putHalf(app, cpu.ees + cpu.eax, reg16(cpu.ebx));
-                else
-                    put(app, cpu.ees + cpu.eax, cpu.ebx);
+                    put(app, to, small);
             }
         }
     }
-    cpu.eax = cpu.ebp;
-    cpu.esp += 0x30;
-    cpu.ebp = pop(app, cpu);
-    popEs(app, cpu);
-    scanEpilogue(app, cpu, {&cpu.edi, &cpu.esi});
+    return read;
 }
 
-/* 0x50c650 (__scnf): the format at edx, the arguments' va_list at [ebx],
- * the input by the specs at eax: white space in the format skips the
- * input's, a character of it must be the input's next, and a '%' a
- * conversion.  How many arguments were assigned, or -1 for an input over
- * before any. */
-void scnf(win32::WinApplication* app, x86::CPU& cpu)
+void scan_int(win32::WinApplication* app, x86::CPU& cpu)
 {
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.esi);
-    push(app, cpu, cpu.edi);
-    push(app, cpu, cpu.ebp);
-    cpu.esp -= 8;
-    const reg32 local = cpu.esp;
+    const reg32 read = scanIntOf(app, cpu, cpu.eax, cpu.edx, cpu.ebx, cpu.ecx);
+    if (cpu.terminate)
+        return;
+    returns(cpu, read);
+}
+
+/* 0x50c650 (__scnf): the format at `format`, the arguments' va_list at [argp], the input by the
+ * specs at `specs`: white space in the format skips the input's, a character of it must be the
+ * input's next, and a '%' a conversion.  How many arguments were assigned, or -1 for an input over
+ * before any.  At its entry's depth: four pushes, then the format's place and the va_list's copy,
+ * which [ and the conversions are handed.  0 with cpu.terminate set when the game stopped. */
+reg32 scnfOf(win32::WinApplication* app, x86::CPU& cpu, reg32 specs, reg32 format, reg32 argp)
+{
+    const GuestFrame frame(cpu, 0x10, 8);
+    const reg32 local = frame - 8;
     const reg32 args = local + 4;
-    cpu.esi = cpu.eax;
-    put(app, local, cpu.edx);
-    cpu.eax = at(app, cpu.ebx);
-    put(app, args, cpu.eax);
-    setHigh8(cpu.eax, byte(app, cpu.esi + kScanFlags));
-    cpu.ebp = 0;
-    setHigh8(cpu.eax, reg8(cpu.eax >> 8) & 0xfd);
-    cpu.edi = 0;
-    putByte(app, cpu.esi + kScanFlags, reg8(cpu.eax >> 8));
-    auto ended = [&] { return (scanFlags(app, cpu.esi) & kEndOfInput) != 0; };
-    // The input's next must be ebx: false for the end of the scan.
-    auto literal = [&](bool& ok) {
-        cpu.eax = cpu.esi;
-        ok = direct(app, cpu, cgetc);
-        if (!ok)
-            return false;
-        if (cpu.eax == cpu.ebx)
+    put(app, local, format);
+    put(app, args, at(app, argp));
+    putByte(app, specs + kScanFlags, scanFlags(app, specs) & reg8(~kEndOfInput));
+    reg32 assigned = 0, read = 0;
+    auto ended = [&] { return (scanFlags(app, specs) & kEndOfInput) != 0; };
+    // The input's next must be `want`: false for the end of the scan.
+    auto literal = [&](reg32 want) {
+        reg32 c;
         {
-            ++cpu.edi;
+            const ReturnSlot slot(cpu);
+            c = cgetcOf(app, cpu, specs);
+        }
+        if (cpu.terminate)
+            return false;
+        if (c == want)
+        {
+            ++read;
             return true;
         }
         if (!ended())
         {
-            cpu.edx = cpu.esi;
-            ok = direct(app, cpu, uncget);
+            const ReturnSlot slot(cpu);
+            uncgetOf(app, cpu, c, specs);
         }
         return false;
     };
-    bool ok = true;
     for (;;)
     {
-        cpu.ebx = at(app, local);
-        cpu.edx = cpu.ebx + 1;
-        put(app, local, cpu.edx);
-        cpu.ebx = byte(app, cpu.ebx);
-        if (cpu.ebx == 0)
+        const reg32 p = at(app, local);
+        put(app, local, p + 1);
+        const reg32 f = byte(app, p);
+        if (f == 0)
             goto end;
-        setLow8(cpu.eax, cpu.ebx);
-        if (isKind(app, cpu, kSpace))
+        if (byte(app, kIsTable + ((f + 1) & 0xff)) & kSpace)
         {
-            cpu.eax = cpu.esi;
-            if (!direct(app, cpu, scan_white))
-                return;
-            cpu.edi += cpu.eax;
+            const ReturnSlot slot(cpu);
+            read += scanWhiteOf(app, cpu, specs);
         }
-        else if (cpu.ebx != '%')
+        else if (f != '%')
         {
-            if (!literal(ok))
-            {
-                if (!ok)
-                    return;
+            if (!literal(f))
                 goto end;
-            }
         }
         else
         {
-            cpu.eax = at(app, local);
-            cpu.edx = cpu.esi;
-            if (!direct(app, cpu, get_opt))
-                return;
-            cpu.ebx = 0;
-            put(app, local, cpu.eax);
-            cpu.ebx = byte(app, cpu.eax);
-            if (cpu.ebx != 0)
+            const reg32 q = getOptOf(app, at(app, local), specs);
+            put(app, local, q);
+            const reg32 kind = byte(app, q);
+            if (kind != 0)
+                put(app, local, q + 1);
+            reg32 got = 0;
+            bool converted = true;
             {
-                ++cpu.eax;
-                put(app, local, cpu.eax);
-            }
-            guest::Native conversion = nullptr;
-            switch (cpu.ebx)
-            {
-            case 'd': cpu.ecx = 1; cpu.ebx = 10; conversion = scan_int; break;
-            case 'i': cpu.ecx = 1; cpu.ebx = 0; conversion = scan_int; break;
-            case 'o': cpu.ecx = 1; cpu.ebx = 8; conversion = scan_int; break;
-            case 'u': cpu.ebx = 10; cpu.ecx = 0; conversion = scan_int; break;
-            case 'x': case 'X': case 'p': cpu.ecx = 1; cpu.ebx = 16; conversion = scan_int; break;
-            case 'e': case 'f': case 'g': case 'E': case 'G': conversion = scan_float; break;
-            case 'S':
-                putByte(app, cpu.esi + kScanFlags, scanFlags(app, cpu.esi) | kLongVar);
-                conversion = scan_string;
-                break;
-            case 's': conversion = scan_string; break;
-            case '[': cpu.ebx = local; conversion = scan_arb; break;
-            case 'C':
-                putByte(app, cpu.esi + kScanFlags, scanFlags(app, cpu.esi) | kLongVar);
-                conversion = scan_char;
-                break;
-            case 'c': conversion = scan_char; break;
-            case 'n':
-                cpu.edx = args;
-                cpu.ebx = cpu.edi;
-                cpu.eax = cpu.esi;
-                if (!direct(app, cpu, report_scan))
-                    return;
-                break;
-            case '%':
-                if (!literal(ok))
+                const ReturnSlot slot(cpu);
+                switch (kind)
                 {
-                    if (!ok)
-                        return;
-                    goto end;
+                case 'd': got = scanIntOf(app, cpu, specs, args, 10, 1); break;
+                case 'i': got = scanIntOf(app, cpu, specs, args, 0, 1); break;
+                case 'o': got = scanIntOf(app, cpu, specs, args, 8, 1); break;
+                case 'u': got = scanIntOf(app, cpu, specs, args, 10, 0); break;
+                case 'x': case 'X': case 'p': got = scanIntOf(app, cpu, specs, args, 16, 1); break;
+                case 'e': case 'f': case 'g': case 'E': case 'G': got = scanFloatOf(app, cpu, specs, args); break;
+                case 'S':
+                    putByte(app, specs + kScanFlags, scanFlags(app, specs) | kLongVar);
+                    got = scanStringOf(app, cpu, specs, args, specs);
+                    break;
+                case 's': got = scanStringOf(app, cpu, specs, args, specs); break;
+                case '[': got = scanArbOf(app, cpu, specs, args, local); break;
+                case 'C':
+                    putByte(app, specs + kScanFlags, scanFlags(app, specs) | kLongVar);
+                    got = scanCharOf(app, cpu, specs, args, specs);
+                    break;
+                case 'c': got = scanCharOf(app, cpu, specs, args, specs); break;
+                case 'n':
+                    reportScanOf(app, specs, args, read);
+                    converted = false;
+                    break;
+                case '%':
+                    converted = false;
+                    if (!literal('%'))
+                        goto end;
+                    break;
+                default:
+                    converted = false;
+                    break;
                 }
-                break;
             }
-            if (conversion != nullptr)
+            if (cpu.terminate)
+                return 0;
+            if (converted)
             {
-                cpu.edx = args;
-                cpu.eax = cpu.esi;
-                if (!direct(app, cpu, conversion))
-                    return;
-                cpu.ebx = cpu.eax;
-                if (x86::sreg32(cpu.ebx) <= 0)
+                if (x86::sreg32(got) <= 0)
                     goto end;
-                cpu.edi += cpu.ebx;
-                if (scanFlags(app, cpu.esi) & kAssign)
-                    ++cpu.ebp;
+                read += got;
+                if (scanFlags(app, specs) & kAssign)
+                    ++assigned;
             }
         }
+        if (cpu.terminate)
+            return 0;
         if (ended())
             break;
     }
     // The input over: a %n where the format goes on is still reported.
-    cpu.eax = at(app, local);
-    if (byte(app, cpu.eax) == '%')
+    if (byte(app, at(app, local)) == '%')
     {
-        cpu.ebx = cpu.eax + 1;
-        cpu.edx = cpu.esi;
-        cpu.eax = cpu.ebx;
-        put(app, local, cpu.ebx);
-        if (!direct(app, cpu, get_opt))
-            return;
-        put(app, local, cpu.eax);
-        if (byte(app, cpu.eax) == 'n')
-        {
-            cpu.edx = args;
-            cpu.ebx = cpu.edi;
-            cpu.eax = cpu.esi;
-            if (!direct(app, cpu, report_scan))
-                return;
-        }
+        put(app, local, at(app, local) + 1);
+        const reg32 q = getOptOf(app, at(app, local), specs);
+        put(app, local, q);
+        if (byte(app, q) == 'n')
+            reportScanOf(app, specs, args, read);
     }
 end:
-    cpu.eax = cpu.ebp == 0 && ended() ? 0xffffffff : cpu.ebp;
-    cpu.esp += 8;
-    scanEpilogue(app, cpu, {&cpu.ebp, &cpu.edi, &cpu.esi, &cpu.ecx});
+    if (cpu.terminate)
+        return 0;
+    return assigned == 0 && ended() ? 0xffffffff : assigned;
 }
 
-/* 0x4f0520 (vsscanf): the string at eax scanned by the format at edx, the
- * arguments' va_list at ebx -- __scnf with sscanf's routines in its specs. */
+void scnf(win32::WinApplication* app, x86::CPU& cpu)
+{
+    reg32 assigned;
+    {
+        const guest::KeptRegisters kept(cpu);
+        assigned = scnfOf(app, cpu, cpu.eax, cpu.edx, cpu.ebx);
+    }
+    if (cpu.terminate)
+        return;
+    returns(cpu, assigned);
+}
+
+/* 0x4f0520 (vsscanf): the string at `string` scanned by the format at `format`, the arguments'
+ * va_list at [argp] -- __scnf with sscanf's routines in specs of its frame: two pushes, then 0x14
+ * bytes. */
+reg32 vsscanfOf(win32::WinApplication* app, x86::CPU& cpu, reg32 string, reg32 format, reg32 argp)
+{
+    const GuestFrame frame(cpu, 8, 0x14);
+    const reg32 specs = frame - 0x14;
+    put(app, specs + kScanString, string);
+    put(app, specs + kScanGet, kCgetString);
+    put(app, specs + kScanUnget, kUncgetString);
+    const ReturnSlot slot(cpu);
+    return scnfOf(app, cpu, specs, format, argp);
+}
+
 void vsscanf(win32::WinApplication* app, x86::CPU& cpu)
 {
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.esi);
-    cpu.esp -= 0x14;
-    cpu.ecx = kCgetString;
-    cpu.esi = kUncgetString;
-    put(app, cpu.esp + kScanString, cpu.eax);
-    cpu.eax = cpu.esp;
-    put(app, cpu.esp + kScanGet, cpu.ecx);
-    put(app, cpu.esp + kScanUnget, cpu.esi);
-    if (!direct(app, cpu, scnf))
+    reg32 assigned;
+    {
+        const guest::KeptRegisters kept(cpu);
+        assigned = vsscanfOf(app, cpu, cpu.eax, cpu.edx, cpu.ebx);
+    }
+    if (cpu.terminate)
         return;
-    cpu.esp += 0x14;
-    scanEpilogue(app, cpu, {&cpu.esi, &cpu.ecx});
+    returns(cpu, assigned);
 }
 
-/* 0x4f0548 (sscanf): vsscanf's, its arguments on the stack. */
+/* 0x4f0548 (sscanf): vsscanf's, its arguments on the stack from `arguments` on; the va_list in its
+ * frame: two pushes, then the dword. */
+reg32 sscanfOf(win32::WinApplication* app, x86::CPU& cpu, reg32 string, reg32 format, reg32 arguments)
+{
+    const GuestFrame frame(cpu, 8, 4);
+    const reg32 list = frame - 4;
+    put(app, list, arguments);
+    const ReturnSlot slot(cpu);
+    return vsscanfOf(app, cpu, string, format, list);
+}
+
 void sscanf(win32::WinApplication* app, x86::CPU& cpu)
 {
-    push(app, cpu, cpu.ebx);
-    push(app, cpu, cpu.edx);
-    cpu.esp -= 4;
-    cpu.eax = cpu.esp + 0x18;
-    cpu.ebx = cpu.esp;
-    cpu.edx = at(app, cpu.esp + 0x14);
-    put(app, cpu.esp, cpu.eax);
-    cpu.eax = at(app, cpu.esp + 0x10);
-    if (!direct(app, cpu, vsscanf))
+    reg32 assigned;
+    {
+        const guest::KeptRegisters kept(cpu);
+        assigned = sscanfOf(app, cpu, at(app, cpu.esp + 4), at(app, cpu.esp + 8), cpu.esp + 0xc);
+    }
+    if (cpu.terminate)
         return;
-    cpu.esp += 4;
-    scanEpilogue(app, cpu, {&cpu.edx, &cpu.ebx});
+    returns(cpu, assigned);
 }
 
-/* 0x51663a (the long double's normalizing): the 96 bits in edx:eax:ebp,
- * exponent edi, shifted up until the top one is set, then rounded to 64 by
- * ebp's top bit; the exponent in esi -- 0 for no bits at all. */
+/* A long double of its parts: the mantissa's low and high dwords, the sign and exponent. */
+x86::IEEEf80 longDouble(reg32 low, reg32 high, reg16 exponent)
+{
+    return x86::IEEEf80(x86::IEEEf80Data{reg16(low), reg16(low >> 16), reg16(high), reg16(high >> 16), exponent});
+}
+
+/* The long double at `p`, and one put there. */
+x86::IEEEf80 longDoubleAt(win32::WinApplication* app, reg32 p)
+{
+    const x86::IEEEf80 value = app->getMemory<x86::IEEEf80>(p);
+    return value;
+}
+
+void putLongDouble(win32::WinApplication* app, reg32 p, const x86::IEEEf80& value)
+{
+    app->getMemory<x86::IEEEf80>(p) = value;
+}
+
+reg32 lowOf(const x86::IEEEf80& value)
+{
+    return value.data.data1 | reg32(value.data.data2) << 16;
+}
+
+/* 0x51663a (the long double's normalizing): the 96 bits `high`:`middle`:`low`, exponent
+ * `exponent`, shifted up until the top one is set, then rounded to 64 by the low dword's top bit.
+ * The exponent; 0 for no bits at all. */
+reg32 normalizeOf(reg32& high, reg32& middle, reg32& low, reg32& exponent)
+{
+    if ((middle | high | low) == 0)
+        return 0;
+    for (int i = 0; i < 2; ++i)
+        if (high == 0)
+        {
+            high = middle;
+            middle = low;
+            low = 0;
+            exponent -= 0x20;
+        }
+    while (!(high & 0x80000000))
+    {
+        --exponent;
+        shift96(high, middle, low);
+    }
+    const reg32 round = low >> 31;
+    low <<= 1;
+    if (round)
+    {
+        const x86::reg64 m = x86::reg64(middle) + round;
+        const x86::reg64 h = x86::reg64(high) + (m >> 32);
+        middle = reg32(m);
+        high = reg32(h);
+        if (h >> 32)
+        {
+            high = high >> 1 | 0x80000000;
+            ++exponent;
+        }
+    }
+    return exponent;
+}
+
 void normalize(win32::WinApplication* app, x86::CPU& cpu)
 {
-    cpu.esi = cpu.eax | cpu.edx | cpu.ebp;
-    if (cpu.esi != 0)
-    {
-        for (int i = 0; i < 2; ++i)
-            if (cpu.edx == 0)
-            {
-                cpu.edx = cpu.eax;
-                cpu.eax = cpu.ebp;
-                cpu.ebp = 0;
-                cpu.edi -= 0x20;
-            }
-        while (!(cpu.edx & 0x80000000))
-        {
-            --cpu.edi;
-            shift96(cpu.edx, cpu.eax, cpu.ebp);
-        }
-        const reg32 round = cpu.ebp >> 31;
-        cpu.ebp <<= 1;
-        if (round)
-        {
-            const x86::reg64 middle = x86::reg64(cpu.eax) + round;
-            const x86::reg64 high = x86::reg64(cpu.edx) + (middle >> 32);
-            cpu.eax = reg32(middle);
-            cpu.edx = reg32(high);
-            if (high >> 32)
-            {
-                cpu.edx = cpu.edx >> 1 | 0x80000000;
-                ++cpu.edi;
-            }
-        }
-        cpu.esi = cpu.edi;
-    }
-    cpu.esp += 4;
     NFS2_USE(app);
+    // Its own convention: edx:eax:ebp and edi in, edx:eax and esi out -- the rest as it leaves them.
+    cpu.esi = normalizeOf(cpu.edx, cpu.eax, cpu.ebp, cpu.edi);
+    cpu.esp += 4;
 }
 
-/* 0x5165d8 (__ZBuf2LD): the decimal digits at eax as the long double at
- * edx -- an integer, 96 bits of it, normalized. */
-void ZBuf2LD(win32::WinApplication* app, x86::CPU& cpu)
+/* 0x5165d8 (__ZBuf2LD): the decimal `digits` as a long double -- an integer, 96 bits of it,
+ * normalized. */
+x86::IEEEf80 zbufOf(const std::string& digits)
 {
-    push(app, cpu, cpu.ebp);
-    push(app, cpu, cpu.esi);
-    push(app, cpu, cpu.edi);
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.ebx);
-    push(app, cpu, cpu.edx);
-    cpu.esi = cpu.eax;
-    cpu.edx = 0;
-    cpu.ecx = 0;
-    cpu.ebp = 0;
-    for (cpu.eax = byte(app, cpu.esi); cpu.eax != 0; cpu.eax = byte(app, cpu.esi))
+    reg32 high = 0, middle = 0, low = 0;
+    for (const char c : digits)
     {
         // Times 10: times 4, plus itself, times 2.
-        cpu.edi = cpu.edx;
-        cpu.ebx = cpu.ecx;
-        cpu.eax = cpu.ebp;
-        shift96(cpu.edx, cpu.ecx, cpu.ebp);
-        shift96(cpu.edx, cpu.ecx, cpu.ebp);
-        add96(cpu.edx, cpu.ecx, cpu.ebp, cpu.edi, cpu.ebx, cpu.eax);
-        shift96(cpu.edx, cpu.ecx, cpu.ebp);
-        cpu.eax = byte(app, cpu.esi) & 0xf;
-        add96(cpu.edx, cpu.ecx, cpu.ebp, 0, 0, cpu.eax);
-        ++cpu.esi;
+        const reg32 h = high, m = middle, l = low;
+        shift96(high, middle, low);
+        shift96(high, middle, low);
+        add96(high, middle, low, h, m, l);
+        shift96(high, middle, low);
+        add96(high, middle, low, 0, 0, reg32(c) & 0xf);
     }
-    cpu.eax = cpu.ecx;
-    cpu.edi = 0x405e;
-    if (!direct(app, cpu, normalize))
-        return;
-    cpu.ebp = pop(app, cpu);
-    put(app, cpu.ebp + 4, cpu.edx);
-    put(app, cpu.ebp, cpu.eax);
-    putHalf(app, cpu.ebp + 8, reg16(cpu.esi));
-    scanEpilogue(app, cpu, {&cpu.ebx, &cpu.ecx, &cpu.edi, &cpu.esi, &cpu.ebp});
+    reg32 exponent = 0x405e;
+    const reg32 normal = normalizeOf(high, middle, low, exponent);
+    return longDouble(middle, high, reg16(normal));
+}
+
+/* The string at `p`, up to its 0. */
+std::string guestString(win32::WinApplication* app, reg32 p)
+{
+    std::string s;
+    for (reg8 c; (c = byte(app, p)) != 0; ++p)
+        s += char(c);
+    return s;
+}
+
+void ZBuf2LD(win32::WinApplication* app, x86::CPU& cpu)
+{
+    const x86::IEEEf80 value = zbufOf(guestString(app, cpu.eax));
+    app->getMemory<x86::IEEEf80>(cpu.edx) = value;
+    returns(cpu, lowOf(value));  // eax the mantissa's low dword, as the code leaves it
 }
 
 namespace
 {
 
-/* 0x5166cf: the scaling's way out, its frame's registers back. */
+/* 0x5166cf: the scaling's way out, its frame's registers back -- the jump 0x5166d8 makes there. */
 void scaleReturn(win32::WinApplication* app, x86::CPU& cpu)
 {
     cpu.esp = cpu.ebp - 0x10;
@@ -10437,43 +9570,31 @@ void scaleReturn(win32::WinApplication* app, x86::CPU& cpu)
 
 }  // namespace
 
-/* 0x51667b (the scaling's powers): the long double at edx made 10 to the edx
- * -- 0x2000 at most -- by the table's powers of 10^2^n it multiplies the
- * long double at eax by. */
+/* 0x51667b (the scaling's powers): `value` times 10 to the `n` -- 0x2000 at most -- by the table's
+ * powers of 10^2^n, each product by the x87. */
+void scalePowersOf(win32::WinApplication* app, x86::CPU& cpu, x86::IEEEf80& value, reg32 n)
+{
+    if (x86::sreg32(n) >= 0x2000)
+        n = 0x2000;
+    for (reg32 power = kPowersOfTen; x86::sreg32(n) > 0; power += 0xa)
+    {
+        if (n & 1)
+        {
+            const x86::Float a = x86::Float(value);
+            const x86::Float b = x86::Float(longDoubleAt(app, power));
+            const x86::Float product = cpu.fpu.mul(a, b);
+            value = x86::Float(product);
+        }
+        n = reg32(x86::sreg32(n) >> 1);
+    }
+}
+
 void scalePowers(win32::WinApplication* app, x86::CPU& cpu)
 {
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    push(app, cpu, cpu.ebx);
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.esi);
-    push(app, cpu, cpu.edi);
-    cpu.esp -= 0xc;
-    cpu.edi = cpu.eax;
-    cpu.esi = cpu.edx;
-    if (x86::sreg32(cpu.edx) >= 0x2000)
-        cpu.esi = 0x2000;
-    for (cpu.ecx = kPowersOfTen; x86::sreg32(cpu.esi) > 0; cpu.ecx += 0xa)
-    {
-        if (cpu.esi & 1)
-        {
-            cpu.eax = (cpu.eax & 0xffff0000) | half(app, cpu.ecx + 8);
-            putHalf(app, cpu.ebp - 0x14, reg16(cpu.eax));
-            cpu.eax = at(app, cpu.ecx + 4);
-            put(app, cpu.ebp - 0x18, cpu.eax);
-            cpu.edx = cpu.ebp - 0x1c;
-            cpu.eax = at(app, cpu.ecx);
-            cpu.ebx = cpu.edi;
-            put(app, cpu.ebp - 0x1c, cpu.eax);
-            cpu.eax = cpu.edi;
-            const x86::Float a = x86::Float(app->getMemory<x86::IEEEf80>(cpu.eax));
-            const x86::Float b = x86::Float(app->getMemory<x86::IEEEf80>(cpu.edx));
-            const x86::Float product = cpu.fpu.mul(a, b);
-            app->getMemory<x86::IEEEf80>(cpu.ebx) = x86::Float(product);
-        }
-        cpu.esi = reg32(x86::sreg32(cpu.esi) >> 1);
-    }
-    scaleReturn(app, cpu);
+    x86::IEEEf80 value = longDoubleAt(app, cpu.eax);
+    scalePowersOf(app, cpu, value, cpu.edx);
+    putLongDouble(app, cpu.eax, value);
+    returns(cpu, cpu.eax);  // eax the long double's address, as the code leaves it
 }
 
 /* 0x5166cf: 0x51667b's way out, which 0x5166d8 jumps to. */
@@ -10482,350 +9603,257 @@ void scaleEnd(win32::WinApplication* app, x86::CPU& cpu)
     scaleReturn(app, cpu);
 }
 
-/* 0x5166d8 (the scaling by a power): the long double at eax times 10 to the
- * edx -- over it for a negative one -- the x87 rounding to its 64 bits. */
+/* 0x5166d8 (the scaling by a power): `value` times 10 to the `n` -- over it for a negative one --
+ * the x87 rounding to its 64 bits meanwhile.  The x87's control word as it was, which the code
+ * leaves in eax; for an `n` of 0 nothing, which leaves eax as it was. */
+reg32 scaleByOf(win32::WinApplication* app, x86::CPU& cpu, x86::IEEEf80& value, reg32 n)
+{
+    const reg32 control = cpu.fpu.control.word;
+    cpu.fpu.setControl(reg16(control | 0x300));
+    x86::IEEEf80 power = longDouble(0, 0x80000000, 0x3fff);
+    const bool divide = x86::sreg32(n) < 0;
+    scalePowersOf(app, cpu, power, divide ? 0 - n : n);
+    {
+        const x86::Float a = x86::Float(value);
+        const x86::Float b = x86::Float(power);
+        const x86::Float result = divide ? cpu.fpu.div(a, b) : cpu.fpu.mul(a, b);
+        value = x86::Float(result);
+    }
+    cpu.fpu.setControl(reg16(control));
+    return control & 0xffff;
+}
+
 void scaleBy(win32::WinApplication* app, x86::CPU& cpu)
 {
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    push(app, cpu, cpu.ebx);
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.esi);
-    push(app, cpu, cpu.edi);
-    cpu.esp -= 0xc;
-    cpu.ecx = cpu.eax;
-    if (cpu.edx == 0)
-        return scaleReturn(app, cpu);
-    push(app, cpu, 0);
-    app->getMemory<x86::reg16>(cpu.esp) = cpu.fpu.control.word;
-    cpu.eax = pop(app, cpu);
-    cpu.esi = cpu.eax;
-    setHigh8(cpu.eax, (cpu.eax >> 8) | 3);
-    cpu.eax &= 0xffff;
-    cpu.ebx = 0x3fff;
-    push(app, cpu, cpu.eax);
-    cpu.fpu.setControl(app->getMemory<x86::reg16>(cpu.esp));
-    cpu.eax = pop(app, cpu);
-    cpu.edi = 0;
-    putHalf(app, cpu.ebp - 0x14, reg16(cpu.ebx));
-    cpu.ebx = 0x80000000;
-    put(app, cpu.ebp - 0x1c, cpu.edi);
-    put(app, cpu.ebp - 0x18, cpu.ebx);
-    const bool divide = x86::sreg32(cpu.edx) < 0;
-    cpu.eax = cpu.ebp - 0x1c;
-    if (divide)
-        cpu.edx = 0 - cpu.edx;
-    if (!direct(app, cpu, scalePowers))
-        return;
-    cpu.ebx = cpu.ecx;
-    cpu.edx = cpu.ebp - 0x1c;
-    cpu.eax = cpu.ecx;
+    if (cpu.edx != 0)
     {
-        const x86::Float a = x86::Float(app->getMemory<x86::IEEEf80>(cpu.eax));
-        const x86::Float b = x86::Float(app->getMemory<x86::IEEEf80>(cpu.edx));
-        const x86::Float result = divide ? cpu.fpu.div(a, b) : cpu.fpu.mul(a, b);
-        app->getMemory<x86::IEEEf80>(cpu.ebx) = x86::Float(result);
+        const reg32 p = cpu.eax;
+        x86::IEEEf80 value = longDoubleAt(app, p);
+        cpu.eax = scaleByOf(app, cpu, value, cpu.edx);
+        putLongDouble(app, p, value);
     }
-    cpu.eax = cpu.esi & 0xffff;
-    push(app, cpu, cpu.eax);
-    cpu.fpu.setControl(app->getMemory<x86::reg16>(cpu.esp));
-    cpu.eax = pop(app, cpu);
-    scaleReturn(app, cpu);
+    cpu.esp += 4;
 }
 
-/* 0x516759 (__LDScale10x): the long double at eax times 10 to the edx, in
- * steps of 10^4096 at most. */
+/* 0x516759 (__LDScale10x): `value` times 10 to the `n`, in steps of 10^4096 at most.  What the
+ * last step leaves in eax: the x87's control word, none for a last step of 0. */
+std::optional<reg32> ldScale10xOf(win32::WinApplication* app, x86::CPU& cpu, x86::IEEEf80& value, reg32 n)
+{
+    if (x86::sreg32(n) > 0x1000)
+    {
+        scaleByOf(app, cpu, value, 0x1000);
+        n -= 0x1000;
+    }
+    else if (x86::sreg32(n) < -0x1000)
+    {
+        scaleByOf(app, cpu, value, 0xfffff000);
+        n += 0x1000;
+    }
+    if (n == 0)
+        return std::nullopt;
+    return scaleByOf(app, cpu, value, n);
+}
+
 void LDScale10x(win32::WinApplication* app, x86::CPU& cpu)
 {
-    push(app, cpu, cpu.ebx);
-    push(app, cpu, cpu.ecx);
-    cpu.ecx = cpu.eax;
-    cpu.ebx = cpu.edx;
-    if (x86::sreg32(cpu.edx) > 0x1000)
-    {
-        cpu.edx = 0x1000;
-        if (!direct(app, cpu, scaleBy))
-            return;
-        cpu.ebx -= 0x1000;
-    }
-    else if (x86::sreg32(cpu.edx) < -0x1000)
-    {
-        cpu.edx = 0xfffff000;
-        if (!direct(app, cpu, scaleBy))
-            return;
-        cpu.ebx += 0x1000;
-    }
-    cpu.edx = cpu.ebx;
-    cpu.eax = cpu.ecx;
-    if (!direct(app, cpu, scaleBy))
-        return;
-    scanEpilogue(app, cpu, {&cpu.ecx, &cpu.ebx});
+    x86::IEEEf80 value = longDoubleAt(app, cpu.eax);
+    const std::optional<reg32> control = ldScale10xOf(app, cpu, value, cpu.edx);
+    putLongDouble(app, cpu.eax, value);
+    returns(cpu, control.value_or(cpu.eax));
 }
 
-/* 0x4f8122 (__Strtold): the number at eax -- white space, a sign, digits
- * with a point among them, an exponent -- as the long double at edx, from
- * its first 19 significant digits; the end of it at [ebx], unless ebx is 0.
- * 0 for no digits (the long double 0), 3 for a number too big for a double,
- * 2 for one too small, 1 for any other. */
-void Strtold(win32::WinApplication* app, x86::CPU& cpu)
+/* 0x4f8122 (__Strtold): the number at `s` -- white space, a sign, digits with a point among them,
+ * an exponent -- as `value`, from its first 19 significant digits; the end of it at [end], unless
+ * `end` is 0.  0 for no digits (the long double 0), 3 for a number too big for a double, 2 for one
+ * too small, 1 for any other. */
+reg32 strtoldOf(win32::WinApplication* app, x86::CPU& cpu, reg32 s, reg32 end, x86::IEEEf80& value)
 {
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.esi);
-    push(app, cpu, cpu.edi);
-    cpu.esp -= 0x34;
-    const reg32 frame = cpu.ebp;
-    cpu.edi = cpu.edx;
-    put(app, frame - 0x18, cpu.ebx);
-    put(app, frame - 0x20, cpu.eax);
-    auto dl = [&] { return reg8(cpu.edx); };
-    for (;; ++cpu.eax)
+    reg32 p = s, stop = s;
+    auto isDigit = [](reg8 c) { return c >= '0' && c <= '9'; };
+    reg8 c = byte(app, p);
+    for (; c == ' ' || (c >= 9 && c <= 0xd); c = byte(app, ++p))
     {
-        setLow8(cpu.edx, byte(app, cpu.eax));
-        if (dl() != ' ' && (dl() < 9 || dl() > 0xd))
-            break;
     }
-    cpu.ebx = cpu.eax + 1;
-    setLow8(cpu.ecx, 0);
-    if (dl() == '+')
-        cpu.eax = cpu.ebx;
-    else if (dl() == '-')
-    {
-        setLow8(cpu.ecx, 1);
-        cpu.eax = cpu.ebx;
-    }
-    cpu.ebx = 0;
-    setHigh8(cpu.edx, '0');
-    put(app, frame - 0x1c, cpu.ebx);
+    const bool negative = c == '-';
+    if (c == '+' || c == '-')
+        ++p;
+    std::string digits;   // the significant ones, 19 at most
+    reg32 count = 0, fraction = 0;
+    bool point = false, any = false, significant = false;
     for (;;)
     {
-        setLow8(cpu.edx, byte(app, cpu.eax));
-        ++cpu.eax;
-        if (dl() == '.')
+        c = byte(app, p++);
+        if (c == '.')
         {
-            if (cpu.ecx & 8)
+            if (point)
                 break;
-            cpu.ecx |= 8;
+            point = true;
             continue;
         }
-        if (dl() < '0' || dl() > '9')
+        if (!isDigit(c))
             break;
-        if (cpu.ecx & 8)
-            put(app, frame - 0x1c, at(app, frame - 0x1c) + 1);
-        setHigh8(cpu.edx, reg8(cpu.edx >> 8) | dl());
-        if (reg8(cpu.edx >> 8) != '0')
+        if (point)
+            ++fraction;
+        significant = significant || c != '0';
+        if (significant)
         {
-            if (x86::sreg32(cpu.ebx) < 0x13)
-                putByte(app, cpu.ebx + frame - 0x40, dl());
-            ++cpu.ebx;
+            if (x86::sreg32(count) < 0x13)
+                digits += char(c);
+            ++count;
         }
-        cpu.ecx |= 4;
+        any = true;
     }
-    cpu.esi = 0;
-    if (cpu.ecx & 4)
+    reg32 exponent = 0;
+    if (any)
     {
-        if (dl() == 'e' || dl() == 'E')
+        if (c == 'e' || c == 'E')
         {
-            cpu.edx = cpu.eax - 1;
-            setHigh8(cpu.ecx, byte(app, cpu.eax));
-            put(app, frame - 0x10, cpu.edx);
-            cpu.edx = cpu.eax + 1;
-            const reg8 ch = reg8(cpu.ecx >> 8);
-            if (ch == '+')
-                cpu.eax = cpu.edx;
-            else if (ch == '-')
+            const reg32 e = p - 1;
+            const reg8 sign = byte(app, p);
+            if (sign == '+' || sign == '-')
+                ++p;
+            bool exponentDigits = false;
+            for (; isDigit(c = byte(app, p)); ++p)
             {
-                cpu.ecx |= 2;
-                cpu.eax = cpu.edx;
+                if (x86::sreg32(exponent) < 0x3e8)
+                    exponent = exponent * 10 + c - 0x30;
+                exponentDigits = true;
             }
-            cpu.ecx &= 0xfffffffb;
-            for (;; ++cpu.eax)
-            {
-                setLow8(cpu.edx, byte(app, cpu.eax));
-                if (dl() < '0' || dl() > '9')
-                    break;
-                if (x86::sreg32(cpu.esi) < 0x3e8)
-                {
-                    cpu.esi *= 10;
-                    put(app, frame - 0x14, cpu.esi);
-                    cpu.esi = dl() + at(app, frame - 0x14) - 0x30;
-                }
-                cpu.ecx |= 4;
-            }
-            if (cpu.ecx & 2)
-                cpu.esi = 0 - cpu.esi;
-            if (!(cpu.ecx & 4))
-                cpu.eax = at(app, frame - 0x10);
+            if (sign == '-')
+                exponent = 0 - exponent;
+            if (!exponentDigits)
+                p = e;
         }
         else
-            --cpu.eax;
-        put(app, frame - 0x20, cpu.eax);
+            --p;
+        stop = p;
     }
-    if (at(app, frame - 0x18) != 0)
+    if (end != 0)
+        put(app, end, stop);
+    exponent -= fraction;
+    if (x86::sreg32(count) > 0x13)
     {
-        cpu.edx = at(app, frame - 0x18);
-        cpu.eax = at(app, frame - 0x20);
-        put(app, cpu.edx, cpu.eax);
+        exponent += count - 0x13;
+        count = 0x13;
     }
-    cpu.esi -= at(app, frame - 0x1c);
-    if (x86::sreg32(cpu.ebx) > 0x13)
+    while (x86::sreg32(count) > 0 && digits[count - 1] == '0')
     {
-        cpu.ebx -= 0x13;
-        cpu.esi += cpu.ebx;
-        cpu.ebx = 0x13;
+        ++exponent;
+        --count;
     }
-    while (x86::sreg32(cpu.ebx) > 0 && byte(app, cpu.ebx + frame - 0x41) == '0')
+    if (count == 0)
     {
-        ++cpu.esi;
-        --cpu.ebx;
+        value = longDouble(0, 0, 0);
+        return 0;
     }
-    if (cpu.ebx == 0)
-    {
-        putHalf(app, cpu.edi + 8, 0);
-        put(app, cpu.edi + 4, cpu.ebx);
-        put(app, cpu.edi, cpu.ebx);
-        cpu.eax = 0;
-    }
-    else
-    {
-        setLow8(cpu.edx, 0);
-        cpu.eax = frame - 0x40;
-        putByte(app, cpu.ebx + frame - 0x40, 0);
-        cpu.edx = frame - 0x2c;
-        if (!direct(app, cpu, ZBuf2LD))
-            return;
-        if (cpu.esi != 0)
-        {
-            cpu.eax = frame - 0x2c;
-            cpu.edx = cpu.esi;
-            if (!direct(app, cpu, LDScale10x))
-                return;
-        }
-        if (cpu.ecx & 1)
-            putByte(app, frame - 0x23, byte(app, frame - 0x23) | 0x80);
-        cpu.eax = at(app, frame - 0x24);
-        putHalf(app, cpu.edi + 8, reg16(cpu.eax));
-        cpu.eax = at(app, frame - 0x28);
-        put(app, cpu.edi + 4, cpu.eax);
-        cpu.eax = at(app, frame - 0x2c);
-        put(app, cpu.edi, cpu.eax);
-        cpu.eax = cpu.esi + cpu.ebx - 1;
-        if (x86::sreg32(cpu.eax) > 0x134)
-            cpu.eax = 3;
-        else if (x86::sreg32(cpu.eax) < -0x134)
-            cpu.eax = 2;
-        else
-            cpu.eax = 1;
-    }
-    cpu.esp = frame - 0xc;
-    scanEpilogue(app, cpu, {&cpu.edi, &cpu.esi, &cpu.ecx, &cpu.ebp});
+    digits.resize(count);
+    x86::IEEEf80 number = zbufOf(digits);
+    if (exponent != 0)
+        ldScale10xOf(app, cpu, number, exponent);
+    if (negative)
+        number.data.data5 |= 0x8000;
+    value = number;
+    const reg32 magnitude = exponent + count - 1;
+    if (x86::sreg32(magnitude) > 0x134)
+        return 3;
+    if (x86::sreg32(magnitude) < -0x134)
+        return 2;
+    return 1;
 }
 
-/* 0x4f82b6 (strtod): the number at eax as a double, in st(0) -- HUGE_VAL
- * with its sign, and ERANGE, for one too big; 0 or a denormal, and ERANGE,
- * for one too small; its end at [edx], unless edx is 0. */
-void strtod(win32::WinApplication* app, x86::CPU& cpu)
+void Strtold(win32::WinApplication* app, x86::CPU& cpu)
 {
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    push(app, cpu, cpu.ebx);
-    push(app, cpu, cpu.ecx);
-    cpu.esp -= 0x24;
-    const reg32 frame = cpu.ebp;
-    cpu.ebx = cpu.edx;
-    cpu.edx = frame - 0x2c;
-    if (!direct(app, cpu, Strtold))
-        return;
-    cpu.ebx = cpu.eax;
-    // The long double made the double at ebp-0x18, by the x87.
-    auto toDouble = [&] {
-        cpu.edx = frame - 0x18;
-        cpu.eax = frame - 0x2c;
-        const x86::Float value = x86::Float(app->getMemory<x86::IEEEf80>(cpu.eax));
-        app->getMemory<double>(cpu.edx) = double(value);
+    x86::IEEEf80 value;
+    const reg32 result = strtoldOf(app, cpu, cpu.eax, cpu.ebx, value);
+    putLongDouble(app, cpu.edx, value);
+    returns(cpu, result);
+}
+
+/* __set_ERANGE's core: errno ERANGE; what it leaves in eax, 0 with cpu.terminate set when the game
+ * stopped. */
+reg32 setErangeOf(win32::WinApplication* app, x86::CPU& cpu)
+{
+    const guest::KeptRegisters kept(cpu);
+    return setThreadWord(app, cpu, kErrno, kERANGE) ? cpu.eax : 0;
+}
+
+/* 0x4f82b6 (strtod): the number at `s` as a double -- HUGE_VAL with its sign, and ERANGE, for one
+ * too big; 0 or a denormal, and ERANGE, for one too small; its end at [end], unless `end` is 0.
+ * `eax` what the code leaves there: the double's high dword, the long double's exponent, or
+ * __set_ERANGE's.  0 with cpu.terminate set when the game stopped. */
+double strtodOf(win32::WinApplication* app, x86::CPU& cpu, reg32 s, reg32 end, reg32& eax)
+{
+    x86::IEEEf80 number;
+    const reg32 kind = strtoldOf(app, cpu, s, end, number);
+    double d = 0;
+    eax = 0;
+    if (kind == 0)
+        return d;
+    auto highOf = [](double v) {
+        x86::reg64 bits;
+        std::memcpy(&bits, &v, sizeof bits);
+        return reg32(bits >> 32);
     };
+    const reg32 e = number.data.data5 & 0x7fff;
     bool range = false;
-    if (cpu.eax == 0)
+    if (e >= 0x43ff)
     {
-        put(app, frame - 0x18, cpu.eax);
-        put(app, frame - 0x14, cpu.eax);
-    }
-    else
-    {
-        cpu.eax = at(app, frame - 0x24);
-        setHigh8(cpu.eax, (cpu.eax >> 8) & 0x7f);
-        cpu.eax &= 0xffff;
-        if (x86::sreg32(cpu.eax) >= 0x43ff)
+        eax = setErangeOf(app, cpu);
+        if (cpu.terminate)
+            return 0;
+        if (number.data.data5 & 0x8000)
         {
-            if (!direct(app, cpu, set_ERANGE))
-                return;
-            if (byte(app, frame - 0x23) & 0x80)
-            {
-                const x86::Float huge = x86::Float(app->getMemory<double>(kHugeVal));
-                const x86::Float negative = -huge;
-                app->getMemory<double>(frame - 0x18) = double(negative);
-            }
-            else
-            {
-                cpu.eax = at(app, kHugeVal);
-                put(app, frame - 0x18, cpu.eax);
-                cpu.eax = at(app, kHugeVal + 4);
-                put(app, frame - 0x14, cpu.eax);
-            }
-        }
-        else if (x86::sreg32(cpu.eax) < 0x3bcd)
-        {
-            if (x86::sreg32(cpu.eax) < -0x34)
-            {
-                cpu.ecx = 0;
-                if (!direct(app, cpu, set_ERANGE))
-                    return;
-                put(app, frame - 0x18, cpu.ecx);
-                put(app, frame - 0x14, cpu.ecx);
-            }
-            else
-            {
-                toDouble();
-                cpu.eax = at(app, frame - 0x18);
-                put(app, frame - 0x10, cpu.eax);
-                cpu.eax = at(app, frame - 0x14);
-                cpu.ebx = at(app, frame - 0x18);
-                put(app, frame - 0xc, cpu.eax);
-                range = ((cpu.eax & 0x7fffffff) == 0 && cpu.ebx == 0) || !(half(app, frame - 0xa) & 0x7ff0);
-            }
+            const x86::Float huge = x86::Float(app->getMemory<double>(kHugeVal));
+            const x86::Float minus = -huge;
+            d = double(minus);
         }
         else
         {
-            toDouble();
-            if (cpu.ebx == 3)
-                range = true;
-            else
-            {
-                cpu.eax = at(app, frame - 0x18);
-                put(app, frame - 0x20, cpu.eax);
-                cpu.eax = at(app, frame - 0x14);
-                put(app, frame - 0x1c, cpu.eax);
-                range = !(half(app, frame - 0x1a) & 0x7ff0);
-            }
+            d = app->getMemory<double>(kHugeVal);
+            eax = at(app, kHugeVal + 4);
         }
     }
-    if (range && !direct(app, cpu, set_ERANGE))
+    else
+    {
+        const x86::Float value = x86::Float(number);
+        d = double(value);
+        eax = highOf(d);
+        if (e >= 0x3bcd && kind == 3)
+        {
+            eax = e;
+            range = true;
+        }
+        else
+            range = !((highOf(d) >> 16) & 0x7ff0);
+    }
+    if (range)
+    {
+        eax = setErangeOf(app, cpu);
+        if (cpu.terminate)
+            return 0;
+    }
+    return d;
+}
+
+void strtod(win32::WinApplication* app, x86::CPU& cpu)
+{
+    reg32 eax;
+    const double d = strtodOf(app, cpu, cpu.eax, cpu.edx, eax);
+    if (cpu.terminate)
         return;
-    const x86::Float result = x86::Float(app->getMemory<double>(frame - 0x18));
+    const x86::Float result = x86::Float(d);
     cpu.fpu.count += 1;
     cpu.fpu.st(0) = result;
-    cpu.esp = frame - 8;
-    scanEpilogue(app, cpu, {&cpu.ecx, &cpu.ebx, &cpu.ebp});
+    returns(cpu, eax);
 }
 
 
 /* ---- The console: getch, getche, kbhit and putch, on the console's input
  * and output Windows hands the runtime by CreateFileA -- or the default
- * windowing's hooks, where there are any -- under the file's lock.  Written
- * as the code is, as the environment's: each push and pop to the guest's
- * stack, each call with the return address's slot, the registers as the code
- * leaves them; the calls to Windows through the game's imports. ---- */
+ * windowing's hooks, where there are any -- under the file's lock.  Typed
+ * cores and their adapters, the INPUT_RECORDs and counts in the frames where
+ * the code had them, which it hands Windows; the calls to Windows through the
+ * game's imports. ---- */
 namespace
 {
 
@@ -10839,22 +9867,13 @@ constexpr reg32 kWindowsKbhit = 0x5677e0, kWindowsGetch = 0x5677e4, kWindowsPutc
 constexpr reg32 kPeekConsoleInputA = 0x5345a0, kReadConsoleInputA = 0x5345ac;
 constexpr reg32 kGetConsoleMode = 0x5344fc, kSetConsoleMode = 0x5345d0, kWriteConsoleA = 0x53463c;
 
-/* One INPUT_RECORD from the console at ebx into the frame's first 0x14
- * bytes, how many at its 0x14th: Windows' `Function`. */
-template <reg32 Slot, auto Function>
-bool consoleInput(win32::WinApplication* app, x86::CPU& cpu, reg32 local)
-{
-    cpu.eax = local;
-    return windows<Slot, Function>(app, cpu, cpu.ebx, local, 1, local + 0x14);
-}
-
 /* The console's HANDLE opened, if it is not yet, at `handle`: CreateFileA of
  * `name`, for `access`, shared as `share`. */
 bool openConsole(win32::WinApplication* app, x86::CPU& cpu, reg32 handle, reg32 name, reg32 access, reg32 share)
 {
     if (at(app, handle) != 0xffffffff)
         return true;
-    if (!windows<kCreateFileA, &win32::kernel32::CreateFileA>(app, cpu, name, access, share, 0, 3, 0x80, 0))
+    if (!windows<kCreateFileA, &host::createFile>(app, cpu, name, access, share, 0, 3, 0x80, 0))
         return false;
     put(app, handle, cpu.eax);
     return true;
@@ -10862,299 +9881,348 @@ bool openConsole(win32::WinApplication* app, x86::CPU& cpu, reg32 handle, reg32 
 
 }  // namespace
 
-/* 0x515690 (__NTRealKey): whether the INPUT_RECORD at eax is a key pressed,
- * not shift, control or alt alone. */
-void NTRealKey(win32::WinApplication* app, x86::CPU& cpu)
+/* 0x515690 (__NTRealKey): whether the INPUT_RECORD at `record` is a key pressed, not shift,
+ * control or alt alone. */
+bool realKeyOf(win32::WinApplication* app, reg32 record)
 {
-    if (half(app, cpu.eax) == 1 && at(app, cpu.eax + 4) != 0)
-    {
-        cpu.eax = (cpu.eax & 0xffff0000) | half(app, cpu.eax + 0xa);
-        const reg16 key = reg16(cpu.eax);
-        cpu.eax = key < 0x10 || key > 0x12 ? 1 : 0;
-    }
-    else
-        cpu.eax = 0;
-    cpu.esp += 4;
+    if (half(app, record) != 1 || at(app, record + 4) == 0)
+        return false;
+    const reg16 key = half(app, record + 0xa);
+    return key < 0x10 || key > 0x12;
 }
 
-/* 0x5156b8 (the console's handles): conin$ and conout$ opened, the ones not
- * yet, under the file's lock. */
+void NTRealKey(win32::WinApplication* app, x86::CPU& cpu)
+{
+    returns(cpu, realKeyOf(app, cpu.eax) ? 1 : 0);
+}
+
+/* The file's lock taken (kAccessFile) or given back (kReleaseFile), by its hook (watcom_hooks.h),
+ * with `eax`, every other register kept: what it leaves in eax, 0 with cpu.terminate set when the
+ * game stopped. */
+reg32 lockHook(win32::WinApplication* app, x86::CPU& cpu, reg32 slot, reg32 eax)
+{
+    const guest::KeptRegisters kept(cpu);
+    cpu.eax = eax;
+    const bool ok = slot == kAccessFile ? guest::runtimeHook<kAccessFile>(app, cpu)
+                                        : guest::runtimeHook<kReleaseFile>(app, cpu);
+    return ok ? cpu.eax : 0;
+}
+
+/* The default windowing's hook at [slot] for the windowed handle `handle`: __IsWindowedHandle's
+ * say, then the hook with it in eax and `edx`. */
+reg32 windowedHook(win32::WinApplication* app, x86::CPU& cpu, reg32 slot, reg32 handle, reg32 edx)
+{
+    const guest::KeptRegisters kept(cpu);
+    cpu.eax = handle;
+    cpu.edx = edx;
+    if (!call(app, cpu, at(app, kIsWindowedHandle)))
+        return 0;
+    return call(app, cpu, at(app, slot)) ? cpu.eax : 0;
+}
+
+/* One INPUT_RECORD from the console `handle` into the 0x14 bytes at `record`, how many at its
+ * 0x14th: Windows' `Function`, its say. */
+template <reg32 Slot, auto Function>
+reg32 consoleRecord(win32::WinApplication* app, x86::CPU& cpu, reg32 handle, reg32 record)
+{
+    const guest::KeptRegisters kept(cpu);
+    cpu.eax = record;
+    return windows<Slot, Function>(app, cpu, handle, record, 1, record + 0x14) ? cpu.eax : 0;
+}
+
+/* 0x5156b8 (the console's handles): conin$ and conout$ opened, the ones not yet, under the file's
+ * lock.  What the release leaves in eax. */
+reg32 openConsolesOf(win32::WinApplication* app, x86::CPU& cpu)
+{
+    const GuestFrame frame(cpu, 8, 0);
+    lockHook(app, cpu, kAccessFile, 0);
+    if (cpu.terminate)
+        return 0;
+    {
+        const guest::KeptRegisters kept(cpu);
+        if (!openConsole(app, cpu, kConsoleIn, kConinName, 0x80000000, 1)
+            || !openConsole(app, cpu, kConsoleOut, kConoutName, 0x40000000, 2))
+            return 0;
+    }
+    return lockHook(app, cpu, kReleaseFile, 0);
+}
+
 void openConsoles(win32::WinApplication* app, x86::CPU& cpu)
 {
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.edx);
-    cpu.eax = 0;
-    if (!indirect(app, cpu, at(app, kAccessFile)))
+    const reg32 eax = openConsolesOf(app, cpu);
+    if (cpu.terminate)
         return;
-    if (!openConsole(app, cpu, kConsoleIn, kConinName, 0x80000000, 1)
-        || !openConsole(app, cpu, kConsoleOut, kConoutName, 0x40000000, 2))
-        return;
-    cpu.eax = 0;
-    if (!indirect(app, cpu, at(app, kReleaseFile)))
-        return;
-    cpu.edx = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
-    cpu.esp += 4;
+    returns(cpu, eax);
 }
 
 /* 0x515728 (__NTConsoleInput): the console's input HANDLE. */
+reg32 consoleInputOf(win32::WinApplication* app, x86::CPU& cpu)
+{
+    const ReturnSlot slot(cpu);
+    openConsolesOf(app, cpu);
+    return at(app, kConsoleIn);
+}
+
 void NTConsoleInput(win32::WinApplication* app, x86::CPU& cpu)
 {
-    if (!direct(app, cpu, openConsoles))
+    const reg32 handle = consoleInputOf(app, cpu);
+    if (cpu.terminate)
         return;
-    returns(cpu, at(app, kConsoleIn));
+    returns(cpu, handle);
 }
 
 /* 0x515734 (__NTConsoleOutput): the console's output HANDLE. */
+reg32 consoleOutputOf(win32::WinApplication* app, x86::CPU& cpu)
+{
+    const ReturnSlot slot(cpu);
+    openConsolesOf(app, cpu);
+    return at(app, kConsoleOut);
+}
+
 void NTConsoleOutput(win32::WinApplication* app, x86::CPU& cpu)
 {
-    if (!direct(app, cpu, openConsoles))
+    const reg32 handle = consoleOutputOf(app, cpu);
+    if (cpu.terminate)
         return;
-    returns(cpu, at(app, kConsoleOut));
+    returns(cpu, handle);
 }
 
-/* 0x52b290 (putch): the character in eax to the console -- by the default
- * windowing's putch, where there is one, else WriteConsoleA; eax back. */
+/* 0x52b290 (putch): the character `c` to the console -- by the default windowing's putch, where
+ * there is one, else WriteConsoleA under the file's lock; `c` back.  At its entry's depth: three
+ * pushes, then 8 bytes: how many WriteConsoleA wrote, the character.  0 with cpu.terminate set when
+ * the game stopped. */
+reg32 putchOf(win32::WinApplication* app, x86::CPU& cpu, reg32 c)
+{
+    const GuestFrame frame(cpu, 0xc, 8);
+    const reg32 written = frame - 8, character = frame - 4;
+    putByte(app, character, reg8(c));
+    if (at(app, kWindowsPutch) != 0)
+        windowedHook(app, cpu, kWindowsPutch, 1, c);
+    else
+    {
+        lockHook(app, cpu, kAccessFile, 1);
+        if (cpu.terminate)
+            return 0;
+        const reg32 handle = consoleOutputOf(app, cpu);
+        if (cpu.terminate)
+            return 0;
+        {
+            const guest::KeptRegisters kept(cpu);
+            cpu.eax = handle;
+            if (!windows<kWriteConsoleA, &host::writeConsole>(app, cpu, handle, character, 1, written, 0))
+                return 0;
+        }
+        lockHook(app, cpu, kReleaseFile, 1);
+    }
+    return cpu.terminate ? 0 : c;
+}
+
 void putch(win32::WinApplication* app, x86::CPU& cpu)
 {
-    push(app, cpu, cpu.ebx);
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.edx);
-    cpu.esp -= 8;
-    const reg32 local = cpu.esp;
-    cpu.ebx = cpu.eax;
-    cpu.edx = at(app, kWindowsPutch);
-    putByte(app, local + 4, reg8(cpu.ebx));
-    if (cpu.edx != 0)
-    {
-        cpu.eax = 1;
-        cpu.edx = cpu.ebx;
-        if (!indirect(app, cpu, at(app, kIsWindowedHandle)) || !indirect(app, cpu, at(app, kWindowsPutch)))
-            return;
-    }
-    else
-    {
-        cpu.eax = 1;
-        if (!indirect(app, cpu, at(app, kAccessFile)) || !direct(app, cpu, NTConsoleOutput))
-            return;
-        // The character, and below it how many WriteConsoleA wrote.
-        const reg32 reserved = cpu.edx, written = cpu.esp;
-        cpu.edx = written + 4;
-        if (!windows<kWriteConsoleA, &win32::kernel32::WriteConsoleA>(app, cpu, cpu.eax, cpu.edx, 1, written, reserved))
-            return;
-        cpu.eax = 1;
-        if (!indirect(app, cpu, at(app, kReleaseFile)))
-            return;
-    }
-    cpu.eax = cpu.ebx;
-    cpu.esp += 8;
-    cpu.edx = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
-    cpu.ebx = pop(app, cpu);
-    cpu.esp += 4;
+    const reg32 c = putchOf(app, cpu, cpu.eax);
+    if (cpu.terminate)
+        return;
+    returns(cpu, c);
 }
 
-/* 0x4f7ce0 (kbhit): whether a key is waiting -- the console's input looked
- * at, what is not a key taken off it -- or the default windowing's say. */
+/* 0x4f7ce0 (kbhit): whether a key is waiting -- the console's input looked at, what is not a key
+ * taken off it -- or the default windowing's say.  At its entry's depth: three pushes, then 0x18
+ * bytes, the INPUT_RECORD and how many.  0 with cpu.terminate set when the game stopped. */
+reg32 kbhitOf(win32::WinApplication* app, x86::CPU& cpu)
+{
+    const GuestFrame frame(cpu, 0xc, 0x18);
+    const reg32 record = frame - 0x18;
+    if (at(app, kWindowsKbhit) != 0)
+        return windowedHook(app, cpu, kWindowsKbhit, 0, cpu.edx);
+    lockHook(app, cpu, kAccessFile, 0);
+    if (cpu.terminate)
+        return 0;
+    const reg32 handle = consoleInputOf(app, cpu);
+    if (cpu.terminate)
+        return 0;
+    for (;;)
+    {
+        // Where the game's code lets the other threads run, as kbhit waits on the console
+        // (THREAD_SEGMENTS), and its loop's safepoint.
+        app->unlockContext(cpu);
+        win32::Thread::sleep(0);
+        app->lockContext(cpu);
+        if (app->contextWanted())
+            app->yieldContext(cpu);
+        consoleRecord<kPeekConsoleInputA, &host::peekConsoleInput>(app, cpu, handle, record);
+        if (cpu.terminate)
+            return 0;
+        if (at(app, record + 0x14) == 0 || realKeyOf(app, record))
+            break;
+        consoleRecord<kReadConsoleInputA, &host::readConsoleInput>(app, cpu, handle, record);
+        if (cpu.terminate)
+            return 0;
+    }
+    lockHook(app, cpu, kReleaseFile, 0);
+    if (cpu.terminate)
+        return 0;
+    return at(app, record + 0x14) != 0 ? 1 : 0;
+}
+
 void kbhit(win32::WinApplication* app, x86::CPU& cpu)
 {
-    push(app, cpu, cpu.ebx);
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.edx);
-    cpu.esp -= 0x18;
-    const reg32 local = cpu.esp;
-    if (at(app, kWindowsKbhit) != 0)
-    {
-        cpu.eax = 0;
-        if (!indirect(app, cpu, at(app, kIsWindowedHandle)) || !indirect(app, cpu, at(app, kWindowsKbhit)))
-            return;
-    }
-    else
-    {
-        cpu.eax = 0;
-        if (!indirect(app, cpu, at(app, kAccessFile)) || !direct(app, cpu, NTConsoleInput))
-            return;
-        cpu.ebx = cpu.eax;
-        for (;;)
-        {
-            // Where the game's code lets the other threads run, as kbhit
-            // waits on the console (THREAD_SEGMENTS), and its loop's
-            // safepoint.
-            app->unlockContext(cpu);
-            win32::Thread::sleep(0);
-            app->lockContext(cpu);
-            if (app->contextWanted())
-                app->yieldContext(cpu);
-            if (!consoleInput<kPeekConsoleInputA, &win32::kernel32::PeekConsoleInputA>(app, cpu, local))
-                return;
-            if (at(app, local + 0x14) == 0)
-                break;
-            cpu.eax = local;
-            if (!direct(app, cpu, NTRealKey))
-                return;
-            if (cpu.eax != 0)
-                break;
-            if (!consoleInput<kReadConsoleInputA, &win32::kernel32::ReadConsoleInputA>(app, cpu, local))
-                return;
-        }
-        cpu.eax = 0;
-        if (!indirect(app, cpu, at(app, kReleaseFile)))
-            return;
-        cpu.eax = at(app, local + 0x14) != 0 ? 1 : 0;
-    }
-    cpu.esp += 0x18;
-    cpu.edx = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
-    cpu.ebx = pop(app, cpu);
-    cpu.esp += 4;
+    const reg32 waiting = kbhitOf(app, cpu);
+    if (cpu.terminate)
+        return;
+    returns(cpu, waiting);
 }
 
-/* 0x4f7e20 (do_getch): the next character from the console at eax, as getch
- * gives it: a character repeated as many times as Windows says, an extended
- * key as 0 and its scan code; -1 for none. */
-void do_getch(win32::WinApplication* app, x86::CPU& cpu)
+/* 0x4f7e20 (do_getch): the next character from the console `handle`, as getch gives it: a
+ * character repeated as many times as Windows says, an extended key as 0 and its scan code; -1 for
+ * none.  At its entry's depth: six pushes, then 0x18 bytes, the INPUT_RECORD and how many.  0 with
+ * cpu.terminate set when the game stopped. */
+reg32 doGetchOf(win32::WinApplication* app, x86::CPU& cpu, reg32 handle)
 {
-    for (const reg32 r : {cpu.ebx, cpu.ecx, cpu.edx, cpu.esi, cpu.edi, cpu.ebp})
-        push(app, cpu, r);
-    cpu.esp -= 0x18;
-    const reg32 local = cpu.esp;
-    cpu.esi = at(app, kKeyRepeats);
-    cpu.edi = at(app, kKeyChar);
-    cpu.ebx = cpu.eax;
-    cpu.eax = at(app, kKeyState);
-    if (cpu.eax == 1)
+    const GuestFrame frame(cpu, 0x18, 0x18);
+    const reg32 record = frame - 0x18;
+    reg32 repeats = at(app, kKeyRepeats), c = at(app, kKeyChar), key;
+    const reg32 state = at(app, kKeyState);
+    if (state == 1)
     {
-        --cpu.esi;
-        if (cpu.edi == 0)
+        --repeats;
+        if (c == 0)
             put(app, kKeyState, 2);
-        else if (cpu.esi == 0)
-            put(app, kKeyState, cpu.esi);
-        cpu.eax = cpu.edi;
+        else if (repeats == 0)
+            put(app, kKeyState, 0);
+        key = c;
     }
-    else if (cpu.eax == 2)
+    else if (state == 2)
     {
-        cpu.eax = cpu.esi != 0 ? 1 : 0;
-        put(app, kKeyState, cpu.eax);
-        cpu.eax = at(app, kKeyScan);
+        put(app, kKeyState, repeats != 0 ? 1 : 0);
+        key = at(app, kKeyScan);
     }
     else
     {
-        put(app, kKeyRepeats, cpu.esi);
-        put(app, kKeyChar, cpu.edi);
+        put(app, kKeyRepeats, repeats);
+        put(app, kKeyChar, c);
         for (;;)
         {
-            if (!consoleInput<kReadConsoleInputA, &win32::kernel32::ReadConsoleInputA>(app, cpu, local))
-                return;
-            if (cpu.eax == 0)
+            const reg32 read = consoleRecord<kReadConsoleInputA, &host::readConsoleInput>(app, cpu, handle, record);
+            if (cpu.terminate)
+                return 0;
+            if (read == 0)
             {
-                cpu.eax = 0xffffffff;
-                cpu.edi = at(app, kKeyChar);
-                cpu.esi = at(app, kKeyRepeats);
+                key = 0xffffffff;
+                c = at(app, kKeyChar);
+                repeats = at(app, kKeyRepeats);
                 break;
             }
-            cpu.eax = local;
-            if (!direct(app, cpu, NTRealKey))
-                return;
-            if (cpu.eax == 0)
+            if (!realKeyOf(app, record))
                 continue;
-            cpu.eax = half(app, local + 8);
-            cpu.esi = cpu.eax - 1;
-            setHigh8(cpu.eax, byte(app, local + 0x11));
-            cpu.edi = byte(app, local + 0xe);
-            if ((reg8(cpu.eax >> 8) & 1) || cpu.edi == 0)
+            repeats = half(app, record + 8) - 1;
+            c = byte(app, record + 0xe);
+            if ((byte(app, record + 0x11) & 1) || c == 0)
             {
                 // An extended key: 0 now, its scan code next.
-                cpu.ebp = 2;
-                cpu.eax = 0;
-                cpu.edi = 0;
-                cpu.eax = half(app, local + 0xc);
-                put(app, kKeyState, cpu.ebp);
-                put(app, kKeyScan, cpu.eax);
+                c = 0;
+                put(app, kKeyState, 2);
+                put(app, kKeyScan, half(app, record + 0xc));
             }
-            else if (cpu.esi != 0)
+            else if (repeats != 0)
                 put(app, kKeyState, 1);
-            cpu.eax = cpu.edi;
+            key = c;
             break;
         }
     }
-    put(app, kKeyChar, cpu.edi);
-    put(app, kKeyRepeats, cpu.esi);
-    cpu.esp += 0x18;
-    for (reg32* r : {&cpu.ebp, &cpu.edi, &cpu.esi, &cpu.edx, &cpu.ecx, &cpu.ebx})
-        *r = pop(app, cpu);
-    cpu.esp += 4;
+    put(app, kKeyChar, c);
+    put(app, kKeyRepeats, repeats);
+    return key;
 }
 
-/* 0x4f7f24 (getch): the next character, not echoed: ungetch's, the default
- * windowing's, or the console's with its mode off for it. */
+void do_getch(win32::WinApplication* app, x86::CPU& cpu)
+{
+    const reg32 key = doGetchOf(app, cpu, cpu.eax);
+    if (cpu.terminate)
+        return;
+    returns(cpu, key);
+}
+
+/* 0x4f7f24 (getch): the next character, not echoed: ungetch's, the default windowing's, or the
+ * console's with its mode off for it.  At its entry's depth: four pushes, then the console's mode.
+ * 0 with cpu.terminate set when the game stopped. */
+reg32 getchOf(win32::WinApplication* app, x86::CPU& cpu)
+{
+    const GuestFrame frame(app, cpu, {cpu.ebx, cpu.ecx, cpu.edx, cpu.esi}, 4);
+    const reg32 mode = frame - 4;
+    const reg32 ungot = at(app, kUngotKey);
+    if (ungot != 0)
+    {
+        put(app, kUngotKey, 0);
+        return ungot;
+    }
+    if (at(app, kWindowsGetch) != 0)
+        return windowedHook(app, cpu, kWindowsGetch, 0, cpu.edx);
+    lockHook(app, cpu, kAccessFile, 0);
+    if (cpu.terminate)
+        return 0;
+    const reg32 handle = consoleInputOf(app, cpu);
+    if (cpu.terminate)
+        return 0;
+    reg32 key;
+    {
+        const guest::KeptRegisters kept(cpu);
+        cpu.eax = mode;
+        if (!windows<kGetConsoleMode, &host::consoleMode>(app, cpu, handle, mode)
+            || !windows<kSetConsoleMode, &host::setConsoleMode>(app, cpu, handle, 0))
+            return 0;
+    }
+    {
+        const ReturnSlot slot(cpu);
+        key = doGetchOf(app, cpu, handle);
+    }
+    if (cpu.terminate)
+        return 0;
+    {
+        const guest::KeptRegisters kept(cpu);
+        cpu.eax = key;
+        cpu.ecx = at(app, mode);
+        if (!windows<kSetConsoleMode, &host::setConsoleMode>(app, cpu, handle, cpu.ecx))
+            return 0;
+    }
+    lockHook(app, cpu, kReleaseFile, 0);
+    return cpu.terminate ? 0 : key;
+}
+
 void getch(win32::WinApplication* app, x86::CPU& cpu)
 {
-    push(app, cpu, cpu.ebx);
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.edx);
-    push(app, cpu, cpu.esi);
-    cpu.esp -= 4;
-    const reg32 local = cpu.esp;
-    cpu.eax = at(app, kUngotKey);
-    if (cpu.eax != 0)
-    {
-        cpu.esi = 0;
-        put(app, kUngotKey, cpu.esi);
-    }
-    else
-    {
-        if (at(app, kWindowsGetch) != 0)
-        {
-            if (!indirect(app, cpu, at(app, kIsWindowedHandle)) || !indirect(app, cpu, at(app, kWindowsGetch)))
-                return;
-            cpu.esi = cpu.eax;
-        }
-        else
-        {
-            if (!indirect(app, cpu, at(app, kAccessFile)) || !direct(app, cpu, NTConsoleInput))
-                return;
-            cpu.ebx = cpu.eax;
-            cpu.eax = local;
-            if (!windows<kGetConsoleMode, &win32::kernel32::GetConsoleMode>(app, cpu, cpu.ebx, cpu.eax)
-                || !windows<kSetConsoleMode, &win32::kernel32::SetConsoleMode>(app, cpu, cpu.ebx, 0))
-                return;
-            cpu.eax = cpu.ebx;
-            if (!direct(app, cpu, do_getch))
-                return;
-            cpu.ecx = at(app, local);
-            cpu.esi = cpu.eax;
-            if (!windows<kSetConsoleMode, &win32::kernel32::SetConsoleMode>(app, cpu, cpu.ebx, cpu.ecx))
-                return;
-            cpu.eax = 0;
-            if (!indirect(app, cpu, at(app, kReleaseFile)))
-                return;
-        }
-        cpu.eax = cpu.esi;
-    }
-    cpu.esp += 4;
-    cpu.esi = pop(app, cpu);
-    cpu.edx = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
-    cpu.ebx = pop(app, cpu);
-    cpu.esp += 4;
+    const reg32 key = getchOf(app, cpu);
+    if (cpu.terminate)
+        return;
+    returns(cpu, key);
 }
 
-/* 0x522e60 (getche): getch's character, echoed by putch -- unless it was
- * ungetch's. */
+/* 0x522e60 (getche): getch's character, echoed by putch -- unless it was ungetch's.  At its
+ * entry's depth: two pushes.  0 with cpu.terminate set when the game stopped. */
+reg32 getcheOf(win32::WinApplication* app, x86::CPU& cpu)
+{
+    const GuestFrame frame(cpu, 8, 0);
+    const reg32 ungot = at(app, kUngotKey);
+    reg32 key;
+    {
+        const ReturnSlot slot(cpu);
+        key = getchOf(app, cpu);
+    }
+    if (cpu.terminate)
+        return 0;
+    if (key != 0xffffffff && ungot == 0)
+    {
+        const ReturnSlot slot(cpu);
+        putchOf(app, cpu, key);
+    }
+    return cpu.terminate ? 0 : key;
+}
+
 void getche(win32::WinApplication* app, x86::CPU& cpu)
 {
-    push(app, cpu, cpu.ebx);
-    push(app, cpu, cpu.edx);
-    cpu.ebx = at(app, kUngotKey);
-    if (!direct(app, cpu, getch))
+    const reg32 key = getcheOf(app, cpu);
+    if (cpu.terminate)
         return;
-    cpu.edx = cpu.eax;
-    if (cpu.eax != 0xffffffff && cpu.ebx == 0 && !direct(app, cpu, putch))
-        return;
-    cpu.eax = cpu.edx;
-    cpu.edx = pop(app, cpu);
-    cpu.ebx = pop(app, cpu);
-    cpu.esp += 4;
+    returns(cpu, key);
 }
 
 
@@ -11178,18 +10246,25 @@ constexpr reg32 kUnwindReturn = 0x4f7bbc;  // where RtlUnwind is told to come ba
 
 }  // namespace
 
-/* 0x4f7af8 (__TryInit): the registration at eax put first on fs:[0]'s chain,
- * at no level yet. */
+/* 0x4f7af8 (__TryInit): the registration at `registration` put first on fs:[0]'s chain, at no level
+ * yet, for the function whose frame is `frame` (its ebp).  The old first goes by the stack, pushed
+ * and popped. */
+void tryInitOf(win32::WinApplication* app, x86::CPU& cpu, reg32 registration, reg32 frame)
+{
+    const reg32 previous = at(app, cpu.efs);
+    put(app, cpu.esp - 4, previous);
+    put(app, registration, previous);
+    put(app, registration + 4, kTryHandler);
+    put(app, registration + 8, frame);
+    putByte(app, registration + 0x10, 0xff);
+    putByte(app, registration + 0x11, 0);
+    put(app, cpu.efs, registration);
+}
+
 void TryInit(win32::WinApplication* app, x86::CPU& cpu)
 {
-    push(app, cpu, at(app, cpu.efs));
-    put(app, cpu.eax, pop(app, cpu));
-    put(app, cpu.eax + 4, kTryHandler);
-    put(app, cpu.eax + 8, cpu.ebp);
-    putByte(app, cpu.eax + 0x10, 0xff);
-    putByte(app, cpu.eax + 0x11, 0);
-    put(app, cpu.efs, cpu.eax);
-    cpu.esp += 4;
+    tryInitOf(app, cpu, cpu.eax, cpu.ebp);
+    cpu.esp += 4;  // eax left as it was, the registration
 }
 
 /* 0x4f7b8c (__TryHandler's end): ExceptionContinueSearch, 1, the handler's
@@ -11228,58 +10303,72 @@ void TryOuter(win32::WinApplication* app, x86::CPU& cpu)
     TryScope(app, cpu);
 }
 
-/* 0x4f7bc3 (__local_unwind): the finally blocks from the registration's
- * level, at ebp, out to the level unwound to, each called with ebp its
- * frame. */
+/* 0x4f7bc3 (__local_unwind): the finally blocks from the registration's level, at `registration`,
+ * out to the level unwound to, each called with ebp its function's frame -- and edi the scopes'
+ * table and ebx the scope's index, which it pushes under its return.  The level is a byte of ebx
+ * as the code has it: the index made of it times 3, the next level its low byte.  At its entry's
+ * depth: six pushes.  False when the game stopped. */
+bool localUnwindOf(win32::WinApplication* app, x86::CPU& cpu, reg32 registration)
+{
+    const GuestFrame frame(app, cpu, {cpu.ebp, cpu.edi, cpu.esi, cpu.edx, cpu.ecx, cpu.ebx}, 0);
+    const reg32 table = at(app, registration + 0xc);
+    reg32 level = byte(app, registration + 0x10);
+    putByte(app, registration + 0x11, 1);
+    while (reg8(level) != 0xff && reg8(level) != byte(app, registration + 0x12))
+    {
+        level *= 3;
+        if (byte(app, table + level * 2 + 1) != 0)
+        {
+            const GuestFrame saved(app, cpu, {registration, table, level}, 0);
+            const guest::KeptRegisters kept(cpu);
+            cpu.ebp = at(app, registration + 8);
+            cpu.edi = table;
+            cpu.ebx = level;
+            if (!call(app, cpu, at(app, table + level * 2 + 2)))
+                return false;
+        }
+        level = (level & 0xffffff00) | byte(app, table + level * 2);
+        putByte(app, registration + 0x10, reg8(level));
+    }
+    putByte(app, registration + 0x11, 0);
+    return true;
+}
+
 void local_unwind(win32::WinApplication* app, x86::CPU& cpu)
 {
-    for (const reg32 r : {cpu.ebp, cpu.edi, cpu.esi, cpu.edx, cpu.ecx, cpu.ebx})
-        push(app, cpu, r);
-    cpu.edi = at(app, cpu.ebp + 0xc);
-    cpu.ebx = byte(app, cpu.ebp + 0x10);
-    putByte(app, cpu.ebp + 0x11, 1);
-    while (reg8(cpu.ebx) != 0xff && reg8(cpu.ebx) != byte(app, cpu.ebp + 0x12))
-    {
-        cpu.ebx *= 3;
-        if (byte(app, cpu.edi + cpu.ebx * 2 + 1) != 0)
-        {
-            push(app, cpu, cpu.ebp);
-            push(app, cpu, cpu.edi);
-            push(app, cpu, cpu.ebx);
-            cpu.ebp = at(app, cpu.ebp + 8);
-            if (!indirect(app, cpu, at(app, cpu.edi + cpu.ebx * 2 + 2)))
-                return;
-            cpu.ebx = pop(app, cpu);
-            cpu.edi = pop(app, cpu);
-            cpu.ebp = pop(app, cpu);
-        }
-        setLow8(cpu.ebx, byte(app, cpu.edi + cpu.ebx * 2));
-        putByte(app, cpu.ebp + 0x10, reg8(cpu.ebx));
-    }
-    putByte(app, cpu.ebp + 0x11, 0);
-    for (reg32* r : {&cpu.ebx, &cpu.ecx, &cpu.edx, &cpu.esi, &cpu.edi, &cpu.ebp})
-        *r = pop(app, cpu);
-    cpu.esp += 4;
+    if (!localUnwindOf(app, cpu, cpu.ebp))
+        return;
+    cpu.esp += 4;  // eax as the finally blocks leave it
 }
 
-/* 0x533de4: RtlUnwind's import, jumped to. */
+/* 0x533de4: RtlUnwind's import, jumped to: the port's host code (host_system.h) with the words on
+ * the stack as the thunk finds them, stdcall; in the checks through the import's slot. */
 void RtlUnwindThunk(win32::WinApplication* app, x86::CPU& cpu)
 {
+#ifdef NFS_GAME_CHECKS
     app->dynamic_call(at(app, kRtlUnwind), cpu);
+#else
+    win32::Wrapper<decltype(&host::unwind), &host::unwind>::stdcall(app, cpu);
+#endif
 }
 
-/* 0x4f7ba7 (__global_unwind): the registrations above the one at ebp
- * unwound, by RtlUnwind. */
+/* 0x4f7ba7 (__global_unwind): the registrations above the one at `registration` unwound, by
+ * RtlUnwind -- its four words pushed, stdcall, to come back to kUnwindReturn.  At its entry's
+ * depth: six pushes.  False when the game stopped. */
+bool globalUnwindOf(win32::WinApplication* app, x86::CPU& cpu, reg32 registration)
+{
+    const GuestFrame frame(app, cpu, {cpu.ebp, cpu.edi, cpu.esi, cpu.edx, cpu.ecx, cpu.ebx}, 0);
+    const guest::KeptRegisters kept(cpu);
+    for (const reg32 word : {reg32(0), reg32(0), kUnwindReturn, registration})
+        push(app, cpu, word);
+    return direct(app, cpu, RtlUnwindThunk);
+}
+
 void global_unwind(win32::WinApplication* app, x86::CPU& cpu)
 {
-    for (const reg32 r : {cpu.ebp, cpu.edi, cpu.esi, cpu.edx, cpu.ecx, cpu.ebx, reg32(0), reg32(0), kUnwindReturn,
-                          cpu.ebp})
-        push(app, cpu, r);
-    if (!direct(app, cpu, RtlUnwindThunk))
+    if (!globalUnwindOf(app, cpu, cpu.ebp))
         return;
-    for (reg32* r : {&cpu.ebx, &cpu.ecx, &cpu.edx, &cpu.esi, &cpu.edi, &cpu.ebp})
-        *r = pop(app, cpu);
-    cpu.esp += 4;
+    cpu.esp += 4;  // eax as RtlUnwind leaves it
 }
 
 /* 0x4f7b2a (__TryHandler): the exception at [esp+4], for the registration at
@@ -11342,10 +10431,12 @@ void Except(win32::WinApplication* app, x86::CPU& cpu)
 /* ---- The start (clib/startup): _cstart_ and what it runs before the game's
  * main -- the initializers, the thread's data and its stack's limits, the
  * standard handles, the environment's and the command line's copies, the
- * exception handler -- then the game's main, by its address, and exit.
- * Written as the code is, as the environment's: each push and pop to the
- * guest's stack, each call with the return address's slot, the registers as
- * the code leaves them; the calls to Windows through the game's imports. ---- */
+ * exception handler -- then the game's main, by its address, and exit.  Each
+ * is a typed core and its adapter, the frames where Windows is handed them;
+ * the calls to Windows through the game's imports, with eax as the code has
+ * it when it calls.  The main thread's start and the call of main stay as
+ * the code is, each push to the guest's stack: they make room on it for the
+ * thread's data and the stack's growth. ---- */
 namespace
 {
 
@@ -11376,13 +10467,6 @@ constexpr reg32 kGetEnvironmentStrings = 0x53451c, kGetVersion = 0x534574, kGetC
 constexpr reg32 kGetCommandLineW = 0x5344f8, kGetStdHandle = 0x53455c, kVirtualQuery = 0x53462c;
 constexpr reg32 kSetUnhandledExceptionFilter = 0x534600, kGetCurrentThreadId = 0x53450c;
 
-bool space(win32::WinApplication* app, x86::CPU& cpu, reg32 at)
-{
-    setLow8(cpu.edx, byte(app, at) + 1);
-    cpu.edx &= 0xff;
-    return (byte(app, kIsTable + cpu.edx) & kSpace) != 0;
-}
-
 }  // namespace
 
 /* 0x52b640: a start-up hook that does nothing. */
@@ -11392,508 +10476,564 @@ void startHook(win32::WinApplication* app, x86::CPU& cpu)
     cpu.esp += 4;
 }
 
-/* 0x4ff41c (__InitRtns): the runtime's initializers of priority up to al
- * not yet run, the lowest first. */
-void InitRtns(win32::WinApplication* app, x86::CPU& cpu)
+/* _nmalloc's and _nfree's cores as a call of them runs them, every register kept. */
+reg32 nmallocOf(win32::WinApplication* app, x86::CPU& cpu, reg32 size)
 {
-    for (const reg32 r : {cpu.ebx, cpu.ecx, cpu.edx, cpu.esi})
-        push(app, cpu, r);
-    pushEs(app, cpu);
-    cpu.esi = kInitEnd;
-    setHigh8(cpu.edx, cpu.eax);
+    const ReturnSlot slot(cpu);
+    const guest::KeptRegisters kept(cpu);
+    reg32 block;
+    return watcomheap::allocate(app, cpu, kGameHeap, size, block) ? block : 0;
+}
+
+void nfreeOf(win32::WinApplication* app, x86::CPU& cpu, reg32 block)
+{
+    const ReturnSlot slot(cpu);
+    const guest::KeptRegisters kept(cpu);
+    watcomheap::free(app, cpu, kGameHeap, block);
+}
+
+/* Whether _IsTable has the character `c` white space. */
+bool isSpace(win32::WinApplication* app, reg32 c)
+{
+    return (byte(app, kIsTable + ((c + 1) & 0xff)) & kSpace) != 0;
+}
+
+/* 0x4ff41c (__InitRtns): the runtime's initializers of priority up to `limit` not yet run, the
+ * lowest first, each marked run.  At its entry's depth: ebx, ecx, edx, esi and es pushed.  What the
+ * code leaves in eax: the table's end. */
+reg32 initRtnsOf(win32::WinApplication* app, x86::CPU& cpu, reg8 limit)
+{
+    pushed(app, cpu.esp, {cpu.ebx, cpu.ecx, cpu.edx, cpu.esi, 0}, 4, cpu.es);
+    const GuestFrame frame(cpu, 0x14, 0);
     for (;;)
     {
-        cpu.eax = kInitStart;
-        cpu.ebx = cpu.esi;
-        setLow8(cpu.edx, cpu.edx >> 8);
-        if (cpu.esi > cpu.eax)
-            do
+        reg32 first = kInitEnd;
+        reg8 lowest = limit;
+        for (reg32 entry = kInitStart; entry < kInitEnd; entry += 6)
+            if (byte(app, entry) != 2 && lowest >= byte(app, entry + 1))
             {
-                if (byte(app, cpu.eax) != 2)
-                {
-                    setHigh8(cpu.ecx, byte(app, cpu.eax + 1));
-                    if (reg8(cpu.edx) >= reg8(cpu.ecx >> 8))
-                    {
-                        cpu.ebx = cpu.eax;
-                        setLow8(cpu.edx, cpu.ecx >> 8);
-                    }
-                }
-                cpu.eax += 6;
-            } while (cpu.eax < kInitEnd);
-        if (cpu.ebx == kInitEnd)
-            break;
-        cpu.eax = cpu.ebx + 2;
-        if (!direct(app, cpu, callRoutine))
-            return;
-        putByte(app, cpu.ebx, 2);
+                first = entry;
+                lowest = byte(app, entry + 1);
+            }
+        if (first == kInitEnd)
+            return kInitEnd;
+        {
+            const ReturnSlot slot(cpu);
+            if (!callRoutineOf(app, cpu, first + 2))
+                return 0;
+        }
+        putByte(app, first, 2);
     }
-    popEs(app, cpu);
-    for (reg32* r : {&cpu.esi, &cpu.edx, &cpu.ecx, &cpu.ebx})
-        *r = pop(app, cpu);
-    cpu.esp += 4;
 }
 
-/* 0x51ec20 (the stack's limits): where the thread's stack ends, into [eax],
- * and where it starts, into [edx] -- from VirtualQuery of the frame, the
- * guard pages Windows keeps below as its version says -- either for none. */
+void InitRtns(win32::WinApplication* app, x86::CPU& cpu)
+{
+    const reg32 eax = initRtnsOf(app, cpu, reg8(cpu.eax));
+    if (cpu.terminate)
+        return;
+    returns(cpu, eax);
+}
+
+/* 0x51ec20 (the stack's limits): where the thread's stack ends, into [low], and where it starts,
+ * into [high] -- from VirtualQuery of the frame, the guard pages Windows keeps below as its version
+ * says -- either for none.  At its entry's depth: three pushes, then 0x20 bytes, the region asked
+ * about at the top and its MEMORY_BASIC_INFORMATION at the bottom.  The end, which the code leaves
+ * in eax; 0 with cpu.terminate set when the game stopped. */
+reg32 stackLimitsOf(win32::WinApplication* app, x86::CPU& cpu, reg32 low, reg32 high)
+{
+    const GuestFrame frame(cpu, 0xc, 0x20);
+    const reg32 info = frame - 0x20, region = frame - 4;
+    {
+        const guest::KeptRegisters kept(cpu);
+        cpu.eax = region;
+        if (!windows<kVirtualQuery, &host::virtualQuery>(app, cpu, region, info, 0x1c))
+            return 0;
+    }
+    const reg32 start = at(app, info) + at(app, info + 0xc);
+    reg32 end = at(app, info + 4);
+    if (half(app, kOsBuild) < 0x8000)
+        end += 0x3000;
+    else if (byte(app, kOsMajor) < 4)
+        end += 0x12000;
+    else
+        end += 0x13000;
+    if (low != 0)
+        put(app, low, end);
+    if (high != 0)
+        put(app, high, start);
+    return end;
+}
+
 void stackLimits(win32::WinApplication* app, x86::CPU& cpu)
 {
-    push(app, cpu, cpu.ebx);
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.esi);
-    cpu.esp -= 0x20;
-    const reg32 local = cpu.esp;
-    cpu.ebx = cpu.eax;
-    cpu.esi = cpu.edx;
-    cpu.eax = local + 0x1c;  // in the frame: the region asked about, its MEMORY_BASIC_INFORMATION at local
-    if (!windows<kVirtualQuery, &win32::kernel32::VirtualQuery>(app, cpu, cpu.eax, local, 0x1c))
+    const reg32 end = stackLimitsOf(app, cpu, cpu.eax, cpu.edx);
+    if (cpu.terminate)
         return;
-    cpu.edx = at(app, local) + at(app, local + 0xc);
-    cpu.ecx = (cpu.ecx & 0xffff0000) | half(app, kOsBuild);
-    cpu.eax = at(app, local + 4);
-    if (reg16(cpu.ecx) < 0x8000)
-        cpu.eax += 0x3000;
-    else if (byte(app, kOsMajor) < 4)
-        cpu.eax += 0x12000;
-    else
-        cpu.eax += 0x13000;
-    if (cpu.ebx != 0)
-        put(app, cpu.ebx, cpu.eax);
-    if (cpu.esi != 0)
-        put(app, cpu.esi, cpu.edx);
-    cpu.esp += 0x20;
-    cpu.esi = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
-    cpu.ebx = pop(app, cpu);
-    cpu.esp += 4;
+    returns(cpu, end);
 }
 
-/* 0x525df0 (calloc): eax things of edx bytes, zeroed. */
+/* 0x525df0 (calloc): `n` things of `size` bytes, zeroed.  At its entry's depth: ebx pushed. */
+reg32 callocOf(win32::WinApplication* app, x86::CPU& cpu, reg32 n, reg32 size)
+{
+    const GuestFrame frame(app, cpu, {cpu.ebx}, 0);
+    const reg32 bytes = n * size;
+    const reg32 block = nmallocOf(app, cpu, bytes);
+    if (cpu.terminate)
+        return 0;
+    if (block != 0)
+        clib::memset(app, block, 0, bytes);
+    return block;
+}
+
 void calloc(win32::WinApplication* app, x86::CPU& cpu)
 {
-    push(app, cpu, cpu.ebx);
-    cpu.eax *= cpu.edx;
-    cpu.ebx = cpu.eax;
-    if (!direct(app, cpu, nmalloc))
+    const reg32 block = callocOf(app, cpu, cpu.eax, cpu.edx);
+    if (cpu.terminate)
         return;
-    if (cpu.eax != 0)
-    {
-        cpu.edx = 0;
-        if (!direct(app, cpu, memset))
-            return;
-    }
-    cpu.ebx = pop(app, cpu);
-    cpu.esp += 4;
+    returns(cpu, block);
 }
 
-/* 0x526030 (the thread's data's start): the data at eax -- if any -- told
- * its stack's end and its thread. */
+/* 0x526030 (the thread's data's start): the data at `data` -- if any -- told its stack's end and
+ * its thread.  At its entry's depth: three pushes.  What the code leaves in eax: the thread's id,
+ * or 0; 0 with cpu.terminate set when the game stopped. */
+reg32 initThreadOf(win32::WinApplication* app, x86::CPU& cpu, reg32 data)
+{
+    const GuestFrame frame(app, cpu, {cpu.ebx, cpu.ecx, cpu.edx}, 0);
+    if (data == 0)
+        return 0;
+    put(app, data + 0xc, 1);
+    reg32 end;
+    {
+        const ReturnSlot slot(cpu);
+        end = stackLimitsOf(app, cpu, data, 0);
+    }
+    if (cpu.terminate)
+        return 0;
+    const guest::KeptRegisters kept(cpu);
+    cpu.eax = end;  // as the code calls it
+    if (!windows<kGetCurrentThreadId, &host::currentThreadId>(app, cpu))
+        return 0;
+    put(app, data + 0xda, cpu.eax);
+    return cpu.eax;
+}
+
 void initThread(win32::WinApplication* app, x86::CPU& cpu)
 {
-    push(app, cpu, cpu.ebx);
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.edx);
-    cpu.ebx = cpu.eax;
-    if (cpu.eax != 0)
-    {
-        cpu.edx = 0;
-        put(app, cpu.eax + 0xc, 1);
-        if (!direct(app, cpu, stackLimits) || !windows<kGetCurrentThreadId, &host::currentThreadId>(app, cpu))
-            return;
-        put(app, cpu.ebx + 0xda, cpu.eax);
-    }
-    cpu.edx = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
-    cpu.ebx = pop(app, cpu);
-    cpu.esp += 4;
+    const reg32 eax = initThreadOf(app, cpu, cpu.eax);
+    if (cpu.terminate)
+        return;
+    returns(cpu, eax);
 }
 
-/* 0x51e7ec (the main thread's data): the data at eax -- calloc's, for none --
- * started; the data, or 0. */
+/* 0x51e7ec (the main thread's data): the data at `data` -- calloc's, for none -- started; the data,
+ * or 0.  At its entry's depth: ebx and edx pushed. */
+reg32 initThreadDataOf(win32::WinApplication* app, x86::CPU& cpu, reg32 data)
+{
+    const GuestFrame frame(app, cpu, {cpu.ebx, cpu.edx}, 0);
+    if (data == 0)
+    {
+        {
+            const ReturnSlot slot(cpu);
+            data = callocOf(app, cpu, 1, at(app, kThreadDataSize));
+        }
+        if (cpu.terminate)
+            return 0;
+        if (data != 0)
+        {
+            putByte(app, data + 0x52, 1);
+            put(app, data + 0xf0, at(app, kThreadDataSize));
+        }
+    }
+    {
+        const ReturnSlot slot(cpu);
+        initThreadOf(app, cpu, data);
+    }
+    return cpu.terminate ? 0 : data;
+}
+
 void initThreadData(win32::WinApplication* app, x86::CPU& cpu)
 {
-    push(app, cpu, cpu.ebx);
-    push(app, cpu, cpu.edx);
-    cpu.edx = cpu.eax;
-    if (cpu.eax == 0)
-    {
-        cpu.eax = 1;
-        cpu.edx = at(app, kThreadDataSize);
-        if (!direct(app, cpu, calloc))
-            return;
-        cpu.edx = cpu.eax;
-        if (cpu.eax != 0)
-        {
-            cpu.ebx = at(app, kThreadDataSize);
-            putByte(app, cpu.eax + 0x52, 1);
-            put(app, cpu.eax + 0xf0, cpu.ebx);
-        }
-    }
-    cpu.eax = cpu.edx;
-    if (!direct(app, cpu, initThread))
+    const reg32 data = initThreadDataOf(app, cpu, cpu.eax);
+    if (cpu.terminate)
         return;
-    cpu.eax = cpu.edx;
-    cpu.edx = pop(app, cpu);
-    cpu.ebx = pop(app, cpu);
-    cpu.esp += 4;
+    returns(cpu, data);
 }
 
-/* 0x51e490 (__initPOSIXHandles): the standard input, output and error
- * Windows hands -- a fake HANDLE for one it has none of -- made handles 0, 1
- * and 2. */
-void initPOSIXHandles(win32::WinApplication* app, x86::CPU& cpu)
+/* 0x51e490 (__initPOSIXHandles): the standard input, output and error Windows hands -- a fake
+ * HANDLE for one it has none of -- made handles 0, 1 and 2.  At its entry's depth: ecx and edx
+ * pushed.  The last handle, which the code leaves in eax; 0 with cpu.terminate set when the game
+ * stopped. */
+reg32 initPOSIXHandlesOf(win32::WinApplication* app, x86::CPU& cpu)
 {
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.edx);
+    const GuestFrame frame(app, cpu, {cpu.ecx, cpu.edx}, 0);
+    reg32 handle = cpu.eax;
     for (const reg32 which : {reg32(-10), reg32(-11), reg32(-12)})
     {
-        if (!windows<kGetStdHandle, &win32::kernel32::GetStdHandle>(app, cpu, which))
-            return;
-        cpu.edx = cpu.eax;
-        if ((cpu.eax == 0 || cpu.eax == 0xffffffff) && !direct(app, cpu, NTGetFakeHandle))
-            return;
-        if (!direct(app, cpu, allocPOSIXHandle))
-            return;
+        reg32 os;
+        {
+            const guest::KeptRegisters kept(cpu);
+            cpu.eax = handle;  // as the code calls it: the last handle
+            if (!windows<kGetStdHandle, &host::stdHandle>(app, cpu, which))
+                return 0;
+            os = cpu.eax;
+        }
+        const ReturnSlot slot(cpu);
+        const guest::KeptRegisters kept(cpu);
+        if ((os == 0 || os == 0xffffffff) && !fakeHandle(app, cpu, os))
+            return 0;
+        if (!allocHandle(app, cpu, os, handle))
+            return 0;
     }
-    cpu.edx = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
-    cpu.esp += 4;
+    return handle;
 }
 
-/* 0x51eb00 (the module's wide name): the name of the module at eax into the
- * ebx bytes at edx -- by GetModuleFileNameW where Windows has it, else the
- * narrow name made wide; how long, or 0. */
+void initPOSIXHandles(win32::WinApplication* app, x86::CPU& cpu)
+{
+    const reg32 handle = initPOSIXHandlesOf(app, cpu);
+    if (cpu.terminate)
+        return;
+    returns(cpu, handle);
+}
+
+/* 0x51eb00 (the module's wide name): the name of the module `module` into the `size` wide
+ * characters at `out` -- by GetModuleFileNameW where Windows has it, else the narrow name made wide;
+ * how long, or 0.  At its entry's depth: four pushes.  0 with cpu.terminate set when the game
+ * stopped. */
+reg32 moduleWideNameOf(win32::WinApplication* app, x86::CPU& cpu, reg32 module, reg32 out, reg32 size)
+{
+    const GuestFrame frame(app, cpu, {cpu.ecx, cpu.esi, cpu.edi, cpu.ebp}, 0);
+    // A Windows function run with eax `eax`, as the code calls it, every other register kept: its
+    // say.
+    auto windowsSays = [&](reg32 eax, auto&& run) {
+        const guest::KeptRegisters kept(cpu);
+        cpu.eax = eax;
+        return run() ? cpu.eax : 0;
+    };
+    const reg32 version =
+        windowsSays(module, [&] { return windows<kGetVersion, &host::windowsVersion>(app, cpu); });
+    if (cpu.terminate)
+        return 0;
+    if (reg16(version >> 16) < 0x8000)
+        return windowsSays((version >> 16) & 0xffff, [&] {
+            return windows<kGetModuleFileNameW, &host::moduleFileNameWide>(app, cpu, module, out, size);
+        });
+    const reg32 narrow = nmallocOf(app, cpu, 0x208);
+    if (cpu.terminate || narrow == 0)
+        return 0;
+    const reg32 n = windowsSays(
+        narrow, [&] { return windows<kGetModuleFileNameA, &host::moduleFileName>(app, cpu, module, narrow, 0x208); });
+    if (cpu.terminate)
+        return 0;
+    if (n == 0)
+    {
+        nfreeOf(app, cpu, narrow);
+        return 0;
+    }
+    const reg32 wide = windowsSays(n, [&] {
+        return windows<kMultiByteToWideChar, &host::multiByteToWide>(app, cpu, 1, 1, narrow, reg32(-1), out, size);
+    });
+    if (cpu.terminate)
+        return 0;
+    nfreeOf(app, cpu, narrow);
+    if (cpu.terminate || wide == 0)
+        return 0;
+    putHalf(app, out + size * 2 - 2, 0);
+    return wcslenOf(app, out);
+}
+
 void moduleWideName(win32::WinApplication* app, x86::CPU& cpu)
 {
-    for (const reg32 r : {cpu.ecx, cpu.esi, cpu.edi, cpu.ebp})
-        push(app, cpu, r);
-    auto done = [&] {
-        for (reg32* r : {&cpu.ebp, &cpu.edi, &cpu.esi, &cpu.ecx})
-            *r = pop(app, cpu);
-        cpu.esp += 4;
-    };
-    cpu.ebp = cpu.eax;
-    cpu.esi = cpu.edx;
-    cpu.edi = cpu.ebx;
-    if (!windows<kGetVersion, &win32::kernel32::GetVersion>(app, cpu))
+    const reg32 n = moduleWideNameOf(app, cpu, cpu.eax, cpu.edx, cpu.ebx);
+    if (cpu.terminate)
         return;
-    cpu.eax = (cpu.eax >> 16) & 0xffff;
-    if (reg16(cpu.eax) < 0x8000)
-    {
-        if (!windows<kGetModuleFileNameW, &win32::kernel32::GetModuleFileNameW>(app, cpu, cpu.ebp, cpu.esi, cpu.ebx))
-            return;
-        return done();
-    }
-    cpu.eax = 0x208;
-    if (!direct(app, cpu, nmalloc))
-        return;
-    cpu.ebx = cpu.eax;
-    if (cpu.eax == 0)
-        return done();
-    if (!windows<kGetModuleFileNameA, &win32::kernel32::GetModuleFileNameA>(app, cpu, cpu.ebp, cpu.eax, 0x208))
-        return;
-    if (cpu.eax == 0)
-    {
-        cpu.eax = cpu.ebx;
-        if (!direct(app, cpu, nfree))
-            return;
-        cpu.eax = 0;
-        return done();
-    }
-    if (!windows<kMultiByteToWideChar, &win32::kernel32::MultiByteToWideChar>(app, cpu, 1, 1, cpu.ebx, reg32(-1), cpu.esi, cpu.edi))
-        return;
-    cpu.ebp = cpu.eax;
-    cpu.eax = cpu.ebx;
-    if (!direct(app, cpu, nfree))
-        return;
-    if (cpu.ebp == 0)
-    {
-        cpu.eax = 0;
-        return done();
-    }
-    cpu.eax = cpu.esi;
-    putHalf(app, cpu.esi + cpu.edi * 2 - 2, 0);
-    if (!direct(app, cpu, wcslen))
-        return;
-    done();
+    returns(cpu, n);
 }
 
-/* 0x51eba0 (the command line's copy): the string at eax copied into a block
- * of _nmalloc's; 0 for none. */
+/* 0x51eba0 (the command line's copy): the string at `s` copied into a block of _nmalloc's; 0 for
+ * none.  At its entry's depth: four pushes. */
+reg32 copyCommandLineOf(win32::WinApplication* app, x86::CPU& cpu, reg32 s)
+{
+    const GuestFrame frame(app, cpu, {cpu.ecx, cpu.edx, cpu.esi, cpu.edi}, 0);
+    reg32 n = 0;
+    while (byte(app, s + n) != 0)
+        ++n;
+    ++n;
+    const reg32 copy = nmallocOf(app, cpu, n);
+    if (cpu.terminate)
+        return 0;
+    if (copy != 0)
+        memcpyOf(app, copy, s, n);
+    return copy;
+}
+
 void copyCommandLine(win32::WinApplication* app, x86::CPU& cpu)
 {
-    for (const reg32 r : {cpu.ecx, cpu.edx, cpu.esi, cpu.edi})
-        push(app, cpu, r);
-    cpu.esi = cpu.eax;
-    cpu.edi = cpu.eax;
-    inlineStrlen(app, cpu);
-    ++cpu.ecx;
-    cpu.eax = cpu.ecx;
-    if (!direct(app, cpu, nmalloc))
+    const reg32 copy = copyCommandLineOf(app, cpu, cpu.eax);
+    if (cpu.terminate)
         return;
-    cpu.edx = cpu.eax;
-    if (cpu.eax != 0)
-    {
-        cpu.edi = cpu.eax;
-        inlineMemcpy(app, cpu);
-    }
-    cpu.eax = cpu.edx;
-    for (reg32* r : {&cpu.edi, &cpu.esi, &cpu.edx, &cpu.ecx})
-        *r = pop(app, cpu);
-    cpu.esp += 4;
+    returns(cpu, copy);
 }
 
-/* 0x51ebf0 (the wide command line's copy): the wide string at eax copied
- * into a block of _nmalloc's; 0 for none. */
+/* 0x51ebf0 (the wide command line's copy): the wide string at `s` copied into a block of
+ * _nmalloc's; 0 for none.  At its entry's depth: three pushes. */
+reg32 copyWideCommandLineOf(win32::WinApplication* app, x86::CPU& cpu, reg32 s)
+{
+    const GuestFrame frame(app, cpu, {cpu.ebx, cpu.ecx, cpu.edx}, 0);
+    const reg32 bytes = (wcslenOf(app, s) + 1) * 2;
+    const reg32 copy = nmallocOf(app, cpu, bytes);
+    if (cpu.terminate)
+        return 0;
+    if (copy != 0)
+        memcpyOf(app, copy, s, bytes);
+    return copy;
+}
+
 void copyWideCommandLine(win32::WinApplication* app, x86::CPU& cpu)
 {
-    push(app, cpu, cpu.ebx);
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.edx);
-    cpu.edx = cpu.eax;
-    if (!direct(app, cpu, wcslen))
+    const reg32 copy = copyWideCommandLineOf(app, cpu, cpu.eax);
+    if (cpu.terminate)
         return;
-    ++cpu.eax;
-    cpu.ebx = cpu.eax * 2;
-    cpu.eax = cpu.ebx;
-    if (!direct(app, cpu, nmalloc))
-        return;
-    cpu.ecx = cpu.eax;
-    if (cpu.eax != 0 && !direct(app, cpu, memcpy))
-        return;
-    cpu.eax = cpu.ecx;
-    cpu.edx = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
-    cpu.ebx = pop(app, cpu);
-    cpu.esp += 4;
+    returns(cpu, copy);
 }
 
-/* 0x51f0d0 (__InitExceptionHandling): the registration at eax the thread's,
- * first on fs:[0]'s chain with the runtime's handler, and the runtime's
- * filter Windows' for an exception nobody handles. */
+/* The thread's data, by __GetThreadPtr's pointer, with edx `edx` as the code calls it; 0 with
+ * cpu.terminate set when the game stopped. */
+reg32 threadPtrOf(win32::WinApplication* app, x86::CPU& cpu, reg32 edx)
+{
+    const guest::KeptRegisters kept(cpu);
+    cpu.edx = edx;
+    return guest::runtimeHook<kThreadPtr>(app, cpu) ? cpu.eax : 0;
+}
+
+/* 0x51f0d0 (__InitExceptionHandling): the registration at `registration` the thread's, first on
+ * fs:[0]'s chain with the runtime's handler, and the runtime's filter Windows' for an exception
+ * nobody handles.  At its entry's depth: ecx and edx pushed.  What SetUnhandledExceptionFilter
+ * leaves in eax; 0 with cpu.terminate set when the game stopped. */
+reg32 initExceptionHandlingOf(win32::WinApplication* app, x86::CPU& cpu, reg32 registration)
+{
+    const GuestFrame frame(app, cpu, {cpu.ecx, cpu.edx}, 0);
+    reg32 data = threadPtrOf(app, cpu, registration);
+    if (cpu.terminate)
+        return 0;
+    put(app, data + 0x54, registration);
+    const reg32 previous = at(app, cpu.efs);
+    data = threadPtrOf(app, cpu, previous);
+    if (cpu.terminate)
+        return 0;
+    put(app, at(app, data + 0x54), previous);
+    data = threadPtrOf(app, cpu, previous);
+    if (cpu.terminate)
+        return 0;
+    put(app, at(app, data + 0x54) + 4, kExceptionHandlerCode);
+    data = threadPtrOf(app, cpu, 0);
+    if (cpu.terminate)
+        return 0;
+    put(app, cpu.efs, at(app, data + 0x54));
+    const guest::KeptRegisters kept(cpu);
+    cpu.eax = at(app, data + 0x54);  // as the code calls it
+    return windows<kSetUnhandledExceptionFilter, &host::setUnhandledExceptionFilter>(app, cpu, kUnhandledFilter)
+               ? cpu.eax
+               : 0;
+}
+
 void InitExceptionHandling(win32::WinApplication* app, x86::CPU& cpu)
 {
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.edx);
-    cpu.edx = cpu.eax;
-    if (!indirect(app, cpu, at(app, kThreadPtr)))
+    const reg32 eax = initExceptionHandlingOf(app, cpu, cpu.eax);
+    if (cpu.terminate)
         return;
-    put(app, cpu.eax + 0x54, cpu.edx);
-    cpu.eax = 0;
-    cpu.eax = at(app, cpu.efs + cpu.eax);
-    cpu.edx = cpu.eax;
-    if (!indirect(app, cpu, at(app, kThreadPtr)))
-        return;
-    cpu.eax = at(app, cpu.eax + 0x54);
-    put(app, cpu.eax, cpu.edx);
-    if (!indirect(app, cpu, at(app, kThreadPtr)))
-        return;
-    cpu.eax = at(app, cpu.eax + 0x54);
-    cpu.edx = 0;
-    put(app, cpu.eax + 4, kExceptionHandlerCode);
-    if (!indirect(app, cpu, at(app, kThreadPtr)))
-        return;
-    cpu.eax = at(app, cpu.eax + 0x54);
-    put(app, cpu.efs + cpu.edx, cpu.eax);
-    if (!windows<kSetUnhandledExceptionFilter, &win32::kernel32::SetUnhandledExceptionFilter>(app, cpu, kUnhandledFilter))
-        return;
-    cpu.edx = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
-    cpu.esp += 4;
+    returns(cpu, eax);
 }
 
-/* 0x4ff108 (__NTInit): the runtime's state for a program (eax 0) or a DLL,
- * the thread's data at edx, the module ebx: the data started, the standard
- * handles, the environment, Windows' version, the names, the command lines
- * and where their arguments start.  0 for no thread's data in a DLL; a
- * program without one leaves by ExitProcess. */
-void NTInit(win32::WinApplication* app, x86::CPU& cpu)
+/* Past the program's name in the command line at `p` -- quoted or not -- and the white space after
+ * it: `step` bytes a character, `c` its character. */
+template <typename Char>
+reg32 argumentsOf(win32::WinApplication* app, reg32 p, reg32 step, Char c)
 {
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.esi);
-    push(app, cpu, cpu.edi);
-    auto done = [&] {
-        cpu.edi = pop(app, cpu);
-        cpu.esi = pop(app, cpu);
-        cpu.ecx = pop(app, cpu);
-        cpu.esp += 4;
-    };
-    cpu.esi = cpu.eax;
-    cpu.edi = cpu.ebx;
-    cpu.eax = cpu.edx;
-    put(app, kIsDll, cpu.esi);
-    if (!direct(app, cpu, initThreadData))
-        return;
-    put(app, kMainThreadData, cpu.eax);
-    if (cpu.eax == 0)
+    if (c(p) == '"')
     {
-        if (cpu.esi != 0)
-            return done();
-        if (!windows<kExitProcess, &win32::kernel32::ExitProcess>(app, cpu, 1))
-            return;
-    }
-    if (!direct(app, cpu, initPOSIXHandles)
-        || !windows<kGetEnvironmentStrings, &win32::kernel32::GetEnvironmentStrings>(app, cpu))
-        return;
-    cpu.edx = 0;
-    put(app, kEnvironmentStrings, cpu.eax);
-    put(app, kEnviron, cpu.edx);
-    if (!windows<kGetVersion, &win32::kernel32::GetVersion>(app, cpu))
-        return;
-    // Its parts: the major and minor versions, the build -- and Windows'
-    // version in Watcom's own words of it.
-    cpu.edx = cpu.eax;
-    cpu.ebx = cpu.eax;
-    putByte(app, kOsMajor, reg8(cpu.eax));
-    cpu.eax = (cpu.eax >> 16) & 0xffff;
-    putHalf(app, kOsBuild, reg16(cpu.eax));
-    cpu.eax = 0;
-    cpu.edx &= 0xffff;
-    cpu.eax = half(app, kOsBuild);
-    put(app, kOsVersion, cpu.eax);
-    cpu.eax = 0;
-    cpu.edx = reg32(x86::sreg32(cpu.edx) >> 8);
-    setLow8(cpu.eax, cpu.ebx);
-    cpu.edx &= 0xff;
-    put(app, kWinMajor, cpu.eax);
-    cpu.eax = 0;
-    putByte(app, kOsMinor, reg8(cpu.edx));
-    setLow8(cpu.eax, cpu.edx);
-    cpu.edx = at(app, kWinMajor);
-    cpu.edx <<= 8;
-    cpu.ebx = kModuleName;
-    cpu.edx |= cpu.eax;
-    put(app, kWinMinor, cpu.eax);
-    put(app, kWinVersion, cpu.edx);
-    if (!windows<kGetModuleFileNameA, &win32::kernel32::GetModuleFileNameA>(app, cpu, 0, kModuleName, 0x104))
-        return;
-    cpu.edx = kWideModuleName;
-    put(app, kProgramName, cpu.ebx);
-    cpu.eax = 0;
-    cpu.ebx = 0x208;
-    cpu.ecx = kWideModuleName;
-    if (!direct(app, cpu, moduleWideName))
-        return;
-    put(app, kWideProgramName, cpu.ecx);
-
-    // The command line's copy, and its arguments: past the program's name,
-    // quoted or not, and the white space after it.
-    if (!windows<kGetCommandLineA, &win32::kernel32::GetCommandLineA>(app, cpu) || !direct(app, cpu, copyCommandLine))
-        return;
-    cpu.edx = cpu.eax;
-    setLow8(cpu.ebx, byte(app, cpu.eax));
-    put(app, kCommandLine, cpu.eax);
-    if (reg8(cpu.ebx) == '"')
-    {
-        setHigh8(cpu.ebx, byte(app, cpu.eax + 1));
-        ++cpu.eax;
-        if (reg8(cpu.ebx >> 8) != reg8(cpu.ebx))
-            while (byte(app, cpu.eax) != 0)
+        const reg32 second = c(p + step);
+        p += step;
+        if (second != '"')
+            while (c(p) != 0)
             {
-                setLow8(cpu.edx, byte(app, cpu.eax + 1));
-                ++cpu.eax;
-                if (reg8(cpu.edx) == '"')
+                const reg32 next = c(p + step);
+                p += step;
+                if (next == '"')
                     break;
             }
-        if (byte(app, cpu.eax) != 0)
-            ++cpu.eax;
+        if (c(p) != 0)
+            p += step;
     }
     else
-        while (!space(app, cpu, cpu.eax) && byte(app, cpu.eax) != 0)
-            ++cpu.eax;
-    while (space(app, cpu, cpu.eax))
-        ++cpu.eax;
-    put(app, kArguments, cpu.eax);
-
-    // The wide one's, the same.
-    if (!windows<kGetCommandLineW, &win32::kernel32::GetCommandLineW>(app, cpu))
-        return;
-    if (cpu.eax == 0)
-        cpu.eax = kNoWideCommandLine;
-    else
-    {
-        if (!direct(app, cpu, copyWideCommandLine))
-            return;
-        cpu.edx = cpu.eax;
-        cpu.ebx = (cpu.ebx & 0xffff0000) | half(app, cpu.eax);
-        put(app, kWideCommandLine, cpu.eax);
-        if (reg16(cpu.ebx) == '"')
-        {
-            cpu.ecx = (cpu.ecx & 0xffff0000) | half(app, cpu.eax + 2);
-            cpu.eax += 2;
-            if (reg16(cpu.ecx) != reg16(cpu.ebx))
-                while (half(app, cpu.eax) != 0)
-                {
-                    cpu.ebx = (cpu.ebx & 0xffff0000) | half(app, cpu.eax + 2);
-                    cpu.eax += 2;
-                    if (reg16(cpu.ebx) == '"')
-                        break;
-                }
-            if (half(app, cpu.eax) != 0)
-                cpu.eax += 2;
-        }
-        else
-        {
-            cpu.ebx = 2;
-            while (!space(app, cpu, cpu.eax) && half(app, cpu.eax) != 0)
-                cpu.eax += 2;
-        }
-        cpu.ebx = 2;
-        while (space(app, cpu, cpu.eax))
-            cpu.eax += 2;
-    }
-    put(app, kWideArguments, cpu.eax);
-
-    // A DLL's own name, and wide.
-    if (cpu.esi != 0)
-    {
-        cpu.esi = kDllName;
-        cpu.ebx = 0x208;
-        if (!windows<kGetModuleFileNameA, &win32::kernel32::GetModuleFileNameA>(app, cpu, cpu.edi, kDllName, 0x104))
-            return;
-        cpu.edx = kWideDllName;
-        put(app, kDllNamePtr, cpu.esi);
-        cpu.eax = cpu.edi;
-        cpu.edi = kWideDllName;
-        if (!direct(app, cpu, moduleWideName))
-            return;
-        put(app, kWideDllNamePtr, cpu.edi);
-    }
-    cpu.eax = 1;
-    done();
+        while (!isSpace(app, byte(app, p)) && c(p) != 0)
+            p += step;
+    while (isSpace(app, byte(app, p)))
+        p += step;
+    return p;
 }
 
-/* 0x4ff338 (the program's start): __NTInit for the module, the stack's
- * limits, the exception handling with the registration at eax, and the
- * initializers. */
+/* 0x4ff108 (__NTInit): the runtime's state for a program (`dll` 0) or a DLL, the thread's data at
+ * `data`, the module `module`: the data started, the standard handles, the environment, Windows'
+ * version, the names, the command lines and where their arguments start.  0 for no thread's data
+ * in a DLL, else 1; a program without one leaves by ExitProcess.  At its entry's depth: three
+ * pushes.  0 with cpu.terminate set when the game stopped. */
+reg32 ntInitOf(win32::WinApplication* app, x86::CPU& cpu, reg32 dll, reg32 data, reg32 module)
+{
+    const GuestFrame frame(app, cpu, {cpu.ecx, cpu.esi, cpu.edi}, 0);
+    // A Windows function run with eax `eax`, as the code calls it, every other register kept: its
+    // say.
+    auto says = [&](reg32 eax, auto&& run) {
+        const guest::KeptRegisters kept(cpu);
+        cpu.eax = eax;
+        return run() ? cpu.eax : 0;
+    };
+    // A core of the runtime's at this one's depth.
+    auto calls = [&](auto&& run) {
+        const ReturnSlot slot(cpu);
+        return run();
+    };
+    put(app, kIsDll, dll);
+    data = calls([&] { return initThreadDataOf(app, cpu, data); });
+    if (cpu.terminate)
+        return 0;
+    put(app, kMainThreadData, data);
+    if (data == 0)
+    {
+        if (dll != 0)
+            return 0;
+        says(0, [&] { return windows<kExitProcess, &host::exitProcess>(app, cpu, 1); });
+        if (cpu.terminate)
+            return 0;
+    }
+    const reg32 handle = calls([&] { return initPOSIXHandlesOf(app, cpu); });
+    if (cpu.terminate)
+        return 0;
+    const reg32 environment = says(handle, [&] { return windows<kGetEnvironmentStrings, &host::environmentStrings>(app, cpu); });
+    if (cpu.terminate)
+        return 0;
+    put(app, kEnvironmentStrings, environment);
+    put(app, kEnviron, 0);
+    const reg32 version = says(environment, [&] { return windows<kGetVersion, &host::windowsVersion>(app, cpu); });
+    if (cpu.terminate)
+        return 0;
+    // Its parts: the major and minor versions, the build -- and Windows' version in Watcom's own
+    // words of it.
+    const reg32 major = version & 0xff, minor = (version >> 8) & 0xff;
+    putByte(app, kOsMajor, reg8(major));
+    putHalf(app, kOsBuild, reg16(version >> 16));
+    put(app, kOsVersion, half(app, kOsBuild));
+    put(app, kWinMajor, major);
+    putByte(app, kOsMinor, reg8(minor));
+    put(app, kWinMinor, minor);
+    put(app, kWinVersion, major << 8 | minor);
+    says(minor, [&] { return windows<kGetModuleFileNameA, &host::moduleFileName>(app, cpu, 0, kModuleName, 0x104); });
+    if (cpu.terminate)
+        return 0;
+    put(app, kProgramName, kModuleName);
+    const reg32 named = calls([&] { return moduleWideNameOf(app, cpu, 0, kWideModuleName, 0x208); });
+    if (cpu.terminate)
+        return 0;
+    put(app, kWideProgramName, kWideModuleName);
+
+    // The command line's copy, and its arguments.
+    const reg32 line = says(named, [&] { return windows<kGetCommandLineA, &host::commandLine>(app, cpu); });
+    if (cpu.terminate)
+        return 0;
+    const reg32 copy = calls([&] { return copyCommandLineOf(app, cpu, line); });
+    if (cpu.terminate)
+        return 0;
+    put(app, kCommandLine, copy);
+    const reg32 narrowArguments = argumentsOf(app, copy, 1, [&](reg32 p) { return reg32(byte(app, p)); });
+    put(app, kArguments, narrowArguments);
+
+    // The wide one's, the same.
+    const reg32 wide = says(narrowArguments, [&] { return windows<kGetCommandLineW, &host::commandLineWide>(app, cpu); });
+    if (cpu.terminate)
+        return 0;
+    reg32 arguments = kNoWideCommandLine;
+    if (wide != 0)
+    {
+        const reg32 wideCopy = calls([&] { return copyWideCommandLineOf(app, cpu, wide); });
+        if (cpu.terminate)
+            return 0;
+        put(app, kWideCommandLine, wideCopy);
+        arguments = argumentsOf(app, wideCopy, 2, [&](reg32 p) { return reg32(half(app, p)); });
+    }
+    put(app, kWideArguments, arguments);
+
+    // A DLL's own name, and wide.
+    if (dll != 0)
+    {
+        says(arguments,
+             [&] { return windows<kGetModuleFileNameA, &host::moduleFileName>(app, cpu, module, kDllName, 0x104); });
+        if (cpu.terminate)
+            return 0;
+        put(app, kDllNamePtr, kDllName);
+        calls([&] { return moduleWideNameOf(app, cpu, module, kWideDllName, 0x208); });
+        if (cpu.terminate)
+            return 0;
+        put(app, kWideDllNamePtr, kWideDllName);
+    }
+    return 1;
+}
+
+void NTInit(win32::WinApplication* app, x86::CPU& cpu)
+{
+    const reg32 result = ntInitOf(app, cpu, cpu.eax, cpu.edx, cpu.ebx);
+    if (cpu.terminate)
+        return;
+    returns(cpu, result);
+}
+
+/* 0x4ff338 (the program's start): __NTInit for the module, the stack's limits, the exception
+ * handling with the registration at `registration`, the thread's data at `data`, and the
+ * initializers.  At its entry's depth: four pushes.  What the code leaves in eax: the initializers'
+ * table's end; 0 with cpu.terminate set when the game stopped. */
+reg32 ntMainOf(win32::WinApplication* app, x86::CPU& cpu, reg32 registration, reg32 data)
+{
+    const GuestFrame frame(app, cpu, {cpu.ebx, cpu.ecx, cpu.esi, cpu.edi}, 0);
+    reg32 module;
+    {
+        const guest::KeptRegisters kept(cpu);
+        cpu.eax = registration;  // as the code calls it
+        if (!windows<kGetModuleHandleA, &host::moduleHandle>(app, cpu, 0))
+            return 0;
+        module = cpu.eax;
+    }
+    auto calls = [&](auto&& run) {
+        const ReturnSlot slot(cpu);
+        return run();
+    };
+    calls([&] { return ntInitOf(app, cpu, 0, data, module); });
+    if (cpu.terminate)
+        return 0;
+    const reg32 thread = threadPtrOf(app, cpu, kStackTop);
+    if (cpu.terminate)
+        return 0;
+    calls([&] { return stackLimitsOf(app, cpu, thread, kStackTop); });
+    if (cpu.terminate)
+        return 0;
+    calls([&] { return initExceptionHandlingOf(app, cpu, registration); });
+    if (cpu.terminate)
+        return 0;
+    const reg32 end = calls([&] { return initRtnsOf(app, cpu, 0x21); });
+    if (cpu.terminate)
+        return 0;
+    {
+        const guest::KeptRegisters kept(cpu);
+        cpu.eax = end;
+        if (!guest::runtimeHook<kAccessIobHook>(app, cpu))
+            return 0;
+    }
+    return calls([&] { return initRtnsOf(app, cpu, 0xff); });
+}
+
 void NTMain(win32::WinApplication* app, x86::CPU& cpu)
 {
-    for (const reg32 r : {cpu.ebx, cpu.ecx, cpu.esi, cpu.edi})
-        push(app, cpu, r);
-    cpu.esi = cpu.eax;
-    cpu.edi = cpu.edx;
-    if (!windows<kGetModuleHandleA, &win32::kernel32::GetModuleHandleA>(app, cpu, 0))
+    const reg32 eax = ntMainOf(app, cpu, cpu.eax, cpu.edx);
+    if (cpu.terminate)
         return;
-    cpu.ebx = cpu.eax;
-    cpu.edx = cpu.edi;
-    cpu.eax = 0;
-    if (!direct(app, cpu, NTInit))
-        return;
-    cpu.edx = kStackTop;
-    if (!indirect(app, cpu, at(app, kThreadPtr)) || !direct(app, cpu, stackLimits))
-        return;
-    cpu.eax = cpu.esi;
-    if (!direct(app, cpu, InitExceptionHandling))
-        return;
-    cpu.eax = 0x21;
-    if (!direct(app, cpu, InitRtns) || !indirect(app, cpu, at(app, kAccessIobHook)))
-        return;
-    cpu.eax = 0xff;
-    if (!direct(app, cpu, InitRtns))
-        return;
-    for (reg32* r : {&cpu.edi, &cpu.esi, &cpu.ecx, &cpu.ebx})
-        *r = pop(app, cpu);
-    cpu.esp += 4;
+    returns(cpu, eax);
 }
 
 /* 0x524290 (the call of main): the stack's room checked -- grown by __GRO
@@ -12050,165 +11190,171 @@ void maskedControl(win32::WinApplication* app, x86::CPU& cpu, reg32 saved, reg32
 
 }  // namespace
 
-/* 0x52e400 (__get_std_stream): __iob's eax'th FILE, the first four; 0 for
- * another. */
+/* 0x52e400 (__get_std_stream): __iob's `n`th FILE, the first four; 0 for another. */
+reg32 stdStreamOf(reg32 n)
+{
+    return n > 3 ? 0 : n * 0x1a + kStdStreams;
+}
+
 void get_std_stream(win32::WinApplication* app, x86::CPU& cpu)
 {
-    push(app, cpu, cpu.edx);
-    cpu.eax = cpu.eax > 3 ? 0 : cpu.eax * 0x1a + kStdStreams;
-    cpu.edx = pop(app, cpu);
-    cpu.esp += 4;
+    pushed(app, cpu.esp, {cpu.edx});
+    returns(cpu, stdStreamOf(cpu.eax));
 }
 
-/* 0x52b647 (the maths' error printed): "<type's name>: <function's name>"
- * and a newline, to stderr. */
+/* 0x52b647 (the maths' error printed): "<type's name>: <function's name>" and a newline, to stderr,
+ * by fputs and fputc -- each at the depth of its call, under three pushes.  fputc's say; 0 with
+ * cpu.terminate set when the game stopped. */
+reg32 printMathErrorOf(win32::WinApplication* app, x86::CPU& cpu, reg32 type, reg32 name)
+{
+    const GuestFrame frame(app, cpu, {cpu.ebx, cpu.ecx, cpu.esi}, 0);
+    const reg32 stream = stdStreamOf(2);
+    const ReturnSlot slot(cpu);
+    reg32 result;
+    for (const reg32 s : {at(app, kMathTypeNames + type * 4), kMathErrorSeparator, name})
+    {
+        const guest::KeptRegisters kept(cpu);
+        if (!putString(app, cpu, s, stream, result))
+            return 0;
+    }
+    const guest::KeptRegisters kept(cpu);
+    return putChar(app, cpu, '\n', stream, result) ? result : 0;
+}
+
 void printMathError(win32::WinApplication* app, x86::CPU& cpu)
 {
-    push(app, cpu, cpu.ebx);
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.esi);
-    cpu.esi = cpu.eax;
-    cpu.ecx = cpu.edx;
-    cpu.eax = 2;
-    if (!direct(app, cpu, get_std_stream))
+    const reg32 result = printMathErrorOf(app, cpu, cpu.eax, cpu.edx);
+    if (cpu.terminate)
         return;
-    cpu.ebx = cpu.eax;
-    cpu.eax = at(app, kMathTypeNames + cpu.esi * 4);
-    cpu.edx = cpu.ebx;
-    if (!direct(app, cpu, fputs))
-        return;
-    cpu.eax = kMathErrorSeparator;
-    cpu.edx = cpu.ebx;
-    if (!direct(app, cpu, fputs))
-        return;
-    cpu.edx = cpu.ebx;
-    cpu.eax = cpu.ecx;
-    if (!direct(app, cpu, fputs))
-        return;
-    cpu.eax = '\n';
-    cpu.edx = cpu.ebx;
-    if (!direct(app, cpu, fputc))
-        return;
-    cpu.esi = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
-    cpu.ebx = pop(app, cpu);
-    cpu.esp += 4;
+    returns(cpu, result);
 }
 
-/* 0x52b68f (__matherr's call): the struct exception at eax to _matherr; for
- * a 0 from it, the error printed, and errno EDOM for a domain error, else
- * ERANGE; its retval onto the x87's stack. */
+/* 0x52b68f (__matherr's call): the struct exception at `exception` to _matherr; for a 0 from it, the
+ * error printed, and errno EDOM for a domain error, else ERANGE; its retval onto the x87's stack.
+ * At its entry's depth: ebx and edx pushed.  What the code leaves in eax: _matherr's say, or the
+ * errno's setting's; 0 with cpu.terminate set when the game stopped. */
+reg32 callMatherrOf(win32::WinApplication* app, x86::CPU& cpu, reg32 exception)
+{
+    const GuestFrame frame(app, cpu, {cpu.ebx, cpu.edx}, 0);
+    reg32 eax;
+    {
+        const guest::KeptRegisters kept(cpu);
+        cpu.eax = exception;
+        cpu.ebx = exception;
+        if (!guest::runtimeHook<kMatherr>(app, cpu))
+            return 0;
+        eax = cpu.eax;
+    }
+    if (eax == 0)
+    {
+        {
+            const ReturnSlot slot(cpu);
+            printMathErrorOf(app, cpu, at(app, exception), at(app, exception + 4));
+        }
+        if (cpu.terminate)
+            return 0;
+        const ReturnSlot slot(cpu);
+        const guest::KeptRegisters kept(cpu);
+        if (!setThreadWord(app, cpu, kErrno, at(app, exception) == 1 ? kEDOM : kERANGE))
+            return 0;
+        eax = cpu.eax;
+    }
+    pushFloat(cpu, loadDouble(app, exception + 0x18));
+    return eax;
+}
+
 void callMatherr(win32::WinApplication* app, x86::CPU& cpu)
 {
-    push(app, cpu, cpu.ebx);
-    push(app, cpu, cpu.edx);
-    cpu.ebx = cpu.eax;
-    if (!indirect(app, cpu, at(app, kMatherr)))
+    const reg32 eax = callMatherrOf(app, cpu, cpu.eax);
+    if (cpu.terminate)
         return;
-    if (cpu.eax == 0)
-    {
-        cpu.edx = at(app, cpu.ebx + 4);
-        cpu.eax = at(app, cpu.ebx);
-        if (!direct(app, cpu, printMathError)
-            || !direct(app, cpu, at(app, cpu.ebx) == 1 ? set_EDOM : set_ERANGE))
-            return;
-    }
-    const x86::Float value = loadDouble(app, cpu.ebx + 0x18);
-    cpu.edx = pop(app, cpu);
-    cpu.ebx = pop(app, cpu);
-    pushFloat(cpu, value);
-    cpu.esp += 4;
+    returns(cpu, eax);
 }
 
-/* 0x5243b1 (__reporterror's struct exception): the error's flags in eax --
- * which function (the low 5 bits), and of what type -- its arguments the
- * doubles at edx and ebx: the struct built, the result the type says --
- * -HUGE_VAL, 0, 1, HUGE_VAL or the second argument -- and _matherr's call. */
-void reportError(win32::WinApplication* app, x86::CPU& cpu)
+/* 0x5243b1 (__reporterror's struct exception): the error's `flags` -- which function (the low 5
+ * bits), and of what type -- its arguments the doubles at `a` and `b`: the struct built in its
+ * frame, the result the type says -- -HUGE_VAL, 0, 1, HUGE_VAL or the second argument -- and
+ * _matherr's call with it.  A type none of the flags give is esi's, as the caller had it.  At its
+ * entry's depth: ebp, ecx and esi pushed, then the struct's 0x20 bytes.  What the code leaves in
+ * eax; 0 with cpu.terminate set when the game stopped. */
+reg32 reportErrorOf(win32::WinApplication* app, x86::CPU& cpu, reg32 flags, reg32 a, reg32 b)
 {
-    push(app, cpu, cpu.ebp);
-    cpu.ebp = cpu.esp;
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.esi);
-    cpu.esp -= 0x20;
-    const reg32 frame = cpu.ebp;
-    cpu.ecx = cpu.eax;
-    cpu.eax = at(app, cpu.edx);
-    put(app, frame - 0x20, cpu.eax);
-    cpu.eax = at(app, cpu.edx + 4);
-    put(app, frame - 0x1c, cpu.eax);
-    cpu.eax = at(app, cpu.ebx);
-    put(app, frame - 0x18, cpu.eax);
-    cpu.eax = at(app, cpu.ebx + 4);
-    put(app, frame - 0x14, cpu.eax);
-    const reg8 cl = reg8(cpu.ecx), ch = reg8(cpu.ecx >> 8);
-    if (cl & 0x40)
-        cpu.esi = 1;  // DOMAIN
-    else if (cl & 0x80)
-        cpu.esi = 2;  // SING
-    else if (ch & 1)
-        cpu.esi = 3;  // OVERFLOW
-    else if (ch & 8)
-        cpu.esi = 4;  // UNDERFLOW
-    else if (ch & 2)
-        cpu.esi = 6;  // PLOSS
-    else if (ch & 4)
-        cpu.esi = 5;  // TLOSS
-    cpu.eax = at(app, kMathErrorNames + (cpu.ecx & 0x1f) * 4);
-    put(app, frame - 0x28, cpu.esi);
-    put(app, frame - 0x24, cpu.eax);
-    if (ch & 0x10)
+    reg32 type = cpu.esi;
+    const GuestFrame frame(app, cpu, {cpu.ebp, cpu.ecx, cpu.esi}, 0x20);
+    const reg32 exception = frame - 0x20;
+    put(app, exception + 8, at(app, a));
+    put(app, exception + 0xc, at(app, a + 4));
+    put(app, exception + 0x10, at(app, b));
+    put(app, exception + 0x14, at(app, b + 4));
+    const reg8 low = reg8(flags), high = reg8(flags >> 8);
+    if (low & 0x40)
+        type = 1;  // DOMAIN
+    else if (low & 0x80)
+        type = 2;  // SING
+    else if (high & 1)
+        type = 3;  // OVERFLOW
+    else if (high & 8)
+        type = 4;  // UNDERFLOW
+    else if (high & 2)
+        type = 6;  // PLOSS
+    else if (high & 4)
+        type = 5;  // TLOSS
+    put(app, exception, type);
+    put(app, exception + 4, at(app, kMathErrorNames + (flags & 0x1f) * 4));
+    const reg32 result = exception + 0x18;
+    if (high & 0x10)
     {
         const x86::Float huge = loadDouble(app, kHugeVal);
         const x86::Float negative = -huge;
-        storeDouble(app, frame - 0x10, negative);
+        storeDouble(app, result, negative);
     }
-    else if (ch & 0x20)
+    else if (high & 0x20)
     {
-        cpu.ecx = 0;
-        put(app, frame - 0x10, cpu.ecx);
-        put(app, frame - 0xc, cpu.ecx);
+        put(app, result, 0);
+        put(app, result + 4, 0);
     }
-    else if (ch & 0x40)
+    else if (high & 0x40)
     {
-        cpu.edx = 0;
-        cpu.ebx = 0x3ff00000;
-        put(app, frame - 0x10, cpu.edx);
-        put(app, frame - 0xc, cpu.ebx);
+        put(app, result, 0);
+        put(app, result + 4, 0x3ff00000);
     }
-    else if (ch & 0x80)
+    else if (high & 0x80)
     {
-        cpu.eax = at(app, kHugeVal);
-        put(app, frame - 0x10, cpu.eax);
-        cpu.eax = at(app, kHugeVal + 4);
-        put(app, frame - 0xc, cpu.eax);
+        put(app, result, at(app, kHugeVal));
+        put(app, result + 4, at(app, kHugeVal + 4));
     }
     else
     {
-        cpu.eax = at(app, cpu.ebx);
-        put(app, frame - 0x10, cpu.eax);
-        cpu.eax = at(app, cpu.ebx + 4);
-        put(app, frame - 0xc, cpu.eax);
+        put(app, result, at(app, b));
+        put(app, result + 4, at(app, b + 4));
     }
-    cpu.eax = frame - 0x28;
-    if (!direct(app, cpu, callMatherr))
-        return;
-    cpu.esp = frame - 8;
-    cpu.esi = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
-    cpu.ebp = pop(app, cpu);
-    cpu.esp += 4;
+    const ReturnSlot slot(cpu);
+    return callMatherrOf(app, cpu, exception);
 }
 
-/* 0x5243a7 (__reporterror): reportError with the argument at edx for both. */
+void reportError(win32::WinApplication* app, x86::CPU& cpu)
+{
+    const reg32 eax = reportErrorOf(app, cpu, cpu.eax, cpu.edx, cpu.ebx);
+    if (cpu.terminate)
+        return;
+    returns(cpu, eax);
+}
+
+/* 0x5243a7 (__reporterror): reportError with the argument at `a` for both.  At its entry's depth:
+ * ebx pushed. */
+reg32 reporterrorOf(win32::WinApplication* app, x86::CPU& cpu, reg32 flags, reg32 a)
+{
+    const GuestFrame frame(app, cpu, {cpu.ebx}, 0);
+    const ReturnSlot slot(cpu);
+    return reportErrorOf(app, cpu, flags, a, a);
+}
+
 void reporterror(win32::WinApplication* app, x86::CPU& cpu)
 {
-    push(app, cpu, cpu.ebx);
-    cpu.ebx = cpu.edx;
-    if (!direct(app, cpu, reportError))
+    const reg32 eax = reporterrorOf(app, cpu, cpu.eax, cpu.edx);
+    if (cpu.terminate)
         return;
-    cpu.ebx = pop(app, cpu);
-    cpu.esp += 4;
+    returns(cpu, eax);
 }
 
 /* ---- The formatted ones as typed functions (native_watcom.h): the functions
@@ -12288,7 +11434,11 @@ x86::reg32 clib::free(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 bloc
 
 x86::reg32 clib::realloc(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 block, x86::reg32 size)
 {
-    return runs(app, cpu, &watcom::nrealloc, {block, size});
+    // As the runtime's code is called: its return address's slot below the caller's esp, every
+    // register but eax kept.
+    const guest::KeptRegisters kept(cpu);
+    const ReturnSlot slot(cpu);
+    return nreallocOf(app, cpu, block, size);
 }
 
 x86::reg32 clib::calloc(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 count, x86::reg32 size)
@@ -12336,7 +11486,10 @@ x86::reg32 clib::rand(win32::WinApplication* app, x86::CPU& cpu)
 
 x86::reg32 clib::getenv(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 name)
 {
-    return runs(app, cpu, &watcom::getenv, {name});
+    // As the runtime's code is called: its return address's slot below the caller's esp.
+    const guest::KeptRegisters kept(cpu);
+    cpu.esp -= 4;
+    return getenvOf(app, cpu, name);
 }
 
 x86::reg32 clib::exit(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 status)

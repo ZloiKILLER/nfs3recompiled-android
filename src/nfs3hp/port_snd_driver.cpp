@@ -1,5 +1,6 @@
 #include "port_snd_stream.h"
 #include "host_threads.h"
+#include "isnd_calls.h"
 
 #include <cstdint>
 
@@ -14,7 +15,10 @@
  * started, +5 the focus handler added, +6 the restore registered at exit, +7
  * the message done, +8 the mode, +0xc the driver's result, +0x10 the mode
  * asked for, +0x14 the rate, +0x16 the rate set; eacsnd's functions at
- * +0x1c (its check), +0x20 (its start), +0x24 (its end), +0x54 (its volume).
+ * +0x1c on (isnd.h's kDirect*), called through guest::sound (isnd_calls.h),
+ * and at +0x54 what the driver's start calls for the effect bus: the game's
+ * iSNDwinsetfx (0x502ff0), once SNDfxinitbus has put it there (setBusType,
+ * port_snd_fx.cpp), else 0.
  * The sound thread's server, its thread and its event are at 0x79c150.
  *
  * What the callers read of the registers: SNDinit's (eight of them, all in
@@ -38,14 +42,14 @@ using stream::safepoint;
 
 constexpr Var<reg32> kDriverModule{0x9ef600}, kDriverMode{0x9ef608}, kDriverResult{0x9ef60c}, kDriverModeAsked{0x9ef610};
 constexpr Var<uint8_t> kThreadStarted{0x9ef604}, kFocusAdded{0x9ef605}, kAtExit{0x9ef606}, kMessageDone{0x9ef607};
-constexpr Var<reg32> kDirectCheck{0x9ef61c}, kDirectStart{0x9ef620}, kDirectEnd{0x9ef624}, kDirectVolume{0x9ef654};
+constexpr Var<reg32> kSetFx{0x9ef654};             // what the driver's start calls for the bus: iSNDwinsetfx, or 0
 constexpr Var<reg32> kTicksHigh{0xa09b00};          // the high word of the 100 Hz tick's count
-constexpr Var<reg32> kErrorFilter{0xa09b08};        // what Error calls first (0x500c80 unless the game set one)
+constexpr Var<reg32> kSoundTick{0xa09b08};          // the 100 Hz tick the game's TickSoundLambda calls
 constexpr Table<reg32> kRestores{0xa09b28};         // what SNDrestore calls, in the order below
 constexpr int32_t kRestoreOrder[] = {3, 4, 1, 2, 0};  // 0xa09b34, 0xa09b38, 0xa09b2c, 0xa09b30, 0xa09b28
 constexpr Var<reg32> kLeaveAll{0x564420};           // what Error calls to leave the library's lock
 constexpr Var<reg32> kSoundRunning{0x5643d8};       // the game's timer: its rate, 0 when stopped
-constexpr Var<reg32> kBusType{0xa0a25c};            // the effect bus's type, which eacsnd's volume gets
+constexpr Var<reg32> kBusType{0xa0a25c};            // the effect bus's type, which kSetFx's function gets
 // The sound thread's (the game's sound server).
 constexpr Var<reg32> kServer{0x79c150}, kServerThread{0x79c154}, kServerEvent{0x79c168};
 
@@ -60,11 +64,46 @@ constexpr reg32 kCaps = 0x4e21b0, kStopAll = 0x4e9010, kMakeLock = 0x4eb2e0, kFr
 constexpr reg32 kLeaveAllFunction = 0x4e1d1c, kMessageHandler = 0x4e225c, kRestoreFunction = 0x4e26b4;
 constexpr reg32 kServerFunction = 0x4e2234, kFocusFunction = 0x4e1d48, kThreadFunction = 0x48ec40;
 constexpr reg32 kMixerEnded = 0x4ffb64;             // what the mixer's start is told to call when a channel ends
-constexpr reg32 kDefaultErrorFilter = 0x500c80;
+constexpr reg32 kDefaultTick = 0x500c80;            // port::soundTick
 
 constexpr Where kMessageError{0x549b10, 0x549f54};  // iSNDmessageinit's
 constexpr Where kInitError{0x549b10, 0x549fbc};     // iSNDinit's
 constexpr Where kVerifyError{0x54a098, 0x54a0a4};   // iSNDverifymode's
+
+/* The function at kSetFx for the bus's effect, called as the game's code
+ * calls it, from `esp` with the registers `a` (its type in eax).  What
+ * setBusType puts there, iSNDwinsetfx, as C++ (applyBusEffect): its frame
+ * where the call's return address would be, every register but eax kept as
+ * its adapter keeps them.  Anything else, and in tools/game_checks (which
+ * stands the pointer in) any, through the pointer.  False when the game
+ * stopped. */
+bool busEffect(App* app, CPU& cpu, reg32 esp, Args a)
+{
+#ifndef NFS3HP_SOUND_THROUGH_SLOTS
+    if (app->methodAt(kSetFx(app)) == &iSNDwinsetfx)
+    {
+        const reg32 esi = cpu.esi, edi = cpu.edi, ebp = cpu.ebp;
+        cpu.esp = esp;
+        cpu.eax = a.eax;
+        cpu.edx = a.edx;
+        cpu.ebx = a.ebx;
+        cpu.ecx = a.ecx;
+        const Result result = applyBusEffect(app, cpu, esp - 4, a.eax);
+        if (!result)
+            return false;
+        cpu.eax = reg32(*result);
+        cpu.ebx = a.ebx;
+        cpu.ecx = a.ecx;
+        cpu.edx = a.edx;
+        cpu.esi = esi;
+        cpu.edi = edi;
+        cpu.ebp = ebp;
+        cpu.esp = esp;
+        return true;
+    }
+#endif
+    return callGame(app, cpu, esp, kSetFx(app), a);
+}
 
 /* The cores: what the game's entries below do, with their arguments and a
  * result. */
@@ -79,7 +118,7 @@ Result unloadDriver(App* app, CPU& cpu, reg32 esp)
         Args a = residue(cpu);
         a.edx = module;
         reg32 freed;
-        if (!callWindows<kFreeLibrary, &win32::kernel32::FreeLibrary>(app, cpu, esp - 3 * 4, a, freed, module))
+        if (!callWindows<kFreeLibrary, &host::freeLibrary>(app, cpu, esp - 3 * 4, a, freed, module))
             return {};
     }
     kDriverModule.set(app, 0);
@@ -235,7 +274,7 @@ Result driverMessage(App* app, CPU& cpu, reg32 esp, reg32 window, reg32 command,
                 return {};
             kFocusAdded.set(app, 0);
         }
-        if (!callGame(app, cpu, frame, kDirectEnd(app), residue(cpu)))
+        if (!guest::soundFrom<isnd::kDirectStop, &eacsnd::stop>(app, cpu, frame, residue(cpu)))
             return {};
         kDriverResult.set(app, 0);
         return done();
@@ -247,8 +286,11 @@ Result driverMessage(App* app, CPU& cpu, reg32 esp, reg32 window, reg32 command,
             return {};
     }
     const reg32 mode = kDriverModeAsked(app);
-    if (!callGame(app, cpu, frame, kDirectCheck(app), {cpu.eax, cpu.edx, cpu.ebx, cpu.ecx}, {window}, eax))
+    const std::optional<reg32> caps =
+        guest::soundFrom<isnd::kDirectCaps, &eacsnd::caps>(app, cpu, frame, {cpu.eax, cpu.edx, cpu.ebx, cpu.ecx}, window);
+    if (!caps)
         return {};
+    eax = *caps;
     if (int32_t(eax) <= 0)
     {
         kDriverResult.set(app, eax);
@@ -286,11 +328,13 @@ Result driverMessage(App* app, CPU& cpu, reg32 esp, reg32 window, reg32 command,
     // The mixer's start, with the mode and what the mixer calls when a channel ends.
     if (!callGame(app, cpu, frame, kMixInit, {kDriverMode(app), kMixerEnded, mode, cpu.ecx}))
         return {};
-    if (kDirectVolume(app) != 0
-        && !callGame(app, cpu, frame, kDirectVolume(app), {kBusType(app), cpu.edx, mode, cpu.ecx}))
+    if (kSetFx(app) != 0 && !busEffect(app, cpu, frame, {kBusType(app), cpu.edx, mode, cpu.ecx}))
         return {};
-    if (!callGame(app, cpu, frame, kDirectStart(app), {cpu.eax, cpu.edx, cpu.ebx, cpu.ecx}, {mode, window}, eax))
+    const std::optional<reg32> started = guest::soundFrom<isnd::kDirectStart, &eacsnd::start>(
+        app, cpu, frame, {cpu.eax, cpu.edx, cpu.ebx, cpu.ecx}, mode, window);
+    if (!started)
         return {};
+    eax = *started;
     kDriverResult.set(app, eax);
     if (int32_t(kDriverResult(app)) < 0)
         return done();
@@ -405,8 +449,8 @@ Result startLibrary(App* app, CPU& cpu, reg32 esp, reg32 mode, reg32 second)
         return 0;
     if (kVoicesUsed(app) == 0)
         kVoicesUsed.set(app, 0x10);
-    if (kErrorFilter(app) == 0)
-        kErrorFilter.set(app, kDefaultErrorFilter);
+    if (kSoundTick(app) == 0)
+        kSoundTick.set(app, kDefaultTick);
     reg32 lock;
     if (!callGame(app, cpu, frame, kMakeLock, residue(cpu), {}, lock))
         return {};

@@ -2,7 +2,7 @@
 #include "native_guest.h"
 #include "native_thrash.h"
 #include "native_windows.h"
-#include <winapi/kernel32.h>
+#include "host_system.h"
 
 /* Watcom's near heap, as the runtime's code keeps it, on its variables in
  * guest memory (WatcomHeap): the game's -- whose functions native_watcom.cpp
@@ -75,8 +75,8 @@ template <typename... Words>
 bool virtualAlloc(win32::WinApplication* app, x86::CPU& cpu, const WatcomHeap& h, Words... words)
 {
     const auto done = h.virtualAlloc == kGameVirtualAlloc
-        ? guest::windows<kGameVirtualAlloc, &win32::kernel32::VirtualAlloc>(app, cpu, words...)
-        : guest::windows<kVoodoo2aVirtualAlloc, &win32::kernel32::VirtualAlloc>(app, cpu, words...);
+        ? guest::windows<kGameVirtualAlloc, &host::virtualAlloc>(app, cpu, words...)
+        : guest::windows<kVoodoo2aVirtualAlloc, &host::virtualAlloc>(app, cpu, words...);
     return done.has_value();
 }
 
@@ -84,8 +84,8 @@ template <typename... Words>
 bool virtualFree(win32::WinApplication* app, x86::CPU& cpu, const WatcomHeap& h, Words... words)
 {
     const auto done = h.virtualFree == kGameVirtualFree
-        ? guest::windows<kGameVirtualFree, &win32::kernel32::VirtualFree>(app, cpu, words...)
-        : guest::windows<kVoodoo2aVirtualFree, &win32::kernel32::VirtualFree>(app, cpu, words...);
+        ? guest::windows<kGameVirtualFree, &host::virtualFree>(app, cpu, words...)
+        : guest::windows<kVoodoo2aVirtualFree, &host::virtualFree>(app, cpu, words...);
     return done.has_value();
 }
 

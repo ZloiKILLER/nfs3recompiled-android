@@ -10,7 +10,8 @@
 #include "port_snd_stream_calls.h"
 #include "native_windows.h"
 #include "host_threads.h"
-#include <winapi/kernel32.h>
+#include <lib/winapp.h>
+#include <winapi/types.h>
 
 #include <initializer_list>
 #include <optional>

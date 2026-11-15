@@ -6,7 +6,7 @@
 #include "native_vertices.h"
 #include "native_windows.h"
 #include "host_threads.h"
-#include <winapi/kernel32.h>
+#include "host_system.h"
 
 #include <cstdint>
 #include <cstring>
@@ -291,13 +291,13 @@ std::optional<reg32> setUpThreads(App* app, CPU& cpu)
     if (!id)
         return std::nullopt;
     put(app, kMainThreadId, *id);
-    const auto target = windows<kGetCurrentProcess, &win32::kernel32::GetCurrentProcess>(app, cpu);
+    const auto target = windows<kGetCurrentProcess, &host::currentProcess>(app, cpu);
     if (!target)
         return std::nullopt;
     const auto thread = windows<kGetCurrentThread, &host::currentThread>(app, cpu);
     if (!thread)
         return std::nullopt;
-    const auto source = windows<kGetCurrentProcess, &win32::kernel32::GetCurrentProcess>(app, cpu);
+    const auto source = windows<kGetCurrentProcess, &host::currentProcess>(app, cpu);
     if (!source)
         return std::nullopt;
     if (!windows<kDuplicateHandle, &host::duplicateThread>(app, cpu, *source, *thread, *target, kMainThread, 0,
@@ -423,7 +423,7 @@ std::optional<reg32> endThread(App* app, CPU& cpu, reg32 thread, reg32 stale)
     }
     if (!windows<kTerminateThread, &host::terminateThread>(app, cpu, handle, 0))
         return std::nullopt;
-    return windows<kCloseHandle, &win32::kernel32::CloseHandle>(app, cpu, handle);
+    return windows<kCloseHandle, &host::closeHandle>(app, cpu, handle);
 }
 
 /* `ms` slept (SleepEx, alertable), eax the ms as the code has them there:
@@ -499,12 +499,12 @@ std::optional<reg32> eventPulsed(App* app, CPU& cpu, reg32 event)
 
 std::optional<reg32> handleClosed(App* app, CPU& cpu, reg32 handle)
 {
-    return windowsKept<kCloseHandle, &win32::kernel32::CloseHandle>(app, cpu, handle);
+    return windowsKept<kCloseHandle, &host::closeHandle>(app, cpu, handle);
 }
 
 std::optional<reg32> lastErrorSet(App* app, CPU& cpu, reg32 code)
 {
-    return windowsKept<kSetLastError, &win32::kernel32::SetLastError>(app, cpu, code);
+    return windowsKept<kSetLastError, &host::setLastError>(app, cpu, code);
 }
 
 std::optional<reg32> lockEntered(App* app, CPU& cpu, reg32 lock)
@@ -572,7 +572,7 @@ std::optional<reg32> eventSetAndClosed(App* app, CPU& cpu, reg32 event)
     const Kept kept(cpu, kKeepEcx | kKeepEdx);
     if (!windows<kSetEvent, &host::setEvent>(app, cpu, event))
         return std::nullopt;
-    return windows<kCloseHandle, &win32::kernel32::CloseHandle>(app, cpu, event);
+    return windows<kCloseHandle, &host::closeHandle>(app, cpu, event);
 }
 
 /* EA's stub: the error's code (0x9ef5bc's low word, which nothing sets) --
@@ -866,7 +866,7 @@ std::optional<reg32> physicalBytes(App* app, CPU& cpu)
     const GuestFrame frame(cpu, 8, kMemoryStatusBytes);
     const reg32 status = frame - kMemoryStatusBytes;
     put(app, status, kMemoryStatusBytes);
-    if (!windows<kGlobalMemoryStatus, &win32::kernel32::GlobalMemoryStatus>(app, cpu, status))
+    if (!windows<kGlobalMemoryStatus, &host::memoryStatus>(app, cpu, status))
         return std::nullopt;
     return at(app, status + kTotalPhys);
 }
@@ -1172,7 +1172,7 @@ void setLastError(win32::WinApplication* app, x86::CPU& cpu)
 /* 0x4dfcf0: Windows' last error. */
 void lastError(win32::WinApplication* app, x86::CPU& cpu)
 {
-    const auto result = windowsKept<kGetLastError, &win32::kernel32::GetLastError>(app, cpu);
+    const auto result = windowsKept<kGetLastError, &host::lastError>(app, cpu);
     if (!result)
         return;
     cpu.eax = *result;
@@ -1302,7 +1302,7 @@ std::optional<reg32> eventClosed(App* app, CPU& cpu, reg32 event)
 
 std::optional<reg32> lastErrorOf(App* app, CPU& cpu)
 {
-    return windowsKept<kGetLastError, &win32::kernel32::GetLastError>(app, cpu);
+    return windowsKept<kGetLastError, &host::lastError>(app, cpu);
 }
 
 }  // namespace ea

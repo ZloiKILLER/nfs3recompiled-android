@@ -7,8 +7,7 @@
 
 /* native_ea_net.cpp's typed functions that other files call as C++ (guest::direct), and how the
  * game's code calls each by address (ByAddress, for the check's stand-ins).  Each may call the
- * game's other functions by address on `cpu`, and is false or nullopt when the game stopped in one.
- * The Huffman unpacker (0x50ed50) is not one: it is still its code, register by register. */
+ * game's other functions by address on `cpu`, and is false or nullopt when the game stopped in one. */
 namespace nfs3hp
 {
 namespace ea

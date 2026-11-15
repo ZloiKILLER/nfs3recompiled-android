@@ -89,3 +89,79 @@ class Reader:
         """How many of eax, edx, ebx, ecx (in that order) the function takes."""
         reads = self.entry_reads(entry)
         return max([ORDER.index(r) + 1 for r in reads if r in ORDER] or [0])
+
+    def calls_to(self):
+        """Every direct call in the code (a linear sweep of it, a byte on where it decodes none):
+        its target and the address after it."""
+        if not hasattr(self, "_calls"):
+            self._calls = {}
+            start, end = 0x401000, 0x534000
+            offset, a = start - self.base, start
+            while a < end:
+                decoded = False
+                for i in self.md.disasm(self.image[offset + (a - start):end - self.base], a):
+                    decoded = True
+                    if i.mnemonic == "call" and i.operands and i.operands[0].type == X.X86_OP_IMM:
+                        self._calls.setdefault(i.operands[0].imm, []).append(i.address + i.size)
+                    a = i.address + i.size
+                if not decoded:
+                    a += 1
+        return self._calls
+
+    def eax_read_after(self, at, limit=200):
+        """Whether the code from `at` on -- where a call came back -- reads what eax was before it
+        writes it all: an instruction reading it, a call to a function taking it, a return (handed
+        on) or a jump or call through a register (unknown)."""
+        work, seen = [(at, frozenset(), 0)], set()
+        eax = PARTS["eax"]
+        while work:
+            a, dead, n = work.pop()
+            while (a, dead) not in seen and n <= limit:
+                seen.add((a, dead))
+                if eax <= dead:
+                    break
+                i = self.at(a)
+                if i is None:
+                    return True
+                n += 1
+                if i.mnemonic == "call":
+                    if not (i.operands and i.operands[0].type == X.X86_OP_IMM):
+                        return True
+                    if self.register_arguments(i.operands[0].imm) >= 1:
+                        return True
+                    dead = dead | eax
+                    a += i.size
+                    continue
+                rd, wr = self.access(i)
+                if rd & eax - dead:
+                    return True
+                dead = dead | (wr & eax)
+                if i.mnemonic.startswith("ret"):
+                    return True
+                if i.mnemonic == "jmp":
+                    if i.operands[0].type == X.X86_OP_IMM:
+                        a = i.operands[0].imm
+                        continue
+                    return True
+                if i.mnemonic.startswith("j") and i.operands[0].type == X.X86_OP_IMM:
+                    work.append((i.operands[0].imm, dead, n))
+                a += i.size
+        return False
+
+    def result_read(self, entry):
+        """Whether a caller of the function reads what it leaves in eax: true unless every call of it
+        is a direct one whose code after it writes eax before reading it -- and for one whose
+        address is anywhere in the image as a word (a pointer to it, called who knows how)."""
+        if not hasattr(self, "_words"):
+            self._words = set()
+            image = bytes(self.image)
+            for k in range(0, len(image) - 3):
+                w = image[k] | image[k + 1] << 8 | image[k + 2] << 16 | image[k + 3] << 24
+                if 0x401000 <= w < 0x534000:
+                    self._words.add(w)
+        if entry in self._words:
+            return True
+        sites = self.calls_to().get(entry)
+        if not sites:
+            return True
+        return any(self.eax_read_after(s) for s in sites)

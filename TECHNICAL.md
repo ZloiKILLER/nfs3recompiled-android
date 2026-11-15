@@ -393,6 +393,23 @@ are always at their best quality and the detail at the game's highest. A movie s
 drops a frame that is late against its sound; that is keeping them together, not the
 processor's speed.
 
+## Windows, on the host
+
+The game asks Windows for files, threads, a window, DirectDraw, sound, input and
+the network through its imports. None of them is a Windows of the port's any more:
+each call site in the native code calls the port's host code in the import's
+place (`guest::windows<slot, &host::fn>`, `src/nfs3hp/native_windows.h`), with the
+words the game's code pushes for it, and gets back what Windows gave in eax. The
+host code is in `src/nfs3hp/host_*.cpp` on `src/lib`: `host_files` (files,
+directories, drives, mappings), `host_system` (the process, memory, modules,
+environment, console, code pages, errors, the registry, the version resource and
+what was left of user32, ole32 and shell32), `host_threads`, `host_window`,
+`host_video` (DirectDraw) and `host_net`. No import is registered for a call by
+address any more (`disasm/application.py` leaves a comment where one was); in
+`tools/game_checks` the calls still go through the imports' slots, to the checks'
+stand-ins. `src/lib/winapi` keeps only the types, COM's objects and the wrapper
+the stdcall adapters are made with.
+
 ## Native code
 
 The game runs on a virtual x86 CPU, and the parts that cost the most no longer
@@ -733,6 +750,11 @@ the game thread's time. They are native whole, with no generated code behind
 them in the game: their checks are on the desktop, against the game's code
 made afresh with the port's changes they carry
 (`python tools/game_checks/vertices/run.py`, and `render/run.py` beside it).
+Those two compare as `tools/game_checks` does: a call out by the register
+arguments its callee's code reads (`entry_regs.py`) and its stack words, and
+at the end every register but the function's own arguments, and eax where a
+caller reads it after the call -- not the arithmetic flags, which no caller
+reads after a call.
 The loading natives keep their check
 in the game (`NFS_NATIVE_CHECK`).
 

@@ -27,7 +27,7 @@
 #include "port_snd_stream_calls.h"
 #include <nfs3hp.h>
 #include <fpu.h>
-#include <winapi/kernel32.h>
+#include "host_system.h"
 #include "host_net.h"
 #include <cstdint>
 #include <cstring>
@@ -2051,7 +2051,7 @@ reg32 frontend::neta::rasLoad(App* app, CPU& cpu)
     constexpr reg32 kLoadLibraryA = 0x53458c, kGetProcAddress = 0x534558, kRasDll = 0x7a05c0;
     if (guest::direct<0x49fb10, rasLoaded>(app, cpu) != 0)
         return 1;
-    const reg32 library = windows<kLoadLibraryA, &win32::kernel32::LoadLibraryA>(guest, cpu, 0x53c71c);
+    const reg32 library = windows<kLoadLibraryA, &host::loadLibrary>(guest, cpu, 0x53c71c);
     guest.setDword(kRasDll, library);
     if (library == 0)
         return library;
@@ -2060,7 +2060,7 @@ reg32 frontend::neta::rasLoad(App* app, CPU& cpu)
         { 0x53c758, 0x7a05d4 }, { 0x53c770, 0x7a05d8 }, { 0x53c77c, 0x7a05dc },
     };
     for (const auto& function : kFunctions)
-        guest.setDword(function.place, windows<kGetProcAddress, &win32::kernel32::GetProcAddress>(guest, cpu, guest.dword(kRasDll), function.name));
+        guest.setDword(function.place, windows<kGetProcAddress, &host::procAddress>(guest, cpu, guest.dword(kRasDll), function.name));
     if (guest::direct<0x49fb10, rasLoaded>(app, cpu) != 0)
         return 1;
     guest::direct<0x49fc50, rasFree>(app, cpu);
@@ -3572,7 +3572,7 @@ reg32 frontend::neta::rasFree(App* app, CPU& cpu)
     const reg32 library = guest.dword(kRasDll);
     if (library == 0)
         return guest.eax();
-    windows<kFreeLibrary, &win32::kernel32::FreeLibrary>(guest, cpu, library);
+    windows<kFreeLibrary, &host::freeLibrary>(guest, cpu, library);
     return guest.call(kFillZero, args({ kRasDll, 0x24 }));
 }
 

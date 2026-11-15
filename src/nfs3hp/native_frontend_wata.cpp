@@ -28,9 +28,8 @@
 #include "host_window.h"
 #include <nfs3hp.h>
 #include <fpu.h>
-#include <winapi/advapi32.h>
-#include <winapi/kernel32.h>
-#include <winapi/user32.h>
+#include "host_files.h"
+#include "host_system.h"
 struct SDL_AtomicInt;
 struct SDL_Semaphore;
 #include <lib/thread.h>
@@ -707,13 +706,13 @@ reg32 frontend::wata::npsLoadDll(App* app, CPU& cpu, reg32 path, reg32 type)
         { 0x53d9e8, 0x7a21c4 }, { 0x53d9fc, 0x7a21b0 }, { 0x53da14, 0x7a2170 }, { 0x53da2c, 0x7a21bc }, { 0x53da44, 0x7a21a0 },
         { 0x53da58, 0x7a216c }, { 0x53da70, 0x7a2178 }, { 0x53da80, 0x7a2180 },
     };
-    const reg32 module = callImport<kLoadLibrary, &win32::kernel32::LoadLibraryA>(guest, cpu, path);
+    const reg32 module = callImport<kLoadLibrary, &host::loadLibrary>(guest, cpu, path);
     if (module == 0)
         return 0;
     if (type != 0)
         return 0xffffffffu;
     for (const Procedure& procedure : kProcedures)
-        guest.setDword(procedure.slot, callImport<kGetProcAddress, &win32::kernel32::GetProcAddress>(guest, cpu, module, procedure.name));
+        guest.setDword(procedure.slot, callImport<kGetProcAddress, &host::procAddress>(guest, cpu, module, procedure.name));
     return module;
 }
 
@@ -733,12 +732,12 @@ reg32 frontend::wata::npsDevelopMode(App* app, CPU& cpu)
     constexpr reg32 kDevelopValue = 0x53daa8;
     static constexpr reg32 kYes[] = { 0x53dab8, 0x53dabc, 0x53dac0, 0x53dac4, 0x53dac8 };
     const reg32 value = guest.frame(), key = value + 0x40, size = value + 0x44;
-    if (callImport<kRegOpenKeyEx, &win32::advapi32::RegOpenKeyExA>(guest, cpu, kHklm, kNpsDllKey, 0, kKeyAllAccess, key) != 0)
+    if (callImport<kRegOpenKeyEx, &host::registryOpen>(guest, cpu, kHklm, kNpsDllKey, 0, kKeyAllAccess, key) != 0)
         return 0;
     guest.setDword(size, 0x40);
-    if (callImport<kRegQueryValueEx, &win32::advapi32::RegQueryValueExA>(guest, cpu, guest.dword(key), kDevelopValue, 0, 0, value, size) != 0)
+    if (callImport<kRegQueryValueEx, &host::registryQuery>(guest, cpu, guest.dword(key), kDevelopValue, 0, 0, value, size) != 0)
         return 0;
-    callImport<kRegCloseKey, &win32::advapi32::RegCloseKey>(guest, cpu, guest.dword(key));
+    callImport<kRegCloseKey, &host::registryClose>(guest, cpu, guest.dword(key));
     for (const reg32 yes : kYes)
         if (fe::direct<kStrcmp, watcom::clib::strcmp>(guest.app(), guest.cpu(), value, yes) == 0)
             return 1;
@@ -759,7 +758,7 @@ reg32 frontend::wata::npsDllPath(App* app, CPU& cpu, reg32 type)
     const fe::Frame frame(guest, cpu, 6 * 4 + 0x108);
     constexpr reg32 kDevelopSuffix = 0x53dacc, kUsingFormat = 0x53dad8;
     const reg32 value = guest.frame(), note = value + 0x80, key = value + 0x100, size = value + 0x104;
-    if (callImport<kRegOpenKeyEx, &win32::advapi32::RegOpenKeyExA>(guest, cpu, kHklm, kNpsDllKey, 0, kKeyAllAccess, key) != 0)
+    if (callImport<kRegOpenKeyEx, &host::registryOpen>(guest, cpu, kHklm, kNpsDllKey, 0, kKeyAllAccess, key) != 0)
         return 0;
     guest.setDword(size, 0x80);
     guest.copyString(value, guest.dword(kDllNames + 4 * type));
@@ -767,17 +766,17 @@ reg32 frontend::wata::npsDllPath(App* app, CPU& cpu, reg32 type)
     {
         appendString(guest, value, kDevelopSuffix);
         fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.cpu(), note, kUsingFormat, guest::Words{value});
-        callImport<kOutputDebugString, &win32::kernel32::OutputDebugStringA>(guest, cpu, note);
+        callImport<kOutputDebugString, &host::debugString>(guest, cpu, note);
     }
-    if (callImport<kRegQueryValueEx, &win32::advapi32::RegQueryValueExA>(guest, cpu, guest.dword(key), value, 0, 0, kDllPath, size) != 0)
+    if (callImport<kRegQueryValueEx, &host::registryQuery>(guest, cpu, guest.dword(key), value, 0, 0, kDllPath, size) != 0)
     {
-        callImport<kRegCloseKey, &win32::advapi32::RegCloseKey>(guest, cpu, guest.dword(key));
+        callImport<kRegCloseKey, &host::registryClose>(guest, cpu, guest.dword(key));
         return 0;
     }
     for (reg32 at = kDllPath; guest.byte(at) != 0; ++at)
         if (guest.byte(at) == '/')
             guest.setByte(at, '\\');
-    callImport<kRegCloseKey, &win32::advapi32::RegCloseKey>(guest, cpu, guest.dword(key));
+    callImport<kRegCloseKey, &host::registryClose>(guest, cpu, guest.dword(key));
     return 1;
 }
 
@@ -806,14 +805,14 @@ reg32 frontend::wata::npsEnsureDll(App* app, CPU& cpu, reg32 type)
             guest.setDword(kDllLoaded + 4 * type, guest.dword(kDllLoaded + 4 * type) + 1);
             return 1;
         }
-        const reg32 error = callImport<kGetLastError, &win32::kernel32::GetLastError>(guest, cpu);
+        const reg32 error = callImport<kGetLastError, &host::lastError>(guest, cpu);
         fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.cpu(), failedText, kLoadFailedFormat, guest::Words{type, guest.dword(kDllNames + 4 * type), kDllPath, error});
-        callImport<kMessageBox, &win32::user32::MessageBoxA>(guest, cpu, 0, failedText, kLoadFailedTitle, 0);
-        callImport<kOutputDebugString, &win32::kernel32::OutputDebugStringA>(guest, cpu, failedText);
+        callImport<kMessageBox, &host::messageBox>(guest, cpu, 0, failedText, kLoadFailedTitle, 0);
+        callImport<kOutputDebugString, &host::debugString>(guest, cpu, failedText);
         return 0;
     }
     fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.cpu(), noPathText, kNoPathFormat, guest::Words{type, guest.dword(kDllNames + 4 * type)});
-    callImport<kMessageBox, &win32::user32::MessageBoxA>(guest, cpu, 0, noPathText, kNoPathTitle, 0);
+    callImport<kMessageBox, &host::messageBox>(guest, cpu, 0, noPathText, kNoPathTitle, 0);
     return 0;
 }
 
@@ -880,7 +879,7 @@ reg32 frontend::wata::findFirstFile(App* app, CPU& cpu, reg32 pattern)
     constexpr reg32 kFoundName = 0x2c, kPathMost = 0x104;
     const reg32 data = guest.frame();
     if (guest.dword(kHandle) != 0xffffffffu)
-        callImport<kFindClose, &win32::kernel32::FindClose>(guest, cpu, guest.dword(kHandle));
+        callImport<kFindClose, &host::findClose>(guest, cpu, guest.dword(kHandle));
     fe::direct<kStrncpy, watcom::clib::strncpy>(guest.app(), guest.cpu(), kPattern, pattern, kPathMost);
     sreg32 folder = sreg32(guest.length(kPattern));
     while (folder > 0 && guest.byte(kPattern + folder) != '\\' && guest.byte(kPattern + folder) != ':')
@@ -888,7 +887,7 @@ reg32 frontend::wata::findFirstFile(App* app, CPU& cpu, reg32 pattern)
     if (folder != 0)
         ++folder;
     guest.setDword(kPatternFolder, reg32(folder));
-    const reg32 handle = callImport<kFindFirstFile, &win32::kernel32::FindFirstFileA>(guest, cpu, kPattern, data);
+    const reg32 handle = callImport<kFindFirstFile, &host::findFirstFile>(guest, cpu, kPattern, data);
     guest.setDword(kHandle, handle);
     if (handle == 0xffffffffu)
         return 0;
@@ -896,7 +895,7 @@ reg32 frontend::wata::findFirstFile(App* app, CPU& cpu, reg32 pattern)
     guest.setByte(kFound + kept, 0);
     fe::direct<kStrncpy, watcom::clib::strncpy>(guest.app(), guest.cpu(), kFound, kPattern, kept);
     fe::direct<kStrncat, watcom::clib::strncat>(guest.app(), guest.cpu(), kFound, data + kFoundName, kPathMost);
-    const reg32 attributes = callImport<kGetFileAttributes, &win32::kernel32::GetFileAttributesA>(guest, cpu, kFound);
+    const reg32 attributes = callImport<kGetFileAttributes, &host::fileAttributes>(guest, cpu, kFound);
     if (attributes != 0xffffffffu && (attributes & kFileAttributeDirectory) == 0)
         return kFound;
     return guest::direct<0x4f0280, findNextFile>(app, cpu);
@@ -921,9 +920,9 @@ reg32 frontend::wata::findNextFile(App* app, CPU& cpu)
         return 0;
     for (;;)
     {
-        if (callImport<kFindNextFile, &win32::kernel32::FindNextFileA>(guest, cpu, guest.dword(kHandle), data) == 0)
+        if (callImport<kFindNextFile, &host::findNextFile>(guest, cpu, guest.dword(kHandle), data) == 0)
         {
-            callImport<kFindClose, &win32::kernel32::FindClose>(guest, cpu, guest.dword(kHandle));
+            callImport<kFindClose, &host::findClose>(guest, cpu, guest.dword(kHandle));
             guest.setDword(kHandle, 0xffffffffu);
             return 0;
         }
@@ -931,7 +930,7 @@ reg32 frontend::wata::findNextFile(App* app, CPU& cpu)
         guest.setByte(kFound + kept, 0);
         fe::direct<kStrncpy, watcom::clib::strncpy>(guest.app(), guest.cpu(), kFound, kPattern, kept);
         fe::direct<kStrncat, watcom::clib::strncat>(guest.app(), guest.cpu(), kFound, data + kFoundName, kPathMost);
-        const reg32 attributes = callImport<kGetFileAttributes, &win32::kernel32::GetFileAttributesA>(guest, cpu, kFound);
+        const reg32 attributes = callImport<kGetFileAttributes, &host::fileAttributes>(guest, cpu, kFound);
         if (attributes != 0xffffffffu && (attributes & kFileAttributeDirectory) == 0)
             return kFound;
     }
@@ -1286,13 +1285,13 @@ reg32 frontend::wata::commandLineRead(App* app, CPU& cpu, reg32 count, reg32 wor
             guest.setByte(spaces + pad, 0);
             fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.cpu(), kUsage + guest.length(kUsage), 0x53d728, guest::Words{name, spaces, guest.dword(kFlagHelps + 4 * i)});
         }
-        callImport<kMessageBox, &win32::user32::MessageBoxA>(guest, cpu, 0, kUsage, understood ? 0x53d748u : 0x53d734u, 0);
+        callImport<kMessageBox, &host::messageBox>(guest, cpu, 0, kUsage, understood ? 0x53d748u : 0x53d734u, 0);
         return 0;
     }
     if (guest.dword(kPort) != 0
         && (guest.length(kServerName) == 0 || guest.length(kCode) == 0 || guest.dword(kNeeded) == 0))
     {
-        callImport<kMessageBox, &win32::user32::MessageBoxA>(guest, cpu, 0, 0x53d764, 0x53d750, 0);
+        callImport<kMessageBox, &host::messageBox>(guest, cpu, 0, 0x53d764, 0x53d750, 0);
         return 0;
     }
     return 1;
@@ -1317,7 +1316,7 @@ reg32 frontend::wata::discCheck(App* app, CPU& cpu)
     const auto refuse = [&](reg32 texts, reg32 local) {
         copyDwords(guest, local, texts, 6);
         const reg32 text = guest.dword(local + 4 * guest.dword(kLanguage));
-        callImport<kMessageBox, &win32::user32::MessageBoxA>(guest, cpu, 0, text, kTitle, kBoxWarning);
+        callImport<kMessageBox, &host::messageBox>(guest, cpu, 0, text, kTitle, kBoxWarning);
         fe::direct<kExit, watcom::clib::exit>(guest.app(), guest.cpu(), 0);
     };
     copyDwords(guest, pattern, kPathPattern, 2);
@@ -1358,7 +1357,7 @@ reg32 frontend::wata::driveIsCd(App* app, CPU& cpu, reg32 drive)
     const reg32 root = guest.frame();
     guest.copyString(root, kRootA);
     guest.setByte(root, std::uint8_t(guest.byte(root) + drive));
-    return callImport<kGetDriveType, &win32::kernel32::GetDriveTypeA>(guest, cpu, root) == kDriveCdrom ? 1 : 0;
+    return callImport<kGetDriveType, &host::driveType>(guest, cpu, root) == kDriveCdrom ? 1 : 0;
 }
 
 void frontend::driveIsCd(win32::WinApplication* app, x86::CPU& cpu)

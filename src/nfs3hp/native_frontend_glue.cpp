@@ -10,7 +10,8 @@
 #include "port_dialogs.h"
 #include "port_sound_music.h"
 #include "port_text.h"
-#include <winapi/kernel32.h>
+#include <lib/winapp.h>
+#include <winapi/types.h>
 
 #include <cstdint>
 #include <initializer_list>

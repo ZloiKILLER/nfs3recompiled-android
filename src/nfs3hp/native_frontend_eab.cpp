@@ -27,8 +27,7 @@ struct SDL_AtomicInt;
 struct SDL_Semaphore;
 #include <lib/thread.h>
 #include <nfs3hp.h>
-#include <winapi/advapi32.h>
-#include <winapi/kernel32.h>
+#include "host_system.h"
 #include "host_net.h"
 #include <cstdint>
 #include <initializer_list>
@@ -509,7 +508,7 @@ x86::reg32 frontend::eab::ddrawSetDisplayMode(App* app, CPU& cpu, reg32 given, r
     }
     g.setDword(display + kBits, g.dword(description + 0x54));
     g.setDword(display + kModeNow, mode);
-    windows<0x534468, &win32::advapi32::RegFlushKey>(g, cpu, 0x80000000);
+    windows<0x534468, &host::registryFlush>(g, cpu, 0x80000000);
     const reg32 bitsGot = g.dword(display + kBits);
     g.leaveEdx(bitsGot);
     report(g, 2, 0x54bf4c, { wide, tall, bits, g.dword(display + kWidth), g.dword(display + kHeight), bitsGot });
@@ -2313,6 +2312,19 @@ reg32 lineLog(Guest& g, reg32 text)
     return g.cpu().eax = *fe::direct<0x501050, ea::reportedAt>(g.app(), g.cpu(), kLineLog, 1u, text, guest::Words({}));
 }
 
+/* wsprintfA, through its slot (cdecl: the caller's words stay pushed): the port's host code in the
+ * game, the slot's stand-in in the checks. */
+void lineFormat(Guest& g, const Arguments& arguments)
+{
+#if defined(NFS_GAME_CHECKS) || defined(NFS_FRONTEND_CHECKS)
+    g.call(g.dword(kLineFormat), arguments);
+#else
+    // The port's wsprintfA formats nothing (it asserts), so the words need not be pushed.
+    static_cast<void>(arguments);
+    nfs3hp::host::formatString(g.app(), g.cpu());
+#endif
+}
+
 reg32 lineFinish(Guest& g, reg32 result)
 {
     g.setDword(kLineResult, result);
@@ -2334,9 +2346,7 @@ x86::reg32 frontend::eab::lineCallback(App* app, CPU& cpu, reg32 device, reg32 w
     g.leaveEbx(p1);
     g.leaveEcx(what);
     g.leaveEdx(what - 1);
-    const auto format = [&](reg32 text) {
-        g.call(g.dword(kLineFormat), args({}, { kLineText, text, p1, p2, p3 }));
-    };
+    const auto format = [&](reg32 text) { lineFormat(g, args({}, { kLineText, text, p1, p2, p3 })); };
     switch (what)
     {
     case kNewCall:
@@ -2387,7 +2397,7 @@ x86::reg32 frontend::eab::lineCallback(App* app, CPU& cpu, reg32 device, reg32 w
         }
     }
     default:
-        g.call(g.dword(kLineFormat), args({}, { kLineText, 0x54da00, what, p1, p2, p3 }));
+        lineFormat(g, args({}, { kLineText, 0x54da00, what, p1, p2, p3 }));
         g.leaveEdx(kLineText);
         return lineLog(g, kLineText);
     }
@@ -2435,7 +2445,7 @@ x86::reg32 frontend::eab::lineShutdown(App* app, CPU& cpu)
     else
     {
         const reg32 handle = g.dword(0x9f4da8);
-        if (handle != 0 && windows<0x534488, &win32::kernel32::CloseHandle>(g, cpu, handle) == 0)
+        if (handle != 0 && windows<0x534488, &host::closeHandle>(g, cpu, handle) == 0)
             lineLog(g, 0x54da50);
     }
     const reg32 buffer = g.dword(0x9f4d88);

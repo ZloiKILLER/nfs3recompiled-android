@@ -13,7 +13,8 @@ remainder the dividend), which the natives do too; the desktop would fault.
 
 game_functions.cpp: the functions, the stand-ins (dynamic_call) and the tests'
 table; nfs3hp.h: what they and native_render.cpp need of the port; tables.inc:
-THRASH's slots and their stdcall sizes, and the ret N of each function called;
+THRASH's slots and their stdcall sizes, the ret N of each function called, and
+the register arguments (entry_regs.py) of each function called and tested;
 image.bin: nfs3.exe's sections, to start memory from."""
 import io
 import re
@@ -28,6 +29,7 @@ from disasm import disassembler  # noqa: E402
 from disasm.codegen import fpu as fpu_codegen  # noqa: E402
 import disassemble_nfs3hp as nfs3hp  # noqa: E402
 from tools.game_checks.generate import PORT_CHANGES  # noqa: E402
+from tools.game_checks.entry_regs import Reader as ArgumentReader  # noqa: E402
 
 # What the port's changes call (nfs3hp_main.cpp's), rcheck.cpp's stand-ins.
 PORT_DECLARATIONS = """\
@@ -140,6 +142,16 @@ def main():
                 if max(rets, default=0):
                     f.write("    {0x%x, %d},\n" % (address, max(rets)))
         f.write("    {0, 0},\n};\n")
+        # Which of eax, edx, ebx and ecx each takes, by its own code (entry_regs.py): what a call
+        # to it is compared by, and what the check does not compare after a tested one, as
+        # game_checks.cpp has them -- and whether a caller of it reads what it leaves in eax.
+        arguments = ArgumentReader()
+        f.write("/* Each called and tested function's register arguments, and whether its eax is read. */\n"
+                "const struct { unsigned address, registers; bool result; } kArguments[] = {\n")
+        for address in sorted(set(called) | set(tested)):
+            f.write("    {0x%x, %d, %s},\n" % (address, arguments.register_arguments(address),
+                                             "true" if arguments.result_read(address) else "false"))
+        f.write("    {0, 0, true},\n};\n")
 
     # The image: nfs3.exe's sections where they load.
     pe = struct.unpack_from("<I", exe, 0x3c)[0]

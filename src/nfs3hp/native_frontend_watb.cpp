@@ -11,7 +11,8 @@
 #include "native_windows.h"
 #include "host_threads.h"
 #include <nfs3hp.h>
-#include <winapi/kernel32.h>
+#include <lib/winapp.h>
+#include <winapi/types.h>
 
 #include <optional>
 #include <type_traits>

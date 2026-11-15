@@ -5,7 +5,8 @@
 #include "native_watcom.h"
 #include "native_windows.h"
 #include "host_threads.h"
-#include <winapi/kernel32.h>
+#include <lib/winapp.h>
+#include <winapi/types.h>
 
 #include <cstdint>
 #include <cstring>

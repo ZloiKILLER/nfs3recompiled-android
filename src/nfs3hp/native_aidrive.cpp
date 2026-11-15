@@ -311,28 +311,29 @@ std::optional<Float> dotLeavingEax(App* app, CPU& cpu, reg32 a, reg32 b)
     return product;
 }
 
-/* 0x4965b0 (sima's): the distance from the place at a to the place at d; edx as the code hands it
- * (the function keeps it), eax as it leaves it. */
-std::optional<Float> distance(App* app, CPU& cpu, reg32 a, reg32 d)
+/* 0x4965b0 (sima's): the distance from the place at a to the place at d; the eax it leaves to
+ * `eax`, where asked. */
+std::optional<Float> distance(App* app, CPU& cpu, reg32 a, reg32 d, reg32* eax = nullptr)
 {
-    cpu.edx = d;
     const std::optional<frontend::sima::FloatLeft> apart =
         feCore<0x4965b0, frontend::sima::quickDistanceOf>(app, cpu, a, d);
     if (!apart)
         return std::nullopt;
-    cpu.eax = apart->eax;
+    if (eax)
+        *eax = apart->eax;
     return Float(apart->value);
 }
 
 /* The distance's size the code's way: fldz; fcompp; jae -- the distance worked out again either
- * way, negated where the first was not over 0 (a NaN is). */
-std::optional<Float> distanceApart(App* app, CPU& cpu, reg32 a, reg32 d)
+ * way, negated where the first was not over 0 (a NaN is); the eax the second leaves to `eax`,
+ * where asked. */
+std::optional<Float> distanceApart(App* app, CPU& cpu, reg32 a, reg32 d, reg32* eax = nullptr)
 {
     const auto first = distance(app, cpu, a, d);
     if (!first)
         return std::nullopt;
     const bool over = below(Float(0.0), *first);
-    const auto again = distance(app, cpu, a, d);
+    const auto again = distance(app, cpu, a, d, eax);
     if (!again)
         return std::nullopt;
     return over ? *again : -*again;
@@ -371,6 +372,36 @@ private:
     const reg32 esp;
     const reg32 base;
 };
+
+/* An adapter's run of its core: every register but eax as the caller had it after it (the game's
+ * code pops what it pushed; its other registers are its arguments, which no caller reads), eax
+ * what the core says the code leaves there -- a core that answers only whether the game went on
+ * leaves eax as it is -- and the return address and `popped` bytes of the caller's words popped.
+ * False when the game stopped. */
+template <typename Core>
+bool adapts(CPU& cpu, Core&& core, reg32 popped = 0)
+{
+    std::optional<reg32> left;
+    {
+        const guest::KeptRegisters kept(cpu);
+        const auto result = core();
+        if constexpr (std::is_same_v<std::decay_t<decltype(result)>, bool>)
+        {
+            if (!result)
+                return false;
+        }
+        else
+        {
+            if (!result)
+                return false;
+            left = reg32(*result);
+        }
+    }
+    if (left)
+        cpu.eax = *left;
+    cpu.esp += 4 + popped;
+    return true;
+}
 
 /* 0x4e0000 (vertices::offsetVectorList<false>) and 0x4dffb0 (<true>): the vector at a less (or
  * plus) the one at b, to `to` (one vector).  False when the game stopped. */
@@ -473,14 +504,12 @@ std::optional<Float> chop(App* app, CPU& cpu, const Float& value)
     return Float(guest::direct<kChop, watcom::clib::chop>(app, cpu, double(value)));
 }
 
-/* 0x4064f0 (sima's): an opponent's pull for car, eax as it leaves it; nullopt when the game
- * stopped. */
+/* 0x4064f0 (sima's): an opponent's pull for car; nullopt when the game stopped. */
 std::optional<Float> pullOf(App* app, CPU& cpu, reg32 car)
 {
     const std::optional<frontend::sima::FloatLeft> pull = feCore<0x4064f0, frontend::sima::enginePullOf>(app, cpu, car);
     if (!pull)
         return std::nullopt;
-    cpu.eax = pull->eax;
     return Float(pull->value);
 }
 
@@ -555,16 +584,14 @@ bool gridPlace(App* app, CPU& cpu, reg32 index, reg32 slice, reg32 place)
  * the code's frame), and the slice two behind it (three for the fifth cop on) goes to `sliceOut`;
  * its place `placeOut`: across by the slice's right width times its lanes, all of it, mirrored,
  * half of it or half of it mirrored by i % 4 (the table at 0x404d14); up 0x8000 and ahead 98304
- * whether found or not.  ebx and edx left as the code leaves them, eax the up's integer; false
- * when the game stopped. */
+ * whether found or not.  eax left the up's integer; false when the game stopped. */
 bool placeCopAtStart(App* app, CPU& cpu, reg32 cop, reg32 sliceOut, reg32 placeOut)
 {
     const GuestFrame frame(cpu, kCopStartPushed, kCopStartFrame);
     put(app, placeOut, 0);
     for (i32 i = 0; i < i32(at(app, kCopCount)); ++i)
     {
-        cpu.ebx = at(app, kCops + reg32(i) * 4);
-        if (cpu.ebx != cop)
+        if (at(app, kCops + reg32(i) * 4) != cop)
             continue;
         put(app, cop + kCarSlice, 0);
         if (gameSettings(app).backwards != 0)
@@ -584,46 +611,33 @@ bool placeCopAtStart(App* app, CPU& cpu, reg32 cop, reg32 sliceOut, reg32 placeO
                                    * i32(byte(app, record + kSliceLanes) & 0xf));
         const reg32 target = at(app, kStartTable + reg32(i % 4) * 4);
         const auto half = [](reg32 value) { return reg32(i32(value - reg32(i32(value) >> 31)) >> 1); };
-        cpu.ebx = across;
-        cpu.edx = reg32(i % 4);
         if (target == kStartAll)
             put(app, placeOut, across);
         else if (target == kStartMirrored)
         {
             put(app, placeOut, across);
             put(app, placeOut, reg32(0) - across);
-            cpu.edx = reg32(0) - across;
         }
         else if (target == kStartHalf)
-        {
             put(app, placeOut, half(across));
-            cpu.edx = reg32(i32(across) >> 31);
-        }
         else
-        {
             put(app, placeOut, half(reg32(0) - across));
-            cpu.edx = reg32(i32(reg32(0) - across) >> 31);
-        }
         break;
     }
     const reg32 ahead = reg32(fp::toInteger<i32>(f32(app, kStartAhead)));
     put(app, placeOut + 8, ahead);
-    cpu.eax = reg32(fp::toInteger<i32>(f32(app, kStartUp)));
-    put(app, placeOut + 4, cpu.eax);
+    const reg32 up = reg32(fp::toInteger<i32>(f32(app, kStartUp)));
+    put(app, placeOut + 4, up);
+    cpu.eax = up;
     return true;
 }
 
 /* Cop eax, the slice to [edx], the place to [ebx]. */
 void copStartPlace(App* app, CPU& cpu)
 {
-    const reg32 ecx = cpu.ecx, esi = cpu.esi, edi = cpu.edi, ebp = cpu.ebp;
-    if (!placeCopAtStart(app, cpu, cpu.eax, cpu.edx, cpu.ebx))
-        return;
-    cpu.ecx = ecx;
-    cpu.esi = esi;
-    cpu.edi = edi;
-    cpu.ebp = ebp;
-    cpu.esp += 4;
+    adapts(cpu, [&, cop = cpu.eax, slice = cpu.edx, place = cpu.ebx] {
+        return placeCopAtStart(app, cpu, cop, slice, place);
+    });
 }
 
 // A player's cop's roadblock button (+0x512) and its press held (+0x513), its player (+0x1f0),
@@ -663,7 +677,6 @@ std::optional<reg32> callRoadblockFor(App* app, CPU& cpu, reg32 cop)
             const auto down = feCore<0x4c9f50, frontend::simc::sirenOff>(app, cpu, index);
             if (!down)
                 return std::nullopt;
-            cpu.eax = *down;
             left = *down;
             sound = kSoundRoadblockDown;
         }
@@ -674,14 +687,11 @@ std::optional<reg32> callRoadblockFor(App* app, CPU& cpu, reg32 cop)
         reg32 side = i32(lane) < 6 ? 0 : i32(lane) > 7 ? 2 : 1;
         if (gameSettings(app).backwards != 0)
             side = 2 - side;
-        cpu.ebx = lane;
-        cpu.ecx = at(app, kRaceFrame) + kRoadblockFrames;
-        cpu.edx = at(app, cop + kCarSlice);
-        const auto up = feCore<0x4c9dd0, frontend::simc::sirenOn>(app, cpu, at(app, cop + kCarRoadblock), cpu.edx,
-                                                                   cpu.ebx, cpu.ecx);
+        const auto up = feCore<0x4c9dd0, frontend::simc::sirenOn>(app, cpu, at(app, cop + kCarRoadblock),
+                                                                   at(app, cop + kCarSlice), lane,
+                                                                   at(app, kRaceFrame) + kRoadblockFrames);
         if (!up)
             return std::nullopt;
-        cpu.eax = *up;
         const auto told = guest::direct<0x40b9c0, pursuit::radioStoppedOf>(app, cpu, cop, side);
         if (!told)
             return std::nullopt;
@@ -702,18 +712,7 @@ std::optional<reg32> callRoadblockFor(App* app, CPU& cpu, reg32 cop)
 /* Cop eax. */
 void callRoadblock(App* app, CPU& cpu)
 {
-    const reg32 ebx = cpu.ebx, ecx = cpu.ecx, edx = cpu.edx, esi = cpu.esi, edi = cpu.edi, ebp = cpu.ebp;
-    const auto left = callRoadblockFor(app, cpu, cpu.eax);
-    if (!left)
-        return;
-    cpu.eax = *left;
-    cpu.ebx = ebx;
-    cpu.ecx = ecx;
-    cpu.edx = edx;
-    cpu.esi = esi;
-    cpu.edi = edi;
-    cpu.ebp = ebp;
-    cpu.esp += 4;
+    adapts(cpu, [&, cop = cpu.eax] { return callRoadblockFor(app, cpu, cop); });
 }
 
 /* 0x404f80: a player's cop's siren switched by its button ([+0x50e]), once a press ([+0x620]
@@ -759,10 +758,7 @@ constexpr reg32 kMapLabel = 0x485180;
  * when the game stopped. */
 std::optional<reg32> showOnMap(App* app, CPU& cpu, reg32 player, reg32 index, reg32 kind, reg32 racer)
 {
-    cpu.edx = index;
-    cpu.ebx = kind;
-    cpu.ecx = racer;
-    return call(app, cpu, kMapLabel, player);
+    return guest::watcomEax(app, cpu, kMapLabel, {player, index, kind, racer});
 }
 
 /* 0x404ff0: cop watches the racers ([kRacers]): the nearest of them within 50 slices (the gap,
@@ -830,12 +826,13 @@ std::optional<reg32> watchRacersFor(App* app, CPU& cpu, reg32 cop)
                 if (!mine)
                     return std::nullopt;
                 const float mineF = float(*mine);
+                reg32 eax;
                 const auto theirs =
-                    distanceApart(app, cpu, at(app, cop + kCarNearestRacer) + kCarPlace, cop + kCarPlace);
+                    distanceApart(app, cpu, at(app, cop + kCarNearestRacer) + kCarPlace, cop + kCarPlace, &eax);
                 if (!theirs)
                     return std::nullopt;
                 const float theirsF = float(*theirs);
-                left = statusInto(cpu.eax, Float(mineF), Float(theirsF));
+                left = statusInto(eax, Float(mineF), Float(theirsF));
                 nearest = below(Float(mineF), Float(theirsF));
             }
             if (nearest)
@@ -858,18 +855,7 @@ std::optional<reg32> watchRacersFor(App* app, CPU& cpu, reg32 cop)
 /* Cop eax. */
 void watchRacers(App* app, CPU& cpu)
 {
-    const reg32 ebx = cpu.ebx, ecx = cpu.ecx, edx = cpu.edx, esi = cpu.esi, edi = cpu.edi, ebp = cpu.ebp;
-    const auto left = watchRacersFor(app, cpu, cpu.eax);
-    if (!left)
-        return;
-    cpu.eax = *left;
-    cpu.ebx = ebx;
-    cpu.ecx = ecx;
-    cpu.edx = edx;
-    cpu.esi = esi;
-    cpu.edi = edi;
-    cpu.ebp = ebp;
-    cpu.esp += 4;
+    adapts(cpu, [&, cop = cpu.eax] { return watchRacersFor(app, cpu, cop); });
 }
 
 // A racer's place in the race (+0x2bc); none better than this.  The frames after which the cop
@@ -919,23 +905,10 @@ std::optional<reg32> jumpBehind(App* app, CPU& cpu, reg32 cop, bool putBack)
     return left;
 }
 
-/* Cop eax, whether to put it back edx; edx left the racers' count (0 for none), as the code's
- * loop leaves it. */
+/* Cop eax, whether to put it back edx. */
 void jumpBehindLeader(App* app, CPU& cpu)
 {
-    const reg32 ebx = cpu.ebx, ecx = cpu.ecx, esi = cpu.esi, edi = cpu.edi, ebp = cpu.ebp;
-    const i32 racers = i32(at(app, kRacerCount));
-    const auto left = jumpBehind(app, cpu, cpu.eax, cpu.edx != 0);
-    if (!left)
-        return;
-    cpu.eax = *left;
-    cpu.edx = reg32(racers > 0 ? racers : 0);
-    cpu.ebx = ebx;
-    cpu.ecx = ecx;
-    cpu.esi = esi;
-    cpu.edi = edi;
-    cpu.ebp = ebp;
-    cpu.esp += 4;
+    adapts(cpu, [&, cop = cpu.eax, putBack = cpu.edx != 0] { return jumpBehind(app, cpu, cop, putBack); });
 }
 
 /* 0x40ed40 (aiplan::trafficSpeed): slice's speed; nullopt when the game stopped. */
@@ -990,17 +963,7 @@ std::optional<reg32> clockRacersFor(App* app, CPU& cpu, reg32 cop)
 /* Cop eax. */
 void clockRacers(App* app, CPU& cpu)
 {
-    const reg32 ebx = cpu.ebx, ecx = cpu.ecx, edx = cpu.edx, esi = cpu.esi, ebp = cpu.ebp;
-    const auto left = clockRacersFor(app, cpu, cpu.eax);
-    if (!left)
-        return;
-    cpu.eax = *left;
-    cpu.ebx = ebx;
-    cpu.ecx = ecx;
-    cpu.edx = edx;
-    cpu.esi = esi;
-    cpu.ebp = ebp;
-    cpu.esp += 4;
+    adapts(cpu, [&, cop = cpu.eax] { return clockRacersFor(app, cpu, cop); });
 }
 
 /* 0x4018b0 (stdcall, its fourth on the stack): a pursuit joined -- `how`, the cop, the racer, 0.
@@ -1033,16 +996,7 @@ std::optional<reg32> startChase(App* app, CPU& cpu, reg32 cop)
 /* Cop eax. */
 void startPursuit(App* app, CPU& cpu)
 {
-    const reg32 ebx = cpu.ebx, ecx = cpu.ecx, edx = cpu.edx, ebp = cpu.ebp;
-    const auto left = startChase(app, cpu, cpu.eax);
-    if (!left)
-        return;
-    cpu.eax = *left;
-    cpu.ebx = ebx;
-    cpu.ecx = ecx;
-    cpu.edx = edx;
-    cpu.ebp = ebp;
-    cpu.esp += 4;
+    adapts(cpu, [&, cop = cpu.eax] { return startChase(app, cpu, cop); });
 }
 
 /* Whether the car cop chases ([+0x624]) is at its own car's end: a human's in state 7, a
@@ -1108,17 +1062,7 @@ std::optional<bool> busts(App* app, CPU& cpu, reg32 cop)
 /* Cop eax; eax 1 for the bust. */
 void bustCheck(App* app, CPU& cpu)
 {
-    const reg32 ebx = cpu.ebx, ecx = cpu.ecx, edx = cpu.edx, esi = cpu.esi, ebp = cpu.ebp;
-    const auto bust = busts(app, cpu, cpu.eax);
-    if (!bust)
-        return;
-    cpu.eax = *bust ? 1 : 0;
-    cpu.ebx = ebx;
-    cpu.ecx = ecx;
-    cpu.edx = edx;
-    cpu.esi = esi;
-    cpu.ebp = ebp;
-    cpu.esp += 4;
+    adapts(cpu, [&, cop = cpu.eax] { return busts(app, cpu, cop); });
 }
 
 /* 0x405630: a pursuit's step: with the siren on, the car chased within 300 and not finished,
@@ -1145,16 +1089,7 @@ std::optional<bool> chaseStep(App* app, CPU& cpu, reg32 cop)
 /* Cop eax; eax 1 for a bust. */
 void pursuitStep(App* app, CPU& cpu)
 {
-    const reg32 ebx = cpu.ebx, ecx = cpu.ecx, edx = cpu.edx, ebp = cpu.ebp;
-    const auto bust = chaseStep(app, cpu, cpu.eax);
-    if (!bust)
-        return;
-    cpu.eax = *bust ? 1 : 0;
-    cpu.ebx = ebx;
-    cpu.ecx = ecx;
-    cpu.edx = edx;
-    cpu.ebp = ebp;
-    cpu.esp += 4;
+    adapts(cpu, [&, cop = cpu.eax] { return chaseStep(app, cpu, cop); });
 }
 
 /* 0x4056e0: car's pursuit dropped: the computer no longer drives it ([+0x200] 2), its state 2
@@ -1175,14 +1110,7 @@ std::optional<reg32> dropChase(App* app, CPU& cpu, reg32 car)
 /* Car eax. */
 void dropPursuit(App* app, CPU& cpu)
 {
-    const reg32 edx = cpu.edx, ebp = cpu.ebp;
-    const auto left = dropChase(app, cpu, cpu.eax);
-    if (!left)
-        return;
-    cpu.eax = *left;
-    cpu.edx = edx;
-    cpu.ebp = ebp;
-    cpu.esp += 4;
+    adapts(cpu, [&, car = cpu.eax] { return dropChase(app, cpu, car); });
 }
 
 // A cop's states (+0x6e0) by the code's table of targets (0x405714): the start (and any past 7),
@@ -1381,16 +1309,7 @@ std::optional<reg32> driveCop(App* app, CPU& cpu, reg32 cop)
 /* Cop eax. */
 void copDriver(App* app, CPU& cpu)
 {
-    const reg32 ebx = cpu.ebx, ecx = cpu.ecx, edx = cpu.edx, ebp = cpu.ebp;
-    const auto left = driveCop(app, cpu, cpu.eax);
-    if (!left)
-        return;
-    cpu.eax = *left;
-    cpu.ebx = ebx;
-    cpu.ecx = ecx;
-    cpu.edx = edx;
-    cpu.ebp = ebp;
-    cpu.esp += 4;
+    adapts(cpu, [&, cop = cpu.eax] { return driveCop(app, cpu, cop); });
 }
 
 // How near counts: the smaller gap's share (a float, a quarter) and the reach (a float, 366).
@@ -1463,16 +1382,7 @@ std::optional<reg32> humanNearSliceOf(App* app, CPU& cpu, reg32 slice)
 /* Slice eax. */
 void humanNearSlice(App* app, CPU& cpu)
 {
-    const reg32 ebx = cpu.ebx, ecx = cpu.ecx, edx = cpu.edx, ebp = cpu.ebp;
-    const auto human = humanNearSliceOf(app, cpu, cpu.eax);
-    if (!human)
-        return;
-    cpu.eax = *human;
-    cpu.ebx = ebx;
-    cpu.ecx = ecx;
-    cpu.edx = edx;
-    cpu.ebp = ebp;
-    cpu.esp += 4;
+    adapts(cpu, [&, slice = cpu.eax] { return humanNearSliceOf(app, cpu, slice); });
 }
 
 /* 0x405cd0: whether traffic car (on the road, [+0x620] 2) is out of every human's sight: not
@@ -1532,16 +1442,12 @@ std::optional<reg32> bringOn(App* app, CPU& cpu, reg32 car)
 /* Car eax; eax its life with ah the flags' byte, as the code leaves it. */
 void trafficStart(App* app, CPU& cpu)
 {
-    const reg32 car = cpu.eax, ebx = cpu.ebx, ecx = cpu.ecx, edx = cpu.edx, ebp = cpu.ebp;
-    const auto life = bringOn(app, cpu, car);
-    if (!life)
-        return;
-    cpu.eax = (*life & 0xffff00ff) | reg32(byte(app, car + kCarAiFlags)) << 8;
-    cpu.ebx = ebx;
-    cpu.ecx = ecx;
-    cpu.edx = edx;
-    cpu.ebp = ebp;
-    cpu.esp += 4;
+    adapts(cpu, [&, car = cpu.eax]() -> std::optional<reg32> {
+        const auto life = bringOn(app, cpu, car);
+        if (!life)
+            return std::nullopt;
+        return (*life & 0xffff00ff) | reg32(byte(app, car + kCarAiFlags)) << 8;
+    });
 }
 
 /* 0x405dc0: extra car leaves the road: one fewer extra car, off the road ([+0x620] 4 cleared),
@@ -1571,16 +1477,7 @@ std::optional<reg32> takeOff(App* app, CPU& cpu, reg32 car)
 /* Car eax. */
 void trafficStop(App* app, CPU& cpu)
 {
-    const reg32 ebx = cpu.ebx, ecx = cpu.ecx, edx = cpu.edx, ebp = cpu.ebp;
-    const auto left = takeOff(app, cpu, cpu.eax);
-    if (!left)
-        return;
-    cpu.eax = *left;
-    cpu.ebx = ebx;
-    cpu.ecx = ecx;
-    cpu.edx = edx;
-    cpu.ebp = ebp;
-    cpu.esp += 4;
+    adapts(cpu, [&, car = cpu.eax] { return takeOff(app, cpu, car); });
 }
 
 /* 0x405e20: an extra car's step: a traffic car's (0x40c210), a cop's (the always-one rule,
@@ -1602,14 +1499,7 @@ std::optional<reg32> stepExtraCar(App* app, CPU& cpu, reg32 car)
 
 void extraCarStep(App* app, CPU& cpu)
 {
-    const reg32 edx = cpu.edx, ebp = cpu.ebp;
-    const auto result = stepExtraCar(app, cpu, cpu.eax);
-    if (!result)
-        return;
-    cpu.eax = *result;
-    cpu.edx = edx;
-    cpu.ebp = ebp;
-    cpu.esp += 4;
+    adapts(cpu, [&, car = cpu.eax] { return stepExtraCar(app, cpu, car); });
 }
 
 /* 0x405e60: the AI's tuning, set as a race starts: the steering's gains and limits
@@ -1695,18 +1585,10 @@ reg32 setReversing(App* app, reg32 car, reg32 how, reg32 frames)
     return frame;
 }
 
-/* Car eax, how edx, frames ebx; bl or bh left as the code leaves them: the flags as written
- * (off), the flags as they were (turned over where it was on). */
+/* Car eax, how edx, frames ebx; eax left the car. */
 void setReverse(App* app, CPU& cpu)
 {
-    const reg32 car = cpu.eax, how = cpu.edx;
-    const bool wasOn = at(app, car + kCarReversing) == 1;
-    const reg8 flags = byte(app, car + kCarAiFlags);
-    cpu.edx = setReversing(app, car, how, cpu.ebx);
-    if (how == kReverseOff)
-        cpu.bl = byte(app, car + kCarAiFlags);
-    else if (how != kReverseOn && wasOn)
-        cpu.bh = flags;
+    setReversing(app, cpu.eax, cpu.edx, cpu.ebx);
     cpu.esp += 4;
 }
 
@@ -1924,18 +1806,7 @@ std::optional<reg32> runEngine(App* app, CPU& cpu, reg32 car, reg32 noGear)
 /* Car eax. */
 void engineRevs(App* app, CPU& cpu)
 {
-    const reg32 ebx = cpu.ebx, ecx = cpu.ecx, edx = cpu.edx, esi = cpu.esi, edi = cpu.edi, ebp = cpu.ebp;
-    const auto left = runEngine(app, cpu, cpu.eax, cpu.ebx);
-    if (!left)
-        return;
-    cpu.eax = *left;
-    cpu.ebx = ebx;
-    cpu.ecx = ecx;
-    cpu.edx = edx;
-    cpu.esi = esi;
-    cpu.edi = edi;
-    cpu.ebp = ebp;
-    cpu.esp += 4;
+    adapts(cpu, [&, car = cpu.eax, noGear = cpu.ebx] { return runEngine(app, cpu, car, noGear); });
 }
 
 // The brake's: none where its size is under this (a double, 0.5); doubled (a double, 2) for a cop
@@ -1986,25 +1857,23 @@ std::optional<float> brakeOf(App* app, CPU& cpu, reg32 car, float shortfall)
  * bits, or where it brakes already as the code's compares leave it. */
 void brakeForce(App* app, CPU& cpu)
 {
-    const reg32 car = cpu.eax, ebx = cpu.ebx, edx = cpu.edx, ebp = cpu.ebp;
+    const reg32 car = cpu.eax;
     const float shortfall = app->getMemory<float>(cpu.esp + 4);
-    const bool already = brakesAlready(app, car, shortfall);
-    const auto brake = brakeOf(app, cpu, car, shortfall);
-    if (!brake)
-        return;
-    if (already)
-    {
-        const reg32 left = below(Float(0.0), Float(shortfall)) ? floatBits(shortfall)
-                                                               : statusInto(car, Float(0.0), Float(shortfall));
-        cpu.eax = statusInto(left, Float(sizeOf(shortfall)), f64(app, kNoBrakeUnder));
-    }
-    else
-        cpu.eax = floatBits(*brake);
-    cpu.fpu.push(Float(*brake));
-    cpu.ebx = ebx;
-    cpu.edx = edx;
-    cpu.ebp = ebp;
-    cpu.esp += 8;
+    adapts(
+        cpu,
+        [&]() -> std::optional<reg32> {
+            const bool already = brakesAlready(app, car, shortfall);
+            const auto brake = brakeOf(app, cpu, car, shortfall);
+            if (!brake)
+                return std::nullopt;
+            cpu.fpu.push(Float(*brake));
+            if (!already)
+                return floatBits(*brake);
+            const reg32 left = below(Float(0.0), Float(shortfall)) ? floatBits(shortfall)
+                                                                   : statusInto(car, Float(0.0), Float(shortfall));
+            return statusInto(left, Float(sizeOf(shortfall)), f64(app, kNoBrakeUnder));
+        },
+        4);
 }
 
 /* Whether car goes against the race's way: its +0x621 0x10, turned over on a race run backwards. */
@@ -2066,17 +1935,7 @@ std::optional<reg32> runAlongRoad(App* app, CPU& cpu, reg32 car)
 /* Car eax. */
 void speedAlongRoad(App* app, CPU& cpu)
 {
-    const reg32 ebx = cpu.ebx, ecx = cpu.ecx, edx = cpu.edx, esi = cpu.esi, ebp = cpu.ebp;
-    const auto left = runAlongRoad(app, cpu, cpu.eax);
-    if (!left)
-        return;
-    cpu.eax = *left;
-    cpu.ebx = ebx;
-    cpu.ecx = ecx;
-    cpu.edx = edx;
-    cpu.esi = esi;
-    cpu.ebp = ebp;
-    cpu.esp += 4;
+    adapts(cpu, [&, car = cpu.eax] { return runAlongRoad(app, cpu, car); });
 }
 
 // The lane's error's scale (a double).
@@ -2105,45 +1964,33 @@ constexpr reg32 kGlidePushed = 0x18, kGlideFrame = 0x20;
 /* 0x4068a0: the computer's car glides along the road, its speed set rather than driven (when a
  * ghost: [+0x88]): its speed along the road (runAlongRoad), its speed's vector the nose by it plus
  * the road's across by the lane's error (in the code's frame, 0x4e0050, 0x4dffb0), no spin, its
- * forward speed [+0x4f4]; then 0x4a0980 with its way against the race's.  False when the game
- * stopped. */
-bool glide(App* app, CPU& cpu, reg32 car)
+ * forward speed [+0x4f4]; then 0x4a0980 with its way against the race's.  The eax that leaves;
+ * nullopt when the game stopped. */
+std::optional<reg32> glide(App* app, CPU& cpu, reg32 car)
 {
     const GuestFrame frame(cpu, kGlidePushed, kGlideFrame);
     const float error = float(laneErrorOf(app, car));
     if (!runAlongRoad(app, cpu, car))
-        return false;
+        return std::nullopt;
     copy3(app, car + kCarRoadAxes, frame - 0x14);
     copy3(app, car + kCarNose, frame - 0x20);
     if (!scaleVector(app, cpu, frame - 0x14, error, frame - 0x14))
-        return false;
+        return std::nullopt;
     const float speed = app->getMemory<float>(car + kCarSpeedSize);
     if (!scaleVector(app, cpu, frame - 0x20, speed, frame - 0x20)
         || !addVectors(app, cpu, frame - 0x20, frame - 0x14, car + kCarSpeed))
-        return false;
+        return std::nullopt;
     put(app, car + kCarSpin, 0);
     put(app, car + kCarSpin + 4, 0);
     put(app, car + kCarSpin + 8, 0);
     put(app, car + kCarForwardSpeed, floatBits(float(f32(app, car + kCarSpeedAlong))));
-    // ecx the race's way, as the code leaves it there.
-    cpu.ecx = gameSettings(app).backwards;
-    cpu.edx = againstRace(app, car) ? 1 : 0;
-    return call(app, cpu, kGlideOn, car).has_value();
+    return guest::watcomEax(app, cpu, kGlideOn, {car, againstRace(app, car) ? 1u : 0u});
 }
 
 /* Car eax; eax as 0x4a0980 leaves it. */
 void glideAlongRoad(App* app, CPU& cpu)
 {
-    const reg32 ebx = cpu.ebx, ecx = cpu.ecx, edx = cpu.edx, esi = cpu.esi, edi = cpu.edi, ebp = cpu.ebp;
-    if (!glide(app, cpu, cpu.eax))
-        return;
-    cpu.ebx = ebx;
-    cpu.ecx = ecx;
-    cpu.edx = edx;
-    cpu.esi = esi;
-    cpu.edi = edi;
-    cpu.ebp = ebp;
-    cpu.esp += 4;
+    adapts(cpu, [&, car = cpu.eax] { return glide(app, cpu, car); });
 }
 
 /* 0x406980: the slice car looks ahead to: the slice its pace gives -- that one on the track's
@@ -2190,18 +2037,7 @@ std::optional<reg32> lookAhead(App* app, CPU& cpu, reg32 car)
 /* Car eax; eax the slice. */
 void lookAheadSlice(App* app, CPU& cpu)
 {
-    const reg32 ebx = cpu.ebx, ecx = cpu.ecx, edx = cpu.edx, esi = cpu.esi, edi = cpu.edi, ebp = cpu.ebp;
-    const auto slice = lookAhead(app, cpu, cpu.eax);
-    if (!slice)
-        return;
-    cpu.eax = *slice;
-    cpu.ebx = ebx;
-    cpu.ecx = ecx;
-    cpu.edx = edx;
-    cpu.esi = esi;
-    cpu.edi = edi;
-    cpu.ebp = ebp;
-    cpu.esp += 4;
+    adapts(cpu, [&, car = cpu.eax] { return lookAhead(app, cpu, car); });
 }
 
 // The slice's right's scale (a double, 1/65536).
@@ -2231,14 +2067,13 @@ std::optional<Float> sidewaysSpeed(App* app, CPU& cpu, reg32 car)
 /* Car eax; the speed onto the x87's stack, eax as the dot product leaves it. */
 void sidewaysToRoad(App* app, CPU& cpu)
 {
-    const reg32 ecx = cpu.ecx, edx = cpu.edx;
-    const auto speed = sidewaysSpeed(app, cpu, cpu.eax);
-    if (!speed)
-        return;
-    cpu.fpu.push(*speed);
-    cpu.ecx = ecx;
-    cpu.edx = edx;
-    cpu.esp += 4;
+    adapts(cpu, [&, car = cpu.eax] {
+        const auto speed = sidewaysSpeed(app, cpu, car);
+        if (!speed)
+            return false;
+        cpu.fpu.push(*speed);
+        return true;
+    });
 }
 
 /* The pushes of the ways' code (ebx, ecx, edx, edi, ebp), the frames below them. */
@@ -2253,17 +2088,13 @@ template <bool (*Way)(App*, CPU&, reg32, reg32)>
 void wayAdapter(App* app, CPU& cpu, reg32 copied)
 {
     const reg32 car = cpu.eax, out = cpu.esi, esp = cpu.esp;
-    const reg32 ebx = cpu.ebx, ecx = cpu.ecx, edx = cpu.edx, edi = cpu.edi, ebp = cpu.ebp;
-    if (!Way(app, cpu, car, out))
-        return;
-    cpu.eax = out;
-    cpu.esi = esp - kWayPushed - copied + 12;
-    cpu.edi = edi;
-    cpu.ebx = ebx;
-    cpu.ecx = ecx;
-    cpu.edx = edx;
-    cpu.ebp = ebp;
-    cpu.esp += 4;
+    const bool went = adapts(cpu, [&]() -> std::optional<reg32> {
+        if (!Way(app, cpu, car, out))
+            return std::nullopt;
+        return out;
+    });
+    if (went)
+        cpu.esi = esp - kWayPushed - copied + 12;
 }
 
 /* 0x406b00: the way from car to the car it chases ([+0x624]), to `out`; whose offset it takes up
@@ -2525,16 +2356,10 @@ void wayToGo(App* app, CPU& cpu)
 constexpr reg32 kCarAxesForce = 0x4e0, kCarAcceleration = 0x2e8, kCarSpinChange = 0x2f4;
 constexpr reg32 kIntegratePushed = 0x10, kIntegrateFrame = 0x58;
 
-/* 0x4e0110 (simd's): the matrix at `matrix` transposed to `to`, eax and edx as the code hands
- * them and it leaves them; false when the game stopped. */
+/* 0x4e0110 (simd's): the matrix at `matrix` transposed to `to`; false when the game stopped. */
 bool transpose(App* app, CPU& cpu, reg32 matrix, reg32 to)
 {
-    cpu.edx = to;
-    const auto left = feCore<0x4e0110, frontend::simd::transpose>(app, cpu, matrix, to);
-    if (!left)
-        return false;
-    cpu.eax = *left;
-    return true;
+    return feCore<0x4e0110, frontend::simd::transpose>(app, cpu, matrix, to).has_value();
 }
 
 /* 0x4071a0: the computer's car's step integrated: the force in its axes (+0x4e0) and the push
@@ -2613,16 +2438,7 @@ std::optional<reg32> integrateStep(App* app, CPU& cpu, reg32 car)
 /* Car eax. */
 void integrate(App* app, CPU& cpu)
 {
-    const reg32 ebx = cpu.ebx, ecx = cpu.ecx, edx = cpu.edx, ebp = cpu.ebp;
-    const auto left = integrateStep(app, cpu, cpu.eax);
-    if (!left)
-        return;
-    cpu.eax = *left;
-    cpu.ebx = ebx;
-    cpu.ecx = ecx;
-    cpu.edx = edx;
-    cpu.ebp = ebp;
-    cpu.esp += 4;
+    adapts(cpu, [&, car = cpu.eax] { return integrateStep(app, cpu, car); });
 }
 
 /* The size of a float the code's other way: fldz; fcomp; ja -- the value itself where 0 is at
@@ -2909,18 +2725,7 @@ std::optional<reg32> steerOn(App* app, CPU& cpu, reg32 car)
 /* Car eax. */
 void steerOnRoad(App* app, CPU& cpu)
 {
-    const reg32 ebx = cpu.ebx, ecx = cpu.ecx, edx = cpu.edx, esi = cpu.esi, edi = cpu.edi, ebp = cpu.ebp;
-    const auto left = steerOn(app, cpu, cpu.eax);
-    if (!left)
-        return;
-    cpu.eax = *left;
-    cpu.ebx = ebx;
-    cpu.ecx = ecx;
-    cpu.edx = edx;
-    cpu.esi = esi;
-    cpu.edi = edi;
-    cpu.ebp = ebp;
-    cpu.esp += 4;
+    adapts(cpu, [&, car = cpu.eax] { return steerOn(app, cpu, car); });
 }
 
 // The backwards steering's tuning (setDrivingConstants): the side's limit, the across's limit and
@@ -3028,18 +2833,7 @@ std::optional<reg32> steerBack(App* app, CPU& cpu, reg32 car)
 /* Car eax. */
 void steerReversing(App* app, CPU& cpu)
 {
-    const reg32 ebx = cpu.ebx, ecx = cpu.ecx, edx = cpu.edx, esi = cpu.esi, edi = cpu.edi, ebp = cpu.ebp;
-    const auto left = steerBack(app, cpu, cpu.eax);
-    if (!left)
-        return;
-    cpu.eax = *left;
-    cpu.ebx = ebx;
-    cpu.ecx = ecx;
-    cpu.edx = edx;
-    cpu.esi = esi;
-    cpu.edi = edi;
-    cpu.ebp = ebp;
-    cpu.esp += 4;
+    adapts(cpu, [&, car = cpu.eax] { return steerBack(app, cpu, car); });
 }
 
 // The off-road steering's tuning (setDrivingConstants): the side's limit, the across's limit and
@@ -3197,18 +2991,7 @@ std::optional<reg32> steerOff(App* app, CPU& cpu, reg32 car)
 /* Car eax. */
 void steerOffRoad(App* app, CPU& cpu)
 {
-    const reg32 ebx = cpu.ebx, ecx = cpu.ecx, edx = cpu.edx, esi = cpu.esi, edi = cpu.edi, ebp = cpu.ebp;
-    const auto left = steerOff(app, cpu, cpu.eax);
-    if (!left)
-        return;
-    cpu.eax = *left;
-    cpu.ebx = ebx;
-    cpu.ecx = ecx;
-    cpu.edx = edx;
-    cpu.esi = esi;
-    cpu.edi = edi;
-    cpu.ebp = ebp;
-    cpu.esp += 4;
+    adapts(cpu, [&, car = cpu.eax] { return steerOff(app, cpu, car); });
 }
 
 // A car's: its +8, its axes (+0xc0, nine floats), +0x204 and +0x208, its track's place (+0xc,
@@ -3216,12 +2999,9 @@ void steerOffRoad(App* app, CPU& cpu)
 constexpr reg32 kCarTrackPlace = 0xc, kCar204 = 0x204, kCar208 = 0x208;
 constexpr reg32 kTrackPlaceBytes = 0x78;
 
-/* 0x4e070c: `bytes` at `to` zeroed; ecx as the caller's code has it.  False when the game
- * stopped. */
+/* 0x4e070c: `bytes` at `to` zeroed.  False when the game stopped. */
 bool fillZero(App* app, CPU& cpu, reg32 to, reg32 bytes)
 {
-    cpu.ecx = to;
-    cpu.edx = bytes;
     guest::direct<0x4e070c, ea::clearBytes>(app, cpu, to, bytes);
     return !cpu.terminate;
 }
@@ -3258,18 +3038,7 @@ std::optional<reg32> rideWith(App* app, CPU& cpu, reg32 car)
 /* Car eax. */
 void rideWithTarget(App* app, CPU& cpu)
 {
-    const reg32 ebx = cpu.ebx, ecx = cpu.ecx, edx = cpu.edx, esi = cpu.esi, edi = cpu.edi, ebp = cpu.ebp;
-    const auto left = rideWith(app, cpu, cpu.eax);
-    if (!left)
-        return;
-    cpu.eax = *left;
-    cpu.ebx = ebx;
-    cpu.ecx = ecx;
-    cpu.edx = edx;
-    cpu.esi = esi;
-    cpu.edi = edi;
-    cpu.ebp = ebp;
-    cpu.esp += 4;
+    adapts(cpu, [&, car = cpu.eax] { return rideWith(app, cpu, car); });
 }
 
 /* 0x408870: the lane's offset car eases to ([+0x7c8]) a step toward the one it wants ([+0x7b4]),
@@ -3350,10 +3119,8 @@ std::optional<reg32> runPhysics(App* app, CPU& cpu, reg32 car, reg32 noGear)
     if (!atDepth(cpu, [&] { return runEngine(app, cpu, car, noGear); }))
         return std::nullopt;
     reverseCheckFor(app, car);
-    const auto heading = feCore<0x4070c0, frontend::sima::headingError>(app, cpu, car);
-    if (!heading)
+    if (!feCore<0x4070c0, frontend::sima::headingError>(app, cpu, car))
         return std::nullopt;
-    cpu.eax = *heading;
     if (i32(at(app, kRaceFrame)) < i32(at(app, car + kCarTrafficTime)) && (byte(app, car + kCarKind) & kKindTraffic) != 0)
         put(app, car + kCarSpeedWanted, 0);
     const float grip = floatAt(
@@ -3403,17 +3170,7 @@ std::optional<reg32> runPhysics(App* app, CPU& cpu, reg32 car, reg32 noGear)
 /* Car eax; ebx the engine's gear where none comes nearer, as the caller's code leaves it. */
 void aiPhysics(App* app, CPU& cpu)
 {
-    const reg32 ebx = cpu.ebx, ecx = cpu.ecx, edx = cpu.edx, edi = cpu.edi, ebp = cpu.ebp;
-    const auto left = runPhysics(app, cpu, cpu.eax, cpu.ebx);
-    if (!left)
-        return;
-    cpu.eax = *left;
-    cpu.ebx = ebx;
-    cpu.ecx = ecx;
-    cpu.edx = edx;
-    cpu.edi = edi;
-    cpu.ebp = ebp;
-    cpu.esp += 4;
+    adapts(cpu, [&, car = cpu.eax, noGear = cpu.ebx] { return runPhysics(app, cpu, car, noGear); });
 }
 
 /* 0x4088f0: the computer's car's step, each frame: nothing while 0x4be1a0 says so or it is off the
@@ -3427,11 +3184,9 @@ void aiPhysics(App* app, CPU& cpu)
 std::optional<reg32> stepCar(App* app, CPU& cpu, reg32 car)
 {
     const GuestFrame frame(cpu, kStepPushed, kStepFrame);
-    cpu.edx = at(app, car);
-    const auto skipped = feCore<0x4be1a0, frontend::simc::offBeat>(app, cpu, kTurnKind, cpu.edx);
+    const auto skipped = feCore<0x4be1a0, frontend::simc::offBeat>(app, cpu, kTurnKind, at(app, car));
     if (!skipped)
         return std::nullopt;
-    cpu.eax = *skipped;
     if (*skipped != 0)
         return *skipped;
     put(app, kStep, kStepBits);
@@ -3476,7 +3231,7 @@ std::optional<reg32> stepCar(App* app, CPU& cpu, reg32 car)
         }
     std::optional<reg32> driven;
     if (byte(app, car + kCarGhost) != 0)
-        driven = atDepth(cpu, [&] { return glide(app, cpu, car) ? std::optional<reg32>(cpu.eax) : std::nullopt; });
+        driven = atDepth(cpu, [&] { return glide(app, cpu, car); });
     else if ((byte(app, car + kCarAiFlags) & kAiRidesWith) != 0)
         driven = atDepth(cpu, [&] { return rideWith(app, cpu, car); });
     else
@@ -3487,18 +3242,7 @@ std::optional<reg32> stepCar(App* app, CPU& cpu, reg32 car)
 /* Car eax. */
 void aiStep(App* app, CPU& cpu)
 {
-    const reg32 ebx = cpu.ebx, ecx = cpu.ecx, edx = cpu.edx, esi = cpu.esi, edi = cpu.edi, ebp = cpu.ebp;
-    const auto left = stepCar(app, cpu, cpu.eax);
-    if (!left)
-        return;
-    cpu.eax = *left;
-    cpu.ebx = ebx;
-    cpu.ecx = ecx;
-    cpu.edx = edx;
-    cpu.esi = esi;
-    cpu.edi = edi;
-    cpu.ebp = ebp;
-    cpu.esp += 4;
+    adapts(cpu, [&, car = cpu.eax] { return stepCar(app, cpu, car); });
 }
 
 }  // namespace aidrive

@@ -2,10 +2,11 @@
 #include "native_ea_threads.h"
 #include "native_watcom.h"
 #include "native_windows.h"
+#include "isnd_calls.h"
+#include "thrash_calls.h"
 #include "host_threads.h"
 #include "host_window.h"
-#include <winapi/kernel32.h>
-#include <winapi/user32.h>
+#include "host_system.h"
 #include <cstring>
 #include <iterator>
 
@@ -173,9 +174,9 @@ void Error(win32::WinApplication* app, x86::CPU& cpu)
     }
     if (at(app, kDebugOutput) != 0)
     {
-        if (!windows<kOutputDebugStringA, &win32::kernel32::OutputDebugStringA>(app, cpu, kErrorText))
+        if (!windows<kOutputDebugStringA, &host::debugString>(app, cpu, kErrorText))
             return;
-        if (at(app, kDebugStop) != 0 && !windows<kDebugBreak, &win32::kernel32::DebugBreak>(app, cpu))
+        if (at(app, kDebugStop) != 0 && !windows<kDebugBreak, &host::debugBreak>(app, cpu))
             return;
     }
     if (const x86::reg32 filter = at(app, kErrorFilter))
@@ -209,7 +210,7 @@ void Error(win32::WinApplication* app, x86::CPU& cpu)
     if (!windows<kShowCursor, &host::showCursor>(app, cpu, 1))
         return;
     // MB_OKCANCEL | MB_ICONEXCLAMATION | MB_SYSTEMMODAL | MB_SETFOREGROUND
-    if (!windows<kMessageBoxA, &win32::user32::MessageBoxA>(app, cpu, 0, kErrorText, kErrorCaption, 0x11031))
+    if (!windows<kMessageBoxA, &host::messageBox>(app, cpu, 0, kErrorText, kErrorCaption, 0x11031))
         return;
     if (cpu.eax == 1 && at(app, kErrorPrintOk) != 0 && at(app, kErrorOk) != 0)
     {
@@ -229,7 +230,7 @@ void Error(win32::WinApplication* app, x86::CPU& cpu)
         if (cpu.terminate)
             return;
     }
-    else if (!windows<kExitProcess, &win32::kernel32::ExitProcess>(app, cpu, cpu.eax))
+    else if (!windows<kExitProcess, &host::exitProcess>(app, cpu, cpu.eax))
     {
         return;
     }
@@ -262,12 +263,9 @@ namespace
 
 constexpr x86::reg32 kSoundModule = 0x9ef600;   // eacsnd.dll's handle
 constexpr x86::reg32 kSoundOptions = 0x9ef608;  // what the sound is started with
-/* iSNDloaddll's lookups after setfunctions, into 0x9ef61c.. in this order. */
+/* iSNDloaddll's lookups after setfunctions, into 0x9ef61c.. in this order
+ * (isnd.h, kDirect*), called through them: guest::sound (isnd_calls.h). */
 constexpr x86::reg32 kSoundFunctions = 0x9ef61c;
-constexpr x86::reg32 kSoundCaps = 0x9ef61c;   // iSNDdirectcaps
-constexpr x86::reg32 kSoundStart = 0x9ef620;  // iSNDdirectstart
-constexpr x86::reg32 kSoundStop = 0x9ef624;   // iSNDdirectstop
-constexpr x86::reg32 kSoundServe = 0x9ef634;  // iSNDdirectserve
 constexpr x86::reg32 kSoundFunctionNames[] = {
     0x549db0, 0x549dc4, 0x549dd8, 0x549dec, 0x549e08, 0x549e24, 0x549e3c,
     0x549e50, 0x549e6c, 0x549e84, 0x549e9c, 0x549eb0, 0x549ec4, 0x549ed8,
@@ -320,13 +318,13 @@ bool soundError(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 function, 
 bool loadSound(win32::WinApplication* app, x86::CPU& cpu, x86::reg32& result)
 {
     result = 0xffffffff;
-    if (!windows<kLoadLibraryA, &win32::kernel32::LoadLibraryA>(app, cpu, kSoundDll))
+    if (!windows<kLoadLibraryA, &host::loadLibrary>(app, cpu, kSoundDll))
         return false;
     const x86::reg32 module = cpu.eax;
     put(app, kSoundModule, module);
     if (module == 0)  // "COULDN'T LOAD/FIND EACSND.DLL..."
         return soundError(app, cpu, kLoadName, 0x153, {0x549c78});
-    if (!windows<kGetProcAddress, &win32::kernel32::GetProcAddress>(app, cpu, module, kVersionName))
+    if (!windows<kGetProcAddress, &host::procAddress>(app, cpu, module, kVersionName))
         return false;
     const x86::reg32 version = cpu.eax;
     if (version == 0)  // "COULDN'T FIND iSNDdllversion."
@@ -340,7 +338,7 @@ bool loadSound(win32::WinApplication* app, x86::CPU& cpu, x86::reg32& result)
         return soundError(app, cpu, kLoadName, 0x169,
                           {0x549d1c, 0x10, 3, x86::reg32(x86::sreg32(cpu.eax) >> 16), cpu.eax & 0xffff});
     }
-    if (!windows<kGetProcAddress, &win32::kernel32::GetProcAddress>(app, cpu, at(app, kSoundModule), kSetFunctionsName))
+    if (!windows<kGetProcAddress, &host::procAddress>(app, cpu, at(app, kSoundModule), kSetFunctionsName))
         return false;
     const x86::reg32 setFunctions = cpu.eax;
     if (setFunctions == 0)  // "COULDN'T FIND setfunctions."
@@ -351,7 +349,7 @@ bool loadSound(win32::WinApplication* app, x86::CPU& cpu, x86::reg32& result)
     x86::reg32 slot = kSoundFunctions;
     for (const x86::reg32 name : kSoundFunctionNames)
     {
-        if (!windows<kGetProcAddress, &win32::kernel32::GetProcAddress>(app, cpu, at(app, kSoundModule), name))
+        if (!windows<kGetProcAddress, &host::procAddress>(app, cpu, at(app, kSoundModule), name))
             return false;
         put(app, slot, cpu.eax);
         slot += 4;
@@ -411,9 +409,10 @@ void SNDcaps(win32::WinApplication* app, x86::CPU& cpu)
             return;
         cpu.esp = esp - 8;
     }
-    if (!call(app, cpu, at(app, kSoundCaps), {window}))
+    const std::optional<x86::reg32> caps = guest::sound<isnd::kDirectCaps, &port::eacsnd::caps>(app, cpu, window);
+    if (!caps)
         return;
-    cpu.eax = x86::sreg32(cpu.eax) > 0 ? cpu.eax | 0x10000 : cpu.eax;
+    cpu.eax = x86::sreg32(*caps) > 0 ? *caps | 0x10000 : *caps;
     cpu.ecx = ecx;
     cpu.edx = edx;
     cpu.esp = esp + 4;
@@ -455,10 +454,10 @@ void audiofocushandler(win32::WinApplication* app, x86::CPU& cpu)
                 return;
             cpu.esp = esp - 0x10;
         }
-        if (!call(app, cpu, at(app, kSoundStart), {at(app, kSoundOptions), window}))
+        if (!guest::sound<isnd::kDirectStart, &port::eacsnd::start>(app, cpu, at(app, kSoundOptions), window))
             return;
     }
-    else if (!call(app, cpu, at(app, kSoundStop)))
+    else if (!guest::sound<isnd::kDirectStop, &port::eacsnd::stop>(app, cpu))
     {
         return;
     }
@@ -479,7 +478,7 @@ void SoundServeHandler(win32::WinApplication* app, x86::CPU& cpu)
     const x86::reg32 ecx = cpu.ecx, edx = cpu.edx;
     cpu.esp = esp - 8;  // below the two registers it keeps
     if (!windows<kEnterCriticalSection, &host::enterLock>(app, cpu, at(app, kSoundLock))
-        || !call(app, cpu, at(app, kSoundServe))
+        || !guest::sound<isnd::kDirectServe, &port::eacsnd::serve>(app, cpu)
         || !windows<kLeaveCriticalSection, &host::leaveLock>(app, cpu, at(app, kSoundLock)))
         return;
     cpu.ecx = ecx;
@@ -488,50 +487,111 @@ void SoundServeHandler(win32::WinApplication* app, x86::CPU& cpu)
 }
 
 /* The lambdas iSNDloaddll hands eacsnd (kSoundLambdas), each to the game's
- * own function behind it: stdcall, and the three that format, cdecl. */
+ * own function behind it: stdcall, and the three that format, cdecl.  The
+ * four the port's eacsnd calls are C++ as well (isnd_calls.h), their natives
+ * thin wrappers: the words off the stack and popped, the registers as the C++
+ * leaves them -- eax and edx the game's function's arguments, as its code
+ * leaves them. */
 
-/* AcquireSoundDataLambda (0x4e1a24): stdcall (buffer, frames), the mix. */
+/* AcquireSoundDataLambda's (0x4e1a24): (buffer, frames), the mix. */
+std::optional<x86::reg32> acquireSoundDataOf(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 buffer,
+                                             x86::reg32 frames)
+{
+    cpu.eax = buffer;
+    cpu.edx = frames;
+    if (!call(app, cpu, kMix))
+        return std::nullopt;
+    return cpu.eax;
+}
+
 void AcquireSoundDataLambda(win32::WinApplication* app, x86::CPU& cpu)
 {
     const x86::reg32 esp = cpu.esp;
-    cpu.eax = at(app, esp + 4);
-    cpu.edx = at(app, esp + 8);
-    if (!call(app, cpu, kMix))
+    if (!acquireSoundDataOf(app, cpu, at(app, esp + 4), at(app, esp + 8)))
         return;
     cpu.esp = esp + 4 + 8;
 }
 
-/* StopSoundBufferLambda (0x4e1a00): stdcall (buffer). */
+/* StopSoundBufferLambda's (0x4e1a00): (buffer). */
+std::optional<x86::reg32> stopSoundBufferOf(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 buffer)
+{
+    cpu.eax = buffer;
+    if (!call(app, cpu, kStopBuffer))
+        return std::nullopt;
+    return cpu.eax;
+}
+
 void StopSoundBufferLambda(win32::WinApplication* app, x86::CPU& cpu)
 {
     const x86::reg32 esp = cpu.esp;
-    cpu.eax = at(app, esp + 4);
-    if (!call(app, cpu, kStopBuffer))
+    if (!stopSoundBufferOf(app, cpu, at(app, esp + 4)))
         return;
     cpu.esp = esp + 4 + 4;
 }
 
-/* AcquireSoundBufferPositionLambda (0x4e1a0c): stdcall (three words, the
- * last where the position goes); keeps ebx. */
-void AcquireSoundBufferPositionLambda(win32::WinApplication* app, x86::CPU& cpu)
+/* AcquireSoundBufferPositionLambda's (0x4e1a0c): (three words, the last
+ * where the position goes); keeps ebx. */
+std::optional<x86::reg32> acquireSoundBufferPositionOf(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 first,
+                                                       x86::reg32 second, x86::reg32 position)
 {
     const x86::reg32 esp = cpu.esp;
     const x86::reg32 ebx = cpu.ebx;
-    cpu.eax = at(app, esp + 4);
-    cpu.edx = at(app, esp + 8);
-    cpu.ebx = at(app, esp + 0xc);
+    cpu.eax = first;
+    cpu.edx = second;
+    cpu.ebx = position;
     cpu.esp = esp - 4;  // below ebx
     if (!call(app, cpu, kBufferPosition))
-        return;
+        return std::nullopt;
     cpu.ebx = ebx;
+    cpu.esp = esp;
+    return cpu.eax;
+}
+
+void AcquireSoundBufferPositionLambda(win32::WinApplication* app, x86::CPU& cpu)
+{
+    const x86::reg32 esp = cpu.esp;
+    if (!acquireSoundBufferPositionOf(app, cpu, at(app, esp + 4), at(app, esp + 8), at(app, esp + 0xc)))
+        return;
     cpu.esp = esp + 4 + 0xc;
 }
 
-/* TickSoundLambda (0x4e1adc): the game's 100 Hz tick (kSoundTick). */
+/* TickSoundLambda's (0x4e1adc): the game's 100 Hz tick (kSoundTick).  The
+ * library's own, port::soundTick (0x500c80, kGameTick, which SNDcaps puts
+ * there), as its C++, port::tickSound: its frame where the call's return
+ * address would be, every register but eax kept as its adapter keeps them.
+ * Another the game set, and in tools/game_checks and tools/frontend_checks
+ * (which stand the tick in) any, through the pointer. */
+std::optional<x86::reg32> tickSoundOf(win32::WinApplication* app, x86::CPU& cpu)
+{
+    const x86::reg32 tick = at(app, kSoundTick);
+#ifndef NFS3HP_SOUND_THROUGH_SLOTS
+    if (app->methodAt(tick) == &port::soundTick)
+    {
+        const x86::reg32 ebx = cpu.ebx, ecx = cpu.ecx, edx = cpu.edx, esi = cpu.esi, edi = cpu.edi, ebp = cpu.ebp;
+        const x86::reg32 esp = cpu.esp;
+        const port::Result result = port::tickSound(app, cpu, esp - 4);
+        if (!result)
+            return std::nullopt;
+        cpu.eax = x86::reg32(*result);
+        cpu.ebx = ebx;
+        cpu.ecx = ecx;
+        cpu.edx = edx;
+        cpu.esi = esi;
+        cpu.edi = edi;
+        cpu.ebp = ebp;
+        cpu.esp = esp;
+        return cpu.eax;
+    }
+#endif
+    if (!call(app, cpu, tick))
+        return std::nullopt;
+    return cpu.eax;
+}
+
 void TickSoundLambda(win32::WinApplication* app, x86::CPU& cpu)
 {
     const x86::reg32 esp = cpu.esp;
-    if (!call(app, cpu, at(app, kSoundTick)))
+    if (!tickSoundOf(app, cpu))
         return;
     cpu.esp = esp + 4;
 }
@@ -606,7 +666,7 @@ void iSNDconvertsample(win32::WinApplication* app, x86::CPU& cpu)
     // "CAN'T HANDLE dstnumchan %i"
     if (argument(9) != 1 && !soundError(app, cpu, kConvertName, 0xb0, {0x549b80, argument(9)}))
         return;
-    if (!windows<kVirtualAlloc, &win32::kernel32::VirtualAlloc>(app, cpu, 0, frames * 8 + 0x4e20, 0x3000, 4))
+    if (!windows<kVirtualAlloc, &host::virtualAlloc>(app, cpu, 0, frames * 8 + 0x4e20, 0x3000, 4))
         return;
     x86::reg32 buffer = cpu.eax;
     switch (representation)
@@ -676,7 +736,7 @@ void iSNDconvertsample(win32::WinApplication* app, x86::CPU& cpu)
     {
         return;
     }
-    if (!windows<kVirtualFree, &win32::kernel32::VirtualFree>(app, cpu, buffer, 0, 0x8000))  // MEM_RELEASE
+    if (!windows<kVirtualFree, &host::virtualFree>(app, cpu, buffer, 0, 0x8000))  // MEM_RELEASE
         return;
     cpu.eax = 0;
     cpu.esp = esp + 4 + 0x24;
@@ -703,8 +763,6 @@ constexpr struct
     {0x54d5bc, 0x9ef934}, {0x54d5d4, 0x9ef958}, {0x54d5ec, 0x9ef948}, {0x54d5fc, 0x9ef968}, {0x54d610, 0x9ef918},
     {0x54d624, 0x9ef964}, {0x54d638, 0x9ef95c}, {0x54d650, 0x9ef938}, {0x54d664, 0x9ef914},
 };
-constexpr x86::reg32 kThrashAbout = 0x9ef980;     // _THRASH_about@0
-constexpr x86::reg32 kThrashSetState = 0x9ef96c;  // _THRASH_setstate@8
 
 }  // namespace
 
@@ -720,13 +778,13 @@ void THRASH_opendll(win32::WinApplication* app, x86::CPU& cpu)
     const x86::reg32 name = cpu.eax;
     const x86::reg32 path = esp - 0x14 - 0x200;  // below the five registers it keeps: its buffer
     cpu.esp = path;
-    if (!windows<kLoadLibraryA, &win32::kernel32::LoadLibraryA>(app, cpu, name))
+    if (!windows<kLoadLibraryA, &host::loadLibrary>(app, cpu, name))
         return;
     put(app, kRendererModule, cpu.eax);
     if (cpu.eax == 0)
     {
         guest::direct<0x4df690, watcom::clib::sprintf>(app, cpu, path, 0x54d3a0u /* "%sa" */, guest::Words({name}));
-        if (cpu.terminate || !windows<kLoadLibraryA, &win32::kernel32::LoadLibraryA>(app, cpu, path))
+        if (cpu.terminate || !windows<kLoadLibraryA, &host::loadLibrary>(app, cpu, path))
             return;
         put(app, kRendererModule, cpu.eax);
     }
@@ -736,7 +794,7 @@ void THRASH_opendll(win32::WinApplication* app, x86::CPU& cpu)
         cpu.esp = path - 4;  // below edi, which it keeps while it looks
         for (const auto& function : kThrashFunctions)
         {
-            if (!windows<kGetProcAddress, &win32::kernel32::GetProcAddress>(app, cpu, at(app, kRendererModule), function.name))
+            if (!windows<kGetProcAddress, &host::procAddress>(app, cpu, at(app, kRendererModule), function.name))
                 return;
             put(app, function.slot, cpu.eax);
         }
@@ -746,14 +804,15 @@ void THRASH_opendll(win32::WinApplication* app, x86::CPU& cpu)
     put(app, kRendererIs3dfx, 0);
     if (opened)
     {
-        if (const x86::reg32 setState = at(app, kThrashSetState);
-            setState != 0 && !call(app, cpu, setState, {0x1f, kThrashVersion}))
+        if (at(app, thrash::kThrashSetState) != 0
+            && !guest::driver<thrash::kThrashSetState, &port::driver::setState>(app, cpu, 0x1f, kThrashVersion))
             return;
-        if (const x86::reg32 about = at(app, kThrashAbout))
+        if (at(app, thrash::kThrashAbout) != 0)
         {
-            if (!call(app, cpu, about))
+            const std::optional<x86::reg32> about = guest::driver<thrash::kThrashAbout, &port::driver::about>(app, cpu);
+            if (!about)
                 return;
-            if (const x86::reg32 record = cpu.eax)
+            if (const x86::reg32 record = *about)
             {
                 if (at(app, record) == 0x33444658)  // "XFD3"
                     put(app, kRendererIs3dfx, 1);

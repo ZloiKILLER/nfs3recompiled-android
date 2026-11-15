@@ -5,7 +5,7 @@
 #include <lib/memmap.h>
 #include <lib/timer.h>
 #include <nfs3hp.h>
-#include <winapi/version.h>
+#include "host_system.h"
 #include <lib/thrashrenderer.h>
 #include "game_settings.h"
 #include "native_thrash.h"
@@ -15,6 +15,7 @@
 #include "diag_hooks.h"
 #include "replay_trace.h"
 #include <SDL3/SDL.h>
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <string>
@@ -2610,7 +2611,7 @@ int main(int argc, char* argv[])
     {
         /* nfs3.exe's own version resource (StringFileInfo 040904b0,
          * FileVersion): the version a network race checks between machines. */
-        win32::version::setFileVersion("27, 2.0");
+        nfs3hp::host::setFileVersion("27, 2.0");
         nfs3hp::Application app("nfs3.exe");
         nfs3hp::installDisplaySliders(&app);
         nfs3hp::installConnectScreen(&app);

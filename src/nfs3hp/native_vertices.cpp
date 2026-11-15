@@ -2,11 +2,13 @@
 #include "game_settings.h"
 #include "native_thrash.h"
 #include "native_vertices.h"
+#include "thrash_calls.h"
 #include <SDL3/SDL.h>
 #include <cfenv>
 #include <cfloat>
 #include <cmath>
 #include <cstring>
+#include <optional>
 #include <string>
 #ifdef __ANDROID__
 #include <SDL3/SDL_system.h>
@@ -54,9 +56,12 @@
  * the host raises overflow, underflow or invalid on the way, runs again through
  * the emulated FPU's own operations.
  *
- * Memory, registers, flags and the FPU status word come out as the generated
- * code leaves them -- which skips the flags of an instruction nothing reads --
- * and only the stack below the returned esp is not written. */
+ * Memory comes out as the generated code leaves it, all but the stack below
+ * the returned esp; the x87 stack and control word too; of the registers,
+ * eax where the game's callers read it and every one the code keeps -- all
+ * but its own register arguments, as Watcom's callers have them.  The flags
+ * and the FPU status word, which no caller reads after a call, are left as
+ * they come but where eax takes the status (fnstsw ax). */
 namespace nfs3hp
 {
 
@@ -70,23 +75,23 @@ namespace vertices
 namespace
 {
 
-// Natives further down that the ones before them call straight, where the
-// game's code calls them.
-void clipPolygonNative(win32::WinApplication* app, x86::CPU& cpu);
-void clipTriangleNative(win32::WinApplication* app, x86::CPU& cpu);
-void objectVerticesNative(win32::WinApplication* app, x86::CPU& cpu);
-void projectedTriangleNative(win32::WinApplication* app, x86::CPU& cpu);
-void clipQuadNative(win32::WinApplication* app, x86::CPU& cpu);
-void clipTriangleByZNative(win32::WinApplication* app, x86::CPU& cpu);
-void sortedBucketsNative(win32::WinApplication* app, x86::CPU& cpu);
-
 /* The typed natives' words (plan step 5): a core with named parameters that keeps its locals in
- * C++, and an adapter that takes the registers and leaves them, the flags and the x87 as the
- * game's code does -- the check compares all of them. */
+ * C++, and an adapter that takes the registers and the stack words and leaves what the game's
+ * callers read -- eax where one reads it, esp past the words its ret takes, every other register
+ * as it came -- and the x87 as the game's code does.  A core that calls out is handed the esp it
+ * is entered at (its return address's slot), and makes each call at the depth the code makes it,
+ * its frame where the code has it. */
 using App = win32::WinApplication;
 using CPU = x86::CPU;
 using x86::reg32;
 using i32 = std::int32_t;
+
+// Cores further down that the ones before them call straight, where the game's code calls them.
+reg32 clipTriangleOf(App* app, CPU& cpu, reg32 esp, reg32 a, reg32 b, reg32 c);
+reg32 projectedTriangleOf(App* app, reg32 slot, reg32 a, reg32 b, reg32 c);
+reg32 clipQuadOf(App* app, CPU& cpu, reg32 esp, reg32 a, reg32 b, reg32 c, reg32 d);
+void clipTriangleByZOf(App* app, CPU& cpu, reg32 esp, reg32 a, reg32 b, reg32 c);
+reg32 sortedBucketsOf(App* app, CPU& cpu, reg32 esp, reg32 list, reg32 start);
 
 inline float asFloat(x86::reg32 bits)
 {
@@ -137,6 +142,11 @@ inline bool singleNearest(const x86::CPU& cpu)
     return cpu.fpu.rounding == x86::FPU::kRoundSingleNearest;
 }
 
+/* What the host raises when a float run left a float's range (or came from a value that had):
+ * the run is then made again through the emulated FPU.  Every output of such a run is a function
+ * of inputs it does not write, so the second run simply writes over the first. */
+constexpr int kOutOfRange = FE_OVERFLOW | FE_UNDERFLOW | FE_INVALID;
+
 /* Two products of differences as the x87 works them out,
  *   one = (p - q) * (r - s),  two = (t - u) * (v - w),  all eight floats,
  * for a comparison of the two -- a polygon's facing -- on the x87 stack, never
@@ -172,106 +182,71 @@ inline CrossProducts crossProducts(x86::CPU& cpu, float p, float q, float r, flo
     return {M.mul(M.sub(t, u), M.sub(v, w)), M.mul(M.sub(p, q), M.sub(r, s))};
 }
 
-/* The last fcomp of a loop over doubles, replayed on the FPU at its end. */
-struct LastWideCompare
+/* A call by address as the game's code makes it from the depth `esp`: `registers` into eax, edx,
+ * ebx and ecx in turn -- the callee's arguments, no more -- and `words` pushed under esp, the
+ * return address's slot under them.  Every register but eax is back as it was after: Watcom's
+ * callees keep them, and what THRASH's stdcall ones leave in ecx and edx the callers here never
+ * read.  The callee's eax, or none when the game stopped in it. */
+std::optional<reg32> callAt(App* app, CPU& cpu, reg32 esp, reg32 target, std::initializer_list<reg32> registers,
+                            std::initializer_list<reg32> words = {})
 {
-    bool any = false;
-    double a = 0.0;
-    double b = 0.0;
-    void operator()(double x, double y)
-    {
-        any = true;
-        a = x;
-        b = y;
-    }
-    /* The status word it leaves, and sahf's flags from it: done once the loop
-     * is over, before the flags of what follows the last sahf. */
-    void replay(x86::CPU& cpu) const
-    {
-        if (!any)
-            return;
-        cpu.fpu.compare(a, b);
-        cpu.flags.lo = x86::reg8(0x02 | ((cpu.fpu.status.word >> 8) & 0xd7));
-    }
-};
-
-/* A call as the generated code makes one: a slot for the return address, then
- * the callee.  False when the game is shutting down, as the generated code
- * then returns at once. */
-bool call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 address)
-{
-    cpu.esp -= 4;
-    app->dynamic_call(address, cpu);
-    return !cpu.terminate;
+    const guest::KeptRegisters kept(cpu);
+    reg32* const into[] = { &cpu.eax, &cpu.edx, &cpu.ebx, &cpu.ecx };
+    unsigned i = 0;
+    for (const reg32 value : registers)
+        *into[i++] = value;
+    cpu.esp = esp;
+    if (!guest::call(app, cpu, target, words))
+        return std::nullopt;
+    return cpu.eax;
 }
 
-/* fcomp leaves only its condition bits behind, so only the last comparison
- * matters: it is replayed on the FPU once the loop is done. */
-struct LastCompare
+/* sub_4bbde0, Render_GetTm's buffer taken on by `bytes` from what `slot` holds, from the depth
+ * `esp`: 1, or 0 when the buffer has run out.  Its message then (Error, sub_401010) is handed
+ * the ebp it pushes, the caller's frame as the code has it: `ebp`. */
+std::optional<reg32> commitArena(App* app, CPU& cpu, reg32 esp, reg32 ebp, reg32 slot, reg32 bytes)
 {
-    float a = 0.0f;
-    float b = 0.0f;
-    void operator()(float x, float y)
-    {
-        a = x;
-        b = y;
-    }
-};
+    const guest::KeptRegisters kept(cpu);
+    cpu.ebp = ebp;
+    return callAt(app, cpu, esp, 0x4bbde0, { slot, bytes });
+}
 
-/* The integer flags as the generated code sets them: test and or clear CF and
- * OF, cmp works them out; neither touches PF. */
-struct IntegerFlags
+/* What fnstsw ax leaves in eax (`eax` before it) after an fcomp of `a` with `b`: the x87's status
+ * word as the compare leaves it, over eax's low half -- where a caller reads that eax. */
+reg32 statusAfterCompare(CPU& cpu, reg32 eax, double a, double b)
 {
-    bool cf = false;
-    bool of = false;
-    bool zf = false;
-    bool sf = false;
+    cpu.fpu.compare(a, b);
+    return (eax & 0xffff0000) | cpu.fpu.status.word;
+}
 
-    void logic(x86::reg32 value)
-    {
-        cf = of = false;
-        zf = !value;
-        sf = value >> 31;
-    }
-    void compare(x86::reg32 a, x86::reg32 b)
-    {
-        const x86::reg32 result = a - b;
-        cf = a < b;
-        of = ((a >> 31) != (result >> 31)) && ((a >> 31) != (b >> 31));
-        zf = !result;
-        sf = result >> 31;
-    }
-    void store(x86::CPU& cpu) const
-    {
-        cpu.flags.cf = cf;
-        cpu.flags.of = of;
-        cpu.flags.zf = zf;
-        cpu.flags.sf = sf;
-    }
-};
+/* One of THRASH's exports through the game's pointer to it (guest::driver, thrash_calls.h: the port's
+ * driver as C++ where the pointer leads to it, through the pointer in the checks), from the depth
+ * `esp`: stdcall, only `words`; every register but eax kept. */
+template <reg32 Slot, auto Fn, typename... W>
+std::optional<reg32> driverAt(App* app, CPU& cpu, reg32 esp, W... words)
+{
+    const guest::KeptRegisters kept(cpu);
+    cpu.esp = esp;
+    return guest::driver<Slot, Fn>(app, cpu, words...);
+}
 
 /* sub_41a3e0: the colour of a track vertex, darkened by how far off the view's
- * axis it lies and by the fog past [0x552e04].  Written to `out`, returned. */
+ * axis it lies and by the fog past [0x552e04].  Written to `out`. */
 template <typename Math>
-x86::reg32 shadeVertex(win32::WinApplication* app, x86::FPU& fpu, const Math& math, float x, float y, float z,
-                       x86::reg32 colour, x86::reg32 out, LastCompare& compared)
+void shadeVertex(win32::WinApplication* app, const Math& math, float x, float y, float z, x86::reg32 colour,
+                 x86::reg32 out)
 {
     const float inverse = float(math.div(1.0f, z));
-    compared(0.0f, x);
     const float absX = 0.0f > x ? -x : x;
-    compared(0.0f, y);
     const float absY = 0.0f > y ? -y : y;
     const float offX = float(math.mul(absX, inverse));
     const float offY = float(math.mul(inverse, absY));
     float fog = 1.0f;
     const float fogStart = app->getMemory<float>(x86::reg32(0x552e04));
-    compared(z, fogStart);
     if (z > fogStart)
         fog = float(math.sub(1.0f, math.mul(math.sub(z, fogStart), app->getMemory<float>(x86::reg32(0x552e10)))));
     // Each clamped to [0, 1] -- the upper bound by the bits, as a signed integer.
-    compared(0.0f, offX);
     const float clampX = 0.0f > offX ? 0.0f : (x86::sreg32(asBits(offX)) > 0x3f800000 ? 1.0f : offX);
-    compared(0.0f, offY);
     const float clampY = 0.0f > offY ? 0.0f : (x86::sreg32(asBits(offY)) > 0x3f800000 ? 1.0f : offY);
     // On the x87 stack all the way to the fistp ([0x536c74] 0.5f, [0x536c7c] 65536.0).
     const double light = double(math.mul(math.mul(math.sub(1.0f, math.mul(math.add(clampX, clampY), 0.5f)), fog),
@@ -284,52 +259,37 @@ x86::reg32 shadeVertex(win32::WinApplication* app, x86::FPU& fpu, const Math& ma
     level = (level >> 8) & 0xff;
     const x86::reg32 redBlue = (colour & 0xff00ff) * level;
     const x86::reg32 alphaGreen = ((colour & 0xff00ff00) >> 8) * level;
-    const x86::reg32 result = (alphaGreen & 0xff00ff00) | ((redBlue >> 8) & 0xff00ff);
-    app->getMemory<x86::reg32>(out) = result;
-    return result;
+    app->getMemory<x86::reg32>(out) = (alphaGreen & 0xff00ff00) | ((redBlue >> 8) & 0xff00ff);
 }
 
 /* The clip code of a point in view space, as sub_41a550 builds it: 0x10 nearer
  * than [0x552e0c], 0x20 past [0x552e08], 8/4 above/below, 2/1 right/left. */
-x86::reg8 clipCode(float x, float y, float z, float nearest, float farthest, LastCompare& compared)
+x86::reg8 clipCode(float x, float y, float z, float nearest, float farthest)
 {
     x86::reg8 code = 0;
-    compared(z, nearest);
     if (!(z >= nearest))
         code |= 0x10;
-    compared(z, farthest);
     if (z > farthest)
         code |= 0x20;
-    compared(y, z);
     if (y > z)
         code |= 8;
-    else
-    {
-        compared(-z, y);
-        if (-z > y)
-            code |= 4;
-    }
-    compared(x, z);
+    else if (-z > y)
+        code |= 4;
     if (x > z)
         code |= 2;
-    else
-    {
-        compared(-z, x);
-        if (-z > x)
-            code |= 1;
-    }
+    else if (-z > x)
+        code |= 1;
     return code;
 }
 
-/* sub_41a550: track vertices into view space and onto the screen.
- *   eax  the view: 3x3 matrix at +0x28, position at +0x58, colours at +0x70/+0x74
- *   edx  vertex count; ebx  the vertices, 3 floats each
- *   ecx  the output, 0x1c bytes each; [esp+4]  a 0x20-byte record per vertex
- * A vertex behind the view is mirrored into the second view when +0x74 is set. */
+/* sub_41a550's work: `count` track vertices at `in` (3 floats each) by the view
+ * `view` -- 3x3 matrix at +0x28, position at +0x58, colours at +0x70/+0x74 --
+ * into view space and onto the screen at `out` (0x1c bytes each), with the
+ * 0x20-byte records from `record` on.  A vertex behind the view is mirrored
+ * into the second view when +0x74 is set. */
 template <typename Math>
-void trackVerticesWith(win32::WinApplication* app, x86::CPU& cpu, const Math& math)
+void trackVertexList(App* app, const Math& math, reg32 view, reg32 count, reg32 in, reg32 out, reg32 record)
 {
-    const x86::reg32 view = cpu.eax;
     const float* m = &app->getMemory<float>(view + 0x28);
     const float* t = &app->getMemory<float>(view + 0x58);
     const x86::reg32 frontColour = app->getMemory<x86::reg32>(view + 0x70);
@@ -337,20 +297,8 @@ void trackVerticesWith(win32::WinApplication* app, x86::CPU& cpu, const Math& ma
     const float nearest = app->getMemory<float>(x86::reg32(0x552e0c));
     const float farthest = app->getMemory<float>(x86::reg32(0x552e08));
 
-    x86::reg32 count = cpu.edx;
-    x86::reg32 in = cpu.ebx;
-    x86::reg32 out = cpu.ecx;
-    x86::reg32 record = app->getMemory<x86::reg32>(cpu.esp + 4);
-    LastCompare compared;
-    bool any = false;
-    bool shaded = false;
-    x86::reg32 eax = cpu.eax;
-    x86::reg32 ebx = cpu.ebx;
-    x86::reg32 zRaw = 0;
-
-    while (--count != x86::reg32(-1))
+    for (reg32 left = count; left != 0; --left, record += 0x20, out += 0x1c, in += 0xc)
     {
-        any = true;
         app->getMemory<x86::reg16>(out + 6) = 0x10;
         app->getMemory<x86::reg32>(out + 0x18) = 0;
         app->getMemory<x86::reg32>(out + 8) = record;
@@ -364,129 +312,88 @@ void trackVerticesWith(win32::WinApplication* app, x86::CPU& cpu, const Math& ma
         const float rz = float(math.add(math.add(math.mul(v[0], m[2]), math.mul(v[1], m[5])), math.mul(v[2], m[8])));
         const float x = float(math.add(rx, t[0]));
         const float y = float(math.add(ry, t[1]));
-        zRaw = asBits(float(math.add(rz, t[2])));
-        x86::reg32 zBits = zRaw;
+        x86::reg32 zBits = asBits(float(math.add(rz, t[2])));
         if ((zBits & 0x7fffffff) == 0)
             zBits = 0x37800080;
         const float z = asFloat(zBits);
-        ebx = zBits;
         const float inverse = x86::sreg32(zBits) < 0x3f800000 ? 1.0f : float(math.div(1.0f, z));
         app->getMemory<float>(out + 0xc) = float(math.mul(math.add(math.mul(x, inverse), 1.0f), 0.5f));
         app->getMemory<float>(out + 0x10) = float(math.mul(math.add(math.mul(y, inverse), 1.0f), 0.5f));
         app->getMemory<float>(out) = float(math.div(app->getMemory<float>(record + 0xc), inverse));
 
-        shaded = false;
-        compared(0.0f, z);
         if (!(0.0f >= z))
         {
-            app->getMemory<x86::reg16>(out + 4) = clipCode(x, y, z, nearest, farthest, compared);
-            compared(z, farthest);
+            app->getMemory<x86::reg16>(out + 4) = clipCode(x, y, z, nearest, farthest);
             if (!(z >= farthest))
-            {
-                eax = shadeVertex(app, cpu.fpu, math, x, y, z, frontColour, out + 0x14, compared);
-                shaded = true;
-            }
+                shadeVertex(app, math, x, y, z, frontColour, out + 0x14);
         }
         else if (backColour != 0)
         {
             const float bx = asFloat(asBits(x) ^ 0x80000000);
             const float by = asFloat(asBits(y) ^ 0x80000000);
             const float bz = asFloat(zBits ^ 0x80000000);
-            app->getMemory<x86::reg16>(out + 6) = clipCode(bx, by, bz, nearest, farthest, compared);
-            compared(bz, farthest);
+            app->getMemory<x86::reg16>(out + 6) = clipCode(bx, by, bz, nearest, farthest);
             if (!(bz >= farthest))
-            {
-                eax = shadeVertex(app, cpu.fpu, math, bx, by, bz, backColour, out + 0x18, compared);
-                shaded = true;
-            }
+                shadeVertex(app, math, bx, by, bz, backColour, out + 0x18);
         }
-
-        record += 0x20;
-        out += 0x1c;
-        in += 0xc;
     }
+}
 
-    if (any)
+/* sub_41a550's work: trackVertexList as floats at single precision to nearest, once more through
+ * the emulated FPU's operations should a value leave a float's range (it writes only what it works
+ * out from what it reads); in any other mode the FPU's way at once. */
+void trackVerticesOf(App* app, CPU& cpu, reg32 view, reg32 count, reg32 in, reg32 out, reg32 record)
+{
+    if (singleNearest(cpu))
     {
-        cpu.fpu.compare(double(compared.a), double(compared.b));
-        if (!shaded)
-            eax = (zRaw & 0xffff0000) | cpu.fpu.status.word;
-        // sahf after the last fnstsw
-        cpu.flags.lo = x86::reg8(0x02 | ((cpu.fpu.status.word >> 8) & 0xd7));
+        std::feclearexcept(kOutOfRange);
+        trackVertexList(app, FloatMath(), view, count, in, out, record);
+        if (!std::fetestexcept(kOutOfRange))
+            return;
     }
-    cpu.eax = eax;
-    cpu.ebx = ebx;
-    cpu.ecx = out;
-    cpu.edx = count;
-    // cmp edx, -1 before the ret
-    cpu.flags.cf = 0;
-    cpu.flags.of = 0;
-    cpu.set_szp(x86::reg32(0));
-    cpu.esp += 4 + 4;
+    trackVertexList(app, FpuMath(), view, count, in, out, record);
 }
 
 /* sub_4bf4c0's clip code of one projected vertex, from the bits of its floats
  * compared as signed integers: 0x10 when 1/z is negative or past [0x7d34f8],
  * else 8/4 for y before [0x7d3504]/past [0x7d3500] and 1/2 for x before
- * [0x7d34fc]/past [0x7d350c].  The registers and flags it leaves are the
- * function's own when this is the last vertex. */
-struct ObjectClip
+ * [0x7d34fc]/past [0x7d350c]. */
+x86::reg8 objectClip(win32::WinApplication* app, x86::reg32 out)
 {
-    x86::reg32 eax, ebx, ecx, edx;
-    IntegerFlags flags;
-};
-
-ObjectClip objectClip(win32::WinApplication* app, x86::reg32 out)
-{
-    ObjectClip clip;
-    const x86::reg32 inverse = app->getMemory<x86::reg32>(out + 0xc);
-    clip.eax = inverse;
-    clip.ecx = app->getMemory<x86::reg32>(x86::reg32(0x7d34f8));
-    clip.edx = app->getMemory<x86::reg32>(out + 8);
-    clip.ebx = 0x10;
-    clip.flags.logic(inverse & 0x80000000);
-    if (inverse & 0x80000000)
-        return clip;
-    clip.flags.compare(inverse, clip.ecx);
-    if (x86::sreg32(inverse) >= x86::sreg32(clip.ecx))
-        return clip;
-
-    x86::reg32 code = 0;
+    auto word = [app](x86::reg32 address) { return app->getMemory<x86::reg32>(address); };
+    const x86::reg32 inverse = word(out + 0xc);
+    if ((inverse & 0x80000000) || x86::sreg32(inverse) >= x86::sreg32(word(0x7d34f8)))
+        return 0x10;
+    x86::reg8 code = 0;
     // One axis: below `low` (or negative) sets `under`, past `high` sets `over`.
-    auto axis = [&](x86::reg32 value, x86::reg32 low, x86::reg32 high, x86::reg32 under, x86::reg32 over) {
-        clip.flags.logic(value & 0x80000000);
-        if (!(value & 0x80000000))
-        {
-            clip.flags.compare(value, low);
-            if (x86::sreg32(value) >= x86::sreg32(low))
-            {
-                clip.flags.compare(value, high);
-                if (x86::sreg32(value) > x86::sreg32(high))
-                    clip.flags.logic(code |= over);
-                return;
-            }
-        }
-        clip.flags.logic(code |= under);
+    auto axis = [&](x86::reg32 value, x86::reg32 low, x86::reg32 high, x86::reg8 under, x86::reg8 over) {
+        if ((value & 0x80000000) || x86::sreg32(value) < x86::sreg32(low))
+            code |= under;
+        else if (x86::sreg32(value) > x86::sreg32(high))
+            code |= over;
     };
-    axis(app->getMemory<x86::reg32>(out + 4), app->getMemory<x86::reg32>(x86::reg32(0x7d3504)),
-         app->getMemory<x86::reg32>(x86::reg32(0x7d3500)), 8, 4);
-    clip.eax = app->getMemory<x86::reg32>(out);
-    clip.ecx = app->getMemory<x86::reg32>(x86::reg32(0x7d34fc));
-    clip.edx = app->getMemory<x86::reg32>(x86::reg32(0x7d350c));
-    axis(clip.eax, clip.ecx, clip.edx, 1, 2);
-    clip.ebx = code;
-    return clip;
+    axis(word(out + 4), word(0x7d3504), word(0x7d3500), 8, 4);
+    axis(word(out), word(0x7d34fc), word(0x7d350c), 1, 2);
+    return code;
+}
+
+/* What objectClip's code leaves in eax for the vertex at `out`: its 1/z when that is behind the
+ * near plane, else its x -- the last word the code looks at, as sub_4bf4c0 returns. */
+reg32 objectClipLeft(App* app, reg32 out)
+{
+    const reg32 inverse = app->getMemory<reg32>(out + 0xc);
+    if ((inverse & 0x80000000) || x86::sreg32(inverse) >= x86::sreg32(app->getMemory<reg32>(0x7d34f8)))
+        return inverse;
+    return app->getMemory<reg32>(out);
 }
 
 /* sub_4bf4c0's work: `count` (at least 1) object vertices from `in`, 3 floats
  * each, turned by the 3x3 `matrix` and moved by `position` into view space and
  * onto the screen at `out`, 0x20 bytes each: x, y, z, 1/z, and the clip code at
  * +0x14.  Pipelined as the original is: a vertex is moved while the one before
- * it is projected.  Returns the last vertex's clip, whose registers and flags
- * the function leaves. */
+ * it is projected. */
 template <typename Math>
-ObjectClip objectVertexList(App* app, const Math& math, i32 count, reg32 in, reg32 matrix, reg32 position,
-                            reg32 out)
+void objectVertexList(App* app, const Math& math, i32 count, reg32 in, reg32 matrix, reg32 position, reg32 out)
 {
     const float* m = &app->getMemory<float>(matrix);
     const float* t = &app->getMemory<float>(position);
@@ -525,13 +432,11 @@ ObjectClip objectVertexList(App* app, const Math& math, i32 count, reg32 in, reg
         const float next = move(in, out + 0x20);
         project(out, inverse);
         inverse = next;
-        app->getMemory<x86::reg8>(out + 0x14) = x86::reg8(objectClip(app, out).ebx);
+        app->getMemory<x86::reg8>(out + 0x14) = objectClip(app, out);
         out += 0x20;
     }
     project(out, inverse);
-    const ObjectClip last = objectClip(app, out);
-    app->getMemory<x86::reg8>(out + 0x14) = x86::reg8(last.ebx);
-    return last;
+    app->getMemory<x86::reg8>(out + 0x14) = objectClip(app, out);
 }
 
 /* sub_4e03b0: vectors turned by a 3x3 matrix, the row vector on the left.
@@ -563,8 +468,7 @@ void rotateVectorList(App* app, const Math& math, i32 count, reg32 in, reg32 mat
  *   s = 1 / sqrt((1 + |z|) * [0x53c6a8]) * [0x53c6b0], a double,
  *   u = x * s + [0x53c6b8] at +0x18 and v = s * y + [0x53c6b8] at +0x1c. */
 template <typename Math>
-void envMapLoop(win32::WinApplication* app, x86::FPU& fpu, const Math& math, x86::reg32 count, x86::reg32 in,
-                x86::reg32 out, x86::reg32& ebx, LastWideCompare& compared)
+void envMapLoop(win32::WinApplication* app, const Math& math, x86::reg32 count, x86::reg32 in, x86::reg32 out)
 {
     typedef typename Math::Value V;
     const V scale = app->getMemory<float>(x86::reg32(0x53c6a8));
@@ -573,17 +477,14 @@ void envMapLoop(win32::WinApplication* app, x86::FPU& fpu, const Math& math, x86
     for (x86::reg32 left = count; left != 0; --left, in += 0xc, out += 0x20)
     {
         const float z = app->getMemory<float>(in + 8);
-        compared(0.0, z);
         // |z| through [ebp-4], a float
         V absZ = z;
         if (0.0f > z)
             absZ = -z;
-        else
-            ebx = app->getMemory<x86::reg32>(in + 8);
         const V root = math.sqrt(math.mul(math.add(V(1), absZ), scale));
         // fmul qword: the one operand that is no float, rounded by the FPU
         // (as floats, a result past a float's range raises overflow here)
-        const V s = V(FpuMath{fpu}.mul(double(math.div(V(1), root)), wide));
+        const V s = V(FpuMath().mul(double(math.div(V(1), root)), wide));
         const V x = app->getMemory<float>(in);
         app->getMemory<float>(out + 0x18) = float(math.add(math.mul(x, s), centre));
         const V y = app->getMemory<float>(in + 4);
@@ -591,58 +492,27 @@ void envMapLoop(win32::WinApplication* app, x86::FPU& fpu, const Math& math, x86
     }
 }
 
+/* sub_49db70's work: `count` normals at `normals` turned by `matrix` into `turned`, then the
+ * coordinates of the vertices at `vertices` from them (envMapLoop) -- at single precision to
+ * nearest as floats, and once more the emulated FPU's way should one leave their range: the loop
+ * only writes what it works out from what it reads.  In any other mode the FPU's way at once. */
+void envMapCoordsOf(App* app, CPU& cpu, reg32 count, reg32 normals, reg32 turned, reg32 vertices, reg32 matrix)
+{
+    turnVectors(app, cpu, i32(count), normals, matrix, turned);
+    if (singleNearest(cpu))
+    {
+        std::feclearexcept(kOutOfRange);
+        envMapLoop(app, FloatMath(), count, turned, vertices);
+        if (!std::fetestexcept(kOutOfRange))
+            return;
+    }
+    envMapLoop(app, FpuMath(), count, turned, vertices);
+}
+
 void envMapCoordsNative(win32::WinApplication* app, x86::CPU& cpu)
 {
-    const x86::reg32 esp = cpu.esp;
-    const x86::reg32 ebp = cpu.ebp;
-    const x86::reg32 esi = cpu.esi;
-    const x86::reg32 edi = cpu.edi;
-    const x86::reg32 count = cpu.eax;
-    const x86::reg32 turned = cpu.ebx;
-    const x86::reg32 vertices = cpu.ecx;
-    // push esi, edi, ebp; mov ebp, esp; sub esp, 0xc -- then the call
-    cpu.ebp = esp - 12;
-    cpu.esp = esp - 24;
-    cpu.ebx = app->getMemory<x86::reg32>(esp + 4);
-    cpu.ecx = turned;
-    if (!call(app, cpu, 0x4e03b0))
-        return;
-
-    // At single precision to nearest as floats, and once more the emulated
-    // FPU's way should one leave their range: the loop only writes what it
-    // works out from what it reads.  In any other mode the FPU's way at once.
-    x86::reg32 ebx = cpu.ebx;
-    LastWideCompare compared;
-    bool exact = !singleNearest(cpu);
-    if (!exact)
-    {
-        std::feclearexcept(FE_OVERFLOW | FE_UNDERFLOW | FE_INVALID);
-        envMapLoop(app, cpu.fpu, FloatMath(), count, turned, vertices, ebx, compared);
-        exact = std::fetestexcept(FE_OVERFLOW | FE_UNDERFLOW | FE_INVALID) != 0;
-    }
-    if (exact)
-    {
-        ebx = cpu.ebx;
-        compared = LastWideCompare();
-        envMapLoop(app, cpu.fpu, FpuMath{cpu.fpu}, count, turned, vertices, ebx, compared);
-    }
-    const x86::reg32 in = turned + count * 0xc;
-    const x86::reg32 out = vertices + count * 0x20;
-
-    compared.replay(cpu);
-    if (compared.any)
-        cpu.eax = (cpu.eax & 0xffff0000) | cpu.fpu.status.word;  // fnstsw ax
-    cpu.ebx = ebx;
-    cpu.ecx = out;
-    cpu.edx = in;
-    cpu.esi = esi;
-    cpu.edi = edi;
-    cpu.ebp = ebp;
-    // cmp esi, -1 at the end
-    IntegerFlags flags;
-    flags.compare(0, 0);
-    flags.store(cpu);
-    cpu.esp = esp + 4 + 4;
+    envMapCoordsOf(app, cpu, cpu.eax, cpu.edx, cpu.ebx, cpu.ecx, app->getMemory<reg32>(cpu.esp + 4));
+    cpu.esp += 4 + 4;
 }
 
 /* sub_49da30: a car's vertices lit by the sun.
@@ -654,47 +524,24 @@ void envMapCoordsNative(win32::WinApplication* app, x86::CPU& cpu)
  *   n = round(d * [0x53c6a0]), a double;  each of r, g and b
  *   base + (n * slope >> 16), capped
  * at +0x10, the others the base colour alone. */
-void shadeNormalsNative(win32::WinApplication* app, x86::CPU& cpu)
+void shadeNormalsOf(App* app, CPU& cpu, reg32 car, reg32 count, reg32 normals, reg32 turned, reg32 vertices,
+                    reg32 matrix)
 {
-    const x86::reg32 esp = cpu.esp;
-    const x86::reg32 ebp = cpu.ebp;
-    const x86::reg32 esi = cpu.esi;
-    const x86::reg32 edi = cpu.edi;
-    const x86::reg32 count = cpu.edx;
-    const x86::reg32 turned = cpu.ecx;
-    const x86::reg32 dots = app->getMemory<x86::reg32>(cpu.eax) + app->getMemory<x86::reg32>(cpu.eax + 4) * 0x84;
-    // push esi, edi, ebp; mov ebp, esp; sub esp, 0x14 -- then the two calls
-    cpu.ebp = esp - 12;
-    cpu.esp = esp - 12 - 0x14;
-    cpu.eax = count;
-    cpu.edx = cpu.ebx;
-    cpu.ebx = app->getMemory<x86::reg32>(esp + 8);
-    cpu.ecx = turned;
-    if (!call(app, cpu, 0x4e03b0))
-        return;
-    cpu.eax = count;
-    cpu.ebx = 0x55e6a0;
-    cpu.ecx = dots;
-    cpu.edx = turned;
-    if (!call(app, cpu, 0x4e0210))
-        return;
-
     auto global = [app](x86::reg32 address) { return app->getMemory<x86::reg32>(address); };
+    const x86::reg32 dots = global(car) + global(car + 4) * 0x84;
+    turnVectors(app, cpu, i32(count), normals, matrix, turned);
+    dotProductsOf(app, cpu, i32(count), turned, 0x55e6a0, dots);
+
     const double factor = app->getMemory<double>(x86::reg32(0x53c6a0));
-    x86::reg32 eax = cpu.eax;
-    x86::reg32 ebx = cpu.ebx;
-    x86::reg32 ecx = cpu.ecx;
     x86::reg32 in = dots;
-    x86::reg32 out = app->getMemory<x86::reg32>(esp + 4);
-    LastWideCompare compared;
-    for (x86::reg32 left = count; left != 0; --left)
+    x86::reg32 out = vertices;
+    for (x86::reg32 left = count; left != 0; --left, out += 0x20, in += 4)
     {
         const double d = app->getMemory<float>(in);
-        compared(0.0, d);
         if (0.0 < d || d != d)
         {
             // fmul qword, fistp: the FPU's rounding, then the control word's
-            const x86::reg32 n = x86::reg32(fp::toInteger<x86::sreg32>(x86::Float(FpuMath{cpu.fpu}.mul(d, factor))));
+            const x86::reg32 n = x86::reg32(fp::toInteger<x86::sreg32>(x86::Float(FpuMath().mul(d, factor))));
             x86::reg32 red = global(0x55e6b8) + ((n * global(0x55e6d0)) >> 16);
             if (red > global(0x55e6c4))
                 red = global(0x55e6c4);
@@ -704,33 +551,19 @@ void shadeNormalsNative(win32::WinApplication* app, x86::CPU& cpu)
             x86::reg32 blue = ((global(0x55e6d8) * n) >> 16) + global(0x55e6c0);
             if (blue > global(0x55e6cc))
                 blue = global(0x55e6cc);
-            ecx = (red << 16) | global(0x55e6e4) | (green << 8) | blue;
-            app->getMemory<x86::reg32>(out + 0x10) = ecx;
-            eax = blue;
-            ebx = green << 8;
+            app->getMemory<x86::reg32>(out + 0x10) = (red << 16) | global(0x55e6e4) | (green << 8) | blue;
         }
         else
-        {
-            eax = (global(0x55e6bc) << 8) | global(0x55e6e4) | (global(0x55e6b8) << 16) | global(0x55e6c0);
-            app->getMemory<x86::reg32>(out + 0x10) = eax;
-            ecx = global(0x55e6c0);
-        }
-        out += 0x20;
-        in += 4;
+            app->getMemory<x86::reg32>(out + 0x10) =
+                (global(0x55e6bc) << 8) | global(0x55e6e4) | (global(0x55e6b8) << 16) | global(0x55e6c0);
     }
+}
 
-    compared.replay(cpu);
-    cpu.eax = eax;
-    cpu.ebx = ebx;
-    cpu.ecx = ecx;
-    cpu.edx = in;
-    cpu.esi = esi;
-    cpu.edi = edi;
-    cpu.ebp = ebp;
-    // cmp esi, -1 at the end
-    IntegerFlags flags;
-    flags.compare(0, 0);
-    flags.store(cpu);
+void shadeNormalsNative(win32::WinApplication* app, x86::CPU& cpu)
+{
+    const reg32 esp = cpu.esp;
+    shadeNormalsOf(app, cpu, cpu.eax, cpu.edx, cpu.ebx, cpu.ecx, app->getMemory<reg32>(esp + 4),
+                   app->getMemory<reg32>(esp + 8));
     cpu.esp = esp + 4 + 8;
 }
 
@@ -742,65 +575,39 @@ void shadeNormalsNative(win32::WinApplication* app, x86::CPU& cpu)
  * A polygon faces away when its corners' cross product on the screen says so,
  * flipped by [0x554e4c]; bit 0 of +7 makes it two-sided.  The draw list runs
  * from [0x7a3d0c] through each polygon's first dword to [0x7a3d08]. */
-void cullPolygonsNative(win32::WinApplication* app, x86::CPU& cpu)
+void cullPolygonsOf(App* app, CPU& cpu, reg32 object, reg32 part, reg32 flag)
 {
     auto reg32At = [app](x86::reg32 address) { return app->getMemory<x86::reg32>(address); };
     auto reg8At = [app](x86::reg32 address) { return app->getMemory<x86::reg8>(address); };
     auto floatAt = [app](x86::reg32 address) -> float { return app->getMemory<float>(address); };
-    const x86::reg32 esp = cpu.esp;
-    const x86::reg32 object = cpu.eax;
-    const x86::reg32 flag = cpu.ebx;
-    const x86::reg32 slot = object + cpu.edx * 4;
+    const x86::reg32 slot = object + part * 4;
     const x86::reg32 count = reg32At(slot + 0x6fc);
-    IntegerFlags flags;
     if (count == 0)
-    {
-        cpu.eax = slot;
-        cpu.edx = 0;
-        flags.logic(0);  // test edx, edx
-        flags.store(cpu);
-        cpu.esp = esp + 4;
         return;
-    }
 
-    LastWideCompare compared;
-    x86::reg32 eax = 0;
-    // 1 when the cross product of a, b and c says the polygon faces the view.
+    // 0 when the cross product of a, b and c says the polygon faces the view.
     auto facing = [&](x86::reg32 polygon) -> x86::reg32 {
         const x86::reg32 a = reg32At(polygon + 8);
         const x86::reg32 b = reg32At(polygon + 0xc);
         const x86::reg32 c = reg32At(polygon + 0x10);
         const CrossProducts cross = crossProducts(cpu, floatAt(c + 4), floatAt(b + 4), floatAt(a), floatAt(b),
                                                   floatAt(a + 4), floatAt(b + 4), floatAt(c), floatAt(b));
-        compared(cross.two, cross.one);
-        eax = cross.two > cross.one ? 1 : 0;
-        return reg32At(0x554e4c) ^ eax;
+        return reg32At(0x554e4c) ^ (cross.two > cross.one ? 1 : 0);
     };
 
-    const x86::reg32 polygons = reg32At(object);
-    x86::reg32 edx = reg32At(slot + 0x5fc) * 0x84 + polygons;
-    x86::reg32 ebx = edx;
-    x86::reg32 current;
-    if (reg8At(edx + 7) & 1)
+    x86::reg32 polygon = reg32At(slot + 0x5fc) * 0x84 + reg32At(object);
+    x86::reg32 ahead = polygon;
+    x86::reg32 current = (reg8At(polygon + 7) & 1) ? 0 : facing(polygon);
+    for (x86::sreg32 i = 0; i < x86::sreg32(count); ++i)
     {
-        eax = (polygons & 0xffff00ff) | (x86::reg32(reg8At(edx + 7)) << 8);  // mov ah, [edx+7]
-        current = 0;
-    }
-    else
-    {
-        current = facing(edx);
-    }
-    // [ebp-0x14]: what the next polygon's test left, or what the stack held
-    x86::reg32 next = reg32At(esp - 16 - 0x14);
-    x86::sreg32 i = 0;
-    for (; i < x86::sreg32(count); ++i)
-    {
+        x86::reg32 next = 0;
         if (i < x86::sreg32(count - 1))
         {
-            const bool twoSided = reg8At(ebx + 0x8b) & 1;
-            ebx += 0x84;
-            next = twoSided ? 0 : facing(ebx);
+            const bool twoSided = reg8At(ahead + 0x8b) & 1;
+            ahead += 0x84;
+            next = twoSided ? 0 : facing(ahead);
         }
+        const x86::reg32 edx = polygon;
         if (current == 0
             && !(reg8At(reg32At(edx + 8) + 0x14) & reg8At(reg32At(edx + 0xc) + 0x14) & reg8At(reg32At(edx + 0x10) + 0x14)))
         {
@@ -850,19 +657,15 @@ void cullPolygonsNative(win32::WinApplication* app, x86::CPU& cpu)
                 reg32At(edx + 0x7c) = shade;
             }
         }
-        eax = next;
         current = next;
-        edx = ebx;
+        polygon = ahead;
     }
+}
 
-    compared.replay(cpu);
-    cpu.eax = eax;
-    cpu.ebx = ebx;
-    cpu.edx = edx;
-    // cmp ecx, edi at the top of the loop
-    flags.compare(x86::reg32(i), count);
-    flags.store(cpu);
-    cpu.esp = esp + 4;
+void cullPolygonsNative(win32::WinApplication* app, x86::CPU& cpu)
+{
+    cullPolygonsOf(app, cpu, cpu.eax, cpu.edx, cpu.ebx);
+    cpu.esp += 4;
 }
 
 /* The depth for Glide of a 1/w whose bits are `w` (taken as 0 when negative or
@@ -891,6 +694,15 @@ void polygonDepth(win32::WinApplication* app, const FpuMath& M, x86::reg32 verte
     app->getMemory<float>(vertex + 8) = depthSteps(M, app->getMemory<x86::reg32>(vertex + 0xc), scale, offset).depth;
 }
 
+/* polygonDepth of each vertex, with [0x560094] and [0x560098] as the drawing reads them. */
+void cornerDepths(App* app, std::initializer_list<reg32> vertices)
+{
+    const float scale = app->getMemory<float>(x86::reg32(0x560094));
+    const float offset = app->getMemory<float>(x86::reg32(0x560098));
+    for (const reg32 vertex : vertices)
+        polygonDepth(app, FpuMath(), vertex, scale, offset);
+}
+
 /* sub_434380: the frame's polygons to the renderer, in the order of their list
  *   eax  the first; each polygon's first dword is the next, the word at +4 its
  *   kind, and the list goes on while that is 3; its vertices at +8, +0xc, +0x10
@@ -901,25 +713,14 @@ void polygonDepth(win32::WinApplication* app, const FpuMath& M, x86::reg32 verte
  * ([0x554e54], state 1) go through THRASH_setstate ([0x9ef96c]) when they
  * change.  A polygon with a vertex off the screen goes to the clipper
  * (sub_4c11b0); the rest get their depth (polygonDepth) and go to
- * THRASH_drawtri ([0x9ef974]).  Returns the polygon the list ended on. */
-void submitPolygonsNative(win32::WinApplication* app, x86::CPU& cpu)
+ * THRASH_drawtri ([0x9ef974]).  Returns the polygon the list ended on.
+ * Entered at `esp`; its frame below six pushes and 0x18 bytes. */
+reg32 submitPolygonsOf(App* app, CPU& cpu, reg32 esp, reg32 first)
 {
     auto reg32At = [app](x86::reg32 address) { return app->getMemory<x86::reg32>(address); };
     auto reg8At = [app](x86::reg32 address) { return app->getMemory<x86::reg8>(address); };
-    const x86::reg32 esp = cpu.esp;
-    const x86::reg32 saved[] = { cpu.ebx, cpu.ecx, cpu.edx, cpu.esi, cpu.edi, cpu.ebp };
-    const x86::reg32 first = cpu.eax;
-    // push ebx, ecx, edx, esi, edi, ebp; mov ebp, esp; sub esp, 0x18
-    cpu.ebp = esp - 24;
-    cpu.esp = esp - 24 - 0x18;
+    const reg32 base = esp - 24 - 0x18;  // push ebx, ecx, edx, esi, edi, ebp; mov ebp, esp; sub esp, 0x18
 
-    auto setState = [&](x86::reg32 state, x86::reg32 value) -> bool {
-        reg32At(cpu.esp - 4) = value;
-        reg32At(cpu.esp - 8) = state;
-        cpu.esp -= 8;
-        return call(app, cpu, reg32At(0x9ef96c));
-    };
-    IntegerFlags flags;
     x86::reg32 polygon = first;
     for (int pass = 0; pass < 2; ++pass)
     {
@@ -939,8 +740,9 @@ void submitPolygonsNative(win32::WinApplication* app, x86::CPU& cpu)
                 if (reg32At(0x554e58) != blend)
                 {
                     reg32At(0x554e58) = blend;
-                    if (!setState(0x68, blend))
-                        return;
+                    if (!driverAt<thrash::kThrashSetState, &port::driver::setState>(app, cpu,
+                        base, 0x68, blend).has_value())
+                        return 0;
                 }
                 for (int i = 0; i < 3; ++i)
                     reg32At(reg32At(polygon + 8 + 4 * i) + 0x10) = reg32At(polygon + colours + 4 * i);
@@ -956,66 +758,41 @@ void submitPolygonsNative(win32::WinApplication* app, x86::CPU& cpu)
                 if (reg32At(0x554e54) != texture)
                 {
                     reg32At(0x554e54) = texture;
-                    if (!setState(1, texture))
-                        return;
+                    if (!driverAt<thrash::kThrashSetState, &port::driver::setState>(app, cpu,
+                        base, 1, texture).has_value())
+                        return 0;
                 }
                 const x86::reg32 corners[3] = { reg32At(polygon + 8), reg32At(polygon + 0xc), reg32At(polygon + 0x10) };
                 if (reg32At(corners[0] + 0x14) != 0 || reg32At(corners[1] + 0x14) != 0
                     || reg32At(corners[2] + 0x14) != 0)
                 {
-                    cpu.eax = corners[0];
-                    cpu.edx = corners[1];
-                    cpu.ebx = corners[2];
-                    cpu.esi = polygon;
-                    cpu.edi = pass == 0 ? first : texture;
-                    cpu.esp -= 4;
-                    clipTriangleNative(app, cpu);
+                    clipTriangleOf(app, cpu, base - 4, corners[0], corners[1], corners[2]);
                     if (cpu.terminate)
-                        return;
+                        return 0;
                 }
                 else
                 {
-                    const float scale = app->getMemory<float>(x86::reg32(0x560094));
-                    const float offset = app->getMemory<float>(x86::reg32(0x560098));
-                    for (int i = 0; i < 3; ++i)
-                        polygonDepth(app, FpuMath{cpu.fpu}, corners[i], scale, offset);
-                    reg32At(cpu.esp - 4) = corners[2];
-                    reg32At(cpu.esp - 8) = corners[1];
-                    reg32At(cpu.esp - 12) = corners[0];
-                    cpu.esp -= 12;
-                    if (!call(app, cpu, reg32At(0x9ef974)))
-                        return;
+                    cornerDepths(app, { corners[0], corners[1], corners[2] });
+                    if (!driverAt<thrash::kThrashDrawTri, &port::driver::drawTri>(app, cpu,
+                        base, corners[0], corners[1], corners[2]).has_value())
+                        return 0;
                 }
             }
             polygon = reg32At(polygon);
-            if (polygon == 0)
-            {
-                flags.logic(0);  // test esi, esi
+            if (polygon == 0 || app->getMemory<x86::reg16>(polygon + 4) != 3)
                 break;
-            }
-            const x86::reg16 kind = app->getMemory<x86::reg16>(polygon + 4);
-            if (kind != 3)
-            {
-                // cmp ax, 3
-                const x86::reg16 result = x86::reg16(kind - 3);
-                flags.cf = kind < 3;
-                flags.of = ((kind ^ 3) & (kind ^ result) & 0x8000) != 0;
-                flags.zf = false;
-                flags.sf = (result & 0x8000) != 0;
-                break;
-            }
         }
     }
+    return polygon;
+}
 
-    cpu.eax = polygon;
-    cpu.ebx = saved[0];
-    cpu.ecx = saved[1];
-    cpu.edx = saved[2];
-    cpu.esi = saved[3];
-    cpu.edi = saved[4];
-    cpu.ebp = saved[5];
-    flags.store(cpu);
-    cpu.esp = esp + 4;
+void submitPolygonsNative(win32::WinApplication* app, x86::CPU& cpu)
+{
+    const reg32 result = submitPolygonsOf(app, cpu, cpu.esp, cpu.eax);
+    if (cpu.terminate)
+        return;
+    cpu.eax = result;
+    cpu.esp += 4;
 }
 
 /* sub_41ae90: one piece of track's polygons -- four corners each -- drawn.
@@ -1032,74 +809,44 @@ void submitPolygonsNative(win32::WinApplication* app, x86::CPU& cpu)
  * texture is not a special one; otherwise each corner only raises its
  * vertex's colour to the record's.  Returns how many triangles went out.
  *
- * Only the arena slots the callees are pointed at live in the guest frame;
- * the rest stays here.  The callees' registers, flags and FPU status are
- * carried through as the original carries them. */
-void trackPolygonsNative(win32::WinApplication* app, x86::CPU& cpu)
+ * Entered at `esp`; only the arena slots the callees are pointed at live in
+ * the guest frame (three pushes, then 0x48 bytes), the rest stays here. */
+reg32 trackPolygonsOf(App* app, CPU& cpu, reg32 esp, reg32 view, reg32 pieceRow, reg32 pieceColumn, reg32 records,
+                      reg32 tail, reg32 head)
 {
     auto reg32At = [app](x86::reg32 address) { return app->getMemory<x86::reg32>(address); };
     auto reg16At = [app](x86::reg32 address) { return app->getMemory<x86::reg16>(address); };
     auto reg8At = [app](x86::reg32 address) { return app->getMemory<x86::reg8>(address); };
     auto floatAt = [app](x86::reg32 address) -> float { return app->getMemory<float>(address); };
-    const x86::reg32 esp = cpu.esp;
-    const x86::reg32 esi = cpu.esi;
-    const x86::reg32 edi = cpu.edi;
-    const x86::reg32 ebp0 = cpu.ebp;
     const x86::reg32 ebp = esp - 12;  // push esi, edi, ebp; mov ebp, esp
+    const x86::reg32 base = ebp - 0x48;
     const x86::reg32 arena = ebp - 0x48;
     const x86::reg32 cursor = ebp - 0x40;
-    const x86::reg32 view = cpu.eax;
-    const x86::reg32 handed = cpu.edx;
-    const x86::reg32 piece = cpu.ebx * 0x5c0 + 0x571370;
-    const x86::reg32 count = reg32At(piece + cpu.ecx * 4);
-    x86::reg32 polygon = reg32At(piece + cpu.ecx * 4 + 0x2c);
-    const x86::reg32 records = reg32At(esp + 4);
+    const x86::reg32 piece = pieceRow * 0x5c0 + 0x571370;
+    const x86::reg32 count = reg32At(piece + pieceColumn * 4);
+    x86::reg32 polygon = reg32At(piece + pieceColumn * 4 + 0x2c);
 
-    cpu.ebp = ebp;
-    cpu.esp = ebp - 0x48;
-    cpu.edx = 0xa0;
-    cpu.eax = arena;
-    if (!call(app, cpu, 0x4bbe40))
-        return;
+    if (!callAt(app, cpu, base, 0x4bbe40, { arena }))
+        return 0;
     reg32At(cursor) = reg32At(arena);
-    cpu.ebx = 0;
-    cpu.edx = count * 0xa0;
-    cpu.eax = ebp - 0x3c;
-    if (!call(app, cpu, 0x4bbe40))
-        return;
-    // test eax, eax: no room in the arena, nothing drawn
-    const x86::sreg32 polygons = cpu.eax != 0 ? x86::sreg32(count) : 0;
+    const auto room = callAt(app, cpu, base, 0x4bbe40, { ebp - 0x3c });
+    if (!room)
+        return 0;
+    // no room in the arena, nothing drawn
+    const x86::sreg32 polygons = *room != 0 ? x86::sreg32(count) : 0;
 
     x86::reg32 total = 0;
-    x86::reg32 ebx = cpu.ebx;
-    x86::reg32 ecx = cpu.ecx;
-    LastWideCompare compared;
-    // A call sees the FPU status and sahf's flags as the original leaves them.
-    auto drawTriangle = [&](x86::reg32 a, x86::reg32 b, x86::reg32 c, x86::reg32 ediThen) -> bool {
-        compared.replay(cpu);
-        compared.any = false;
-        reg32At(cpu.esp - 4) = c;
-        reg32At(cpu.esp - 8) = b;
-        cpu.esp -= 8;
-        cpu.eax = cursor;
-        cpu.ebx = view;
-        cpu.ecx = a;
-        cpu.edx = handed;
-        cpu.esi = a;
-        cpu.edi = ediThen;
-        cpu.esp -= 4;
-        projectedTriangleNative(app, cpu);
-        if (cpu.terminate)
-            return false;
-        total += cpu.eax;
-        return true;
-    };
-    auto raise = [&](x86::reg32 record, x86::reg32 at, x86::reg8& vertexByte) {
-        // cmp; jbe: the record's byte where it is the greater
+    // A corner whose record is on the screen raises its vertex's colour.
+    auto raise = [&](x86::reg32 record) {
+        if (reg16At(record + 4) != 0)
+            return;
         const x86::reg32 vertex = reg32At(record + 8);
-        const x86::reg8 own = reg8At(record + at);
-        vertexByte = reg8At(vertex + at - 4);
-        reg8At(vertex + at - 4) = own > vertexByte ? own : vertexByte;
+        for (const x86::reg32 at : { 0x16u, 0x15u, 0x14u })
+        {
+            const x86::reg8 own = reg8At(record + at);
+            const x86::reg8 vertexByte = reg8At(vertex + at - 4);
+            reg8At(vertex + at - 4) = own > vertexByte ? own : vertexByte;
+        }
     };
 
     for (x86::sreg32 i = 0; i < polygons; ++i, polygon += 0xe)
@@ -1110,10 +857,8 @@ void trackPolygonsNative(win32::WinApplication* app, x86::CPU& cpu)
         const x86::reg32 rec3 = records + x86::reg32(x86::sreg32(reg32At(polygon + 4)) >> 16) * 0x1c;
         const x86::reg8 flags = reg8At(polygon + 0xc);
         const x86::reg32 t0 = reg32At(rec0 + 8);
-        ecx = t0;
         const double farthest = floatAt(reg32At(0x5dd830) + 0x30);
         const double z0 = floatAt(t0 + 8);
-        compared(z0, farthest);
         if (z0 > farthest)
             continue;
 
@@ -1123,34 +868,24 @@ void trackPolygonsNative(win32::WinApplication* app, x86::CPU& cpu)
         const x86::reg32 t2 = reg32At(rec2 + 8);
         const x86::reg32 c2 = reg8At(t2 + 0x14);
         const x86::reg32 c3 = reg8At(reg32At(rec3 + 8) + 0x14);
-        ebx = c2;
-        ecx = c0 & c1 & c2;
-        if (c3 & ecx)
+        if (c3 & c0 & c1 & c2)
             continue;
-        if (!(flags & 0x10))
+        if (!(flags & 0x10) && !((c0 | c1 | c2 | c3) & 0x10))
         {
-            ecx = c0 | c1 | c2 | c3;
-            if (!(ecx & 0x10))
+            const CrossProducts p = crossProducts(cpu, floatAt(t2 + 4), floatAt(t1 + 4), floatAt(t0), floatAt(t1),
+                                                  floatAt(t0 + 4), floatAt(t1 + 4), floatAt(t2), floatAt(t1));
+            const x86::reg32 back = (p.two < p.one || p.two != p.two || p.one != p.one) ? 1 : 0;
+            if (back ^ reg32At(0x554e4c))
             {
-                const CrossProducts p = crossProducts(cpu, floatAt(t2 + 4), floatAt(t1 + 4), floatAt(t0), floatAt(t1),
-                                                      floatAt(t0 + 4), floatAt(t1 + 4), floatAt(t2), floatAt(t1));
-                compared(p.two, p.one);
-                ecx = t2;
-                const x86::reg32 back = (p.two < p.one || p.two != p.two || p.one != p.one) ? 1 : 0;
-                if (back ^ reg32At(0x554e4c))
-                {
-                    const x86::reg32 t3 = reg32At(rec3 + 8);
-                    const x86::reg32 t2again = reg32At(rec2 + 8);
-                    ebx = t3;
-                    ecx = reg32At(rec0 + 8);
-                    const CrossProducts q = crossProducts(cpu, floatAt(t3 + 4), floatAt(t2again + 4), floatAt(ecx),
-                                                          floatAt(t2again), floatAt(ecx + 4), floatAt(t2again + 4),
-                                                          floatAt(t3), floatAt(t2again));
-                    compared(q.two, q.one);
-                    const x86::reg32 backToo = (q.two < q.one || q.two != q.two || q.one != q.one) ? 1 : 0;
-                    if (backToo ^ reg32At(0x554e4c))
-                        continue;
-                }
+                const x86::reg32 t3 = reg32At(rec3 + 8);
+                const x86::reg32 t2again = reg32At(rec2 + 8);
+                const x86::reg32 t0again = reg32At(rec0 + 8);
+                const CrossProducts q = crossProducts(cpu, floatAt(t3 + 4), floatAt(t2again + 4), floatAt(t0again),
+                                                      floatAt(t2again), floatAt(t0again + 4), floatAt(t2again + 4),
+                                                      floatAt(t3), floatAt(t2again));
+                const x86::reg32 backToo = (q.two < q.one || q.two != q.two || q.one != q.one) ? 1 : 0;
+                if (backToo ^ reg32At(0x554e4c))
+                    continue;
             }
         }
 
@@ -1158,93 +893,43 @@ void trackPolygonsNative(win32::WinApplication* app, x86::CPU& cpu)
         if (mirrorAsMain(reg32At(view)) != 1)
         {
             const x86::reg32 texture = x86::reg32(x86::sreg32(reg32At(polygon + 6)) >> 16);
-            ecx = reg32At(0x552df4);
-            draw = !(reg8At(ecx + texture * 47 + 0x28) & 4) && gameSettings(app).detailFlagFc == 1 && reg32At(0x7a3a60) != 0;
+            draw = !(reg8At(reg32At(0x552df4) + texture * 47 + 0x28) & 4) && gameSettings(app).detailFlagFc == 1
+                   && reg32At(0x7a3a60) != 0;
         }
         if (draw)
         {
-            if (!drawTriangle(rec0, rec1, rec2, rec2) || !drawTriangle(rec0, rec2, rec3, polygon))
-                return;
-            ebx = cpu.ebx;
-            ecx = cpu.ecx;
+            total += projectedTriangleOf(app, cursor, rec0, rec1, rec2);
+            total += projectedTriangleOf(app, cursor, rec0, rec2, rec3);
             continue;
         }
-
-        // Each corner whose record is on the screen raises its vertex's colour.
-        x86::reg8 low, high, third;
-        if (reg16At(rec0 + 4) == 0)
-        {
-            raise(rec0, 0x16, low);
-            raise(rec0, 0x15, high);
-            raise(rec0, 0x14, high);
-            ebx = (ebx & 0xffff0000) | (x86::reg32(high) << 8) | reg8At(rec0 + 0x14);
-            ecx = reg32At(rec0 + 8);
-        }
-        if (reg16At(rec1 + 4) == 0)
-        {
-            raise(rec1, 0x16, low);
-            raise(rec1, 0x15, high);
-            raise(rec1, 0x14, high);
-            ebx = (ebx & 0xffff0000) | (x86::reg32(high) << 8) | reg8At(rec1 + 0x14);
-            ecx = reg32At(rec1 + 8);
-        }
-        if (reg16At(rec2 + 4) == 0)
-        {
-            raise(rec2, 0x16, low);
-            raise(rec2, 0x15, high);
-            raise(rec2, 0x14, third);
-            ecx = (ecx & 0xffff0000) | (x86::reg32(high) << 8) | low;
-        }
-        if (reg16At(rec3 + 4) == 0)
-        {
-            raise(rec3, 0x16, low);
-            raise(rec3, 0x15, high);
-            raise(rec3, 0x14, third);
-            ebx = (ebx & 0xffff0000) | (x86::reg32(high) << 8) | low;
-            ecx = (ecx & 0xffffff00) | third;
-        }
+        for (const x86::reg32 record : { rec0, rec1, rec2, rec3 })
+            raise(record);
     }
 
     // The arena gets what went out, and the list its new end.
-    const x86::reg32 tail = reg32At(esp + 8);
-    reg32At(cursor) = reg32At(tail);
-    IntegerFlags flags;
+    app->getMemory<reg32>(cursor) = reg32At(tail);
     if (total != 0)
     {
-        compared.replay(cpu);
-        compared.any = false;
-        cpu.eax = arena;
-        cpu.ebx = ebx;
-        cpu.ecx = ecx;
-        cpu.edx = total * 0xa0;
-        if (!call(app, cpu, 0x4bbde0))
-            return;
-        ecx = reg32At(cursor);
-        reg32At(ecx != 0 ? ecx : reg32At(esp + 12)) = reg32At(arena);
-        cpu.eax = cursor;
-        cpu.edx = 0xa0;
-        if (!call(app, cpu, 0x4bbe40))
-            return;
-        // sub dword ptr [ebp-0x40], 0xa0, whose flags nothing reads: the
-        // generated code leaves sub_4bbe40's.
-        reg32At(cursor) = reg32At(cursor) - 0xa0;
-        ebx = cpu.ebx;
+        if (!commitArena(app, cpu, base, ebp, arena, total * 0xa0))
+            return 0;
+        const x86::reg32 last = reg32At(cursor);
+        app->getMemory<reg32>(last != 0 ? last : head) = reg32At(arena);
+        if (!callAt(app, cpu, base, 0x4bbe40, { cursor }))
+            return 0;
+        app->getMemory<reg32>(cursor) = reg32At(cursor) - 0xa0;
     }
-    else
-    {
-        compared.replay(cpu);
-        flags.logic(0);  // test edx, edx
-        flags.store(cpu);
-    }
-    reg32At(tail) = reg32At(cursor);
+    app->getMemory<reg32>(tail) = reg32At(cursor);
+    return total;
+}
 
+void trackPolygonsNative(win32::WinApplication* app, x86::CPU& cpu)
+{
+    const reg32 esp = cpu.esp;
+    const reg32 total = trackPolygonsOf(app, cpu, esp, cpu.eax, cpu.ebx, cpu.ecx, app->getMemory<reg32>(esp + 4),
+                                        app->getMemory<reg32>(esp + 8), app->getMemory<reg32>(esp + 12));
+    if (cpu.terminate)
+        return;
     cpu.eax = total;
-    cpu.ebx = ebx;
-    cpu.ecx = ecx;
-    cpu.edx = tail;
-    cpu.esi = esi;
-    cpu.edi = edi;
-    cpu.ebp = ebp0;
     cpu.esp = esp + 4 + 0xc;
 }
 
@@ -1269,56 +954,20 @@ inline bool indefinite(x86::reg32 bits)
  * original has it, a float in memory for the near plane, kept on the x87 for
  * the rest.  The polygon left becomes Glide vertices at 0x7cdbb0 -- x, y,
  * depth, w, colour packed again, s/w-ish, t/w-ish as THRASH wants them -- and
- * goes to THRASH_drawtrifan ([0x9ef960]).  Returns -1 in eax and edx when a
- * pass leaves fewer than three corners, 0 otherwise (also when the first
- * corner is an indefinite and nothing is drawn).
+ * goes to THRASH_drawtrifan ([0x9ef960]).  Returns -1 when a pass leaves
+ * fewer than three corners, 0 otherwise (also when the first corner is an
+ * indefinite and nothing is drawn).  `esp` is where it is entered (its frame:
+ * four pushes, then 0xc8 bytes).
  *
  * The arithmetic is the emulated FPU's (FpuMath), in whatever precision the
- * game has it at, every float stored where the original stores one; the last
- * fcomp and its sahf are replayed on the FPU, and the integer flags set as
- * the last instruction before the return (or the call) leaves them. */
-void clipPolygonNative(win32::WinApplication* app, x86::CPU& cpu)
+ * game has it at, every float stored where the original stores one. */
+reg32 clipPolygonOf(App* app, CPU& cpu, reg32 esp, reg32 corners, reg32 cornerCodes, x86::reg8 clipCodes)
 {
-    const FpuMath M{cpu.fpu};
+    const FpuMath M;
     auto word = [app](x86::reg32 address) { return app->getMemory<x86::reg32>(address); };
     auto byte = [app](x86::reg32 address) { return app->getMemory<x86::reg8>(address); };
     auto load = [app](x86::reg32 address) { return double(app->getMemory<float>(address)); };
     auto store = [app](x86::reg32 address, double value) { app->getMemory<float>(address) = float(value); };
-
-    const x86::reg32 esp = cpu.esp;
-    const x86::reg32 saved[] = { cpu.ecx, cpu.esi, cpu.edi, cpu.ebp };
-    const x86::reg32 corners = cpu.eax;
-    x86::reg8 clipCodes = cpu.bl;
-
-    struct LastFcomp
-    {
-        bool any = false;
-        double a = 0.0;
-        double b = 0.0;
-        void operator()(double x, double y)
-        {
-            any = true;
-            a = x;
-            b = y;
-        }
-    } compared;
-    // fcomp, fnstsw ax, sahf: the FPU's condition bits and the flags from them.
-    auto replay = [&]() {
-        if (!compared.any)
-            return;
-        cpu.fpu.compare(compared.a, compared.b);
-        cpu.flags.lo = x86::reg8(0x02 | ((cpu.fpu.status.word >> 8) & 0xd7));
-    };
-    auto finish = [&](x86::reg32 result, x86::reg32 ebx) {
-        cpu.eax = result;
-        cpu.edx = result;
-        cpu.ebx = ebx;
-        cpu.ecx = saved[0];
-        cpu.esi = saved[1];
-        cpu.edi = saved[2];
-        cpu.ebp = saved[3];
-        cpu.esp = esp + 4;
-    };
 
     {
         // Every field read before any is written.
@@ -1341,9 +990,9 @@ void clipPolygonNative(win32::WinApplication* app, x86::CPU& cpu)
         std::memcpy(&app->getMemory<x86::reg8>(0x7d3570), fields, sizeof fields);
     }
 
-    x86::reg32 list = 0x5600d4;    // ebx: the corners' pointers, the work records'
-    x86::reg32 codes = cpu.edx;    // their clip codes
-    x86::reg32 outList = 0x7d0e78; // esi
+    x86::reg32 list = 0x5600d4;    // the corners' pointers, the work records'
+    x86::reg32 codes = cornerCodes; // their clip codes
+    x86::reg32 outList = 0x7d0e78;
     x86::reg32 outCodes = 0x7d0db0;
     x86::reg32 count = 3;
     x86::reg32 made = 0;
@@ -1355,15 +1004,10 @@ void clipPolygonNative(win32::WinApplication* app, x86::CPU& cpu)
     const double right = load(0x7d34ec);
     auto codeX = [&](x86::reg32 vertex, x86::reg32 code) {
         const double x = load(vertex);
-        compared(x, left);
         if (!(x >= left))
             byte(code) |= 1;
-        else
-        {
-            compared(x, right);
-            if (x > right)
-                byte(code) |= 2;
-        }
+        else if (x > right)
+            byte(code) |= 2;
     };
     auto between = [&](x86::reg32 a, x86::reg32 b, x86::reg32 made, x86::reg32 field, double t) {
         const double from = load(a + field);
@@ -1394,14 +1038,7 @@ void clipPolygonNative(win32::WinApplication* app, x86::CPU& cpu)
             }
         }
         if (kept < 3)
-        {
-            replay();
-            IntegerFlags flags;
-            flags.compare(kept, 3);
-            flags.store(cpu);
-            finish(0xffffffff, list);
             return false;
-        }
         codes = outCodes;
         outCodes += kept;
         list = outList;
@@ -1423,32 +1060,21 @@ void clipPolygonNative(win32::WinApplication* app, x86::CPU& cpu)
             double t = double(float(M.mul(M.sub(aW, nearW), inverse)));
             for (x86::reg32 field : { 0u, 4u, 0xcu, 0x10u })
                 between(a, b, vertex, field, t);
-            if (x86::sreg32(asBits(float(t))) > 0x3f800000)
+            if (x86::sreg32(asBits(float(t))) > 0x3f800000 || 0.0 > t)
                 t = double(float(M.mul(aW, inverse)));
-            else
-            {
-                compared(0.0, t);
-                if (0.0 > t)
-                    t = double(float(M.mul(aW, inverse)));
-            }
             for (x86::reg32 field : { 0x14u, 0x18u, 0x1cu, 0x20u })
                 between(a, b, vertex, field, t);
             word(vertex + 8) = word(0x7d34f0);
             byte(code) = 0x10;
             const double y = load(vertex + 4);
-            compared(y, bottom);
             if (!(y >= bottom))
                 byte(code) |= 8;
-            else
-            {
-                compared(y, top);
-                if (y > top)
-                    byte(code) |= 4;
-            }
+            else if (y > top)
+                byte(code) |= 4;
             codeX(vertex, code);
         });
         if (!kept)
-            return;
+            return 0xffffffff;
         orCodes();
     }
 
@@ -1471,7 +1097,7 @@ void clipPolygonNative(win32::WinApplication* app, x86::CPU& cpu)
                 codeX(vertex, code);
             });
             if (!kept)
-                return;
+                return 0xffffffff;
         }
         orCodes();
     }
@@ -1494,35 +1120,22 @@ void clipPolygonNative(win32::WinApplication* app, x86::CPU& cpu)
                 byte(code) = x86::reg8((previousCode & 0xfc) | bit);
             });
             if (!kept)
-                return;
+                return 0xffffffff;
         }
     }
 
     // A first corner with an indefinite x, y or w: nothing drawn.
-    {
-        const x86::reg32 first = word(list);
-        for (x86::reg32 field : { 0u, 4u, 8u })
-        {
-            if (indefinite(word(first + field)))
-            {
-                replay();
-                IntegerFlags flags;
-                flags.compare(word(first + field) | 0x80000000, 0xffc00000);
-                flags.store(cpu);
-                finish(0, list);
-                return;
-            }
-        }
-    }
+    for (x86::reg32 field : { 0u, 4u, 8u })
+        if (indefinite(word(word(list) + field)))
+            return 0;
 
     const double scale = load(0x560094);
     const double offset = load(0x560098);
     x86::reg32 fan = 0x7cdbb0;
     x86::reg32 drawn = 0;
-    x86::reg32 vertex = 0;
     for (x86::reg32 i = 0; i < count; ++i)
     {
-        vertex = word(list + 4 * i);
+        const x86::reg32 vertex = word(list + 4 * i);
         const double w = load(vertex + 8);
         const double inverse = double(float(M.div(1.0, w)));
         const x86::reg32 wBits = word(vertex + 8);
@@ -1549,81 +1162,19 @@ void clipPolygonNative(win32::WinApplication* app, x86::CPU& cpu)
         }
     }
 
-    /* The call as the original makes it: its frame below the four pushes, the
-     * registers it has then; dec edx ended the loop (add ecx, 0x20 or the
-     * equal cmp before it cleared CF). */
-    replay();
-    cpu.flags.cf = false;
-    cpu.flags.of = false;
-    cpu.flags.zf = true;
-    cpu.flags.sf = false;
-    const x86::reg32 frame = esp - 16 - 0xc8;
-    word(frame - 4) = 0x7cdbb0;
-    word(frame - 8) = drawn - 2;
-    cpu.eax = drawn - 2;
-    cpu.ebx = list + 4 * count;
-    cpu.ecx = fan;
-    cpu.edx = 0;
-    cpu.esi = vertex;
-    cpu.edi = drawn;
-    cpu.ebp = esp - 16 - 0x82;
-    cpu.esp = frame - 8;
-    if (!call(app, cpu, word(0x9ef960)))
+    // From its frame below the four pushes.
+    driverAt<thrash::kThrashDrawTriFan, &port::driver::drawTriFan>(app, cpu, esp - 16 - 0xc8, drawn - 2, 0x7cdbb0);
+    return 0;
+}
+
+/* The adapter of a clipper's entry: eax the corners, edx their codes, bl the codes or-ed. */
+void clipPolygonNative(win32::WinApplication* app, x86::CPU& cpu)
+{
+    const reg32 result = clipPolygonOf(app, cpu, cpu.esp, cpu.eax, cpu.edx, cpu.bl);
+    if (cpu.terminate)
         return;
-    finish(0, cpu.ebx);
-}
-
-/* A call through one of THRASH's pointers, the arguments pushed. */
-bool callThrash(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 slot)
-{
-    const x86::reg32 target = app->getMemory<x86::reg32>(slot);
-    cpu.esp -= 4;
-    app->dynamic_call(target, cpu);
-    return !cpu.terminate;
-}
-
-/* call 0x4c2cd0: the clipper. */
-bool callClipper(win32::WinApplication* app, x86::CPU& cpu)
-{
-    cpu.esp -= 4;
-    clipPolygonNative(app, cpu);
-    return !cpu.terminate;
-}
-
-/* The flags of an 8-bit and, or or test. */
-void logic8(x86::CPU& cpu, x86::reg8 value)
-{
-    cpu.flags.cf = false;
-    cpu.flags.of = false;
-    cpu.flags.zf = !value;
-    cpu.flags.sf = value >> 7;
-}
-
-/* polygonDepth as sub_4c11b0 and sub_4c12e0 write it out inline, and what it
- * leaves: the flags of its test of w's sign and its cmp with 1.0 -- or of the
- * xor that zeroes a register when w is negative or past 1 (`zeroed`) -- and
- * the 1 - w (or 0) it moved through eax. */
-struct InlineDepth
-{
-    bool zeroed;
-    x86::reg32 t;
-};
-
-InlineDepth inlineDepth(win32::WinApplication* app, const FpuMath& M, x86::reg32 vertex, float scale, float offset,
-                        IntegerFlags& flags)
-{
-    const x86::reg32 w = app->getMemory<x86::reg32>(vertex + 0xc);
-    bool zeroed = true;
-    if (!(w & 0x80000000))
-    {
-        flags.compare(w, 0x3f800000);
-        zeroed = x86::sreg32(w) > 0x3f800000;
-    }
-    if (zeroed)
-        flags.logic(0);
-    const DepthSteps steps = depthSteps(M, w, scale, offset);
-    app->getMemory<float>(vertex + 8) = steps.depth;
-    return { zeroed, asBits(steps.t) };
+    cpu.eax = result;
+    cpu.esp += 4;
 }
 
 /* The first indefinite (either sign) among x, y, depth, w, u, v of the
@@ -1643,149 +1194,76 @@ x86::reg32 firstIndefinite(win32::WinApplication* app, std::initializer_list<x86
 /* sub_4c11b0: a triangle (eax, edx, ebx) to the screen.  Nothing when its
  * corners share a clip bit (the byte at +0x14); through the clipper
  * (sub_4c2cd0) when one of them has one; otherwise each gets its depth
- * (polygonDepth) and the three go to THRASH_drawtri ([0x9ef974]).  Registers
- * and flags as the generated code leaves them, the callees' included. */
-void clipTriangleNative(win32::WinApplication* app, x86::CPU& cpu)
+ * (polygonDepth) and the three go to THRASH_drawtri ([0x9ef974]).  Returns
+ * what the code leaves in eax: the shared bits over a's low byte, else the
+ * callee's.  Entered at `esp`; its frame below four pushes. */
+reg32 clipTriangleOf(App* app, CPU& cpu, reg32 esp, reg32 a, reg32 b, reg32 c)
 {
     auto word = [app](x86::reg32 address) { return app->getMemory<x86::reg32>(address); };
     auto byte = [app](x86::reg32 address) { return app->getMemory<x86::reg8>(address); };
-    const x86::reg32 esp = cpu.esp;
-    const x86::reg32 saved[] = { cpu.ecx, cpu.esi, cpu.edi, cpu.ebp };
-    const x86::reg32 a = cpu.eax, b = cpu.edx, c = cpu.ebx;
     const x86::reg8 codes[3] = { byte(a + 0x14), byte(b + 0x14), byte(c + 0x14) };
     const x86::reg32 frame = esp - 16;  // push ecx, esi, edi, ebp; mov ebp, esp
-    auto finish = [&]() {
-        cpu.ecx = saved[0];
-        cpu.esi = saved[1];
-        cpu.edi = saved[2];
-        cpu.ebp = saved[3];
-        cpu.esp = esp + 4;
-    };
     for (int i = 0; i < 3; ++i)
         byte(frame - 4 + x86::reg32(i)) = codes[i];
 
     const x86::reg8 shared = codes[0] & codes[1] & codes[2];
     if (shared)
-    {
-        cpu.eax = (a & 0xffffff00) | shared;
-        logic8(cpu, shared);
-        finish();
-        return;
-    }
+        return (a & 0xffffff00) | shared;
     const x86::reg8 any = codes[0] | codes[1] | codes[2];
-    cpu.ecx = a;
-    cpu.ebp = frame;
     if (any)
     {
         word(frame - 0x1c) = a;
         word(frame - 0x18) = b;
         word(frame - 0x14) = c;
-        cpu.eax = frame - 0x1c;
-        cpu.edx = frame - 4;
-        cpu.ebx = any;
-        cpu.esp = frame - 0x1c;
-        if (!callClipper(app, cpu))
-            return;
-        finish();
-        return;
+        return clipPolygonOf(app, cpu, frame - 0x1c - 4, frame - 0x1c, frame - 4, any);
     }
-    const float scale = app->getMemory<float>(x86::reg32(0x560094));
-    const float offset = app->getMemory<float>(x86::reg32(0x560098));
-    IntegerFlags flags;
-    const InlineDepth da = inlineDepth(app, FpuMath{cpu.fpu}, a, scale, offset, flags);
-    const InlineDepth db = inlineDepth(app, FpuMath{cpu.fpu}, b, scale, offset, flags);
-    const InlineDepth dc = inlineDepth(app, FpuMath{cpu.fpu}, c, scale, offset, flags);
-    cpu.eax = dc.t;
-    cpu.edx = b;
-    cpu.esi = db.zeroed ? 0 : saved[1];
-    cpu.edi = da.zeroed ? 0 : saved[2];
-    flags.store(cpu);
-    word(frame - 0x20) = c;
-    word(frame - 0x24) = b;
-    word(frame - 0x28) = a;
-    cpu.esp = frame - 0x28;
-    if (!callThrash(app, cpu, 0x9ef974))
+    cornerDepths(app, { a, b, c });
+    return driverAt<thrash::kThrashDrawTri, &port::driver::drawTri>(app, cpu, frame - 0x1c, a, b, c).value_or(0);
+}
+
+void clipTriangleNative(win32::WinApplication* app, x86::CPU& cpu)
+{
+    const reg32 result = clipTriangleOf(app, cpu, cpu.esp, cpu.eax, cpu.edx, cpu.ebx);
+    if (cpu.terminate)
         return;
-    finish();
+    cpu.eax = result;
+    cpu.esp += 4;
 }
 
 /* sub_4c12e0: a quad (eax, edx, ebx, ecx: a, b, c, d) to the screen.  Nothing
  * when the four share a clip bit; THRASH_drawquad ([0x9ef94c]) with their
  * depths when none has one; otherwise triangles a b c and a c d, each skipped
  * when its corners share a bit, clipped when one has one, else drawn with
- * THRASH_drawtri unless a field of a corner is an indefinite.  The registers
- * it does not keep, and the flags, as the generated code leaves them. */
-void clipQuadNative(win32::WinApplication* app, x86::CPU& cpu)
+ * THRASH_drawtri unless a field of a corner is an indefinite.  Returns what
+ * the code leaves in eax: the codes it and-ed and or-ed in its low bytes, the
+ * indefinite it found, or the last callee's.  Entered at `esp`; its frame
+ * below three pushes. */
+reg32 clipQuadOf(App* app, CPU& cpu, reg32 esp, reg32 a, reg32 b, reg32 c, reg32 d)
 {
     auto word = [app](x86::reg32 address) { return app->getMemory<x86::reg32>(address); };
     auto byte = [app](x86::reg32 address) { return app->getMemory<x86::reg8>(address); };
-    const x86::reg32 esp = cpu.esp;
-    const x86::reg32 saved[] = { cpu.esi, cpu.edi, cpu.ebp };
-    const x86::reg32 a = cpu.eax, b = cpu.edx, c = cpu.ebx, d = cpu.ecx;
     const x86::reg8 ca = byte(a + 0x14), cb = byte(b + 0x14), cc = byte(c + 0x14), cd = byte(d + 0x14);
     const x86::reg32 frame = esp - 12;  // push esi, edi, ebp; mov ebp, esp
-    auto finish = [&](x86::reg32 eax, x86::reg32 ebx, x86::reg32 ecx, x86::reg32 edx) {
-        cpu.eax = eax;
-        cpu.ebx = ebx;
-        cpu.ecx = ecx;
-        cpu.edx = edx;
-        cpu.esi = saved[0];
-        cpu.edi = saved[1];
-        cpu.ebp = saved[2];
-        cpu.esp = esp + 4;
-    };
-    // And after a callee: its registers as they come back.
-    auto finishCalled = [&]() { finish(cpu.eax, cpu.ebx, cpu.ecx, cpu.edx); };
     byte(frame - 4) = ca;
     byte(frame - 3) = cb;
     byte(frame - 2) = cc;
     byte(frame - 1) = cd;
-    word(frame - 8) = d;
 
     const x86::reg8 three = ca & cb & cc;
     const x86::reg8 all = three & cd;
     if (all)
-    {
-        logic8(cpu, all);
-        finish((a & 0xffff0000) | x86::reg32(three) << 8 | all, c, d, b);
-        return;
-    }
+        return (a & 0xffff0000) | x86::reg32(three) << 8 | all;
     const x86::reg8 first = ca | cb | cc;
     const x86::reg8 any = first | cd;
-    x86::reg32 eax = (a & 0xffff0000) | x86::reg32(three) << 8 | first;
-    x86::reg32 ebx = (c & 0xffffff00) | any;
-    x86::reg32 ecx = d;
-    x86::reg32 edx = b;
-    const float scale = app->getMemory<float>(x86::reg32(0x560094));
-    const float offset = app->getMemory<float>(x86::reg32(0x560098));
-    cpu.esi = c;
-    cpu.edi = a;
-    cpu.ebp = frame;
-    IntegerFlags flags;
-
     if (!any)
     {
-        inlineDepth(app, FpuMath{cpu.fpu}, a, scale, offset, flags);
-        const InlineDepth db = inlineDepth(app, FpuMath{cpu.fpu}, b, scale, offset, flags);
-        inlineDepth(app, FpuMath{cpu.fpu}, c, scale, offset, flags);
-        const InlineDepth dd = inlineDepth(app, FpuMath{cpu.fpu}, d, scale, offset, flags);
-        flags.store(cpu);
-        cpu.eax = dd.t;
-        cpu.ebx = d;
-        cpu.ecx = db.zeroed ? 0 : d;
-        cpu.edx = b;
-        word(frame - 0x40) = d;
-        word(frame - 0x44) = c;
-        word(frame - 0x48) = b;
-        word(frame - 0x4c) = a;
-        cpu.esp = frame - 0x4c;
-        if (!callThrash(app, cpu, 0x9ef94c))
-            return;
-        finishCalled();
-        return;
+        cornerDepths(app, { a, b, c, d });
+        return driverAt<thrash::kThrashDrawQuad, &port::driver::drawQuad>(app, cpu,
+            frame - 0x3c, a, b, c, d).value_or(0);
     }
 
     // The first triangle, a b c.
+    x86::reg32 eax = (a & 0xffff0000) | x86::reg32(three) << 8 | first;
     if (!three)
     {
         if (first)
@@ -1793,63 +1271,24 @@ void clipQuadNative(win32::WinApplication* app, x86::CPU& cpu)
             word(frame - 0x3c) = a;
             word(frame - 0x38) = b;
             word(frame - 0x34) = c;
-            cpu.eax = frame - 0x3c;
-            cpu.edx = frame - 4;
-            cpu.ebx = first;
-            cpu.ecx = ecx;
-            cpu.esp = frame - 0x3c;
-            if (!callClipper(app, cpu))
-                return;
+            eax = clipPolygonOf(app, cpu, frame - 0x3c - 4, frame - 0x3c, frame - 4, first);
         }
         else
         {
-            const InlineDepth da = inlineDepth(app, FpuMath{cpu.fpu}, a, scale, offset, flags);
-            const InlineDepth db = inlineDepth(app, FpuMath{cpu.fpu}, b, scale, offset, flags);
-            inlineDepth(app, FpuMath{cpu.fpu}, c, scale, offset, flags);
-            if (da.zeroed)
-                ebx = 0;
-            if (db.zeroed)
-                ecx = 0;
-            const x86::reg32 indefinite = firstIndefinite(app, { a, b, c });
-            if (indefinite)
-            {
-                eax = indefinite;
-                cpu.eax = eax;
-                cpu.ebx = ebx;
-                cpu.ecx = ecx;
-                cpu.edx = edx;
-            }
-            else
-            {
-                cpu.eax = word(c + 0x1c) | 0x80000000;
-                flags.compare(cpu.eax, 0xffc00000);
-                flags.store(cpu);
-                cpu.ebx = ebx;
-                cpu.ecx = ecx;
-                cpu.edx = edx;
-                word(frame - 0x40) = c;
-                word(frame - 0x44) = b;
-                word(frame - 0x48) = a;
-                cpu.esp = frame - 0x48;
-                if (!callThrash(app, cpu, 0x9ef974))
-                    return;
-            }
+            cornerDepths(app, { a, b, c });
+            eax = firstIndefinite(app, { a, b, c });
+            if (!eax)
+                eax = driverAt<thrash::kThrashDrawTri, &port::driver::drawTri>(app, cpu,
+                    frame - 0x3c, a, b, c).value_or(0);
         }
-        eax = cpu.eax;
-        ebx = cpu.ebx;
-        ecx = cpu.ecx;
-        edx = cpu.edx;
+        if (cpu.terminate)
+            return 0;
     }
 
     // The second, a c d.
     const x86::reg8 shared = ca & cc & cd;
-    edx = (edx & 0xffffff00) | cd;
     if (shared)
-    {
-        logic8(cpu, shared);
-        finish((eax & 0xffff0000) | x86::reg32(cc) << 8 | shared, ebx, ecx, edx);
-        return;
-    }
+        return (eax & 0xffff0000) | x86::reg32(cc) << 8 | shared;
     const x86::reg8 second = ca | cc | cd;
     if (second)
     {
@@ -1858,53 +1297,28 @@ void clipQuadNative(win32::WinApplication* app, x86::CPU& cpu)
         word(frame - 0x3c) = a;
         word(frame - 0x38) = c;
         word(frame - 0x34) = d;
-        cpu.eax = frame - 0x3c;
-        cpu.edx = frame - 4;
-        cpu.ebx = second;
-        cpu.ecx = ecx;
-        cpu.esp = frame - 0x3c;
-        if (!callClipper(app, cpu))
-            return;
-        finishCalled();
-        return;
+        return clipPolygonOf(app, cpu, frame - 0x3c - 4, frame - 0x3c, frame - 4, second);
     }
-    flags = IntegerFlags();
-    const InlineDepth da = inlineDepth(app, FpuMath{cpu.fpu}, a, scale, offset, flags);
-    inlineDepth(app, FpuMath{cpu.fpu}, c, scale, offset, flags);
-    const InlineDepth dd = inlineDepth(app, FpuMath{cpu.fpu}, d, scale, offset, flags);
-    if (da.zeroed || dd.zeroed)
-        ecx = 0;
-    edx = d;
-    const x86::reg32 indefinite = firstIndefinite(app, { a, c, d });
-    if (indefinite)
-    {
-        cpu.flags.cf = false;
-        cpu.flags.of = false;
-        cpu.flags.zf = true;
-        cpu.flags.sf = false;
-        finish(indefinite, ebx, ecx, edx);
+    cornerDepths(app, { a, c, d });
+    if (const x86::reg32 found = firstIndefinite(app, { a, c, d }))
+        return found;
+    return driverAt<thrash::kThrashDrawTri, &port::driver::drawTri>(app, cpu, frame - 0x3c, a, c, d).value_or(0);
+}
+
+void clipQuadNative(win32::WinApplication* app, x86::CPU& cpu)
+{
+    const reg32 result = clipQuadOf(app, cpu, cpu.esp, cpu.eax, cpu.edx, cpu.ebx, cpu.ecx);
+    if (cpu.terminate)
         return;
-    }
-    cpu.eax = word(d + 0x1c) | 0x80000000;
-    flags.compare(cpu.eax, 0xffc00000);
-    flags.store(cpu);
-    cpu.ebx = ebx;
-    cpu.ecx = ecx;
-    cpu.edx = edx;
-    word(frame - 0x40) = d;
-    word(frame - 0x44) = c;
-    word(frame - 0x48) = a;
-    cpu.esp = frame - 0x48;
-    if (!callThrash(app, cpu, 0x9ef974))
-        return;
-    finishCalled();
+    cpu.eax = result;
+    cpu.esp += 4;
 }
 
 /* A corner of sub_4c1aa0's triangle, which carries z at +8 rather than a
  * depth: the depth of 1/z written there as polygonDepth works it out (1/z
  * taken as 65535 for a z of 0), the clip code's dword at +0x14 cleared, and
- * 1/w at +0xc held to 0..1.  Returns 1/w as it came, for the last fcomp. */
-float zCornerDepth(win32::WinApplication* app, const FpuMath& M, x86::reg32 vertex, float scale, float offset)
+ * 1/w at +0xc held to 0..1. */
+void zCornerDepth(win32::WinApplication* app, const FpuMath& M, x86::reg32 vertex, float scale, float offset)
 {
     auto word = [app](x86::reg32 address) { return app->getMemory<x86::reg32>(address); };
     const x86::reg32 z = word(vertex + 8);
@@ -1918,126 +1332,69 @@ float zCornerDepth(win32::WinApplication* app, const FpuMath& M, x86::reg32 vert
         word(vertex + 0xc) = 0;
     else if (x86::sreg32(w) > 0x3f800000)
         word(vertex + 0xc) = 0x3f800000;
-    return oow;
 }
 
 /* sub_4c1aa0: a triangle (eax, edx, ebx) whose corners carry z, to the
  * screen -- as sub_4c11b0, but each corner drawn gets its depth from 1/z
  * (zCornerDepth), and the clipping goes to sub_4bf790.  Nothing when an
- * x, y, depth, 1/w, u or v of a corner is an indefinite.  Registers, flags
- * and the FPU status as the generated code leaves them, the callees'
- * included. */
-void clipTriangleByZNative(win32::WinApplication* app, x86::CPU& cpu)
+ * x, y, depth, 1/w, u or v of a corner is an indefinite.  Entered at `esp`;
+ * its frame below four pushes. */
+void clipTriangleByZOf(App* app, CPU& cpu, reg32 esp, reg32 a, reg32 b, reg32 c)
 {
     auto word = [app](x86::reg32 address) { return app->getMemory<x86::reg32>(address); };
     auto byte = [app](x86::reg32 address) { return app->getMemory<x86::reg8>(address); };
-    const x86::reg32 esp = cpu.esp;
-    const x86::reg32 saved[] = { cpu.ecx, cpu.esi, cpu.edi, cpu.ebp };
-    const x86::reg32 a = cpu.eax, b = cpu.edx, c = cpu.ebx;
     const x86::reg8 codes[3] = { byte(a + 0x14), byte(b + 0x14), byte(c + 0x14) };
     const x86::reg32 frame = esp - 16;  // push ecx, esi, edi, ebp; mov ebp, esp
-    auto finish = [&]() {
-        cpu.ecx = saved[0];
-        cpu.esi = saved[1];
-        cpu.edi = saved[2];
-        cpu.ebp = saved[3];
-        cpu.esp = esp + 4;
-    };
     for (int i = 0; i < 3; ++i)
         byte(frame - 4 + x86::reg32(i)) = codes[i];
 
-    const x86::reg8 shared = codes[0] & codes[1] & codes[2];
-    if (shared)
-    {
-        cpu.eax = (a & 0xffffff00) | shared;
-        logic8(cpu, shared);
-        finish();
+    if (codes[0] & codes[1] & codes[2])
         return;
-    }
     const x86::reg8 any = codes[0] | codes[1] | codes[2];
-    cpu.ecx = a;
-    cpu.ebp = frame;
     if (any)
     {
         word(frame - 0x4c) = a;
         word(frame - 0x48) = b;
         word(frame - 0x44) = c;
-        cpu.eax = frame - 0x4c;
-        cpu.edx = frame - 4;
-        cpu.ebx = any;
-        cpu.esp = frame - 0x4c;
-        logic8(cpu, any);
-        if (!call(app, cpu, 0x4bf790))
-            return;
-        finish();
+        callAt(app, cpu, frame - 0x4c, 0x4bf790, { frame - 0x4c, frame - 4, any });
         return;
     }
     const float scale = app->getMemory<float>(x86::reg32(0x560094));
     const float offset = app->getMemory<float>(x86::reg32(0x560098));
-    zCornerDepth(app, FpuMath{cpu.fpu}, a, scale, offset);
-    zCornerDepth(app, FpuMath{cpu.fpu}, b, scale, offset);
-    const float last = zCornerDepth(app, FpuMath{cpu.fpu}, c, scale, offset);
-    LastWideCompare compared;
-    compared(0.0, last);
-    compared.replay(cpu);
-    IntegerFlags flags;
-    const x86::reg32 indefinite = firstIndefinite(app, { a, b, c });
-    if (indefinite)
-    {
-        flags.compare(indefinite, 0xffc00000);
-        flags.store(cpu);
-        cpu.eax = indefinite;
-        finish();
+    for (const reg32 corner : { a, b, c })
+        zCornerDepth(app, FpuMath(), corner, scale, offset);
+    if (firstIndefinite(app, { a, b, c }))
         return;
-    }
-    cpu.eax = word(c + 0x1c) | 0x80000000;
-    flags.compare(cpu.eax, 0xffc00000);
-    flags.store(cpu);
-    word(frame - 0x50) = c;
-    word(frame - 0x54) = b;
-    word(frame - 0x58) = a;
-    cpu.esp = frame - 0x58;
-    if (!callThrash(app, cpu, 0x9ef974))
-        return;
-    finish();
+    driverAt<thrash::kThrashDrawTri, &port::driver::drawTri>(app, cpu, frame - 0x4c, a, b, c);
 }
 
-/* sub_4c1e20: a mesh of quads (a car's) to the screen.
- *   eax  the count; edx  the vertices, 0x20 bytes each; ebx  the quads, four
- *   vertex numbers each
- * Nothing when every corner of every quad shares a clip bit; when none has
- * one, every corner gets its depth (polygonDepth, inline) and the mesh goes
- * whole to THRASH_drawquadmesh ([0x9ef930]); otherwise each quad to
- * sub_4c12e0.  The registers it does not keep, and the flags, as the
- * generated code leaves them. */
-void quadMeshNative(win32::WinApplication* app, x86::CPU& cpu)
+void clipTriangleByZNative(win32::WinApplication* app, x86::CPU& cpu)
+{
+    clipTriangleByZOf(app, cpu, cpu.esp, cpu.eax, cpu.edx, cpu.ebx);
+    if (cpu.terminate)
+        return;
+    cpu.esp += 4;
+}
+
+/* sub_4c1e20: a mesh of `count` quads (a car's) to the screen: `vertices`, 0x20 bytes each, and
+ * the quads at `quads`, four vertex numbers each.  Nothing when every corner of every quad shares a
+ * clip bit; when none has one, every corner gets its depth (polygonDepth, inline) and the mesh goes
+ * whole to THRASH_drawquadmesh ([0x9ef930]); otherwise each quad to sub_4c12e0.  Returns what the
+ * code leaves in eax: past the quads looked at, the quads drawn, or THRASH's.  Entered at `esp`;
+ * its frame below four pushes. */
+reg32 quadMeshOf(App* app, CPU& cpu, reg32 esp, x86::sreg32 count, reg32 vertices, reg32 quads)
 {
     auto word = [app](x86::reg32 address) { return app->getMemory<x86::reg32>(address); };
     auto byte = [app](x86::reg32 address) { return app->getMemory<x86::reg8>(address); };
-    const x86::reg32 esp = cpu.esp;
-    const x86::reg32 saved[] = { cpu.ecx, cpu.esi, cpu.edi, cpu.ebp };
     const x86::reg32 frame = esp - 16;  // push ecx, esi, edi, ebp; mov ebp, esp
-    const x86::sreg32 count = x86::sreg32(cpu.eax);
-    const x86::reg32 base = cpu.edx;
-    const x86::reg32 list = cpu.ebx;
-    auto corner = [&](x86::reg32 quad, x86::reg32 i) { return base + (word(quad + i * 4) << 5); };
-    auto finish = [&](x86::reg32 eax, x86::reg32 ebx, x86::reg32 edx) {
-        cpu.eax = eax;
-        cpu.ebx = ebx;
-        cpu.edx = edx;
-        cpu.ecx = saved[0];
-        cpu.esi = saved[1];
-        cpu.edi = saved[2];
-        cpu.ebp = saved[3];
-        cpu.esp = esp + 4;
-    };
+    auto corner = [&](x86::reg32 quad, x86::reg32 i) { return vertices + (word(quad + i * 4) << 5); };
     // The codes of the first quad, then of the rest: or and and over all.
     x86::reg8 any = 0;
     x86::reg8 all = 0xff;
     x86::sreg32 n = 0;
     do
     {
-        const x86::reg32 quad = list + x86::reg32(n) * 0x10;
+        const x86::reg32 quad = quads + x86::reg32(n) * 0x10;
         for (x86::reg32 i = 0; i < 4; ++i)
         {
             const x86::reg8 code = byte(corner(quad, i) + 0x14);
@@ -2047,129 +1404,73 @@ void quadMeshNative(win32::WinApplication* app, x86::CPU& cpu)
         ++n;
     } while (n < count);
     if (all)
-    {
-        logic8(cpu, all);
-        finish(list + x86::reg32(n) * 0x10, list, x86::reg32(n));
-        return;
-    }
-    cpu.esi = base;
-    cpu.ebp = frame;
-    IntegerFlags flags;
+        return quads + x86::reg32(n) * 0x10;
     if (any)
     {
         x86::sreg32 i = 0;
-        x86::reg32 ebx = 0, edx = x86::reg32(n);
         for (; i < count; ++i)
         {
-            const x86::reg32 quad = list + x86::reg32(i) * 0x10;
-            flags.compare(x86::reg32(i), x86::reg32(count));
-            flags.store(cpu);
-            cpu.eax = corner(quad, 0);
-            cpu.edx = corner(quad, 1);
-            cpu.ebx = corner(quad, 2);
-            cpu.ecx = corner(quad, 3);
-            cpu.edi = quad;
-            cpu.esp = frame - 0x30 - 4;
-            clipQuadNative(app, cpu);
+            const x86::reg32 quad = quads + x86::reg32(i) * 0x10;
+            clipQuadOf(app, cpu, frame - 0x30 - 4, corner(quad, 0), corner(quad, 1), corner(quad, 2), corner(quad, 3));
             if (cpu.terminate)
-                return;
-            ebx = cpu.ebx;
-            edx = cpu.edx;
+                return 0;
         }
-        flags.compare(x86::reg32(i), x86::reg32(count));
-        flags.store(cpu);
-        finish(x86::reg32(i), ebx, edx);
-        return;
+        return x86::reg32(i);
     }
     const float scale = app->getMemory<float>(x86::reg32(0x560094));
     const float offset = app->getMemory<float>(x86::reg32(0x560098));
-    x86::sreg32 i = 0;
-    for (; i < count; ++i)
+    for (x86::sreg32 i = 0; i < count; ++i)
     {
-        const x86::reg32 quad = list + x86::reg32(i) * 0x10;
+        const x86::reg32 quad = quads + x86::reg32(i) * 0x10;
         for (x86::reg32 k = 0; k < 4; ++k)
-            inlineDepth(app, FpuMath{cpu.fpu}, corner(quad, k), scale, offset, flags);
+            polygonDepth(app, FpuMath(), corner(quad, k), scale, offset);
     }
-    flags.compare(x86::reg32(i), x86::reg32(count));  // cmp edi, edx
-    flags.store(cpu);
-    cpu.eax = list + x86::reg32(i) * 0x10;
-    cpu.edi = x86::reg32(i);
-    cpu.edx = x86::reg32(count);
-    word(frame - 0x34) = list;
-    word(frame - 0x38) = base;
-    word(frame - 0x3c) = x86::reg32(count);
-    cpu.esp = frame - 0x3c;
-    if (!callThrash(app, cpu, 0x9ef930))
-        return;
-    finish(cpu.eax, cpu.ebx, cpu.edx);
+    return driverAt<thrash::kThrashDrawQuadMesh, &port::driver::drawQuadMesh>(app, cpu,
+        frame - 0x30, x86::reg32(count), vertices, quads).value_or(0);
 }
 
-/* At single precision to nearest as floats; again through the emulated FPU
- * when the host says a result left a float's range (or came from one that
- * had).  Every output is then a function of inputs the call does not write
- * (`inPlace` says when that is not so), so the second run simply writes over
- * the first.  In any other mode, and in place, the emulated FPU's way at once. */
-constexpr int kOutOfRange = FE_OVERFLOW | FE_UNDERFLOW | FE_INVALID;
-
-template <void (*Float)(win32::WinApplication*, x86::CPU&, const FloatMath&),
-          void (*Exact)(win32::WinApplication*, x86::CPU&, const FpuMath&)>
-void runNative(win32::WinApplication* app, x86::CPU& cpu, bool inPlace = false)
+void quadMeshNative(win32::WinApplication* app, x86::CPU& cpu)
 {
-    if (singleNearest(cpu) && !inPlace)
-    {
-        const x86::CPU entry = cpu;
-        std::feclearexcept(kOutOfRange);
-        Float(app, cpu, FloatMath());
-        if (!std::fetestexcept(kOutOfRange))
-            return;
-        cpu = entry;
-    }
-    Exact(app, cpu, FpuMath{cpu.fpu});
+    const reg32 result = quadMeshOf(app, cpu, cpu.esp, x86::sreg32(cpu.eax), cpu.edx, cpu.ebx);
+    if (cpu.terminate)
+        return;
+    cpu.eax = result;
+    cpu.esp += 4;
 }
 
+/* sub_41a550: trackVerticesOf for the view eax, edx vertices at ebx into ecx, the records from
+ * [esp+4] (ret 4). */
 void trackVerticesNative(win32::WinApplication* app, x86::CPU& cpu)
 {
-    runNative<trackVerticesWith<FloatMath>, trackVerticesWith<FpuMath>>(app, cpu);
+    trackVerticesOf(app, cpu, cpu.eax, cpu.edx, cpu.ebx, cpu.ecx, app->getMemory<reg32>(cpu.esp + 4));
+    cpu.esp += 4 + 4;
 }
 
 /* objectVertexList as floats at single precision to nearest (`asFloats`), and
  * once more through the emulated FPU's operations should a value leave a
  * float's range on the way: it writes only what it works out from what it
  * reads.  In any other mode the FPU's way at once. */
-ObjectClip objectVerticesExactly(App* app, bool asFloats, i32 count, reg32 in, reg32 matrix, reg32 position,
-                                 reg32 out)
+void objectVerticesExactly(App* app, bool asFloats, i32 count, reg32 in, reg32 matrix, reg32 position, reg32 out)
 {
     if (asFloats)
     {
         std::feclearexcept(kOutOfRange);
-        const ObjectClip last = objectVertexList(app, FloatMath(), count, in, matrix, position, out);
+        objectVertexList(app, FloatMath(), count, in, matrix, position, out);
         if (!std::fetestexcept(kOutOfRange))
-            return last;
+            return;
     }
-    return objectVertexList(app, FpuMath(), count, in, matrix, position, out);
+    objectVertexList(app, FpuMath(), count, in, matrix, position, out);
 }
 
-/* sub_4bf4c0: objectVerticesExactly of eax vertices at edx by ebx and ecx into
- * [esp+4] (ret 4); the last vertex's clip in eax, ebx, ecx, edx and the
- * flags, or for none the flags of the count's test. */
+/* sub_4bf4c0: objectVerticesOf eax vertices at edx by ebx and ecx into [esp+4] (ret 4); eax what
+ * the last vertex's clip code leaves (objectClipLeft), the count for none. */
 void objectVerticesNative(App* app, CPU& cpu)
 {
     const i32 count = i32(cpu.eax);
-    if (count <= 0)
-    {
-        IntegerFlags flags;
-        flags.logic(cpu.eax);
-        flags.store(cpu);
-        cpu.esp += 4 + 4;
-        return;
-    }
-    const ObjectClip last = objectVerticesExactly(app, singleNearest(cpu), count, cpu.edx, cpu.ebx, cpu.ecx,
-                                                  app->getMemory<reg32>(cpu.esp + 4));
-    cpu.eax = last.eax;
-    cpu.ebx = last.ebx;
-    cpu.ecx = last.ecx;
-    cpu.edx = last.edx;
-    last.flags.store(cpu);
+    const reg32 out = app->getMemory<reg32>(cpu.esp + 4);
+    objectVerticesOf(app, cpu, count, cpu.edx, cpu.ebx, cpu.ecx, out);
+    if (count > 0)
+        cpu.eax = objectClipLeft(app, out + reg32(count - 1) * 0x20);
     cpu.esp += 4 + 4;
 }
 
@@ -2206,31 +1507,14 @@ void turnVectors(App* app, CPU& cpu, i32 count, reg32 in, reg32 matrix, reg32 ou
 namespace
 {
 
-/* sub_4e03b0: turnVectors of eax vectors at edx by ebx into ecx; eax and ecx past them, ebx at the
- * last out, edx the matrix, the flags of the loop's dec and the add before it. */
+/* sub_4e03b0: turnVectors of eax vectors at edx by ebx into ecx; eax past the vectors read (where
+ * they start for none). */
 void rotateVectorsNative(win32::WinApplication* app, x86::CPU& cpu)
 {
     const i32 count = i32(cpu.eax);
-    const reg32 in = cpu.edx, matrix = cpu.ebx, out = cpu.ecx;
-    turnVectors(app, cpu, count, in, matrix, out);
-    IntegerFlags flags;
-    if (count <= 0)
-    {
-        flags.logic(cpu.eax);   // test esi, esi
-        flags.store(cpu);
-        cpu.eax = in;
-        cpu.esp += 4;
-        return;
-    }
-    const reg32 bytes = reg32(count) * 0xc;
-    cpu.eax = in + bytes;
-    cpu.ebx = out + bytes - 0xc;
-    cpu.ecx = out + bytes;
-    cpu.edx = matrix;
-    // dec esi to 0, and the carry of the last add ecx, 0xc, which dec leaves
-    flags.compare(0, 0);
-    flags.cf = out + bytes < 0xc;
-    flags.store(cpu);
+    const reg32 in = cpu.edx;
+    turnVectors(app, cpu, count, in, cpu.ebx, cpu.ecx);
+    cpu.eax = count > 0 ? in + reg32(count) * 0xc : in;
     cpu.esp += 4;
 }
 
@@ -2270,29 +1554,15 @@ void dotProductsOf(App* app, CPU& cpu, i32 count, reg32 in, reg32 d, reg32 out)
 namespace
 {
 
-/* sub_4e0210: dotProductsOf eax vectors at edx with ebx into ecx; eax at the last vector, ecx past
- * the products, edx the one vector, the flags of the loop's dec and the add before it. */
+/* sub_4e0210: dotProductsOf eax vectors at edx with ebx into ecx; eax at the last vector (the
+ * count for none). */
 void dotProductsNative(win32::WinApplication* app, x86::CPU& cpu)
 {
     const i32 count = i32(cpu.eax);
-    const reg32 in = cpu.edx, d = cpu.ebx, out = cpu.ecx;
-    dotProductsOf(app, cpu, count, in, d, out);
-    IntegerFlags flags;
-    if (count <= 0)
-    {
-        flags.logic(cpu.eax);   // test eax, eax
-        flags.store(cpu);
-        cpu.esp += 4;
-        return;
-    }
-    const reg32 end = in + reg32(count) * 0xc;
-    cpu.eax = end - 0xc;
-    cpu.edx = d;
-    cpu.ecx = out + reg32(count) * 4;
-    // dec edi to 0, and the carry of the last add esi, 0xc, which dec leaves
-    flags.compare(0, 0);
-    flags.cf = end < 0xc;
-    flags.store(cpu);
+    const reg32 in = cpu.edx;
+    dotProductsOf(app, cpu, count, in, cpu.ebx, cpu.ecx);
+    if (count > 0)
+        cpu.eax = in + reg32(count - 1) * 0xc;
     cpu.esp += 4;
 }
 
@@ -2321,28 +1591,16 @@ void multiplyMatrix(App* app, reg32 a, reg32 b, reg32 c)
 namespace
 {
 
-/* sub_4e0280's adapter: multiplyMatrix of eax and edx into ebx.  The copy the original makes in
- * its frame of the one c is, eax or edx left at it; the flags of its add esp, 0x2c. */
+/* sub_4e0280's adapter: multiplyMatrix of eax and edx into ebx (ret).  When c is a, the original
+ * works from a copy of it in its frame (push ecx, esi, edi, ebp; sub esp, 0x2c) and leaves eax at
+ * the copy. */
 void multiplyMatricesNative(App* app, CPU& cpu)
 {
-    const reg32 esp = cpu.esp;
-    const reg32 a = cpu.eax, b = cpu.edx, c = cpu.ebx;
-    const reg32 frame = esp - 16 - 0x2c;  // push ecx, esi, edi, ebp; sub esp, 0x2c
-    float kept[9];
-    if (a == c || b == c)
-        std::memcpy(kept, &app->getMemory<float>(a == c ? a : b), sizeof kept);
-    multiplyMatrix(app, a, b, c);
-    if (a == c || b == c)
-        std::memcpy(&app->getMemory<float>(frame), kept, sizeof kept);
-    cpu.eax = a == c ? frame : a;
-    cpu.edx = b == c ? frame : b;
-    // add esp, 0x2c
-    const x86::reg32 sum = frame + 0x2c;
-    cpu.flags.cf = sum < frame;
-    cpu.flags.of = ((~(frame ^ 0x2c) & (frame ^ sum)) >> 31) != 0;
-    cpu.flags.zf = sum == 0;
-    cpu.flags.sf = sum >> 31;
-    cpu.esp = esp + 4;
+    const reg32 a = cpu.eax, c = cpu.ebx;
+    multiplyMatrix(app, a, cpu.edx, c);
+    if (a == c)
+        cpu.eax = cpu.esp - 16 - 0x2c;
+    cpu.esp += 4;
 }
 
 }  // namespace
@@ -2385,67 +1643,28 @@ namespace
 {
 
 /* sub_4e0430's adapter: transformPointList of eax points at edx by ebx and ecx into [esp+4]
- * (ret 4); eax and ecx past them, ebx at the last, edx the move, the flags of the loop's dec. */
+ * (ret 4); eax past the points out (the count for none). */
 void transformPointsNative(App* app, CPU& cpu)
 {
     const i32 count = i32(cpu.eax);
-    const reg32 move = cpu.ecx;
     const reg32 out = app->getMemory<reg32>(cpu.esp + 4);
-    transformPointList(app, count, cpu.edx, cpu.ebx, move, out);
-    IntegerFlags flags;
-    if (count <= 0)
-    {
-        flags.logic(cpu.eax);   // test eax, eax
-        flags.store(cpu);
-        cpu.ecx = out;
-        cpu.esp += 4 + 4;
-        return;
-    }
-    const reg32 end = out + reg32(count) * 0xc;
-    cpu.eax = end;
-    cpu.ebx = end - 0xc;
-    cpu.ecx = end;
-    cpu.edx = move;
-    // dec esi to 0; CF still test eax, eax's
-    flags.compare(0, 0);
-    flags.store(cpu);
+    transformPointList(app, count, cpu.edx, cpu.ebx, cpu.ecx, out);
+    if (count > 0)
+        cpu.eax = out + reg32(count) * 0xc;
     cpu.esp += 4 + 4;
 }
 
-/* sub_4c79a0: the frame's polygons as one list, from the depth buckets.
- *   eax  whether the 2000 far buckets count too; esi  where the list's head
- *   and tail go; returns it in eax
+/* sub_4c79a0: the frame's polygons as one list, from the depth buckets, its head and tail to
+ * `out`; `deep` whether the 2000 far buckets count too.
  * Each bucket is a head and a tail (0x7d575c, 8 bytes each): the 256 near ones
  * from the second on, then, asked, the 2000 below 0x7d9dd4 from the top down,
  * each non-empty one hung on the tail so far (its first dword the next).
- * With [0x7a3a60] clear the list comes from sub_4bbe70 instead. */
-void gatherBucketsNative(win32::WinApplication* app, x86::CPU& cpu)
+ * With [0x7a3a60] clear the list is the empty one sub_4bbe70 makes. */
+void gatherBucketsOf(App* app, reg32 deep, reg32 out)
 {
     auto word = [app](x86::reg32 address) { return app->getMemory<x86::reg32>(address); };
-    const x86::reg32 esp = cpu.esp;
-    const x86::reg32 saved[] = { cpu.ebx, cpu.ecx, cpu.edx, cpu.edi, cpu.ebp };
-    x86::reg32 out = cpu.esi;
-    const x86::reg32 deep = cpu.eax;
-    const x86::reg32 frame = esp - 20;  // push ebx, ecx, edx, edi, ebp; mov ebp, esp
-    x86::reg32 head, tail;
-    if (word(0x7a3a60) == 0)
-    {
-        // cmp dword ptr [0x7a3a60], 0: what sub_4bbe70 leaves the flags as
-        IntegerFlags flags;
-        flags.compare(0, 0);
-        flags.store(cpu);
-        cpu.ecx = out;
-        cpu.ebx = deep;
-        cpu.esi = frame - 0x10;
-        cpu.ebp = frame;
-        cpu.esp = frame - 0x10;
-        if (!call(app, cpu, 0x4bbe70))
-            return;
-        out = cpu.ecx;  // mov edi, ecx: where the callee left it
-        head = word(frame - 0x10);
-        tail = word(frame - 0xc);
-    }
-    else
+    x86::reg32 head = 0, tail = 0;
+    if (word(0x7a3a60) != 0)
     {
         head = word(0x7d575c);
         tail = word(0x7d5760);
@@ -2457,119 +1676,60 @@ void gatherBucketsNative(win32::WinApplication* app, x86::CPU& cpu)
             }
             else if (const x86::reg32 first = word(bucket))
             {
-                word(tail) = first;
+                app->getMemory<reg32>(tail) = first;
                 tail = word(bucket + 4);
             }
         };
         for (x86::reg32 i = 1; i < 0x100; ++i)
             take(0x7d575c + i * 8);
-        IntegerFlags flags;
         if (deep)
-        {
             for (x86::reg32 i = 0; i < 0x7d0; ++i)
                 take(0x7d9dd4 - i * 8);
-            flags.compare(0x7d0, 0x7d0);
-        }
-        else
-        {
-            flags.logic(0);  // test ebx, ebx
-        }
-        flags.store(cpu);
-        word(frame - 8) = head;
-        word(frame - 4) = tail;
     }
-    word(frame - 0x10) = head;
-    word(frame - 0xc) = tail;
-    word(out) = head;
-    word(out + 4) = tail;
-    cpu.eax = out;
-    cpu.esi = frame - 8;
-    cpu.ebx = saved[0];
-    cpu.ecx = saved[1];
-    cpu.edx = saved[2];
-    cpu.edi = saved[3];
-    cpu.ebp = saved[4];
-    cpu.esp = esp + 4;
+    app->getMemory<reg32>(out) = head;
+    app->getMemory<reg32>(out + 4) = tail;
+}
+
+/* The adapter: eax whether deep, esi the list; esi left at the copy of it the code makes in its
+ * frame (five pushes; lea esi, [ebp-8]). */
+void gatherBucketsNative(win32::WinApplication* app, x86::CPU& cpu)
+{
+    gatherBucketsOf(app, cpu.eax, cpu.esi);
+    cpu.esi = cpu.esp - 20 - 8;
+    cpu.esp += 4;
 }
 
 constexpr reg32 kFarthestZ = 0x477fff00;  // 65535.0f, where the nearest z starts
 
-/* What sub_49d9d0 found: the nearest z's bits; for its adapter the last
- * vertex's clip, the last fcomp's operands and the last word it moved. */
-struct NearestZ
-{
-    ObjectClip last;
-    reg32 nearest;
-    bool compared;
-    double z, low;
-    reg32 moved;
-};
-
 /* sub_49d9d0's work: `count` vertices of an object from `in` into view space
  * and onto the screen at `out` (objectVertexList by `matrix` and `position`),
- * each given `colour` (+0x10), and the nearest z of them, from 65535 down (a
- * NaN z taken too, as fcomp's "not above or equal" takes it). */
-NearestZ colourObjectNearest(App* app, bool asFloats, i32 count, reg32 in, reg32 matrix, reg32 position, reg32 out,
-                             reg32 colour)
+ * each given `colour` (+0x10), and the bits of the nearest z of them, from
+ * 65535 down (a NaN z taken too, as fcomp's "not above or equal" takes it). */
+reg32 colourObjectNearest(App* app, bool asFloats, i32 count, reg32 in, reg32 matrix, reg32 position, reg32 out,
+                          reg32 colour)
 {
-    NearestZ found{{}, kFarthestZ, false, 0.0, 0.0, 0};
+    reg32 nearest = kFarthestZ;
     if (count > 0)
-        found.last = objectVerticesExactly(app, asFloats, count, in, matrix, position, out);
+        objectVerticesExactly(app, asFloats, count, in, matrix, position, out);
     for (i32 k = 0; k < count; ++k)
     {
         const reg32 vertex = out + reg32(k) * 0x20;
         app->getMemory<reg32>(vertex + 0x10) = colour;
-        found.moved = colour;
-        found.z = app->getMemory<float>(vertex + 8);
-        found.low = asFloat(found.nearest);
-        found.compared = true;
-        if (!(found.z >= found.low))
-        {
-            found.nearest = app->getMemory<reg32>(vertex + 8);
-            found.moved = found.nearest;
-        }
+        const double z = app->getMemory<float>(vertex + 8);
+        if (!(z >= double(asFloat(nearest))))
+            nearest = app->getMemory<reg32>(vertex + 8);
     }
-    return found;
+    return nearest;
 }
 
 /* sub_49d9d0: colourObjectNearest of eax vertices at edx by ecx and [esp+4]
- * into ebx, the colour [esp+8] (ret 8); the nearest z onto the x87 stack.
- * eax..edx as objectVertices leaves them, then after a vertex the last fcomp
- * replayed with its sahf and fnstsw ax, ebx at the last vertex and ecx the last
- * word moved; edx the count looked at, the flags of its cmp with the count. */
+ * into ebx, the colour [esp+8] (ret 8); the nearest z onto the x87 stack. */
 void objectVerticesNearestNative(App* app, CPU& cpu)
 {
-    const i32 count = i32(cpu.eax);
-    const reg32 out = cpu.ebx, matrix = cpu.ecx, in = cpu.edx;
-    const reg32 position = app->getMemory<reg32>(cpu.esp + 4);
-    const NearestZ found = colourObjectNearest(app, singleNearest(cpu), count, in, matrix, position, out,
-                                               app->getMemory<reg32>(cpu.esp + 8));
-    if (count > 0)
-    {
-        cpu.eax = found.last.eax;
-        cpu.ebx = found.last.ebx;
-        cpu.ecx = found.last.ecx;
-    }
-    else
-    {
-        cpu.ebx = matrix;
-        cpu.ecx = position;
-    }
-    if (found.compared)
-    {
-        cpu.fpu.compare(found.z, found.low);
-        cpu.flags.lo = x86::reg8(0x02 | ((cpu.fpu.status.word >> 8) & 0xd7));
-        cpu.ax = x86::reg16(cpu.fpu.status.word);
-        cpu.ebx = out + reg32(count - 1) * 0x20;
-        cpu.ecx = found.moved;
-    }
-    const reg32 looked = count > 0 ? reg32(count) : 0;
-    IntegerFlags flags;
-    flags.compare(looked, reg32(count));  // cmp edx, esi
-    flags.store(cpu);
-    cpu.edx = looked;
-    cpu.fpu.push(x86::Float(asFloat(found.nearest)));
-    cpu.esp += 4 + 8;
+    const reg32 esp = cpu.esp;
+    cpu.fpu.push(x86::Float(colouredNearestZ(app, cpu, i32(cpu.eax), cpu.edx, cpu.ebx, cpu.ecx,
+                                             app->getMemory<reg32>(esp + 4), app->getMemory<reg32>(esp + 8))));
+    cpu.esp = esp + 4 + 8;
 }
 
 /* idiv as the generated code does it: edx:eax over a signed dword, on arm64,
@@ -2600,44 +1760,32 @@ void signedDivide(x86::sreg64 dividend, x86::sreg32 divisor, x86::reg32& quotien
  * dropped when its first corner is past the far plane, when its corners share
  * a clip bit, or when both its triangles face away (not when it is two-sided or
  * a corner is behind the view).  Returns how many records were written.
- * The registers and flags it does not keep are left as the original leaves
- * them; the last fcomp and sahf are replayed before each call and the end. */
-void trackRecordsNative(win32::WinApplication* app, x86::CPU& cpu)
+ * Entered at `esp`; the slots the callees are pointed at in its frame (three
+ * pushes, then 0x3c bytes). */
+reg32 trackRecordsOf(App* app, CPU& cpu, reg32 esp, reg32 records, reg32 pieceRow, reg32 pieceColumn,
+                     reg32 tailArgument, reg32 headArgument)
 {
-    const FpuMath M{cpu.fpu};
+    const FpuMath M;
     auto word = [app](x86::reg32 address) { return app->getMemory<x86::reg32>(address); };
     auto half = [app](x86::reg32 address) { return app->getMemory<x86::reg16>(address); };
     auto byte = [app](x86::reg32 address) { return app->getMemory<x86::reg8>(address); };
     auto floatAt = [app](x86::reg32 address) -> float { return app->getMemory<float>(address); };
-    const x86::reg32 esp = cpu.esp;
-    const x86::reg32 saved[] = { cpu.esi, cpu.edi, cpu.ebp };
     const x86::reg32 frame = esp - 12;  // push esi, edi, ebp; mov ebp, esp
-    const x86::reg32 records = cpu.ecx;
-    const x86::reg32 piece = cpu.edx * 0x5c0 + 0x571370;
-    const x86::reg32 count = word(piece + cpu.ebx * 4);
-    x86::reg32 polygon = word(piece + cpu.ebx * 4 + 0x2c);
-    const x86::reg32 tailArgument = word(esp + 4);
-    const x86::reg32 headArgument = word(esp + 8);
+    const x86::reg32 base = frame - 0x3c;
+    const x86::reg32 piece = pieceRow * 0x5c0 + 0x571370;
+    const x86::reg32 count = word(piece + pieceColumn * 4);
+    x86::reg32 polygon = word(piece + pieceColumn * 4 + 0x2c);
     const x86::reg32 first = frame - 0x3c;
     const x86::reg32 cursorSlot = frame - 0x10;
 
-    cpu.ebp = frame;
-    cpu.esp = frame - 0x3c;
-    cpu.ecx = polygon;
-    cpu.edx = 0x20;
-    cpu.eax = first;
-    cpu.ebx = 0;
-    if (!call(app, cpu, 0x4bbe40))
-        return;
+    if (!callAt(app, cpu, base, 0x4bbe40, { first }))
+        return 0;
     x86::reg32 cursor = word(first);
-    x86::reg32 ebx = cpu.ebx;
-    polygon = cpu.ecx;  // the loop walks ecx as the call left it
     x86::reg32 written = 0;
-    LastWideCompare compared;
     const double farthest = floatAt(word(0x5dd830) + 0x30);
     const x86::reg32 textures = word(0x552df4);
 
-    for (x86::sreg32 i = x86::sreg32(ebx); i < x86::sreg32(count); ++i, polygon += 0xe)
+    for (x86::sreg32 i = 0; i < x86::sreg32(count); ++i, polygon += 0xe)
     {
         const x86::reg32 v0 = records + (x86::reg32(x86::sreg32(x86::sreg16(half(polygon)))) << 5);
         const x86::reg32 v1 = records + (x86::reg32(x86::sreg32(word(polygon)) >> 16) << 5);
@@ -2647,10 +1795,8 @@ void trackRecordsNative(win32::WinApplication* app, x86::CPU& cpu)
         word(cursor + 0xc) = v1;
         word(cursor + 0x10) = v2;
         word(cursor + 0x14) = v3;
-        ebx = v2;
         const x86::reg8 flags = byte(polygon + 0xc);
         const double z0 = floatAt(v0 + 8);
-        compared(z0, farthest);
         if (z0 > farthest)
             continue;
         const x86::reg32 c0 = byte(v0 + 0x14), c1 = byte(v1 + 0x14), c2 = byte(v2 + 0x14), c3 = byte(v3 + 0x14);
@@ -2660,13 +1806,11 @@ void trackRecordsNative(win32::WinApplication* app, x86::CPU& cpu)
         {
             const CrossProducts p = crossProducts(cpu, floatAt(v2 + 4), floatAt(v1 + 4), floatAt(v0), floatAt(v1),
                                                   floatAt(v0 + 4), floatAt(v1 + 4), floatAt(v2), floatAt(v1));
-            compared(p.two, p.one);
             const x86::reg32 back = (p.two < p.one || p.two != p.two || p.one != p.one) ? 1 : 0;
             if (back ^ word(0x554e4c))
             {
                 const CrossProducts q = crossProducts(cpu, floatAt(v3 + 4), floatAt(v2 + 4), floatAt(v0), floatAt(v2),
                                                       floatAt(v0 + 4), floatAt(v2 + 4), floatAt(v3), floatAt(v2));
-                compared(q.two, q.one);
                 const x86::reg32 backToo = (q.two < q.one || q.two != q.two || q.one != q.one) ? 1 : 0;
                 if (backToo ^ word(0x554e4c))
                     continue;
@@ -2681,14 +1825,11 @@ void trackRecordsNative(win32::WinApplication* app, x86::CPU& cpu)
             byte(cursor + 6) = x86::reg8(byte(cursor + 6) | 4);
         auto depthSum = [&]() {
             return M.mul(M.add(M.add(M.add(floatAt(v0 + 8), floatAt(v1 + 8)), floatAt(v2 + 8)), floatAt(v3 + 8)),
-                          app->getMemory<double>(x86::reg32(0x536c8c)));
+                         app->getMemory<double>(x86::reg32(0x536c8c)));
         };
         if ((byte(0x7a3a58) & 6) && gameSettings(app).nearPolygons != 0)
         {
-            const double mean = depthSum();
-            const double near = app->getMemory<double>(x86::reg32(0x536c94));
-            compared(mean, near);
-            if (!(mean >= near))
+            if (!(depthSum() >= app->getMemory<double>(x86::reg32(0x536c94))))
                 byte(cursor + 6) = x86::reg8(byte(cursor + 6) | 8);
         }
         if (flags & 4)
@@ -2714,263 +1855,138 @@ void trackRecordsNative(win32::WinApplication* app, x86::CPU& cpu)
         }
         cursor += 0x20;
         ++written;
-        ebx = written;
     }
 
-    word(cursorSlot) = cursor;
-    x86::reg32 ecx = polygon;
-    cursor = word(tailArgument);
-    word(cursorSlot) = cursor;
-    compared.replay(cpu);
-    IntegerFlags flags;
-    flags.logic(written);  // test eax, eax
-    flags.store(cpu);
+    word(cursorSlot) = word(tailArgument);
     if (written != 0)
     {
-        cpu.eax = first;
-        cpu.ebx = ebx;
-        cpu.ecx = ecx;
-        cpu.edx = written << 5;
-        if (!call(app, cpu, 0x4bbde0))
-            return;
+        if (!commitArena(app, cpu, base, frame, first, written << 5))
+            return 0;
         const x86::reg32 tail = word(cursorSlot);
         word(tail != 0 ? tail : headArgument) = word(first);
-        flags.logic(tail);  // test edx, edx
-        flags.store(cpu);
-        cpu.edx = 0x20;
-        cpu.eax = cursorSlot;
-        if (!call(app, cpu, 0x4bbe40))
-            return;
+        if (!callAt(app, cpu, base, 0x4bbe40, { cursorSlot }))
+            return 0;
         word(cursorSlot) = word(cursorSlot) - 0x20;
-        ebx = cpu.ebx;
-        ecx = cpu.ecx;
     }
     word(tailArgument) = word(cursorSlot);
+    return written;
+}
+
+void trackRecordsNative(win32::WinApplication* app, x86::CPU& cpu)
+{
+    const reg32 esp = cpu.esp;
+    const reg32 written = trackRecordsOf(app, cpu, esp, cpu.ecx, cpu.edx, cpu.ebx, app->getMemory<reg32>(esp + 4),
+                                         app->getMemory<reg32>(esp + 8));
+    if (cpu.terminate)
+        return;
     cpu.eax = written;
-    cpu.ebx = ebx;
-    cpu.ecx = ecx;
-    cpu.edx = tailArgument;
-    cpu.esi = saved[0];
-    cpu.edi = saved[1];
-    cpu.ebp = saved[2];
     cpu.esp = esp + 4 + 8;
 }
 
-bool setThrashState(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 state, x86::reg32 value)
+/* One of the drawing's states kept at `slot`: `value` through THRASH_setstate (state `state`)
+ * from the depth `base` when it is not what is set already.  False when the game stopped. */
+bool setState(App* app, CPU& cpu, reg32 base, reg32 slot, reg32 state, reg32 value)
 {
-    app->getMemory<x86::reg32>(cpu.esp - 4) = value;
-    app->getMemory<x86::reg32>(cpu.esp - 8) = state;
-    cpu.esp -= 8;
-    return call(app, cpu, app->getMemory<x86::reg32>(0x9ef96c));
+    if (app->getMemory<reg32>(slot) == value)
+        return true;
+    app->getMemory<reg32>(slot) = value;
+    return driverAt<thrash::kThrashSetState, &port::driver::setState>(app, cpu, base, state, value).has_value();
 }
 
-/* sub_433bb0: a list of quads to the drawing, from the one in eax while each
- * next one's kind word at +4 is 0.  For each, by its flags at +6: blending
- * (bit 1, state 0x68 through [0x554e58]), its texture record at +0x18 -- the
- * light coordinates copied to the four corners at +0x18 unless bit 2, then
- * the texture through [0x554e54] (state 1) -- state 0x15 from [0x7a3a64]
- * unless bit 4 (through [0x554e5c]), and the four corners (+8 to +0x14) to
- * sub_4c20e0 with bit 0x10, else to the quad's clipper sub_4c12e0.  Returns
- * the quad the list stopped at.  The registers but eax are kept. */
-void quadListNative(win32::WinApplication* app, x86::CPU& cpu)
+/* The state sub_433bb0 and sub_433a50 set for a polygon by its flags `bits` (+6) and its texture
+ * record `record` (+0x18), around the copy of the record's light coordinates to its `corners` at
+ * +0x18 unless bit 2: blending (bit 1, state 0x68 through [0x554e58]), then the texture (state 1
+ * through [0x554e54]) and state 0x15 from [0x7a3a64] unless bit 4 (through [0x554e5c]).  False
+ * when the game stopped. */
+bool polygonState(App* app, CPU& cpu, reg32 base, x86::reg8 bits, reg32 record, std::initializer_list<reg32> corners)
 {
     auto word = [app](x86::reg32 address) { return app->getMemory<x86::reg32>(address); };
-    const x86::reg32 esp = cpu.esp;
-    const x86::reg32 saved[] = { cpu.ebx, cpu.ecx, cpu.edx, cpu.esi, cpu.edi, cpu.ebp };
-    const x86::reg32 frame = esp - 24;
-    x86::reg32 quad = cpu.eax;
-    cpu.ebp = frame;
-    cpu.esp = frame - 0xc;
-    IntegerFlags flags;
+    if (!setState(app, cpu, base, 0x554e58, 0x68, bits & 1))
+        return false;
+    if (record != 0 && !(bits & 2))
+    {
+        reg32 from = record + 8;
+        for (const reg32 corner : corners)
+        {
+            app->getMemory<reg32>(corner + 0x18) = word(from);
+            app->getMemory<reg32>(corner + 0x1c) = word(from + 4);
+            from += 8;
+        }
+    }
+    return setState(app, cpu, base, 0x554e54, 1, record != 0 ? reg32(word(record + 4)) : 0)
+           && setState(app, cpu, base, 0x554e5c, 0x15, (bits & 4) ? x86::reg32(0) : x86::reg32(word(0x7a3a64)));
+}
+
+/* sub_433bb0: a list of quads to the drawing, from `quad` while each next
+ * one's kind word at +4 is 0.  For each, its state (polygonState) and its
+ * four corners (+8 to +0x14) to sub_4c20e0 with bit 0x10 of its flags, else
+ * to the quad's clipper sub_4c12e0.  Returns the quad the list stopped at.
+ * Entered at `esp`; its frame below six pushes and 0xc bytes. */
+reg32 quadListOf(App* app, CPU& cpu, reg32 esp, reg32 quad)
+{
+    auto word = [app](x86::reg32 address) { return app->getMemory<x86::reg32>(address); };
+    const x86::reg32 base = esp - 24 - 0xc;
     while (true)
     {
         const x86::reg32 a = word(quad + 8), b = word(quad + 0xc), c = word(quad + 0x10), d = word(quad + 0x14);
         const x86::reg8 bits = app->getMemory<x86::reg8>(quad + 6);
-        cpu.esi = quad;
-        cpu.edi = b;
-        cpu.ebx = d;
-        const x86::reg32 blend = bits & 1;
-        if (word(0x554e58) != blend)
-        {
-            word(0x554e58) = blend;
-            if (!setThrashState(app, cpu, 0x68, blend))
-                return;
-        }
-        if (word(quad + 0x18) != 0)
-        {
-            if (!(bits & 2))
-            {
-                word(a + 0x18) = word(word(quad + 0x18) + 8);
-                word(a + 0x1c) = word(word(quad + 0x18) + 0xc);
-                word(b + 0x18) = word(word(quad + 0x18) + 0x10);
-                word(b + 0x1c) = word(word(quad + 0x18) + 0x14);
-                word(c + 0x18) = word(word(quad + 0x18) + 0x18);
-                word(c + 0x1c) = word(word(quad + 0x18) + 0x1c);
-                word(d + 0x18) = word(word(quad + 0x18) + 0x20);
-                word(d + 0x1c) = word(word(quad + 0x18) + 0x24);
-            }
-            const x86::reg32 texture = word(word(quad + 0x18) + 4);
-            if (word(0x554e54) != texture)
-            {
-                word(0x554e54) = texture;
-                if (!setThrashState(app, cpu, 1, texture))
-                    return;
-            }
-        }
-        else if (word(0x554e54) != 0)
-        {
-            word(0x554e54) = 0;
-            if (!setThrashState(app, cpu, 1, 0))
-                return;
-        }
-        const x86::reg32 mode = (bits & 4) ? x86::reg32(0) : x86::reg32(word(0x7a3a64));
-        if (word(0x554e5c) != mode)
-        {
-            word(0x554e5c) = mode;
-            if (!setThrashState(app, cpu, 0x15, mode))
-                return;
-        }
-        cpu.eax = a;
-        cpu.edx = b;
-        cpu.ebx = c;
-        cpu.ecx = d;
-        cpu.esp -= 4;
+        if (!polygonState(app, cpu, base, bits, word(quad + 0x18), { a, b, c, d }))
+            return 0;
         if (bits & 0x10)
-            app->dynamic_call(0x4c20e0, cpu);
+            callAt(app, cpu, base, 0x4c20e0, { a, b, c, d });
         else
-            clipQuadNative(app, cpu);
+            clipQuadOf(app, cpu, base - 4, a, b, c, d);
         if (cpu.terminate)
-            return;
+            return 0;
         quad = word(quad);
-        if (quad == 0)
-        {
-            flags.logic(0);  // test esi, esi
-            break;
-        }
-        const x86::reg16 kind = app->getMemory<x86::reg16>(quad + 4);
-        if (kind != 0)
-        {
-            // test ax, ax
-            flags.cf = flags.of = false;
-            flags.zf = false;
-            flags.sf = (kind & 0x8000) != 0;
-            break;
-        }
+        if (quad == 0 || app->getMemory<x86::reg16>(quad + 4) != 0)
+            return quad;
     }
-    flags.store(cpu);
-    cpu.eax = quad;
-    cpu.ebx = saved[0];
-    cpu.ecx = saved[1];
-    cpu.edx = saved[2];
-    cpu.esi = saved[3];
-    cpu.edi = saved[4];
-    cpu.ebp = saved[5];
-    cpu.esp = esp + 4;
 }
 
-/* sub_433a50: a list of triangles to the drawing, from the one in eax while
- * each next one's kind word at +4 is 1 -- sub_433bb0 for triangles: blending
- * (bit 1 of the flags at +6), the texture record at +0x18 (its light
- * coordinates to the three corners at +0x18 unless bit 2) and state 0x15
- * unless bit 4, each through the state it last set; then the corners (+8 to
- * +0x10) to sub_4c1aa0 with bit 0x10, else to sub_4c11b0.  Returns the
- * triangle the list stopped at.  The registers but eax are kept. */
-void triangleListNative(win32::WinApplication* app, x86::CPU& cpu)
+void quadListNative(win32::WinApplication* app, x86::CPU& cpu)
+{
+    const reg32 result = quadListOf(app, cpu, cpu.esp, cpu.eax);
+    if (cpu.terminate)
+        return;
+    cpu.eax = result;
+    cpu.esp += 4;
+}
+
+/* sub_433a50: a list of triangles to the drawing, from `triangle` while each
+ * next one's kind word at +4 is 1 -- sub_433bb0 for triangles: its state
+ * (polygonState), then the corners (+8 to +0x10) to sub_4c1aa0 with bit 0x10
+ * of its flags, else to sub_4c11b0.  Returns the triangle the list stopped
+ * at.  Entered at `esp`; its frame below six pushes and 8 bytes. */
+reg32 triangleListOf(App* app, CPU& cpu, reg32 esp, reg32 triangle)
 {
     auto word = [app](x86::reg32 address) { return app->getMemory<x86::reg32>(address); };
-    const x86::reg32 esp = cpu.esp;
-    const x86::reg32 saved[] = { cpu.ebx, cpu.ecx, cpu.edx, cpu.esi, cpu.edi, cpu.ebp };
-    const x86::reg32 frame = esp - 24;
-    x86::reg32 triangle = cpu.eax;
-    cpu.ebp = frame;
-    cpu.esp = frame - 8;
-    IntegerFlags flags;
+    const x86::reg32 base = esp - 24 - 8;
     while (true)
     {
         const x86::reg32 a = word(triangle + 8), b = word(triangle + 0xc), c = word(triangle + 0x10);
         const x86::reg8 bits = app->getMemory<x86::reg8>(triangle + 6);
-        cpu.esi = triangle;
-        cpu.edi = b;
-        cpu.ebx = c;
-        const x86::reg32 blend = bits & 1;
-        if (word(0x554e58) != blend)
-        {
-            word(0x554e58) = blend;
-            if (!setThrashState(app, cpu, 0x68, blend))
-                return;
-        }
-        const x86::reg32 record = word(triangle + 0x18);
-        if (record != 0)
-        {
-            if (!(bits & 2))
-            {
-                word(a + 0x18) = word(record + 8);
-                word(a + 0x1c) = word(record + 0xc);
-                word(b + 0x18) = word(record + 0x10);
-                word(b + 0x1c) = word(record + 0x14);
-                word(c + 0x18) = word(record + 0x18);
-                word(c + 0x1c) = word(record + 0x1c);
-            }
-            const x86::reg32 texture = word(record + 4);
-            if (word(0x554e54) != texture)
-            {
-                word(0x554e54) = texture;
-                if (!setThrashState(app, cpu, 1, texture))
-                    return;
-            }
-        }
-        else if (word(0x554e54) != 0)
-        {
-            word(0x554e54) = 0;
-            if (!setThrashState(app, cpu, 1, 0))
-                return;
-        }
-        const x86::reg32 mode = (bits & 4) ? x86::reg32(0) : x86::reg32(word(0x7a3a64));
-        if (word(0x554e5c) != mode)
-        {
-            word(0x554e5c) = mode;
-            if (!setThrashState(app, cpu, 0x15, mode))
-                return;
-        }
-        cpu.eax = a;
-        cpu.edx = b;
-        cpu.ebx = c;
-        cpu.esp -= 4;
+        if (!polygonState(app, cpu, base, bits, word(triangle + 0x18), { a, b, c }))
+            return 0;
         if (bits & 0x10)
-        {
-            clipTriangleByZNative(app, cpu);
-        }
+            clipTriangleByZOf(app, cpu, base - 4, a, b, c);
         else
-            clipTriangleNative(app, cpu);
+            clipTriangleOf(app, cpu, base - 4, a, b, c);
         if (cpu.terminate)
-            return;
+            return 0;
         triangle = word(triangle);
-        if (triangle == 0)
-        {
-            flags.logic(0);  // test esi, esi
-            break;
-        }
-        const x86::reg16 kind = app->getMemory<x86::reg16>(triangle + 4);
-        if (kind != 1)
-        {
-            // cmp ax, 1
-            const x86::reg16 result = x86::reg16(kind - 1);
-            flags.cf = kind < 1;
-            flags.of = (((kind ^ 1) & (kind ^ result)) >> 15) != 0;
-            flags.zf = false;
-            flags.sf = (result >> 15) != 0;
-            break;
-        }
+        if (triangle == 0 || app->getMemory<x86::reg16>(triangle + 4) != 1)
+            return triangle;
     }
-    flags.store(cpu);
-    cpu.eax = triangle;
-    cpu.ebx = saved[0];
-    cpu.ecx = saved[1];
-    cpu.edx = saved[2];
-    cpu.esi = saved[3];
-    cpu.edi = saved[4];
-    cpu.ebp = saved[5];
-    cpu.esp = esp + 4;
+}
+
+void triangleListNative(win32::WinApplication* app, x86::CPU& cpu)
+{
+    const reg32 result = triangleListOf(app, cpu, cpu.esp, cpu.eax);
+    if (cpu.terminate)
+        return;
+    cpu.eax = result;
+    cpu.esp += 4;
 }
 
 /* A bucket's head and tail (two dwords): the polygon hung on its end. */
@@ -2983,91 +1999,77 @@ inline void appendToBucket(win32::WinApplication* app, x86::reg32 bucket, x86::r
     app->getMemory<x86::reg32>(bucket + 4) = polygon;
 }
 
-/* sub_4c7610: polygons whose texture has bit 2 at +0x28, each put into one of
- * 800 buckets at 0x7db6dc by its depth at +0x1c times [0x54024c], kept in
- * order of that depth, deepest first.
- *   eax  the list; [esp+4]  passed on to sub_4c7480 when [0x7a3a60] is clear
- * The last fcomp and sahf are replayed; eax as fnstsw and the rest leave it. */
-void sortedBucketsNative(win32::WinApplication* app, x86::CPU& cpu)
+/* sub_4c7610: the polygons of the list `list` whose texture has bit 2 at
+ * +0x28, each put into one of 800 buckets at 0x7db6dc by its depth at +0x1c
+ * times [0x54024c], kept in order of that depth, deepest first; `start`
+ * (its stack word) passed on to sub_4c7480 when [0x7a3a60] is clear, which
+ * does it instead.  Returns what the code leaves in eax: the callee's, or
+ * the last bucket's offset or node looked at, the status of its fcomp over
+ * the node's low word (fnstsw ax).  Entered at `esp`; six pushes. */
+reg32 sortedBucketsOf(App* app, CPU& cpu, reg32 esp, reg32 list, reg32 start)
 {
     auto word = [app](x86::reg32 address) { return app->getMemory<x86::reg32>(address); };
-    const x86::reg32 esp = cpu.esp;
-    const x86::reg32 saved[] = { cpu.ebx, cpu.ecx, cpu.edx, cpu.esi, cpu.edi, cpu.ebp };
     if (word(0x7a3a60) == 0)
+        return callAt(app, cpu, esp - 24, 0x4c7480, { list }, { start }).value_or(0);
+    x86::reg32 polygon = list;
+    x86::reg32 eax = list;
+    const double scale = app->getMemory<float>(x86::reg32(0x54024c));
+    while (polygon != 0)
     {
-        cpu.ebp = esp - 24;
-        word(esp - 28) = word(esp + 4);
-        cpu.edx = cpu.eax;
-        cpu.esp = esp - 28;
-        if (!call(app, cpu, 0x4c7480))
-            return;
-    }
-    else
-    {
-        x86::reg32 polygon = cpu.eax;
-        x86::reg32 eax = cpu.eax;
-        LastWideCompare compared;
-        const double scale = app->getMemory<float>(x86::reg32(0x54024c));
-        while (polygon != 0)
+        const x86::reg32 next = word(polygon);
+        x86::sreg32 index =
+            fp::toInteger<x86::sreg32>(x86::Float(FpuMath().mul(app->getMemory<float>(polygon + 0x1c), scale)));
+        if (index < 0)
+            index = 0;
+        else if (index > 0x31f)
+            index = 0x31f;
+        const x86::reg32 bucket = 0x7db6dc + x86::reg32(index) * 8;
+        eax = x86::reg32(index) * 8;
+        if (word(bucket) == 0)
         {
-            const x86::reg32 next = word(polygon);
-            x86::sreg32 index = fp::toInteger<x86::sreg32>(
-                x86::Float(FpuMath{cpu.fpu}.mul(app->getMemory<float>(polygon + 0x1c), scale)));
-            if (index < 0)
-                index = 0;
-            else if (index > 0x31f)
-                index = 0x31f;
-            const x86::reg32 bucket = 0x7db6dc + x86::reg32(index) * 8;
-            eax = x86::reg32(index) * 8;
-            if (word(bucket) == 0)
-            {
-                word(polygon) = 0;
-                word(bucket) = polygon;
-                word(bucket + 4) = polygon;
-                polygon = next;
-                continue;
-            }
-            const double depth = app->getMemory<float>(polygon + 0x1c);
-            x86::reg32 link = bucket;
-            while (true)
-            {
-                const x86::reg32 node = word(link);
-                eax = node;
-                if (node == 0)
-                    break;
-                const double nodeDepth = app->getMemory<float>(node + 0x1c);
-                compared(nodeDepth, depth);
-                cpu.fpu.compare(nodeDepth, depth);
-                eax = (node & 0xffff0000) | cpu.fpu.status.word;
-                if (!(nodeDepth >= depth))
-                {
-                    word(polygon) = node;
-                    word(link) = polygon;
-                    break;
-                }
-                if (word(node) == 0)
-                {
-                    word(polygon) = 0;
-                    word(word(bucket + 4)) = polygon;
-                    word(bucket + 4) = polygon;
-                    break;
-                }
-                link = node;
-            }
+            app->getMemory<reg32>(polygon) = 0;
+            app->getMemory<reg32>(bucket) = polygon;
+            app->getMemory<reg32>(bucket + 4) = polygon;
             polygon = next;
+            continue;
         }
-        compared.replay(cpu);
-        IntegerFlags flags;
-        flags.logic(0);  // test edx, edx
-        flags.store(cpu);
-        cpu.eax = eax;
+        const double depth = app->getMemory<float>(polygon + 0x1c);
+        x86::reg32 link = bucket;
+        while (true)
+        {
+            const x86::reg32 node = word(link);
+            eax = node;
+            if (node == 0)
+                break;
+            const double nodeDepth = app->getMemory<float>(node + 0x1c);
+            eax = statusAfterCompare(cpu, node, nodeDepth, depth);
+            if (!(nodeDepth >= depth))
+            {
+                app->getMemory<reg32>(polygon) = node;
+                app->getMemory<reg32>(link) = polygon;
+                break;
+            }
+            if (word(node) == 0)
+            {
+                app->getMemory<reg32>(polygon) = 0;
+                app->getMemory<reg32>(word(bucket + 4)) = polygon;
+                app->getMemory<reg32>(bucket + 4) = polygon;
+                break;
+            }
+            link = node;
+        }
+        polygon = next;
     }
-    cpu.ebx = saved[0];
-    cpu.ecx = saved[1];
-    cpu.edx = saved[2];
-    cpu.esi = saved[3];
-    cpu.edi = saved[4];
-    cpu.ebp = saved[5];
+    return eax;
+}
+
+void sortedBucketsNative(win32::WinApplication* app, x86::CPU& cpu)
+{
+    const reg32 esp = cpu.esp;
+    const reg32 result = sortedBucketsOf(app, cpu, esp, cpu.eax, app->getMemory<reg32>(esp + 4));
+    if (cpu.terminate)
+        return;
+    cpu.eax = result;
     cpu.esp = esp + 4 + 4;
 }
 
@@ -3080,104 +2082,72 @@ void sortedBucketsNative(win32::WinApplication* app, x86::CPU& cpu)
  * its texture names at +0x29 (0x7d575c); the rest into one of the 2000 far
  * buckets (0x7d5f5c) by its mean depth, ((sum * [0x540254] or [0x540264]) -
  * start + [0x7dcfdc]) * [0x54025c], held to 0..1999.  With [0x7a3a60] clear,
- * sub_4c7480 does it instead. */
-void depthBucketsNative(win32::WinApplication* app, x86::CPU& cpu)
+ * sub_4c7480 does it instead.  Entered at `esp`; six pushes, then 8 bytes. */
+void depthBucketsOf(App* app, CPU& cpu, reg32 esp, reg32 list, reg32 start)
 {
-    const FpuMath M{cpu.fpu};
+    const FpuMath M;
     auto word = [app](x86::reg32 address) { return app->getMemory<x86::reg32>(address); };
     auto floatAt = [app](x86::reg32 address) -> double { return app->getMemory<float>(address); };
-    const x86::reg32 esp = cpu.esp;
-    const x86::reg32 saved[] = { cpu.ebx, cpu.ecx, cpu.edx, cpu.esi, cpu.edi, cpu.ebp };
     const x86::reg32 frame = esp - 24;
-    const x86::reg32 start = word(esp + 4);
     if (word(0x7a3a60) == 0)
     {
-        word(frame - 8) = start;
-        cpu.edx = cpu.eax;
-        cpu.ecx = 0;  // mov ecx, [0x7a3a60]
-        cpu.ebp = frame;
-        cpu.esp = frame - 8;
-        if (!call(app, cpu, 0x4c7480))
-            return;
+        callAt(app, cpu, frame - 4, 0x4c7480, { list }, { start });
+        return;
     }
-    else
+    x86::reg32 polygon = list;
+    while (polygon != 0)
     {
-        x86::reg32 polygon = cpu.eax;
-        x86::reg32 eax = cpu.eax;
-        bool called = false;
-        while (polygon != 0)
+        const x86::reg32 next = word(polygon);
+        const x86::reg32 v0 = word(polygon + 8), v1 = word(polygon + 0xc), v2 = word(polygon + 0x10),
+                         v3 = word(polygon + 0x14);
+        const x86::reg32 texture = word(polygon + 0x18);
+        if (texture && (app->getMemory<x86::reg8>(texture + 0x28) & 2))
         {
-            const x86::reg32 next = word(polygon);
-            const x86::reg32 v0 = word(polygon + 8), v1 = word(polygon + 0xc), v2 = word(polygon + 0x10),
-                             v3 = word(polygon + 0x14);
-            const x86::reg32 texture = word(polygon + 0x18);
-            eax = v1;
-            if (texture && (app->getMemory<x86::reg8>(texture + 0x28) & 2))
-            {
-                word(polygon) = 0;
-                word(frame - 4) = next;
-                word(frame - 8) = 0;
-                cpu.eax = polygon;
-                cpu.ebx = v2;
-                cpu.ecx = v0;
-                cpu.edx = polygon;
-                cpu.esi = texture;
-                cpu.edi = v3;
-                cpu.ebp = frame;
-                cpu.esp = frame - 8;
-                cpu.esp -= 4;
-                sortedBucketsNative(app, cpu);
-                if (cpu.terminate)
-                    return;
-                eax = cpu.eax;
-                called = true;
-                polygon = next;
-                continue;
-            }
-            const x86::reg16 kind = app->getMemory<x86::reg16>(polygon + 4);
-            word(polygon) = 0;
-            x86::reg32 alpha = word(v0 + 0x10) & word(v1 + 0x10) & word(v2 + 0x10);
-            if (kind == 0)
-                alpha &= word(v3 + 0x10);
-            if ((alpha >> 24) == 0xff
-                && !(texture && (app->getMemory<x86::reg8>(texture + 0x28) & 4)))
-            {
-                eax = x86::reg32(app->getMemory<x86::reg8>(texture + 0x29)) << 3;
-                appendToBucket(app, 0x7d575c + eax, polygon);
-                polygon = next;
-                continue;
-            }
-            if (kind > 1)
-            {
-                polygon = next;
-                continue;
-            }
-            double sum = M.add(M.add(floatAt(v0 + 8), floatAt(v1 + 8)), floatAt(v2 + 8));
-            if (kind == 0)
-                sum = M.add(sum, floatAt(v3 + 8));
-            const double mean = M.mul(sum, app->getMemory<double>(x86::reg32(kind == 0 ? 0x540254 : 0x540264)));
-            const double shifted = M.add(M.sub(mean, asFloat(start)), floatAt(0x7dcfdc));
-            x86::sreg32 index = fp::toInteger<x86::sreg32>(x86::Float(M.mul(shifted, floatAt(0x54025c))));
-            if (index < 0)
-                index = 0;
-            else if (index > 0x7cf)
-                index = 0x7cf;
-            eax = x86::reg32(index) << 3;
-            appendToBucket(app, 0x7d5f5c + eax, polygon);
+            // alone, pushed with a start of 0 under the next polygon's slot
+            app->getMemory<reg32>(polygon) = 0;
+            sortedBucketsOf(app, cpu, frame - 12, polygon, 0);
+            if (cpu.terminate)
+                return;
             polygon = next;
+            continue;
         }
-        NFS2_USE(called);
-        IntegerFlags flags;
-        flags.logic(0);  // test edx, edx
-        flags.store(cpu);
-        cpu.eax = eax;
+        const x86::reg16 kind = app->getMemory<x86::reg16>(polygon + 4);
+        app->getMemory<reg32>(polygon) = 0;
+        x86::reg32 alpha = word(v0 + 0x10) & word(v1 + 0x10) & word(v2 + 0x10);
+        if (kind == 0)
+            alpha &= word(v3 + 0x10);
+        if ((alpha >> 24) == 0xff && !(texture && (app->getMemory<x86::reg8>(texture + 0x28) & 4)))
+        {
+            appendToBucket(app, 0x7d575c + (x86::reg32(app->getMemory<x86::reg8>(texture + 0x29)) << 3), polygon);
+            polygon = next;
+            continue;
+        }
+        if (kind > 1)
+        {
+            polygon = next;
+            continue;
+        }
+        double sum = M.add(M.add(floatAt(v0 + 8), floatAt(v1 + 8)), floatAt(v2 + 8));
+        if (kind == 0)
+            sum = M.add(sum, floatAt(v3 + 8));
+        const double mean = M.mul(sum, app->getMemory<double>(x86::reg32(kind == 0 ? 0x540254 : 0x540264)));
+        const double shifted = M.add(M.sub(mean, asFloat(start)), floatAt(0x7dcfdc));
+        x86::sreg32 index = fp::toInteger<x86::sreg32>(x86::Float(M.mul(shifted, floatAt(0x54025c))));
+        if (index < 0)
+            index = 0;
+        else if (index > 0x7cf)
+            index = 0x7cf;
+        appendToBucket(app, 0x7d5f5c + (x86::reg32(index) << 3), polygon);
+        polygon = next;
     }
-    cpu.ebx = saved[0];
-    cpu.ecx = saved[1];
-    cpu.edx = saved[2];
-    cpu.esi = saved[3];
-    cpu.edi = saved[4];
-    cpu.ebp = saved[5];
+}
+
+void depthBucketsNative(win32::WinApplication* app, x86::CPU& cpu)
+{
+    const reg32 esp = cpu.esp;
+    depthBucketsOf(app, cpu, esp, cpu.eax, app->getMemory<reg32>(esp + 4));
+    if (cpu.terminate)
+        return;
     cpu.esp = esp + 4 + 4;
 }
 
@@ -3186,7 +2156,7 @@ void depthBucketsNative(win32::WinApplication* app, x86::CPU& cpu)
 /* sub_49d9d0's core: colourObjectNearest's nearest z, which its adapter leaves on the x87 stack. */
 float colouredNearestZ(App* app, CPU& cpu, i32 count, reg32 in, reg32 out, reg32 matrix, reg32 position, reg32 colour)
 {
-    return asFloat(colourObjectNearest(app, singleNearest(cpu), count, in, matrix, position, out, colour).nearest);
+    return asFloat(colourObjectNearest(app, singleNearest(cpu), count, in, matrix, position, out, colour));
 }
 
 /* sub_4e01f0's work: (a0 b0 + a1 b1) + a2 b2 of the vectors at a and b, as wide as the x87 holds
@@ -3231,15 +2201,10 @@ float normaliseVector(App* app, reg32 vector)
 namespace
 {
 
-/* sub_4972f0: normaliseVector of eax, the length onto the x87 stack; the flags of the test of its
- * bits but the sign (the xor that makes the 0 for a zero length leaves the same). */
+/* sub_4972f0: normaliseVector of eax, the length onto the x87 stack. */
 void normaliseNative(App* app, CPU& cpu)
 {
-    const float length = normaliseVector(app, cpu.eax);
-    IntegerFlags flags;
-    flags.logic(asBits(length) & 0x7fffffff);
-    flags.store(cpu);
-    cpu.fpu.push(x86::Float(length));
+    cpu.fpu.push(x86::Float(normaliseVector(app, cpu.eax)));
     cpu.esp += 4;
 }
 
@@ -3320,14 +2285,10 @@ NearestBlock nearestBlock(App* app, reg32 point)
 namespace
 {
 
-/* sub_41e0f0: nearestBlock to the point at eax, to eax; the flags of the loop's last cmp. */
+/* sub_41e0f0: nearestBlock to the point at eax, to eax. */
 void nearestBlockNative(App* app, CPU& cpu)
 {
-    const NearestBlock found = nearestBlock(app, cpu.eax);
-    IntegerFlags flags;
-    flags.compare(reg32(found.looked), reg32(found.count));  // cmp ecx, [ebp-4]
-    flags.store(cpu);
-    cpu.eax = found.block;
+    cpu.eax = nearestBlock(app, cpu.eax).block;
     cpu.esp += 4;
 }
 
@@ -3356,15 +2317,11 @@ void gatherSortedBuckets(App* app, reg32 out)
     word(out + 4) = tail;
 }
 
-/* sub_4c7320: gatherSortedBuckets to esi, returned in eax; esi past the two words it copies from
- * its frame, where the code keeps them. */
+/* sub_4c7320: gatherSortedBuckets to esi; esi left past the two words the code copies from its
+ * frame, where it keeps them. */
 void gatherSortedNative(App* app, CPU& cpu)
 {
     gatherSortedBuckets(app, cpu.esi);
-    IntegerFlags flags;
-    flags.compare(kSortedBucketCount, kSortedBucketCount);  // cmp ecx, 0x320
-    flags.store(cpu);
-    cpu.eax = cpu.esi;
     cpu.esi = cpu.esp - 20;  // push ebx, ecx, edx, edi, ebp; lea esi, [ebp-8]; two movsd
     cpu.esp += 4;
 }
@@ -3372,58 +2329,23 @@ void gatherSortedNative(App* app, CPU& cpu)
 // A view's position and matrix for an object's vertices (objectVertexList).
 constexpr reg32 kViewObjectPosition = 0x38, kViewObjectMatrix = 0x44;
 
-/* What sub_41a970 leaves: the clip of objectVertexList's last vertex (none for
- * a count under 1), and the last colour given. */
-struct ColouredVertices
-{
-    bool any;
-    ObjectClip last;
-    reg32 lastColour;
-};
-
 /* sub_41a970's work: `count` vertices of an object from `in` into view space
  * and onto the screen at `out` (objectVertexList with the view's position and
  * matrix), each then given the colour (+0x10) from the list at `colours`. */
-ColouredVertices colouredObjectVertices(App* app, bool asFloats, reg32 view, reg32 count, reg32 in,
-                                        reg32 colours, reg32 out)
+void colouredObjectVertices(App* app, bool asFloats, reg32 view, reg32 count, reg32 in, reg32 colours, reg32 out)
 {
-    ColouredVertices made{i32(count) > 0, {}, 0};
-    if (made.any)
-        made.last = objectVerticesExactly(app, asFloats, i32(count), in, view + kViewObjectMatrix,
-                                          view + kViewObjectPosition, out);
+    if (i32(count) > 0)
+        objectVerticesExactly(app, asFloats, i32(count), in, view + kViewObjectMatrix, view + kViewObjectPosition,
+                              out);
     for (reg32 left = count; left != 0; --left, colours += 4, out += 0x20)
-    {
-        made.lastColour = app->getMemory<reg32>(colours);
-        app->getMemory<reg32>(out + 0x10) = made.lastColour;
-    }
-    return made;
+        app->getMemory<reg32>(out + 0x10) = app->getMemory<reg32>(colours);
 }
 
-/* sub_41a970: colouredObjectVertices for the view eax, edx vertices at ebx, the
- * colours at ecx, into [esp+4] (ret 4).  After a vertex eax holds the last
- * colour, edx the last vertex out and ebx the one after; ecx the clip's, else
- * the view's position; the flags of the loop's dec to -1. */
+/* sub_41a970: colouredVerticesOf the view eax, edx vertices at ebx, the colours at ecx, into
+ * [esp+4] (ret 4). */
 void objectVerticesColouredNative(App* app, CPU& cpu)
 {
-    const reg32 view = cpu.eax, count = cpu.edx, in = cpu.ebx;
-    const reg32 out = app->getMemory<reg32>(cpu.esp + 4);
-    const ColouredVertices made = colouredObjectVertices(app, singleNearest(cpu), view, count, in, cpu.ecx, out);
-    cpu.ecx = made.any ? made.last.ecx : view + kViewObjectPosition;
-    if (count != 0)
-    {
-        cpu.eax = made.lastColour;
-        cpu.edx = out + (count - 1) * 0x20;
-        cpu.ebx = out + count * 0x20;
-    }
-    else
-    {
-        cpu.eax = count;
-        cpu.ebx = view + kViewObjectMatrix;
-        cpu.edx = in;
-    }
-    IntegerFlags flags;
-    flags.compare(0xffffffff, 0xffffffff);  // dec esi; cmp esi, -1
-    flags.store(cpu);
+    colouredVerticesOf(app, cpu, cpu.eax, cpu.edx, cpu.ebx, cpu.ecx, app->getMemory<reg32>(cpu.esp + 4));
     cpu.esp += 4 + 4;
 }
 
@@ -3440,7 +2362,7 @@ void colouredVerticesOf(App* app, CPU& cpu, reg32 view, reg32 count, reg32 in, r
 /* sub_4968a0's work: a point brought onto the ground plane of a frame -- p - o
  * turned into the frame by the transpose of `matrix` (sub_4e0110), its height
  * dropped, turned back and o added -- and the height of the result returned.
- * Nothing is written; the flags are untouched. */
+ * Nothing is written. */
 float groundHeight(App* app, reg32 matrix, const float (&o)[3], const float (&p)[3])
 {
     const FpuMath M;
@@ -3477,48 +2399,8 @@ void groundHeightNative(App* app, CPU& cpu)
 
 /* A screen vertex's clip code from its x, y and 1/z at +0, +4, +0xc, compared
  * as integers with the bounds at 0x7d34f8..0x7d350c -- the code sub_41bf30,
- * sub_4cbc90 and others write inline.  `edx` becomes what the inline code
- * leaves in it: the right bound, or unchanged for a vertex behind the near
- * plane. */
-inline x86::reg8 screenCode(win32::WinApplication* app, x86::reg32 vertex, x86::reg32& edx, IntegerFlags& flags)
-{
-    /* The flags its last test, cmp or or leaves (or ebx, 8 sets none). */
-    auto word = [app](x86::reg32 address) { return app->getMemory<x86::reg32>(address); };
-    const x86::reg32 inverse = word(vertex + 0xc);
-    if (inverse & 0x80000000)
-    {
-        flags.logic(inverse & 0x80000000);
-        return 0x10;
-    }
-    flags.compare(inverse, word(0x7d34f8));
-    if (x86::sreg32(inverse) >= x86::sreg32(word(0x7d34f8)))
-        return 0x10;
-    x86::reg8 code = 0;
-    const x86::reg32 y = word(vertex + 4);
-    if ((y & 0x80000000) || x86::sreg32(y) < x86::sreg32(word(0x7d3504)))
-        code |= 8;
-    else if (x86::sreg32(y) > x86::sreg32(word(0x7d3500)))
-        code |= 4;
-    const x86::reg32 x = word(vertex);
-    edx = word(0x7d350c);
-    if ((x & 0x80000000) || x86::sreg32(x) < x86::sreg32(word(0x7d34fc)))
-    {
-        code |= 1;
-        flags.logic(code);
-    }
-    else
-    {
-        flags.compare(x, edx);
-        if (x86::sreg32(x) > x86::sreg32(edx))
-        {
-            code |= 2;
-            flags.logic(code);
-        }
-    }
-    return code;
-}
-
-inline x86::reg8 screenCode(win32::WinApplication* app, x86::reg32 vertex, x86::reg32& edx)
+ * sub_4cbc90 and others write inline. */
+inline x86::reg8 screenCode(win32::WinApplication* app, x86::reg32 vertex)
 {
     auto word = [app](x86::reg32 address) { return app->getMemory<x86::reg32>(address); };
     const x86::reg32 inverse = word(vertex + 0xc);
@@ -3535,7 +2417,6 @@ inline x86::reg8 screenCode(win32::WinApplication* app, x86::reg32 vertex, x86::
         code |= 1;
     else if (x86::sreg32(x) > x86::sreg32(word(0x7d350c)))
         code |= 2;
-    edx = word(0x7d350c);
     return code;
 }
 
@@ -3555,64 +2436,39 @@ inline x86::reg8 screenCode(win32::WinApplication* app, x86::reg32 vertex, x86::
  * it was last drawn in this pass (+0x58, per player and pass; the flag byte at
  * +0x78 per player and pass says it was) -- with the kind's flags, the
  * texture at +0x50 and every corner's clip code.  The flag byte is cleared
- * for every particle not drawn this way.  Returns esi. */
-void particlesNative(win32::WinApplication* app, x86::CPU& cpu)
+ * for every particle not drawn this way.  Entered at `esp`; the slot the
+ * callees are pointed at in its frame (four pushes, ebp 0x82 under them).  Returns
+ * where the code leaves esi. */
+reg32 particlesOf(App* app, CPU& cpu, reg32 esp, reg32 view, reg32 matrix, reg32 out)
 {
-    const FpuMath M{cpu.fpu};
+    const FpuMath M;
     auto word = [app](x86::reg32 address) { return app->getMemory<x86::reg32>(address); };
     auto byte = [app](x86::reg32 address) { return app->getMemory<x86::reg8>(address); };
     auto floatAt = [app](x86::reg32 address) -> float { return app->getMemory<float>(address); };
     auto putFloat = [app](x86::reg32 address, double value) { app->getMemory<float>(address) = float(value); };
-    const x86::reg32 esp = cpu.esp;
-    const x86::reg32 saved[] = { cpu.ebx, cpu.ecx, cpu.edi, cpu.ebp };
     const x86::reg32 ebp = esp - 16 - 0x82;  // push ebx, ecx, edi, ebp; mov ebp, esp; sub ebp, 0x82
-    const x86::reg32 view = cpu.eax;
-    const x86::reg32 matrix = cpu.edx;
-    const x86::reg32 out = cpu.esi;
-    LastWideCompare compared;
-    auto finish = [&](x86::reg32 edx) {
-        word(out) = word(ebp - 0x1e);
-        word(out + 4) = word(ebp - 0x1a);
-        cpu.eax = out;
-        cpu.edx = edx;
-        cpu.esi = ebp - 0x16;
-        cpu.ebx = saved[0];
-        cpu.ecx = saved[1];
-        cpu.edi = saved[2];
-        cpu.ebp = saved[3];
-        cpu.esp = esp + 4;
+    const x86::reg32 base = esp - 16 - 0xe4;
+    const x86::reg32 slot = ebp + 0x22;      // Render_GetTm's
+    x86::reg32 head = 0, tail = 0;           // sub_4bbe70's empty list
+    auto finish = [&]() {
+        app->getMemory<reg32>(out) = head;
+        app->getMemory<reg32>(out + 4) = tail;
+        return ebp - 0x16;  // lea esi, [ebp-0x1e]; two movsd
     };
 
-    // sub_4bbe70 into [ebp-0xe]: an empty list
-    word(ebp - 0xe) = 0;
-    word(ebp - 0xa) = 0;
     const x86::reg32 alphaScale = x86::reg32(fp::toInteger<x86::sreg32>(
         x86::Float(M.mul(gameSettings(app).alphaIntensity, app->getMemory<double>(x86::reg32(0x540448))))));
     const float camera[3] = { floatAt(view + 0x38), floatAt(view + 0x3c), floatAt(view + 0x40) };
     const x86::reg32 player = word(view + 4);
 
-    cpu.ebp = ebp;
-    cpu.esp = ebp + 0x82 - 0xe4;
-    cpu.esi = view + 0x44;  // past the camera's three, copied with movsd
-    cpu.edi = ebp - 0x1e;
-    cpu.eax = ebp + 0x22;
-    cpu.edx = 0x17700;
-    if (!call(app, cpu, 0x4bbe40))
-        return;
-    if (cpu.eax == 0)
-    {
-        IntegerFlags flags;
-        flags.logic(0);  // test eax, eax
-        flags.store(cpu);
-        word(ebp - 0x1e) = 0;
-        word(ebp - 0x1a) = 0;
-        finish(cpu.edx);
-        return;
-    }
-    const x86::reg32 first = word(ebp + 0x22);
+    const auto room = callAt(app, cpu, base, 0x4bbe40, { slot });
+    if (!room)
+        return 0;
+    if (*room == 0)
+        return finish();
+    const x86::reg32 first = word(slot);
     x86::reg32 cursor = first;
     x86::reg32 count = 0;
-    x86::reg32 edx = 0;
     const double k1 = floatAt(0x56009c), k2 = floatAt(0x5600a0), c1 = floatAt(0x5600a4), c2 = floatAt(0x5600a8);
     const x86::reg32 viewLevel = gameSettings(app).viewDistance;
     for (x86::reg32 i = 0; i < 0x258; ++i)
@@ -3624,15 +2480,9 @@ void particlesNative(win32::WinApplication* app, x86::CPU& cpu)
         const x86::reg32 kind = word(particle + 4);
         const x86::reg32 pass = word(view);
         const x86::reg32 flag = particle + 0x78 + player * 2 + (pass == 1 ? 1 : 0);
-        edx = flag;
-        if (gameSettings(app).effectsLevel == 1 && (byte(particle + 0x7d) & 1))
+        if ((gameSettings(app).effectsLevel == 1 && (byte(particle + 0x7d) & 1)) || word(particle) == 0)
         {
-            byte(flag) = 0;
-            continue;
-        }
-        if (word(particle) == 0)
-        {
-            byte(flag) = 0;
+            app->getMemory<x86::reg8>(flag) = 0;
             continue;
         }
         const float* m = &app->getMemory<float>(matrix);
@@ -3642,19 +2492,9 @@ void particlesNative(win32::WinApplication* app, x86::CPU& cpu)
         x = float(M.add(x, camera[0]));
         y = float(M.add(y, camera[1]));
         z = float(M.add(z, camera[2]));
-        edx = matrix;
-        compared(0.0, z);
-        if (0.0 >= z)
+        if (0.0 >= z || !(M.mul(floatAt(0x560bc4 + (kind << 7)), floatAt(0x4ca480 + viewLevel * 4)) >= z))
         {
-            byte(flag) = 0;
-            continue;
-        }
-        edx = kind << 7;
-        const double reach = M.mul(floatAt(0x560bc4 + (kind << 7)), floatAt(0x4ca480 + viewLevel * 4));
-        compared(reach, z);
-        if (!(reach >= z))
-        {
-            byte(flag) = 0;
+            app->getMemory<x86::reg8>(flag) = 0;
             continue;
         }
         if (!(asBits(z) & 0x7fffffff))
@@ -3663,36 +2503,19 @@ void particlesNative(win32::WinApplication* app, x86::CPU& cpu)
         const x86::reg32 centre = ebp - 0x62;
         putFloat(centre, M.add(M.mul(M.mul(k1, inverse), x), c1));
         putFloat(centre + 4, M.add(M.mul(M.mul(k2, inverse), y), c2));
-        word(centre + 8) = asBits(z);
-        word(centre + 0xc) = asBits(inverse);
-        edx = asBits(z);
-        byte(centre + 0x14) = screenCode(app, centre, edx);
+        app->getMemory<reg32>(centre + 8) = asBits(z);
+        app->getMemory<reg32>(centre + 0xc) = asBits(inverse);
+        app->getMemory<x86::reg8>(centre + 0x14) = screenCode(app, centre);
         if (x86::sreg32(asBits(z)) < 0x40400000 && pass == 0)
         {
-            // a particle on the camera: sub_4ca500 may splash it over the view
-            compared.replay(cpu);
-            compared.any = false;
-            word(cpu.esp - 4) = kind;
-            word(cpu.esp - 8) = asBits(z);
-            word(cpu.esp - 12) = asBits(y);
-            word(cpu.esp - 16) = asBits(x);
-            cpu.esp -= 16;
-            cpu.eax = player;
-            cpu.ebx = asBits(x);
-            cpu.ecx = asBits(y);
-            cpu.edx = edx;
-            cpu.esi = asBits(z);
-            cpu.edi = 0;
-            IntegerFlags tested;
-            tested.logic(0);  // test edi, edi
-            tested.store(cpu);
-            if (!call(app, cpu, 0x4ca500))
-                return;
-            edx = cpu.edx;
-            if (cpu.eax != 0)
+            // a particle on the camera: sub_4ca500 may splash it over the view (ret 0x10)
+            const auto splashed = callAt(app, cpu, base, 0x4ca500, { player }, { asBits(x), asBits(y), asBits(z), kind });
+            if (!splashed)
+                return 0;
+            if (*splashed != 0)
             {
-                byte(flag) = 0;
-                word(particle) = cpu.edi;
+                app->getMemory<x86::reg8>(flag) = 0;
+                app->getMemory<reg32>(particle) = 0;  // edi, 0 then
                 continue;
             }
         }
@@ -3700,16 +2523,13 @@ void particlesNative(win32::WinApplication* app, x86::CPU& cpu)
         const x86::reg32 corners[4] = { cursor + 0x20, cursor + 0x40, cursor + 0x60, cursor + 0x80 };
         x86::reg32 colour = word(particle + 0x54);
         // [0x7a3a58] & 0x40 forced on (tools/apply_alpha_intensity.py)
-        const double alpha = gameSettings(app).alphaIntensity;
-        compared(1.0, alpha);
-        if (1.0 > alpha && (byte(0x560bbc + (kind << 7)) & 1))
+        if (1.0 > gameSettings(app).alphaIntensity && (byte(0x560bbc + (kind << 7)) & 1))
         {
             auto channel = [&](x86::reg32 at) {
                 return (x86::reg32(x86::sreg32(x86::reg32(byte(particle + at)) * alphaScale) >> 16)) & 0xff;
             };
             colour = channel(0x57) << 24 | channel(0x56) << 16 | channel(0x55) << 8 | channel(0x54);
         }
-        compared(1.0, z);
         if (!(1.0 > z))
         {
             const float scale = float(M.div(1.0, z));
@@ -3717,30 +2537,26 @@ void particlesNative(win32::WinApplication* app, x86::CPU& cpu)
             sizeY = float(fp::toInteger<x86::sreg32>(x86::Float(M.mul(sizeY, scale))));
         }
         app->getMemory<x86::reg16>(cursor + 4) = 0;
-        word(cursor) = cursor + 0xa0;
+        app->getMemory<reg32>(cursor) = cursor + 0xa0;
         app->getMemory<x86::reg16>(cursor + 6) = app->getMemory<x86::reg16>(0x560bbc + (kind << 7));
-        word(cursor + 0x18) = word(particle + 0x50);
+        app->getMemory<reg32>(cursor + 0x18) = word(particle + 0x50);
         for (int c = 0; c < 4; ++c)
-            word(cursor + 8 + x86::reg32(c) * 4) = corners[c];
-        word(cursor + 0x1c) = asBits(z);
+            app->getMemory<reg32>(cursor + 8 + x86::reg32(c) * 4) = corners[c];
+        app->getMemory<reg32>(cursor + 0x1c) = asBits(z);
         for (int c = 0; c < 4; ++c)
         {
-            word(corners[c] + 8) = asBits(z);
-            word(corners[c] + 0xc) = asBits(inverse);
-            word(corners[c] + 0x10) = colour;
+            app->getMemory<reg32>(corners[c] + 8) = asBits(z);
+            app->getMemory<reg32>(corners[c] + 0xc) = asBits(inverse);
+            app->getMemory<reg32>(corners[c] + 0x10) = colour;
         }
-        edx = colour;
         const double cx = floatAt(centre), cy = floatAt(centre + 4);
         if (byte(particle + 0x7c) != 0)
         {
             const x86::reg32 previous = particle + 0x58 + (player << 4) + ((pass == 1 ? 1u : 0u) << 3);
-            edx = previous;
             const double limit = app->getMemory<double>(x86::reg32(0x540450));
             auto clamp = [&](double size) {
-                compared(size, limit);
                 if (!(size >= limit))
                     return 0.5;
-                compared(1.0, size);
                 return 1.0 >= size ? size : 1.0;  // never wider than a pixel
             };
             const float width = float(clamp(sizeX));
@@ -3748,10 +2564,10 @@ void particlesNative(win32::WinApplication* app, x86::CPU& cpu)
             if (byte(flag) != 0)
             {
                 const float px = floatAt(previous);
-                word(corners[0]) = asBits(px);
-                word(corners[1]) = asBits(px);
-                word(corners[0] + 4) = word(previous + 4);
-                word(corners[1] + 4) = word(previous + 4);
+                app->getMemory<reg32>(corners[0]) = asBits(px);
+                app->getMemory<reg32>(corners[1]) = asBits(px);
+                app->getMemory<reg32>(corners[0] + 4) = word(previous + 4);
+                app->getMemory<reg32>(corners[1] + 4) = word(previous + 4);
                 putFloat(corners[2], M.add(cx, width));
                 putFloat(corners[2] + 4, M.add(cy, height));
                 putFloat(corners[3], M.sub(cx, width));
@@ -3762,18 +2578,18 @@ void particlesNative(win32::WinApplication* app, x86::CPU& cpu)
             }
             else
             {
-                word(corners[0]) = word(centre);
-                word(corners[0] + 4) = word(centre + 4);
+                app->getMemory<reg32>(corners[0]) = word(centre);
+                app->getMemory<reg32>(corners[0] + 4) = word(centre + 4);
                 putFloat(corners[1], M.add(cx, width));
                 putFloat(corners[1] + 4, M.sub(cy, height));
                 putFloat(corners[2], M.add(width, cx));
                 putFloat(corners[2] + 4, M.add(cy, height));
-                word(corners[3]) = word(centre);
+                app->getMemory<reg32>(corners[3]) = word(centre);
                 putFloat(corners[3] + 4, M.add(height, cy));
-                word(previous) = word(centre);
-                word(previous + 4) = word(centre + 4);
+                app->getMemory<reg32>(previous) = word(centre);
+                app->getMemory<reg32>(previous + 4) = word(centre + 4);
             }
-            byte(flag) = 1;
+            app->getMemory<x86::reg8>(flag) = 1;
         }
         else
         {
@@ -3789,40 +2605,31 @@ void particlesNative(win32::WinApplication* app, x86::CPU& cpu)
             putFloat(corners[3] + 4, M.sub(cy, a));
         }
         for (int c = 0; c < 4; ++c)
-            byte(corners[c] + 0x14) = screenCode(app, corners[c], edx);
-        // the stack copies the original keeps: the sizes it rounded
-        putFloat(ebp + 0x4e, sizeX);
-        putFloat(ebp + 0x52, sizeY);
+            app->getMemory<x86::reg8>(corners[c] + 0x14) = screenCode(app, corners[c]);
         cursor += 0xa0;
         ++count;
     }
 
-    compared.replay(cpu);
-    IntegerFlags flags;
     if (count == 0)
-    {
-        flags.logic(0);  // test eax, eax
-        flags.store(cpu);
-        word(ebp - 0x1e) = 0;
-        word(ebp - 0x1a) = 0;
-        finish(edx);
-        return;
-    }
+        return finish();
     const x86::reg32 last = cursor - 0xa0;
-    // sub ecx, 0xa0
-    flags.compare(cursor, 0xa0);
-    flags.store(cpu);
-    cpu.eax = ebp + 0x22;
-    cpu.edx = count * 0xa0;
-    cpu.ecx = last;
-    if (!call(app, cpu, 0x4bbde0))
+    if (!commitArena(app, cpu, base, ebp, slot, count * 0xa0))
+        return 0;
+    tail = last;
+    head = word(slot);
+    app->getMemory<reg32>(last) = 0;
+    return finish();
+}
+
+/* The adapter: eax the view, edx its matrix, esi where the list goes; esi left past the copy
+ * of it the code makes from its frame. */
+void particlesNative(win32::WinApplication* app, x86::CPU& cpu)
+{
+    const reg32 esi = particlesOf(app, cpu, cpu.esp, cpu.eax, cpu.edx, cpu.esi);
+    if (cpu.terminate)
         return;
-    word(ebp - 0xa) = last;
-    word(ebp - 0xe) = word(ebp + 0x22);
-    word(last) = 0;
-    word(ebp - 0x1e) = word(ebp - 0xe);
-    word(ebp - 0x1a) = word(ebp - 0xa);
-    finish(count * 0xa0);
+    cpu.esi = esi;
+    cpu.esp += 4;
 }
 
 /* sub_4cb750: the drops on the view of one player (0x7f0bd0, 0x3200 bytes a
@@ -3833,28 +2640,15 @@ void particlesNative(win32::WinApplication* app, x86::CPU& cpu)
  * test is forced on, tools/apply_alpha_intensity.py), the flags and the
  * texture at +0x30.  Nothing under camera modes 8, 0xe and 0x12.
  *   eax  the view (+4 its player)
- * Only eax is not kept: what its last step left in it. */
-void dropsNative(win32::WinApplication* app, x86::CPU& cpu)
+ * Entered at `esp`; the slot sub_4bbf80 fills in its frame below six pushes. */
+void dropsOf(App* app, CPU& cpu, reg32 esp, reg32 view)
 {
-    const FpuMath M{cpu.fpu};
+    const FpuMath M;
     auto word = [app](x86::reg32 address) { return app->getMemory<x86::reg32>(address); };
     auto byte = [app](x86::reg32 address) { return app->getMemory<x86::reg8>(address); };
     auto floatAt = [app](x86::reg32 address) -> float { return app->getMemory<float>(address); };
-    const x86::reg32 esp = cpu.esp;
-    const x86::reg32 saved[] = { cpu.ebx, cpu.ecx, cpu.edx, cpu.esi, cpu.edi, cpu.ebp };
     const x86::reg32 frame = esp - 24;
-    const x86::reg32 view = cpu.eax;
     const x86::reg32 player = word(view + 4);
-    auto finish = [&](x86::reg32 eax) {
-        cpu.eax = eax;
-        cpu.ebx = saved[0];
-        cpu.ecx = saved[1];
-        cpu.edx = saved[2];
-        cpu.esi = saved[3];
-        cpu.edi = saved[4];
-        cpu.ebp = saved[5];
-        cpu.esp = esp + 4;
-    };
     const x86::reg32 alphaScale = x86::reg32(fp::toInteger<x86::sreg32>(
         x86::Float(M.mul(gameSettings(app).alphaIntensity, app->getMemory<double>(x86::reg32(0x540440))))));
     // The camera's mode, three times as the original reads it.
@@ -3865,48 +2659,23 @@ void dropsNative(win32::WinApplication* app, x86::CPU& cpu)
         const x86::reg32 second = word(0x5e10b0 + player * 4);
         return second ? x86::reg32(word(second)) : 0u;
     };
-    IntegerFlags flags;
     for (const x86::reg32 skipped : { 8u, 0xeu, 0x12u })
-    {
-        const x86::reg32 mode = cameraMode();
-        flags.compare(mode, skipped);
-        if (mode == skipped)
-        {
-            flags.store(cpu);
-            finish(mode);
+        if (cameraMode() == skipped)
             return;
-        }
-    }
-    LastWideCompare compared;
     const double k1 = floatAt(0x56009c), k2 = floatAt(0x5600a0), c1 = floatAt(0x5600a4), c2 = floatAt(0x5600a8);
     const x86::reg32 drops = 0x7f0bd0 + player * 0x3200;
-    x86::reg32 eax = 0;
-    cpu.ebp = frame;
     for (x86::reg32 i = 0; i < 0xc8; ++i)
     {
         const x86::reg32 drop = drops + (i << 6);
-        eax = i << 6;
         if (word(drop) == 0)
             continue;
-        compared.replay(cpu);
-        compared.any = false;
-        cpu.eax = frame - 0x28;
-        cpu.edx = 0xa0;
-        cpu.esp = frame - 0x28;
-        if (!call(app, cpu, 0x4bbf80))
+        // sub_4bbf80 hands edx, the size, on to sub_4bbde0
+        const auto room = callAt(app, cpu, frame - 0x28, 0x4bbf80, { frame - 0x28, 0xa0 });
+        if (!room || *room == 0)
             return;
-        if (cpu.eax == 0)
-        {
-            flags.logic(0);  // test eax, eax
-            flags.store(cpu);
-            finish(0);
-            return;
-        }
         const x86::reg32 polygon = word(frame - 0x28);
         x86::reg32 colour = word(drop + 0x28);
-        const double alpha = gameSettings(app).alphaIntensity;
-        compared(1.0, alpha);
-        if (1.0 > alpha && (byte(drop + 0x2c) & 1))
+        if (1.0 > gameSettings(app).alphaIntensity && (byte(drop + 0x2c) & 1))
         {
             auto channel = [&](x86::reg32 at) {
                 return (x86::reg32(x86::sreg32(x86::reg32(byte(drop + at)) * alphaScale) >> 16)) & 0xff;
@@ -3916,25 +2685,27 @@ void dropsNative(win32::WinApplication* app, x86::CPU& cpu)
         app->getMemory<x86::reg16>(polygon + 4) = 0;
         app->getMemory<x86::reg16>(polygon + 6) = app->getMemory<x86::reg16>(drop + 0x2c);
         for (x86::reg32 c = 0; c < 4; ++c)
-            word(polygon + 8 + c * 4) = polygon + 0x20 + c * 0x20;
-        word(polygon + 0x18) = word(drop + 0x30);
-        x86::reg32 edx = 0;
+            app->getMemory<reg32>(polygon + 8 + c * 4) = polygon + 0x20 + c * 0x20;
+        app->getMemory<reg32>(polygon + 0x18) = word(drop + 0x30);
         for (x86::reg32 c = 0; c < 4; ++c)
         {
             const x86::reg32 corner = polygon + 0x20 + c * 0x20;
             app->getMemory<float>(corner) = float(M.add(M.mul(floatAt(drop + 8 + c * 8), k1), c1));
-            word(corner + 8) = 0;
-            word(corner + 0xc) = 0x3f7fff00;
+            app->getMemory<reg32>(corner + 8) = 0;
+            app->getMemory<reg32>(corner + 0xc) = 0x3f7fff00;
             app->getMemory<float>(corner + 4) = float(M.add(M.mul(floatAt(drop + 0xc + c * 8), k2), c2));
-            byte(corner + 0x14) = screenCode(app, corner, edx);
-            word(corner + 0x10) = colour;
+            app->getMemory<x86::reg8>(corner + 0x14) = screenCode(app, corner);
+            app->getMemory<reg32>(corner + 0x10) = colour;
         }
-        eax = colour;
     }
-    compared.replay(cpu);
-    flags.compare(0xc8, 0xc8);  // cmp [ebp-0x1c], 0xc8
-    flags.store(cpu);
-    finish(eax);
+}
+
+void dropsNative(win32::WinApplication* app, x86::CPU& cpu)
+{
+    dropsOf(app, cpu, cpu.esp, cpu.eax);
+    if (cpu.terminate)
+        return;
+    cpu.esp += 4;
 }
 
 /* sub_4cb2c0: the 600 particles moved on a frame.  Every live one moves by its
@@ -3945,36 +2716,30 @@ void dropsNative(win32::WinApplication* app, x86::CPU& cpu)
  * grows with age; every fourth frame its colour fades by its kind's; its
  * velocity is damped and falls by its kind's gravity; it loses a frame of
  * life, dies with its alpha, and one that spawns (+0x7e) hands a copy of
- * itself to sub_4cab60 as it dies.  Only eax is not kept. */
-void moveParticlesNative(win32::WinApplication* app, x86::CPU& cpu)
+ * itself to sub_4cab60 as it dies.  Returns what the code leaves in eax: the
+ * last live particle's position, else what sub_4cb220 or the frame's parity
+ * left.  Entered at `esp`; its frame below six pushes and 0x38 bytes. */
+reg32 moveParticlesOf(App* app, CPU& cpu, reg32 esp)
 {
-    const FpuMath M{cpu.fpu};
+    const FpuMath M;
     auto word = [app](x86::reg32 address) { return app->getMemory<x86::reg32>(address); };
     auto byte = [app](x86::reg32 address) { return app->getMemory<x86::reg8>(address); };
     auto floatAt = [app](x86::reg32 address) -> float { return app->getMemory<float>(address); };
     auto putFloat = [app](x86::reg32 address, double value) { app->getMemory<float>(address) = float(value); };
-    const x86::reg32 esp = cpu.esp;
-    const x86::reg32 saved[] = { cpu.ebx, cpu.ecx, cpu.edx, cpu.esi, cpu.edi, cpu.ebp };
-    const x86::reg32 frame = esp - 24;
-    cpu.ebp = frame;
-    cpu.esp = frame - 0x38;
+    const x86::reg32 frame = esp - 24;  // push ebx, ecx, edx, esi, edi, ebp; mov ebp, esp; sub esp, 0x38
+    const x86::reg32 base = frame - 0x38;
     const x86::reg32 odd = word(0x7d3684) & 1;
     x86::reg32 eax = odd;
     if (odd)
     {
-        cpu.eax = 0;
-        if (!call(app, cpu, 0x4cb220))
-            return;
-        eax = cpu.eax;
-        if (gameSettings(app).playMode == 1)
+        for (reg32 player = 0; player < (gameSettings(app).playMode == 1 ? 2u : 1u); ++player)
         {
-            cpu.eax = 1;
-            if (!call(app, cpu, 0x4cb220))
-                return;
-            eax = cpu.eax;
+            const auto aged = callAt(app, cpu, base, 0x4cb220, { player });
+            if (!aged)
+                return 0;
+            eax = *aged;
         }
     }
-    LastWideCompare compared;
     const double step = app->getMemory<double>(x86::reg32(0x540420));
     auto trig = [&](bool sine, x86::reg32 at) {
         const x86::Float angle = fp::mul(x86::Float(floatAt(at)),
@@ -3993,8 +2758,8 @@ void moveParticlesNative(win32::WinApplication* app, x86::CPU& cpu)
         {
             const x86::reg32 kind = 0x560b64 + (word(p + 4) << 7);
             const double damping = floatAt(kind + 0x38);
-            word(frame - 8) = word(p + 8) - life;
-            const float age = float(M.div(double(x86::sreg32(word(frame - 8))), double(x86::sreg32(word(p + 8)))));
+            const x86::sreg32 lived = x86::sreg32(word(p + 8) - life);
+            const float age = float(M.div(double(lived), double(x86::sreg32(word(p + 8)))));
             if (word(p + 0x44) & 0x7fffffff)
             {
                 const double s = trig(true, p + 0x40);
@@ -4014,16 +2779,13 @@ void moveParticlesNative(win32::WinApplication* app, x86::CPU& cpu)
                 if (word(kind + 0x3c) != 0)
                 {
                     const double spin = floatAt(p + 0x34);
-                    compared(0.0, spin);
                     const x86::reg32 size = (0.0 <= spin || spin != spin) ? spinBits : asBits(float(-spin));
                     const double angle = floatAt(p + 0x30);
-                    compared(angle, app->getMemory<double>(x86::reg32(0x540410)));
                     x86::reg32 bounced;
                     if (angle > app->getMemory<double>(x86::reg32(0x540410)))
                         bounced = asBits(-asFloat(size));
                     else
                     {
-                        compared(angle, app->getMemory<double>(x86::reg32(0x540418)));
                         bounced = angle >= app->getMemory<double>(x86::reg32(0x540418)) ? spinBits : size;
                     }
                     word(p + 0x34) = bounced;
@@ -4059,21 +2821,12 @@ void moveParticlesNative(win32::WinApplication* app, x86::CPU& cpu)
             if (byte(p + 0x7e) != 0 && word(p) == 0)
             {
                 // a copy of the particle on the stack for sub_4cab60 (ret 0x80)
-                compared.replay(cpu);
-                compared.any = false;
-                cpu.esp = frame - 0x38 - 0x80;
-                std::memmove(&app->getMemory<x86::reg8>(cpu.esp), &app->getMemory<x86::reg8>(p), 0x80);
-                cpu.ebx = velocity;
-                cpu.edx = p;
-                cpu.ecx = 0;
-                cpu.esi = p + 0x80;
-                cpu.edi = frame - 0x38;
-                IntegerFlags dead;
-                dead.compare(0, 0);  // cmp dword ptr [edx], 0
-                dead.store(cpu);
-                if (!call(app, cpu, 0x4cab60))
-                    return;
-                cpu.esp = frame - 0x38;
+                const guest::KeptRegisters kept(cpu);
+                std::memmove(&app->getMemory<x86::reg8>(base - 0x80), &app->getMemory<x86::reg8>(p), 0x80);
+                cpu.esp = base - 0x80 - 4;
+                app->dynamic_call(0x4cab60, cpu);
+                if (cpu.terminate)
+                    return 0;
             }
         }
         putFloat(position, M.add(M.mul(floatAt(velocity), step), floatAt(position)));
@@ -4081,18 +2834,16 @@ void moveParticlesNative(win32::WinApplication* app, x86::CPU& cpu)
         putFloat(position + 8, M.add(M.mul(step, floatAt(velocity + 8)), floatAt(position + 8)));
         eax = position;
     }
-    compared.replay(cpu);
-    IntegerFlags flags;
-    flags.compare(0x258, 0x258);  // cmp [ebp-0x1c], 0x258
-    flags.store(cpu);
+    return eax;
+}
+
+void moveParticlesNative(win32::WinApplication* app, x86::CPU& cpu)
+{
+    const reg32 eax = moveParticlesOf(app, cpu, cpu.esp);
+    if (cpu.terminate)
+        return;
     cpu.eax = eax;
-    cpu.ebx = saved[0];
-    cpu.ecx = saved[1];
-    cpu.edx = saved[2];
-    cpu.esi = saved[3];
-    cpu.edi = saved[4];
-    cpu.ebp = saved[5];
-    cpu.esp = esp + 4;
+    cpu.esp += 4;
 }
 
 x86::reg32 scaleColour(x86::reg32 colour, x86::reg32 scale);
@@ -4126,42 +2877,20 @@ inline void projectToScreen(win32::WinApplication* app, const FpuMath& M, x86::r
  * alpha intensity slider below 1 (the [0x7a3a58] & 0x40 test forced on,
  * tools/apply_alpha_intensity.py); the square, of the size scaled by the
  * light's own 1/z, is turned by (1 + x/z) * [0x53bd00], its texture 0x8b4840.
- * The arguments are written as the original writes them.  Only eax is not
- * kept. */
-void lightGlowNative(win32::WinApplication* app, x86::CPU& cpu)
+ * The arguments are written as the original writes them.  Returns what the
+ * code leaves in eax: fnstsw's over the view or the light's end for a light
+ * left out, the 1/z or x the inline clip code last read for one off the
+ * screen, else sub_4c7610's.  Entered at `esp`; its frame below six pushes. */
+reg32 lightGlowOf(App* app, CPU& cpu, reg32 esp, reg32 view)
 {
-    const FpuMath M{cpu.fpu};
+    const FpuMath M;
     auto word = [app](x86::reg32 address) { return app->getMemory<x86::reg32>(address); };
     auto floatAt = [app](x86::reg32 address) -> float { return app->getMemory<float>(address); };
-    const x86::reg32 esp = cpu.esp;
-    const x86::reg32 saved[] = { cpu.ebx, cpu.ecx, cpu.edx, cpu.esi, cpu.edi, cpu.ebp };
-    const x86::reg32 ebp = esp - 24;
-    const x86::reg32 view = cpu.eax;
-    LastWideCompare compared;
-    auto finish = [&](x86::reg32 eax) {
-        cpu.eax = eax;
-        cpu.ebx = saved[0];
-        cpu.ecx = saved[1];
-        cpu.edx = saved[2];
-        cpu.esi = saved[3];
-        cpu.edi = saved[4];
-        cpu.ebp = saved[5];
-        cpu.esp = esp + 4 + 0x1c;
-    };
-    auto statusInto = [&](x86::reg32 eax) {
-        // fnstsw ax after the last fcomp
-        return (eax & 0xffff0000) | cpu.fpu.status.word;
-    };
+    const x86::reg32 ebp = esp - 24;  // push ebx, ecx, edx, esi, edi, ebp; mov ebp, esp
     word(ebp - 0x2c) = 0;
     const double size = floatAt(ebp + 0x2c);
-    compared(0.0, size);
     if (0.0 >= size)
-    {
-        compared.replay(cpu);
-        cpu.flags.of = false;  // xor edx, edx
-        finish(statusInto(view));
-        return;
-    }
+        return statusAfterCompare(cpu, view, 0.0, size);
     const float* m = &app->getMemory<float>(view + 0x44);
     const float p0 = floatAt(ebp + 0x1c), p1 = floatAt(ebp + 0x20), p2 = floatAt(ebp + 0x24);
     float x = float(M.add(M.add(M.mul(p0, m[0]), M.mul(p1, m[3])), M.mul(p2, m[6])));
@@ -4174,29 +2903,14 @@ void lightGlowNative(win32::WinApplication* app, x86::CPU& cpu)
     app->getMemory<float>(ebp - 0x3c) = y;
     app->getMemory<float>(ebp - 0x38) = z;
     const x86::reg32 afterTurn = ebp + 0x28;  // lea eax, [eax + 0xc] past the light's three
-    IntegerFlags flags;
-    flags.compare(asBits(z), 0x43960000);  // cmp ecx, 300.0
-    if (x86::sreg32(asBits(z)) > 0x43960000)
-    {
-        compared.replay(cpu);
-        flags.store(cpu);
-        finish(afterTurn);
-        return;
-    }
-    compared(0.0, z);
+    if (x86::sreg32(asBits(z)) > 0x43960000)  // cmp ecx, 300.0
+        return afterTurn;
     if (0.0 >= z)
-    {
-        // sahf's flags over the cmp's, OF the cmp's
-        flags.store(cpu);
-        compared.replay(cpu);
-        finish(statusInto(afterTurn));
-        return;
-    }
+        return statusAfterCompare(cpu, afterTurn, 0.0, z);
     const x86::reg32 record = ebp - 0x60;
     projectToScreen(app, M, record, x, y, z);
     app->getMemory<float>(ebp - 0x38) = z;
-    x86::reg32 edx = 0;
-    app->getMemory<x86::reg8>(record + 0x14) = screenCode(app, record, edx);
+    app->getMemory<x86::reg8>(record + 0x14) = screenCode(app, record);
     const x86::reg32 lightInverse = word(record + 0xc);
     word(ebp - 4) = lightInverse;
     if (!(word(ebp + 0x30) & 0x7fffffff))
@@ -4205,53 +2919,30 @@ void lightGlowNative(win32::WinApplication* app, x86::CPU& cpu)
     app->getMemory<float>(ebp + 0x30) = float(depth);
     app->getMemory<float>(record + 0xc) = float(M.div(1.0, depth));
     word(record + 8) = word(ebp + 0x30);
-    const x86::reg8 code = screenCode(app, record, edx);
+    const x86::reg8 code = screenCode(app, record);
     app->getMemory<x86::reg8>(record + 0x14) = code;
     if (code != 0)
     {
-        compared.replay(cpu);
-        flags.cf = false;  // cmp byte ptr [ebp-0x4c], 0
-        flags.of = false;
-        flags.zf = false;
-        flags.sf = (code & 0x80) != 0;
-        flags.store(cpu);
         // eax as the inline code left it: 1/z behind the near plane, else x
         const x86::reg32 inverse = word(record + 0xc);
         const bool behind = (inverse & 0x80000000) || x86::sreg32(inverse) >= x86::sreg32(word(0x7d34f8));
-        finish(behind ? inverse : word(record));
-        return;
+        return behind ? inverse : word(record);
     }
     // [0x7a3a58] & 0x40 forced on (tools/apply_alpha_intensity.py)
     const double alpha = gameSettings(app).alphaIntensity;
-    compared(1.0, alpha);
-    bool scaled = false;
-    x86::reg32 scale = 0;
     if (1.0 > alpha)
     {
-        scaled = true;
-        scale = x86::reg32(fp::toInteger<x86::sreg32>(
+        const x86::reg32 scale = x86::reg32(fp::toInteger<x86::sreg32>(
             x86::Float(M.mul(alpha, app->getMemory<double>(x86::reg32(0x53bcf8))))));
         word(ebp + 0x28) = scaleColour(word(ebp + 0x28), scale);
     }
     word(ebp - 0x50) = word(ebp + 0x28);
 
-    // the forced test's clear OF, sahf's flags, and the scaling's cmp ecx, 0x10000
-    compared.replay(cpu);
-    compared.any = false;
-    cpu.flags.of = false;
-    if (scaled)
-    {
-        flags.compare(scale, 0x10000);
-        flags.store(cpu);
-    }
-    cpu.eax = ebp - 0x2c;
-    cpu.edx = 0xa0;
-    cpu.ebp = ebp;
-    cpu.esp = ebp - 0x60;
-    if (!call(app, cpu, 0x4bbde0))
-        return;
+    const auto room = commitArena(app, cpu, ebp - 0x60, ebp, ebp - 0x2c, 0xa0);
+    if (!room)
+        return 0;
     const x86::reg32 polygon = word(ebp - 0x2c);
-    if (cpu.eax != 0)
+    if (*room != 0)
     {
         const x86::reg32 corners[4] = { polygon + 0x20, polygon + 0x40, polygon + 0x60, polygon + 0x80 };
         const double slope = M.div(x, floatAt(ebp - 0x38));
@@ -4300,30 +2991,26 @@ void lightGlowNative(win32::WinApplication* app, x86::CPU& cpu)
             app->getMemory<float>(corners[3]) = float(M.sub(cx, ch));
             app->getMemory<float>(corners[3] + 4) = float(M.sub(cy, sw));
         }
-        IntegerFlags codeFlags;
         for (int c = 0; c < 4; ++c)
-            app->getMemory<x86::reg8>(corners[c] + 0x14) = screenCode(app, corners[c], edx, codeFlags);
-        codeFlags.store(cpu);
+            app->getMemory<x86::reg8>(corners[c] + 0x14) = screenCode(app, corners[c]);
     }
-    else
-    {
-        flags.logic(0);  // test eax, eax
-        flags.store(cpu);
-    }
-    word(cpu.esp - 4) = word(0x7dcffc);
-    cpu.esp -= 4;
-    cpu.eax = polygon;
-    cpu.esp -= 4;
-    sortedBucketsNative(app, cpu);
+    // pushed with the bucket's start, from the depth of the call before
+    return sortedBucketsOf(app, cpu, ebp - 0x60 - 8, polygon, word(0x7dcffc));
+}
+
+void lightGlowNative(win32::WinApplication* app, x86::CPU& cpu)
+{
+    const reg32 esp = cpu.esp;
+    const reg32 eax = lightGlowOf(app, cpu, esp, cpu.eax);
     if (cpu.terminate)
         return;
-    finish(cpu.eax);
+    cpu.eax = eax;
+    cpu.esp = esp + 4 + 0x1c;
 }
 
 /* st(0) toward zero, then to an integer as fistp stores it (sub_4dfd56). */
-inline x86::sreg32 truncated(x86::CPU& cpu, double value)
+inline x86::sreg32 truncated(double value)
 {
-    NFS2_USE(cpu);
     return fp::toInteger<x86::sreg32>(std::trunc(value));
 }
 
@@ -4340,16 +3027,13 @@ inline x86::sreg32 truncated(x86::CPU& cpu, double value)
  * it and by the alpha intensity slider (the [0x7a3a58] & 0x40 test forced on,
  * tools/apply_alpha_intensity.py); a quad all off one side of the screen is
  * left out, the rest hung on a list, last first, each keyed by its deepest
- * corner.  Only eax is not kept. */
-void headlightBeamNative(win32::WinApplication* app, x86::CPU& cpu)
+ * corner.  Entered at `esp`; the rings and the arena's slot in its frame. */
+void headlightBeamOf(App* app, CPU& cpu, reg32 esp, reg32 view)
 {
-    const FpuMath M{cpu.fpu};
+    const FpuMath M;
     auto word = [app](x86::reg32 address) { return app->getMemory<x86::reg32>(address); };
     auto floatAt = [app](x86::reg32 address) -> float { return app->getMemory<float>(address); };
-    const x86::reg32 esp = cpu.esp;
-    const x86::reg32 saved[] = { cpu.ebx, cpu.ecx, cpu.edx, cpu.esi, cpu.edi, cpu.ebp };
-    const x86::reg32 ebp = esp - 24 - 0x5a;
-    const x86::reg32 view = cpu.eax;
+    const x86::reg32 ebp = esp - 24 - 0x5a;  // six pushes; mov ebp, esp; sub ebp, 0x5a
     const x86::reg32 args = esp + 4;
     const float lamp[3] = { floatAt(args), floatAt(args + 4), floatAt(args + 8) };
     const x86::reg32 carMatrix = word(args + 0xc);
@@ -4359,53 +3043,15 @@ void headlightBeamNative(win32::WinApplication* app, x86::CPU& cpu)
     const float nearRadius = floatAt(args + 0x1c);
     const float textureV = floatAt(args + 0x20);
     const float depthBias = floatAt(args + 0x24);
-    LastWideCompare compared;
-    IntegerFlags flags;
-    auto finish = [&](x86::reg32 eax) {
-        cpu.eax = eax;
-        cpu.ebx = saved[0];
-        cpu.ecx = saved[1];
-        cpu.edx = saved[2];
-        cpu.esi = saved[3];
-        cpu.edi = saved[4];
-        cpu.ebp = saved[5];
-        cpu.esp = esp + 4 + 0x28;
-    };
     word(ebp + 0x1a) = 0;
     word(ebp - 0x32) = 0;
-    flags.compare(gameSettings(app).effectsLevel, 2);
-    if (gameSettings(app).effectsLevel == 2)
-    {
-        flags.store(cpu);
-        finish(view);
+    if (gameSettings(app).effectsLevel == 2 || !(lengthBits & 0x7fffffff))
         return;
-    }
-    flags.logic(lengthBits & 0x7fffffff);
-    if (!(lengthBits & 0x7fffffff))
-    {
-        flags.store(cpu);
-        finish(view);
-        return;
-    }
     float d[3] = { float(M.sub(floatAt(view + 8), lamp[0])), float(M.sub(floatAt(view + 0xc), lamp[1])),
                    float(M.sub(floatAt(view + 0x10), lamp[2])) };
     const float distance = float(M.sqrt(M.add(M.add(M.mul(d[1], d[1]), M.mul(d[0], d[0])), M.mul(d[2], d[2]))));
-    flags.logic(asBits(distance) & 0x7fffffff);
-    if (!(asBits(distance) & 0x7fffffff))
-    {
-        flags.store(cpu);
-        finish(ebp - 0x46);
+    if (!(asBits(distance) & 0x7fffffff) || distance > double(floatAt(0x53bd04)))
         return;
-    }
-    const double reach = floatAt(0x53bd04);
-    compared(distance, reach);
-    if (distance > reach)
-    {
-        compared.replay(cpu);
-        cpu.flags.of = false;
-        finish(((ebp - 0x46) & 0xffff0000) | cpu.fpu.status.word);
-        return;
-    }
     {
         const double inverse = M.div(1.0, distance);
         d[0] = float(M.mul(d[0], inverse));
@@ -4422,7 +3068,7 @@ void headlightBeamNative(win32::WinApplication* app, x86::CPU& cpu)
     const double k8 = floatAt(0x53bd08);
     const double segments = M.mul(M.sub(1.0, M.mul(distance, floatAt(0x53bd10))), floatAt(0x53bd14));
     const float start = float(M.mul(k8, M.sub(M.sub(floatAt(0x53bd0c), M.mul(c2, k8)), M.mul(c3, k8))));
-    const x86::sreg32 raw = truncated(cpu, segments);
+    const x86::sreg32 raw = truncated(segments);
     const x86::sreg32 n = raw > 12 ? 12 : (raw >= 3 ? raw : 3);
     const x86::sreg32 count = n + 1;
 
@@ -4434,34 +3080,22 @@ void headlightBeamNative(win32::WinApplication* app, x86::CPU& cpu)
     }
     const float spread = float(M.mul(angle, floatAt(0x53bd18)));
     float width;
-    compared(1.0, spread);
-    bool small = false;
-    if (!(1.0 < spread || spread != spread))
-    {
-        compared(floatAt(0x53bd1c), spread);
-        small = floatAt(0x53bd1c) > spread;
-    }
-    if (small)
+    if (!(1.0 < spread || spread != spread) && floatAt(0x53bd1c) > spread)
         width = asFloat(0x3d4ccccd);
     else
-    {
-        compared(1.0, spread);
         width = 1.0 >= spread ? spread : 1.0f;
-    }
-    compared(M.sub(1.0, width), c1);
     if (!(M.sub(1.0, width) >= c1))
     {
         const double into = M.sub(c1, M.sub(1.0, width));
         const double fade = M.sub(1.0, M.mul(M.div(1.0, width), into));
-        const x86::reg32 a = x86::reg32(truncated(cpu, M.mul(double((colour >> 24) & 0xff), fade))) & 0xff;
-        const x86::reg32 r = x86::reg32(truncated(cpu, M.mul(double((colour >> 16) & 0xff), fade))) & 0xff;
-        const x86::reg32 b = x86::reg32(truncated(cpu, M.mul(double(colour & 0xff), fade))) & 0xff;
-        const x86::reg32 g = x86::reg32(truncated(cpu, M.mul(fade, double((colour >> 8) & 0xff)))) & 0xff;
+        const x86::reg32 a = x86::reg32(truncated(M.mul(double((colour >> 24) & 0xff), fade))) & 0xff;
+        const x86::reg32 r = x86::reg32(truncated(M.mul(double((colour >> 16) & 0xff), fade))) & 0xff;
+        const x86::reg32 b = x86::reg32(truncated(M.mul(double(colour & 0xff), fade))) & 0xff;
+        const x86::reg32 g = x86::reg32(truncated(M.mul(fade, double((colour >> 8) & 0xff)))) & 0xff;
         colour = a << 24 | r << 16 | g << 8 | b;
     }
     // [0x7a3a58] & 0x40 forced on (tools/apply_alpha_intensity.py)
     const double alpha = gameSettings(app).alphaIntensity;
-    compared(1.0, alpha);
     if (1.0 > alpha)
         colour = scaleColour(colour, x86::reg32(fp::toInteger<x86::sreg32>(
                                          x86::Float(M.mul(alpha, app->getMemory<double>(x86::reg32(0x53bd20)))))));
@@ -4495,8 +3129,7 @@ void headlightBeamNative(win32::WinApplication* app, x86::CPU& cpu)
                 w[j] = float(M.add(camera[j], w[j]));
             const x86::reg32 record = records + x86::reg32(i) * 0x20;
             projectToScreen(app, M, record, w[0], w[1], w[2]);
-            x86::reg32 edx = 0;
-            app->getMemory<x86::reg8>(record + 0x14) = screenCode(app, record, edx);
+            app->getMemory<x86::reg8>(record + 0x14) = screenCode(app, record);
             word(record + 0x10) = lit ? colour : 0;
             app->getMemory<float>(record + 0x18) = float(M.div(double(i), double(n)));
             app->getMemory<float>(record + 0x1c) = lit ? float(M.sub(1.0, textureV)) : -textureV;
@@ -4507,24 +3140,13 @@ void headlightBeamNative(win32::WinApplication* app, x86::CPU& cpu)
     ring(nearRing, nearRadius, false);
     ring(farRing, farRadius, true);
 
+    const x86::reg32 base = ebp + 0x5a - 0x5b4;
     x86::reg32 head = 0;
-    cpu.ebp = ebp;
     for (x86::sreg32 j = 0; j < n; ++j)
     {
-        compared.replay(cpu);
-        compared.any = false;
-        cpu.eax = ebp - 0x32;
-        cpu.edx = 0xa0;
-        cpu.esp = ebp + 0x5a - 0x5b4;
-        if (!call(app, cpu, 0x4bbde0))
+        const auto room = commitArena(app, cpu, base, ebp, ebp - 0x32, 0xa0);
+        if (!room || *room == 0)
             return;
-        if (cpu.eax == 0)
-        {
-            flags.logic(0);  // test eax, eax
-            flags.store(cpu);
-            finish(0);
-            return;
-        }
         const x86::reg32 polygon = word(ebp - 0x32);
         const x86::reg32 sources[4] = { nearRing + x86::reg32(j + 1) * 0x20, nearRing + x86::reg32(j) * 0x20,
                                         farRing + x86::reg32(j) * 0x20, farRing + x86::reg32(j + 1) * 0x20 };
@@ -4547,39 +3169,23 @@ void headlightBeamNative(win32::WinApplication* app, x86::CPU& cpu)
         }
         const double z0 = floatAt(polygon + 0x28), z1 = floatAt(polygon + 0x48);
         const double z2 = floatAt(polygon + 0x68), z3 = floatAt(polygon + 0x88);
-        auto max23 = [&]() {
-            compared(z2, z3);
-            return z2 > z3 ? z2 : z3;
-        };
-        double deepest;
-        double b;
-        const double a = max23();
-        compared(z1, a);
-        if (z1 > a)
-            b = z1;
-        else
-            b = max23();
-        compared(z0, b);
-        if (z0 > b)
-            deepest = z0;
-        else
-        {
-            const double a2 = max23();
-            compared(z1, a2);
-            deepest = z1 > a2 ? z1 : max23();
-        }
+        const double z23 = z2 > z3 ? z2 : z3;
+        const double z123 = z1 > z23 ? z1 : z23;
+        const double deepest = z0 > z123 ? z0 : z123;
         app->getMemory<float>(polygon + 0x1c) = float(M.add(deepest, depthBias));
         head = polygon;
     }
-    compared.replay(cpu);
-    word(cpu.esp - 4) = word(0x7dcffc);
-    cpu.esp -= 4;
-    cpu.eax = word(ebp - 0x32);
-    cpu.esp -= 4;
-    sortedBucketsNative(app, cpu);
+    // pushed with the bucket's start, from the depth of the calls before
+    sortedBucketsOf(app, cpu, base - 8, word(ebp - 0x32), word(0x7dcffc));
+}
+
+void headlightBeamNative(win32::WinApplication* app, x86::CPU& cpu)
+{
+    const reg32 esp = cpu.esp;
+    headlightBeamOf(app, cpu, esp, cpu.eax);
     if (cpu.terminate)
         return;
-    finish(cpu.eax);
+    cpu.esp = esp + 4 + 0x28;
 }
 
 float viewZoom(win32::WinApplication* app, x86::reg32 view);
@@ -4595,96 +3201,35 @@ void signedDivide(x86::sreg64 dividend, x86::sreg32 divisor, x86::reg32& quotien
  * otherwise 0 to 3 by the mean depth of the corners against the Car Detail
  * row of 0x55fdf4 (times 0.75 in split screen or at night, times the mirror's
  * factor -- nfs3hp::mirrorCarScale -- in the mirror, times the camera's
- * zoom), or -1 past the last.  The registers it does not keep, the flags and
- * the FPU status as the original leaves them. */
-void carDetailNative(win32::WinApplication* app, x86::CPU& cpu)
+ * zoom), or -1 past the last.  Entered at `esp`; its frame below four
+ * pushes and 0xd8 bytes. */
+reg32 carDetailOf(App* app, CPU& cpu, reg32 esp, reg32 view, reg32 car, reg32 out)
 {
-    const FpuMath M{cpu.fpu};
+    const FpuMath M;
     auto word = [app](x86::reg32 address) { return app->getMemory<x86::reg32>(address); };
     auto byte = [app](x86::reg32 address) { return app->getMemory<x86::reg8>(address); };
     auto floatAt = [app](x86::reg32 address) -> float { return app->getMemory<float>(address); };
-    const x86::reg32 esp = cpu.esp;
-    const x86::reg32 saved[] = { cpu.ecx, cpu.esi, cpu.edi, cpu.ebp };
-    const x86::reg32 ebp = esp - 16 - 0x82;
-    const x86::reg32 view = cpu.eax;
-    const x86::reg32 car = cpu.edx;
-    const x86::reg32 out = cpu.ebx;
-    LastWideCompare compared;
-    IntegerFlags flags;
-    auto finish = [&](x86::reg32 eax, x86::reg32 ebx, x86::reg32 edx) {
-        cpu.eax = eax;
-        cpu.ebx = ebx;
-        cpu.edx = edx;
-        cpu.ecx = saved[0];
-        cpu.esi = saved[1];
-        cpu.edi = saved[2];
-        cpu.ebp = saved[3];
-        cpu.esp = esp + 4;
-    };
+    const x86::reg32 base = esp - 16 - 0xd8;  // push ecx, esi, edi, ebp; mov ebp, esp; sub esp, 0xd8
     const float zoom = viewZoom(app, view);
-    const x86::reg8 shown = byte(car + 0x89);
-    x86::reg32 edx = (car & 0xffffff00) | shown;
+    if (!byte(car + 0x89) || byte(car + 0x88) != 0)
+        return 0xffffffff;
+    const auto own = callAt(app, cpu, base, 0x422ba0, { word(view + 4) });
+    if (!own)
+        return 0;
+    if (*own == car)
+    {
+        const auto mode = callAt(app, cpu, base, 0x423b00, { word(view + 4) });
+        if (!mode)
+            return 0;
+        if (*mode == 1 || word(view) == 1 || *mode == 2)
+            return 0xffffffff;
+    }
+    const auto shown = callAt(app, cpu, base, 0x41e070, { view, x86::reg32(x86::sreg32(word(car + 0x1c)) >> 3) });
     if (!shown)
-    {
-        logic8(cpu, 0);  // test dl, dl
-        finish(0xffffffff, out, edx);
-        return;
-    }
-    if (byte(car + 0x88) != 0)
-    {
-        // cmp byte ptr [eax+0x88], 0
-        cpu.flags.cf = false;
-        cpu.flags.of = false;
-        cpu.flags.zf = false;
-        cpu.flags.sf = (byte(car + 0x88) & 0x80) != 0;
-        finish(0xffffffff, out, edx);
-        return;
-    }
-    cpu.ebp = ebp;
-    cpu.esp = ebp + 0x82 - 0xd8;
-    cpu.ecx = view;
-    cpu.ebx = out;
-    cpu.eax = word(view + 4);
-    cpu.edx = car;
-    if (!call(app, cpu, 0x422ba0))
-        return;
-    if (cpu.eax == car)
-    {
-        cpu.eax = word(view + 4);
-        if (!call(app, cpu, 0x423b00))
-            return;
-        const x86::reg32 mode = cpu.eax;
-        flags.compare(mode, 1);
-        bool skip = mode == 1;
-        if (!skip)
-        {
-            flags.compare(word(view), 1);
-            skip = word(view) == 1;
-        }
-        if (!skip)
-        {
-            flags.compare(mode, 2);
-            skip = mode == 2;
-        }
-        if (skip)
-        {
-            flags.store(cpu);
-            finish(0xffffffff, cpu.ebx, cpu.edx);
-            return;
-        }
-    }
-    cpu.edx = x86::reg32(x86::sreg32(word(car + 0x1c)) >> 3);
-    cpu.eax = view;
-    if (!call(app, cpu, 0x41e070))
-        return;
-    if (cpu.eax == 0)
-    {
-        flags.logic(0);  // test eax, eax
-        flags.store(cpu);
-        finish(0xffffffff, cpu.ebx, cpu.edx);
-        return;
-    }
-    word(out) = 0;
+        return 0;
+    if (*shown == 0)
+        return 0xffffffff;
+    app->getMemory<reg32>(out) = 0;
     const x86::reg32 row = 0x55fdf4 + (gameSettings(app).detailLevel << 4);
     float t[4] = { floatAt(row), floatAt(row + 4), floatAt(row + 8), floatAt(row + 0xc) };
     if (gameSettings(app).playMode == 1 || gameSettings(app).night != 0)
@@ -4725,7 +3270,6 @@ void carDetailNative(win32::WinApplication* app, x86::CPU& cpu)
             r[i * 3 + j] = float(M.add(M.add(M.mul(turn[i * 3], v[j]), M.mul(turn[i * 3 + 1], v[3 + j])),
                                         M.mul(turn[i * 3 + 2], v[6 + j])));
     float sum = 0.0f;
-    x86::reg32 code = 0;
     for (int i = 0; i < 8; ++i)
     {
         float p[3];
@@ -4736,60 +3280,29 @@ void carDetailNative(win32::WinApplication* app, x86::CPU& cpu)
             p[j] = float(M.add(p[j], place[j]));
         const x86::reg32 record = 0x7a3bf0 + x86::reg32(i) * 0x20;
         projectToScreen(app, M, record, p[0], p[1], p[2]);
-        x86::reg32 unused = 0;
-        code = screenCode(app, record, unused);
-        byte(record + 0x14) = x86::reg8(code);
+        app->getMemory<x86::reg8>(record + 0x14) = screenCode(app, record);
         sum = float(M.add(sum, p[2]));
     }
     const x86::reg32 near = byte(0x7a3c04) & byte(0x7a3c24) & byte(0x7a3c44);
-    flags.logic(near & byte(0x7a3c64));
-    if (near & byte(0x7a3c64))
-    {
-        const x86::reg32 far = byte(0x7a3c84) & byte(0x7a3ca4) & byte(0x7a3cc4);
-        flags.logic(far & byte(0x7a3ce4));
-        if (far & byte(0x7a3ce4))
-        {
-            flags.store(cpu);
-            finish(0xffffffff, code, far);
-            return;
-        }
-    }
+    if ((near & byte(0x7a3c64)) && (byte(0x7a3c84) & byte(0x7a3ca4) & byte(0x7a3cc4) & byte(0x7a3ce4)))
+        return 0xffffffff;
     const float mean = float(M.mul(sum, app->getMemory<double>(x86::reg32(0x540140))));
-    word(out) = asBits(mean);
-    x86::reg32 level = 0xffffffff;
-    bool decided = false;
-    bool first = false;
-    if (asBits(t[0]) & 0x7fffffff)
-    {
-        compared(mean, t[0]);
-        if (!(mean >= t[0]))
-        {
-            level = 0;
-            decided = true;
-            first = true;
-        }
-    }
-    for (int i = 1; i < 4 && !decided; ++i)
-    {
-        compared(mean, t[i]);
+    app->getMemory<reg32>(out) = asBits(mean);
+    if ((asBits(t[0]) & 0x7fffffff) && !(mean >= t[0]))
+        return 0;
+    for (int i = 1; i < 4; ++i)
         if (!(mean >= t[i]))
-        {
-            level = x86::reg32(i);
-            decided = true;
-        }
-    }
-    compared.replay(cpu);
-    if (first)
-    {
-        flags.logic(0);  // xor eax, eax
-        flags.store(cpu);
-    }
-    else
-    {
-        // sahf's, with OF clear from test ecx, 0x7fffffff (or test edx, eax before it)
-        cpu.flags.of = false;
-    }
-    finish(level, code, out);
+            return x86::reg32(i);
+    return 0xffffffff;
+}
+
+void carDetailNative(win32::WinApplication* app, x86::CPU& cpu)
+{
+    const reg32 level = carDetailOf(app, cpu, cpu.esp, cpu.eax, cpu.edx, cpu.ebx);
+    if (cpu.terminate)
+        return;
+    cpu.eax = level;
+    cpu.esp += 4;
 }
 
 /* sub_4dbef0: an object's vertices to the screen with their colours.
@@ -4798,71 +3311,25 @@ void carDetailNative(win32::WinApplication* app, x86::CPU& cpu)
  *   0x20 bytes each (ret 8)
  * More than 20 go to sub_4bf4c0 (objectVertices) at once, fewer
  * one by one, turned, moved and projected inline; each record then takes its
- * colour at +0x10.  esi, edi and ebp are kept, the rest as the original leaves
- * them; the two pointers it moves on in its arguments are left, past the return. */
-void objectVerticesListNative(win32::WinApplication* app, x86::CPU& cpu)
+ * colour at +0x10.  Returns what the code leaves in eax: past the records
+ * out, or for the inline loop past the vertices read (the matrix for none). */
+reg32 objectVerticesListOf(App* app, CPU& cpu, reg32 matrix, reg32 move, reg32 count, reg32 vertices,
+                           reg32 colours, reg32 out)
 {
-    const FpuMath M{cpu.fpu};
+    const FpuMath M;
     auto word = [app](x86::reg32 address) { return app->getMemory<x86::reg32>(address); };
-    const x86::reg32 esp = cpu.esp;
-    const x86::reg32 saved[] = { cpu.esi, cpu.edi, cpu.ebp };
-    const x86::reg32 ebp = esp - 12;
-    const x86::reg32 matrix = cpu.eax, move = cpu.edx, vertices = cpu.ecx;
-    const x86::reg32 count = cpu.ebx;
-    x86::reg32 colours = word(esp + 4);
-    x86::reg32 out = word(esp + 8);
-    IntegerFlags flags;
-    auto finish = [&]() {
-        cpu.esi = saved[0];
-        cpu.edi = saved[1];
-        cpu.ebp = saved[2];
-        cpu.esp = esp + 4 + 8;
-    };
     if (x86::sreg32(count) > 0x14)
     {
-        word(ebp - 0x24) = out;  // push ecx: sub_4bf4c0's argument
-        cpu.eax = count;
-        cpu.ebx = matrix;
-        cpu.ecx = move;
-        cpu.edx = vertices;
-        cpu.ebp = ebp;
-        cpu.esp = ebp - 0x24;
-        cpu.esp -= 4;
-        objectVerticesNative(app, cpu);
-        if (cpu.terminate)
-            return;
-        x86::reg32 left = count;
-        x86::reg32 eax = cpu.eax, ecx = cpu.ecx;
-        while (true)
-        {
-            --left;
-            if (left == 0xffffffff)
-                break;
-            eax = word(colours);
-            colours += 4;
-            word(out + 0x10) = eax;
-            ecx = out;
-            out += 0x20;
-            eax = out;
-        }
-        flags.compare(0xffffffff, 0xffffffff);  // cmp ebx, -1
-        flags.store(cpu);
-        cpu.eax = eax;
-        cpu.ebx = 0xffffffff;
-        cpu.ecx = ecx;
-        finish();
-        return;
+        objectVerticesOf(app, cpu, i32(count), vertices, matrix, move, out);
+        for (x86::reg32 left = count; left != 0; --left, colours += 4, out += 0x20)
+            app->getMemory<reg32>(out + 0x10) = word(colours);
+        return out;
     }
-    x86::reg32 left = count;
-    x86::reg32 eax = matrix, ebx = count, ecx = vertices;
     x86::reg32 in = vertices;
     const float* m = &app->getMemory<float>(matrix);
     const float* t = &app->getMemory<float>(move);
-    while (true)
+    for (x86::reg32 left = count; left != 0; --left, colours += 4, out += 0x20, in += 0xc)
     {
-        --left;
-        if (left == 0xffffffff)
-            break;
         const float* v = &app->getMemory<float>(in);
         float p[3];
         for (int j = 0; j < 3; ++j)
@@ -4870,52 +3337,37 @@ void objectVerticesListNative(win32::WinApplication* app, x86::CPU& cpu)
         for (int j = 0; j < 3; ++j)
             p[j] = float(M.add(p[j], t[j]));
         projectToScreen(app, M, out, p[0], p[1], p[2]);
-        x86::reg32 unused = 0;
-        ebx = screenCode(app, out, unused);
-        app->getMemory<x86::reg8>(out + 0x14) = x86::reg8(ebx);
-        word(out + 0x10) = word(colours);
-        colours += 4;
-        ecx = out;
-        out += 0x20;
-        in += 0xc;
-        eax = in;
+        app->getMemory<x86::reg8>(out + 0x14) = screenCode(app, out);
+        app->getMemory<reg32>(out + 0x10) = word(colours);
     }
-    flags.compare(0xffffffff, 0xffffffff);  // cmp edx, -1
-    flags.store(cpu);
-    cpu.eax = eax;
-    cpu.ebx = ebx;
-    cpu.ecx = ecx;
-    cpu.edx = 0xffffffff;
-    finish();
+    return count != 0 ? in : matrix;
+}
+
+void objectVerticesListNative(win32::WinApplication* app, x86::CPU& cpu)
+{
+    const reg32 esp = cpu.esp;
+    cpu.eax = objectVerticesListOf(app, cpu, cpu.eax, cpu.edx, cpu.ebx, cpu.ecx, app->getMemory<reg32>(esp + 4),
+                                   app->getMemory<reg32>(esp + 8));
+    cpu.esp = esp + 4 + 8;
 }
 
 /* sub_41b640: the polygons of a piece of an object, four corners each, as
  * records for the frame's polygon list -- as sub_41b300 does for the track,
- * written one after another at ecx, with the corners taken the other way round.
- *   ebx  the polygons, 14 bytes each; edx  their count; ecx  the records out;
- *   [esp+4]  the vertex records, 0x20 bytes each (ret 4)
- * Returns how many records were written.  esi, edi and ebp are kept; the
- * rest, the flags and the FPU status as the original leaves them. */
-void objectRecordsNative(win32::WinApplication* app, x86::CPU& cpu)
+ * written one after another at `record`, with the corners taken the other way
+ * round: `count` polygons at `polygon`, 14 bytes each, their corners among
+ * the vertex records at `base`, 0x20 bytes each.  Returns how many records
+ * were written. */
+reg32 objectRecordsOf(App* app, CPU& cpu, x86::sreg32 count, reg32 polygon, reg32 record, reg32 base)
 {
-    const FpuMath M{cpu.fpu};
+    const FpuMath M;
     auto word = [app](x86::reg32 address) { return app->getMemory<x86::reg32>(address); };
     auto half = [app](x86::reg32 address) { return app->getMemory<x86::reg16>(address); };
     auto byte = [app](x86::reg32 address) { return app->getMemory<x86::reg8>(address); };
     auto floatAt = [app](x86::reg32 address) -> float { return app->getMemory<float>(address); };
-    const x86::reg32 esp = cpu.esp;
-    const x86::reg32 saved[] = { cpu.esi, cpu.edi, cpu.ebp };
-    const x86::reg32 base = word(esp + 4);
-    const x86::sreg32 count = x86::sreg32(cpu.edx);
-    x86::reg32 polygon = cpu.ebx;
-    x86::reg32 record = cpu.ecx;
-    x86::reg32 edx = 0;
     x86::reg32 written = 0;
-    LastWideCompare compared;
     const double farthest = floatAt(word(0x5dd830) + 0x30);
     const x86::reg32 textures = word(0x552df4);
-    x86::sreg32 i = 0;
-    for (; i < count; ++i)
+    for (x86::sreg32 i = 0; i < count; ++i, polygon += 0xe)
     {
         const x86::reg32 v0 = base + (x86::reg32(x86::sreg32(word(polygon)) >> 16) << 5);
         const x86::reg32 v1 = base + (x86::reg32(x86::sreg32(x86::sreg16(half(polygon)))) << 5);
@@ -4923,36 +3375,23 @@ void objectRecordsNative(win32::WinApplication* app, x86::CPU& cpu)
         const x86::reg32 v3 = base + (x86::reg32(x86::sreg32(word(polygon + 2)) >> 16) << 5);
         const x86::reg8 flags8 = byte(polygon + 0xc);
         const x86::reg32 c0 = byte(v0 + 0x14), c1 = byte(v1 + 0x14), c2 = byte(v2 + 0x14), c3 = byte(v3 + 0x14);
-        edx = c3;
         if (c0 & c1 & c2 & c3)
-        {
-            polygon += 0xe;
             continue;
-        }
         const double z0 = floatAt(v0 + 8);
-        compared(z0, farthest);
         if (z0 > farthest)
-        {
-            polygon += 0xe;
             continue;
-        }
         if (!(flags8 & 0x10) && !((c0 | c1 | c2 | c3) & 0x10))
         {
             const CrossProducts p = crossProducts(cpu, floatAt(v2 + 4), floatAt(v1 + 4), floatAt(v0), floatAt(v1),
                                                   floatAt(v0 + 4), floatAt(v1 + 4), floatAt(v2), floatAt(v1));
-            compared(p.two, p.one);
             const x86::reg32 back = (p.two < p.one || p.two != p.two || p.one != p.one) ? 1 : 0;
             if (back ^ word(0x554e4c))
             {
                 const CrossProducts q = crossProducts(cpu, floatAt(v3 + 4), floatAt(v2 + 4), floatAt(v0), floatAt(v2),
                                                       floatAt(v0 + 4), floatAt(v2 + 4), floatAt(v3), floatAt(v2));
-                compared(q.two, q.one);
                 const x86::reg32 backToo = (q.two < q.one || q.two != q.two || q.one != q.one) ? 1 : 0;
                 if (backToo ^ word(0x554e4c))
-                {
-                    polygon += 0xe;
                     continue;
-                }
             }
         }
         word(record + 0x10) = v2;
@@ -4960,23 +3399,18 @@ void objectRecordsNative(win32::WinApplication* app, x86::CPU& cpu)
         word(record + 0xc) = v1;
         word(record + 0x14) = v3;
         word(record) = record + 0x20;
-        x86::reg32 texture = textures + x86::reg32(x86::sreg32(word(polygon + 6)) >> 16) * 47;
         app->getMemory<x86::reg16>(record + 6) = 0;
-        word(record + 0x18) = texture;
-        edx = (texture & 0xffffff00) | flags8;
+        word(record + 0x18) = textures + x86::reg32(x86::sreg32(word(polygon + 6)) >> 16) * 47;
         app->getMemory<x86::reg16>(record + 4) = 0;
         if (flags8 & 1)
             byte(record + 6) = x86::reg8(byte(record + 6) | 4);
         auto depthSum = [&]() {
             return M.mul(M.add(M.add(M.add(floatAt(v0 + 8), floatAt(v1 + 8)), floatAt(v2 + 8)), floatAt(v3 + 8)),
-                          app->getMemory<double>(x86::reg32(0x536c9c)));
+                         app->getMemory<double>(x86::reg32(0x536c9c)));
         };
         if ((byte(0x7a3a58) & 6) && gameSettings(app).nearPolygons != 0)
         {
-            const double mean = depthSum();
-            const double near = app->getMemory<double>(x86::reg32(0x536ca4));
-            compared(mean, near);
-            if (!(mean >= near))
+            if (!(depthSum() >= app->getMemory<double>(x86::reg32(0x536ca4))))
                 byte(record + 6) = x86::reg8(byte(record + 6) | 8);
         }
         if (flags8 & 4)
@@ -4986,9 +3420,7 @@ void objectRecordsNative(win32::WinApplication* app, x86::CPU& cpu)
             signedDivide(x86::sreg32(word(0x7d3684)), x86::sreg32(animation >> 3), frames, unused);
             signedDivide(x86::sreg32(frames), x86::sreg32(animation & 7), step, phase);
             NFS2_USE(step);
-            texture = textures + (phase + x86::reg32(x86::sreg32(word(polygon + 8)) >> 16)) * 47;
-            word(record + 0x18) = texture;
-            edx = texture;
+            word(record + 0x18) = textures + (phase + x86::reg32(x86::sreg32(word(polygon + 8)) >> 16)) * 47;
         }
         if (byte(word(record + 0x18) + 0x28) & 2)
         {
@@ -4999,39 +3431,25 @@ void objectRecordsNative(win32::WinApplication* app, x86::CPU& cpu)
             word(v3 + 0x10) = colour;
             byte(record + 6) = x86::reg8(byte(record + 6) | 1);
             app->getMemory<float>(record + 0x1c) = float(depthSum());
-            edx = v3;
         }
-        polygon += 0xe;
         record += 0x20;
         ++written;
     }
-    compared.replay(cpu);
-    IntegerFlags flags;
-    flags.compare(x86::reg32(i), x86::reg32(count));  // cmp eax, [ebp-0x2c]
-    flags.store(cpu);
-    cpu.eax = written;
-    cpu.ebx = polygon;
-    cpu.ecx = record;
-    cpu.edx = edx;
-    cpu.esi = saved[0];
-    cpu.edi = saved[1];
-    cpu.ebp = saved[2];
+    return written;
+}
+
+/* The adapter: edx the count, ebx the polygons, ecx the records out, [esp+4] the vertex records
+ * (ret 4). */
+void objectRecordsNative(win32::WinApplication* app, x86::CPU& cpu)
+{
+    const reg32 esp = cpu.esp;
+    cpu.eax = objectRecordsOf(app, cpu, x86::sreg32(cpu.edx), cpu.ebx, cpu.ecx, app->getMemory<reg32>(esp + 4));
     cpu.esp = esp + 4 + 4;
 }
 
 /* The game's small vector helpers (Watcom-style register calls, used from
  * dozens of places, the physics and the opponents' driving among them): each
  * element as the emulated x87 has it in the precision it is in. */
-
-/* The flags dec leaves after a loop counted down to zero, CF from the add
- * before it. */
-inline void countedDown(x86::CPU& cpu, x86::reg32 added, x86::reg32 before)
-{
-    IntegerFlags flags;
-    flags.compare(0, 0);
-    flags.cf = added < before;
-    flags.store(cpu);
-}
 
 constexpr reg32 kVectorBytes = 0xc;
 
@@ -5057,27 +3475,13 @@ namespace
 {
 
 /* sub_4e0050: scaleVectorList of eax vectors at edx by the float [esp+4] into [esp+8] (ret 8);
- * eax and edx past them, the flags of the loop's dec and the add before it. */
+ * eax past the vectors out. */
 void scaleVectorsNative(App* app, CPU& cpu)
 {
     const i32 count = i32(cpu.eax);
-    const reg32 in = cpu.edx;
     const reg32 out = app->getMemory<reg32>(cpu.esp + 8);
-    scaleVectorList(app, count, in, app->getMemory<float>(cpu.esp + 4), out);
-    if (count <= 0)
-    {
-        IntegerFlags flags;
-        flags.logic(cpu.eax);
-        flags.store(cpu);
-        cpu.eax = out;
-    }
-    else
-    {
-        const reg32 bytes = reg32(count) * kVectorBytes;
-        countedDown(cpu, in + bytes, in + bytes - kVectorBytes);
-        cpu.eax = out + bytes;
-        cpu.edx = in + bytes;
-    }
+    scaleVectorList(app, count, cpu.edx, app->getMemory<float>(cpu.esp + 4), out);
+    cpu.eax = count > 0 ? out + reg32(count) * kVectorBytes : out;
     cpu.esp += 4 + 8;
 }
 
@@ -5109,31 +3513,15 @@ template void offsetVectorList<false>(App* app, i32 count, reg32 in, reg32 by, r
 namespace
 {
 
-/* sub_4dffb0 and sub_4e0000: offsetVectorList of eax vectors at edx with ebx into ecx; eax and
- * ecx past them, ebx at the last out, edx the one vector, the flags of the loop's dec and the
- * add before it. */
+/* sub_4dffb0 and sub_4e0000: offsetVectorList of eax vectors at edx with ebx into ecx; eax past
+ * the vectors read. */
 template <bool Add>
 void offsetVectorsNative(App* app, CPU& cpu)
 {
     const i32 count = i32(cpu.eax);
-    const reg32 in = cpu.edx, by = cpu.ebx, out = cpu.ecx;
-    offsetVectorList<Add>(app, count, in, by, out);
-    if (count <= 0)
-    {
-        IntegerFlags flags;
-        flags.logic(cpu.eax);  // test esi, esi
-        flags.store(cpu);
-        cpu.eax = in;
-    }
-    else
-    {
-        const reg32 bytes = reg32(count) * kVectorBytes;
-        countedDown(cpu, out + bytes, out + bytes - kVectorBytes);
-        cpu.eax = in + bytes;
-        cpu.ebx = out + bytes - kVectorBytes;
-        cpu.ecx = out + bytes;
-        cpu.edx = by;
-    }
+    const reg32 in = cpu.edx;
+    offsetVectorList<Add>(app, count, in, cpu.ebx, cpu.ecx);
+    cpu.eax = count > 0 ? in + reg32(count) * kVectorBytes : in;
     cpu.esp += 4;
 }
 
@@ -5204,21 +3592,12 @@ float viewZoom(win32::WinApplication* app, x86::reg32 view)
  * position worked out from [0x56009c..a8], and its clip code from the screen
  * bounds at [0x7d34f8..0x7d350c], compared as integers; then x becomes |x|
  * times the zoom, held to 1.  Returns 1 when every corner has |x| beyond its z
- * and the four share a clip bit, else 0.  Only its stack is written.  The
- * registers it does not keep, the flags and the FPU status as the original
- * leaves them. */
-void boxOutsideNative(win32::WinApplication* app, x86::CPU& cpu)
+ * and the four share a clip bit, else 0.  Only its stack is written. */
+reg32 boxOutsideOf(App* app, reg32 view, reg32 corners, reg32 matrix, reg32 move)
 {
-    const FpuMath M{cpu.fpu};
+    const FpuMath M;
     auto word = [app](x86::reg32 address) { return app->getMemory<x86::reg32>(address); };
-    const x86::reg32 esp = cpu.esp;
-    const x86::reg32 corners = cpu.edx;
-    const x86::reg32 matrix = cpu.ebx;
-    const x86::reg32 move = cpu.ecx;
-    LastWideCompare compared;
-
-    const double zoom = viewZoom(app, cpu.eax);
-    compared(1.0, zoom);
+    const double zoom = viewZoom(app, view);
     const double scale = 1.0 >= zoom ? zoom : 1.0;
 
     const double k1 = app->getMemory<float>(x86::reg32(0x56009c));
@@ -5230,7 +3609,6 @@ void boxOutsideNative(win32::WinApplication* app, x86::CPU& cpu)
     const x86::sreg32 left = x86::sreg32(word(0x7d34fc)), right = x86::sreg32(word(0x7d350c));
     float xs[4], zs[4];
     x86::reg8 codes[4];
-    x86::reg32 code = 0, edx = 0;
     for (int i = 0; i < 4; ++i)
     {
         const float* v = &app->getMemory<float>(corners + x86::reg32(i) * 12);
@@ -5249,12 +3627,8 @@ void boxOutsideNative(win32::WinApplication* app, x86::CPU& cpu)
         const float sx = float(M.add(M.mul(M.mul(k1, inverse), x), c1));
         const float sy = float(M.add(M.mul(M.mul(k2, inverse), y), c2));
         const x86::reg32 inverseBits = asBits(inverse);
-        if ((inverseBits & 0x80000000) || x86::sreg32(inverseBits) >= nearest)
-        {
-            code = 0x10;
-            edx = asBits(z);
-        }
-        else
+        x86::reg8 code = 0x10;
+        if (!(inverseBits & 0x80000000) && x86::sreg32(inverseBits) < nearest)
         {
             code = 0;
             const x86::reg32 yb = asBits(sy);
@@ -5267,38 +3641,23 @@ void boxOutsideNative(win32::WinApplication* app, x86::CPU& cpu)
                 code |= 1;
             else if (x86::sreg32(xb) > right)
                 code |= 2;
-            edx = x86::reg32(right);
         }
-        codes[i] = x86::reg8(code);
-        compared(0.0, x);
+        codes[i] = code;
         const float size = (0.0 <= x || x != x) ? x : -x;
         xs[i] = float(M.mul(size, scale));
         zs[i] = z;
     }
 
-    x86::reg32 eax = 0, ecx = 4;
-    bool beyond = true;
-    for (int i = 0; i < 4 && beyond; ++i)
-    {
-        compared(xs[i], zs[i]);
-        beyond = xs[i] > zs[i];
-    }
-    compared.replay(cpu);
-    cpu.flags.of = false;  // the loop's cmp [ebp+0x7e], 4 left it clear; sahf keeps it
-    if (beyond)
-    {
-        const x86::reg32 shared = x86::reg32(codes[0] & codes[1] & codes[2]);
-        ecx = codes[3];
-        IntegerFlags flags;
-        flags.logic(shared & ecx);  // test eax, ecx
-        flags.store(cpu);
-        eax = (shared & ecx) ? 1 : 0;
-    }
-    cpu.eax = eax;
-    cpu.ebx = code;
-    cpu.ecx = ecx;
-    cpu.edx = edx;
-    cpu.esp = esp + 4;
+    for (int i = 0; i < 4; ++i)
+        if (!(xs[i] > zs[i]))
+            return 0;
+    return (codes[0] & codes[1] & codes[2] & codes[3]) ? 1 : 0;
+}
+
+void boxOutsideNative(win32::WinApplication* app, x86::CPU& cpu)
+{
+    cpu.eax = boxOutsideOf(app, cpu.eax, cpu.edx, cpu.ebx, cpu.ecx);
+    cpu.esp += 4;
 }
 
 /* The brightness the projected light is scaled by (sub_41a120), applied to a
@@ -5324,39 +3683,17 @@ x86::reg32 scaleColour(x86::reg32 colour, x86::reg32 scale)
  * records' coordinates and colours, the colours scaled by [0x6fbc38] when
  * that is below 1 (the alpha intensity slider; the game's [0x7a3a58] & 0x40
  * test is forced on by tools/apply_alpha_intensity.py) -- and the slot moves on past it
- * unless the three colours' alpha is all below 8.  Returns 1 when it moved.
- * The registers and flags as the two leave them. */
-void projectedTriangleNative(win32::WinApplication* app, x86::CPU& cpu)
+ * unless the three colours' alpha is all below 8.  Returns 1 when it moved. */
+reg32 projectedTriangleOf(App* app, reg32 slot, reg32 a, reg32 b, reg32 c)
 {
     auto word = [app](x86::reg32 address) { return app->getMemory<x86::reg32>(address); };
     auto byte = [app](x86::reg32 address) { return app->getMemory<x86::reg8>(address); };
-    const x86::reg32 esp = cpu.esp;
-    const x86::reg32 slot = cpu.eax;
-    const x86::reg32 records[3] = { cpu.ecx, word(esp + 4), word(esp + 8) };
+    const x86::reg32 records[3] = { a, b, c };
     const x86::reg8 ca = byte(records[0] + 4), cb = byte(records[1] + 4), cc = byte(records[2] + 4);
-    auto finish = [&]() { cpu.esp = esp + 4 + 8; };
-
-    const x86::reg8 shared = ca & cb & cc;
-    if (shared)
-    {
-        logic8(cpu, shared);
-        cpu.eax = 0;
-        cpu.ecx = (records[1] & 0xffff0000) | x86::reg32(cc) << 8 | shared;
-        finish();
-        return;
-    }
-    const x86::reg8 any = ca | cb | cc;
-    if (any & 0x20)
-    {
-        logic8(cpu, any & 0x20);
-        cpu.eax = 0;
-        cpu.ecx = (records[1] & 0xffff0000) | x86::reg32(cc) << 8 | any;
-        finish();
-        return;
-    }
+    if ((ca & cb & cc) || ((ca | cb | cc) & 0x20))
+        return 0;
 
     // sub_41a120, with the records as copied to its stack
-    cpu.ecx = 0;  // rep movsd; sub_41a120 keeps it
     x86::reg32 vertexOf[3], recordWords[3][7];
     for (int i = 0; i < 3; ++i)
     {
@@ -5365,19 +3702,8 @@ void projectedTriangleNative(win32::WinApplication* app, x86::CPU& cpu)
         vertexOf[i] = recordWords[i][2];
     }
     const x86::reg32 polygon = word(slot);
-    const x86::reg32 ab = x86::reg32(byte(vertexOf[1] + 0x14)) & x86::reg32(byte(vertexOf[0] + 0x14));
-    const x86::reg32 c = byte(vertexOf[2] + 0x14);
-    if (ab & c)
-    {
-        IntegerFlags flags;
-        flags.logic(0);  // test edx, ebx; xor eax, eax
-        flags.store(cpu);
-        cpu.eax = 0;
-        cpu.ebx = c;
-        cpu.edx = ab;
-        finish();
-        return;
-    }
+    if (byte(vertexOf[1] + 0x14) & byte(vertexOf[0] + 0x14) & byte(vertexOf[2] + 0x14))
+        return 0;
     const x86::reg32 copies[3] = { polygon + 0x20, polygon + 0x40, polygon + 0x60 };
     app->getMemory<x86::reg16>(polygon + 4) = 1;
     word(polygon + 0x18) = 0x8b4814;
@@ -5388,23 +3714,14 @@ void projectedTriangleNative(win32::WinApplication* app, x86::CPU& cpu)
     word(polygon + 0x10) = copies[2];
     for (int i = 0; i < 3; ++i)
         std::memmove(&app->getMemory<x86::reg8>(copies[i]), &app->getMemory<x86::reg8>(vertexOf[i]), 0x20);
-    x86::reg32 ebx = c;
     // The [0x7a3a58] & 0x40 test is forced on (tools/apply_alpha_intensity.py).
+    const double brightness = gameSettings(app).alphaIntensity;
+    if (1.0 > brightness)
     {
-        const double brightness = gameSettings(app).alphaIntensity;
-        cpu.fpu.compare(1.0, brightness);
-        cpu.flags.lo = x86::reg8(0x02 | ((cpu.fpu.status.word >> 8) & 0xd7));
-        if (1.0 > brightness)
-        {
-            const x86::reg32 scale = x86::reg32(fp::toInteger<x86::sreg32>(
-                x86::Float(FpuMath{cpu.fpu}.mul(brightness, app->getMemory<double>(x86::reg32(0x536c6c))))));
-            for (int i = 0; i < 3; ++i)
-                recordWords[i][5] = scaleColour(recordWords[i][5], scale);
-            // the last mul's: ebx the red and blue of the third colour, shifted and masked
-            const x86::reg32 clamped = x86::sreg32(scale) >= 0x10000 ? 0xffff : scale;
-            const x86::reg32 level = (clamped >> 8) & 0xff;
-            ebx = (((word(records[2] + 0x14) & 0xff00ff) * level) >> 8) & 0xff00ff;
-        }
+        const x86::reg32 scale = x86::reg32(fp::toInteger<x86::sreg32>(
+            x86::Float(FpuMath().mul(brightness, app->getMemory<double>(x86::reg32(0x536c6c))))));
+        for (int i = 0; i < 3; ++i)
+            recordWords[i][5] = scaleColour(recordWords[i][5], scale);
     }
     for (int i = 0; i < 3; ++i)
     {
@@ -5414,22 +3731,17 @@ void projectedTriangleNative(win32::WinApplication* app, x86::CPU& cpu)
         word(copies[i] + 0x10) = recordWords[i][5];
     }
     const x86::reg32 alpha = (word(copies[0] + 0x10) | word(copies[1] + 0x10) | word(copies[2] + 0x10)) >> 24;
-    IntegerFlags flags;
-    flags.compare(alpha, 8);
-    flags.store(cpu);
-    cpu.ebx = ebx;
     if (alpha < 8)
-    {
-        cpu.eax = 0;
-        cpu.edx = copies[2];
-    }
-    else
-    {
-        word(slot) = polygon + 0xa0;
-        cpu.eax = 1;
-        cpu.edx = slot;
-    }
-    finish();
+        return 0;
+    word(slot) = polygon + 0xa0;
+    return 1;
+}
+
+void projectedTriangleNative(win32::WinApplication* app, x86::CPU& cpu)
+{
+    const reg32 esp = cpu.esp;
+    cpu.eax = projectedTriangleOf(app, cpu.eax, cpu.ecx, app->getMemory<reg32>(esp + 4), app->getMemory<reg32>(esp + 8));
+    cpu.esp = esp + 4 + 8;
 }
 
 }  // namespace

@@ -3,16 +3,6 @@
 #include <winapi/wrapper.h>
 #include "eacsnd.h"
 #include "voodoo2a.h"
-#include <winapi/advapi32.h>
-#include <winapi/ole32.h>
-#include <winapi/shell32.h>
-#include <winapi/kernel32.h>
-#include <winapi/version.h>
-#include <winapi/user32.h>
-#include <winapi/user32.h>
-#include <winapi/kernel32.h>
-#include <winapi/user32.h>
-#include <winapi/kernel32.h>
 
 namespace nfs3hp
 {
@@ -5808,125 +5798,125 @@ Application::Application(const char* appName)
     registerMethod(0x00a84360, {"<voodoo2a>THRASH_modemessage", &nfs3hp::THRASH_modemessage});
     /* 0x00400a00 <gdi32>GetDeviceCaps: not in the port's Windows */
     /* 0x00400a01 <gdi32>GetStockObject: not in the port's Windows */
-    registerMethod(0x00400a02, {"<advapi32>RegCloseKey", &win32::Wrapper<decltype(&win32::advapi32::RegCloseKey), &win32::advapi32::RegCloseKey>::stdcall});
-    registerMethod(0x00400a03, {"<advapi32>RegFlushKey", &win32::Wrapper<decltype(&win32::advapi32::RegFlushKey), &win32::advapi32::RegFlushKey>::stdcall});
-    registerMethod(0x00400a04, {"<advapi32>RegOpenKeyExA", &win32::Wrapper<decltype(&win32::advapi32::RegOpenKeyExA), &win32::advapi32::RegOpenKeyExA>::stdcall});
-    registerMethod(0x00400a05, {"<advapi32>RegQueryValueExA", &win32::Wrapper<decltype(&win32::advapi32::RegQueryValueExA), &win32::advapi32::RegQueryValueExA>::stdcall});
-    registerMethod(0x00400a06, {"<ole32>CoCreateGuid", &win32::Wrapper<decltype(&win32::ole32::CoCreateGuid), &win32::ole32::CoCreateGuid>::stdcall});
-    registerMethod(0x00400a07, {"<shell32>ShellExecuteA", &win32::Wrapper<decltype(&win32::shell32::ShellExecuteA), &win32::shell32::ShellExecuteA>::stdcall});
-    registerMethod(0x00400a08, {"<kernel32>CloseHandle", &win32::Wrapper<decltype(&win32::kernel32::CloseHandle), &win32::kernel32::CloseHandle>::stdcall});
-    registerMethod(0x00400a09, {"<kernel32>CompareFileTime", &win32::Wrapper<decltype(&win32::kernel32::CompareFileTime), &win32::kernel32::CompareFileTime>::stdcall});
-    registerMethod(0x00400a0a, {"<kernel32>CreateDirectoryA", &win32::Wrapper<decltype(&win32::kernel32::CreateDirectoryA), &win32::kernel32::CreateDirectoryA>::stdcall});
+    /* 0x00400a02 <advapi32>RegCloseKey: not in the port's Windows */
+    /* 0x00400a03 <advapi32>RegFlushKey: not in the port's Windows */
+    /* 0x00400a04 <advapi32>RegOpenKeyExA: not in the port's Windows */
+    /* 0x00400a05 <advapi32>RegQueryValueExA: not in the port's Windows */
+    /* 0x00400a06 <ole32>CoCreateGuid: not in the port's Windows */
+    /* 0x00400a07 <shell32>ShellExecuteA: not in the port's Windows */
+    /* 0x00400a08 <kernel32>CloseHandle: not in the port's Windows */
+    /* 0x00400a09 <kernel32>CompareFileTime: not in the port's Windows */
+    /* 0x00400a0a <kernel32>CreateDirectoryA: not in the port's Windows */
     /* 0x00400a0b <kernel32>CreateEventA: not in the port's Windows */
-    registerMethod(0x00400a0c, {"<kernel32>CreateFileA", &win32::Wrapper<decltype(&win32::kernel32::CreateFileA), &win32::kernel32::CreateFileA>::stdcall});
-    registerMethod(0x00400a0d, {"<kernel32>CreateFileMappingA", &win32::Wrapper<decltype(&win32::kernel32::CreateFileMappingA), &win32::kernel32::CreateFileMappingA>::stdcall});
+    /* 0x00400a0c <kernel32>CreateFileA: not in the port's Windows */
+    /* 0x00400a0d <kernel32>CreateFileMappingA: not in the port's Windows */
     /* 0x00400a0e <kernel32>CreateMutexA: not in the port's Windows */
     /* 0x00400a0f <kernel32>CreateThread: not in the port's Windows */
-    registerMethod(0x00400a10, {"<kernel32>DebugBreak", &win32::Wrapper<decltype(&win32::kernel32::DebugBreak), &win32::kernel32::DebugBreak>::stdcall});
+    /* 0x00400a10 <kernel32>DebugBreak: not in the port's Windows */
     /* 0x00400a11 <kernel32>DeleteCriticalSection: not in the port's Windows */
-    registerMethod(0x00400a12, {"<kernel32>DeleteFileA", &win32::Wrapper<decltype(&win32::kernel32::DeleteFileA), &win32::kernel32::DeleteFileA>::stdcall});
+    /* 0x00400a12 <kernel32>DeleteFileA: not in the port's Windows */
     /* 0x00400a13 <kernel32>DuplicateHandle: not in the port's Windows */
     /* 0x00400a14 <kernel32>EnterCriticalSection: not in the port's Windows */
     /* 0x00400a15 <kernel32>EscapeCommFunction: not in the port's Windows */
-    registerMethod(0x00400a16, {"<kernel32>ExitProcess", &win32::Wrapper<decltype(&win32::kernel32::ExitProcess), &win32::kernel32::ExitProcess>::stdcall});
+    /* 0x00400a16 <kernel32>ExitProcess: not in the port's Windows */
     /* 0x00400a17 <kernel32>ExitThread: not in the port's Windows */
-    registerMethod(0x00400a18, {"<kernel32>FindClose", &win32::Wrapper<decltype(&win32::kernel32::FindClose), &win32::kernel32::FindClose>::stdcall});
-    registerMethod(0x00400a19, {"<kernel32>FindFirstFileA", &win32::Wrapper<decltype(&win32::kernel32::FindFirstFileA), &win32::kernel32::FindFirstFileA>::stdcall});
-    registerMethod(0x00400a1a, {"<kernel32>FindNextFileA", &win32::Wrapper<decltype(&win32::kernel32::FindNextFileA), &win32::kernel32::FindNextFileA>::stdcall});
-    registerMethod(0x00400a1b, {"<kernel32>FlushFileBuffers", &win32::Wrapper<decltype(&win32::kernel32::FlushFileBuffers), &win32::kernel32::FlushFileBuffers>::stdcall});
-    registerMethod(0x00400a1c, {"<kernel32>FreeEnvironmentStringsA", &win32::Wrapper<decltype(&win32::kernel32::FreeEnvironmentStringsA), &win32::kernel32::FreeEnvironmentStringsA>::stdcall});
-    registerMethod(0x00400a1d, {"<kernel32>FreeLibrary", &win32::Wrapper<decltype(&win32::kernel32::FreeLibrary), &win32::kernel32::FreeLibrary>::stdcall});
-    registerMethod(0x00400a1e, {"<kernel32>GetACP", &win32::Wrapper<decltype(&win32::kernel32::GetACP), &win32::kernel32::GetACP>::stdcall});
-    registerMethod(0x00400a1f, {"<kernel32>GetCPInfo", &win32::Wrapper<decltype(&win32::kernel32::GetCPInfo), &win32::kernel32::GetCPInfo>::stdcall});
+    /* 0x00400a18 <kernel32>FindClose: not in the port's Windows */
+    /* 0x00400a19 <kernel32>FindFirstFileA: not in the port's Windows */
+    /* 0x00400a1a <kernel32>FindNextFileA: not in the port's Windows */
+    /* 0x00400a1b <kernel32>FlushFileBuffers: not in the port's Windows */
+    /* 0x00400a1c <kernel32>FreeEnvironmentStringsA: not in the port's Windows */
+    /* 0x00400a1d <kernel32>FreeLibrary: not in the port's Windows */
+    /* 0x00400a1e <kernel32>GetACP: not in the port's Windows */
+    /* 0x00400a1f <kernel32>GetCPInfo: not in the port's Windows */
     /* 0x00400a20 <kernel32>GetCommModemStatus: not in the port's Windows */
     /* 0x00400a21 <kernel32>GetCommProperties: not in the port's Windows */
     /* 0x00400a22 <kernel32>GetCommState: not in the port's Windows */
-    registerMethod(0x00400a23, {"<kernel32>GetCommandLineA", &win32::Wrapper<decltype(&win32::kernel32::GetCommandLineA), &win32::kernel32::GetCommandLineA>::stdcall});
-    registerMethod(0x00400a24, {"<kernel32>GetCommandLineW", &win32::Wrapper<decltype(&win32::kernel32::GetCommandLineW), &win32::kernel32::GetCommandLineW>::stdcall});
-    registerMethod(0x00400a25, {"<kernel32>GetConsoleMode", &win32::Wrapper<decltype(&win32::kernel32::GetConsoleMode), &win32::kernel32::GetConsoleMode>::stdcall});
-    registerMethod(0x00400a26, {"<kernel32>GetCurrentDirectoryA", &win32::Wrapper<decltype(&win32::kernel32::GetCurrentDirectoryA), &win32::kernel32::GetCurrentDirectoryA>::stdcall});
-    registerMethod(0x00400a27, {"<kernel32>GetCurrentProcess", &win32::Wrapper<decltype(&win32::kernel32::GetCurrentProcess), &win32::kernel32::GetCurrentProcess>::stdcall});
-    registerMethod(0x00400a28, {"<kernel32>GetCurrentProcessId", &win32::Wrapper<decltype(&win32::kernel32::GetCurrentProcessId), &win32::kernel32::GetCurrentProcessId>::stdcall});
+    /* 0x00400a23 <kernel32>GetCommandLineA: not in the port's Windows */
+    /* 0x00400a24 <kernel32>GetCommandLineW: not in the port's Windows */
+    /* 0x00400a25 <kernel32>GetConsoleMode: not in the port's Windows */
+    /* 0x00400a26 <kernel32>GetCurrentDirectoryA: not in the port's Windows */
+    /* 0x00400a27 <kernel32>GetCurrentProcess: not in the port's Windows */
+    /* 0x00400a28 <kernel32>GetCurrentProcessId: not in the port's Windows */
     /* 0x00400a29 <kernel32>GetCurrentThreadId: not in the port's Windows */
     /* 0x00400a2a <kernel32>GetCurrentThread: not in the port's Windows */
-    registerMethod(0x00400a2b, {"<kernel32>GetDiskFreeSpaceA", &win32::Wrapper<decltype(&win32::kernel32::GetDiskFreeSpaceA), &win32::kernel32::GetDiskFreeSpaceA>::stdcall});
-    registerMethod(0x00400a2c, {"<kernel32>GetDriveTypeA", &win32::Wrapper<decltype(&win32::kernel32::GetDriveTypeA), &win32::kernel32::GetDriveTypeA>::stdcall});
-    registerMethod(0x00400a2d, {"<kernel32>GetEnvironmentStrings", &win32::Wrapper<decltype(&win32::kernel32::GetEnvironmentStrings), &win32::kernel32::GetEnvironmentStrings>::stdcall});
-    registerMethod(0x00400a2e, {"<kernel32>GetFileAttributesA", &win32::Wrapper<decltype(&win32::kernel32::GetFileAttributesA), &win32::kernel32::GetFileAttributesA>::stdcall});
-    registerMethod(0x00400a2f, {"<kernel32>GetFileSize", &win32::Wrapper<decltype(&win32::kernel32::GetFileSize), &win32::kernel32::GetFileSize>::stdcall});
-    registerMethod(0x00400a30, {"<kernel32>GetFileTime", &win32::Wrapper<decltype(&win32::kernel32::GetFileTime), &win32::kernel32::GetFileTime>::stdcall});
-    registerMethod(0x00400a31, {"<kernel32>GetFileType", &win32::Wrapper<decltype(&win32::kernel32::GetFileType), &win32::kernel32::GetFileType>::stdcall});
-    registerMethod(0x00400a32, {"<kernel32>GetFullPathNameA", &win32::Wrapper<decltype(&win32::kernel32::GetFullPathNameA), &win32::kernel32::GetFullPathNameA>::stdcall});
-    registerMethod(0x00400a33, {"<kernel32>GetLastError", &win32::Wrapper<decltype(&win32::kernel32::GetLastError), &win32::kernel32::GetLastError>::stdcall});
+    /* 0x00400a2b <kernel32>GetDiskFreeSpaceA: not in the port's Windows */
+    /* 0x00400a2c <kernel32>GetDriveTypeA: not in the port's Windows */
+    /* 0x00400a2d <kernel32>GetEnvironmentStrings: not in the port's Windows */
+    /* 0x00400a2e <kernel32>GetFileAttributesA: not in the port's Windows */
+    /* 0x00400a2f <kernel32>GetFileSize: not in the port's Windows */
+    /* 0x00400a30 <kernel32>GetFileTime: not in the port's Windows */
+    /* 0x00400a31 <kernel32>GetFileType: not in the port's Windows */
+    /* 0x00400a32 <kernel32>GetFullPathNameA: not in the port's Windows */
+    /* 0x00400a33 <kernel32>GetLastError: not in the port's Windows */
     /* 0x00400a34 <kernel32>GetLocalTime: not in the port's Windows */
-    registerMethod(0x00400a35, {"<kernel32>GetLogicalDriveStringsA", &win32::Wrapper<decltype(&win32::kernel32::GetLogicalDriveStringsA), &win32::kernel32::GetLogicalDriveStringsA>::stdcall});
-    registerMethod(0x00400a36, {"<kernel32>GetLogicalDrives", &win32::Wrapper<decltype(&win32::kernel32::GetLogicalDrives), &win32::kernel32::GetLogicalDrives>::stdcall});
-    registerMethod(0x00400a37, {"<kernel32>GetModuleFileNameA", &win32::Wrapper<decltype(&win32::kernel32::GetModuleFileNameA), &win32::kernel32::GetModuleFileNameA>::stdcall});
-    registerMethod(0x00400a38, {"<kernel32>GetModuleFileNameW", &win32::Wrapper<decltype(&win32::kernel32::GetModuleFileNameW), &win32::kernel32::GetModuleFileNameW>::stdcall});
-    registerMethod(0x00400a39, {"<kernel32>GetModuleHandleA", &win32::Wrapper<decltype(&win32::kernel32::GetModuleHandleA), &win32::kernel32::GetModuleHandleA>::stdcall});
-    registerMethod(0x00400a3a, {"<kernel32>GetOEMCP", &win32::Wrapper<decltype(&win32::kernel32::GetOEMCP), &win32::kernel32::GetOEMCP>::stdcall});
+    /* 0x00400a35 <kernel32>GetLogicalDriveStringsA: not in the port's Windows */
+    /* 0x00400a36 <kernel32>GetLogicalDrives: not in the port's Windows */
+    /* 0x00400a37 <kernel32>GetModuleFileNameA: not in the port's Windows */
+    /* 0x00400a38 <kernel32>GetModuleFileNameW: not in the port's Windows */
+    /* 0x00400a39 <kernel32>GetModuleHandleA: not in the port's Windows */
+    /* 0x00400a3a <kernel32>GetOEMCP: not in the port's Windows */
     /* 0x00400a3b <kernel32>GetOverlappedResult: not in the port's Windows */
-    registerMethod(0x00400a3c, {"<kernel32>GetProcAddress", &win32::Wrapper<decltype(&win32::kernel32::GetProcAddress), &win32::kernel32::GetProcAddress>::stdcall});
-    registerMethod(0x00400a3d, {"<kernel32>GetStdHandle", &win32::Wrapper<decltype(&win32::kernel32::GetStdHandle), &win32::kernel32::GetStdHandle>::stdcall});
-    registerMethod(0x00400a3e, {"<kernel32>GetSystemInfo", &win32::Wrapper<decltype(&win32::kernel32::GetSystemInfo), &win32::kernel32::GetSystemInfo>::stdcall});
+    /* 0x00400a3c <kernel32>GetProcAddress: not in the port's Windows */
+    /* 0x00400a3d <kernel32>GetStdHandle: not in the port's Windows */
+    /* 0x00400a3e <kernel32>GetSystemInfo: not in the port's Windows */
     /* 0x00400a3f <kernel32>GetThreadPriority: not in the port's Windows */
     /* 0x00400a40 <kernel32>GetTickCount: not in the port's Windows */
     /* 0x00400a41 <kernel32>GetTimeZoneInformation: not in the port's Windows */
-    registerMethod(0x00400a42, {"<kernel32>GetVersionExA", &win32::Wrapper<decltype(&win32::kernel32::GetVersionExA), &win32::kernel32::GetVersionExA>::stdcall});
-    registerMethod(0x00400a43, {"<kernel32>GetVersion", &win32::Wrapper<decltype(&win32::kernel32::GetVersion), &win32::kernel32::GetVersion>::stdcall});
-    registerMethod(0x00400a44, {"<kernel32>GetVolumeInformationA", &win32::Wrapper<decltype(&win32::kernel32::GetVolumeInformationA), &win32::kernel32::GetVolumeInformationA>::stdcall});
-    registerMethod(0x00400a45, {"<kernel32>GetWindowsDirectoryA", &win32::Wrapper<decltype(&win32::kernel32::GetWindowsDirectoryA), &win32::kernel32::GetWindowsDirectoryA>::stdcall});
-    registerMethod(0x00400a46, {"<kernel32>GlobalMemoryStatus", &win32::Wrapper<decltype(&win32::kernel32::GlobalMemoryStatus), &win32::kernel32::GlobalMemoryStatus>::stdcall});
+    /* 0x00400a42 <kernel32>GetVersionExA: not in the port's Windows */
+    /* 0x00400a43 <kernel32>GetVersion: not in the port's Windows */
+    /* 0x00400a44 <kernel32>GetVolumeInformationA: not in the port's Windows */
+    /* 0x00400a45 <kernel32>GetWindowsDirectoryA: not in the port's Windows */
+    /* 0x00400a46 <kernel32>GlobalMemoryStatus: not in the port's Windows */
     /* 0x00400a47 <kernel32>InitializeCriticalSection: not in the port's Windows */
     /* 0x00400a48 <kernel32>LeaveCriticalSection: not in the port's Windows */
-    registerMethod(0x00400a49, {"<kernel32>LoadLibraryA", &win32::Wrapper<decltype(&win32::kernel32::LoadLibraryA), &win32::kernel32::LoadLibraryA>::stdcall});
-    registerMethod(0x00400a4a, {"<kernel32>MapViewOfFile", &win32::Wrapper<decltype(&win32::kernel32::MapViewOfFile), &win32::kernel32::MapViewOfFile>::stdcall});
-    registerMethod(0x00400a4b, {"<kernel32>MoveFileA", &win32::Wrapper<decltype(&win32::kernel32::MoveFileA), &win32::kernel32::MoveFileA>::stdcall});
-    registerMethod(0x00400a4c, {"<kernel32>MultiByteToWideChar", &win32::Wrapper<decltype(&win32::kernel32::MultiByteToWideChar), &win32::kernel32::MultiByteToWideChar>::stdcall});
-    registerMethod(0x00400a4d, {"<kernel32>OutputDebugStringA", &win32::Wrapper<decltype(&win32::kernel32::OutputDebugStringA), &win32::kernel32::OutputDebugStringA>::stdcall});
-    registerMethod(0x00400a4e, {"<kernel32>PeekConsoleInputA", &win32::Wrapper<decltype(&win32::kernel32::PeekConsoleInputA), &win32::kernel32::PeekConsoleInputA>::stdcall});
+    /* 0x00400a49 <kernel32>LoadLibraryA: not in the port's Windows */
+    /* 0x00400a4a <kernel32>MapViewOfFile: not in the port's Windows */
+    /* 0x00400a4b <kernel32>MoveFileA: not in the port's Windows */
+    /* 0x00400a4c <kernel32>MultiByteToWideChar: not in the port's Windows */
+    /* 0x00400a4d <kernel32>OutputDebugStringA: not in the port's Windows */
+    /* 0x00400a4e <kernel32>PeekConsoleInputA: not in the port's Windows */
     /* 0x00400a4f <kernel32>PulseEvent: not in the port's Windows */
     /* 0x00400a50 <kernel32>PurgeComm: not in the port's Windows */
-    registerMethod(0x00400a51, {"<kernel32>ReadConsoleInputA", &win32::Wrapper<decltype(&win32::kernel32::ReadConsoleInputA), &win32::kernel32::ReadConsoleInputA>::stdcall});
-    registerMethod(0x00400a52, {"<kernel32>ReadFile", &win32::Wrapper<decltype(&win32::kernel32::ReadFile), &win32::kernel32::ReadFile>::stdcall});
-    registerMethod(0x00400a53, {"<kernel32>RemoveDirectoryA", &win32::Wrapper<decltype(&win32::kernel32::RemoveDirectoryA), &win32::kernel32::RemoveDirectoryA>::stdcall});
+    /* 0x00400a51 <kernel32>ReadConsoleInputA: not in the port's Windows */
+    /* 0x00400a52 <kernel32>ReadFile: not in the port's Windows */
+    /* 0x00400a53 <kernel32>RemoveDirectoryA: not in the port's Windows */
     /* 0x00400a54 <kernel32>ResetEvent: not in the port's Windows */
     /* 0x00400a55 <kernel32>ResumeThread: not in the port's Windows */
-    registerMethod(0x00400a56, {"<kernel32>RtlUnwind", &win32::Wrapper<decltype(&win32::kernel32::RtlUnwind), &win32::kernel32::RtlUnwind>::stdcall});
+    /* 0x00400a56 <kernel32>RtlUnwind: not in the port's Windows */
     /* 0x00400a57 <kernel32>SetCommState: not in the port's Windows */
     /* 0x00400a58 <kernel32>SetCommTimeouts: not in the port's Windows */
-    registerMethod(0x00400a59, {"<kernel32>SetConsoleCtrlHandler", &win32::Wrapper<decltype(&win32::kernel32::SetConsoleCtrlHandler), &win32::kernel32::SetConsoleCtrlHandler>::stdcall});
-    registerMethod(0x00400a5a, {"<kernel32>SetConsoleMode", &win32::Wrapper<decltype(&win32::kernel32::SetConsoleMode), &win32::kernel32::SetConsoleMode>::stdcall});
-    registerMethod(0x00400a5b, {"<kernel32>SetCurrentDirectoryA", &win32::Wrapper<decltype(&win32::kernel32::SetCurrentDirectoryA), &win32::kernel32::SetCurrentDirectoryA>::stdcall});
-    registerMethod(0x00400a5c, {"<kernel32>SetEndOfFile", &win32::Wrapper<decltype(&win32::kernel32::SetEndOfFile), &win32::kernel32::SetEndOfFile>::stdcall});
-    registerMethod(0x00400a5d, {"<kernel32>SetEnvironmentVariableA", &win32::Wrapper<decltype(&win32::kernel32::SetEnvironmentVariableA), &win32::kernel32::SetEnvironmentVariableA>::stdcall});
-    registerMethod(0x00400a5e, {"<kernel32>SetEnvironmentVariableW", &win32::Wrapper<decltype(&win32::kernel32::SetEnvironmentVariableW), &win32::kernel32::SetEnvironmentVariableW>::stdcall});
-    registerMethod(0x00400a5f, {"<kernel32>SetErrorMode", &win32::Wrapper<decltype(&win32::kernel32::SetErrorMode), &win32::kernel32::SetErrorMode>::stdcall});
+    /* 0x00400a59 <kernel32>SetConsoleCtrlHandler: not in the port's Windows */
+    /* 0x00400a5a <kernel32>SetConsoleMode: not in the port's Windows */
+    /* 0x00400a5b <kernel32>SetCurrentDirectoryA: not in the port's Windows */
+    /* 0x00400a5c <kernel32>SetEndOfFile: not in the port's Windows */
+    /* 0x00400a5d <kernel32>SetEnvironmentVariableA: not in the port's Windows */
+    /* 0x00400a5e <kernel32>SetEnvironmentVariableW: not in the port's Windows */
+    /* 0x00400a5f <kernel32>SetErrorMode: not in the port's Windows */
     /* 0x00400a60 <kernel32>SetEvent: not in the port's Windows */
-    registerMethod(0x00400a61, {"<kernel32>SetFileAttributesA", &win32::Wrapper<decltype(&win32::kernel32::SetFileAttributesA), &win32::kernel32::SetFileAttributesA>::stdcall});
-    registerMethod(0x00400a62, {"<kernel32>SetFilePointer", &win32::Wrapper<decltype(&win32::kernel32::SetFilePointer), &win32::kernel32::SetFilePointer>::stdcall});
-    registerMethod(0x00400a63, {"<kernel32>SetLastError", &win32::Wrapper<decltype(&win32::kernel32::SetLastError), &win32::kernel32::SetLastError>::stdcall});
-    registerMethod(0x00400a64, {"<kernel32>SetStdHandle", &win32::Wrapper<decltype(&win32::kernel32::SetStdHandle), &win32::kernel32::SetStdHandle>::stdcall});
+    /* 0x00400a61 <kernel32>SetFileAttributesA: not in the port's Windows */
+    /* 0x00400a62 <kernel32>SetFilePointer: not in the port's Windows */
+    /* 0x00400a63 <kernel32>SetLastError: not in the port's Windows */
+    /* 0x00400a64 <kernel32>SetStdHandle: not in the port's Windows */
     /* 0x00400a65 <kernel32>SetThreadPriority: not in the port's Windows */
-    registerMethod(0x00400a66, {"<kernel32>SetUnhandledExceptionFilter", &win32::Wrapper<decltype(&win32::kernel32::SetUnhandledExceptionFilter), &win32::kernel32::SetUnhandledExceptionFilter>::stdcall});
+    /* 0x00400a66 <kernel32>SetUnhandledExceptionFilter: not in the port's Windows */
     /* 0x00400a67 <kernel32>SleepEx: not in the port's Windows */
     /* 0x00400a68 <kernel32>TerminateThread: not in the port's Windows */
     /* 0x00400a69 <kernel32>TlsAlloc: not in the port's Windows */
     /* 0x00400a6a <kernel32>TlsFree: not in the port's Windows */
     /* 0x00400a6b <kernel32>TlsGetValue: not in the port's Windows */
     /* 0x00400a6c <kernel32>TlsSetValue: not in the port's Windows */
-    registerMethod(0x00400a6d, {"<kernel32>UnhandledExceptionFilter", &win32::Wrapper<decltype(&win32::kernel32::UnhandledExceptionFilter), &win32::kernel32::UnhandledExceptionFilter>::stdcall});
-    registerMethod(0x00400a6e, {"<kernel32>UnmapViewOfFile", &win32::Wrapper<decltype(&win32::kernel32::UnmapViewOfFile), &win32::kernel32::UnmapViewOfFile>::stdcall});
-    registerMethod(0x00400a6f, {"<kernel32>VirtualAlloc", &win32::Wrapper<decltype(&win32::kernel32::VirtualAlloc), &win32::kernel32::VirtualAlloc>::stdcall});
-    registerMethod(0x00400a70, {"<kernel32>VirtualFree", &win32::Wrapper<decltype(&win32::kernel32::VirtualFree), &win32::kernel32::VirtualFree>::stdcall});
-    registerMethod(0x00400a71, {"<kernel32>VirtualQuery", &win32::Wrapper<decltype(&win32::kernel32::VirtualQuery), &win32::kernel32::VirtualQuery>::stdcall});
+    /* 0x00400a6d <kernel32>UnhandledExceptionFilter: not in the port's Windows */
+    /* 0x00400a6e <kernel32>UnmapViewOfFile: not in the port's Windows */
+    /* 0x00400a6f <kernel32>VirtualAlloc: not in the port's Windows */
+    /* 0x00400a70 <kernel32>VirtualFree: not in the port's Windows */
+    /* 0x00400a71 <kernel32>VirtualQuery: not in the port's Windows */
     /* 0x00400a72 <kernel32>WaitForMultipleObjectsEx: not in the port's Windows */
     /* 0x00400a73 <kernel32>WaitForSingleObject: not in the port's Windows */
-    registerMethod(0x00400a74, {"<kernel32>WideCharToMultiByte", &win32::Wrapper<decltype(&win32::kernel32::WideCharToMultiByte), &win32::kernel32::WideCharToMultiByte>::stdcall});
-    registerMethod(0x00400a75, {"<kernel32>WriteConsoleA", &win32::Wrapper<decltype(&win32::kernel32::WriteConsoleA), &win32::kernel32::WriteConsoleA>::stdcall});
-    registerMethod(0x00400a76, {"<kernel32>WriteFile", &win32::Wrapper<decltype(&win32::kernel32::WriteFile), &win32::kernel32::WriteFile>::stdcall});
-    registerMethod(0x00400a77, {"<kernel32>_lclose", &win32::Wrapper<decltype(&win32::kernel32::_lclose), &win32::kernel32::_lclose>::stdcall});
-    registerMethod(0x00400a78, {"<kernel32>_lopen", &win32::Wrapper<decltype(&win32::kernel32::_lopen), &win32::kernel32::_lopen>::stdcall});
+    /* 0x00400a74 <kernel32>WideCharToMultiByte: not in the port's Windows */
+    /* 0x00400a75 <kernel32>WriteConsoleA: not in the port's Windows */
+    /* 0x00400a76 <kernel32>WriteFile: not in the port's Windows */
+    /* 0x00400a77 <kernel32>_lclose: not in the port's Windows */
+    /* 0x00400a78 <kernel32>_lopen: not in the port's Windows */
     /* 0x00400a79 <winmm>timeBeginPeriod: not in the port's Windows */
     /* 0x00400a7a <winmm>timeEndPeriod: not in the port's Windows */
     /* 0x00400a7b <winmm>timeGetDevCaps: not in the port's Windows */
@@ -5934,9 +5924,9 @@ Application::Application(const char* appName)
     /* 0x00400a7d <winmm>timeSetEvent: not in the port's Windows */
     /* 0x00400a7e <ddraw>DirectDrawCreate: not in the port's Windows */
     /* 0x00400a7f <ddraw>DirectDrawEnumerateA: not in the port's Windows */
-    registerMethod(0x00400a80, {"<version>GetFileVersionInfoA", &win32::Wrapper<decltype(&win32::version::GetFileVersionInfoA), &win32::version::GetFileVersionInfoA>::stdcall});
-    registerMethod(0x00400a81, {"<version>GetFileVersionInfoSizeA", &win32::Wrapper<decltype(&win32::version::GetFileVersionInfoSizeA), &win32::version::GetFileVersionInfoSizeA>::stdcall});
-    registerMethod(0x00400a82, {"<version>VerQueryValueA", &win32::Wrapper<decltype(&win32::version::VerQueryValueA), &win32::version::VerQueryValueA>::stdcall});
+    /* 0x00400a80 <version>GetFileVersionInfoA: not in the port's Windows */
+    /* 0x00400a81 <version>GetFileVersionInfoSizeA: not in the port's Windows */
+    /* 0x00400a82 <version>VerQueryValueA: not in the port's Windows */
     /* 0x00400a83 <wsock32>gethostname: not in the port's Windows */
     /* 0x00400a84 <wsock32>ntohs: not in the port's Windows */
     /* 0x00400a85 <wsock32>inet_ntoa: not in the port's Windows */
@@ -5965,8 +5955,8 @@ Application::Application(const char* appName)
     /* 0x00400a9c <user32>AdjustWindowRect: not in the port's Windows */
     /* 0x00400a9d <user32>BeginPaint: not in the port's Windows */
     /* 0x00400a9e <user32>CallNextHookEx: not in the port's Windows */
-    registerMethod(0x00400a9f, {"<user32>CharUpperA", &win32::Wrapper<decltype(&win32::user32::CharUpperA), &win32::user32::CharUpperA>::stdcall});
-    registerMethod(0x00400aa0, {"<user32>CharUpperBuffA", &win32::Wrapper<decltype(&win32::user32::CharUpperBuffA), &win32::user32::CharUpperBuffA>::stdcall});
+    /* 0x00400a9f <user32>CharUpperA: not in the port's Windows */
+    /* 0x00400aa0 <user32>CharUpperBuffA: not in the port's Windows */
     /* 0x00400aa1 <user32>ClientToScreen: not in the port's Windows */
     /* 0x00400aa2 <user32>CreateWindowExA: not in the port's Windows */
     /* 0x00400aa3 <user32>DdeClientTransaction: not in the port's Windows */
@@ -5992,7 +5982,7 @@ Application::Application(const char* appName)
     /* 0x00400ab7 <user32>GetWindowLongA: not in the port's Windows */
     /* 0x00400ab8 <user32>IsIconic: not in the port's Windows */
     /* 0x00400ab9 <user32>LoadIconA: not in the port's Windows */
-    registerMethod(0x00400aba, {"<user32>MessageBoxA", &win32::Wrapper<decltype(&win32::user32::MessageBoxA), &win32::user32::MessageBoxA>::stdcall});
+    /* 0x00400aba <user32>MessageBoxA: not in the port's Windows */
     /* 0x00400abb <user32>PostMessageA: not in the port's Windows */
     /* 0x00400abc <user32>PostQuitMessage: not in the port's Windows */
     /* 0x00400abd <user32>PostThreadMessageA: not in the port's Windows */
@@ -6011,116 +6001,116 @@ Application::Application(const char* appName)
     /* 0x00400aca <user32>TranslateMessage: not in the port's Windows */
     /* 0x00400acb <user32>UnhookWindowsHookEx: not in the port's Windows */
     /* 0x00400acc <user32>keybd_event: not in the port's Windows */
-    registerMethod(0x00400acd, {"<user32>wsprintfA", &win32::Wrapper<decltype(&win32::user32::wsprintfA), &win32::user32::wsprintfA>::stdcall});
+    /* 0x00400acd <user32>wsprintfA: not in the port's Windows */
     /* 0x00400ace <dinput>DirectInputCreateA: not in the port's Windows */
-    registerMethod(0x00400acf, {"<user32>CharUpperBuffA", &win32::Wrapper<decltype(&win32::user32::CharUpperBuffA), &win32::user32::CharUpperBuffA>::stdcall});
-    registerMethod(0x00400ad0, {"<kernel32>CloseHandle", &win32::Wrapper<decltype(&win32::kernel32::CloseHandle), &win32::kernel32::CloseHandle>::stdcall});
+    /* 0x00400acf <user32>CharUpperBuffA: not in the port's Windows */
+    /* 0x00400ad0 <kernel32>CloseHandle: not in the port's Windows */
     /* 0x00400ad1 <kernel32>CreateEventA: not in the port's Windows */
-    registerMethod(0x00400ad2, {"<kernel32>CreateFileA", &win32::Wrapper<decltype(&win32::kernel32::CreateFileA), &win32::kernel32::CreateFileA>::stdcall});
+    /* 0x00400ad2 <kernel32>CreateFileA: not in the port's Windows */
     /* 0x00400ad3 <kernel32>CreateThread: not in the port's Windows */
     /* 0x00400ad4 <kernel32>DeleteCriticalSection: not in the port's Windows */
     /* 0x00400ad5 <kernel32>EnterCriticalSection: not in the port's Windows */
-    registerMethod(0x00400ad6, {"<kernel32>ExitProcess", &win32::Wrapper<decltype(&win32::kernel32::ExitProcess), &win32::kernel32::ExitProcess>::stdcall});
+    /* 0x00400ad6 <kernel32>ExitProcess: not in the port's Windows */
     /* 0x00400ad7 <kernel32>ExitThread: not in the port's Windows */
-    registerMethod(0x00400ad8, {"<kernel32>GetACP", &win32::Wrapper<decltype(&win32::kernel32::GetACP), &win32::kernel32::GetACP>::stdcall});
-    registerMethod(0x00400ad9, {"<kernel32>GetCPInfo", &win32::Wrapper<decltype(&win32::kernel32::GetCPInfo), &win32::kernel32::GetCPInfo>::stdcall});
-    registerMethod(0x00400ada, {"<kernel32>GetCommandLineA", &win32::Wrapper<decltype(&win32::kernel32::GetCommandLineA), &win32::kernel32::GetCommandLineA>::stdcall});
-    registerMethod(0x00400adb, {"<kernel32>GetCommandLineW", &win32::Wrapper<decltype(&win32::kernel32::GetCommandLineW), &win32::kernel32::GetCommandLineW>::stdcall});
+    /* 0x00400ad8 <kernel32>GetACP: not in the port's Windows */
+    /* 0x00400ad9 <kernel32>GetCPInfo: not in the port's Windows */
+    /* 0x00400ada <kernel32>GetCommandLineA: not in the port's Windows */
+    /* 0x00400adb <kernel32>GetCommandLineW: not in the port's Windows */
     /* 0x00400adc <kernel32>GetCurrentThreadId: not in the port's Windows */
     /* 0x00400add <kernel32>GetCurrentThread: not in the port's Windows */
-    registerMethod(0x00400ade, {"<kernel32>GetEnvironmentStrings", &win32::Wrapper<decltype(&win32::kernel32::GetEnvironmentStrings), &win32::kernel32::GetEnvironmentStrings>::stdcall});
-    registerMethod(0x00400adf, {"<kernel32>GetFileType", &win32::Wrapper<decltype(&win32::kernel32::GetFileType), &win32::kernel32::GetFileType>::stdcall});
-    registerMethod(0x00400ae0, {"<kernel32>GetLastError", &win32::Wrapper<decltype(&win32::kernel32::GetLastError), &win32::kernel32::GetLastError>::stdcall});
-    registerMethod(0x00400ae1, {"<kernel32>GetModuleFileNameA", &win32::Wrapper<decltype(&win32::kernel32::GetModuleFileNameA), &win32::kernel32::GetModuleFileNameA>::stdcall});
-    registerMethod(0x00400ae2, {"<kernel32>GetModuleFileNameW", &win32::Wrapper<decltype(&win32::kernel32::GetModuleFileNameW), &win32::kernel32::GetModuleFileNameW>::stdcall});
-    registerMethod(0x00400ae3, {"<kernel32>GetModuleHandleA", &win32::Wrapper<decltype(&win32::kernel32::GetModuleHandleA), &win32::kernel32::GetModuleHandleA>::stdcall});
-    registerMethod(0x00400ae4, {"<kernel32>GetOEMCP", &win32::Wrapper<decltype(&win32::kernel32::GetOEMCP), &win32::kernel32::GetOEMCP>::stdcall});
-    registerMethod(0x00400ae5, {"<kernel32>GetProcAddress", &win32::Wrapper<decltype(&win32::kernel32::GetProcAddress), &win32::kernel32::GetProcAddress>::stdcall});
-    registerMethod(0x00400ae6, {"<kernel32>GetStdHandle", &win32::Wrapper<decltype(&win32::kernel32::GetStdHandle), &win32::kernel32::GetStdHandle>::stdcall});
-    registerMethod(0x00400ae7, {"<kernel32>GetVersion", &win32::Wrapper<decltype(&win32::kernel32::GetVersion), &win32::kernel32::GetVersion>::stdcall});
+    /* 0x00400ade <kernel32>GetEnvironmentStrings: not in the port's Windows */
+    /* 0x00400adf <kernel32>GetFileType: not in the port's Windows */
+    /* 0x00400ae0 <kernel32>GetLastError: not in the port's Windows */
+    /* 0x00400ae1 <kernel32>GetModuleFileNameA: not in the port's Windows */
+    /* 0x00400ae2 <kernel32>GetModuleFileNameW: not in the port's Windows */
+    /* 0x00400ae3 <kernel32>GetModuleHandleA: not in the port's Windows */
+    /* 0x00400ae4 <kernel32>GetOEMCP: not in the port's Windows */
+    /* 0x00400ae5 <kernel32>GetProcAddress: not in the port's Windows */
+    /* 0x00400ae6 <kernel32>GetStdHandle: not in the port's Windows */
+    /* 0x00400ae7 <kernel32>GetVersion: not in the port's Windows */
     /* 0x00400ae8 <kernel32>InitializeCriticalSection: not in the port's Windows */
     /* 0x00400ae9 <kernel32>LeaveCriticalSection: not in the port's Windows */
-    registerMethod(0x00400aea, {"<kernel32>LoadLibraryA", &win32::Wrapper<decltype(&win32::kernel32::LoadLibraryA), &win32::kernel32::LoadLibraryA>::stdcall});
-    registerMethod(0x00400aeb, {"<kernel32>MultiByteToWideChar", &win32::Wrapper<decltype(&win32::kernel32::MultiByteToWideChar), &win32::kernel32::MultiByteToWideChar>::stdcall});
-    registerMethod(0x00400aec, {"<kernel32>SetConsoleCtrlHandler", &win32::Wrapper<decltype(&win32::kernel32::SetConsoleCtrlHandler), &win32::kernel32::SetConsoleCtrlHandler>::stdcall});
-    registerMethod(0x00400aed, {"<kernel32>SetEnvironmentVariableA", &win32::Wrapper<decltype(&win32::kernel32::SetEnvironmentVariableA), &win32::kernel32::SetEnvironmentVariableA>::stdcall});
-    registerMethod(0x00400aee, {"<kernel32>SetEnvironmentVariableW", &win32::Wrapper<decltype(&win32::kernel32::SetEnvironmentVariableW), &win32::kernel32::SetEnvironmentVariableW>::stdcall});
+    /* 0x00400aea <kernel32>LoadLibraryA: not in the port's Windows */
+    /* 0x00400aeb <kernel32>MultiByteToWideChar: not in the port's Windows */
+    /* 0x00400aec <kernel32>SetConsoleCtrlHandler: not in the port's Windows */
+    /* 0x00400aed <kernel32>SetEnvironmentVariableA: not in the port's Windows */
+    /* 0x00400aee <kernel32>SetEnvironmentVariableW: not in the port's Windows */
     /* 0x00400aef <kernel32>SetEvent: not in the port's Windows */
-    registerMethod(0x00400af0, {"<kernel32>SetLastError", &win32::Wrapper<decltype(&win32::kernel32::SetLastError), &win32::kernel32::SetLastError>::stdcall});
-    registerMethod(0x00400af1, {"<kernel32>SetStdHandle", &win32::Wrapper<decltype(&win32::kernel32::SetStdHandle), &win32::kernel32::SetStdHandle>::stdcall});
-    registerMethod(0x00400af2, {"<kernel32>SetUnhandledExceptionFilter", &win32::Wrapper<decltype(&win32::kernel32::SetUnhandledExceptionFilter), &win32::kernel32::SetUnhandledExceptionFilter>::stdcall});
+    /* 0x00400af0 <kernel32>SetLastError: not in the port's Windows */
+    /* 0x00400af1 <kernel32>SetStdHandle: not in the port's Windows */
+    /* 0x00400af2 <kernel32>SetUnhandledExceptionFilter: not in the port's Windows */
     /* 0x00400af3 <kernel32>TlsAlloc: not in the port's Windows */
     /* 0x00400af4 <kernel32>TlsFree: not in the port's Windows */
     /* 0x00400af5 <kernel32>TlsGetValue: not in the port's Windows */
     /* 0x00400af6 <kernel32>TlsSetValue: not in the port's Windows */
-    registerMethod(0x00400af7, {"<kernel32>UnhandledExceptionFilter", &win32::Wrapper<decltype(&win32::kernel32::UnhandledExceptionFilter), &win32::kernel32::UnhandledExceptionFilter>::stdcall});
-    registerMethod(0x00400af8, {"<kernel32>VirtualAlloc", &win32::Wrapper<decltype(&win32::kernel32::VirtualAlloc), &win32::kernel32::VirtualAlloc>::stdcall});
-    registerMethod(0x00400af9, {"<kernel32>VirtualFree", &win32::Wrapper<decltype(&win32::kernel32::VirtualFree), &win32::kernel32::VirtualFree>::stdcall});
-    registerMethod(0x00400afa, {"<kernel32>VirtualQuery", &win32::Wrapper<decltype(&win32::kernel32::VirtualQuery), &win32::kernel32::VirtualQuery>::stdcall});
+    /* 0x00400af7 <kernel32>UnhandledExceptionFilter: not in the port's Windows */
+    /* 0x00400af8 <kernel32>VirtualAlloc: not in the port's Windows */
+    /* 0x00400af9 <kernel32>VirtualFree: not in the port's Windows */
+    /* 0x00400afa <kernel32>VirtualQuery: not in the port's Windows */
     /* 0x00400afb <kernel32>WaitForSingleObject: not in the port's Windows */
-    registerMethod(0x00400afc, {"<kernel32>WideCharToMultiByte", &win32::Wrapper<decltype(&win32::kernel32::WideCharToMultiByte), &win32::kernel32::WideCharToMultiByte>::stdcall});
-    registerMethod(0x00400afd, {"<kernel32>WriteFile", &win32::Wrapper<decltype(&win32::kernel32::WriteFile), &win32::kernel32::WriteFile>::stdcall});
+    /* 0x00400afc <kernel32>WideCharToMultiByte: not in the port's Windows */
+    /* 0x00400afd <kernel32>WriteFile: not in the port's Windows */
     /* 0x00400afe <dsound>DirectSoundCreate: not in the port's Windows */
-    registerMethod(0x00400b42, {"<user32>CharUpperBuffA", &win32::Wrapper<decltype(&win32::user32::CharUpperBuffA), &win32::user32::CharUpperBuffA>::stdcall});
-    registerMethod(0x00400b43, {"<user32>MessageBoxA", &win32::Wrapper<decltype(&win32::user32::MessageBoxA), &win32::user32::MessageBoxA>::stdcall});
+    /* 0x00400b42 <user32>CharUpperBuffA: not in the port's Windows */
+    /* 0x00400b43 <user32>MessageBoxA: not in the port's Windows */
     /* 0x00400b44 <user32>PostMessageA: not in the port's Windows */
     /* 0x00400b45 <user32>SetForegroundWindow: not in the port's Windows */
-    registerMethod(0x00400b46, {"<kernel32>CloseHandle", &win32::Wrapper<decltype(&win32::kernel32::CloseHandle), &win32::kernel32::CloseHandle>::stdcall});
+    /* 0x00400b46 <kernel32>CloseHandle: not in the port's Windows */
     /* 0x00400b47 <kernel32>CreateEventA: not in the port's Windows */
-    registerMethod(0x00400b48, {"<kernel32>CreateFileA", &win32::Wrapper<decltype(&win32::kernel32::CreateFileA), &win32::kernel32::CreateFileA>::stdcall});
+    /* 0x00400b48 <kernel32>CreateFileA: not in the port's Windows */
     /* 0x00400b49 <kernel32>CreateThread: not in the port's Windows */
     /* 0x00400b4a <kernel32>DeleteCriticalSection: not in the port's Windows */
-    registerMethod(0x00400b4b, {"<kernel32>DeleteFileA", &win32::Wrapper<decltype(&win32::kernel32::DeleteFileA), &win32::kernel32::DeleteFileA>::stdcall});
+    /* 0x00400b4b <kernel32>DeleteFileA: not in the port's Windows */
     /* 0x00400b4c <kernel32>EnterCriticalSection: not in the port's Windows */
-    registerMethod(0x00400b4d, {"<kernel32>ExitProcess", &win32::Wrapper<decltype(&win32::kernel32::ExitProcess), &win32::kernel32::ExitProcess>::stdcall});
+    /* 0x00400b4d <kernel32>ExitProcess: not in the port's Windows */
     /* 0x00400b4e <kernel32>ExitThread: not in the port's Windows */
-    registerMethod(0x00400b4f, {"<kernel32>FlushFileBuffers", &win32::Wrapper<decltype(&win32::kernel32::FlushFileBuffers), &win32::kernel32::FlushFileBuffers>::stdcall});
-    registerMethod(0x00400b50, {"<kernel32>FreeEnvironmentStringsA", &win32::Wrapper<decltype(&win32::kernel32::FreeEnvironmentStringsA), &win32::kernel32::FreeEnvironmentStringsA>::stdcall});
-    registerMethod(0x00400b51, {"<kernel32>FreeLibrary", &win32::Wrapper<decltype(&win32::kernel32::FreeLibrary), &win32::kernel32::FreeLibrary>::stdcall});
-    registerMethod(0x00400b52, {"<kernel32>GetACP", &win32::Wrapper<decltype(&win32::kernel32::GetACP), &win32::kernel32::GetACP>::stdcall});
-    registerMethod(0x00400b53, {"<kernel32>GetCPInfo", &win32::Wrapper<decltype(&win32::kernel32::GetCPInfo), &win32::kernel32::GetCPInfo>::stdcall});
-    registerMethod(0x00400b54, {"<kernel32>GetCommandLineA", &win32::Wrapper<decltype(&win32::kernel32::GetCommandLineA), &win32::kernel32::GetCommandLineA>::stdcall});
-    registerMethod(0x00400b55, {"<kernel32>GetCommandLineW", &win32::Wrapper<decltype(&win32::kernel32::GetCommandLineW), &win32::kernel32::GetCommandLineW>::stdcall});
-    registerMethod(0x00400b56, {"<kernel32>GetCurrentDirectoryA", &win32::Wrapper<decltype(&win32::kernel32::GetCurrentDirectoryA), &win32::kernel32::GetCurrentDirectoryA>::stdcall});
-    registerMethod(0x00400b57, {"<kernel32>GetCurrentProcessId", &win32::Wrapper<decltype(&win32::kernel32::GetCurrentProcessId), &win32::kernel32::GetCurrentProcessId>::stdcall});
+    /* 0x00400b4f <kernel32>FlushFileBuffers: not in the port's Windows */
+    /* 0x00400b50 <kernel32>FreeEnvironmentStringsA: not in the port's Windows */
+    /* 0x00400b51 <kernel32>FreeLibrary: not in the port's Windows */
+    /* 0x00400b52 <kernel32>GetACP: not in the port's Windows */
+    /* 0x00400b53 <kernel32>GetCPInfo: not in the port's Windows */
+    /* 0x00400b54 <kernel32>GetCommandLineA: not in the port's Windows */
+    /* 0x00400b55 <kernel32>GetCommandLineW: not in the port's Windows */
+    /* 0x00400b56 <kernel32>GetCurrentDirectoryA: not in the port's Windows */
+    /* 0x00400b57 <kernel32>GetCurrentProcessId: not in the port's Windows */
     /* 0x00400b58 <kernel32>GetCurrentThreadId: not in the port's Windows */
     /* 0x00400b59 <kernel32>GetCurrentThread: not in the port's Windows */
-    registerMethod(0x00400b5a, {"<kernel32>GetEnvironmentStrings", &win32::Wrapper<decltype(&win32::kernel32::GetEnvironmentStrings), &win32::kernel32::GetEnvironmentStrings>::stdcall});
-    registerMethod(0x00400b5b, {"<kernel32>GetFileAttributesA", &win32::Wrapper<decltype(&win32::kernel32::GetFileAttributesA), &win32::kernel32::GetFileAttributesA>::stdcall});
-    registerMethod(0x00400b5c, {"<kernel32>GetFileType", &win32::Wrapper<decltype(&win32::kernel32::GetFileType), &win32::kernel32::GetFileType>::stdcall});
-    registerMethod(0x00400b5d, {"<kernel32>GetFullPathNameA", &win32::Wrapper<decltype(&win32::kernel32::GetFullPathNameA), &win32::kernel32::GetFullPathNameA>::stdcall});
-    registerMethod(0x00400b5e, {"<kernel32>GetLastError", &win32::Wrapper<decltype(&win32::kernel32::GetLastError), &win32::kernel32::GetLastError>::stdcall});
-    registerMethod(0x00400b5f, {"<kernel32>GetModuleFileNameA", &win32::Wrapper<decltype(&win32::kernel32::GetModuleFileNameA), &win32::kernel32::GetModuleFileNameA>::stdcall});
-    registerMethod(0x00400b60, {"<kernel32>GetModuleFileNameW", &win32::Wrapper<decltype(&win32::kernel32::GetModuleFileNameW), &win32::kernel32::GetModuleFileNameW>::stdcall});
-    registerMethod(0x00400b61, {"<kernel32>GetModuleHandleA", &win32::Wrapper<decltype(&win32::kernel32::GetModuleHandleA), &win32::kernel32::GetModuleHandleA>::stdcall});
-    registerMethod(0x00400b62, {"<kernel32>GetOEMCP", &win32::Wrapper<decltype(&win32::kernel32::GetOEMCP), &win32::kernel32::GetOEMCP>::stdcall});
-    registerMethod(0x00400b63, {"<kernel32>GetProcAddress", &win32::Wrapper<decltype(&win32::kernel32::GetProcAddress), &win32::kernel32::GetProcAddress>::stdcall});
-    registerMethod(0x00400b64, {"<kernel32>GetStdHandle", &win32::Wrapper<decltype(&win32::kernel32::GetStdHandle), &win32::kernel32::GetStdHandle>::stdcall});
-    registerMethod(0x00400b65, {"<kernel32>GetVersion", &win32::Wrapper<decltype(&win32::kernel32::GetVersion), &win32::kernel32::GetVersion>::stdcall});
+    /* 0x00400b5a <kernel32>GetEnvironmentStrings: not in the port's Windows */
+    /* 0x00400b5b <kernel32>GetFileAttributesA: not in the port's Windows */
+    /* 0x00400b5c <kernel32>GetFileType: not in the port's Windows */
+    /* 0x00400b5d <kernel32>GetFullPathNameA: not in the port's Windows */
+    /* 0x00400b5e <kernel32>GetLastError: not in the port's Windows */
+    /* 0x00400b5f <kernel32>GetModuleFileNameA: not in the port's Windows */
+    /* 0x00400b60 <kernel32>GetModuleFileNameW: not in the port's Windows */
+    /* 0x00400b61 <kernel32>GetModuleHandleA: not in the port's Windows */
+    /* 0x00400b62 <kernel32>GetOEMCP: not in the port's Windows */
+    /* 0x00400b63 <kernel32>GetProcAddress: not in the port's Windows */
+    /* 0x00400b64 <kernel32>GetStdHandle: not in the port's Windows */
+    /* 0x00400b65 <kernel32>GetVersion: not in the port's Windows */
     /* 0x00400b66 <kernel32>InitializeCriticalSection: not in the port's Windows */
     /* 0x00400b67 <kernel32>LeaveCriticalSection: not in the port's Windows */
-    registerMethod(0x00400b68, {"<kernel32>LoadLibraryA", &win32::Wrapper<decltype(&win32::kernel32::LoadLibraryA), &win32::kernel32::LoadLibraryA>::stdcall});
-    registerMethod(0x00400b69, {"<kernel32>MoveFileA", &win32::Wrapper<decltype(&win32::kernel32::MoveFileA), &win32::kernel32::MoveFileA>::stdcall});
-    registerMethod(0x00400b6a, {"<kernel32>MultiByteToWideChar", &win32::Wrapper<decltype(&win32::kernel32::MultiByteToWideChar), &win32::kernel32::MultiByteToWideChar>::stdcall});
-    registerMethod(0x00400b6b, {"<kernel32>SetConsoleCtrlHandler", &win32::Wrapper<decltype(&win32::kernel32::SetConsoleCtrlHandler), &win32::kernel32::SetConsoleCtrlHandler>::stdcall});
-    registerMethod(0x00400b6c, {"<kernel32>SetEnvironmentVariableA", &win32::Wrapper<decltype(&win32::kernel32::SetEnvironmentVariableA), &win32::kernel32::SetEnvironmentVariableA>::stdcall});
-    registerMethod(0x00400b6d, {"<kernel32>SetEnvironmentVariableW", &win32::Wrapper<decltype(&win32::kernel32::SetEnvironmentVariableW), &win32::kernel32::SetEnvironmentVariableW>::stdcall});
+    /* 0x00400b68 <kernel32>LoadLibraryA: not in the port's Windows */
+    /* 0x00400b69 <kernel32>MoveFileA: not in the port's Windows */
+    /* 0x00400b6a <kernel32>MultiByteToWideChar: not in the port's Windows */
+    /* 0x00400b6b <kernel32>SetConsoleCtrlHandler: not in the port's Windows */
+    /* 0x00400b6c <kernel32>SetEnvironmentVariableA: not in the port's Windows */
+    /* 0x00400b6d <kernel32>SetEnvironmentVariableW: not in the port's Windows */
     /* 0x00400b6e <kernel32>SetEvent: not in the port's Windows */
-    registerMethod(0x00400b6f, {"<kernel32>SetFilePointer", &win32::Wrapper<decltype(&win32::kernel32::SetFilePointer), &win32::kernel32::SetFilePointer>::stdcall});
-    registerMethod(0x00400b70, {"<kernel32>SetLastError", &win32::Wrapper<decltype(&win32::kernel32::SetLastError), &win32::kernel32::SetLastError>::stdcall});
-    registerMethod(0x00400b71, {"<kernel32>SetStdHandle", &win32::Wrapper<decltype(&win32::kernel32::SetStdHandle), &win32::kernel32::SetStdHandle>::stdcall});
-    registerMethod(0x00400b72, {"<kernel32>SetUnhandledExceptionFilter", &win32::Wrapper<decltype(&win32::kernel32::SetUnhandledExceptionFilter), &win32::kernel32::SetUnhandledExceptionFilter>::stdcall});
+    /* 0x00400b6f <kernel32>SetFilePointer: not in the port's Windows */
+    /* 0x00400b70 <kernel32>SetLastError: not in the port's Windows */
+    /* 0x00400b71 <kernel32>SetStdHandle: not in the port's Windows */
+    /* 0x00400b72 <kernel32>SetUnhandledExceptionFilter: not in the port's Windows */
     /* 0x00400b73 <kernel32>TlsAlloc: not in the port's Windows */
     /* 0x00400b74 <kernel32>TlsFree: not in the port's Windows */
     /* 0x00400b75 <kernel32>TlsGetValue: not in the port's Windows */
     /* 0x00400b76 <kernel32>TlsSetValue: not in the port's Windows */
-    registerMethod(0x00400b77, {"<kernel32>UnhandledExceptionFilter", &win32::Wrapper<decltype(&win32::kernel32::UnhandledExceptionFilter), &win32::kernel32::UnhandledExceptionFilter>::stdcall});
-    registerMethod(0x00400b78, {"<kernel32>VirtualAlloc", &win32::Wrapper<decltype(&win32::kernel32::VirtualAlloc), &win32::kernel32::VirtualAlloc>::stdcall});
-    registerMethod(0x00400b79, {"<kernel32>VirtualFree", &win32::Wrapper<decltype(&win32::kernel32::VirtualFree), &win32::kernel32::VirtualFree>::stdcall});
-    registerMethod(0x00400b7a, {"<kernel32>VirtualQuery", &win32::Wrapper<decltype(&win32::kernel32::VirtualQuery), &win32::kernel32::VirtualQuery>::stdcall});
+    /* 0x00400b77 <kernel32>UnhandledExceptionFilter: not in the port's Windows */
+    /* 0x00400b78 <kernel32>VirtualAlloc: not in the port's Windows */
+    /* 0x00400b79 <kernel32>VirtualFree: not in the port's Windows */
+    /* 0x00400b7a <kernel32>VirtualQuery: not in the port's Windows */
     /* 0x00400b7b <kernel32>WaitForSingleObject: not in the port's Windows */
-    registerMethod(0x00400b7c, {"<kernel32>WideCharToMultiByte", &win32::Wrapper<decltype(&win32::kernel32::WideCharToMultiByte), &win32::kernel32::WideCharToMultiByte>::stdcall});
-    registerMethod(0x00400b7d, {"<kernel32>WriteFile", &win32::Wrapper<decltype(&win32::kernel32::WriteFile), &win32::kernel32::WriteFile>::stdcall});
+    /* 0x00400b7c <kernel32>WideCharToMultiByte: not in the port's Windows */
+    /* 0x00400b7d <kernel32>WriteFile: not in the port's Windows */
     /* 0x00400b7e <ddraw>DirectDrawCreate: not in the port's Windows */
 }
 

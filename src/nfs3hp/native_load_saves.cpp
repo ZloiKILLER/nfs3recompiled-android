@@ -21,7 +21,8 @@
 #include "native_windows.h"
 #include "port_snd_stream_calls.h"
 #include "port_text.h"
-#include <winapi/kernel32.h>
+#include "host_files.h"
+#include "host_system.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -1246,12 +1247,12 @@ bool writeTimeOf(App* app, CPU& cpu, reg32 name, reg32 to)
     const reg32 time = frame - 0x10;
     put(app, time, at(app, kNoTime));
     put(app, time + 4, at(app, kNoTime + 4));
-    const std::optional<reg32> file = windows<kLopen, &win32::kernel32::_lopen>(app, cpu, {}, name, 0);
+    const std::optional<reg32> file = windows<kLopen, &host::openFileByName>(app, cpu, {}, name, 0);
     if (!file)
         return false;
     if (*file != 0
-        && (!windows<kGetFileTime, &win32::kernel32::GetFileTime>(app, cpu, {}, *file, 0, 0, time)
-            || !windows<kLclose, &win32::kernel32::_lclose>(app, cpu, {}, *file)))
+        && (!windows<kGetFileTime, &host::fileTime>(app, cpu, {}, *file, 0, 0, time)
+            || !windows<kLclose, &host::closeFileByName>(app, cpu, {}, *file)))
         return false;
     put(app, to, at(app, time));
     put(app, to + 4, at(app, time + 4));
@@ -1273,7 +1274,7 @@ std::optional<reg32> writtenBefore(App* app, CPU& cpu, reg32 name, reg32 other)
     // eax and edx as the code has them there: what CompareFileTime leaves in
     // edx is fileOlder's.
     const std::optional<reg32> order =
-        windows<kCompareFileTime, &win32::kernel32::CompareFileTime>(app, cpu, {first, other}, first, second);
+        windows<kCompareFileTime, &host::compareFileTime>(app, cpu, {first, other}, first, second);
     if (!order)
         return std::nullopt;
     return *order == 0xffffffff ? 1 : 0;
@@ -1343,7 +1344,7 @@ bool loadSettings(App* app, CPU& cpu)
     const reg32 where = frame - 0x10, handle = frame - 0xc, size = frame - 8;
     put(app, handle, 0);
     put(app, where, 0);
-    if (!windows<kGetModuleFileNameA, &win32::kernel32::GetModuleFileNameA>(app, cpu, {}, 0, exe, kExePathBytes)
+    if (!windows<kGetModuleFileNameA, &host::moduleFileName>(app, cpu, {}, 0, exe, kExePathBytes)
         || !print(app, cpu, {path, kConfigFormat, kSaveFolder}) || !runTasks(app, cpu))
         return false;
     if ((byte(app, kCommandFlags) & kDemoCommand) == 0)

@@ -683,11 +683,12 @@ void blend(reg32 destination)
         s_renderer->setAlphaBlendDst(win32::AB_1);
 }
 
+}  // namespace
+
 /* THRASH_setstate(state, value): one piece of the driver's state, to the
  * renderer or to voodoo2a's variables.  1 for done, 0 for a state or value it
- * does not take.  An argument it writes back to (thrash::kMipLinear) is at
- * `slot`, or nowhere for 0. */
-reg32 setState(App* app, CPU& cpu, reg32 state, reg32 value, reg32 slot)
+ * does not take. */
+reg32 setState(App* app, CPU& cpu, reg32 state, reg32 value)
 {
     win32::ThrashRenderer* const r = s_renderer;
     reg32 result = 1;
@@ -780,11 +781,7 @@ reg32 setState(App* app, CPU& cpu, reg32 state, reg32 value, reg32 slot)
     {
         reg32 twoPass = 0;
         if (value == thrash::kMipLinear)
-        {
-            twoPass = 1;
-            if (slot != 0)
-                put(app, slot, thrash::kMipPoint);  // over the argument, as voodoo2a does
-        }
+            twoPass = 1;  // THRASH_setstate writes kMipPoint over the argument
         if (twoPass != kTwoPass(app))
         {
             kTwoPass.set(app, twoPass);
@@ -919,6 +916,9 @@ reg32 setState(App* app, CPU& cpu, reg32 state, reg32 value, reg32 slot)
     return result;
 }
 
+namespace
+{
+
 /* ---- The window ---- */
 
 /* grSstQueryHardware as the port's Glide answered it: one Voodoo2, 16 MB of
@@ -1035,26 +1035,10 @@ Result openMode(App* app, CPU& cpu, reg32 ebx, reg32 mode, reg32 buffers, reg32 
         {thrash::kStateGamma, 0x3f800000}, {thrash::kStateDepthBias, 0}, {thrash::kStateLodBias, 0},
     };
     for (const auto& pair : kDefaults)
-        setState(app, cpu, pair[0], pair[1], 0);
-    setState(app, cpu, thrash::kStateDepth, int32_t(auxiliary) >= 1 ? thrash::kDepthW : thrash::kDepthOff, 0);
+        setState(app, cpu, pair[0], pair[1]);
+    setState(app, cpu, thrash::kStateDepth, int32_t(auxiliary) >= 1 ? thrash::kDepthW : thrash::kDepthOff);
     kFlags.set(app, uint8_t(kFlags(app) | kWindowOpen));
     return 1;
-}
-
-/* THRASH_setvideomode(mode, buffers, auxiliary): the game's window found, by
- * its lambda when it gave one, and the mode opened.  (voodoo2a took the screen
- * by DirectDraw first, brought the window forward and, when the game gave it
- * a way, had the window's own thread open the mode while it waited: none of
- * which the port's Win32 did anything with.) */
-Result setVideoMode(App* app, CPU& cpu, reg32 ebx, reg32 mode, reg32 buffers, reg32 auxiliary)
-{
-    if (const reg32 findWindow = kFindWindow(app))
-    {
-        if (!guest::call(app, cpu, findWindow))
-            return {};
-        kWindow.set(app, cpu.eax);
-    }
-    return openMode(app, cpu, ebx, mode, buffers, auxiliary);
 }
 
 /* The game's hook around the frame buffer's locks, when it has set one.  False
@@ -1139,277 +1123,239 @@ bool fullColourTextures()
     return on;
 }
 
-}  // namespace driver
-}  // namespace port
+/* ---- voodoo2a's exports, typed (port_thrash.h) ---- */
 
-/* ---- voodoo2a's exports ---- */
-
-using port::App;
-using port::CPU;
-using port::Entry;
-using port::Result;
-using port::reg32;
-namespace driver = port::driver;
-
-void THRASH_drawtri(App* app, CPU& cpu)
+/* THRASH_drawtri(a, b, c). */
+reg32 drawTri(App* app, CPU& cpu, reg32 a, reg32 b, reg32 c)
 {
-    const Entry e(cpu);
-    driver::triangle(app, driver::Drawing(app), e.arg(app, 0), e.arg(app, 1), e.arg(app, 2));
-    e.back(cpu, e.eax, 0xc);
+    triangle(app, Drawing(app), a, b, c);
+    return cpu.eax;
 }
 
 /* THRASH_drawquad(a, b, c, d). */
-void THRASH_drawquad(App* app, CPU& cpu)
+reg32 drawQuad(App* app, CPU& cpu, reg32 a, reg32 b, reg32 c, reg32 d)
 {
-    const Entry e(cpu);
-    driver::quad(app, driver::Drawing(app), e.arg(app, 0), e.arg(app, 1), e.arg(app, 2), e.arg(app, 3));
-    e.back(cpu, e.eax, 0x10);
+    quad(app, Drawing(app), a, b, c, d);
+    return cpu.eax;
 }
 
 /* THRASH_drawquadmesh(count, vertices, quads): four vertex indices each. */
-void THRASH_drawquadmesh(App* app, CPU& cpu)
+reg32 drawQuadMesh(App* app, CPU& cpu, reg32 count, reg32 vertices, reg32 quads)
 {
-    const Entry e(cpu);
-    const driver::Drawing d(app);
-    const int32_t count = int32_t(e.arg(app, 0));
-    const reg32 vertices = e.arg(app, 1);
-    reg32 quad = e.arg(app, 2);
-    for (int32_t i = 0; i < count; ++i, quad += 0x10)
-        driver::quad(app, d, driver::meshVertex(app, vertices, quad), driver::meshVertex(app, vertices, quad + 4),
-                     driver::meshVertex(app, vertices, quad + 8), driver::meshVertex(app, vertices, quad + 0xc));
-    e.back(cpu, e.eax, 0xc);
+    const Drawing d(app);
+    reg32 entry = quads;
+    for (int32_t i = 0; i < int32_t(count); ++i, entry += 0x10)
+        quad(app, d, meshVertex(app, vertices, entry), meshVertex(app, vertices, entry + 4),
+             meshVertex(app, vertices, entry + 8), meshVertex(app, vertices, entry + 0xc));
+    return cpu.eax;
 }
 
 /* THRASH_drawtrimesh(count, vertices, triangles): three indices each. */
-void THRASH_drawtrimesh(App* app, CPU& cpu)
+reg32 drawTriMesh(App* app, CPU& cpu, reg32 count, reg32 vertices, reg32 triangles)
 {
-    const Entry e(cpu);
-    const driver::Drawing d(app);
-    const int32_t count = int32_t(e.arg(app, 0));
-    const reg32 vertices = e.arg(app, 1);
-    reg32 triangle = e.arg(app, 2);
-    for (int32_t i = 0; i < count; ++i, triangle += 0xc)
-        driver::triangle(app, d, driver::meshVertex(app, vertices, triangle),
-                         driver::meshVertex(app, vertices, triangle + 4), driver::meshVertex(app, vertices, triangle + 8));
-    e.back(cpu, e.eax, 0xc);
+    const Drawing d(app);
+    reg32 entry = triangles;
+    for (int32_t i = 0; i < int32_t(count); ++i, entry += 0xc)
+        triangle(app, d, meshVertex(app, vertices, entry), meshVertex(app, vertices, entry + 4),
+                 meshVertex(app, vertices, entry + 8));
+    return cpu.eax;
 }
 
 /* THRASH_drawtrifan(count, vertices): count triangles around the first
  * vertex, the n-th of it, n + 1 and n + 2. */
-void THRASH_drawtrifan(App* app, CPU& cpu)
+reg32 drawTriFan(App* app, CPU& cpu, reg32 count, reg32 vertices)
 {
-    const Entry e(cpu);
-    const driver::Drawing d(app);
-    const int32_t count = int32_t(e.arg(app, 0));
-    const reg32 vertices = e.arg(app, 1);
-    for (int32_t i = 0; i < count; ++i)
-        driver::triangle(app, d, vertices, vertices + reg32(i + 1) * thrash::kVertexBytes,
-                         vertices + reg32(i + 2) * thrash::kVertexBytes);
-    e.back(cpu, e.eax, 8);
+    const Drawing d(app);
+    for (int32_t i = 0; i < int32_t(count); ++i)
+        triangle(app, d, vertices, vertices + reg32(i + 1) * thrash::kVertexBytes,
+                 vertices + reg32(i + 2) * thrash::kVertexBytes);
+    return cpu.eax;
 }
 
 /* THRASH_drawtristrip(count, vertices): count triangles along the strip, the
  * n-th of vertices n, n + 1 and n + 2 -- every other one n, n + 2, n + 1, all
- * of them wound the same way.  voodoo2a's loop draws six at a time and keeps
- * where the next six start in the argument, which it leaves there. */
-void THRASH_drawtristrip(App* app, CPU& cpu)
+ * of them wound the same way. */
+reg32 drawTriStrip(App* app, CPU& cpu, reg32 count, reg32 vertices)
 {
-    const Entry e(cpu);
-    const driver::Drawing d(app);
-    const int32_t count = int32_t(e.arg(app, 0));
-    const reg32 vertices = e.arg(app, 1);
-    for (int32_t i = 0; i < count; ++i)
+    const Drawing d(app);
+    for (int32_t i = 0; i < int32_t(count); ++i)
     {
         const reg32 first = vertices + reg32(i) * thrash::kVertexBytes;
         const reg32 second = first + thrash::kVertexBytes, third = second + thrash::kVertexBytes;
         if (i & 1)
-            driver::triangle(app, d, first, third, second);
+            triangle(app, d, first, third, second);
         else
-            driver::triangle(app, d, first, second, third);
+            triangle(app, d, first, second, third);
     }
-    if (count >= 6)
-        guest::put(app, e.esp + 8, vertices + reg32(count / 6) * 6 * thrash::kVertexBytes);
-    e.back(cpu, e.eax, 8);
+    return cpu.eax;
 }
 
 /* THRASH_drawline(a, b). */
-void THRASH_drawline(App* app, CPU& cpu)
+reg32 drawLine(App* app, CPU& cpu, reg32 a, reg32 b)
 {
-    const Entry e(cpu);
-    driver::line(app, driver::Drawing(app), e.arg(app, 0), e.arg(app, 1));
-    e.back(cpu, e.eax, 8);
+    line(app, Drawing(app), a, b);
+    return cpu.eax;
 }
 
 /* THRASH_drawlinemesh(count, vertices, lines): two indices each. */
-void THRASH_drawlinemesh(App* app, CPU& cpu)
+reg32 drawLineMesh(App* app, CPU& cpu, reg32 count, reg32 vertices, reg32 lines)
 {
-    const Entry e(cpu);
-    const driver::Drawing d(app);
-    const int32_t count = int32_t(e.arg(app, 0));
-    const reg32 vertices = e.arg(app, 1);
-    reg32 line = e.arg(app, 2);
-    for (int32_t i = 0; i < count; ++i, line += 8)
-        driver::line(app, d, driver::meshVertex(app, vertices, line), driver::meshVertex(app, vertices, line + 4));
-    e.back(cpu, e.eax, 0xc);
+    const Drawing d(app);
+    reg32 entry = lines;
+    for (int32_t i = 0; i < int32_t(count); ++i, entry += 8)
+        line(app, d, meshVertex(app, vertices, entry), meshVertex(app, vertices, entry + 4));
+    return cpu.eax;
 }
 
 /* THRASH_drawlinestrip(count, vertices): count lines, the n-th from vertex n
  * to n + 1. */
-void THRASH_drawlinestrip(App* app, CPU& cpu)
+reg32 drawLineStrip(App* app, CPU& cpu, reg32 count, reg32 vertices)
 {
-    const Entry e(cpu);
-    const driver::Drawing d(app);
-    const int32_t count = int32_t(e.arg(app, 0));
-    const reg32 vertices = e.arg(app, 1);
-    for (int32_t i = 0; i < count; ++i)
-        driver::line(app, d, vertices + reg32(i) * thrash::kVertexBytes, vertices + reg32(i + 1) * thrash::kVertexBytes);
-    e.back(cpu, e.eax, 8);
+    const Drawing d(app);
+    for (int32_t i = 0; i < int32_t(count); ++i)
+        line(app, d, vertices + reg32(i) * thrash::kVertexBytes, vertices + reg32(i + 1) * thrash::kVertexBytes);
+    return cpu.eax;
 }
 
 /* THRASH_drawpoint(vertex), _drawpointmesh(count, vertices, points) and
  * _drawpointstrip(count, vertices): Glide's points, of which the port's drew
  * none. */
-void THRASH_drawpoint(App* app, CPU& cpu)
+reg32 drawPoint(App* app, CPU& cpu, reg32 vertex)
 {
     NFS2_USE(app);
-    const Entry e(cpu);
-    e.back(cpu, e.eax, 4);
+    NFS2_USE(vertex);
+    return cpu.eax;
 }
 
-void THRASH_drawpointmesh(App* app, CPU& cpu)
+reg32 drawPointMesh(App* app, CPU& cpu, reg32 count, reg32 vertices, reg32 points)
 {
     NFS2_USE(app);
-    const Entry e(cpu);
-    e.back(cpu, e.eax, 0xc);
+    NFS2_USE(count);
+    NFS2_USE(vertices);
+    NFS2_USE(points);
+    return cpu.eax;
 }
 
-void THRASH_drawpointstrip(App* app, CPU& cpu)
+reg32 drawPointStrip(App* app, CPU& cpu, reg32 count, reg32 vertices)
 {
     NFS2_USE(app);
-    const Entry e(cpu);
-    e.back(cpu, e.eax, 8);
-}
-
-/* THRASH_setstate(state, value). */
-void THRASH_setstate(App* app, CPU& cpu)
-{
-    const Entry e(cpu);
-    const reg32 result = driver::setState(app, cpu, e.arg(app, 0), e.arg(app, 1), e.esp + 8);
-    e.back(cpu, result, 8);
+    NFS2_USE(count);
+    NFS2_USE(vertices);
+    return cpu.eax;
 }
 
 /* THRASH_talloc(width, height, format, palette, levels). */
-void THRASH_talloc(App* app, CPU& cpu)
+std::optional<reg32> tAlloc(App* app, CPU& cpu, reg32 width, reg32 height, reg32 format, reg32 palette, reg32 levels)
 {
-    const Entry e(cpu);
-    const Result record = driver::allocateTexture(app, cpu, e.arg(app, 0), e.arg(app, 1), e.arg(app, 2), e.arg(app, 4));
-    e.finish(cpu, record, 0x14);
+    NFS2_USE(palette);
+    const Result record = allocateTexture(app, cpu, width, height, format, levels);
+    if (!record)
+        return std::nullopt;
+    return reg32(*record);
 }
 
 /* THRASH_treset: 1. */
-void THRASH_treset(App* app, CPU& cpu)
+std::optional<reg32> tReset(App* app, CPU& cpu)
 {
-    const Entry e(cpu);
-    if (driver::resetTextures(app, cpu))
-        e.back(cpu, 1);
+    if (!resetTextures(app, cpu))
+        return std::nullopt;
+    return 1;
 }
 
 /* THRASH_tupdate(record, texels, palette): the record. */
-void THRASH_tupdate(App* app, CPU& cpu)
+reg32 tUpdate(App* app, CPU& cpu, reg32 texture, reg32 texels, reg32 palette)
 {
-    const Entry e(cpu);
-    const reg32 record = driver::updateTexture(app, cpu, e.arg(app, 0), e.arg(app, 1));
-    e.back(cpu, record, 0xc);
+    NFS2_USE(palette);
+    return updateTexture(app, cpu, texture, texels);
 }
 
 /* THRASH_settexture(record): 1. */
-void THRASH_settexture(App* app, CPU& cpu)
+reg32 setTexture(App* app, CPU& cpu, reg32 texture)
 {
-    const Entry e(cpu);
-    driver::selectTexture(app, e.arg(app, 0));
-    e.back(cpu, 1, 4);
+    NFS2_USE(cpu);
+    selectTexture(app, texture);
+    return 1;
 }
 
 /* THRASH_window(buffer): which buffer to draw into, counted from 1; 0 is 1. */
-void THRASH_window(App* app, CPU& cpu)
+reg32 window(App* app, CPU& cpu, reg32 buffer)
 {
-    const Entry e(cpu);
-    reg32 buffer = e.arg(app, 0);
+    NFS2_USE(cpu);
     if (buffer == 0)
         buffer = 1;
-    driver::kBuffer.set(app, buffer - 1);
-    if (driver::s_renderer)
-        driver::s_renderer->render(buffer - 1);
-    e.back(cpu, 1, 4);
+    kBuffer.set(app, buffer - 1);
+    if (s_renderer)
+        s_renderer->render(buffer - 1);
+    return 1;
 }
 
 /* THRASH_clearwindow: colour and depth cleared to what THRASH_setstate set,
  * the guest context let go meanwhile; the depth back. */
-void THRASH_clearwindow(App* app, CPU& cpu)
+reg32 clearWindow(App* app, CPU& cpu)
 {
-    const Entry e(cpu);
-    const reg32 depth = driver::kClearDepth(app);
-    if (driver::s_renderer)
+    const reg32 depth = kClearDepth(app);
+    if (s_renderer)
     {
         app->unlockContext(cpu);
-        driver::s_renderer->clear(driver::kClearColour(app));
+        s_renderer->clear(kClearColour(app));
         app->lockContext(cpu);
     }
-    e.back(cpu, depth);
+    return depth;
 }
 
 /* THRASH_flushwindow and THRASH_idle: nothing to do on a Voodoo2. */
-void THRASH_flushwindow(App* app, CPU& cpu)
+reg32 flushWindow(App* app, CPU& cpu)
 {
     NFS2_USE(app);
-    const Entry e(cpu);
-    e.back(cpu, e.eax);
+    return cpu.eax;
 }
 
-void THRASH_idle(App* app, CPU& cpu)
+reg32 idle(App* app, CPU& cpu)
 {
     NFS2_USE(app);
-    const Entry e(cpu);
-    e.back(cpu, e.eax);
+    return cpu.eax;
 }
 
 /* THRASH_pageflip: the buffers swapped -- with nothing ever pending -- the
  * guest context let go meanwhile, then the game layer's look at the frame. */
-void THRASH_pageflip(App* app, CPU& cpu)
+reg32 pageFlip(App* app, CPU& cpu)
 {
-    const Entry e(cpu);
-    if (driver::s_renderer)
+    const reg32 eax = cpu.eax;
+    if (s_renderer)
     {
         app->unlockContext(cpu);
-        driver::s_renderer->swap();
+        s_renderer->swap();
         app->lockContext(cpu);
-        if (driver::s_swapObserver)
-            driver::s_swapObserver(app);
+        if (s_swapObserver)
+            s_swapObserver(app);
     }
-    e.back(cpu, e.eax);
+    return eax;
 }
 
 /* THRASH_sync(what): 0 waits for the card, 1 asks whether it is busy, 2 waits
  * for the start of a vertical retrace, 3 tells how much of the FIFO is free.
  * The port's Glide was never busy and had no retrace, which voodoo2a waited
  * for four million tries before it gave up, and a FIFO 0xfff short of full. */
-void THRASH_sync(App* app, CPU& cpu)
+reg32 sync(App* app, CPU& cpu, reg32 what)
 {
-    const Entry e(cpu);
-    const reg32 what = e.arg(app, 0);
-    e.back(cpu, what == 1 ? 1 : what == 3 ? 0xf000 : 0, 4);
+    NFS2_USE(app);
+    NFS2_USE(cpu);
+    return what == 1 ? 1 : what == 3 ? 0xf000 : 0;
 }
 
 /* THRASH_clip(minX, minY, maxX, maxY): 1. */
-void THRASH_clip(App* app, CPU& cpu)
+reg32 clip(App* app, CPU& cpu, reg32 minX, reg32 minY, reg32 maxX, reg32 maxY)
 {
-    const Entry e(cpu);
-    for (int i = 0; i < 4; ++i)
-        driver::s_clipWindow[i] = e.arg(app, i);
-    driver::s_clipWindowSet = true;
-    if (driver::s_renderer)
-        driver::s_renderer->setClipWindow(e.arg(app, 0), e.arg(app, 1), e.arg(app, 2), e.arg(app, 3));
-    e.back(cpu, 1, 0x10);
+    NFS2_USE(app);
+    NFS2_USE(cpu);
+    s_clipWindow[0] = minX;
+    s_clipWindow[1] = minY;
+    s_clipWindow[2] = maxX;
+    s_clipWindow[3] = maxY;
+    s_clipWindowSet = true;
+    if (s_renderer)
+        s_renderer->setClipWindow(minX, minY, maxX, maxY);
+    return 1;
 }
 
 /* THRASH_lockwindow: the frame buffer locked for the game to write into, as a
@@ -1417,78 +1363,82 @@ void THRASH_clip(App* app, CPU& cpu)
  * window's size and the buffer -- or 0, the game's lock hook told before and,
  * when there is no lock, after.  (voodoo2a then asked for a read lock as well,
  * which the port's Glide refused.) */
-void THRASH_lockwindow(App* app, CPU& cpu)
+std::optional<reg32> lockWindow(App* app, CPU& cpu)
 {
-    const Entry e(cpu);
-    if (!driver::lockHook(app, cpu, 1))
-        return;
+    if (!lockHook(app, cpu, 1))
+        return std::nullopt;
     reg32 record = 0;
-    if (driver::s_screen)
+    if (s_screen)
     {
-        const reg32 buffer = driver::kBuffer(app);
-        const reg32 pixels = driver::s_screen->lock(buffer);
-        const reg32 stride = driver::s_screen->getWidth() * 2;
+        const reg32 buffer = kBuffer(app);
+        const reg32 pixels = s_screen->lock(buffer);
+        const reg32 stride = s_screen->getWidth() * 2;
         record = thrashMalloc(app, cpu, thrash::kLockBytes);
         if (cpu.terminate)
-            return;
+            return std::nullopt;
         if (record != 0)
         {
-            guest::put(app, record + thrash::kLockData, pixels);
-            guest::put(app, record + thrash::kLockFormat, 4);
-            guest::put(app, record + thrash::kLockStride, stride);
-            guest::put(app, record + thrash::kLockWidth, driver::kWidth(app));
-            guest::put(app, record + thrash::kLockHeight, driver::kHeight(app));
-            guest::put(app, record + thrash::kLockBuffer, driver::kBuffer(app));
+            put(app, record + thrash::kLockData, pixels);
+            put(app, record + thrash::kLockFormat, 4);
+            put(app, record + thrash::kLockStride, stride);
+            put(app, record + thrash::kLockWidth, kWidth(app));
+            put(app, record + thrash::kLockHeight, kHeight(app));
+            put(app, record + thrash::kLockBuffer, kBuffer(app));
         }
     }
-    if (record == 0 && !driver::lockHook(app, cpu, 0))
-        return;
-    e.back(cpu, record);
+    if (record == 0 && !lockHook(app, cpu, 0))
+        return std::nullopt;
+    return record;
 }
 
 /* THRASH_unlockwindow(record): the lock let go, the record freed, the hook
  * told: 1. */
-void THRASH_unlockwindow(App* app, CPU& cpu)
+std::optional<reg32> unlockWindow(App* app, CPU& cpu, reg32 lock)
 {
-    const Entry e(cpu);
-    const reg32 record = e.arg(app, 0);
-    if (record != 0)
+    if (lock != 0)
     {
-        if (driver::s_screen)
-            driver::s_screen->unlock(guest::at(app, record + thrash::kLockBuffer));
-        thrashFree(app, cpu, record);
-        if (cpu.terminate || !driver::lockHook(app, cpu, 0))
-            return;
+        if (s_screen)
+            s_screen->unlock(at(app, lock + thrash::kLockBuffer));
+        thrashFree(app, cpu, lock);
+        if (cpu.terminate || !lockHook(app, cpu, 0))
+            return std::nullopt;
     }
-    e.back(cpu, 1, 4);
+    return 1;
 }
 
 /* THRASH_readrect(x, y, width, height, to) and THRASH_writerect(x, y, width,
  * height, pixels): the buffer drawn into read back, or 565 pixels written
  * into it, the game's lock hook told around -- 0, from the port's Glide, which
  * did neither. */
-void THRASH_readrect(App* app, CPU& cpu)
+std::optional<reg32> readRect(App* app, CPU& cpu, reg32 x, reg32 y, reg32 width, reg32 height, reg32 pixels)
 {
-    const Entry e(cpu);
-    if (!driver::lockHook(app, cpu, 1) || !driver::lockHook(app, cpu, 0))
-        return;
-    e.back(cpu, 0, 0x14);
+    NFS2_USE(x);
+    NFS2_USE(y);
+    NFS2_USE(width);
+    NFS2_USE(height);
+    NFS2_USE(pixels);
+    if (!lockHook(app, cpu, 1) || !lockHook(app, cpu, 0))
+        return std::nullopt;
+    return 0;
 }
 
-void THRASH_writerect(App* app, CPU& cpu)
+std::optional<reg32> writeRect(App* app, CPU& cpu, reg32 x, reg32 y, reg32 width, reg32 height, reg32 pixels)
 {
-    const Entry e(cpu);
-    if (!driver::lockHook(app, cpu, 1) || !driver::lockHook(app, cpu, 0))
-        return;
-    e.back(cpu, 0, 0x14);
+    NFS2_USE(x);
+    NFS2_USE(y);
+    NFS2_USE(width);
+    NFS2_USE(height);
+    NFS2_USE(pixels);
+    if (!lockHook(app, cpu, 1) || !lockHook(app, cpu, 0))
+        return std::nullopt;
+    return 0;
 }
 
 /* THRASH_about: the driver described, once -- its name, what it can do, its
  * texture formats and its modes -- from a look at the card. */
-void THRASH_about(App* app, CPU& cpu)
+reg32 about(App* app, CPU& cpu)
 {
-    using namespace driver;
-    const Entry e(cpu);
+    NFS2_USE(cpu);
     if (at(app, kInfo) == 0)
     {
         std::memset(&app->getMemory<x86::reg8>(kInfo), 0, thrash::kAboutBytes);
@@ -1527,24 +1477,22 @@ void THRASH_about(App* app, CPU& cpu)
         }
         measureModes(app, kInfo);
     }
-    e.back(cpu, kInfo);
+    return kInfo;
 }
 
 /* THRASH_selectdisplay(board): 1 for one of the boards, else 0. */
-void THRASH_selectdisplay(App* app, CPU& cpu)
+reg32 selectDisplay(App* app, CPU& cpu, reg32 board)
 {
-    const Entry e(cpu);
-    const reg32 board = e.arg(app, 0);
-    e.back(cpu, int32_t(board) < int32_t(guest::at(app, driver::kHardware)) ? 1 : 0, 4);
+    NFS2_USE(cpu);
+    return int32_t(board) < int32_t(at(app, kHardware)) ? 1 : 0;
 }
 
 /* THRASH_init: Glide up, board 0, the modes measured.  The number of boards,
  * or 0 when it was already up.  (voodoo2a also had THRASH_restore run at its
  * exit, which never comes on the port.) */
-void THRASH_init(App* app, CPU& cpu)
+reg32 init(App* app, CPU& cpu)
 {
-    using namespace driver;
-    const Entry e(cpu);
+    NFS2_USE(cpu);
     reg32 result = 0;
     if (!(kFlags(app) & kSetUp))
     {
@@ -1559,21 +1507,20 @@ void THRASH_init(App* app, CPU& cpu)
                 kFlagsWord.set(app, kSetUp);
         }
     }
-    e.back(cpu, result);
+    return result;
 }
 
 /* THRASH_is: how well voodoo2a would drive what there is -- for Glide 2.42 up
  * to 2.5, 100; past it, 95; older, 0.  The port's Glide never said which it
  * was, so what voodoo2a read as its version is what its frame held of the
- * stack below it: push ebx, sub esp, 0x50, the version from the bottom.  (Its
- * VOODOO2_IS from the environment never is: its C library's start-up, which
- * would have filled the environment, never runs on the port.) */
-void THRASH_is(App* app, CPU& cpu)
+ * stack below it: push ebx, sub esp, 0x50, the version from the bottom --
+ * below esp as the export finds it, at its return address.  (Its VOODOO2_IS
+ * from the environment never is: its C library's start-up, which would have
+ * filled the environment, never runs on the port.) */
+reg32 is(App* app, CPU& cpu)
 {
-    using namespace driver;
-    const Entry e(cpu);
-    put(app, e.esp - 4, e.ebx);
-    const reg32 version = e.esp - 0x54;
+    put(app, cpu.esp - 4, cpu.ebx);
+    const reg32 version = cpu.esp - 0x54;
     if (kLog(app) == 0)
         kLog.set(app, kDefaultLog);
     queryHardware(app);
@@ -1581,41 +1528,285 @@ void THRASH_is(App* app, CPU& cpu)
     reg32 number = version;
     while (byte(app, number) != 0 && !(characterClass(app, byte(app, number)) & 0x20))
         ++number;
-    reg32 result;
     if (compareText(app, number, kVersionLow) < 0)
-        result = 0;
-    else if (compareText(app, number, kVersionHigh) <= 0)
-        result = 100;
-    else
-        result = 95;
-    e.back(cpu, result);
+        return 0;
+    if (compareText(app, number, kVersionHigh) <= 0)
+        return 100;
+    return 95;
 }
 
-/* THRASH_setvideomode(mode, buffers, auxiliary): 1 when it opened, or what
- * ebx held for no buffers. */
-void THRASH_setvideomode(App* app, CPU& cpu)
+/* THRASH_setvideomode(mode, buffers, auxiliary): the game's window found, by
+ * its lambda when it gave one, and the mode opened: 1 when it opened, or what
+ * ebx held for no buffers.  (voodoo2a took the screen by DirectDraw first,
+ * brought the window forward and, when the game gave it a way, had the
+ * window's own thread open the mode while it waited: none of which the port's
+ * Win32 did anything with.) */
+std::optional<reg32> setVideoMode(App* app, CPU& cpu, reg32 mode, reg32 buffers, reg32 auxiliary)
 {
-    const Entry e(cpu);
-    const Result opened = driver::setVideoMode(app, cpu, e.ebx, e.arg(app, 0), e.arg(app, 1), e.arg(app, 2));
-    e.finish(cpu, opened, 0xc);
+    const reg32 ebx = cpu.ebx;
+    if (const reg32 findWindow = kFindWindow(app))
+    {
+        if (!guest::call(app, cpu, findWindow))
+            return std::nullopt;
+        kWindow.set(app, cpu.eax);
+    }
+    const Result opened = openMode(app, cpu, ebx, mode, buffers, auxiliary);
+    if (!opened)
+        return std::nullopt;
+    return reg32(*opened);
 }
 
 /* THRASH_restore: everything let go, the window first: 1. */
-void THRASH_restore(App* app, CPU& cpu)
+std::optional<reg32> restore(App* app, CPU& cpu)
 {
-    using namespace driver;
-    const Entry e(cpu);
     if (kFlagsWord(app) != 0)
     {
-        if ((kFlags(app) & kWindowOpen) && !setVideoMode(app, cpu, e.ebx, 0, 0, 0))
-            return;
+        if ((kFlags(app) & kWindowOpen) && !setVideoMode(app, cpu, 0, 0, 0))
+            return std::nullopt;
         if (kExecute(app) != 0)
             kExecute.set(app, 0);
         closePicture(app);
         kLog.set(app, 0);
         kFlagsWord.set(app, 0);
     }
-    e.back(cpu, 1);
+    return 1;
+}
+
+}  // namespace driver
+}  // namespace port
+
+/* ---- voodoo2a's exports, as the game calls them ---- */
+
+/* Each export's words off the stack, as the game's code pushes them; its
+ * typed function called; its result in eax, every other register as the
+ * caller had it and the words popped (stdcall) -- nothing when the game
+ * stopped in it. */
+
+using port::App;
+using port::CPU;
+using port::Entry;
+using port::reg32;
+namespace driver = port::driver;
+
+void THRASH_drawtri(App* app, CPU& cpu)
+{
+    const Entry e(cpu);
+    e.back(cpu, driver::drawTri(app, cpu, e.arg(app, 0), e.arg(app, 1), e.arg(app, 2)), 0xc);
+}
+
+void THRASH_drawquad(App* app, CPU& cpu)
+{
+    const Entry e(cpu);
+    e.back(cpu, driver::drawQuad(app, cpu, e.arg(app, 0), e.arg(app, 1), e.arg(app, 2), e.arg(app, 3)), 0x10);
+}
+
+void THRASH_drawquadmesh(App* app, CPU& cpu)
+{
+    const Entry e(cpu);
+    e.back(cpu, driver::drawQuadMesh(app, cpu, e.arg(app, 0), e.arg(app, 1), e.arg(app, 2)), 0xc);
+}
+
+void THRASH_drawtrimesh(App* app, CPU& cpu)
+{
+    const Entry e(cpu);
+    e.back(cpu, driver::drawTriMesh(app, cpu, e.arg(app, 0), e.arg(app, 1), e.arg(app, 2)), 0xc);
+}
+
+void THRASH_drawtrifan(App* app, CPU& cpu)
+{
+    const Entry e(cpu);
+    e.back(cpu, driver::drawTriFan(app, cpu, e.arg(app, 0), e.arg(app, 1)), 8);
+}
+
+/* voodoo2a's loop draws six at a time and keeps where the next six start in
+ * the argument, which it leaves there. */
+void THRASH_drawtristrip(App* app, CPU& cpu)
+{
+    const Entry e(cpu);
+    const int32_t count = int32_t(e.arg(app, 0));
+    const reg32 vertices = e.arg(app, 1);
+    const reg32 eax = driver::drawTriStrip(app, cpu, reg32(count), vertices);
+    if (count >= 6)
+        guest::put(app, e.esp + 8, vertices + reg32(count / 6) * 6 * thrash::kVertexBytes);
+    e.back(cpu, eax, 8);
+}
+
+void THRASH_drawline(App* app, CPU& cpu)
+{
+    const Entry e(cpu);
+    e.back(cpu, driver::drawLine(app, cpu, e.arg(app, 0), e.arg(app, 1)), 8);
+}
+
+void THRASH_drawlinemesh(App* app, CPU& cpu)
+{
+    const Entry e(cpu);
+    e.back(cpu, driver::drawLineMesh(app, cpu, e.arg(app, 0), e.arg(app, 1), e.arg(app, 2)), 0xc);
+}
+
+void THRASH_drawlinestrip(App* app, CPU& cpu)
+{
+    const Entry e(cpu);
+    e.back(cpu, driver::drawLineStrip(app, cpu, e.arg(app, 0), e.arg(app, 1)), 8);
+}
+
+void THRASH_drawpoint(App* app, CPU& cpu)
+{
+    const Entry e(cpu);
+    e.back(cpu, driver::drawPoint(app, cpu, e.arg(app, 0)), 4);
+}
+
+void THRASH_drawpointmesh(App* app, CPU& cpu)
+{
+    const Entry e(cpu);
+    e.back(cpu, driver::drawPointMesh(app, cpu, e.arg(app, 0), e.arg(app, 1), e.arg(app, 2)), 0xc);
+}
+
+void THRASH_drawpointstrip(App* app, CPU& cpu)
+{
+    const Entry e(cpu);
+    e.back(cpu, driver::drawPointStrip(app, cpu, e.arg(app, 0), e.arg(app, 1)), 8);
+}
+
+/* thrash::kMipLinear is kMipPoint in two passes: voodoo2a writes kMipPoint
+ * over the argument. */
+void THRASH_setstate(App* app, CPU& cpu)
+{
+    const Entry e(cpu);
+    const reg32 state = e.arg(app, 0), value = e.arg(app, 1);
+    const reg32 result = driver::setState(app, cpu, state, value);
+    if (state == thrash::kStateMipFilter && value == thrash::kMipLinear)
+        guest::put(app, e.esp + 8, thrash::kMipPoint);
+    e.back(cpu, result, 8);
+}
+
+void THRASH_talloc(App* app, CPU& cpu)
+{
+    const Entry e(cpu);
+    e.finish(cpu, driver::tAlloc(app, cpu, e.arg(app, 0), e.arg(app, 1), e.arg(app, 2), e.arg(app, 3), e.arg(app, 4)),
+             0x14);
+}
+
+void THRASH_treset(App* app, CPU& cpu)
+{
+    const Entry e(cpu);
+    e.finish(cpu, driver::tReset(app, cpu));
+}
+
+void THRASH_tupdate(App* app, CPU& cpu)
+{
+    const Entry e(cpu);
+    e.back(cpu, driver::tUpdate(app, cpu, e.arg(app, 0), e.arg(app, 1), e.arg(app, 2)), 0xc);
+}
+
+void THRASH_settexture(App* app, CPU& cpu)
+{
+    const Entry e(cpu);
+    e.back(cpu, driver::setTexture(app, cpu, e.arg(app, 0)), 4);
+}
+
+void THRASH_window(App* app, CPU& cpu)
+{
+    const Entry e(cpu);
+    e.back(cpu, driver::window(app, cpu, e.arg(app, 0)), 4);
+}
+
+void THRASH_clearwindow(App* app, CPU& cpu)
+{
+    const Entry e(cpu);
+    e.back(cpu, driver::clearWindow(app, cpu));
+}
+
+void THRASH_flushwindow(App* app, CPU& cpu)
+{
+    const Entry e(cpu);
+    e.back(cpu, driver::flushWindow(app, cpu));
+}
+
+void THRASH_idle(App* app, CPU& cpu)
+{
+    const Entry e(cpu);
+    e.back(cpu, driver::idle(app, cpu));
+}
+
+void THRASH_pageflip(App* app, CPU& cpu)
+{
+    const Entry e(cpu);
+    e.back(cpu, driver::pageFlip(app, cpu));
+}
+
+void THRASH_sync(App* app, CPU& cpu)
+{
+    const Entry e(cpu);
+    e.back(cpu, driver::sync(app, cpu, e.arg(app, 0)), 4);
+}
+
+void THRASH_clip(App* app, CPU& cpu)
+{
+    const Entry e(cpu);
+    e.back(cpu, driver::clip(app, cpu, e.arg(app, 0), e.arg(app, 1), e.arg(app, 2), e.arg(app, 3)), 0x10);
+}
+
+void THRASH_lockwindow(App* app, CPU& cpu)
+{
+    const Entry e(cpu);
+    e.finish(cpu, driver::lockWindow(app, cpu));
+}
+
+void THRASH_unlockwindow(App* app, CPU& cpu)
+{
+    const Entry e(cpu);
+    e.finish(cpu, driver::unlockWindow(app, cpu, e.arg(app, 0)), 4);
+}
+
+void THRASH_readrect(App* app, CPU& cpu)
+{
+    const Entry e(cpu);
+    e.finish(cpu, driver::readRect(app, cpu, e.arg(app, 0), e.arg(app, 1), e.arg(app, 2), e.arg(app, 3), e.arg(app, 4)),
+             0x14);
+}
+
+void THRASH_writerect(App* app, CPU& cpu)
+{
+    const Entry e(cpu);
+    e.finish(cpu,
+             driver::writeRect(app, cpu, e.arg(app, 0), e.arg(app, 1), e.arg(app, 2), e.arg(app, 3), e.arg(app, 4)),
+             0x14);
+}
+
+void THRASH_about(App* app, CPU& cpu)
+{
+    const Entry e(cpu);
+    e.back(cpu, driver::about(app, cpu));
+}
+
+void THRASH_selectdisplay(App* app, CPU& cpu)
+{
+    const Entry e(cpu);
+    e.back(cpu, driver::selectDisplay(app, cpu, e.arg(app, 0)), 4);
+}
+
+void THRASH_init(App* app, CPU& cpu)
+{
+    const Entry e(cpu);
+    e.back(cpu, driver::init(app, cpu));
+}
+
+void THRASH_is(App* app, CPU& cpu)
+{
+    const Entry e(cpu);
+    e.back(cpu, driver::is(app, cpu));
+}
+
+void THRASH_setvideomode(App* app, CPU& cpu)
+{
+    const Entry e(cpu);
+    e.finish(cpu, driver::setVideoMode(app, cpu, e.arg(app, 0), e.arg(app, 1), e.arg(app, 2)), 0xc);
+}
+
+void THRASH_restore(App* app, CPU& cpu)
+{
+    const Entry e(cpu);
+    e.finish(cpu, driver::restore(app, cpu));
 }
 
 /* sub_a84360, what voodoo2a's THRASH_setvideomode handed the game to run on

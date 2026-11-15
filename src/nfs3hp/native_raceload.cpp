@@ -23,8 +23,10 @@
 #include "native_windows.h"
 #include "host_threads.h"
 #include "native_watcom.h"
-#include <winapi/kernel32.h>
+#include <lib/winapp.h>
+#include <winapi/types.h>
 
+#include <array>
 #include <cstdint>
 #include <cstring>
 #include <optional>
@@ -62,20 +64,19 @@
  *
  * Each is a typed core -- its arguments named, its result returned, its
  * locals C++'s -- and an adapter under the game's name, for the dispatch and
- * the callers still on registers, which leaves the registers and the x87's
- * stack as the code does (those the code pushes and pops kept by Kept).  The
- * x87's arithmetic is fp:: in the code's order, each store to a float a
- * float.  The other typed files' functions are called as C++ (guest::direct,
- * their headers), what the code reads in a register after one made from
- * what it gives back -- by address where it gives back less.  Every other
- * function of the game's, and Windows' through its imports, is called by
- * address, its arguments in the registers and on the guest's stack as the
- * code has them; a frame whose address a callee is
- * handed stays on the guest's stack as deep as the code has it (GuestFrame),
- * a core's call of a core making the return address's slot (Nested).  Where
- * a register the code leaves is seen by its callers -- a callee's, a word
- * pushed through it, an x87 status word in ax -- the core or the adapter
- * leaves it so, and says so. */
+ * the callers still on registers (adapts): every register but eax as the
+ * caller had it, eax what the core gives back -- what the code leaves there,
+ * a callee's, a loop's count, an x87 status word in ax among it -- and the
+ * x87's stack as the code leaves it.  The x87's arithmetic is fp:: in the
+ * code's order, each store to a float a float.  The other typed files'
+ * functions are called as C++ (guest::direct, their headers) -- by address
+ * where what one leaves in eax is read and its core gives back less.  Every
+ * other function of the game's, and Windows' through its imports, is called
+ * by address, only its argument registers set (guest::watcom) and its words
+ * on the guest's stack as the code has them; a frame whose address a callee
+ * is handed stays on the guest's stack as deep as the code has it
+ * (GuestFrame), a core's call of a core making the return address's slot
+ * (Nested). */
 namespace nfs3hp
 {
 namespace raceload
@@ -185,20 +186,24 @@ x86::Float f64(win32::WinApplication* app, reg32 address)
     return x86::Float(app->getMemory<double>(address));
 }
 
-/* fcomp, fcompp or fucompp's comparison, fnstsw ax and sahf: the x87's
- * status word in ax, and the flags sahf takes from it -- CF (C0) `below`,
- * ZF (C3) `equal`, both set when unordered. */
+/* fcomp, fcompp or fucompp's comparison and fnstsw ax: the x87's status
+ * word, which the code leaves in ax, and the flags sahf takes from it -- CF
+ * (C0) `below`, ZF (C3) `equal`, both set when unordered. */
 struct Status
 {
+    reg16 word;
     bool below, equal;
 };
 
 Status compare(x86::CPU& cpu, const x86::Float& a, const x86::Float& b)
 {
     cpu.fpu.compare(a, b);
-    cpu.ax = cpu.fpu.status.word;
-    return {(cpu.ax & 0x100) != 0, (cpu.ax & 0x4000) != 0};
+    const reg16 word = cpu.fpu.status.word;
+    return {word, (word & 0x100) != 0, (word & 0x4000) != 0};
 }
+
+/* eax with the status word in ax, as fnstsw ax leaves it. */
+reg32 withStatus(reg32 eax, const Status& s) { return (eax & 0xffff0000u) | s.word; }
 
 using App = win32::WinApplication;
 using CPU = x86::CPU;
@@ -215,54 +220,69 @@ constexpr reg32 kCarChoice = 0x220, kCarPerformance = 0x528;
 constexpr reg32 kLineFrom = 0, kLineText = 4, kLineNext = 0x68, kLineBefore = 0x6c;
 constexpr reg32 kHeadLock = 0, kHeadFirst = 4, kHeadLast = 8;
 
-/* The registers of its caller's a function of the game's pushes and pops,
- * put back as its code does when this goes: the adapters', and the cores'
- * around a call of another core. */
-enum : unsigned { kEbx = 1, kEcx = 2, kEdx = 4, kEsi = 8, kEdi = 0x10 };
-class Kept
-{
-public:
-    Kept(CPU& cpu, unsigned which)
-        : cpu_(cpu), which_(which), ebx_(cpu.ebx), ecx_(cpu.ecx), edx_(cpu.edx), esi_(cpu.esi), edi_(cpu.edi)
-    {
-    }
-    Kept(const Kept&) = delete;
-    Kept& operator=(const Kept&) = delete;
-    ~Kept()
-    {
-        if (which_ & kEbx)
-            cpu_.ebx = ebx_;
-        if (which_ & kEcx)
-            cpu_.ecx = ecx_;
-        if (which_ & kEdx)
-            cpu_.edx = edx_;
-        if (which_ & kEsi)
-            cpu_.esi = esi_;
-        if (which_ & kEdi)
-            cpu_.edi = edi_;
-    }
-
-private:
-    CPU& cpu_;
-    const unsigned which_;
-    const reg32 ebx_, ecx_, edx_, esi_, edi_;
-};
-
 /* A core's call of a core as the game's call is: the return address's slot
- * under esp while it runs, and the registers the callee's code keeps put
- * back after. */
+ * under esp while it runs. */
 class Nested
 {
 public:
-    Nested(CPU& cpu, unsigned kept) : kept_(cpu, kept), cpu_(cpu) { cpu.esp -= 4; }
+    explicit Nested(CPU& cpu) : cpu_(cpu) { cpu.esp -= 4; }
     Nested(const Nested&) = delete;
     Nested& operator=(const Nested&) = delete;
     ~Nested() { cpu_.esp += 4; }
 
 private:
-    const Kept kept_;
     CPU& cpu_;
 };
+
+/* An adapter's run of its core: every register but eax as the caller had it
+ * after it (the code pushes and pops what it uses; its other registers are
+ * its arguments, which no caller reads), eax what the core gives -- a core
+ * that gives nothing, or answers only whether the game went on (a bool),
+ * leaves eax as it is -- and the return address and `popped` bytes of the
+ * caller's words popped.  False when the game stopped. */
+template <typename T>
+struct IsOptional : std::false_type
+{
+};
+
+template <typename T>
+struct IsOptional<std::optional<T>> : std::true_type
+{
+};
+
+template <typename Core>
+bool adapts(CPU& cpu, Core&& core, reg32 popped = 0)
+{
+    using Result = std::decay_t<decltype(core())>;
+    std::optional<reg32> left;
+    {
+        const guest::KeptRegisters kept(cpu);
+        if constexpr (std::is_void_v<Result>)
+            core();
+        else if constexpr (std::is_same_v<Result, bool>)
+        {
+            if (!core())
+                return false;
+        }
+        else if constexpr (IsOptional<Result>::value)
+        {
+            const Result result = core();
+            if (!result)
+                return false;
+            left = reg32(*result);
+        }
+        else
+            left = reg32(core());
+    }
+    if (left)
+        cpu.eax = *left;
+    cpu.esp += 4 + popped;
+    return true;
+}
+
+/* The caller's word `n` (from 1) on the guest's stack, above the return
+ * address. */
+reg32 word(App* app, const CPU& cpu, reg32 n) { return at(app, cpu.esp + 4 * n); }
 
 /* Room on the guest's stack for what a callee is handed the address of: the
  * game's frame (`pushed` bytes of registers under esp on entry, then
@@ -322,16 +342,13 @@ reg32 lengthOf(App* app, reg32 text)
 
 // The flags of the blocks the cars' loading and the message lines allocate.
 constexpr reg32 kBlockFlags = 0x10;
-// The register mask of every register but eax.
-constexpr unsigned kAllButEax = 0x1f;
 
 
 /* A native_frontend_* file's typed core called as C++ (guest::direct): nothing (false) when the
  * game stopped in it (its calls into the game throw fe::Terminated).  tools/game_checks does not
  * build those files: there it goes by address, through its ByAddress, as the game's code calls it,
- * every register but eax kept.  A reg32 result is the eax the function leaves: eax set to it (in the
- * game too); after any other, eax spoilt there, so that code still reading what the callee left in
- * eax differs there. */
+ * every register but eax kept.  A reg32 result is the eax the function leaves, given back; eax is
+ * spoilt there after it, so that code still reading what the callee left in eax differs there. */
 template <reg32 Address, auto Core, typename... Args>
 auto feCore(App* app, CPU& cpu, Args... args)
 {
@@ -367,10 +384,7 @@ auto feCore(App* app, CPU& cpu, Args... args)
         try
         {
             const Result result = run();
-            if constexpr (std::is_same_v<Result, x86::reg32>)
-                cpu.eax = result;  // a menu core's result: the eax it leaves, as the call by address does
-            else
-                spoil();
+            spoil();
             return cpu.terminate ? std::optional<Result>() : std::optional<Result>(result);
         }
         catch (const fe::Terminated&)
@@ -380,157 +394,136 @@ auto feCore(App* app, CPU& cpu, Args... args)
     }
 }
 
-// The callees by address, their arguments in the registers and on the
-// guest's stack as the code has them; the registers as each leaves them.
-// The other typed files' as C++ (guest::direct, or feCore for the menu
-// files'), the registers the code loads for one loaded as it loads them
-// (the callee keeps them) and eax made from what one gives back where the
-// code has it there.  False or nullopt when the game stopped in one.
+// The callees by address, their argument registers set as the code has them
+// (guest::watcom, every other register kept) and their words pushed; the
+// other typed files' as C++ (guest::direct, or feCore for the menu files').
+// Each gives back the eax it leaves where a caller of the code reads it on;
+// false or nullopt when the game stopped in one.
 
-/* An eax the callee gives back made the caller's, as the call by address leaves it. */
-bool leftInEax(CPU& cpu, const std::optional<reg32>& result)
+/* A call by address with `registers` (eax, edx, ebx, ecx in turn) and `words` pushed, every
+ * register but eax kept: the eax it leaves. */
+std::optional<reg32> callGame(App* app, CPU& cpu, reg32 target, std::initializer_list<reg32> registers,
+                              std::initializer_list<reg32> words = {})
 {
-    if (!result)
-        return false;
-    cpu.eax = *result;
-    return true;
+    const guest::KeptRegisters kept(cpu);
+    reg32* const into[] = {&cpu.eax, &cpu.edx, &cpu.ebx, &cpu.ecx};
+    unsigned i = 0;
+    for (const reg32 value : registers)
+        *into[i++] = value;
+    if (!guest::call(app, cpu, target, words))
+        return std::nullopt;
+    return cpu.eax;
 }
 
 /* The loading's stop check (0x4a33d0, loada's). */
-bool loadingTick(App* app, CPU& cpu)
+std::optional<reg32> loadingTick(App* app, CPU& cpu)
 {
-    return leftInEax(cpu, feCore<0x4a33d0, frontend::loada::stopCheck>(app, cpu));
+    return feCore<0x4a33d0, frontend::loada::stopCheck>(app, cpu);
 }
 
-/* memset: `bytes` bytes at `to` the byte `value`. */
-bool fill(App* app, CPU& cpu, reg32 to, reg32 value, reg32 bytes)
+/* memset: `bytes` bytes at `to` the byte `value`; `to`, what it gives back. */
+std::optional<reg32> fill(App* app, CPU& cpu, reg32 to, reg32 value, reg32 bytes)
 {
-    cpu.eax = to;
-    cpu.edx = value;
-    cpu.ebx = bytes;
-    cpu.eax = guest::direct<0x4e0640, watcom::clib::memset>(app, cpu, to, value, bytes);
-    return !cpu.terminate;
+    const reg32 filled = guest::direct<0x4e0640, watcom::clib::memset>(app, cpu, to, value, bytes);
+    if (cpu.terminate)
+        return std::nullopt;
+    return filled;
 }
 
-/* A block of `bytes` allocated, named `name`, with the flags; or 0 (in eax
- * too). */
+/* A block of `bytes` allocated, named `name`, with the flags; or 0. */
 std::optional<reg32> allocate(App* app, CPU& cpu, reg32 name, reg32 bytes, reg32 flags)
 {
-    const std::optional<reg32> block = guest::direct<0x4e1620, ea::reserved>(app, cpu, name, bytes, flags);
-    if (block)
-        cpu.eax = *block;
-    return block;
+    return guest::direct<0x4e1620, ea::reserved>(app, cpu, name, bytes, flags);
 }
 
-/* The block freed; eax what that gives back. */
-bool freeBlock(App* app, CPU& cpu, reg32 block)
+/* The block freed; what that gives back. */
+std::optional<reg32> freeBlock(App* app, CPU& cpu, reg32 block)
 {
-    const std::optional<reg32> freed = guest::direct<0x4e1890, ea::purgeBlock>(app, cpu, block);
-    if (!freed)
-        return false;
-    cpu.eax = *freed;
-    return true;
+    return guest::direct<0x4e1890, ea::purgeBlock>(app, cpu, block);
 }
 
 /* The car's model freed (0x4b7eb0, rendd's). */
-bool freeShapes(App* app, CPU& cpu, reg32 car)
+std::optional<reg32> freeShapes(App* app, CPU& cpu, reg32 car)
 {
-    cpu.eax = car;
-    return leftInEax(cpu, feCore<0x4b7eb0, frontend::rendd::freeCarModel>(app, cpu, car));
+    return feCore<0x4b7eb0, frontend::rendd::freeCarModel>(app, cpu, car);
 }
 
 /* The event `event` set (0x4dfb20), eax what is posted with it as the code
- * has it then; eax what the setting gives back. */
-bool postEvent(App* app, CPU& cpu, reg32 posted, reg32 event)
+ * has it then (its stand-in's argument); what the setting gives back. */
+std::optional<reg32> postEvent(App* app, CPU& cpu, reg32 posted, reg32 event)
 {
+    const guest::KeptRegisters kept(cpu);
     cpu.eax = posted;
-    const std::optional<reg32> set = guest::direct<0x4dfb20, ea::eventPosted>(app, cpu, event);
-    if (!set)
-        return false;
-    cpu.eax = *set;
-    return true;
+    return guest::direct<0x4dfb20, ea::eventPosted>(app, cpu, event);
 }
 
 /* EnterCriticalSection or LeaveCriticalSection (`Function`) of the lock
- * `lock`, eax `leftover` as the code has it then: the port's own, called as
- * C++ (native_windows.h); in the check through its import's slot `Slot`. */
+ * `lock`: the port's own, called as C++ (native_windows.h); in the check
+ * through its import's slot `Slot`.  The eax it leaves: `leftover`, the
+ * code's, which the port's void function leaves as it is. */
 template <reg32 Slot, auto Function>
-bool lockCall(App* app, CPU& cpu, reg32 leftover, reg32 lock)
+std::optional<reg32> lockCall(App* app, CPU& cpu, reg32 leftover, reg32 lock)
 {
+    const guest::KeptRegisters kept(cpu);
     cpu.eax = leftover;
-    return guest::windows<Slot, Function>(app, cpu, lock).has_value();
+    return guest::windows<Slot, Function>(app, cpu, lock);
 }
 
-/* The message lines' lock ([[0x5537a0]]) taken or let go of. */
+/* The message lines' lock ([[0x5537a0]]) taken or let go of, the head the
+ * eax the code has then. */
 template <reg32 Slot, auto Function>
-bool lockLines(App* app, CPU& cpu)
+std::optional<reg32> lockLines(App* app, CPU& cpu)
 {
     const reg32 head = at(app, kLines);
     return lockCall<Slot, Function>(app, cpu, head, at(app, head + kHeadLock));
 }
 
 /* A call of the game's on the car `car` in eax. */
-bool carCall(App* app, CPU& cpu, reg32 target, reg32 car)
+std::optional<reg32> carCall(App* app, CPU& cpu, reg32 target, reg32 car)
 {
-    cpu.eax = car;
-    return guest::call(app, cpu, target);
+    return guest::watcomEax(app, cpu, target, {car});
 }
 
 /* The car's block of driving state cleared (0x4285f0, loada's). */
-bool clearDriving(App* app, CPU& cpu, reg32 car)
+std::optional<reg32> clearDriving(App* app, CPU& cpu, reg32 car)
 {
-    cpu.eax = car;
-    return leftInEax(cpu, feCore<0x4285f0, frontend::loada::carClearDriving>(app, cpu, car));
-}
-
-/* racestart::placeOnGrid: the car on the grid at `slot`; eax and edx the car, as it leaves them
- * (its other registers it keeps). */
-bool placeCar(App* app, CPU& cpu, reg32 car, reg32 slot)
-{
-    if (!guest::direct<0x42bcb0, racestart::placeOnGridOf>(app, cpu, car, slot))
-        return false;
-    cpu.eax = car;
-    cpu.edx = car;
-    return true;
+    return feCore<0x4285f0, frontend::loada::carClearDriving>(app, cpu, car);
 }
 
 /* The handler `handler` of the car added to the task list `list` at its
- * priority (0x4be250), or taken off (0x4be2f0, ebx the car as the code has
- * it). */
-bool addTask(App* app, CPU& cpu, reg32 list, reg32 handler, reg32 car, reg32 priority)
+ * priority (0x4be250), or taken off (0x4be2f0). */
+std::optional<reg32> addTask(App* app, CPU& cpu, reg32 list, reg32 handler, reg32 car, reg32 priority)
 {
-    cpu.eax = list;
-    cpu.edx = handler;
-    cpu.ebx = car;
-    cpu.ecx = priority;
-    return leftInEax(cpu, feCore<0x4be250, frontend::simd::taskListAdd>(app, cpu, list, handler, car, priority));
+    return feCore<0x4be250, frontend::simd::taskListAdd>(app, cpu, list, handler, car, priority);
 }
 
-bool removeTask(App* app, CPU& cpu, reg32 list, reg32 handler, reg32 car)
+std::optional<reg32> removeTask(App* app, CPU& cpu, reg32 list, reg32 handler, reg32 car)
 {
-    cpu.eax = list;
-    cpu.edx = handler;
-    cpu.ebx = car;
-    return leftInEax(cpu, feCore<0x4be2f0, frontend::loada::listRemove>(app, cpu, list, handler, car));
+    return feCore<0x4be2f0, frontend::loada::listRemove>(app, cpu, list, handler, car);
 }
 
-/* The dot product of the vectors at `a` and `b` (0x4e01f0), off the x87's
- * stack: by address, for a caller that reads what it leaves in eax, which
- * vertices::dotProduct does not give back (the check's row for it models it). */
-std::optional<Float> dotProduct(App* app, CPU& cpu, reg32 a, reg32 b)
+/* What the dot product by address leaves: the product, off the x87's
+ * stack, and its eax. */
+struct Product
 {
-    cpu.eax = a;
-    cpu.edx = b;
-    if (!guest::call(app, cpu, kDotProduct))
+    Float value;
+    reg32 eax;
+};
+
+/* The dot product of the vectors at `a` and `b` (0x4e01f0), by address, for
+ * a caller that reads what it leaves in eax, which vertices::dotProduct does
+ * not give back (the check's row for it models it). */
+std::optional<Product> dotProduct(App* app, CPU& cpu, reg32 a, reg32 b)
+{
+    const std::optional<reg32> left = guest::watcomEax(app, cpu, kDotProduct, {a, b});
+    if (!left)
         return std::nullopt;
-    return cpu.fpu.take();
+    return Product{cpu.fpu.take(), *left};
 }
 
-/* The same as C++, where nothing reads eax after it; edx `b`, as the code has
- * it then, which the callee keeps. */
+/* The same as C++, where nothing reads eax after it. */
 std::optional<Float> dot(App* app, CPU& cpu, reg32 a, reg32 b)
 {
-    cpu.edx = b;
     const double product = guest::direct<0x4e01f0, vertices::dotProduct>(app, cpu, a, b);
     if (cpu.terminate)
         return std::nullopt;
@@ -538,88 +531,66 @@ std::optional<Float> dot(App* app, CPU& cpu, reg32 a, reg32 b)
 }
 
 /* 0x4ea290 (stdcall): the file named `name` found in the .viv `viv`, its
- * place in it to [place] and its size to [size]; eax the name's address it
- * gives back. */
+ * place in it to [place] and its size to [size]. */
 bool findInViv(App* app, CPU& cpu, reg32 viv, reg32 name, reg32 place, reg32 size)
 {
-    const std::optional<reg32> found = guest::direct<0x4ea290, load::locatedEntry>(app, cpu, viv, name, 0, place, size);
-    if (!found)
-        return false;
-    cpu.eax = *found;
-    return true;
+    return guest::direct<0x4ea290, load::locatedEntry>(app, cpu, viv, name, 0, place, size).has_value();
 }
 
 /* 0x4b1380 (wata's): the performance text of `bytes` at `text` read into the
  * performance record `record`. */
-bool readPerformance(App* app, CPU& cpu, reg32 record, reg32 text, reg32 bytes)
+std::optional<reg32> readPerformance(App* app, CPU& cpu, reg32 record, reg32 text, reg32 bytes)
 {
-    cpu.eax = record;
-    cpu.edx = text;
-    cpu.ebx = bytes;
-    cpu.ecx = 0;
-    return leftInEax(cpu, feCore<0x4b1380, frontend::wata::carDataRead>(app, cpu, record, text, bytes, 0u));
+    return feCore<0x4b1380, frontend::wata::carDataRead>(app, cpu, record, text, bytes, 0u);
 }
 
 /* sprintf (cdecl): its words, the buffer first. */
 bool print(App* app, CPU& cpu, std::initializer_list<reg32> words)
 {
-    return guest::call(app, cpu, kSprintf, words);
+    return callGame(app, cpu, kSprintf, {}, words).has_value();
 }
 
 /* 0x4b7d30: the car's shapes made from the .viv `viv`. */
 bool carShapes(App* app, CPU& cpu, reg32 car, reg32 viv)
 {
-    cpu.eax = car;
-    cpu.edx = viv;
-    return guest::call(app, cpu, kCarShapes);
+    return guest::watcom(app, cpu, kCarShapes, {car, viv});
 }
 
 /* loadFile: the file at `path` loaded whole into a block with the flags; the
- * block, or 0 (in eax too). */
+ * block, or 0. */
 std::optional<reg32> loadFile(App* app, CPU& cpu, reg32 path, reg32 flags)
 {
-    const std::optional<reg32> block = guest::direct<0x4e0ec0, ea::loadWhole>(app, cpu, path, flags);
-    if (block)
-        cpu.eax = *block;
-    return block;
+    return guest::direct<0x4e0ec0, ea::loadWhole>(app, cpu, path, flags);
 }
 
-/* 0x4e070c: `bytes` bytes at `to` zeroed. */
-bool fillZero(App* app, CPU& cpu, reg32 to, reg32 bytes)
+/* 0x4e070c: `bytes` bytes at `to` zeroed; the eax it leaves. */
+std::optional<reg32> fillZero(App* app, CPU& cpu, reg32 to, reg32 bytes)
 {
-    cpu.eax = to;
-    cpu.edx = bytes;
-    return guest::call(app, cpu, kFillZero);
+    return guest::watcomEax(app, cpu, kFillZero, {to, bytes});
 }
 
 /* 0x4a2bc0: a speed of the car's, off the x87's stack. */
 std::optional<Float> carSpeed(App* app, CPU& cpu, reg32 car)
 {
-    if (!carCall(app, cpu, kCarSpeed, car))
-        return std::nullopt;
-    return cpu.fpu.take();
+    return guest::watcomFloat(app, cpu, kCarSpeed, {car});
 }
 
 /* aiplan::roadSliceIndex (stdcall): the road's slice of the node `node` at
- * the speed of those bits (in eax too). */
+ * the speed of those bits. */
 std::optional<reg32> roadSliceIndex(App* app, CPU& cpu, reg32 node, reg32 speedBits)
 {
     const reg32 slice = guest::direct<0x40e2b0, aiplan::roadSlice>(app, cpu, node, floatOf(speedBits));
     if (cpu.terminate)
         return std::nullopt;
-    cpu.eax = slice;
     return slice;
 }
 
-/* atan2 (0x4ea9c0, simd's; stdcall) of the floats of those bits; eax as it was, as the callee
- * leaves it. */
+/* atan2 (0x4ea9c0, simd's; stdcall) of the floats of those bits. */
 std::optional<Float> arcTangent(App* app, CPU& cpu, reg32 xBits, reg32 zBits)
 {
-    const reg32 eax = cpu.eax;
     const std::optional<double> angle = feCore<0x4ea9c0, frontend::simd::angleOfFloatsValue>(app, cpu, xBits, zBits);
     if (!angle)
         return std::nullopt;
-    cpu.eax = eax;
     return Float(*angle);
 }
 
@@ -638,15 +609,10 @@ bool addVectors(App* app, CPU& cpu, reg32 a, reg32 b, reg32 out)
     return !cpu.terminate;
 }
 
-/* The same by address (eax 1, edx `a`, ebx `b`, ecx `out`), for a caller
- * whose code leaves the registers as it leaves them: the collisions'. */
-bool addVectorsLeaving(App* app, CPU& cpu, reg32 a, reg32 b, reg32 out)
+/* The same by address (1, `a`, `b`, `out`), as the collisions' code calls it. */
+bool addVectorsByAddress(App* app, CPU& cpu, reg32 a, reg32 b, reg32 out)
 {
-    cpu.eax = 1;
-    cpu.edx = a;
-    cpu.ebx = b;
-    cpu.ecx = out;
-    return guest::call(app, cpu, kAddVectors);
+    return guest::watcom(app, cpu, kAddVectors, {1, a, b, out});
 }
 
 /* 0x4e0050 (stdcall): the vector at `from` scaled by the float of those bits
@@ -662,16 +628,13 @@ bool scaleVectors(App* app, CPU& cpu, reg32 from, reg32 factorBits, reg32 to)
 template <reg32 Address, auto Core>
 bool turn(App* app, CPU& cpu, reg32 matrix, reg32 angleBits)
 {
-    cpu.eax = matrix;
-    return leftInEax(cpu, feCore<Address, Core>(app, cpu, matrix, angleBits, matrix));
+    return feCore<Address, Core>(app, cpu, matrix, angleBits, matrix).has_value();
 }
 
 /* 0x4e0110 (simd's): the matrix at `from` transposed into `to`. */
 bool transpose(App* app, CPU& cpu, reg32 from, reg32 to)
 {
-    cpu.eax = from;
-    cpu.edx = to;
-    return leftInEax(cpu, feCore<0x4e0110, frontend::simd::transpose>(app, cpu, from, to));
+    return feCore<0x4e0110, frontend::simd::transpose>(app, cpu, from, to).has_value();
 }
 
 /* 0x4e06a0: the vector at `vector`'s length (vertices::vectorLength). */
@@ -696,37 +659,23 @@ std::optional<Float> vectorLength(App* app, CPU& cpu, reg32 vector)
 /* 0x4e0160 (simd's): the vector at `a` crossed with the one at `b`, into `out`. */
 bool cross(App* app, CPU& cpu, reg32 a, reg32 b, reg32 out)
 {
-    cpu.eax = a;
-    cpu.edx = b;
-    cpu.ebx = out;
-    return leftInEax(cpu, feCore<0x4e0160, frontend::simd::cross>(app, cpu, a, b, out));
+    return feCore<0x4e0160, frontend::simd::cross>(app, cpu, a, b, out).has_value();
 }
 
 /* Whether the text at `text` fits a message line (0x441900, menua's). */
 std::optional<reg32> textFits(App* app, CPU& cpu, reg32 text)
 {
-    cpu.eax = text;
-    const std::optional<reg32> fits = feCore<0x441900, frontend::menua::panelLineFits>(app, cpu, text);
-    if (fits)
-        cpu.eax = *fits;
-    return fits;
+    return feCore<0x441900, frontend::menua::panelLineFits>(app, cpu, text);
 }
 
-/* The text at `text` shown as a message line (0x436e10, channel 0); ebx as
- * the code has it then, or `most`; eax what the adding gives back. */
-bool showLine(App* app, CPU& cpu, reg32 text)
+/* The text at `text` shown as a message line (0x436e10, channel 0); what the
+ * adding gives back. */
+std::optional<reg32> showLine(App* app, CPU& cpu, reg32 text)
 {
     const reg32 added = guest::direct<0x436e10, collide::addTextResult>(app, cpu, 0, text);
     if (cpu.terminate)
-        return false;
-    cpu.eax = added;
-    return true;
-}
-
-bool showLine(App* app, CPU& cpu, reg32 text, reg32 most)
-{
-    cpu.ebx = most;
-    return showLine(app, cpu, text);
+        return std::nullopt;
+    return added;
 }
 
 /* memmove: `bytes` bytes from `from` to `to`. */
@@ -736,77 +685,53 @@ bool moveMemory(App* app, CPU& cpu, reg32 from, reg32 to, reg32 bytes)
 }
 
 /* A packet of `bytes` at `data` sent to the machine `to` (0x4a60e0; 0
- * every other); eax, edx and ebx as it leaves them. */
+ * every other). */
 bool sendPacket(App* app, CPU& cpu, reg32 to, reg32 data, reg32 bytes)
 {
-    const std::optional<ea::Regs> sent = guest::direct<0x4a60e0, ea::packetSent>(app, cpu, to, data, bytes);
-    if (!sent)
-        return false;
-    cpu.eax = sent->eax;
-    cpu.edx = sent->edx;
-    cpu.ebx = sent->ebx;
-    return true;
+    return guest::direct<0x4a60e0, ea::packetSent>(app, cpu, to, data, bytes).has_value();
 }
 
-/* A lock made (0x4eb2e0); the lock (in eax too). */
+/* A lock made (0x4eb2e0); the lock. */
 std::optional<reg32> makeLock(App* app, CPU& cpu)
 {
-    const std::optional<reg32> lock = guest::direct<0x4eb2e0, ea::newLock>(app, cpu);
-    if (lock)
-        cpu.eax = *lock;
-    return lock;
+    return guest::direct<0x4eb2e0, ea::newLock>(app, cpu);
 }
 
-/* The lock freed (0x4eb360); eax what that gives back. */
-bool freeLock(App* app, CPU& cpu, reg32 lock)
+/* The lock freed (0x4eb360); what that gives back. */
+std::optional<reg32> freeLock(App* app, CPU& cpu, reg32 lock)
 {
-    const std::optional<reg32> freed = guest::direct<0x4eb360, ea::lockFreed>(app, cpu, lock);
-    if (!freed)
-        return false;
-    cpu.eax = *freed;
-    return true;
+    return guest::direct<0x4eb360, ea::lockFreed>(app, cpu, lock);
 }
 
 /* strncpy: at most `most` characters of `text` to `to`. */
 bool copyText(App* app, CPU& cpu, reg32 to, reg32 text, reg32 most)
 {
-    cpu.eax = to;
-    cpu.edx = text;
-    cpu.ebx = most;
-    cpu.eax = guest::direct<0x4e0e30, watcom::clib::strncpy>(app, cpu, to, text, most);
+    guest::direct<0x4e0e30, watcom::clib::strncpy>(app, cpu, to, text, most);
     return !cpu.terminate;
 }
 
-/* An event made (0x4dfb00); the event (in eax too). */
+/* An event made (0x4dfb00); the event. */
 std::optional<reg32> createEvent(App* app, CPU& cpu)
 {
-    const std::optional<reg32> event = guest::direct<0x4dfb00, ea::newAutoEvent>(app, cpu);
-    if (event)
-        cpu.eax = *event;
-    return event;
+    return guest::direct<0x4dfb00, ea::newAutoEvent>(app, cpu);
 }
 
-/* The event waited for (0x4dfb70); what that gives back (in eax too). */
+/* The event waited for (0x4dfb70); what that gives back. */
 std::optional<reg32> waitEvent(App* app, CPU& cpu, reg32 event)
 {
-    const std::optional<reg32> waited = guest::direct<0x4dfb70, ea::eventWaited>(app, cpu, event);
-    if (waited)
-        cpu.eax = *waited;
-    return waited;
+    return guest::direct<0x4dfb70, ea::eventWaited>(app, cpu, event);
 }
 
 /* port_timer's addCallback and removeCallback: `function` run with every
- * tick of the game's timer, or no longer. */
-bool addTimer(App* app, CPU& cpu, reg32 function)
+ * tick of the game's timer, or no longer; the eax each leaves. */
+std::optional<reg32> addTimer(App* app, CPU& cpu, reg32 function)
 {
-    cpu.eax = function;
-    return guest::call(app, cpu, kAddTimer);
+    return guest::watcomEax(app, cpu, kAddTimer, {function});
 }
 
-bool removeTimer(App* app, CPU& cpu, reg32 function)
+std::optional<reg32> removeTimer(App* app, CPU& cpu, reg32 function)
 {
-    cpu.eax = function;
-    return guest::call(app, cpu, kRemoveTimer);
+    return guest::watcomEax(app, cpu, kRemoveTimer, {function});
 }
 
 }  // namespace
@@ -868,12 +793,12 @@ void boxHitsWall(win32::WinApplication* app, x86::CPU& cpu);
 void carsCollide(win32::WinApplication* app, x86::CPU& cpu);
 
 // The cores other cores call before they are defined.
-bool closeLines(App* app, CPU& cpu);
-bool clearLines(App* app, CPU& cpu);
-bool openLines(App* app, CPU& cpu);
-bool appendLine(App* app, CPU& cpu, reg32 text);
+std::optional<reg32> closeLines(App* app, CPU& cpu, reg32 eax);
+std::optional<reg32> clearLines(App* app, CPU& cpu);
+std::optional<reg32> openLines(App* app, CPU& cpu, reg32 eax);
+std::optional<reg32> appendLine(App* app, CPU& cpu, reg32 text);
 std::optional<reg32> openViv(App* app, CPU& cpu, reg32 choice);
-bool freeCarViv(App* app, CPU& cpu);
+std::optional<reg32> freeCarViv(App* app, CPU& cpu, reg32 eax);
 void sortPlaces(App* app);
 reg32 sortedCount(App* app);
 
@@ -885,48 +810,58 @@ reg32 sortedCount(App* app);
 constexpr reg32 kChoiceIndex = 0x14, kCarModelSlot = 0x9a8;
 constexpr i32 kCarIndexes = 0x32;  // the 50 cars' own
 
-bool readCarPerformance(App* app, CPU& cpu, reg32 car, reg32 name)
+/* What readCarPerformance leaves: eax, and edx the text's block, as the
+ * reading's call has it. */
+struct Left2
+{
+    reg32 eax, edx;
+};
+
+std::optional<Left2> readCarPerformance(App* app, CPU& cpu, reg32 car, reg32 name)
 {
     const GuestFrame frame(cpu, 0x14, 8);
     const reg32 size = frame - 8, place = frame - 4;
     put(app, size, 0);
     put(app, place, 0);
     if (!findInViv(app, cpu, at(app, kCarViv), name, place, size))
-        return false;
+        return std::nullopt;
     const reg32 from = at(app, place) + at(app, kCarViv);
     const std::optional<reg32> block = allocate(app, cpu, kNoName, at(app, size), kBlockFlags);
-    if (!block || !moveMemory(app, cpu, from, *block, at(app, size))
-        || !readPerformance(app, cpu, at(app, car + kCarPerformance), *block, at(app, size)))
-        return false;
+    if (!block || !moveMemory(app, cpu, from, *block, at(app, size)))
+        return std::nullopt;
+    const std::optional<reg32> read = readPerformance(app, cpu, at(app, car + kCarPerformance), *block, at(app, size));
+    if (!read)
+        return std::nullopt;
     if (*block != 0 && !freeBlock(app, cpu, *block))
-        return false;
-    const i32 index = i32(at(app, at(app, car + kCarChoice) + kChoiceIndex));
+        return std::nullopt;
+    const reg32 choice = at(app, car + kCarChoice);
+    const i32 index = i32(at(app, choice + kChoiceIndex));
     reg32 model = 0;
     if (index >= 0 && index < kCarIndexes)
     {
-        cpu.eax = reg32(index);
-        if (!leftInEax(cpu, feCore<0x439710, frontend::loada::carByte3a0>(app, cpu, reg32(index))))
-            return false;
-        model = cpu.eax;
+        const std::optional<reg32> byIndex = feCore<0x439710, frontend::loada::carByte3a0>(app, cpu, reg32(index));
+        if (!byIndex)
+            return std::nullopt;
+        model = *byIndex;
     }
     put(app, car + kCarModelSlot, model);
-    return true;
+    // eax the model, or the choice when the car is none of the 50.
+    return Left2{index >= 0 && index < kCarIndexes ? model : choice, *block};
 }
 
-/* readCarPerformance of the car eax from the file edx; ebx, ecx, esi and edi
- * as the caller had them, eax the choice when the car is none of the 50 (as
- * the code leaves it). */
+/* readCarPerformance of the car eax from the file edx; edx the text's block
+ * as the code leaves it (no argument of its by its code's reading). */
 void loadCarPerformance(App* app, CPU& cpu)
 {
-    const Kept kept(cpu, kEbx | kEcx | kEsi | kEdi);
-    const reg32 car = cpu.eax;
-    if (!readCarPerformance(app, cpu, car, cpu.edx))
-        return;
-    const reg32 choice = at(app, car + kCarChoice);
-    const i32 index = i32(at(app, choice + kChoiceIndex));
-    if (index < 0 || index >= kCarIndexes)
-        cpu.eax = choice;
-    cpu.esp += 4;
+    std::optional<Left2> left;
+    adapts(cpu, [&, car = cpu.eax, name = cpu.edx]() -> std::optional<reg32> {
+        left = readCarPerformance(app, cpu, car, name);
+        if (!left)
+            return std::nullopt;
+        return left->eax;
+    });
+    if (left)
+        cpu.edx = left->edx;
 }
 
 /* 0x42c350: the race's car ebx (if there are that many), its record eax,
@@ -935,47 +870,43 @@ void loadCarPerformance(App* app, CPU& cpu)
  * drawing (0x4a78d6, unless +0x200 has 0x40) and shapes (0x4b7d30) made,
  * placed on the grid (0x42bcb0) and reset (0x40cb70) -- the loading bar's
  * tick (0x4a33d0) between. */
-bool loadCar(App* app, CPU& cpu, reg32 car, reg32 slot, reg32 performance)
+std::optional<reg32> loadCar(App* app, CPU& cpu, reg32 car, reg32 slot, reg32 performance)
 {
     if (i32(slot) >= i32(gameSettings(app).entryCount))
-        return true;
+        return car;
     const GuestFrame frame(cpu, 8, 0x110);
     const reg32 shortName = frame - 0x14, textName = frame - 0x110;
     if (!clearDriving(app, cpu, car))
-        return false;
+        return std::nullopt;
     const reg32 index = at(app, at(app, car + kCarChoice) + kChoiceIndex);
     put(app, car + kCarPerformance, performance);
     const std::optional<reg32> prefix = guest::direct<0x439300, load::prefixOf>(app, cpu, index);
     if (!prefix)
-        return false;
-    cpu.eax = *prefix;
+        return std::nullopt;
     if (!print(app, cpu, {shortName, kPerformanceName, *prefix}) || !print(app, cpu, {textName, kTextName, shortName}))
-        return false;
+        return std::nullopt;
     {
-        const Nested nested(cpu, kEbx | kEcx | kEsi | kEdi);
+        const Nested nested(cpu);
         if (!readCarPerformance(app, cpu, car, textName))
-            return false;
+            return std::nullopt;
     }
     if (!loadingTick(app, cpu)
         || ((byte(app, car + 0x200) & 0x40) == 0 && !guest::direct<0x4a78d6, handling::tuneHandling>(app, cpu, car))
         || !loadingTick(app, cpu) || !carShapes(app, cpu, car, at(app, kCarViv)) || !loadingTick(app, cpu))
-        return false;
-    // The grid's and the reset's by address: what they leave in edx and eax
-    // is what the car's loading leaves (placeOnGridOf and resetTraffic give
-    // back only whether the game went on).
-    if (!placeCar(app, cpu, car, slot) || !loadingTick(app, cpu))
-        return false;
+        return std::nullopt;
+    if (!guest::direct<0x42bcb0, racestart::placeOnGridOf>(app, cpu, car, slot) || !loadingTick(app, cpu))
+        return std::nullopt;
+    // The reset's by address: the eax it leaves is the car's loading's
+    // (resetTraffic gives back only whether the game went on).
     return carCall(app, cpu, kCarReset, car);
 }
 
-/* loadCar eax at the slot ebx with the performance record edx; ecx as the
- * caller had it. */
+/* loadCar eax at the slot ebx with the performance record edx. */
 void loadRaceCar(App* app, CPU& cpu)
 {
-    const Kept kept(cpu, kEcx);
-    if (!loadCar(app, cpu, cpu.eax, cpu.ebx, cpu.edx))
-        return;
-    cpu.esp += 4;
+    adapts(cpu, [&, car = cpu.eax, slot = cpu.ebx, performance = cpu.edx] {
+        return loadCar(app, cpu, car, slot, performance);
+    });
 }
 
 /* 0x42c400: the car eax's handlers -- what moves it, steers it, draws it --
@@ -1025,22 +956,19 @@ void setHandlers(App* app, reg32 car)
 /* setHandlers of eax. */
 void setCarHandlers(App* app, CPU& cpu)
 {
-    setHandlers(app, cpu.eax);
-    cpu.esp += 4;
+    adapts(cpu, [&, car = cpu.eax] { setHandlers(app, car); });
 }
 
-/* 0x42c520: the car eax's shapes freed (0x4b7eb0). */
+/* 0x42c520: the car eax's shapes freed (0x4b7eb0); the eax that leaves. */
 void freeCarShapes(App* app, CPU& cpu)
 {
-    if (!freeShapes(app, cpu, cpu.eax))
-        return;
-    cpu.esp += 4;
+    adapts(cpu, [&, car = cpu.eax] { return freeShapes(app, cpu, car); });
 }
 
 /* 0x42c530: the race's cars back on the grid: the lists by place and by
  * distance the cars' list again, and each car placed (0x42bcb0), reset
  * (0x40cb70) and prepared (0x4285f0) afresh. */
-bool restartCars(App* app, CPU& cpu)
+std::optional<reg32> restartCars(App* app, CPU& cpu)
 {
     for (i32 i = 0; i < i32(at(app, kCarCount)); ++i)
     {
@@ -1048,60 +976,55 @@ bool restartCars(App* app, CPU& cpu)
         put(app, kByPlace + reg32(i) * 4, car);
         put(app, kByDistance + reg32(i) * 4, car);
     }
+    reg32 eax = 0;  // the first loop's count, with no cars
     for (i32 i = 0; i < i32(at(app, kCarCount)); ++i)
     {
         const reg32 car = at(app, kCarList + reg32(i) * 4);
         if (!guest::direct<0x42bcb0, racestart::placeOnGridOf>(app, cpu, car, reg32(i))
-            || !guest::direct<0x40cb70, aiplan::resetTraffic>(app, cpu, car) || !clearDriving(app, cpu, car))
-            return false;
+            || !guest::direct<0x40cb70, aiplan::resetTraffic>(app, cpu, car))
+            return std::nullopt;
+        const std::optional<reg32> cleared = clearDriving(app, cpu, car);
+        if (!cleared)
+            return std::nullopt;
+        eax = *cleared;
     }
-    return true;
+    return eax;
 }
 
-/* restartCars; ebx, ecx and edx as the caller had them, eax 0 (the first
- * loop's count) with no cars. */
+/* restartCars; eax what the last preparing leaves, 0 with no cars. */
 void restartRaceCars(App* app, CPU& cpu)
 {
-    const Kept kept(cpu, kEbx | kEcx | kEdx);
-    cpu.eax = 0;
-    if (!restartCars(app, cpu))
-        return;
-    cpu.esp += 4;
+    adapts(cpu, [&] { return restartCars(app, cpu); });
 }
 
 /* 0x42c660: the cars' slots (0x258 bytes at 0x5ef6a0) cleared (memset). */
-bool clearSlots(App* app, CPU& cpu)
+std::optional<reg32> clearSlots(App* app, CPU& cpu)
 {
     return fill(app, cpu, kCarSlots, 0, kCarSlotsBytes);
 }
 
-/* clearSlots; ebx and edx as the caller had them. */
+/* clearSlots; eax the slots, as memset leaves it. */
 void clearCarSlots(App* app, CPU& cpu)
 {
-    const Kept kept(cpu, kEbx | kEdx);
-    if (!clearSlots(app, cpu))
-        return;
-    cpu.esp += 4;
+    adapts(cpu, [&] { return clearSlots(app, cpu); });
 }
 
 /* 0x42c680: the loading bar's tick, and the race's counts -- the cars in
  * all among them -- 0. */
-bool clearCounts(App* app, CPU& cpu)
+std::optional<reg32> clearCounts(App* app, CPU& cpu)
 {
-    if (!loadingTick(app, cpu))
-        return false;
+    const std::optional<reg32> ticked = loadingTick(app, cpu);
+    if (!ticked)
+        return std::nullopt;
     for (const reg32 count : kRaceCounts)
         put(app, count, 0);
-    return true;
+    return ticked;
 }
 
-/* clearCounts; edx as the caller had it. */
+/* clearCounts; eax as the tick leaves it. */
 void clearRaceCounts(App* app, CPU& cpu)
 {
-    const Kept kept(cpu, kEdx);
-    if (!clearCounts(app, cpu))
-        return;
-    cpu.esp += 4;
+    adapts(cpu, [&] { return clearCounts(app, cpu); });
 }
 
 /* 0x42c6d0: the cars' list's 16 pointers 0. */
@@ -1114,9 +1037,10 @@ void clearList(App* app)
 /* clearList; eax 16, the loop's count as the code leaves it. */
 void clearCarList(App* app, CPU& cpu)
 {
-    clearList(app);
-    cpu.eax = 0x10;
-    cpu.esp += 4;
+    adapts(cpu, [&] {
+        clearList(app);
+        return 0x10;
+    });
 }
 
 /* 0x42c700: the race's cars loaded: the last race's freed (0x42bb80), the
@@ -1125,19 +1049,19 @@ void clearCarList(App* app, CPU& cpu)
  * from its choice and loaded (loadRaceCar), the .viv freed -- the loading
  * bar from 75 per cent on, 15 per cent for them all -- and every car's
  * handlers set. */
-bool loadCars(App* app, CPU& cpu)
+std::optional<reg32> loadCars(App* app, CPU& cpu)
 {
     const GuestFrame frame(cpu, 0x18, 0xc);
-    const std::optional<reg32> grid = guest::direct<0x42bb80, racestart::loadStartGridOf>(app, cpu);
-    if (!grid)
-        return false;
-    cpu.eax = *grid;
-    if (!clearCounts(app, cpu))
-        return false;
+    if (!guest::direct<0x42bb80, racestart::loadStartGridOf>(app, cpu) || !clearCounts(app, cpu))
+        return std::nullopt;
     clearList(app);
     float bar = 75.0f;  // per cent, where the cars start the loading bar
-    if (!fillZero(app, cpu, kCars, kCarsBytes) || !fillZero(app, cpu, kPerformances, kPerformancesBytes))
-        return false;
+    if (!fillZero(app, cpu, kCars, kCarsBytes))
+        return std::nullopt;
+    // With no cars, what the second zeroing leaves.
+    std::optional<reg32> eax = fillZero(app, cpu, kPerformances, kPerformancesBytes);
+    if (!eax)
+        return std::nullopt;
     for (i32 i = 0; i < i32(gameSettings(app).entryCount); ++i)
     {
         bar = float(fp::add(fp::div(f64(app, kBarCars), Float(i32(gameSettings(app).entryCount))), Float(bar)));
@@ -1146,51 +1070,44 @@ bool loadCars(App* app, CPU& cpu)
             const GuestFrame pushed(cpu, 0, 4);
             put(app, pushed - 4, floatBits(bar));
             if (!guest::direct<0x495230, graphics::loadingProgress>(app, cpu, pushed - 4))
-                return false;
+                return std::nullopt;
         }
         if (!loadingTick(app, cpu))
-            return false;
+            return std::nullopt;
         const reg32 choice = SETTINGS_ADDRESS(entries) + reg32(i) * 0x6c;
         {
-            const Nested nested(cpu, kEbx | kEdx | kEdi);
+            const Nested nested(cpu);
             if (!openViv(app, cpu, choice))
-                return false;
+                return std::nullopt;
         }
         const reg32 car = kCars + reg32(i) * kCarBytes;
         put(app, car + kCarChoice, choice);
-        cpu.edx = reg32(i) * kPerformanceBytes;  // the record's offset, as the code has it then
-        cpu.eax = car;
-        if (!leftInEax(cpu, feCore<0x428700, frontend::loada::carJoinLists>(app, cpu, car)))
-            return false;
+        if (!feCore<0x428700, frontend::loada::carJoinLists>(app, cpu, car))
+            return std::nullopt;
         {
-            const Nested nested(cpu, kEcx);
+            const Nested nested(cpu);
             if (!loadCar(app, cpu, at(app, kCarList + reg32(i) * 4), reg32(i), kPerformances + reg32(i) * kPerformanceBytes))
-                return false;
+                return std::nullopt;
         }
-        const Nested nested(cpu, kEcx | kEdx);
-        if (!freeCarViv(app, cpu))
-            return false;
+        const Nested nested(cpu);
+        if (!freeCarViv(app, cpu, 0))
+            return std::nullopt;
     }
     for (i32 i = 0; i < i32(gameSettings(app).entryCount); ++i)
     {
         if (!loadingTick(app, cpu))
-            return false;
-        setHandlers(app, at(app, kCarList + reg32(i) * 4));
+            return std::nullopt;
+        eax = at(app, kCarList + reg32(i) * 4);  // the car whose handlers are set
+        setHandlers(app, *eax);
     }
-    return true;
+    return eax;
 }
 
-/* loadCars; every register but eax as the caller had it, eax the last car's
- * (as its handlers were set) when there are cars. */
+/* loadCars; eax the last car's (as its handlers were set) when there are
+ * cars. */
 void loadRaceCars(App* app, CPU& cpu)
 {
-    const Kept kept(cpu, kAllButEax);
-    if (!loadCars(app, cpu))
-        return;
-    const i32 cars = i32(gameSettings(app).entryCount);
-    if (cars > 0)
-        cpu.eax = at(app, kCarList + reg32(cars - 1) * 4);
-    cpu.esp += 4;
+    adapts(cpu, [&] { return loadCars(app, cpu); });
 }
 
 /* 0x42c7f0: the race's time step ([0x55307c]): 0.001 when the three
@@ -1207,9 +1124,10 @@ void pickTimeStep(App* app)
 /* pickTimeStep; eax the third option's byte, as the code leaves it. */
 void setTimeStep(App* app, CPU& cpu)
 {
-    pickTimeStep(app);
-    cpu.eax = byte(app, kOption3);
-    cpu.esp += 4;
+    adapts(cpu, [&] {
+        pickTimeStep(app);
+        return reg32(byte(app, kOption3));
+    });
 }
 
 /* 0x42c830: every car's handlers added to the race's task lists
@@ -1218,34 +1136,34 @@ void setTimeStep(App* app, CPU& cpu)
  * +0x200 has 8 or 4), +0x60c and +0x608 at 0x1e, +0x618 at 0x28, +0x61c at
  * 0x32, +0x610 at 0x1e to the drawing's, +0x614 at 0x1e to the drawing's
  * (+0x200 has 4) or the other. */
-bool addTasks(App* app, CPU& cpu)
+std::optional<reg32> addTasks(App* app, CPU& cpu, reg32 eax)
 {
     for (i32 i = 0; i < i32(gameSettings(app).entryCount); ++i)
     {
         const reg32 car = at(app, kCarList + reg32(i) * 4);
         const auto add = [&](reg32 list, reg32 handler, reg32 priority) {
-            return addTask(app, cpu, at(app, list), at(app, car + handler), car, priority);
+            const std::optional<reg32> added = addTask(app, cpu, at(app, list), at(app, car + handler), car, priority);
+            if (added)
+                eax = *added;
+            return added.has_value();
         };
         if (!add(kTasks, 0x5f8, 6) || !add(kTasks, 0x600, 0x15))
-            return false;
+            return std::nullopt;
         if ((byte(app, car + 0x200) & 0xc) != 0 && !add(kDrawTasks, 0x604, 0x19))
-            return false;
+            return std::nullopt;
         if (!add(kTasks, 0x60c, 0x1e) || !add(kTasks, 0x608, 0x1e) || !add(kTasks, 0x618, 0x28)
             || !add(kTasks, 0x61c, 0x32) || !add(kDrawTasks, 0x610, 0x1e))
-            return false;
+            return std::nullopt;
         if (!add((byte(app, car + 0x200) & 4) != 0 ? kDrawTasks : kTasks, 0x614, 0x1e))
-            return false;
+            return std::nullopt;
     }
-    return true;
+    return eax;
 }
 
-/* addTasks; every register but eax as the caller had it. */
+/* addTasks; eax what the last adding leaves, the caller's with no cars. */
 void addCarTasks(App* app, CPU& cpu)
 {
-    const Kept kept(cpu, kAllButEax);
-    if (!addTasks(app, cpu))
-        return;
-    cpu.esp += 4;
+    adapts(cpu, [&, eax = cpu.eax] { return addTasks(app, cpu, eax); });
 }
 
 /* 0x42c950: the .viv of the car whose choice is at eax loaded whole to
@@ -1266,7 +1184,6 @@ std::optional<reg32> openViv(App* app, CPU& cpu, reg32 choice)
         const std::optional<reg32> name = guest::direct<0x4392b0, load::folderOf>(app, cpu, index);
         if (!name)
             return false;
-        cpu.eax = *name;
         return print(app, cpu, {path, format, kDataPath, *name, *folder});
     };
     const auto& settings = gameSettings(app);
@@ -1293,36 +1210,29 @@ std::optional<reg32> openViv(App* app, CPU& cpu, reg32 choice)
     return viv;
 }
 
-/* openViv of the choice eax; ebx, edx and edi as the caller had them. */
+/* openViv of the choice eax; eax the .viv. */
 void openCarViv(App* app, CPU& cpu)
 {
-    const Kept kept(cpu, kEbx | kEdx | kEdi);
-    const std::optional<reg32> viv = openViv(app, cpu, cpu.eax);
-    if (!viv)
-        return;
-    cpu.eax = *viv;
-    cpu.esp += 4;
+    adapts(cpu, [&, choice = cpu.eax] { return openViv(app, cpu, choice); });
 }
 
 /* 0x42ca80: the car's .viv ([0x553070]) freed, if there is one, and 0. */
-bool freeCarViv(App* app, CPU& cpu)
+std::optional<reg32> freeCarViv(App* app, CPU& cpu, reg32 eax)
 {
     const reg32 viv = at(app, kCarViv);
     if (viv == 0)
-        return true;
-    if (!freeBlock(app, cpu, viv))
-        return false;
+        return eax;
+    const std::optional<reg32> freed = freeBlock(app, cpu, viv);
+    if (!freed)
+        return std::nullopt;
     put(app, kCarViv, 0);
-    return true;
+    return freed;
 }
 
-/* freeCarViv; ecx and edx as the caller had them. */
+/* freeCarViv; eax what the freeing leaves, the caller's with no .viv. */
 void closeCarViv(App* app, CPU& cpu)
 {
-    const Kept kept(cpu, kEcx | kEdx);
-    if (!freeCarViv(app, cpu))
-        return;
-    cpu.esp += 4;
+    adapts(cpu, [&, eax = cpu.eax] { return freeCarViv(app, cpu, eax); });
 }
 
 /* 0x42cab0: every car's handlers taken off the race's task lists (0x4be2f0:
@@ -1362,17 +1272,16 @@ std::optional<i32> removeTasks(App* app, CPU& cpu)
     return i;
 }
 
-/* removeTasks; every register but eax as the caller had it, eax the last
- * car's place in the lists (its index times 4) as the code leaves it. */
+/* removeTasks; eax the last car's place in the lists (its index times 4) as
+ * the code leaves it, the caller's with no cars. */
 void removeCarTasks(App* app, CPU& cpu)
 {
-    const Kept kept(cpu, kAllButEax);
-    const std::optional<i32> cars = removeTasks(app, cpu);
-    if (!cars)
-        return;
-    if (*cars > 0)
-        cpu.eax = reg32(*cars - 1) * 4;
-    cpu.esp += 4;
+    adapts(cpu, [&, eax = cpu.eax]() -> std::optional<reg32> {
+        const std::optional<i32> cars = removeTasks(app, cpu);
+        if (!cars)
+            return std::nullopt;
+        return *cars > 0 ? reg32(*cars - 1) * 4 : eax;
+    });
 }
 
 /* 0x42cc20: the car eax's laps counted as its node on the track (+0x1c)
@@ -1411,8 +1320,7 @@ void countLap(App* app, reg32 car)
 /* countLap of eax. */
 void countLaps(App* app, CPU& cpu)
 {
-    countLap(app, cpu.eax);
-    cpu.esp += 4;
+    adapts(cpu, [&, car = cpu.eax] { countLap(app, car); });
 }
 
 /* 0x42cd00: the car eax's speed along its own axes, onto the x87's stack:
@@ -1421,22 +1329,31 @@ void countLaps(App* app, CPU& cpu)
  * summed. */
 constexpr reg32 kAxesVelocity = 0x124, kCarAxes = 0xc0, kAxisWeights = 0x114;
 
-/* The speed, and the last part along an axis as the code keeps it. */
+/* The speed, the last part along an axis as the code keeps it, and the eax
+ * the last dot product leaves. */
 struct AxesSpeed
 {
     Float speed;
     float lastAlong;
+    reg32 eax;
 };
 
 std::optional<AxesSpeed> axesSpeed(App* app, CPU& cpu, reg32 car)
 {
     float sum = 0.0f, along = 0.0f;
     Float speed = 0.0;
+    reg32 eax = 0;
     for (reg32 axis = 0; axis < 3; ++axis)
     {
         // The last by address: what it leaves in eax is carAxesSpeed's.
-        const std::optional<Float> part = axis < 2 ? dot(app, cpu, car + kAxesVelocity, car + kCarAxes + axis * 0xc)
-                                                   : dotProduct(app, cpu, car + kAxesVelocity, car + kCarAxes + axis * 0xc);
+        std::optional<Float> part;
+        if (axis < 2)
+            part = dot(app, cpu, car + kAxesVelocity, car + kCarAxes + axis * 0xc);
+        else if (const std::optional<Product> last = dotProduct(app, cpu, car + kAxesVelocity, car + kCarAxes + axis * 0xc))
+        {
+            part = last->value;
+            eax = last->eax;
+        }
         if (!part)
             return std::nullopt;
         along = float(*part);
@@ -1447,22 +1364,22 @@ std::optional<AxesSpeed> axesSpeed(App* app, CPU& cpu, reg32 car)
         speed = axis == 0 ? weighed : fp::add(weighed, Float(sum));
         sum = float(speed);
     }
-    return AxesSpeed{speed, along};
+    return AxesSpeed{speed, along, eax};
 }
 
-/* axesSpeed of eax onto the x87's stack; ecx and edx as the caller had them,
- * eax as the code leaves it: the last part's bits when over 0 (or a NaN),
- * else the x87's status word of that compare in ax. */
+/* axesSpeed of eax onto the x87's stack; eax as the code leaves it: the last
+ * part's bits when over 0 (or a NaN), else the x87's status word of that
+ * compare in ax. */
 void carAxesSpeed(App* app, CPU& cpu)
 {
-    const Kept kept(cpu, kEcx | kEdx);
-    const std::optional<AxesSpeed> speed = axesSpeed(app, cpu, cpu.eax);
-    if (!speed)
-        return;
-    if (compare(cpu, 0.0, Float(speed->lastAlong)).below)
-        cpu.eax = floatBits(speed->lastAlong);
-    cpu.fpu.push(speed->speed);
-    cpu.esp += 4;
+    adapts(cpu, [&, car = cpu.eax]() -> std::optional<reg32> {
+        const std::optional<AxesSpeed> speed = axesSpeed(app, cpu, car);
+        if (!speed)
+            return std::nullopt;
+        const Status s = compare(cpu, 0.0, Float(speed->lastAlong));
+        cpu.fpu.push(speed->speed);
+        return s.below ? floatBits(speed->lastAlong) : withStatus(speed->eax, s);
+    });
 }
 
 /* 0x42cdd0: the car eax's velocity (+0xa4) along its forward axis (+0x13c),
@@ -1481,8 +1398,7 @@ Float forwardSpeed(App* app, reg32 car)
 /* forwardSpeed of eax onto the x87's stack. */
 void carForwardSpeed(App* app, CPU& cpu)
 {
-    cpu.fpu.push(forwardSpeed(app, cpu.eax));
-    cpu.esp += 4;
+    adapts(cpu, [&, car = cpu.eax] { cpu.fpu.push(forwardSpeed(app, car)); });
 }
 
 /* 0x42ce10: the car eax's distance into the race (+8): its laps (+0x204)
@@ -1504,8 +1420,7 @@ void setRaceDistance(App* app, reg32 car)
 /* setRaceDistance of eax. */
 void carRaceDistance(App* app, CPU& cpu)
 {
-    setRaceDistance(app, cpu.eax);
-    cpu.esp += 4;
+    adapts(cpu, [&, car = cpu.eax] { setRaceDistance(app, car); });
 }
 
 /* 0x42ce70: each car's race state for the frame, for those that are in it
@@ -1581,15 +1496,14 @@ bool updateCars(App* app, CPU& cpu)
     return true;
 }
 
-/* updateCars; ebx, ecx, edx and esi as the caller had them, eax as the
- * places' sort leaves it. */
+/* updateCars; eax as the places' sort leaves it. */
 void updateRaceCars(App* app, CPU& cpu)
 {
-    const Kept kept(cpu, kEbx | kEcx | kEdx | kEsi);
-    if (!updateCars(app, cpu))
-        return;
-    cpu.eax = sortedCount(app);
-    cpu.esp += 4;
+    adapts(cpu, [&]() -> std::optional<reg32> {
+        if (!updateCars(app, cpu))
+            return std::nullopt;
+        return sortedCount(app);
+    });
 }
 
 /* 0x42cff0: the frame counter ([0x7d3684]) modulo 32, in 32nds, onto the
@@ -1603,9 +1517,10 @@ Float fractionOfFrame(App* app)
  * leaves it. */
 void frameFraction(App* app, CPU& cpu)
 {
-    cpu.eax = reg32(i32(at(app, kFrameCounter)) / 0x20);
-    cpu.fpu.push(fractionOfFrame(app));
-    cpu.esp += 4;
+    adapts(cpu, [&] {
+        cpu.fpu.push(fractionOfFrame(app));
+        return reg32(i32(at(app, kFrameCounter)) / 0x20);
+    });
 }
 
 /* 0x42d020: the car eax's headlights' beam (if it has them, +0x734): its
@@ -1663,18 +1578,16 @@ std::optional<bool> placeLights(App* app, CPU& cpu, reg32 car)
     return true;
 }
 
-/* placeLights of eax; every register but eax as the caller had it, eax the
- * address past the point's copy in the code's frame as its product leaves
- * it -- the car when it has no lights. */
+/* placeLights of eax; eax the address past the point's copy in the code's
+ * frame as its product leaves it -- the car when it has no lights. */
 void placeHeadlights(App* app, CPU& cpu)
 {
-    const Kept kept(cpu, kAllButEax);
-    const std::optional<bool> placed = placeLights(app, cpu, cpu.eax);
-    if (!placed)
-        return;
-    if (*placed)
-        cpu.eax = cpu.esp - 0x20;
-    cpu.esp += 4;
+    adapts(cpu, [&, car = cpu.eax, frameEnd = cpu.esp - 0x20]() -> std::optional<reg32> {
+        const std::optional<bool> placed = placeLights(app, cpu, car);
+        if (!placed)
+            return std::nullopt;
+        return *placed ? frameEnd : car;
+    });
 }
 
 /* 0x42d160: the car eax's shadow and lights' frame (if +0x660; its
@@ -1735,18 +1648,16 @@ std::optional<bool> placeShadow(App* app, CPU& cpu, reg32 car)
     return true;
 }
 
-/* placeShadow of eax; every register but eax as the caller had it, eax the
- * address past the point's copy in the code's frame as its product leaves
- * it -- the car when it has no shadow. */
+/* placeShadow of eax; eax the address past the point's copy in the code's
+ * frame as its product leaves it -- the car when it has no shadow. */
 void placeCarShadow(App* app, CPU& cpu)
 {
-    const Kept kept(cpu, kAllButEax);
-    const reg32 car = cpu.eax;
-    const std::optional<bool> placed = placeShadow(app, cpu, car);
-    if (!placed)
-        return;
-    cpu.eax = *placed ? cpu.esp - 0x28 : car;
-    cpu.esp += 4;
+    adapts(cpu, [&, car = cpu.eax, frameEnd = cpu.esp - 0x28]() -> std::optional<reg32> {
+        const std::optional<bool> placed = placeShadow(app, cpu, car);
+        if (!placed)
+            return std::nullopt;
+        return *placed ? frameEnd : car;
+    });
 }
 
 /* 0x42d3e0: the race's places: the cars by place sorted (insertion) by
@@ -1798,9 +1709,10 @@ reg32 sortedCount(App* app)
 
 void sortRaceCars(App* app, CPU& cpu)
 {
-    sortPlaces(app);
-    cpu.eax = sortedCount(app);
-    cpu.esp += 4;
+    adapts(cpu, [&] {
+        sortPlaces(app);
+        return sortedCount(app);
+    });
 }
 
 /* 0x42d500: a hook of the game's that does nothing -- push ebp, mov ebp,
@@ -1812,8 +1724,7 @@ void noHook(App* app)
 
 void emptyHook(win32::WinApplication* app, x86::CPU& cpu)
 {
-    noHook(app);
-    cpu.esp += 4;
+    adapts(cpu, [&] { noHook(app); });
 }
 
 /* 0x42d520: another that does nothing, the same. */
@@ -1824,8 +1735,7 @@ void noHook2(App* app)
 
 void emptyHook2(win32::WinApplication* app, x86::CPU& cpu)
 {
-    noHook2(app);
-    cpu.esp += 4;
+    adapts(cpu, [&] { noHook2(app); });
 }
 
 /* 0x42d620: the message text eax shown as the race's message lines
@@ -1833,7 +1743,7 @@ void emptyHook2(win32::WinApplication* app, x86::CPU& cpu)
  * into the frame (100 bytes of it) and broken where the line no longer fits.
  * The two lines' 100 bytes start as the zeros nfs3.exe keeps at 0x42d550 and
  * 0x42d5b4. */
-std::optional<bool> showText(App* app, CPU& cpu, reg32 text)
+std::optional<reg32> showText(App* app, CPU& cpu, reg32 text)
 {
     const GuestFrame frame(cpu, 0x18, 0xcc);
     const reg32 copy = frame - 0xcc, line = frame - 0x68;
@@ -1846,11 +1756,7 @@ std::optional<bool> showText(App* app, CPU& cpu, reg32 text)
     if (!fits)
         return std::nullopt;
     if (*fits != 0)
-    {
-        if (!showLine(app, cpu, text))
-            return std::nullopt;
-        return true;
-    }
+        return showLine(app, cpu, text);
     if (!fill(app, cpu, line, 0, kMost) || !copyText(app, cpu, copy, text, kMost))
         return std::nullopt;
     const reg32 length = lengthOf(app, copy);
@@ -1867,7 +1773,7 @@ std::optional<bool> showText(App* app, CPU& cpu, reg32 text)
         {
             // The line full: ended, shown, cleared, the character again.
             putByte(app, line + count, 0);
-            if (!showLine(app, cpu, line, kMost))
+            if (!showLine(app, cpu, line))
                 return std::nullopt;
             --next;
             if (!fill(app, cpu, line, 0, kMost))
@@ -1878,144 +1784,111 @@ std::optional<bool> showText(App* app, CPU& cpu, reg32 text)
             break;
     }
     if (lengthOf(app, line) == 0)
-        return false;
-    if (!showLine(app, cpu, line))
-        return std::nullopt;
-    return true;
+        return 0;  // the code's length count's
+    return showLine(app, cpu, line);
 }
 
-/* showText of eax; every register but eax as the caller had it, eax 0 (the
- * code's length count's) when it showed nothing. */
+/* showText of eax; eax what the last line's adding leaves, 0 when it showed
+ * nothing. */
 void showMessage(App* app, CPU& cpu)
 {
-    const Kept kept(cpu, kAllButEax);
-    const std::optional<bool> shown = showText(app, cpu, cpu.eax);
-    if (!shown)
-        return;
-    if (!*shown)
-        cpu.eax = 0;
-    cpu.esp += 4;
+    adapts(cpu, [&, text = cpu.eax] { return showText(app, cpu, text); });
 }
 
 /* 0x42d710: the message text edx (ebx long, after its first byte) sent to
  * every other machine of a network race (the players' list at 0x7a21f0 from
  * 1, but the machine eax) while the network is up ([0x7a22da], [0x7a22e4] 1),
  * and its text added to the message lines; [0x7a22a8] 1.  No caller but a
- * pointer. */
-bool sendToOthers(App* app, CPU& cpu, reg32 from, reg32 text, reg32 bytes)
+ * pointer.  The eax the lines' adding leaves. */
+std::optional<reg32> sendToOthers(App* app, CPU& cpu, reg32 from, reg32 text, reg32 bytes)
 {
     if (half(app, kNetworkUp) != 0 && at(app, kNetworkMode) == 1)
         for (i32 machine = 1; machine < i32(at(app, kMachines)) >> 16; ++machine)
         {
             const reg32 player = at(app, kPlayers + reg32(machine) * 4);
             if (player != from && !sendPacket(app, cpu, player, text, bytes))
-                return false;
+                return std::nullopt;
         }
-    {
-        const Kept kept(cpu, kAllButEax);
-        if (!appendLine(app, cpu, text + 1))
-            return false;
-    }
+    const std::optional<reg32> added = appendLine(app, cpu, text + 1);
+    if (!added)
+        return std::nullopt;
     putHalf(app, kMessageSent, 1);
-    return true;
+    return added;
 }
 
-/* sendToOthers from eax of edx, ebx long; ecx, esi and edi as the caller had
- * them, ebx 1, edx as the code leaves it: the network's mode when that is not
- * 1, 1 with no other machines, the last machine's player when that is the
- * sender, else what the packet's call leaves (the caller's with the network
- * down). */
+/* sendToOthers from eax of edx, ebx long (ebx and edx, its arguments, as the
+ * code leaves them are not compared). */
 void sendMessage(App* app, CPU& cpu)
 {
-    const Kept kept(cpu, kEcx | kEsi | kEdi);
-    const reg32 from = cpu.eax;
-    if (!sendToOthers(app, cpu, from, cpu.edx, cpu.ebx))
-        return;
-    if (half(app, kNetworkUp) != 0)
-    {
-        const reg32 mode = at(app, kNetworkMode);
-        const i32 machines = i32(at(app, kMachines)) >> 16;
-        if (mode != 1)
-            cpu.edx = mode;
-        else if (machines <= 1)
-            cpu.edx = 1;
-        else if (at(app, kPlayers + reg32(machines - 1) * 4) == from)
-            cpu.edx = from;
-    }
-    cpu.ebx = 1;
-    cpu.esp += 4;
+    adapts(cpu, [&, from = cpu.eax, text = cpu.edx, bytes = cpu.ebx] { return sendToOthers(app, cpu, from, text, bytes); });
 }
 
 /* 0x42d790: the message box opened (0x436c40, its description in the frame:
- * 1, 10, 100, 0, 0, 0, 7, 1) and the message lines made afresh. */
-bool openAllMessages(App* app, CPU& cpu)
+ * 1, 10, 100, 0, 0, 0, 7, 1) and the message lines made afresh.  `pushed`
+ * the registers the code pushes (ebx, ecx, edx, esi, ebp), which memmove's
+ * stand-in, called by the box's opening on the description, logs past it. */
+std::optional<reg32> openAllMessages(App* app, CPU& cpu, const std::array<reg32, 5>& pushed)
 {
     const GuestFrame frame(cpu, 0x14, 0x20);
-    // memmove's stand-in, which the box's opening calls on the description,
-    // logs the words past it too: the registers the code pushed.
-    frame.pushed(app, {cpu.ebx, cpu.ecx, cpu.edx, cpu.esi, cpu.ebp});
+    frame.pushed(app, {pushed[0], pushed[1], pushed[2], pushed[3], pushed[4]});
     const reg32 box = frame - 0x20;
     constexpr reg32 kBox[] = {1, 0xa, 0x64, 0, 0, 0, 7, 1};
     for (reg32 i = 0; i < 8; ++i)
         put(app, box + i * 4, kBox[i]);
     const std::optional<reg32> opened = guest::direct<0x436c40, collide::openChannels>(app, cpu, box);
     if (!opened)
-        return false;
-    cpu.eax = *opened;
-    const Kept kept(cpu, kAllButEax);
-    return openLines(app, cpu);
+        return std::nullopt;
+    return openLines(app, cpu, *opened);
 }
 
-/* openAllMessages; ebx, ecx, edx and esi as the caller had them. */
+/* openAllMessages; eax what the lines' making leaves. */
 void openMessages(App* app, CPU& cpu)
 {
-    const Kept kept(cpu, kEbx | kEcx | kEdx | kEsi);
-    if (!openAllMessages(app, cpu))
-        return;
-    cpu.esp += 4;
+    adapts(cpu, [&, pushed = std::array<reg32, 5>{cpu.ebx, cpu.ecx, cpu.edx, cpu.esi, cpu.ebp}] {
+        return openAllMessages(app, cpu, pushed);
+    });
 }
 
 /* 0x42d7f0: the message box closed (0x436cf0) and the message lines with
  * it.  The box's closing by address: what it leaves in eax goes on to the
  * lines' lock (collide::closeChannels gives back only whether the game went
- * on). */
+ * on).  The eax the lines' closing leaves. */
+std::optional<reg32> closeAllMessagesEax(App* app, CPU& cpu)
+{
+    const std::optional<reg32> closed = guest::watcomEax(app, cpu, kCloseMessageBox, {});
+    if (!closed)
+        return std::nullopt;
+    return closeLines(app, cpu, *closed);
+}
+
 bool closeAllMessages(App* app, CPU& cpu)
 {
-    if (!guest::call(app, cpu, kCloseMessageBox))
-        return false;
-    const Kept kept(cpu, kAllButEax);
-    return closeLines(app, cpu);
+    return closeAllMessagesEax(app, cpu).has_value();
 }
 
 void closeMessages(App* app, CPU& cpu)
 {
-    if (!closeAllMessages(app, cpu))
-        return;
-    cpu.esp += 4;
+    adapts(cpu, [&] { return closeAllMessagesEax(app, cpu); });
 }
 
 /* 0x42d800: the message box cleared (0x436d40) and the message lines after
  * the first. */
-bool clearAllMessages(App* app, CPU& cpu)
+std::optional<reg32> clearAllMessages(App* app, CPU& cpu)
 {
-    const reg32 cleared = guest::direct<0x436d40, collide::clearAllChannels>(app, cpu);
+    guest::direct<0x436d40, collide::clearAllChannels>(app, cpu);
     if (cpu.terminate)
-        return false;
-    cpu.eax = cleared;
-    const Kept kept(cpu, kAllButEax);
+        return std::nullopt;
     return clearLines(app, cpu);
 }
 
 void clearMessages(App* app, CPU& cpu)
 {
-    if (!clearAllMessages(app, cpu))
-        return;
-    cpu.esp += 4;
+    adapts(cpu, [&] { return clearAllMessages(app, cpu); });
 }
 
 /* 0x42d810: the message text edx sent to the other machines (0x4a60e0, a
  * packet of a newline byte and the text, its ending too) and shown. */
-std::optional<bool> sendTyped(App* app, CPU& cpu, reg32 text)
+std::optional<reg32> sendTyped(App* app, CPU& cpu, reg32 text)
 {
     const GuestFrame frame(cpu, 0x14, 0x68);
     const reg32 packet = frame - 0x68;
@@ -2023,21 +1896,14 @@ std::optional<bool> sendTyped(App* app, CPU& cpu, reg32 text)
     putByte(app, packet, 0xa);
     if (!moveMemory(app, cpu, text, packet + 1, bytes) || !sendPacket(app, cpu, 0, packet, bytes + 1))
         return std::nullopt;
-    const Nested nested(cpu, kAllButEax);
+    const Nested nested(cpu);
     return showText(app, cpu, text);
 }
 
-/* sendTyped of edx; ebx, ecx, esi and edi as the caller had them, edx as the
- * packet's call leaves it, eax 0 when nothing was shown. */
+/* sendTyped of edx; eax as showMessage leaves it. */
 void sendTypedMessage(App* app, CPU& cpu)
 {
-    const Kept kept(cpu, kEbx | kEcx | kEsi | kEdi);
-    const std::optional<bool> shown = sendTyped(app, cpu, cpu.edx);
-    if (!shown)
-        return;
-    if (!*shown)
-        cpu.eax = 0;
-    cpu.esp += 4;
+    adapts(cpu, [&, text = cpu.edx] { return sendTyped(app, cpu, text); });
 }
 
 /* 0x42d860: a message line allocated (0x70 bytes) and cleared; or 0. */
@@ -2049,29 +1915,25 @@ std::optional<reg32> newLine(App* app, CPU& cpu)
     return line;
 }
 
-/* newLine; ebx, ecx and edx as the caller had them. */
+/* newLine; eax the line. */
 void newMessageLine(App* app, CPU& cpu)
 {
-    const Kept kept(cpu, kEbx | kEcx | kEdx);
-    const std::optional<reg32> line = newLine(app, cpu);
-    if (!line)
-        return;
-    cpu.eax = *line;
-    cpu.esp += 4;
+    adapts(cpu, [&] { return newLine(app, cpu); });
 }
 
-/* 0x42d8a0: the message line eax freed, if there is one. */
-bool freeLine(App* app, CPU& cpu, reg32 line)
+/* 0x42d8a0: the message line eax freed, if there is one; what the freeing
+ * leaves, or 0. */
+std::optional<reg32> freeLine(App* app, CPU& cpu, reg32 line)
 {
-    return line == 0 || freeBlock(app, cpu, line);
+    if (line == 0)
+        return 0;
+    return freeBlock(app, cpu, line);
 }
 
 /* freeLine of eax. */
 void freeMessageLine(App* app, CPU& cpu)
 {
-    if (!freeLine(app, cpu, cpu.eax))
-        return;
-    cpu.esp += 4;
+    adapts(cpu, [&, line = cpu.eax] { return freeLine(app, cpu, line); });
 }
 
 /* 0x42d8b0: a message line of the text edx (100 bytes of it, strncpy), from
@@ -2095,38 +1957,32 @@ std::optional<reg32> insertLine(App* app, CPU& cpu, reg32 from, reg32 text, reg3
     return line;
 }
 
-/* insertLine from eax of edx after ebx; ecx, esi and edi as the caller had
- * them (ebx and edx as the code leaves them are not compared). */
+/* insertLine from eax of edx after ebx; eax the line. */
 void insertMessageLine(App* app, CPU& cpu)
 {
-    const Kept kept(cpu, kEcx | kEsi | kEdi);
-    const std::optional<reg32> line = insertLine(app, cpu, cpu.eax, cpu.edx, cpu.ebx);
-    if (!line)
-        return;
-    cpu.eax = *line;
-    cpu.esp += 4;
+    adapts(cpu, [&, from = cpu.eax, text = cpu.edx, after = cpu.ebx] { return insertLine(app, cpu, from, text, after); });
 }
 
-/* 0x42d910: the message line eax and every one after it freed. */
-bool freeLines(App* app, CPU& cpu, reg32 line)
+/* 0x42d910: the message line eax and every one after it freed; what the
+ * last freeing leaves, or 0 with none. */
+std::optional<reg32> freeLines(App* app, CPU& cpu, reg32 line)
 {
+    std::optional<reg32> eax = line;
     while (line != 0)
     {
         const reg32 next = at(app, line + kLineNext);
-        if (!freeLine(app, cpu, line))
-            return false;
+        eax = freeLine(app, cpu, line);
+        if (!eax)
+            return std::nullopt;
         line = next;
     }
-    return true;
+    return eax;
 }
 
-/* freeLines from eax; ecx and edx as the caller had them. */
+/* freeLines from eax. */
 void freeMessageLines(App* app, CPU& cpu)
 {
-    const Kept kept(cpu, kEcx | kEdx);
-    if (!freeLines(app, cpu, cpu.eax))
-        return;
-    cpu.esp += 4;
+    adapts(cpu, [&, line = cpu.eax] { return freeLines(app, cpu, line); });
 }
 
 /* The lines after the first, from `rest`, freed and the first the last
@@ -2141,22 +1997,26 @@ bool dropRest(App* app, CPU& cpu, reg32 rest)
     return true;
 }
 
-/* The lines' lock let go of and freed (0x4eb360), their head freed and 0. */
-bool dropHead(App* app, CPU& cpu)
+/* The lines' lock let go of and freed (0x4eb360), their head freed and 0;
+ * what the head's freeing leaves. */
+std::optional<reg32> dropHead(App* app, CPU& cpu)
 {
     if (!lockLines<kLeaveCriticalSection, &host::leaveLock>(app, cpu)
-        || !freeLock(app, cpu, at(app, at(app, kLines) + kHeadLock))
-        || !freeBlock(app, cpu, at(app, kLines)))
-        return false;
+        || !freeLock(app, cpu, at(app, at(app, kLines) + kHeadLock)))
+        return std::nullopt;
+    const std::optional<reg32> freed = freeBlock(app, cpu, at(app, kLines));
+    if (!freed)
+        return std::nullopt;
     put(app, kLines, 0);
-    return true;
+    return freed;
 }
 
-/* 0x42d940: the message lines after the first freed, under their lock. */
-bool clearLines(App* app, CPU& cpu)
+/* 0x42d940: the message lines after the first freed, under their lock; what
+ * letting it go of leaves. */
+std::optional<reg32> clearLines(App* app, CPU& cpu)
 {
     if (!lockLines<kEnterCriticalSection, &host::enterLock>(app, cpu))
-        return false;
+        return std::nullopt;
     const reg32 head = at(app, kLines);
     if (head != 0)
     {
@@ -2165,59 +2025,52 @@ bool clearLines(App* app, CPU& cpu)
         {
             const reg32 rest = at(app, first + kLineNext);
             if (rest != 0 && !dropRest(app, cpu, rest))
-                return false;
+                return std::nullopt;
         }
     }
     return lockLines<kLeaveCriticalSection, &host::leaveLock>(app, cpu);
 }
 
-/* clearLines; every register but eax as the caller had it. */
 void clearMessageLines(App* app, CPU& cpu)
 {
-    const Kept kept(cpu, kAllButEax);
-    if (!clearLines(app, cpu))
-        return;
-    cpu.esp += 4;
+    adapts(cpu, [&] { return clearLines(app, cpu); });
 }
 
 /* 0x42d9b0: each message line after the first shown (showMessage), and
- * then freed, under their lock. */
-bool showLines(App* app, CPU& cpu)
+ * then freed, under their lock; what letting it go of leaves. */
+std::optional<reg32> showLines(App* app, CPU& cpu)
 {
     const GuestFrame frame(cpu, 0x18, 0);
     if (!lockLines<kEnterCriticalSection, &host::enterLock>(app, cpu))
-        return false;
+        return std::nullopt;
     const reg32 head = at(app, kLines);
     if (head != 0 && at(app, head + kHeadFirst) != 0)
     {
         for (reg32 line = at(app, at(app, head + kHeadFirst) + kLineNext); line != 0; line = at(app, line + kLineNext))
         {
-            const Nested nested(cpu, kAllButEax);
+            const Nested nested(cpu);
             if (!showText(app, cpu, line + kLineText))
-                return false;
+                return std::nullopt;
         }
         const reg32 rest = at(app, at(app, at(app, kLines) + kHeadFirst) + kLineNext);
         if (rest != 0 && !dropRest(app, cpu, rest))
-            return false;
+            return std::nullopt;
     }
     return lockLines<kLeaveCriticalSection, &host::leaveLock>(app, cpu);
 }
 
-/* showLines; every register but eax as the caller had it. */
 void showMessageLines(App* app, CPU& cpu)
 {
-    const Kept kept(cpu, kAllButEax);
-    if (!showLines(app, cpu))
-        return;
-    cpu.esp += 4;
+    adapts(cpu, [&] { return showLines(app, cpu); });
 }
 
 /* 0x42da30: the text eax added as the last message line, numbered by
- * [0x55379c], under their lock -- if there is a text and the lines are. */
-bool appendLine(App* app, CPU& cpu, reg32 text)
+ * [0x55379c], under their lock -- if there is a text and the lines are;
+ * what letting it go of leaves. */
+std::optional<reg32> appendLine(App* app, CPU& cpu, reg32 text)
 {
     if (!lockLines<kEnterCriticalSection, &host::enterLock>(app, cpu))
-        return false;
+        return std::nullopt;
     const reg32 head = at(app, kLines);
     if (text != 0 && head != 0 && at(app, head + kHeadFirst) != 0)
     {
@@ -2228,7 +2081,7 @@ bool appendLine(App* app, CPU& cpu, reg32 text)
             put(app, kLineSerial, serial);
             const std::optional<reg32> line = insertLine(app, cpu, serial, text, last);
             if (!line)
-                return false;
+                return std::nullopt;
             if (*line != 0)
                 put(app, at(app, kLines) + kHeadLast, *line);
         }
@@ -2236,70 +2089,63 @@ bool appendLine(App* app, CPU& cpu, reg32 text)
     return lockLines<kLeaveCriticalSection, &host::leaveLock>(app, cpu);
 }
 
-/* appendLine of eax; every register but eax as the caller had it. */
 void appendMessageLine(App* app, CPU& cpu)
 {
-    const Kept kept(cpu, kAllButEax);
-    if (!appendLine(app, cpu, cpu.eax))
-        return;
-    cpu.esp += 4;
+    adapts(cpu, [&, text = cpu.eax] { return appendLine(app, cpu, text); });
 }
 
 /* 0x42daf0: the message lines freed, under their lock, the lock freed
- * (0x4eb360) and the lines' head freed and 0. */
-bool closeLines(App* app, CPU& cpu)
+ * (0x4eb360) and the lines' head freed and 0.  `eax` the code's, which the
+ * lock's taking is called with; what the head's freeing leaves, or `eax`
+ * with no lines. */
+std::optional<reg32> closeLines(App* app, CPU& cpu, reg32 eax)
 {
     const reg32 head = at(app, kLines);
     if (head == 0)
-        return true;
-    if (!lockCall<kEnterCriticalSection, &host::enterLock>(app, cpu, cpu.eax,
-                                                                                 at(app, head + kHeadLock)))
-        return false;
+        return eax;
+    if (!lockCall<kEnterCriticalSection, &host::enterLock>(app, cpu, eax, at(app, head + kHeadLock)))
+        return std::nullopt;
     const reg32 first = at(app, at(app, kLines) + kHeadFirst);
     if (first != 0)
     {
         if (!freeLines(app, cpu, first))
-            return false;
+            return std::nullopt;
         put(app, at(app, kLines) + kHeadFirst, 0);
         put(app, at(app, kLines) + kHeadLast, 0);
     }
     return dropHead(app, cpu);
 }
 
-/* closeLines; every register but eax as the caller had it. */
 void closeMessageLines(App* app, CPU& cpu)
 {
-    const Kept kept(cpu, kAllButEax);
-    if (!closeLines(app, cpu))
-        return;
-    cpu.esp += 4;
+    adapts(cpu, [&, eax = cpu.eax] { return closeLines(app, cpu, eax); });
 }
 
-/* 0x42db70: the message lines made afresh: the old freed, their head (12
- * bytes: the lock, the first line, the last) allocated, its lock made
- * (0x4eb2e0) and, under it, an empty first line -- none, and all of it
- * freed again. */
-bool openLines(App* app, CPU& cpu)
+/* 0x42db70: the message lines made afresh: the old freed (closeLines of
+ * `eax`), their head (12 bytes: the lock, the first line, the last)
+ * allocated, its lock made (0x4eb2e0) and, under it, an empty first line --
+ * none, and all of it freed again.  The eax the last call leaves. */
+std::optional<reg32> openLines(App* app, CPU& cpu, reg32 eax)
 {
-    if (!closeLines(app, cpu))
-        return false;
+    if (!closeLines(app, cpu, eax))
+        return std::nullopt;
     const std::optional<reg32> head = allocate(app, cpu, kLineName, 0xc, kBlockFlags);
     if (!head)
-        return false;
+        return std::nullopt;
     put(app, kLines, *head);
     if (*head == 0)
-        return true;
+        return head;
     const std::optional<reg32> lock = makeLock(app, cpu);
     if (!lock)
-        return false;
+        return std::nullopt;
     put(app, at(app, kLines) + kHeadLock, *lock);
     if (!lockCall<kEnterCriticalSection, &host::enterLock>(app, cpu, *lock, *lock))
-        return false;
+        return std::nullopt;
     put(app, at(app, kLines) + kHeadFirst, 0);
     put(app, at(app, kLines) + kHeadLast, 0);
     const std::optional<reg32> line = newLine(app, cpu);
     if (!line)
-        return false;
+        return std::nullopt;
     if (*line == 0)
         return dropHead(app, cpu);
     put(app, at(app, kLines) + kHeadFirst, *line);
@@ -2307,18 +2153,14 @@ bool openLines(App* app, CPU& cpu)
     return lockLines<kLeaveCriticalSection, &host::leaveLock>(app, cpu);
 }
 
-/* openLines; every register but eax as the caller had it. */
 void openMessageLines(App* app, CPU& cpu)
 {
-    const Kept kept(cpu, kAllButEax);
-    if (!openLines(app, cpu))
-        return;
-    cpu.esp += 4;
+    adapts(cpu, [&, eax = cpu.eax] { return openLines(app, cpu, eax); });
 }
 
 /* 0x42dc20: the race controls' thread: an event made ([0x5efdf0]), then
  * for ever the event waited for and the race's controls read (0x48f550).
- * Its loop's head the generated code's safepoint. */
+ * Its loop's head the generated code's safepoint; it never returns. */
 void raceControlsThread(App* app, CPU& cpu)
 {
     const std::optional<reg32> event = createEvent(app, cpu);
@@ -2330,100 +2172,87 @@ void raceControlsThread(App* app, CPU& cpu)
         if (app->contextWanted())
             app->yieldContext(cpu);
         const std::optional<reg32> waited = waitEvent(app, cpu, at(app, kControlsEvent));
-        if (!waited)
+        if (!waited || !guest::direct<0x48f550, controls::readControls>(app, cpu, *waited))
             return;
-        const std::optional<reg32> read = guest::direct<0x48f550, controls::readControls>(app, cpu, *waited);
-        if (!read)
-            return;
-        cpu.eax = *read;
     }
 }
 
 /* 0x42dc40: the race controls' event set (0x4dfb20, eax 0x7a3aac). */
-bool wakeControls(App* app, CPU& cpu)
+std::optional<reg32> wakeControls(App* app, CPU& cpu)
 {
     return postEvent(app, cpu, kControlsThread, at(app, kControlsEvent));
 }
 
-/* wakeControls; edx as the caller had it. */
 void wakeRaceControls(App* app, CPU& cpu)
 {
-    const Kept kept(cpu, kEdx);
-    if (!wakeControls(app, cpu))
-        return;
-    cpu.esp += 4;
+    adapts(cpu, [&] { return wakeControls(app, cpu); });
 }
 
 /* 0x42dc60: the game's timer's call: the ticks counted ([0x5efdf4],
- * [0x5efe00], eax the last), every second of them counted again
- * ([0x5efdf8]) and every second of those -- a fourth tick -- the race
- * controls woken ([0x5efdfc] counts them). */
-bool countTick(App* app, CPU& cpu)
+ * [0x5efe00]), every second of them counted again ([0x5efdf8]) and every
+ * second of those -- a fourth tick -- the race controls woken ([0x5efdfc]
+ * counts them).  eax the ticks before this one unless the event's call
+ * leaves its own. */
+std::optional<reg32> countTick(App* app, CPU& cpu)
 {
+    const reg32 before = at(app, kAllTicks);
     put(app, kTicks, at(app, kTicks) + 1);
     put(app, kAllTicks, at(app, kAllTicks) + 1);
     if ((byte(app, kTicks) & 1) != 0)
-        return true;
+        return before;
     put(app, kHalfTicks, at(app, kHalfTicks) + 1);
     if ((byte(app, kHalfTicks) & 1) != 0)
-        return true;
+        return before;
     put(app, kWakes, at(app, kWakes) + 1);
     return wakeControls(app, cpu);
 }
 
-/* countTick; edx and esi as the caller had them, eax the ticks before this
- * one unless the event's call leaves its own. */
 void raceControlsTick(App* app, CPU& cpu)
 {
-    const Kept kept(cpu, kEdx | kEsi);
-    cpu.eax = at(app, kAllTicks);
-    if (!countTick(app, cpu))
-        return;
-    cpu.esp += 4;
+    adapts(cpu, [&] { return countTick(app, cpu); });
 }
 
 /* 0x42dcb0: the race controls' ticks from 0, and, the first time
  * ([0x5537a4]), raceControlsTick given to the game's timer (0x48ee30) and
- * the counts -- 0x79c4ac's too -- 0. */
-bool startTick(App* app, CPU& cpu)
+ * the counts -- 0x79c4ac's too -- 0.  eax what the giving leaves, else
+ * `eax`, the caller's. */
+std::optional<reg32> startTick(App* app, CPU& cpu, reg32 eax)
 {
     put(app, kAllTicks, 0);
     if (at(app, kTicking) != 0)
-        return true;
+        return eax;
     put(app, kTicking, 1);
-    if (!addTimer(app, cpu, kTickFunction))
-        return false;
+    const std::optional<reg32> added = addTimer(app, cpu, kTickFunction);
+    if (!added)
+        return std::nullopt;
     for (const reg32 count : {kTicks, kHalfTicks, kWakes, kTimerCount})
         put(app, count, 0);
-    return true;
+    return added;
 }
 
-/* startTick; ebx and edx as the caller had them. */
 void startRaceControlsTick(App* app, CPU& cpu)
 {
-    const Kept kept(cpu, kEbx | kEdx);
-    if (!startTick(app, cpu))
-        return;
-    cpu.esp += 4;
+    adapts(cpu, [&, eax = cpu.eax] { return startTick(app, cpu, eax); });
 }
 
 /* 0x42dd00: raceControlsTick taken from the game's timer (0x48ee90), if it
- * was given. */
-bool stopTick(App* app, CPU& cpu)
+ * was given; eax what the taking leaves, else `eax`, the caller's. */
+std::optional<reg32> stopTickEax(App* app, CPU& cpu, reg32 eax)
 {
     if (at(app, kTicking) == 0)
-        return true;
+        return eax;
     put(app, kTicking, 0);
     return removeTimer(app, cpu, kTickFunction);
 }
 
-/* stopTick; ecx as the caller had it. */
+bool stopTick(App* app, CPU& cpu)
+{
+    return stopTickEax(app, cpu, 0).has_value();
+}
+
 void stopRaceControlsTick(App* app, CPU& cpu)
 {
-    const Kept kept(cpu, kEcx);
-    if (!stopTick(app, cpu))
-        return;
-    cpu.esp += 4;
+    adapts(cpu, [&, eax = cpu.eax] { return stopTickEax(app, cpu, eax); });
 }
 
 /* 0x42dd60: whether the corner ecx, ebx, [esp+4] (each -1, 0 or 1, as
@@ -2565,8 +2394,12 @@ bool cornerIn(App* app, reg32 box, reg32 other, i32 firstSign, i32 secondSign, i
 /* cornerIn of eax, edx, the signs ebx, ecx and [esp+4]: eax 1 inside, else 0. */
 void cornerInBox(App* app, CPU& cpu)
 {
-    cpu.eax = cornerIn(app, cpu.eax, cpu.edx, i32(cpu.ebx), i32(cpu.ecx), i32(at(app, cpu.esp + 4))) ? 1 : 0;
-    cpu.esp += 8;
+    adapts(
+        cpu,
+        [&, box = cpu.eax, other = cpu.edx, first = i32(cpu.ebx), second = i32(cpu.ecx), third = i32(word(app, cpu, 1))] {
+            return cornerIn(app, box, other, first, second, third) ? 1u : 0u;
+        },
+        4);
 }
 
 /* 0x42e010: cornerInBox the other way round: the corner of the car eax's
@@ -2707,8 +2540,12 @@ bool cornerInBack(App* app, reg32 box, reg32 other, i32 firstSign, i32 secondSig
 /* cornerInBack of eax, edx, the signs ebx, ecx and [esp+4]: eax 1 inside, else 0. */
 void cornerInBoxBack(App* app, CPU& cpu)
 {
-    cpu.eax = cornerInBack(app, cpu.eax, cpu.edx, i32(cpu.ebx), i32(cpu.ecx), i32(at(app, cpu.esp + 4))) ? 1 : 0;
-    cpu.esp += 8;
+    adapts(
+        cpu,
+        [&, box = cpu.eax, other = cpu.edx, first = i32(cpu.ebx), second = i32(cpu.ecx), third = i32(word(app, cpu, 1))] {
+            return cornerInBack(app, box, other, first, second, third) ? 1u : 0u;
+        },
+        4);
 }
 
 /* 0x42e2c0: cornerInBox with the corner from edx's axes worked out the
@@ -2821,8 +2658,12 @@ bool cornerIn2(App* app, reg32 box, reg32 other, i32 firstSign, i32 secondSign, 
 /* cornerIn2 of eax, edx, the signs ebx, ecx and [esp+4]: eax 1 inside, else 0. */
 void cornerInBox2(App* app, CPU& cpu)
 {
-    cpu.eax = cornerIn2(app, cpu.eax, cpu.edx, i32(cpu.ebx), i32(cpu.ecx), i32(at(app, cpu.esp + 4))) ? 1 : 0;
-    cpu.esp += 8;
+    adapts(
+        cpu,
+        [&, box = cpu.eax, other = cpu.edx, first = i32(cpu.ebx), second = i32(cpu.ecx), third = i32(word(app, cpu, 1))] {
+            return cornerIn2(app, box, other, first, second, third) ? 1u : 0u;
+        },
+        4);
 }
 
 /* 0x42e4f0: cornerInBoxBack worked out as cornerInBox2 is. */
@@ -2933,8 +2774,12 @@ bool cornerInBack2(App* app, reg32 box, reg32 other, i32 firstSign, i32 secondSi
 /* cornerInBack2 of eax, edx, the signs ebx, ecx and [esp+4]: eax 1 inside, else 0. */
 void cornerInBoxBack2(App* app, CPU& cpu)
 {
-    cpu.eax = cornerInBack2(app, cpu.eax, cpu.edx, i32(cpu.ebx), i32(cpu.ecx), i32(at(app, cpu.esp + 4))) ? 1 : 0;
-    cpu.esp += 8;
+    adapts(
+        cpu,
+        [&, box = cpu.eax, other = cpu.edx, first = i32(cpu.ebx), second = i32(cpu.ecx), third = i32(word(app, cpu, 1))] {
+            return cornerInBack2(app, box, other, first, second, third) ? 1u : 0u;
+        },
+        4);
 }
 
 /* 0x42e720: the car eax's spin (+0xe4, +0xe8, +0xec) held within plus and
@@ -2970,8 +2815,7 @@ reg32 holdSpin(App* app, reg32 car)
 /* holdSpin of eax; eax the last component as held, as the code leaves it. */
 void clampSpin(App* app, CPU& cpu)
 {
-    cpu.eax = holdSpin(app, cpu.eax);
-    cpu.esp += 4;
+    adapts(cpu, [&, car = cpu.eax] { return holdSpin(app, car); });
 }
 
 /* 0x42e820: an impulse on the car eax at a point, as the 7 words on the
@@ -3060,17 +2904,19 @@ std::optional<Impulse> impulse(App* app, CPU& cpu, reg32 car, reg32 words)
 }
 
 /* impulse of the words above the return address on the car eax, onto the
- * x87's stack (ret 0x1c); every register but eax as the caller had it, eax
- * the spin's last component as held. */
+ * x87's stack (ret 0x1c); eax the spin's last component as held. */
 void applyImpulse(App* app, CPU& cpu)
 {
-    const Kept kept(cpu, kAllButEax);
-    const std::optional<Impulse> done = impulse(app, cpu, cpu.eax, cpu.esp + 4);
-    if (!done)
-        return;
-    cpu.eax = done->lastSpin;
-    cpu.fpu.push(done->sum);
-    cpu.esp += 4 + 0x1c;
+    adapts(
+        cpu,
+        [&, car = cpu.eax, words = cpu.esp + 4]() -> std::optional<reg32> {
+            const std::optional<Impulse> done = impulse(app, cpu, car, words);
+            if (!done)
+                return std::nullopt;
+            cpu.fpu.push(done->sum);
+            return done->lastSpin;
+        },
+        0x1c);
 }
 
 /* 0x42e9c0: the car eax bounced off a wall of normal edx with the strength
@@ -3164,27 +3010,19 @@ bool bounce(App* app, CPU& cpu, reg32 car, reg32 normal)
     return true;
 }
 
-/* bounce of the car off the normal as the code's call leaves the registers:
- * ebx, ecx and esi as they were, eax past the spin's copy in its frame (as
- * its last product leaves it), edx the car's axes. */
-bool bounceAsCalled(App* app, CPU& cpu, reg32 car, reg32 normal)
-{
-    const reg32 frameEnd = cpu.esp - 0x40;
-    const Kept kept(cpu, kEbx | kEcx | kEsi);
-    if (!bounce(app, cpu, car, normal))
-        return false;
-    cpu.eax = frameEnd;
-    cpu.edx = car + kCarAxes;
-    return true;
-}
-
-/* bounceAsCalled of the car eax off the normal edx; [esp+4], its strength,
- * the code does not read (ret 4). */
+/* bounce of the car eax off the normal edx; [esp+4], its strength, the code
+ * does not read (ret 4).  eax past the spin's copy in its frame, as its last
+ * product leaves it. */
 void bounceOffWall(App* app, CPU& cpu)
 {
-    if (!bounceAsCalled(app, cpu, cpu.eax, cpu.edx))
-        return;
-    cpu.esp += 8;
+    adapts(
+        cpu,
+        [&, car = cpu.eax, normal = cpu.edx, frameEnd = cpu.esp - 0x40]() -> std::optional<reg32> {
+            if (!bounce(app, cpu, car, normal))
+                return std::nullopt;
+            return frameEnd;
+        },
+        4);
 }
 
 /* 0x42ee10: the car eax hitting a wall at the point edx, its normal ebx,
@@ -3208,12 +3046,11 @@ bool subtract(App* app, CPU& cpu, reg32 a, reg32 b, reg32 out)
 
 /* The point's speed in the car: its velocity, and its spin (a turn's 2 pi)
  * across the point from its place (`lever`, the point less the place) --
- * `lever`, `spin` and `speed` the frame's.  The registers as the adding
- * leaves them, which hitWall and carsCollide leave. */
+ * `lever`, `spin` and `speed` the frame's. */
 bool spinSpeed(App* app, CPU& cpu, reg32 car, reg32 lever, reg32 spin, reg32 speed)
 {
     return scaleVectors(app, cpu, car + kCarSpin, kTurnBits, spin) && cross(app, cpu, spin, lever, speed)
-           && addVectorsLeaving(app, cpu, speed, car + kCarVelocity, speed);
+           && addVectorsByAddress(app, cpu, speed, car + kCarVelocity, speed);
 }
 
 bool pointSpeed(App* app, CPU& cpu, reg32 car, reg32 point, reg32 lever, reg32 spin, reg32 speed)
@@ -3253,9 +3090,7 @@ std::optional<bool> hit(App* app, CPU& cpu, reg32 car, reg32 point, reg32 normal
         return false;
     if (!scaleVectors(app, cpu, normal, floatBits(float(-Float(along))), push))
         return std::nullopt;
-    // The impulse's 7 words as the code pushes them -- the push, the lever,
-    // 1 -- through ebx, ecx and edx, which it leaves holding the lever's
-    // first two and the push's first.
+    // The impulse's 7 words as the code pushes them: the push, the lever, 1.
     std::optional<Impulse> done;
     {
         const GuestFrame words(cpu, 0, 0x1c);  // popped by the impulse's ret 0x1c
@@ -3265,10 +3100,7 @@ std::optional<bool> hit(App* app, CPU& cpu, reg32 car, reg32 point, reg32 normal
             put(app, first + 0xc + k * 4, at(app, lever + k * 4));
         for (reg32 k = 3; k-- > 0;)
             put(app, first + k * 4, at(app, push + k * 4));
-        cpu.ebx = at(app, lever);
-        cpu.ecx = at(app, lever + 4);
-        cpu.edx = at(app, push);
-        const Nested nested(cpu, kAllButEax);
+        const Nested nested(cpu);
         done = impulse(app, cpu, car, first);
     }
     if (!done)
@@ -3282,27 +3114,25 @@ std::optional<bool> hit(App* app, CPU& cpu, reg32 car, reg32 point, reg32 normal
         put(app, car + kCarHitKind, kind);
         for (reg32 k = 0; k < 0xc; k += 4)
             put(app, car + kCarHitAt + k, at(app, point + k));
-        cpu.ecx = kind;  // as the code leaves it
         const GuestFrame strength(cpu, 0, 4);
         put(app, strength - 4, at(app, car + kCarImpact));
-        const Nested nested(cpu, 0);
-        if (!bounceAsCalled(app, cpu, car, normal))
+        const Nested nested(cpu);
+        if (!bounce(app, cpu, car, normal))
             return std::nullopt;
     }
     return true;
 }
 
 /* hit of the car eax at the point edx, the normal ebx, the wall's point ecx:
- * eax 1, or 0 when it moved away; esi and edi as the caller had them, ebx,
- * ecx and edx as the code leaves them. */
+ * eax 1, or 0 when it moved away. */
 void hitWall(App* app, CPU& cpu)
 {
-    const Kept kept(cpu, kEsi | kEdi);
-    const std::optional<bool> hitIt = hit(app, cpu, cpu.eax, cpu.edx, cpu.ebx, cpu.ecx);
-    if (!hitIt)
-        return;
-    cpu.eax = *hitIt ? 1 : 0;
-    cpu.esp += 4;
+    adapts(cpu, [&, car = cpu.eax, point = cpu.edx, normal = cpu.ebx, wall = cpu.ecx]() -> std::optional<reg32> {
+        const std::optional<bool> hitIt = hit(app, cpu, car, point, normal, wall);
+        if (!hitIt)
+            return std::nullopt;
+        return *hitIt ? 1 : 0;
+    });
 }
 
 /* 0x42efe0: the car eax's box against a wall of normal edx through the
@@ -3380,12 +3210,11 @@ std::optional<reg32> boxHits(App* app, CPU& cpu, reg32 car, reg32 normal, reg32 
                 put(app, nearest + k, at(app, corner + k));
         }
     }
-    cpu.ebx = (count - 1) * 0xc;  // the last corner's place, as the loop leaves it
     reg32 result = 0;
     // fcomp with the reach: under it (or a NaN), the car hits the wall there.
     if (!(Float(best) >= f32(app, reach)))
     {
-        const Nested nested(cpu, kEsi | kEdi);
+        const Nested nested(cpu);
         const std::optional<bool> hitIt = hit(app, cpu, car, nearest, normal, point);
         if (!hitIt)
             return std::nullopt;
@@ -3396,16 +3225,15 @@ std::optional<reg32> boxHits(App* app, CPU& cpu, reg32 car, reg32 normal, reg32 
 }
 
 /* boxHits of the car eax against the normal edx through the point ebx
- * within [esp+4] (ret 4); ecx, esi and edi as the caller had them, ebx and
- * edx as the code leaves them. */
+ * within [esp+4] (ret 4). */
 void boxHitsWall(App* app, CPU& cpu)
 {
-    const Kept kept(cpu, kEcx | kEsi | kEdi);
-    const std::optional<reg32> result = boxHits(app, cpu, cpu.eax, cpu.edx, cpu.ebx, cpu.esp + 4);
-    if (!result)
-        return;
-    cpu.eax = *result;
-    cpu.esp += 8;
+    adapts(
+        cpu,
+        [&, car = cpu.eax, normal = cpu.edx, point = cpu.ebx, reach = cpu.esp + 4] {
+            return boxHits(app, cpu, car, normal, point, reach);
+        },
+        4);
 }
 
 /* 0x42f280: the cars eax and edx in collision at the point ebx: each one's
@@ -3419,61 +3247,56 @@ constexpr reg32 kHitByCar = 0x50005;
 
 /* The impulse of the 7 words at `words` on `car` -- kept at +0x168 -- and,
  * if there was one, its hit by `other` at `point` noted and, past 5, the
- * car's hard hits (+0x164) counted.  eax and edx as the code leaves them:
- * the car, its compares' status words in ax, the other car once noted. */
-bool impulseFrom(App* app, CPU& cpu, reg32 car, reg32 other, reg32 point, reg32 words)
+ * car's hard hits (+0x164) counted.  The eax the code leaves: the car, its
+ * compares' status words in ax. */
+std::optional<reg32> impulseFrom(App* app, CPU& cpu, reg32 car, reg32 other, reg32 point, reg32 words)
 {
     std::optional<Impulse> done;
     {
-        const Nested nested(cpu, kAllButEax);
+        const Nested nested(cpu);
         done = impulse(app, cpu, car, words);
     }
     if (!done)
-        return false;
+        return std::nullopt;
     putFloat(app, car + kCarImpact, float(done->sum));
-    cpu.eax = car;
     // fcompp of 0 with it: none (or a NaN), no hit.
-    if (compare(cpu, 0.0, done->sum).equal)
-        return true;
-    cpu.eax = car;
-    cpu.edx = other;
+    const Status none = compare(cpu, 0.0, done->sum);
+    if (none.equal)
+        return withStatus(car, none);
     put(app, car + kCarHitKind, kHitByCar);
     put(app, car + kCarHitBy, other);
     for (reg32 k = 0; k < 0xc; k += 4)
         put(app, car + kCarHitAt + k, at(app, point + k));
     // fcomp with 5: over it (a NaN not), a hard hit.
     const Status s = compare(cpu, f32(app, car + kCarImpact), f64(app, kFive));
-    if (!s.below && !s.equal)
-    {
-        cpu.eax = car;
-        putHalf(app, car + kCarHardHits, reg16(half(app, car + kCarHardHits) + 1));
-    }
-    return true;
+    if (s.below || s.equal)
+        return withStatus(car, s);
+    putHalf(app, car + kCarHardHits, reg16(half(app, car + kCarHardHits) + 1));
+    return car;
 }
 
 /* The impulse's 7 words as the code pushes them -- the direction at
- * `direction`, the lever at `lever`, the strength's bits -- under esp, and
- * ebx, ecx and edx as the pushes leave them (the lever's). */
-void pushImpulse(App* app, CPU& cpu, reg32 first, reg32 direction, reg32 lever, reg32 strengthBits)
+ * `direction`, the lever at `lever`, the strength's bits -- from `first`. */
+void pushImpulse(App* app, reg32 first, reg32 direction, reg32 lever, reg32 strengthBits)
 {
     put(app, first + 0x18, strengthBits);
     for (reg32 k = 3; k-- > 0;)
         put(app, first + 0xc + k * 4, at(app, lever + k * 4));
     for (reg32 k = 3; k-- > 0;)
         put(app, first + k * 4, at(app, direction + k * 4));
-    cpu.edx = at(app, lever + 8);
-    cpu.ecx = at(app, lever + 4);
-    cpu.ebx = at(app, lever);
 }
 
-bool respond(App* app, CPU& cpu, reg32 a, reg32 b, reg32 point)
+/* The collision answered; the eax the code leaves: the second car's
+ * impulse's, else the second dot product's with its compare's status word in
+ * ax. */
+std::optional<reg32> respondEax(App* app, CPU& cpu, reg32 a, reg32 b, reg32 point)
 {
     const GuestFrame frame(cpu, 0x10, 0x7c);
     const reg32 leverA = frame - 0x7c, leverB = frame - 0x70, speedA = frame - 0x64, speedB = frame - 0x34;
     const reg32 pushA = frame - 0x28, pushB = frame - 0x4c, apart = frame - 0x40, share = frame - 0x10;
     if (!subtract(app, cpu, point, a + kCarPlace, leverA) || !subtract(app, cpu, point, b + kCarPlace, leverB)
         || !spinSpeed(app, cpu, a, leverA, frame - 0x1c, speedA) || !spinSpeed(app, cpu, b, leverB, frame - 0x58, speedB))
-        return false;
+        return std::nullopt;
     // The speeds against each other weighed by the masses, the masses'
     // share, the line between the cars: in the code's order.
     const Float t1 = f32(app, speedA);
@@ -3515,42 +3338,39 @@ bool respond(App* app, CPU& cpu, reg32 a, reg32 b, reg32 point)
     putFloat(app, apart + 8, float(t28));
     const std::optional<Float> closing = dot(app, cpu, apart, pushA);
     if (!closing)
-        return false;
-    // fcompp of 0 with it, its status word in ax as the code leaves it:
-    // under 0 (a NaN not), an impulse on the first car.
+        return std::nullopt;
+    // fcompp of 0 with it: under 0 (a NaN not), an impulse on the first car.
     const Status s = compare(cpu, 0.0, *closing);
     if (!s.below && !s.equal)
     {
         const GuestFrame words(cpu, 0, 0x1c);
-        pushImpulse(app, cpu, words - 0x1c, pushA, leverA,
-                    floatBits(float(fp::mul(f32(app, share), f32(app, a + kCarSize)))));
+        pushImpulse(app, words - 0x1c, pushA, leverA, floatBits(float(fp::mul(f32(app, share), f32(app, a + kCarSize)))));
         if (!impulseFrom(app, cpu, a, b, point, words - 0x1c))
-            return false;
+            return std::nullopt;
     }
     // By address: what it leaves in eax is what the collision's code leaves.
-    const std::optional<Float> opening = dotProduct(app, cpu, apart, pushB);
+    const std::optional<Product> opening = dotProduct(app, cpu, apart, pushB);
     if (!opening)
-        return false;
-    // fcompp of 0 with it, as above: over 0 (or a NaN), one on the second.
-    if (compare(cpu, 0.0, *opening).below)
-    {
-        const GuestFrame words(cpu, 0, 0x1c);
-        pushImpulse(app, cpu, words - 0x1c, pushB, leverB,
-                    floatBits(float(fp::mul(f32(app, share), f32(app, b + kCarSize)))));
-        if (!impulseFrom(app, cpu, b, a, point, words - 0x1c))
-            return false;
-    }
-    return true;
+        return std::nullopt;
+    // fcompp of 0 with it, its status word in ax as the code leaves it: over 0
+    // (or a NaN), one on the second.
+    const Status t = compare(cpu, 0.0, opening->value);
+    if (!t.below)
+        return withStatus(opening->eax, t);
+    const GuestFrame words(cpu, 0, 0x1c);
+    pushImpulse(app, words - 0x1c, pushB, leverB, floatBits(float(fp::mul(f32(app, share), f32(app, b + kCarSize)))));
+    return impulseFrom(app, cpu, b, a, point, words - 0x1c);
 }
 
-/* respond of the cars eax and edx at the point ebx; ecx, esi and edi as
- * the caller had them, eax, ebx and edx as the code leaves them. */
+bool respond(App* app, CPU& cpu, reg32 a, reg32 b, reg32 point)
+{
+    return respondEax(app, cpu, a, b, point).has_value();
+}
+
+/* respondEax of the cars eax and edx at the point ebx. */
 void carsCollide(App* app, CPU& cpu)
 {
-    const Kept kept(cpu, kEcx | kEsi | kEdi);
-    if (!respond(app, cpu, cpu.eax, cpu.edx, cpu.ebx))
-        return;
-    cpu.esp += 4;
+    adapts(cpu, [&, a = cpu.eax, b = cpu.edx, point = cpu.ebx] { return respondEax(app, cpu, a, b, point); });
 }
 
 }  // namespace raceload

@@ -1,10 +1,13 @@
 #ifndef NFS3HP_PORT_SND_H
 #define NFS3HP_PORT_SND_H
 
+#include "host_files.h"
+#include "host_system.h"
 #include "native_windows.h"
 #include "port.h"
 
-#include <winapi/kernel32.h>
+#include <lib/winapp.h>
+#include <winapi/types.h>
 
 #include <array>
 #include <cstdint>
@@ -251,9 +254,6 @@ constexpr Var<int32_t> kBusLevel{0xa0a260};       // the first effect bus's leve
 constexpr Var<reg32> kChannelEnded{0x9f6b1c};     // what the mixer calls when a channel ends
 constexpr Var<reg32> kEmms{0x9f6b24};
 constexpr Var<reg32> kBankHook{0xa09b24};         // what SNDrestore calls for the banks
-// eacsnd's 3D buffers' functions (the port's eacsnd has none, native_isnd.cpp).
-constexpr Var<reg32> kDirectCreate3dBuf{0x9ef638}, kDirectRemoveBuf{0x9ef63c}, kDirectPlay3d{0x9ef640};
-constexpr Var<reg32> kDirectPos3d{0x9ef644}, kDirectVol{0x9ef648}, kDirectRate{0x9ef64c}, kDirectStopBuf{0x9ef650};
 
 // What the library calls of the game's.
 constexpr reg32 kSurfaceLocked = 0x4f9070;
@@ -419,6 +419,11 @@ Result bankHeaderSize(App* app, CPU& cpu, reg32 esp, int32_t bank);
 Result copyBankHeader(App* app, CPU& cpu, reg32 esp, reg32 to, int32_t bank);
 Result bankHasPatch(App* app, CPU& cpu, reg32 esp, int32_t bank, int32_t patch);
 Result setMasterVolume(App* app, CPU& cpu, reg32 esp, int32_t volume);
+
+/* The bus's effect (port_snd_fx.cpp): iSNDwinsetfx's core and its adapter,
+ * what the driver's start calls through its pointer. */
+Result applyBusEffect(App* app, CPU& cpu, reg32 esp, reg32 type);
+void iSNDwinsetfx(App* app, CPU& cpu);
 
 }  // namespace port
 }  // namespace nfs3hp

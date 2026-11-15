@@ -49,7 +49,11 @@
  *   THRASH_writerect     @20 0xa85290  native   x, y, width, height, pixels
  *
  * Seven of them the game does not call: drawlinestrip, the three drawpoint
- * ones, drawtristrip, is and writerect. */
+ * ones, drawtristrip, is and writerect.
+ *
+ * The game keeps a pointer to each in its data, 0x9ef900 on (kThrash*,
+ * kExports below); native code calls them through it, guest::driver
+ * (thrash_calls.h). */
 
 #include <x86.h>
 
@@ -57,6 +61,74 @@ namespace nfs3hp
 {
 namespace thrash
 {
+
+/* The game's pointers to the exports, THRASH_opendll's (native_game.cpp). */
+constexpr x86::reg32 kThrashDrawPointMesh = 0x9ef900;
+constexpr x86::reg32 kThrashDrawPointStrip = 0x9ef904;
+constexpr x86::reg32 kThrashDrawLineStrip = 0x9ef908;
+constexpr x86::reg32 kThrashDrawLineMesh = 0x9ef90c;
+constexpr x86::reg32 kThrashDrawPoint = 0x9ef910;
+constexpr x86::reg32 kThrashWriteRect = 0x9ef914;
+constexpr x86::reg32 kThrashTReset = 0x9ef918;
+constexpr x86::reg32 kThrashDrawTriStrip = 0x9ef91c;
+constexpr x86::reg32 kThrashReadRect = 0x9ef920;
+constexpr x86::reg32 kThrashDrawTriMesh = 0x9ef924;
+constexpr x86::reg32 kThrashDrawLine = 0x9ef928;
+constexpr x86::reg32 kThrashClip = 0x9ef92c;
+constexpr x86::reg32 kThrashDrawQuadMesh = 0x9ef930;
+constexpr x86::reg32 kThrashSetTexture = 0x9ef934;
+constexpr x86::reg32 kThrashWindow = 0x9ef938;
+constexpr x86::reg32 kThrashIdle = 0x9ef93c;
+constexpr x86::reg32 kThrashPageFlip = 0x9ef940;
+constexpr x86::reg32 kThrashSelectDisplay = 0x9ef944;
+constexpr x86::reg32 kThrashSync = 0x9ef948;
+constexpr x86::reg32 kThrashDrawQuad = 0x9ef94c;
+constexpr x86::reg32 kThrashFlushWindow = 0x9ef950;
+constexpr x86::reg32 kThrashLockWindow = 0x9ef954;
+constexpr x86::reg32 kThrashSetVideoMode = 0x9ef958;
+constexpr x86::reg32 kThrashUnlockWindow = 0x9ef95c;
+constexpr x86::reg32 kThrashDrawTriFan = 0x9ef960;
+constexpr x86::reg32 kThrashTUpdate = 0x9ef964;
+constexpr x86::reg32 kThrashTAlloc = 0x9ef968;
+constexpr x86::reg32 kThrashSetState = 0x9ef96c;
+constexpr x86::reg32 kThrashClearWindow = 0x9ef970;
+constexpr x86::reg32 kThrashDrawTri = 0x9ef974;
+constexpr x86::reg32 kThrashInit = 0x9ef978;
+constexpr x86::reg32 kThrashRestore = 0x9ef97c;
+constexpr x86::reg32 kThrashAbout = 0x9ef980;
+constexpr x86::reg32 kThrashIs = 0x9ef984;
+
+/* Each pointer with its export: voodoo2a's address of it (the list above)
+ * and the bytes of its words. */
+struct Export
+{
+    x86::reg32 slot, voodoo2a, bytes;
+};
+
+constexpr Export kExports[] = {
+    {kThrashDrawPointMesh, 0xa866e0, 12}, {kThrashDrawPointStrip, 0xa86790, 8}, {kThrashDrawLineStrip, 0xa86490, 8},
+    {kThrashDrawLineMesh, 0xa86350, 12},  {kThrashDrawPoint, 0xa86650, 4},       {kThrashWriteRect, 0xa85290, 20},
+    {kThrashTReset, 0xa84690, 0},         {kThrashDrawTriStrip, 0xa85ac0, 8},    {kThrashReadRect, 0xa85220, 20},
+    {kThrashDrawTriMesh, 0xa85900, 12},   {kThrashDrawLine, 0xa86240, 8},        {kThrashClip, 0xa848b0, 16},
+    {kThrashDrawQuadMesh, 0xa85520, 12},  {kThrashSetTexture, 0xa846d0, 4},      {kThrashWindow, 0xa84780, 4},
+    {kThrashIdle, 0xa84810, 0},           {kThrashPageFlip, 0xa847e0, 0},        {kThrashSelectDisplay, 0xa83f10, 4},
+    {kThrashSync, 0xa84830, 4},           {kThrashDrawQuad, 0xa85300, 16},       {kThrashFlushWindow, 0xa847d0, 0},
+    {kThrashLockWindow, 0xa850f0, 0},     {kThrashSetVideoMode, 0xa843d0, 12},   {kThrashUnlockWindow, 0xa851d0, 4},
+    {kThrashDrawTriFan, 0xa86000, 8},     {kThrashTUpdate, 0xa84630, 12},        {kThrashTAlloc, 0xa844b0, 20},
+    {kThrashSetState, 0xa84990, 8},       {kThrashClearWindow, 0xa847b0, 0},     {kThrashDrawTri, 0xa85770, 12},
+    {kThrashInit, 0xa83f50, 0},           {kThrashRestore, 0xa84100, 0},         {kThrashAbout, 0xa83c60, 0},
+    {kThrashIs, 0xa83df0, 0},
+};
+
+/* The export whose pointer is at `slot`; one of no address for another
+ * slot. */
+constexpr Export exportAt(x86::reg32 slot)
+{
+    for (const Export& e : kExports)
+        if (e.slot == slot)
+            return e;
+    return {slot, 0, 0};
+}
 
 /* THRASH_setstate(state, value): 1 done, 0 a state or value the driver does
  * not take.  The state's name, then what voodoo2a does with it. */

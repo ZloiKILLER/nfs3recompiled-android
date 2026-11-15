@@ -1,5 +1,6 @@
 #include "port_shapes.h"
 #include "port_thrash.h"
+#include "thrash_calls.h"
 
 #include <cstdint>
 
@@ -88,9 +89,9 @@ constexpr reg32 kShapeDepth = 0x563aa8, kShapeW = 0x563aac;  // each corner's z 
 constexpr reg32 kClipFar = 0x7d34f8, kClipLeft = 0x7d34fc, kClipBottom = 0x7d3500, kClipTop = 0x7d3504;
 constexpr reg32 kClipRight = 0x7d350c;       // the clip's rectangle: a float's bits, compared as integers
 
-// The game's pointers to the driver's functions (THRASH_opendll fills them).
-constexpr reg32 kThrashTReset = 0x9ef918, kThrashDrawQuad = 0x9ef94c, kThrashTUpdate = 0x9ef964;
-constexpr reg32 kThrashTAlloc = 0x9ef968, kThrashSetState = 0x9ef96c, kThrashAbout = 0x9ef980;
+// The driver's functions are called through the game's pointers to them
+// (thrash_calls.h).  Where their eax is read, eax at the call is the game's
+// code's there, which the checks' stand-ins may leave.
 constexpr reg32 kStateTextureFilter = 7;     // THRASH_setstate's: filtered (1) or not
 
 // What is not theirs: the render states, the clipper, EA's allocator, its
@@ -902,7 +903,8 @@ Result drawTileQuad(App* app, CPU& cpu, reg32 esp)
     if (byteAt(app, kDriverFlags) & 2)
     {
         if (!callGame(app, cpu, frame, kSetRenderState, {0x2bf, 2})
-            || !callGame(app, cpu, frame, dwordAt(app, kThrashDrawQuad), {}, {corner(0), corner(1), corner(2), corner(3)})
+            || !guest::driverFrom<thrash::kThrashDrawQuad, &driver::drawQuad>(app, cpu, frame, corner(0), corner(1),
+                                                                              corner(2), corner(3))
             || !callGame(app, cpu, frame, kSetRenderState, {0x2bf, 0}, {}, r))
             return {};
         return int32_t(r);
@@ -1007,18 +1009,18 @@ Result artTexturesOf(App* app, CPU& cpu, reg32 esp, reg32 shape, int32_t again, 
             if (again == 0)
             {
                 const reg32 kept = dwordAt(app, formatAt);
-                reg32 texture;
-                if (!callGame(app, cpu, frame, dwordAt(app, kThrashTAlloc), {reg32(size), cut, kept, 0},
-                              {reg32(size), reg32(size), kept, 0, 0}, texture))
+                cpu.eax = reg32(size);
+                const std::optional<reg32> texture = guest::driverFrom<thrash::kThrashTAlloc, &driver::tAlloc>(
+                    app, cpu, frame, reg32(size), reg32(size), kept, 0, 0);
+                if (!texture)
                     return {};
-                putDword(app, at, texture);
+                putDword(app, at, *texture);
                 putWord(app, at + 8, uint16_t(row));
                 putWord(app, at + 4, uint16_t(size));
                 putWord(app, at + 6, uint16_t(column));
             }
             const reg32 texture = dwordAt(app, at);
-            if (!callGame(app, cpu, frame, dwordAt(app, kThrashTUpdate), {reg32(tile) * 3, reg32(tile), texture, cut},
-                          {texture, cut, 0}))
+            if (!guest::driverFrom<thrash::kThrashTUpdate, &driver::tUpdate>(app, cpu, frame, texture, cut, 0))
                 return {};
             if (tile < 0x31f)
             {
@@ -1060,13 +1062,15 @@ Result textureOf(App* app, CPU& cpu, reg32 esp, reg32 out, reg32 shape, int32_t 
         return {};
     const reg32 kept = dwordAt(app, formatAt);
     const reg32 width = reg32(sword(app, pixels + kShapeWidth)), height = reg32(sword(app, pixels + kShapeHeight));
-    reg32 texture;
-    if (!callGame(app, cpu, frame, dwordAt(app, kThrashTAlloc), {width, kept}, {width, height, kept, 0, 0}, texture))
+    cpu.eax = width;
+    const std::optional<reg32> texture =
+        guest::driverFrom<thrash::kThrashTAlloc, &driver::tAlloc>(app, cpu, frame, width, height, kept, 0, 0);
+    if (!texture)
         return {};
-    putDword(app, out, texture);
-    if (texture != 0
-        && !callGame(app, cpu, frame, dwordAt(app, kThrashTUpdate), {texture, pixels + kShapePixels},
-                     {texture, pixels + kShapePixels, 0}))
+    putDword(app, out, *texture);
+    if (*texture != 0
+        && !guest::driverFrom<thrash::kThrashTUpdate, &driver::tUpdate>(app, cpu, frame, *texture,
+                                                                        pixels + kShapePixels, 0))
         return {};
     if (!callGame(app, cpu, frame, kFree, {pixels}))
         return {};
@@ -1077,7 +1081,7 @@ Result textureOf(App* app, CPU& cpu, reg32 esp, reg32 out, reg32 shape, int32_t 
  * table of them emptied. */
 Result texturesLetGo(App* app, CPU& cpu, reg32 esp)
 {
-    if (!callGame(app, cpu, esp - 0x18, dwordAt(app, kThrashTReset), {cpu.eax, cpu.edx, cpu.ebx, cpu.ecx}))
+    if (!guest::driverFrom<thrash::kThrashTReset, &driver::tReset>(app, cpu, esp - 0x18))
         return {};
     for (reg32 row = 0; row < 0xd; ++row)
         for (reg32 column = 0; column < 0xa; ++column)
@@ -1125,9 +1129,11 @@ Result shapeToPixelsOf(App* app, CPU& cpu, reg32 esp, reg32 target, reg32 shape,
 {
     const reg32 frame = esp - 0xc - 0x9c;
     const reg32 base = esp - 0xc - 0x7e;  // ebp as the code has it: its locals about it
-    reg32 about;
-    if (!callGame(app, cpu, frame, dwordAt(app, kThrashAbout), {target, shape, reg32(limit), reg32(limit)}, {}, about))
+    cpu.eax = target;
+    const std::optional<reg32> described = guest::driverFrom<thrash::kThrashAbout, &driver::about>(app, cpu, frame);
+    if (!described)
         return {};
+    const reg32 about = *described;
     const int32_t shapeWidth = sword(app, shape + kShapeWidth);
     const reg32 asked = dwordAt(app, format);
     if (asked != 3 && asked != 4 && asked != 7 && asked != 6 && asked != 0)
@@ -1319,7 +1325,7 @@ Result drawArt(App* app, CPU& cpu, reg32 esp, int32_t record, int32_t x, int32_t
         const reg32 apart = reg32(tile - sword(app, at + 0xe));
         if (int32_t(int32_t(apart) > 0 ? apart : 0u - apart) > 0xa)
         {
-            if (!callGame(app, cpu, frame, dwordAt(app, kThrashSetState), {apart, apart}, {kStateTextureFilter, 0}))
+            if (!guest::driverFrom<thrash::kThrashSetState, &driver::setState>(app, cpu, frame, kStateTextureFilter, 0))
                 return {};
             unfiltered = true;
         }
@@ -1331,11 +1337,12 @@ Result drawArt(App* app, CPU& cpu, reg32 esp, int32_t record, int32_t x, int32_t
         {
             if (!unfiltered)
                 return end;
-            reg32 r;
-            if (!callGame(app, cpu, frame, dwordAt(app, kThrashSetState), {reg32(end), reg32(i)},
-                          {kStateTextureFilter, 1}, r))
+            cpu.eax = reg32(end);
+            const std::optional<reg32> r =
+                guest::driverFrom<thrash::kThrashSetState, &driver::setState>(app, cpu, frame, kStateTextureFilter, 1);
+            if (!r)
                 return {};
-            return int32_t(r);
+            return int32_t(*r);
         }
         // This tile: its texture, its size, where it sits in the record.
         const reg32 t = kArtTiles + reg32(tile) * 0xc;

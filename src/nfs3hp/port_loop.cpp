@@ -11,6 +11,7 @@
 #include "port_menus.h"
 #include "port_sound_effects.h"
 #include "port_sound_music.h"
+#include "thrash_calls.h"
 
 #include <cstdint>
 #include <cstring>
@@ -212,7 +213,6 @@ constexpr Var<reg32> kResumed{0x55fec0};
 constexpr Var<reg32> kFade{0x559c60};          // a screen's fade out, to 500
 constexpr Var<reg32> kFadeIn{0x559c68};
 constexpr reg32 kArtFolder = 0x7a2db4;
-constexpr Var<reg32> kRestoreDisplay{0x9ef918};  // an import's slot
 // The dialogs the loop opens, their lines and buttons.
 constexpr reg32 kDialogLines = 0x662970;
 constexpr reg32 kDialogButtons = 0x66297c;
@@ -1258,7 +1258,11 @@ Result waitWhileSuspendedCore(Game& g, reg32 esp, reg32 menu, reg32 action)
         GAME(at, kSleep, {0});
         GAME(at, kPollEvents);
     } while (kSuspended(app) != 0);
-    GAME(at, kRestoreDisplay(app));
+    // THRASH_treset, through the game's pointer to it (thrash_calls.h).
+    const std::optional<reg32> reset = guest::driverFrom<thrash::kThrashTReset, &driver::tReset>(app, g.cpu, at);
+    if (!reset)
+        return {};
+    g.eax = *reset;
     kResumed.set(app, 0);
     GAME(at, kResumeSound, {1});
     if (screen(app, menu).onExit != 0)

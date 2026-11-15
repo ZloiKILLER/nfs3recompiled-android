@@ -15,7 +15,7 @@
 #include "host_threads.h"
 #include "port_snd_stream_calls.h"
 #include <nfs3hp.h>
-#include <winapi/kernel32.h>
+#include "host_system.h"
 #include "host_net.h"
 #include "host_window.h"
 #include <cstdint>
@@ -2525,7 +2525,7 @@ reg32 frontend::netb::tapiGetCommHandleConfig(App* app, CPU& cpu)
     g.setWord(kCommDcb, 0x1000);
     g.setDword(kCommDcb + 0x34, 0xe73cf52e);
     const reg32 read = windows<kGetCommConfig, &host::serialGetProperties>(g, cpu, g.dword(handleAt), kCommDcb);
-    windows<kCloseHandle, &win32::kernel32::CloseHandle>(g, cpu, g.dword(handleAt));
+    windows<kCloseHandle, &host::closeHandle>(g, cpu, g.dword(handleAt));
     if (read == 0)
         return 0;
     g.setDword(kCommConfig, kCommDcb + 0x3c);

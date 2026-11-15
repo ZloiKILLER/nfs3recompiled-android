@@ -285,7 +285,7 @@ void deleteMusicCopy(App* app, CPU& cpu)
     {
         // The import at 0x5345ec (SetFileAttributesA): the attributes of the file set to archive (0x20).
         g.sync();
-        if (!callWindows<0x5345ec, &win32::kernel32::SetFileAttributesA>(app, cpu, g.esp, {eax}, eax, name, 0x20)
+        if (!callWindows<0x5345ec, &host::setFileAttributes>(app, cpu, g.esp, {eax}, eax, name, 0x20)
             || !g.call(kUnlink, {name}, eax))
             return;
     }

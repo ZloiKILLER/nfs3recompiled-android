@@ -27,7 +27,8 @@ struct SDL_AtomicInt;
 struct SDL_Semaphore;
 #include <lib/thread.h>
 #include <nfs3hp.h>
-#include <winapi/kernel32.h>
+#include <lib/winapp.h>
+#include <winapi/types.h>
 #include <optional>
 
 /* The race's main loop and what hangs off it, decompiled:

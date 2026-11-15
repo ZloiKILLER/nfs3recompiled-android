@@ -3,6 +3,7 @@
 
 #include "port.h"
 
+#include <optional>
 #include <vector>
 
 /* The THRASH driver, the Voodoo2's (voodoo2a.dll), as the port's own C++
@@ -132,6 +133,59 @@ reg32 lodOf(App* app, int32_t log);
  * 256 a side, which a .tga of 512 fills at 512).  A record of more levels is
  * left as it is. */
 void resizeTexture(App* app, reg32 record, reg32 side);
+
+/* The 34 exports as C++ (port_thrash.cpp): each one's words as its
+ * parameters, in their order (thrash.h), and its result -- what voodoo2a
+ * leaves in eax.  The THRASH_* adapters the game's pointers lead to take the
+ * words off the stack, call these and pop the words; native code calls them
+ * through the game's pointers, guest::driver (thrash_calls.h).
+ *
+ * An export that gives nothing back (Glide's void ones) leaves eax as its
+ * caller had it: its function returns cpu.eax.  Those that call the game's
+ * own code -- its lambdas, voodoo2a's malloc and free -- give nullopt when
+ * the game stopped in it.  The registers a caller left that voodoo2a reads
+ * besides (ebx for setVideoMode and restore, esp for is) are read from cpu as
+ * the export finds them. */
+
+reg32 about(App* app, CPU& cpu);
+reg32 clearWindow(App* app, CPU& cpu);
+reg32 clip(App* app, CPU& cpu, reg32 minX, reg32 minY, reg32 maxX, reg32 maxY);
+reg32 drawLine(App* app, CPU& cpu, reg32 a, reg32 b);
+reg32 drawLineMesh(App* app, CPU& cpu, reg32 count, reg32 vertices, reg32 lines);
+reg32 drawLineStrip(App* app, CPU& cpu, reg32 count, reg32 vertices);
+reg32 drawPoint(App* app, CPU& cpu, reg32 vertex);
+reg32 drawPointMesh(App* app, CPU& cpu, reg32 count, reg32 vertices, reg32 points);
+reg32 drawPointStrip(App* app, CPU& cpu, reg32 count, reg32 vertices);
+reg32 drawQuad(App* app, CPU& cpu, reg32 a, reg32 b, reg32 c, reg32 d);
+reg32 drawQuadMesh(App* app, CPU& cpu, reg32 count, reg32 vertices, reg32 quads);
+reg32 drawTri(App* app, CPU& cpu, reg32 a, reg32 b, reg32 c);
+reg32 drawTriFan(App* app, CPU& cpu, reg32 count, reg32 vertices);
+reg32 drawTriMesh(App* app, CPU& cpu, reg32 count, reg32 vertices, reg32 triangles);
+/* The strip's argument voodoo2a writes back (port_thrash.cpp) is the
+ * adapter's: there is none here. */
+reg32 drawTriStrip(App* app, CPU& cpu, reg32 count, reg32 vertices);
+reg32 flushWindow(App* app, CPU& cpu);
+reg32 idle(App* app, CPU& cpu);
+reg32 init(App* app, CPU& cpu);
+reg32 is(App* app, CPU& cpu);
+std::optional<reg32> lockWindow(App* app, CPU& cpu);
+reg32 pageFlip(App* app, CPU& cpu);
+std::optional<reg32> readRect(App* app, CPU& cpu, reg32 x, reg32 y, reg32 width, reg32 height, reg32 pixels);
+std::optional<reg32> restore(App* app, CPU& cpu);
+reg32 selectDisplay(App* app, CPU& cpu, reg32 board);
+/* The argument voodoo2a writes back for thrash::kMipLinear is the
+ * adapter's, as with drawTriStrip. */
+reg32 setState(App* app, CPU& cpu, reg32 state, reg32 value);
+reg32 setTexture(App* app, CPU& cpu, reg32 texture);
+std::optional<reg32> setVideoMode(App* app, CPU& cpu, reg32 mode, reg32 buffers, reg32 auxiliary);
+reg32 sync(App* app, CPU& cpu, reg32 what);
+std::optional<reg32> tAlloc(App* app, CPU& cpu, reg32 width, reg32 height, reg32 format, reg32 palette,
+                            reg32 levels);
+std::optional<reg32> tReset(App* app, CPU& cpu);
+reg32 tUpdate(App* app, CPU& cpu, reg32 texture, reg32 texels, reg32 palette);
+std::optional<reg32> unlockWindow(App* app, CPU& cpu, reg32 lock);
+reg32 window(App* app, CPU& cpu, reg32 buffer);
+std::optional<reg32> writeRect(App* app, CPU& cpu, reg32 x, reg32 y, reg32 width, reg32 height, reg32 pixels);
 
 }  // namespace driver
 }  // namespace port

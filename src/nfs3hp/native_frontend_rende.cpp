@@ -17,6 +17,7 @@
 #include "native_frontend_sime.h"
 #include "native_graphics.h"
 #include "native_vertices.h"
+#include "thrash_calls.h"
 #include <nfs3hp.h>
 #include <cstring>
 #include <iterator>
@@ -167,7 +168,17 @@ constexpr reg32 kFrameTime = 0x7d3684;
  * A quad on the card: sub_4c1900, sub_4c19e0
  * ------------------------------------------------------------------------- */
 
-constexpr reg32 kThrashDrawQuad = 0x9ef94c, kThrashDrawTri = 0x9ef974;  // pointers to the driver's
+/* One of the driver's functions through the game's pointer to it (thrash_calls.h): its eax,
+ * Terminated when the game stopped in it, as Guest::call. */
+template <reg32 Slot, auto Function, typename... Words>
+reg32 driverCall(Guest& guest, Words... words)
+{
+    const std::optional<reg32> eax = guest::driver<Slot, Function>(guest.app(), guest.cpu(), words...);
+    if (!eax)
+        throw fe::Terminated();
+    return *eax;
+}
+
 constexpr reg32 kVertexCode = 0x14;            // a corner's clip code, a byte
 
 /* The frame both have: a triangle's three corners and the four corners' codes. */
@@ -229,12 +240,12 @@ x86::reg32 frontend::rende::drawQuadClipped(App* app, CPU& cpu, reg32 a, reg32 b
         return withHigh(withLow(cpu.eax, uint8_t(outOfFirst & codeD)), outOfFirst);
     cpu.ebx = withLow(cpu.ebx, uint8_t(anyOfFirst | codeD));
     if ((anyOfFirst | codeD) == 0)
-        return guest.call(guest.dword(kThrashDrawQuad), args({}, { a, b, c, d }));
+        return driverCall<thrash::kThrashDrawQuad, &port::driver::drawQuad>(guest, a, b, c, d);
 
     if (outOfFirst != 0)
         cpu.eax = withHigh(cpu.eax, outOfFirst);
     else if (anyOfFirst == 0)
-        guest.call(guest.dword(kThrashDrawTri), args({}, { a, b, c }));
+        driverCall<thrash::kThrashDrawTri, &port::driver::drawTri>(guest, a, b, c);
     else
         clipFirstTriangle(guest, a, b, c, anyOfFirst);
 
@@ -248,7 +259,7 @@ x86::reg32 frontend::rende::drawQuadClipped(App* app, CPU& cpu, reg32 a, reg32 b
     if (anyOfSecond == 0)
     {
         cpu.ebx = d;
-        return guest.call(guest.dword(kThrashDrawTri), args({}, { a, c, d }));
+        return driverCall<thrash::kThrashDrawTri, &port::driver::drawTri>(guest, a, c, d);
     }
     return clipSecondTriangle(guest, a, c, d, againC, againD, anyOfSecond);
 }
@@ -276,7 +287,7 @@ x86::reg32 frontend::rende::drawQuadSplit(App* app, CPU& cpu, reg32 a, reg32 b, 
     {
         const uint8_t anyOfFirst = uint8_t(codeA | codeB | codeC);
         if (anyOfFirst == 0)
-            guest.call(guest.dword(kThrashDrawTri), args({}, { a, b, c }));
+            driverCall<thrash::kThrashDrawTri, &port::driver::drawTri>(guest, a, b, c);
         else
             clipFirstTriangle(guest, a, b, c, anyOfFirst);
     }
@@ -291,7 +302,7 @@ x86::reg32 frontend::rende::drawQuadSplit(App* app, CPU& cpu, reg32 a, reg32 b, 
     if (anyOfSecond == 0)
     {
         cpu.edx = d;
-        return guest.call(guest.dword(kThrashDrawTri), args({}, { a, c, d }));
+        return driverCall<thrash::kThrashDrawTri, &port::driver::drawTri>(guest, a, c, d);
     }
     return clipSecondTriangle(guest, a, c, d, againC, againD, anyOfSecond);
 }

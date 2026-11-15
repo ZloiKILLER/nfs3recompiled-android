@@ -1,5 +1,6 @@
 #include "port_snd.h"
 #include "port_snd_play.h"
+#include "isnd_calls.h"
 
 #ifdef __ANDROID__
 #include <SDL3/SDL.h>
@@ -581,12 +582,13 @@ Result resolveSample(App* app, CPU& cpu, reg32 esp, reg32 tags, reg32 base)
     }
     else if (!fail(app, cpu, f, kPlatformResolveError, 0x6d, {0x551ac4, compression}))
         return {};
-    reg32 made;
-    if (!callGame(app, cpu, f, kDirectCreate3dBuf(app), {length, rate, channels, format},
-                  {channels, format, rate, length, loopStart, loopEnd, wordAt(app, samplePlace)}, made))
+    const std::optional<reg32> made = guest::soundFrom<isnd::kDirectCreate3dBuf, &eacsnd::create3d>(
+        app, cpu, f, {length, rate, channels, format}, channels, format, rate, length, loopStart, loopEnd,
+        wordAt(app, samplePlace));
+    if (!made)
         return {};
-    app->getMemory<reg32>(buffer) = made;
-    if (made != 0)
+    app->getMemory<reg32>(buffer) = *made;
+    if (*made != 0)
         app->getMemory<uint8_t>(methodPlace) = 3;
     return 8;
 }
@@ -616,10 +618,11 @@ Result unresolveSample(App* app, CPU& cpu, reg32 esp, reg32 tags)
         return 0;
     app->getMemory<uint8_t>(place) = 2;
     // eax the reader's last answer, which eacsnd's answer is when it gives none.
-    reg32 eax = more ? 1 : 0;
-    if (!callGame(app, cpu, f, kDirectRemoveBuf(app), {eax}, {wordAt(app, buffer)}, eax))
+    const std::optional<reg32> removed =
+        guest::soundFrom<isnd::kDirectRemoveBuf, &eacsnd::remove3d>(app, cpu, f, {more ? 1u : 0u}, wordAt(app, buffer));
+    if (!removed)
         return {};
-    return int32_t(eax);
+    return int32_t(*removed);
 }
 
 /* 0x5000b8's (iSNDmixstart): channel `index` started on a sample: `format` its
@@ -823,13 +826,13 @@ Result playSample(App* app, CPU& cpu, reg32 esp, reg32 tags, int32_t mode, int32
         const x86::Float scaled = fp::mul(pitchScale(app, cpu, play.pitch), x86::Float(int32_t(p.rate)));
         const int64_t frames = chopped<int64_t>(cpu, scaled);
         // eax as the pitch's power leaves it: its size.
-        reg32 eax = reg32(play.pitch <= 0 ? imul(play.pitch, -1) : play.pitch);
-        if (!callGame(app, cpu, f, kDirectPlay3d(app), {eax},
-                      {wordAt(app, bufferPlace), reg32(index), looped, reg32(frames), reg32(play.volume), play.position,
-                       reg32(play.elevation)},
-                      eax))
+        const reg32 eax = reg32(play.pitch <= 0 ? imul(play.pitch, -1) : play.pitch);
+        const std::optional<reg32> played = guest::soundFrom<isnd::kDirectPlay3d, &eacsnd::play3d>(
+            app, cpu, f, {eax}, wordAt(app, bufferPlace), reg32(index), looped, reg32(frames), reg32(play.volume),
+            play.position, reg32(play.elevation));
+        if (!played)
             return {};
-        if (int32_t(eax) >= 0)
+        if (int32_t(*played) >= 0)
         {
             p.method = uint8_t(method);
             return 0;

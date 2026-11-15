@@ -10,7 +10,13 @@
  * made from the case and the call's place, pops as the callee pops (ret N, a
  * THRASH stdcall's size), chops st(0) for __CHP and leaves a made-up float for
  * the functions that return one -- and now and then stops the game.  Then the
- * calls, the registers, the flags, the x87 and the memory are compared.
+ * calls, the registers, the x87 and the memory are compared, as game_checks
+ * compares them: a call by its target, the register arguments its callee's
+ * code reads (entry_regs.py, gen_render.py's kArguments) and its stack words;
+ * at the end the direction flag and every register but the tested function's
+ * own arguments, which Watcom's convention leaves its callers no longer, and
+ * eax where a caller of it reads eax after it (entry_regs.py, result_read) --
+ * not the arithmetic flags, which no caller reads after a call.
  *
  *     rcheck <function|all> <cases> <first case> <control words, e.g. 7f,37f> [df]
  *
@@ -105,6 +111,8 @@ std::vector<unsigned char> g_image;
 std::uint64_t g_seed = 0;
 std::atomic<unsigned> g_caseTick{0};
 const char* g_curName = "";
+unsigned g_curArguments = 0;  // the tested function's register arguments
+bool g_curResult = true;      // whether its callers read its eax
 unsigned g_curControl = 0, g_curCase = 0;
 void runaway(const char* why)
 {
@@ -201,6 +209,25 @@ unsigned thrashBytes(x86::reg32 slot, const char** name)
     return 0;
 }
 
+/* How many of eax, edx, ebx and ecx the function at `address` takes: all four for one the table
+ * has not. */
+unsigned argumentsOf(x86::reg32 address)
+{
+    for (const auto& a : kArguments)
+        if (a.address == address)
+            return a.registers;
+    return 4;
+}
+
+/* Whether a caller of the function at `address` reads its eax: so for one the table has not. */
+bool resultOf(x86::reg32 address)
+{
+    for (const auto& a : kArguments)
+        if (a.address == address)
+            return a.result;
+    return true;
+}
+
 unsigned popsOf(x86::reg32 address)
 {
     for (const auto& p : kPops)
@@ -244,8 +271,10 @@ public:
             bytes = thrashBytes(address - kThrashBase, &name);
         else
             bytes = popsOf(address);
-        for (x86::reg32 v : {cpu.eax, cpu.ebx, cpu.ecx, cpu.edx, cpu.esi, cpu.edi, cpu.ebp, cpu.esp})
-            c.words.push_back(v);
+        // Its register arguments (THRASH's, stdcall, have none), then its stack words.
+        const x86::reg32 registers[] = {cpu.eax, cpu.edx, cpu.ebx, cpu.ecx};
+        for (unsigned i = 0, n = thrash ? 0 : argumentsOf(address); i < n; ++i)
+            c.words.push_back(registers[i]);
         for (unsigned i = 0; i < bytes / 4; ++i)
         {
             const x86::reg32 w = word(esp + 4 + 4 * i);
@@ -370,17 +399,19 @@ bool compare(RApp& g, RApp& n, const x86::CPU& gc, const x86::CPU& nc, x86::reg3
     }
     if (!gc.terminate)
     {
-        const struct { const char* name; x86::reg32 a, b; } regs[] = {
-            {"eax", gc.eax, nc.eax}, {"ebx", gc.ebx, nc.ebx}, {"ecx", gc.ecx, nc.ecx}, {"edx", gc.edx, nc.edx},
-            {"esi", gc.esi, nc.esi}, {"edi", gc.edi, nc.edi}, {"ebp", gc.ebp, nc.ebp}, {"esp", gc.esp, nc.esp},
-            {"cf", gc.flags.cf, nc.flags.cf}, {"zf", gc.flags.zf, nc.flags.zf}, {"sf", gc.flags.sf, nc.flags.sf},
-            {"of", gc.flags.of, nc.flags.of}, {"pf", gc.flags.pf, nc.flags.pf}, {"af", gc.flags.af, nc.flags.af},
-            {"df", gc.flags.df, nc.flags.df},
-            {"fpu count", gc.fpu.count, nc.fpu.count},
-            {"fpu control", gc.fpu.control.word, nc.fpu.control.word},
+        // eax where its callers read it; edx, ebx and ecx where the tested function is not handed
+        // an argument in them (eax, edx, ebx, ecx in that order); the rest always.
+        const unsigned n = g_curArguments;
+        const struct { const char* name; x86::reg32 a, b; bool compared; } regs[] = {
+            {"eax", gc.eax, nc.eax, g_curResult}, {"ebx", gc.ebx, nc.ebx, n < 3}, {"ecx", gc.ecx, nc.ecx, n < 4},
+            {"edx", gc.edx, nc.edx, n < 2}, {"esi", gc.esi, nc.esi, true}, {"edi", gc.edi, nc.edi, true},
+            {"ebp", gc.ebp, nc.ebp, true}, {"esp", gc.esp, nc.esp, true},
+            {"df", gc.flags.df, nc.flags.df, true},
+            {"fpu count", gc.fpu.count, nc.fpu.count, true},
+            {"fpu control", gc.fpu.control.word, nc.fpu.control.word, true},
         };
         for (const auto& r : regs)
-            if (r.a != r.b)
+            if (r.compared && r.a != r.b)
             {
                 std::snprintf(b, sizeof b, "%s %08x generated, %08x native", r.name, r.a, r.b);
                 what = b;
@@ -503,6 +534,12 @@ bool runCase(const RenderTest& t, RApp& g, RApp& n, unsigned index, x86::reg16 c
         f = x86::Float(v);
     }
     g_stopAt = r.chance(10) ? long(r.below(12)) : -1;
+    /* the smoke's and the streaks' particle count: at most a group's 800 (9600 bytes of 12-byte
+     * positions; the weather never asks more, tail's weatherOnView).  With millions the projected
+     * points (32 bytes each from 0x8ba4c0) run over the function's own stack frame, which the
+     * game's code reads its locals back from and a typed core holds in C++. */
+    if (t.address == 0x4de070 || t.address == 0x4de700)
+        cpu.edx %= 801;
     // a screen mode: Dynamic Fullscreen's, the one open, in every third case
     if (t.address == 0x4bef50 && index % 3 == 0)
     {
@@ -629,6 +666,8 @@ int main(int argc, char** argv)
         const RenderTest& t = kRenderTests[i];
         if (std::strcmp(only, "all") != 0 && std::strcmp(only, t.name) != 0)
             continue;
+        g_curArguments = argumentsOf(t.address);
+        g_curResult = resultOf(t.address);
         for (x86::reg16 control : controls)
         {
             Counts counts;

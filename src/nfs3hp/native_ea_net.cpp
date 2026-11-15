@@ -9,7 +9,8 @@
 #include "port_snd_stream_calls.h"
 #include "native_windows.h"
 #include "host_threads.h"
-#include <winapi/kernel32.h>
+#include <lib/winapp.h>
+#include <winapi/types.h>
 
 #include <optional>
 
@@ -58,9 +59,11 @@
  *
  * The network's functions are typed: a core of its own name, and the
  * adapter under the game's name, for the dispatch and the callers still on
- * registers, leaving each register as the code leaves it -- what a Windows
- * function or a callee left in one the code does not restore too, which the
- * cores hand back.  The frames a callee is handed the address of stay on
+ * registers, leaving each register its callers read as the code leaves it
+ * (none it was handed an argument in) -- what a Windows function or a
+ * callee left in one the code does not restore too, which the cores hand
+ * back.  A callee is handed its own argument registers, and the others only
+ * where what it leaves in them is read after.  The frames a callee is handed the address of stay on
  * the guest's stack at the code's depth: the packets announceMachineLeft and
  * closeNetwork send, with the registers the code pushed above them (the
  * send's check reads on past the packet), connSend's piece, sendOverLink's
@@ -75,10 +78,9 @@
  * machine's number (0x4a6650) too, which other natives' checks stand in for.
  *
  * The unpackers are typed too, the byte pairs' tables in their frame at the
- * code's depth (their addresses are kept at 0xa0b034 to 0xa0b040) -- but
- * Huffman's (0x50ed50), a knot of jumps, still written as its code is: each
- * push and pop to the guest's stack, the frame's locals in the guest's
- * memory, the registers as the code leaves them, a label at each target. */
+ * code's depth (their addresses are kept at 0xa0b034 to 0xa0b040), and
+ * Huffman's (0x50ed50) tables in its frame at the code's depth as well:
+ * read again with no tables asked for, and a run's count writes over one. */
 namespace nfs3hp
 {
 namespace ea
@@ -172,19 +174,6 @@ constexpr reg32 kFillZero = 0x4e070c;
 constexpr reg32 kFree = 0x4e1890, kNetMessage = 0x512180;
 constexpr reg32 kConnectionTask = 0x4f5110;
 
-void push(App* app, CPU& cpu, reg32 value)
-{
-    cpu.esp -= 4;
-    put(app, cpu.esp, value);
-}
-
-reg32 pop(App* app, CPU& cpu)
-{
-    const reg32 value = at(app, cpu.esp);
-    cpu.esp += 4;
-    return value;
-}
-
 reg16 word16(App* app, reg32 address)
 {
     return app->getMemory<reg16>(address);
@@ -211,78 +200,45 @@ struct Saved
     reg32 ebx, ecx, edx, esi, edi, ebp;
 };
 
-/* `call` (true, or false when the game stopped) made with the four registers
- * as the code has them; every register as it was before after it.  What the
- * callee left in the four; nullopt when the game stopped. */
-template <typename Call>
-std::optional<Regs> callWithRegisters(CPU& cpu, Regs in, Call call)
-{
-    const reg32 result = cpu.eax;
-    const Saved kept{cpu.ebx, cpu.ecx, cpu.edx, cpu.esi, cpu.edi, cpu.ebp};
-    cpu.eax = in.eax;
-    cpu.edx = in.edx;
-    cpu.ebx = in.ebx;
-    cpu.ecx = in.ecx;
-    if (!call())
-        return std::nullopt;
-    const Regs left{cpu.eax, cpu.edx, cpu.ebx, cpu.ecx};
-    cpu.eax = result;
-    cpu.ebx = kept.ebx;
-    cpu.ecx = kept.ecx;
-    cpu.edx = kept.edx;
-    cpu.esi = kept.esi;
-    cpu.edi = kept.edi;
-    cpu.ebp = kept.ebp;
-    return left;
-}
-
-/* A call by address with the four registers as the code has them and
- * `words` pushed (the first at the top), taken off after it; every register
- * as it was before after it, esp too.  What the callee left in the four;
- * nullopt when the game stopped. */
+/* A call by address with the four registers `in` -- what a callee that
+ * leaves them as handed, or one whose registers are handed on, is given as
+ * the code has them -- and `words` pushed (the first at the top), taken off
+ * after it; every register but eax as it was before after it, esp too
+ * (guest::KeptRegisters).  What the callee left in the four; nullopt when
+ * the game stopped. */
 std::optional<Regs> callWith(App* app, CPU& cpu, reg32 target, Regs in, std::initializer_list<reg32> words = {})
 {
-    return callWithRegisters(cpu, in, [&] { return guest::call(app, cpu, target, words); });
-}
-
-/* A typed core called as C++ (guest::direct, in `call`) the way callWith calls by address: the
- * four registers loaded from `in` first, as the code has them for the callee; every register as it
- * was before after it.  What `call` gives back: what the callee leaves, from its result. */
-template <typename Call>
-auto directWith(CPU& cpu, Regs in, Call call) -> decltype(call())
-{
-    const reg32 result = cpu.eax;
-    const Saved kept{cpu.ebx, cpu.ecx, cpu.edx, cpu.esi, cpu.edi, cpu.ebp};
+    const guest::KeptRegisters kept(cpu);
     cpu.eax = in.eax;
     cpu.edx = in.edx;
     cpu.ebx = in.ebx;
     cpu.ecx = in.ecx;
-    auto left = call();
-    if (cpu.terminate)
-        return left;
-    cpu.eax = result;
-    cpu.ebx = kept.ebx;
-    cpu.ecx = kept.ecx;
-    cpu.edx = kept.edx;
-    cpu.esi = kept.esi;
-    cpu.edi = kept.edi;
-    cpu.ebp = kept.ebp;
-    return left;
+    if (!guest::call(app, cpu, target, words))
+        return std::nullopt;
+    return Regs{cpu.eax, cpu.edx, cpu.ebx, cpu.ecx};
 }
 
-/* EnterCriticalSection or LeaveCriticalSection (`Function`) on `lock`, as
- * callWith calls: the port's own, called as C++ (native_windows.h); in the
- * check through its import's slot `Slot`. */
+/* EnterCriticalSection or LeaveCriticalSection (`Function`) on `lock`: the
+ * port's own, called as C++ (native_windows.h); in the check through its
+ * import's slot `Slot`, whose stand-in leaves eax as handed now and then --
+ * `eax`, as the code has it, where what it leaves there is read.  Every
+ * register but eax kept; eax as it leaves it. */
 template <reg32 Slot, auto Function>
-std::optional<Regs> lockCall(App* app, CPU& cpu, reg32 lock, Regs in)
+std::optional<reg32> lockCall(App* app, CPU& cpu, reg32 lock, std::optional<reg32> eax = std::nullopt)
 {
-    return callWithRegisters(cpu, in, [&] { return guest::windows<Slot, Function>(app, cpu, lock).has_value(); });
+    const guest::KeptRegisters kept(cpu);
+    if (eax)
+        cpu.eax = *eax;
+    if (!guest::windows<Slot, Function>(app, cpu, lock))
+        return std::nullopt;
+    return cpu.eax;
 }
 
 /* An Error from `file`'s `function` at `line` (set where Error reads them,
- * in that order), its words on the stack, the format first.  It keeps every
- * register but eax: eax as it leaves it. */
-std::optional<reg32> reportError(App* app, CPU& cpu, reg32 file, reg32 function, reg32 line, Regs in,
+ * in that order), its words on the stack, the format first; `eax` as the
+ * code hands it over.  It keeps every register but eax: eax as it leaves
+ * it. */
+std::optional<reg32> reportError(App* app, CPU& cpu, reg32 file, reg32 function, reg32 line, reg32 eax,
                                  std::initializer_list<reg32> words)
 {
     put(app, kWhereFile, file);
@@ -291,19 +247,18 @@ std::optional<reg32> reportError(App* app, CPU& cpu, reg32 file, reg32 function,
     guest::Words more({});
     for (const reg32* word = words.begin() + 1; word < words.end(); ++word)
         more.word[more.count++] = *word;
-    return directWith(cpu, in, [&]() -> std::optional<reg32> {
-        guest::direct<0x401010, ea::error>(app, cpu, *words.begin(), more);
-        if (cpu.terminate)
-            return std::nullopt;
-        return cpu.eax;
-    });
+    cpu.eax = eax;
+    guest::direct<0x401010, ea::error>(app, cpu, *words.begin(), more);
+    if (cpu.terminate)
+        return std::nullopt;
+    return cpu.eax;
 }
 
 /* The queue `queue` uninitialized, as the queues report one in `function`
- * at `line`: its address and the function's name. */
-std::optional<reg32> reportUninitialized(App* app, CPU& cpu, reg32 queue, reg32 function, reg32 line, Regs in)
+ * at `line`: its address and the function's name; eax the queue. */
+std::optional<reg32> reportUninitialized(App* app, CPU& cpu, reg32 queue, reg32 function, reg32 line)
 {
-    return reportError(app, cpu, kQueueC, function, line, in, {kUninitialized, function, queue});
+    return reportError(app, cpu, kQueueC, function, line, queue, {kUninitialized, function, queue});
 }
 
 /* The guest's stack lowered `bytes` while it lives, as the code's pushes and
@@ -472,10 +427,7 @@ std::optional<reg32> callNet(App* app, CPU& cpu, reg32 net, reg32 name, reg32 sl
     if (!traceNet(app, cpu, name))
         return std::nullopt;
     const reg32 functions = at(app, net + kNetFunctions);
-    const auto left = callWith(app, cpu, at(app, functions + slot), {net, argument, functions, net});
-    if (!left)
-        return std::nullopt;
-    return left->eax;
+    return guest::watcomEax(app, cpu, at(app, functions + slot), {net, argument});
 }
 
 /* 0x4f5040: whether the player `player` is the NET object `net`'s: its
@@ -483,21 +435,12 @@ std::optional<reg32> callNet(App* app, CPU& cpu, reg32 net, reg32 name, reg32 sl
 std::optional<reg32> checkNetPlayer(App* app, CPU& cpu, reg32 net, reg32 player)
 {
     const reg32 check = at(app, net + kNetCheck);
-    const auto left = callWith(app, cpu, at(app, check + kCheckSlot), {at(app, net + kNetGame), player, cpu.ebx, check});
-    if (!left)
-        return std::nullopt;
-    return left->eax;
+    return guest::watcomEax(app, cpu, at(app, check + kCheckSlot), {at(app, net + kNetGame), player});
 }
 
-/* What qnth gives back: the element, and the count as it leaves it in edx. */
-struct Nth
-{
-    reg32 element, left;
-};
-
 /* 0x50dc00: the element `n` + 1 past `element` -- its next, and on -- or 0
- * past the last; `n` counted down to -1, or as far as the list went. */
-Nth nth(App* app, reg32 element, reg32 n)
+ * past the last. */
+reg32 nth(App* app, reg32 element, reg32 n)
 {
     element = at(app, element);
     if (element != 0)
@@ -512,7 +455,7 @@ Nth nth(App* app, reg32 element, reg32 n)
                 break;
         }
     }
-    return {element, n};
+    return element;
 }
 
 /* 0x50dc20: the element `element` taken out of the queue `queue`, its lock
@@ -581,7 +524,7 @@ std::optional<reg32> freeQueueLock(App* app, CPU& cpu, reg32 queue)
     if (at(app, queue + kQueueLock) == 0)
     {
         const auto reported = below(cpu, 0x10, [&] {
-            return reportUninitialized(app, cpu, queue, kQfreeName, kQfreeLine, {queue, queue, kQueueC, cpu.ecx});
+            return reportUninitialized(app, cpu, queue, kQfreeName, kQfreeLine);
         });
         if (!reported)
             return std::nullopt;
@@ -603,7 +546,7 @@ std::optional<reg32> freeQueueLock(App* app, CPU& cpu, reg32 queue)
 std::optional<reg32> queueLength(App* app, CPU& cpu, reg32 queue)
 {
     if (at(app, queue + kQueueLock) == 0 && !below(cpu, 0x10, [&] {
-            return reportUninitialized(app, cpu, queue, kQlengthName, kQlengthLine, {queue, queue, kQueueC, cpu.ecx});
+            return reportUninitialized(app, cpu, queue, kQlengthName, kQlengthLine);
         }))
         return std::nullopt;
     return at(app, queue);
@@ -611,89 +554,57 @@ std::optional<reg32> queueLength(App* app, CPU& cpu, reg32 queue)
 
 /* 0x50e150, EA's qremove: the element taken out of the queue under its lock
  * (unlink); 1 if it was there.  Asked for none, what eax gives back is
- * `forNone`, edi as the caller had it.  eax, and in edx what
- * LeaveCriticalSection left. */
-std::optional<Regs> removeFromQueue(App* app, CPU& cpu, reg32 queue, reg32 element, reg32 forNone)
+ * `forNone`, edi as the caller had it. */
+std::optional<reg32> removeFromQueue(App* app, CPU& cpu, reg32 queue, reg32 element, reg32 forNone)
 {
-    const reg32 lock = at(app, queue + kQueueLock);
-    const auto entered = lockCall<kEnterCriticalSection, &host::enterLock>(
-        app, cpu, lock, {queue, lock, queue, cpu.ecx});
-    if (!entered)
+    if (!lockCall<kEnterCriticalSection, &host::enterLock>(app, cpu, at(app, queue + kQueueLock)))
         return std::nullopt;
-    Regs held = *entered;
-    if (at(app, queue + kQueueLock) == 0)
-    {
-        const Regs in{kQremoveName, kQremoveLine, queue, held.ecx};
-        const auto reported = below(cpu, 0x14, [&] {
-            return reportError(app, cpu, kQueueC, kQremoveName, kQremoveLine, in, {kUninitialized, kQremoveName, queue});
-        });
-        if (!reported)
-            return std::nullopt;
-        held = {*reported, kQremoveLine, queue, held.ecx};
-    }
-    reg32 result = forNone;
-    if (element != 0)
-    {
-        result = unlink(app, queue, element);
-        held.eax = result;
-        held.edx = element;
-    }
-    const reg32 unlock = at(app, queue + kQueueLock);
-    const auto left = lockCall<kLeaveCriticalSection, &host::leaveLock>(
-        app, cpu, unlock, {held.eax, held.edx, queue, unlock});
-    if (!left)
+    if (at(app, queue + kQueueLock) == 0 && !below(cpu, 0x14, [&] {
+            return reportError(app, cpu, kQueueC, kQremoveName, kQremoveLine, kQremoveName,
+                               {kUninitialized, kQremoveName, queue});
+        }))
         return std::nullopt;
-    return Regs{result, left->edx, queue, unlock};
+    const reg32 result = element != 0 ? unlink(app, queue, element) : forNone;
+    if (!lockCall<kLeaveCriticalSection, &host::leaveLock>(app, cpu, at(app, queue + kQueueLock)))
+        return std::nullopt;
+    return result;
 }
 
 /* 0x50e220, EA's qposition: under the queue's lock, the index of the
  * element, or -1.  A queue with a priority's function is looked through only
- * as far as the elements whose priority is not above the element's.  eax,
- * and in edx what LeaveCriticalSection left. */
-std::optional<Regs> queuePosition(App* app, CPU& cpu, reg32 queue, reg32 element)
+ * as far as the elements whose priority is not above the element's. */
+std::optional<reg32> queuePosition(App* app, CPU& cpu, reg32 queue, reg32 element)
 {
-    const reg32 lock = at(app, queue + kQueueLock);
-    const auto entered = lockCall<kEnterCriticalSection, &host::enterLock>(
-        app, cpu, lock, {queue, lock, cpu.ebx, cpu.ecx});
-    if (!entered)
+    if (!lockCall<kEnterCriticalSection, &host::enterLock>(app, cpu, at(app, queue + kQueueLock)))
         return std::nullopt;
-    Regs held = *entered;
-    reg32 index = 0;
-    if (at(app, queue + kQueueLock) == 0)
-    {
-        const Regs in{kQpositionName, kQpositionLine, index, 0};
-        const auto reported = below(cpu, 0x18, [&] {
-            return reportError(app, cpu, kQueueC, kQpositionName, kQpositionLine, in,
+    if (at(app, queue + kQueueLock) == 0 && !below(cpu, 0x18, [&] {
+            return reportError(app, cpu, kQueueC, kQpositionName, kQpositionLine, kQpositionName,
                                {kUninitialized, kQpositionName, queue});
-        });
-        if (!reported)
-            return std::nullopt;
-        held = {*reported, kQpositionLine, index, 0};
-    }
+        }))
+        return std::nullopt;
+    reg32 index = 0;
     bool found = false;
     if (element != 0)
     {
         const reg32 priority = at(app, queue + kQueuePriority);
         reg32 current = at(app, queue + kQueueFirst);
         // The element's own priority, none without the function.
-        held.eax = 0;
+        reg32 elementsPriority = 0;
         if (priority != 0)
         {
-            const auto own = callWith(app, cpu, priority, {element, at(app, queue + kQueuePriorityArgument), index, current});
+            const auto own = guest::watcomEax(app, cpu, priority, {element, at(app, queue + kQueuePriorityArgument)});
             if (!own)
                 return std::nullopt;
-            held = *own;
+            elementsPriority = *own;
         }
-        const reg32 elementsPriority = held.eax;
         while (current != 0 && current != element)
         {
             if (priority != 0)
             {
-                const auto its = callWith(app, cpu, priority, {current, at(app, queue + kQueuePriorityArgument), index, current});
+                const auto its = guest::watcomEax(app, cpu, priority, {current, at(app, queue + kQueuePriorityArgument)});
                 if (!its)
                     return std::nullopt;
-                held = *its;
-                if (its->eax > elementsPriority)
+                if (*its > elementsPriority)
                     break;
             }
             current = at(app, current);
@@ -703,56 +614,28 @@ std::optional<Regs> queuePosition(App* app, CPU& cpu, reg32 queue, reg32 element
     }
     if (!found)
         index = 0xffffffff;
-    const reg32 unlock = at(app, queue + kQueueLock);
-    const auto left = lockCall<kLeaveCriticalSection, &host::leaveLock>(
-        app, cpu, unlock, {held.eax, held.edx, index, unlock});
-    if (!left)
+    if (!lockCall<kLeaveCriticalSection, &host::leaveLock>(app, cpu, at(app, queue + kQueueLock)))
         return std::nullopt;
-    return Regs{index, left->edx, index, unlock};
+    return index;
 }
 
 /* 0x50e470, EA's qfindindex: under the queue's lock, its element `index`
- * (nth past the first), or 0.  eax, and in edx what LeaveCriticalSection
- * left. */
-std::optional<Regs> findInQueue(App* app, CPU& cpu, reg32 queue, reg32 index)
+ * (nth past the first), or 0. */
+std::optional<reg32> findInQueue(App* app, CPU& cpu, reg32 queue, reg32 index)
 {
-    const reg32 lock = at(app, queue + kQueueLock);
-    const auto entered = lockCall<kEnterCriticalSection, &host::enterLock>(
-        app, cpu, lock, {queue, lock, queue, cpu.ecx});
-    if (!entered)
+    if (!lockCall<kEnterCriticalSection, &host::enterLock>(app, cpu, at(app, queue + kQueueLock)))
         return std::nullopt;
-    Regs held = *entered;
-    if (at(app, queue + kQueueLock) == 0)
-    {
-        const Regs in{kQfindindexLine, held.edx, queue, held.ecx};
-        const auto reported = below(cpu, 0x14, [&] {
-            return reportError(app, cpu, kQueueC, kQfindindexName, kQfindindexLine, in,
+    if (at(app, queue + kQueueLock) == 0 && !below(cpu, 0x14, [&] {
+            return reportError(app, cpu, kQueueC, kQfindindexName, kQfindindexLine, kQfindindexLine,
                                {kUninitialized, kQfindindexName, queue});
-        });
-        if (!reported)
-            return std::nullopt;
-        held.eax = *reported;
-    }
-    const reg32 first = at(app, queue + kQueueFirst);
-    held.edx = first;
-    reg32 found = first;
-    if (first == 0)
-    {
-        found = 0;
-    }
-    else if (index != 0)
-    {
-        const Nth n = nth(app, at(app, queue + kQueueFirst), index - 1);
-        found = n.element;
-        held.eax = n.element;
-        held.edx = n.left;
-    }
-    const reg32 unlock = at(app, queue + kQueueLock);
-    const auto left = lockCall<kLeaveCriticalSection, &host::leaveLock>(
-        app, cpu, unlock, {held.eax, held.edx, queue, unlock});
-    if (!left)
+        }))
         return std::nullopt;
-    return Regs{found, left->edx, queue, unlock};
+    reg32 found = at(app, queue + kQueueFirst);
+    if (found != 0 && index != 0)
+        found = nth(app, at(app, queue + kQueueFirst), index - 1);
+    if (!lockCall<kLeaveCriticalSection, &host::leaveLock>(app, cpu, at(app, queue + kQueueLock)))
+        return std::nullopt;
+    return found;
 }
 
 /* 0x5123b0, EA's LAYER_send: the `count` pieces at `pieces` ({length,
@@ -819,10 +702,9 @@ std::optional<Regs> callPacker(App* app, CPU& cpu, reg32 connection, reg32 layer
     const auto found = below(cpu, 0x10, [&] { return findInQueue(app, cpu, layers, layer); });
     if (!found)
         return std::nullopt;
-    const reg32 element = found->eax;
+    const reg32 element = *found;
     if (element == 0 && !below(cpu, 0xc, [&] {
-            return reportError(app, cpu, kLayerC, kCallPackerName, kCallPackerLine,
-                               {kCallPackerName, kCallPackerLine, layers, pieces}, {kFindFailed});
+            return reportError(app, cpu, kLayerC, kCallPackerName, kCallPackerLine, kCallPackerName, {kFindFailed});
         }))
         return std::nullopt;
     return callWith(app, cpu, at(app, element + kLayerPacker), {connection, at(app, element + kLayerData), count, pieces},
@@ -844,7 +726,7 @@ std::optional<Regs> packFromTop(App* app, CPU& cpu, reg32 connection, reg32 coun
 std::optional<Regs> sendDownLayers(App* app, CPU& cpu, reg32 connection, reg32 count, reg32 pieces)
 {
     if (connection == 0 || at(app, connection + kConnectionUp) == 0)
-        return Regs{0, count, pieces, cpu.ecx};
+        return Regs{0, count, pieces, 0};
     const reg32 layers = at(app, connection + kConnectionLayers);
     return below(cpu, 8, [&] { return packFromTop(app, cpu, connection, count, pieces, layers); });
 }
@@ -886,10 +768,10 @@ std::optional<reg32> closeConnection(App* app, CPU& cpu, reg32 connection)
     if (connection == 0 || at(app, connection + kConnectionOpen) == 0)
         return 0;
     const reg32 functions = at(app, connection + kConnectionFunctions);
-    const auto closed = callWith(app, cpu, at(app, functions + kCloseSlot), {connection, connection, cpu.ebx, functions});
+    const auto closed = guest::watcomEax(app, cpu, at(app, functions + kCloseSlot), {connection});
     if (!closed)
         return std::nullopt;
-    if (closed->eax != 0 && at(app, at(app, connection + kConnectionFunctions) + kCountsSlot) != 0)
+    if (*closed != 0 && at(app, at(app, connection + kConnectionFunctions) + kCountsSlot) != 0)
     {
         const reg32 open = at(app, kOpenCount);
         if (open != 0)
@@ -901,7 +783,7 @@ std::optional<reg32> closeConnection(App* app, CPU& cpu, reg32 connection)
     }
     if (!below(cpu, 0x14, [&] { return freeLayers(app, cpu, connection); }))
         return std::nullopt;
-    return closed->eax;
+    return closed;
 }
 
 /* 0x4f5280, EA's CONN_restore: when connections are restored, each closing
@@ -918,9 +800,9 @@ std::optional<reg32> restoreConnections(App* app, CPU& cpu, reg32 handed)
         const auto closing = below(cpu, 0x1c, [&] { return findInQueue(app, cpu, kClosingQueue, 0); });
         if (!closing)
             return std::nullopt;
-        if (closing->eax == 0)
+        if (*closing == 0)
             break;
-        if (!below(cpu, 0x1c, [&] { return closeConnection(app, cpu, closing->eax); }))
+        if (!below(cpu, 0x1c, [&] { return closeConnection(app, cpu, *closing); }))
             return std::nullopt;
     }
     for (;;)
@@ -928,7 +810,7 @@ std::optional<reg32> restoreConnections(App* app, CPU& cpu, reg32 handed)
         const auto found = below(cpu, 0x1c, [&] { return findInQueue(app, cpu, kConnectionsQueue, 0); });
         if (!found)
             return std::nullopt;
-        const reg32 connection = found->eax;
+        const reg32 connection = *found;
         if (connection == 0)
             return 0;
         if (!below(cpu, 0x1c, [&] { return closeConnection(app, cpu, connection); }))
@@ -937,9 +819,9 @@ std::optional<reg32> restoreConnections(App* app, CPU& cpu, reg32 handed)
             below(cpu, 0x1c, [&] { return removeFromQueue(app, cpu, kConnectionsQueue, connection, kConnectC); });
         if (!removed)
             return std::nullopt;
-        if (removed->eax != 0 && !below(cpu, 0x18, [&] {
-                return reportError(app, cpu, kConnectC, kRestoreName, kRestoreLine,
-                                   {kRestoreLine, removed->edx, 0, connection}, {kNotRemoved, connection});
+        if (*removed != 0 && !below(cpu, 0x18, [&] {
+                return reportError(app, cpu, kConnectC, kRestoreName, kRestoreLine, kRestoreLine,
+                                   {kNotRemoved, connection});
             }))
             return std::nullopt;
     }
@@ -954,13 +836,10 @@ std::optional<reg32> endNetGame(App* app, CPU& cpu, reg32 net)
     const auto position = below(cpu, 0xc, [&] { return queuePosition(app, cpu, kPlayersQueue, net); });
     if (!position)
         return std::nullopt;
-    if (position->eax == 0xffffffff)
+    if (*position == 0xffffffff)
         return 1;
     const reg32 functions = at(app, net + kNetFunctions);
-    const auto left = callWith(app, cpu, at(app, functions + kEndGameSlot), {net, functions, cpu.ebx, net});
-    if (!left)
-        return std::nullopt;
-    return left->eax;
+    return guest::watcomEax(app, cpu, at(app, functions + kEndGameSlot), {net, functions});
 }
 
 /* 0x49ecb0: the connection dropped, if it is one and open: closed, its
@@ -1026,31 +905,19 @@ std::optional<reg32> announceLeft(App* app, CPU& cpu, reg32 machine, const Saved
     if (at(app, kEnding) != 0 || sreg32(machine) > 7 || sreg32(machine) < 0)
         return forgotten;
     const reg32 lock = at(app, kEndingLock);
-    const auto entered = lockCall<kEnterCriticalSection, &host::enterLock>(
-        app, cpu, lock, {*forgotten, saved.edx, machine, lock});
-    if (!entered)
+    if (!lockCall<kEnterCriticalSection, &host::enterLock>(app, cpu, lock))
         return std::nullopt;
     const reg32 state = kMachineStates + machine * 2;
     if (word16(app, state) != 0)
-    {
-        const reg32 unlock = at(app, kEndingLock);
-        const auto left = lockCall<kLeaveCriticalSection, &host::leaveLock>(
-            app, cpu, unlock, {machine * 2, entered->edx, machine, entered->ecx});
-        if (!left)
-            return std::nullopt;
-        return left->eax;
-    }
+        // Its eax, or the state's offset the code has there.
+        return lockCall<kLeaveCriticalSection, &host::leaveLock>(app, cpu, at(app, kEndingLock), machine * 2);
     putWord16(app, state, kMachineGone);
-    const reg32 unlock = at(app, kEndingLock);
-    if (!lockCall<kLeaveCriticalSection, &host::leaveLock>(
-            app, cpu, unlock, {machine * 2, entered->edx, unlock, entered->ecx}))
+    if (!lockCall<kLeaveCriticalSection, &host::leaveLock>(app, cpu, at(app, kEndingLock)))
         return std::nullopt;
     putByte(app, packet, kMachineLeftPacket);
     copyMemory(app, packet + 2, kMachineStates, kStatesBytes);
     putWord16(app, kStateChanged, 1);
-    const auto sent = directWith(cpu, {0, packet, kMachineLeftBytes, 1}, [&] {
-        return guest::direct<0x4a60e0, ea::packetSent>(app, cpu, 0u, packet, kMachineLeftBytes);
-    });
+    const auto sent = guest::direct<0x4a60e0, ea::packetSent>(app, cpu, 0u, packet, kMachineLeftBytes);
     if (!sent)
         return std::nullopt;
     return sent->eax;
@@ -1118,7 +985,7 @@ std::optional<Regs> sendLinked(App* app, CPU& cpu, reg32 machine, reg32 packet, 
     }
     if (!sent)
         return std::nullopt;
-    return Regs{sent->eax, sent->edx, sent->ebx, cpu.ecx};
+    return Regs{sent->eax, sent->edx, sent->ebx, 0};
 }
 
 /* The connection counts as lost: edx 1 as the code leaves it. */
@@ -1163,17 +1030,14 @@ std::optional<Regs> sendPacketTo(App* app, CPU& cpu, reg32 connection, reg32 pac
     // The machine of the connection handed (eax) announced gone; `counter`
     // the code's edi, which announceMachineLeft pushes.
     const auto announce = [&](Regs handed, reg32 counter) -> std::optional<Regs> {
-        // What machineNumber leaves: its answer in eax, the rest as handed.
-        const std::optional<Regs> number = directWith(cpu, handed, [&] {
-            return std::optional<Regs>(Regs{guest::direct<0x4a6650, ea::machineOf>(app, cpu, handed.eax), handed.edx,
-                                            handed.ebx, handed.ecx});
-        });
-        const reg32 machine = reg32(sreg32(x86::sreg16(reg16(number->eax))));
-        const Saved pushed{number->ebx, packet, number->edx, length, counter, frameBase};
+        // machineNumber keeps every register but eax: the rest as handed.
+        const reg32 number = guest::direct<0x4a6650, ea::machineOf>(app, cpu, handed.eax);
+        const reg32 machine = reg32(sreg32(x86::sreg16(reg16(number))));
+        const Saved pushed{handed.ebx, packet, handed.edx, length, counter, frameBase};
         const auto told = announceLeft(app, cpu, machine, pushed);
         if (!told)
             return std::nullopt;
-        return Regs{*told, number->edx, number->ebx, packet};
+        return Regs{*told, handed.edx, handed.ebx, packet};
     };
     if (word16(app, kNetworkHost) == 0 || kind == 0)
     {
@@ -1335,26 +1199,25 @@ std::optional<Regs> closeNetworkAt(App* app, CPU& cpu)
     pushRegisters(app, cpu.esp, {cpu.ebx, cpu.edx, cpu.ebp});
     const Lowered frame(cpu, 3 * 4 + 4);
     const reg32 packet = cpu.esp;
-    // The game's timers run (0x4e7630) with 0, the registers as the code has them: their eax.
-    const auto timersRun = [&] {
-        return directWith(cpu, {0, cpu.edx, cpu.ebx, cpu.ecx}, [&]() -> std::optional<Regs> {
-            const port::Result ran = guest::direct<0x4e7630, port::stream::runDueTasks>(app, cpu, cpu.esp - 4, 0u);
-            if (!ran)
-                return std::nullopt;
-            return Regs{reg32(*ran), cpu.edx, cpu.ebx, cpu.ecx};
-        });
+    // The game's timers run (0x4e7630) with 0: their eax.  ebp at the code's frame (above the
+    // packet), which the code's call leaves the timers to hand their tasks.
+    const auto timersRun = [&]() -> std::optional<reg32> {
+        const guest::KeptRegisters kept(cpu);
+        cpu.ebp = packet + 4;
+        const port::Result ran = guest::direct<0x4e7630, port::stream::runDueTasks>(app, cpu, packet - 4, 0u);
+        if (!ran)
+            return std::nullopt;
+        return reg32(*ran);
     };
     const auto stopped = timersRun();
     if (!stopped)
         return std::nullopt;
-    reg32 left = stopped->eax;
+    reg32 left = *stopped;
     if (word16(app, kNetworkHost) != 0)
     {
         putByte(app, packet, kClosedPacket);
         putWord16(app, packet + 2, kClosedWord);
-        const auto sent = directWith(cpu, {0, packet, kClosedBytes, cpu.ecx}, [&] {
-            return guest::direct<0x4a60e0, ea::packetSent>(app, cpu, 0u, packet, kClosedBytes);
-        });
+        const auto sent = guest::direct<0x4a60e0, ea::packetSent>(app, cpu, 0u, packet, kClosedBytes);
         if (!sent)
             return std::nullopt;
         left = sent->eax;
@@ -1365,7 +1228,7 @@ std::optional<Regs> closeNetworkAt(App* app, CPU& cpu)
     const auto again = timersRun();
     if (!again)
         return std::nullopt;
-    const auto ended = below(cpu, 4, [&] { return endNetwork(app, cpu, again->eax); });
+    const auto ended = below(cpu, 4, [&] { return endNetwork(app, cpu, *again); });
     if (!ended)
         return std::nullopt;
     // By address: the four registers it leaves are handed on, which native_raceload.h's
@@ -1380,7 +1243,7 @@ std::optional<Regs> closeNetworkAt(App* app, CPU& cpu)
     if (!reset)
         return std::nullopt;
     gameSettings(app).networkGame = 0;
-    return Regs{*reset, cpu.edx, cpu.ebx, freed->ecx};
+    return Regs{*reset, 0, 0, freed->ecx};
 }
 
 }  // namespace
@@ -1432,16 +1295,11 @@ void sendOverLink(App* app, CPU& cpu)
     }
 }
 
-/* 0x4a60e0: sendPacketTo the connection eax of edx, ebx long; edx and ebx
- * as it leaves them. */
+/* 0x4a60e0: sendPacketTo the connection eax of edx, ebx long. */
 void sendPacket(App* app, CPU& cpu)
 {
     if (const auto sent = sendPacketTo(app, cpu, cpu.eax, cpu.edx, cpu.ebx))
-    {
-        cpu.edx = sent->edx;
-        cpu.ebx = sent->ebx;
         answer(cpu, sent->eax);
-    }
 }
 
 /* 0x4a6390: resetNetworkState, the second lost flag too for eax nonzero. */
@@ -1517,16 +1375,11 @@ void connRestore(App* app, CPU& cpu)
         answer(cpu, *restored);
 }
 
-/* 0x4f5310: sendOnConnection eax of edx, ebx long; edx and ebx as it leaves
- * them. */
+/* 0x4f5310: sendOnConnection eax of edx, ebx long. */
 void connSend(App* app, CPU& cpu)
 {
     if (const auto sent = sendOnConnection(app, cpu, cpu.eax, cpu.edx, cpu.ebx))
-    {
-        cpu.edx = sent->edx;
-        cpu.ebx = sent->ebx;
         answer(cpu, sent->eax);
-    }
 }
 
 /* 0x4f5330: closeConnection of eax. */
@@ -1536,12 +1389,10 @@ void connClose(App* app, CPU& cpu)
         answer(cpu, *closed);
 }
 
-/* 0x50dc00: nth of eax, edx; edx as it leaves it. */
+/* 0x50dc00: nth of eax, edx. */
 void qnth(App* app, CPU& cpu)
 {
-    const Nth n = nth(app, cpu.eax, cpu.edx);
-    cpu.edx = n.left;
-    answer(cpu, n.element);
+    answer(cpu, nth(app, cpu.eax, cpu.edx));
 }
 
 /* 0x50dc20: unlink the element edx from the queue eax. */
@@ -1557,14 +1408,12 @@ void qfree(App* app, CPU& cpu)
         answer(cpu, *freed);
 }
 
-/* 0x50e150: removeFromQueue of the element edx from the queue eax; edx as
- * it leaves it. */
+/* 0x50e150: removeFromQueue of the element edx from the queue eax. */
 void qremove(App* app, CPU& cpu)
 {
     if (const auto removed = removeFromQueue(app, cpu, cpu.eax, cpu.edx, cpu.edi))
     {
-        cpu.edx = removed->edx;
-        answer(cpu, removed->eax);
+        answer(cpu, *removed);
     }
 }
 
@@ -1575,66 +1424,48 @@ void qlength(App* app, CPU& cpu)
         answer(cpu, *length);
 }
 
-/* 0x50e220: queuePosition of the element edx in the queue eax; edx as it
- * leaves it. */
+/* 0x50e220: queuePosition of the element edx in the queue eax. */
 void qposition(App* app, CPU& cpu)
 {
     if (const auto position = queuePosition(app, cpu, cpu.eax, cpu.edx))
     {
-        cpu.edx = position->edx;
-        answer(cpu, position->eax);
+        answer(cpu, *position);
     }
 }
 
-/* 0x50e470: findInQueue of element edx of the queue eax; edx as it leaves
- * it. */
+/* 0x50e470: findInQueue of element edx of the queue eax. */
 void qfindindex(App* app, CPU& cpu)
 {
     if (const auto found = findInQueue(app, cpu, cpu.eax, cpu.edx))
     {
-        cpu.edx = found->edx;
-        answer(cpu, found->eax);
+        answer(cpu, *found);
     }
 }
 
-/* 0x5123b0: gatherAndSend of the edx pieces at ebx on the connection eax;
- * edx and ebx as it leaves them. */
+/* 0x5123b0: gatherAndSend of the edx pieces at ebx on the connection eax. */
 void layerSend(App* app, CPU& cpu)
 {
     if (const auto sent = gatherAndSend(app, cpu, cpu.eax, cpu.edx, cpu.ebx))
-    {
-        cpu.edx = sent->edx;
-        cpu.ebx = sent->ebx;
         answer(cpu, sent->eax);
-    }
 }
 
 /* 0x512530: callPacker of the ebx pieces at ecx on the connection eax to
- * layer edx of the queue on the stack, taken off (stdcall); edx, ebx and ecx
- * as it leaves them. */
+ * layer edx of the queue on the stack, taken off (stdcall). */
 void layerCallPacker(App* app, CPU& cpu)
 {
     if (const auto packed = callPacker(app, cpu, cpu.eax, cpu.edx, cpu.ebx, cpu.ecx, at(app, cpu.esp + 4)))
     {
-        cpu.edx = packed->edx;
-        cpu.ebx = packed->ebx;
-        cpu.ecx = packed->ecx;
         answer(cpu, packed->eax);
         cpu.esp += 4;
     }
 }
 
 /* 0x512630: packFromTop of the edx pieces at ebx on the connection eax, the
- * queue of layers ecx; edx, ebx and ecx as it leaves them. */
+ * queue of layers ecx. */
 void layerPackFromTop(App* app, CPU& cpu)
 {
     if (const auto packed = packFromTop(app, cpu, cpu.eax, cpu.edx, cpu.ebx, cpu.ecx))
-    {
-        cpu.edx = packed->edx;
-        cpu.ebx = packed->ebx;
-        cpu.ecx = packed->ecx;
         answer(cpu, packed->eax);
-    }
 }
 
 /* 0x5126c0: freeLayers of the connection eax. */
@@ -1749,18 +1580,12 @@ std::optional<reg32> unpackRuns(App* app, CPU& cpu, reg32 source, reg32 to)
 namespace
 {
 
-/* What dxtBlock leaves in eax and edx: the last row's last colour and the
- * one before it. */
-struct LastColours
-{
-    reg32 last, beforeLast;
-};
-
 /* 0x510420: a DXT1 block at `block` unpacked to 4 rows of 4 16-bit pixels
  * at `to`, `pitch` bytes apart: its two colours (5-6-5), and between them
  * two thirds and a third of the way (each channel times 0xaaaa and 0x5556,
- * 16 bits up) -- or, with the first not above the second, half way and 0. */
-LastColours unpackBlock(App* app, reg32 to, reg32 pitch, reg32 block)
+ * 16 bits up) -- or, with the first not above the second, half way and 0.
+ * The last row's last colour. */
+reg32 unpackBlock(App* app, reg32 to, reg32 pitch, reg32 block)
 {
     constexpr reg32 kRed = 0xf800, kGreen = 0x7e0, kBlue = 0x1f;
     constexpr reg32 kTwoThirds = 0xaaaa, kOneThird = 0x5556;
@@ -1793,8 +1618,7 @@ LastColours unpackBlock(App* app, reg32 to, reg32 pitch, reg32 block)
         for (reg32 pixel = 0; pixel < 4; ++pixel)
             putWord16(app, line + pixel * 2, colours[codes >> (pixel * 2) & 3]);
     }
-    const reg8 last = byte(app, block + 7);
-    return {colours[last >> 6], colours[last >> 4 & 3]};
+    return colours[byte(app, block + 7) >> 6];
 }
 
 }  // namespace
@@ -1940,22 +1764,16 @@ void runUnpack(App* app, CPU& cpu)
         answer(cpu, *total);
 }
 
-/* 0x510420: unpackBlock at ebx to eax, edx bytes a row; edx as it leaves it. */
+/* 0x510420: unpackBlock at ebx to eax, edx bytes a row. */
 void dxtBlock(App* app, CPU& cpu)
 {
-    const LastColours left = unpackBlock(app, cpu.eax, cpu.edx, cpu.ebx);
-    cpu.edx = left.beforeLast;
-    answer(cpu, left.last);
+    answer(cpu, unpackBlock(app, cpu.eax, cpu.edx, cpu.ebx));
 }
 
-/* 0x510760: unpackDxt from eax to edx, the blocks too for ebx not 0; edx
- * and ebx as it leaves them. */
+/* 0x510760: unpackDxt from eax to edx, the blocks too for ebx not 0. */
 void dxtUnpack(App* app, CPU& cpu)
 {
-    const Regs left = unpackDxt(app, cpu.eax, cpu.edx, cpu.ebx);
-    cpu.edx = left.edx;
-    cpu.ebx = left.ebx;
-    answer(cpu, left.eax);
+    answer(cpu, unpackDxt(app, cpu.eax, cpu.edx, cpu.ebx).eax);
 }
 
 /* 0x510820: expandPair of al. */
@@ -1964,1413 +1782,275 @@ void pairExpand(App* app, CPU& cpu)
     answer(cpu, expandPair(app, cpu.eax));
 }
 
-/* 0x510870: unpackPairs from eax to edx; edx as it leaves it. */
+/* 0x510870: unpackPairs from eax to edx. */
 void pairUnpack(App* app, CPU& cpu)
 {
-    const Regs left = unpackPairs(app, cpu, cpu.eax, cpu.edx);
-    cpu.edx = left.edx;
-    answer(cpu, left.eax);
+    answer(cpu, unpackPairs(app, cpu, cpu.eax, cpu.edx).eax);
 }
 
-/* 0x50ed50: EA's Huffman with runs (0x30fb, 0x32fb and 0x34fb -- each with
- * the packed length too when odd) unpacked from eax to edx, its tables read
- * first when ebx is not 0; the length unpacked, as the header says (0 for
- * eax 0).  The bits are read from the top, 16 at a time into [esp+0x534]:
- * the clue byte; how many codes of each length, from 1 bit until they fill
- * the code space; the symbols, each as how many not yet taken to skip; then
- * codes -- up to 8 bits looked up by their first byte, longer ones by the
- * limits of each length -- each a byte, or the clue's code: then a count, a
- * run of the byte before that long, or with 0 a bit: 1 the end, 0 a byte as
- * it is.  The counts are 2 + n bits after n 0s and a 1 (3 + n where the
- * next 16 bits are all 0), less 4.  0x32fb's bytes are the sums of those
- * unpacked, 0x34fb's the sums of their sums.  A 16-bit code's offset
- * ([esp+0x4c0]) is where a run's long count keeps where it reads: kept, the
- * game's own clash.  Written with its jumps, as the code goes. */
-void huffUnpack(win32::WinApplication* app, x86::CPU& cpu)
+namespace
 {
-    push(app, cpu, cpu.ecx);
-    push(app, cpu, cpu.esi);
-    push(app, cpu, cpu.edi);
-    push(app, cpu, cpu.ebp);
-    cpu.esp -= 0x544;
-    const reg32 f = cpu.esp;
-    // The frame: the symbols taken, the first byte's lookup -- its symbol and
-    // its length (0x40 a longer code, 0x60 the clue's) -- the symbols in
-    // their codes' order; by length (+ 4 * length) the codes' counts, their
-    // limits (16 bits, left-justified), their first's offset in the symbols;
-    // and the rest, as their names say.
-    constexpr reg32 kUsed = 0, kLookupSymbols = 0x100, kLookupLengths = 0x200, kSymbols = 0x300, kRunSource = 0x4c0;
-    constexpr reg32 kStart = 0x4c4, kType = 0x4c8, kLength = 0x4cc, kClueLength = 0x4d0, kDest = 0x4d4;
-    constexpr reg32 kNextLength = 0x4d8, kLongest = 0x4dc, kSymbolIndex = 0x4e0, kTotal = 0x4e4, kLowBits = 0x4e8;
-    constexpr reg32 kTableLength = 0x4ec, kLeft = 0x4f0, kSymbol = 0x4f4, kSymbolLength = 0x4f8, kSymbolAt = 0x4fc;
-    constexpr reg32 kLookup = 0x500, kRun = 0x504, kRunLow = 0x508, kHighBits = 0x50c, kCountWord = 0x510;
-    constexpr reg32 kRunWord = 0x514, kShift = 0x518, kLengthOffset = 0x51c, kTableOffset = 0x520;
-    constexpr reg32 kTableShift = 0x524, kCountSource = 0x528, kSymbolSource = 0x52c, kSource = 0x530, kWord = 0x534;
-    constexpr reg32 kBit = 0x538, kLiteral = 0x53c, kClue = 0x540;
-    constexpr reg32 kTypeHigh = kType + 1;
-    constexpr reg32 kCounts = 0x400, kLimits = 0x440, kOffsets = 0x480;
-    put(app, f + kStart, cpu.edx);
-    put(app, f + kDest, cpu.edx);
-    cpu.edx = 0;
-    put(app, f + kLength, cpu.edx);
-    if (cpu.eax == 0)
-        goto l50ffb0;
-    cpu.ecx = 0;
-    cpu.cl = byte(app, cpu.eax);
-    cpu.dl = byte(app, cpu.eax + 0x1);
-    cpu.ecx <<= 8;
-    cpu.edx |= cpu.ecx;
-    cpu.eax += 2;
-    put(app, f + kWord, cpu.edx);
-    cpu.esi = cpu.edx;
-    cpu.edx = 0;
-    put(app, f + kSource, cpu.eax);
-    cpu.dl = byte(app, cpu.eax);
-    cpu.eax = at(app, f + kWord);
-    cpu.edi = 0;
-    cpu.eax <<= 8;
-    cpu.ecx = at(app, f + kSource);
-    cpu.edx |= cpu.eax;
-    cpu.esi <<= 0x10;
-    put(app, f + kWord, cpu.edx);
-    cpu.edx = at(app, f + kSource);
-    cpu.eax = 0;
-    cpu.ecx += 2;
-    cpu.al = byte(app, cpu.edx + 0x1);
-    cpu.edx = at(app, f + kWord);
-    cpu.esi >>= 0x10;
-    cpu.edx <<= 8;
-    put(app, f + kType, cpu.esi);
-    cpu.eax |= cpu.edx;
-    put(app, f + kSource, cpu.ecx);
-    put(app, f + kWord, cpu.eax);
-    cpu.esi = cpu.eax;
-    cpu.ah = byte(app, f + kTypeHigh);
-    cpu.esi <<= 0x10;
-    if ((cpu.ah & 1) != 0)
-        goto l50efeb;
-l50ee03:
-    cpu.dl = byte(app, f + kTypeHigh);
-    cpu.ebp = cpu.esi;
-    cpu.edi -= 8;
-    cpu.dl &= 0xfe;
-    cpu.ebp >>= 0x18;
-    cpu.esi <<= 8;
-    putByte(app, f + kTypeHigh, cpu.dl);
-    if (sreg32(cpu.edi) < 0)
-        goto l50f060;
-l50ee27:
-    cpu.eax = cpu.esi;
-    cpu.edi -= 0x10;
-    cpu.eax >>= 0x10;
-    cpu.esi <<= 0x10;
-    put(app, f + kLength, cpu.eax);
-    if (sreg32(cpu.edi) < 0)
-        goto l50f0be;
-l50ee41:
-    cpu.eax = cpu.ebp;
-    cpu.ecx = at(app, f + kLength);
-    cpu.eax <<= 0x10;
-    cpu.ecx |= cpu.eax;
-    put(app, f + kLength, cpu.ecx);
-    if (cpu.ebx != 0)
-        goto l50f11c;
-l50ee5e:
-    cpu.eax = f + kLookupSymbols;
-    cpu.ebx = f + kLookupLengths;
-    put(app, f + kLookup, cpu.eax);
-l50ee73:
-    cpu.eax = cpu.esi;
-    cpu.eax >>= 0x18;
-    cpu.al = byte(app, cpu.ebx + cpu.eax);
-    cpu.eax &= 0xff;
-    cpu.edi -= cpu.eax;
-    if (sreg32(cpu.edi) < 0)
-        goto l50ef58;
-l50ee8a:
-    cpu.edx = cpu.esi;
-    cpu.ecx = at(app, f + kLookup);
-    cpu.edx >>= 0x18;
-    cpu.edx += cpu.ecx;
-    cpu.ah = byte(app, cpu.edx);
-    cpu.cl = cpu.al;
-    cpu.edx = at(app, f + kDest);
-    cpu.esi <<= cpu.cl & 31;
-    putByte(app, cpu.edx, cpu.ah);
-    cpu.edx = cpu.esi;
-    cpu.ebp = at(app, f + kDest);
-    cpu.edx >>= 0x18;
-    ++cpu.ebp;
-    cpu.eax = cpu.ebx + cpu.edx;
-    put(app, f + kDest, cpu.ebp);
-    cpu.al = byte(app, cpu.eax);
-    cpu.eax &= 0xff;
-    cpu.edi -= cpu.eax;
-    if (sreg32(cpu.edi) < 0)
-        goto l50ef58;
-    cpu.edx += at(app, f + kLookup);
-    cpu.ah = byte(app, cpu.edx);
-    cpu.cl = cpu.al;
-    cpu.esi <<= cpu.cl & 31;
-    cpu.edx = cpu.esi;
-    ++cpu.ebp;
-    cpu.edx >>= 0x18;
-    putByte(app, cpu.ebp - 0x1, cpu.ah);
-    cpu.eax = cpu.ebx + cpu.edx;
-    put(app, f + kDest, cpu.ebp);
-    cpu.al = byte(app, cpu.eax);
-    cpu.eax &= 0xff;
-    cpu.edi -= cpu.eax;
-    if (sreg32(cpu.edi) < 0)
-        goto l50ef58;
-    cpu.edx += at(app, f + kLookup);
-    cpu.ah = byte(app, cpu.edx);
-    cpu.cl = cpu.al;
-    cpu.esi <<= cpu.cl & 31;
-    cpu.edx = cpu.esi;
-    ++cpu.ebp;
-    cpu.edx >>= 0x18;
-    putByte(app, cpu.ebp - 0x1, cpu.ah);
-    cpu.eax = cpu.ebx + cpu.edx;
-    put(app, f + kDest, cpu.ebp);
-    cpu.al = byte(app, cpu.eax);
-    cpu.eax &= 0xff;
-    cpu.edi -= cpu.eax;
-    if (sreg32(cpu.edi) < 0)
-        goto l50ef58;
-    cpu.edx += at(app, f + kLookup);
-    cpu.ah = byte(app, cpu.edx);
-    cpu.cl = cpu.al;
-    cpu.esi <<= cpu.cl & 31;
-    putByte(app, cpu.ebp, cpu.ah);
-    cpu.eax = cpu.esi;
-    ++cpu.ebp;
-    cpu.eax >>= 0x18;
-    put(app, f + kDest, cpu.ebp);
-    cpu.al = byte(app, cpu.ebx + cpu.eax);
-    cpu.eax &= 0xff;
-    cpu.edi -= cpu.eax;
-    if (sreg32(cpu.edi) >= 0)
-        goto l50ee8a;
-l50ef58:
-    cpu.edi += 0x10;
-    if (sreg32(cpu.edi) < 0)
-        goto l50faa5;
-    cpu.eax = at(app, f + kLookup);
-    cpu.esi >>= 0x18;
-    cpu.edx = at(app, f + kDest);
-    cpu.al = byte(app, cpu.esi + cpu.eax);
-    putByte(app, cpu.edx, cpu.al);
-    cpu.edx = at(app, f + kSource);
-    cpu.eax = 0;
-    cpu.al = byte(app, cpu.edx);
-    cpu.edx = at(app, f + kWord);
-    cpu.edx <<= 8;
-    cpu.eax |= cpu.edx;
-    put(app, f + kWord, cpu.eax);
-    cpu.eax = at(app, f + kSource);
-    cpu.edx = 0;
-    cpu.dl = byte(app, cpu.eax + 0x1);
-    cpu.eax = at(app, f + kWord);
-    cpu.ecx = 0x10;
-    cpu.eax <<= 8;
-    cpu.ecx -= cpu.edi;
-    cpu.edx |= cpu.eax;
-    cpu.eax = at(app, f + kDest);
-    put(app, f + kWord, cpu.edx);
-    cpu.edx = at(app, f + kSource);
-    ++cpu.eax;
-    cpu.esi = at(app, f + kWord);
-    put(app, f + kDest, cpu.eax);
-    cpu.edx += 2;
-    cpu.esi <<= cpu.cl & 31;
-    put(app, f + kSource, cpu.edx);
-    goto l50ee73;
-l50efeb:
-    cpu.eax = at(app, f + kWord);
-    cpu.edx = 0;
-    cpu.eax <<= 8;
-    cpu.dl = byte(app, cpu.ecx);
-    cpu.edx |= cpu.eax;
-    put(app, f + kWord, cpu.edx);
-    cpu.eax = 0;
-    cpu.edx <<= 8;
-    cpu.al = byte(app, cpu.ecx + 0x1);
-    cpu.eax |= cpu.edx;
-    cpu.esi = cpu.ecx + 0x2;
-    put(app, f + kWord, cpu.eax);
-    cpu.edx = 0;
-    cpu.eax <<= 8;
-    cpu.dl = byte(app, cpu.esi);
-    put(app, f + kSource, cpu.esi);
-    cpu.edx |= cpu.eax;
-    cpu.edi = cpu.esi;
-    put(app, f + kWord, cpu.edx);
-    cpu.edi += 2;
-    cpu.eax = at(app, f + kWord);
-    cpu.edx = 0;
-    cpu.eax <<= 8;
-    cpu.dl = byte(app, cpu.esi + 0x1);
-    put(app, f + kSource, cpu.edi);
-    cpu.edx |= cpu.eax;
-    cpu.edi = 8;
-    cpu.esi = cpu.edx;
-    put(app, f + kWord, cpu.edx);
-    cpu.esi <<= 8;
-    goto l50ee03;
-l50f060:
-    cpu.eax = at(app, f + kSource);
-    cpu.edx = 0;
-    cpu.dl = byte(app, cpu.eax);
-    cpu.eax = at(app, f + kWord);
-    cpu.eax <<= 8;
-    cpu.edx |= cpu.eax;
-    cpu.eax = at(app, f + kSource);
-    put(app, f + kWord, cpu.edx);
-    cpu.edx = 0;
-    cpu.ecx = cpu.edi;
-    cpu.dl = byte(app, cpu.eax + 0x1);
-    cpu.eax = at(app, f + kWord);
-    cpu.ecx = 0 - cpu.ecx;
-    cpu.eax <<= 8;
-    cpu.edi += 0x10;
-    cpu.edx |= cpu.eax;
-    cpu.eax = at(app, f + kSource);
-    put(app, f + kWord, cpu.edx);
-    cpu.esi = cpu.edx;
-    cpu.eax += 2;
-    cpu.esi <<= cpu.cl & 31;
-    put(app, f + kSource, cpu.eax);
-    goto l50ee27;
-l50f0be:
-    cpu.eax = at(app, f + kSource);
-    cpu.edx = 0;
-    cpu.dl = byte(app, cpu.eax);
-    cpu.eax = at(app, f + kWord);
-    cpu.eax <<= 8;
-    cpu.edx |= cpu.eax;
-    put(app, f + kWord, cpu.edx);
-    cpu.edx = at(app, f + kSource);
-    cpu.eax = 0;
-    cpu.ecx = cpu.edi;
-    cpu.al = byte(app, cpu.edx + 0x1);
-    cpu.edx = at(app, f + kWord);
-    cpu.ecx = 0 - cpu.ecx;
-    cpu.edx <<= 8;
-    cpu.edi += 0x10;
-    cpu.eax |= cpu.edx;
-    cpu.edx = at(app, f + kSource);
-    put(app, f + kWord, cpu.eax);
-    cpu.esi = cpu.eax;
-    cpu.edx += 2;
-    cpu.esi <<= cpu.cl & 31;
-    put(app, f + kSource, cpu.edx);
-    goto l50ee41;
-l50f11c:
-    cpu.eax = cpu.esi;
-    cpu.edi -= 8;
-    cpu.eax >>= 0x18;
-    cpu.esi <<= 8;
-    putByte(app, f + kClue, cpu.al);
-    if (sreg32(cpu.edi) < 0)
-        goto l50f51a;
-l50f136:
-    cpu.eax = 1;
-    cpu.edx = 0xf;
-    cpu.ecx = 4;
-    cpu.ebp = 0;
-    put(app, f + kNextLength, cpu.eax);
-    put(app, f + kShift, cpu.edx);
-    put(app, f + kLengthOffset, cpu.ecx);
-    put(app, f + kTotal, cpu.ebp);
-l50f163:
-    cpu.ebp += cpu.ebp;
-    cpu.ebx = at(app, f + kTotal);
-    cpu.eax = cpu.ebp;
-    cpu.edx = at(app, f + kLengthOffset);
-    cpu.eax -= cpu.ebx;
-    put(app, f + cpu.edx + kOffsets, cpu.eax);
-    if (sreg32(cpu.esi) < 0)
-        goto l50f578;
-    cpu.eax = cpu.esi;
-    cpu.eax >>= 0x10;
-    if (cpu.eax == 0)
-        goto l50f651;
-    cpu.eax = 2;
-l50f198:
-    cpu.esi += cpu.esi;
-    ++cpu.eax;
-    if (sreg32(cpu.esi) >= 0)
-        goto l50f198;
-    cpu.edx = cpu.eax - 0x1;
-    cpu.edi -= cpu.edx;
-    cpu.esi += cpu.esi;
-    if (sreg32(cpu.edi) < 0)
-        goto l50f5ee;
-l50f1ae:
-    cpu.edx = at(app, f + kWord);
-    cpu.edx <<= 8;
-    put(app, f + kCountWord, cpu.edx);
-    cpu.edx = at(app, f + kSource);
-    cpu.edx += 2;
-    put(app, f + kCountSource, cpu.edx);
-    if (sreg32(cpu.eax) <= sreg32(0x10))
-        goto l50f79e;
-    cpu.ecx = 0x20;
-    cpu.ebx = cpu.eax - 0x10;
-    cpu.edx = cpu.esi;
-    cpu.ecx -= cpu.ebx;
-    cpu.edx >>= cpu.cl & 31;
-    cpu.cl = cpu.bl;
-    cpu.edi -= cpu.ebx;
-    cpu.esi <<= cpu.cl & 31;
-    if (sreg32(cpu.edi) < 0)
-        goto l50f6ce;
-l50f1f5:
-    cpu.ebx = cpu.esi;
-    cpu.edi -= 0x10;
-    cpu.esi <<= 0x10;
-    cpu.ebx >>= 0x10;
-    if (sreg32(cpu.edi) < 0)
-        goto l50f726;
-l50f208:
-    cpu.cl = cpu.al;
-    cpu.edx <<= 0x10;
-    cpu.eax = 1;
-    cpu.edx |= cpu.ebx;
-l50f214:
-    cpu.eax <<= cpu.cl & 31;
-    cpu.edx += cpu.eax;
-l50f218:
-    cpu.edx -= 4;
-    cpu.ebx = at(app, f + kTotal);
-    cpu.eax = at(app, f + kLengthOffset);
-    cpu.ebp += cpu.edx;
-    cpu.ecx = 0;
-    cpu.ebx += cpu.edx;
-    put(app, f + cpu.eax + kCounts, cpu.edx);
-    put(app, f + kTotal, cpu.ebx);
-    if (cpu.edx == 0)
-        goto l50f254;
-    cpu.cl = byte(app, f + kShift);
-    cpu.eax = cpu.ebp;
-    cpu.eax <<= cpu.cl & 31;
-    cpu.ecx = cpu.eax;
-    cpu.ecx &= 0xffff;
-l50f254:
-    cpu.eax = at(app, f + kLengthOffset);
-    put(app, f + cpu.eax + kLimits, cpu.ecx);
-    cpu.eax = at(app, f + kShift);
-    --cpu.eax;
-    cpu.ebx = at(app, f + kLengthOffset);
-    put(app, f + kShift, cpu.eax);
-    cpu.eax = at(app, f + kNextLength);
-    cpu.ebx += 4;
-    ++cpu.eax;
-    put(app, f + kLengthOffset, cpu.ebx);
-    put(app, f + kNextLength, cpu.eax);
-    if (cpu.edx == 0)
-        goto l50f163;
-    if (cpu.ecx != 0)
-        goto l50f163;
-    --cpu.eax;
-    cpu.edx = 0xffffffff;
-    put(app, f + kLongest, cpu.eax);
-    put(app, f + cpu.eax * 4 + kLimits, cpu.edx);
-    cpu.edx = 0x10;
-    cpu.eax = cpu.esp;
-l50f2bc:
-    cpu.eax += 0x10;
-    put(app, cpu.eax - 0xc, cpu.ecx);
-    put(app, cpu.eax - 0x8, cpu.ecx);
-    put(app, cpu.eax - 0x4, cpu.ecx);
-    put(app, cpu.eax - 0x10, cpu.ecx);
-    --cpu.edx;
-    if (cpu.edx != 0)
-        goto l50f2bc;
-    cpu.ebx = at(app, f + kTotal);
-    cpu.al = 0xff;
-    put(app, f + kSymbolIndex, cpu.edx);
-    if (sreg32(cpu.ebx) <= 0)
-        goto l50f3e2;
-l50f2e6:
-    if (sreg32(cpu.esi) < 0)
-        goto l50f81e;
-    cpu.edx = cpu.esi;
-    cpu.edx >>= 0x10;
-    if (cpu.edx == 0)
-        goto l50f8f2;
-    cpu.edx = 2;
-l50f300:
-    cpu.esi += cpu.esi;
-    ++cpu.edx;
-    if (sreg32(cpu.esi) >= 0)
-        goto l50f300;
-    cpu.ecx = cpu.edx - 0x1;
-    cpu.edi -= cpu.ecx;
-    cpu.esi += cpu.esi;
-    if (sreg32(cpu.edi) < 0)
-        goto l50f894;
-l50f316:
-    cpu.ecx = at(app, f + kSource);
-    cpu.ebp = at(app, f + kWord);
-    cpu.ecx += 2;
-    cpu.ebp <<= 8;
-    put(app, f + kSymbolSource, cpu.ecx);
-    if (sreg32(cpu.edx) <= sreg32(0x10))
-        goto l50fa09;
-    cpu.ecx = cpu.edx - 0x10;
-    put(app, f + kHighBits, cpu.ecx);
-    cpu.ecx = 0x20;
-    cpu.ecx -= at(app, f + kHighBits);
-    cpu.ebx = cpu.esi;
-    cpu.ebx >>= cpu.cl & 31;
-    cpu.cl = byte(app, f + kHighBits);
-    cpu.esi <<= cpu.cl & 31;
-    cpu.edi -= at(app, f + kHighBits);
-    if (sreg32(cpu.edi) < 0)
-        goto l50f96f;
-l50f36c:
-    cpu.ecx = cpu.esi;
-    cpu.edi -= 0x10;
-    cpu.ecx >>= 0x10;
-    cpu.esi <<= 0x10;
-    put(app, f + kLowBits, cpu.ecx);
-    if (sreg32(cpu.edi) < 0)
-        goto l50f9af;
-l50f386:
-    cpu.ecx = at(app, f + kLowBits);
-    cpu.ebx <<= 0x10;
-    cpu.ebx |= cpu.ecx;
-l50f392:
-    cpu.cl = cpu.dl;
-    cpu.edx = 1;
-    cpu.edx <<= cpu.cl & 31;
-    cpu.ebx += cpu.edx;
-l50f39d:
-    cpu.ebx -= 4;
-    ++cpu.ebx;
-    cpu.ecx = 0;
-l50f3a3:
-    ++cpu.al;
-    cpu.edx = 0;
-    cpu.dl = cpu.al;
-    if (cpu.cl != byte(app, f + kUsed + cpu.edx))
-        goto l50f3af;
-    --cpu.ebx;
-l50f3af:
-    if (cpu.ebx != 0)
-        goto l50f3a3;
-    cpu.edx = 0;
-    cpu.dl = cpu.al;
-    putByte(app, f + kUsed + cpu.edx, 1);
-    cpu.edx = at(app, f + kSymbolIndex);
-    cpu.ecx = at(app, f + kTotal);
-    cpu.ebp = cpu.edx + 0x1;
-    putByte(app, f + kSymbols + cpu.edx, cpu.al);
-    put(app, f + kSymbolIndex, cpu.ebp);
-    if (sreg32(cpu.ebp) < sreg32(cpu.ecx))
-        goto l50f2e6;
-l50f3e2:
-    cpu.edx = f + kLookupLengths;
-    cpu.ebx = 0x40404040;
-    cpu.ecx = 0x10;
-l50f3f3:
-    cpu.edx += 0x10;
-    put(app, cpu.edx - 0xc, cpu.ebx);
-    put(app, cpu.edx - 0x8, cpu.ebx);
-    put(app, cpu.edx - 0x4, cpu.ebx);
-    put(app, cpu.edx - 0x10, cpu.ebx);
-    --cpu.ecx;
-    if (cpu.ecx != 0)
-        goto l50f3f3;
-    cpu.eax = f + kSymbols;
-    cpu.ebx = f + kLookupSymbols;
-    cpu.edx = f + kLookupLengths;
-    put(app, f + kSymbolAt, cpu.eax);
-    cpu.eax = 1;
-    cpu.ecx = at(app, f + kLongest);
-    put(app, f + kTableLength, cpu.eax);
-    if (sreg32(cpu.ecx) < sreg32(cpu.eax))
-        goto l50ee5e;
-    cpu.ecx = 7;
-    cpu.eax = 4;
-    put(app, f + kTableShift, cpu.ecx);
-    put(app, f + kTableOffset, cpu.eax);
-l50f454:
-    cpu.eax = at(app, f + kTableOffset);
-    cpu.eax = at(app, f + cpu.eax + kCounts);
-    cpu.ebp = at(app, f + kTableLength);
-    put(app, f + kLeft, cpu.eax);
-    if (sreg32(cpu.ebp) >= sreg32(9))
-        goto l50ee5e;
-    cpu.cl = byte(app, f + kTableShift);
-    cpu.ebp = 1;
-    cpu.ebp <<= cpu.cl & 31;
-l50f487:
-    cpu.eax = at(app, f + kLeft);
-    --cpu.eax;
-    put(app, f + kLeft, cpu.eax);
-    if (cpu.eax == 0xffffffff)
-        goto l50fa62;
-    cpu.ecx = at(app, f + kSymbolAt);
-    cpu.eax = 0;
-    cpu.al = byte(app, cpu.ecx);
-    ++cpu.ecx;
-    put(app, f + kSymbol, cpu.eax);
-    cpu.eax = at(app, f + kTableLength);
-    put(app, f + kSymbolAt, cpu.ecx);
-    put(app, f + kSymbolLength, cpu.eax);
-    cpu.eax = 0;
-    cpu.ecx = at(app, f + kSymbol);
-    cpu.al = byte(app, f + kClue);
-    if (cpu.eax != cpu.ecx)
-        goto l50f4f4;
-    cpu.eax = at(app, f + kTableLength);
-    put(app, f + kClueLength, cpu.eax);
-    put(app, f + kSymbolLength, 0x60);
-l50f4f4:
-    cpu.eax = 0;
-    if (sreg32(cpu.ebp) <= 0)
-        goto l50f487;
-l50f4fa:
-    ++cpu.ebx;
-    cpu.cl = byte(app, f + kSymbol);
-    ++cpu.edx;
-    putByte(app, cpu.ebx - 0x1, cpu.cl);
-    cpu.cl = byte(app, f + kSymbolLength);
-    ++cpu.eax;
-    putByte(app, cpu.edx - 0x1, cpu.cl);
-    if (sreg32(cpu.eax) < sreg32(cpu.ebp))
-        goto l50f4fa;
-    goto l50f487;
-l50f51a:
-    cpu.eax = at(app, f + kSource);
-    cpu.edx = 0;
-    cpu.dl = byte(app, cpu.eax);
-    cpu.eax = at(app, f + kWord);
-    cpu.ebx = at(app, f + kSource);
-    cpu.eax <<= 8;
-    cpu.ecx = cpu.edi;
-    cpu.edx |= cpu.eax;
-    cpu.eax = at(app, f + kSource);
-    put(app, f + kWord, cpu.edx);
-    cpu.edx = 0;
-    cpu.ecx = 0 - cpu.ecx;
-    cpu.dl = byte(app, cpu.eax + 0x1);
-    cpu.eax = at(app, f + kWord);
-    cpu.ebx += 2;
-    cpu.eax <<= 8;
-    cpu.edi += 0x10;
-    cpu.edx |= cpu.eax;
-    put(app, f + kSource, cpu.ebx);
-    cpu.esi = cpu.edx;
-    put(app, f + kWord, cpu.edx);
-    cpu.esi <<= cpu.cl & 31;
-    goto l50f136;
-l50f578:
-    cpu.edx = cpu.esi;
-    cpu.edi -= 3;
-    cpu.esi <<= 3;
-    cpu.edx >>= 0x1d;
-    if (sreg32(cpu.edi) >= 0)
-        goto l50f218;
-    cpu.eax = at(app, f + kSource);
-    cpu.ecx = 0;
-    cpu.cl = byte(app, cpu.eax);
-    cpu.eax = at(app, f + kWord);
-    cpu.eax <<= 8;
-    cpu.ecx |= cpu.eax;
-    cpu.eax = at(app, f + kSource);
-    put(app, f + kWord, cpu.ecx);
-    cpu.ecx = 0;
-    cpu.cl = byte(app, cpu.eax + 0x1);
-    cpu.eax = at(app, f + kWord);
-    cpu.eax <<= 8;
-    cpu.ecx |= cpu.eax;
-    put(app, f + kWord, cpu.ecx);
-    cpu.eax = at(app, f + kSource);
-    cpu.esi = at(app, f + kWord);
-    cpu.ecx = cpu.edi;
-    cpu.eax += 2;
-    cpu.ecx = 0 - cpu.ecx;
-    put(app, f + kSource, cpu.eax);
-    cpu.edi += 0x10;
-    cpu.esi <<= cpu.cl & 31;
-    goto l50f218;
-l50f5ee:
-    cpu.edx = at(app, f + kSource);
-    cpu.ecx = 0;
-    cpu.cl = byte(app, cpu.edx);
-    cpu.edx = at(app, f + kWord);
-    cpu.edx <<= 8;
-    cpu.ecx |= cpu.edx;
-    cpu.edx = at(app, f + kSource);
-    put(app, f + kWord, cpu.ecx);
-    cpu.ecx = 0;
-    cpu.cl = byte(app, cpu.edx + 0x1);
-    cpu.edx = at(app, f + kWord);
-    cpu.ebx = at(app, f + kSource);
-    cpu.edx <<= 8;
-    cpu.ebx += 2;
-    cpu.ecx |= cpu.edx;
-    put(app, f + kSource, cpu.ebx);
-    put(app, f + kWord, cpu.ecx);
-    cpu.ecx = cpu.edi;
-    cpu.esi = at(app, f + kWord);
-    cpu.ecx = 0 - cpu.ecx;
-    cpu.edi += 0x10;
-    cpu.esi <<= cpu.cl & 31;
-    goto l50f1ae;
-l50f651:
-    cpu.eax = 2;
-l50f656:
-    cpu.edx = cpu.esi;
-    ++cpu.eax;
-    --cpu.edi;
-    cpu.edx >>= 0x1f;
-    cpu.esi += cpu.esi;
-    if (sreg32(cpu.edi) < 0)
-        goto l50f66c;
-    if (cpu.edx == 0)
-        goto l50f656;
-    goto l50f1ae;
-l50f66c:
-    cpu.ebx = at(app, f + kSource);
-    cpu.ecx = 0;
-    cpu.cl = byte(app, cpu.ebx);
-    cpu.ebx = at(app, f + kWord);
-    cpu.ebx <<= 8;
-    cpu.ecx |= cpu.ebx;
-    put(app, f + kWord, cpu.ecx);
-    cpu.ecx = at(app, f + kSource);
-    cpu.ebx = 0;
-    cpu.bl = byte(app, cpu.ecx + 0x1);
-    cpu.ecx = at(app, f + kWord);
-    cpu.ecx <<= 8;
-    cpu.ebx |= cpu.ecx;
-    cpu.ecx = cpu.edi;
-    cpu.esi = cpu.ebx;
-    cpu.ecx = 0 - cpu.ecx;
-    cpu.esi <<= cpu.cl & 31;
-    cpu.ecx = at(app, f + kSource);
-    put(app, f + kWord, cpu.ebx);
-    cpu.ecx += 2;
-    cpu.edi += 0x10;
-    put(app, f + kSource, cpu.ecx);
-    if (cpu.edx == 0)
-        goto l50f656;
-    goto l50f1ae;
-l50f6ce:
-    cpu.ebx = at(app, f + kSource);
-    cpu.ecx = 0;
-    cpu.cl = byte(app, cpu.ebx);
-    cpu.ebx = at(app, f + kCountWord);
-    cpu.ebx |= cpu.ecx;
-    cpu.ecx = at(app, f + kSource);
-    put(app, f + kWord, cpu.ebx);
-    cpu.ebx = 0;
-    cpu.bl = byte(app, cpu.ecx + 0x1);
-    cpu.ecx = at(app, f + kWord);
-    cpu.ecx <<= 8;
-    cpu.ebx |= cpu.ecx;
-    cpu.ecx = cpu.edi;
-    cpu.esi = cpu.ebx;
-    cpu.ecx = 0 - cpu.ecx;
-    put(app, f + kWord, cpu.ebx);
-    cpu.esi <<= cpu.cl & 31;
-    cpu.ecx = at(app, f + kCountSource);
-    cpu.edi += 0x10;
-    put(app, f + kSource, cpu.ecx);
-    goto l50f1f5;
-l50f726:
-    cpu.esi = at(app, f + kSource);
-    cpu.ecx = 0;
-    cpu.cl = byte(app, cpu.esi);
-    put(app, f + kHighBits, cpu.ecx);
-    cpu.ecx = at(app, f + kWord);
-    cpu.esi = at(app, f + kHighBits);
-    cpu.ecx <<= 8;
-    cpu.esi |= cpu.ecx;
-    put(app, f + kWord, cpu.esi);
-    cpu.esi = at(app, f + kSource);
-    cpu.ecx = 0;
-    cpu.cl = byte(app, cpu.esi + 0x1);
-    put(app, f + kHighBits, cpu.ecx);
-    cpu.ecx = at(app, f + kWord);
-    cpu.esi = at(app, f + kHighBits);
-    cpu.ecx <<= 8;
-    cpu.esi |= cpu.ecx;
-    cpu.ecx = cpu.edi;
-    cpu.ecx = 0 - cpu.ecx;
-    put(app, f + kWord, cpu.esi);
-    cpu.esi <<= cpu.cl & 31;
-    cpu.ecx = at(app, f + kSource);
-    cpu.ecx += 2;
-    cpu.edi += 0x10;
-    put(app, f + kSource, cpu.ecx);
-    goto l50f208;
-l50f79e:
-    cpu.ecx = 0x20;
-    cpu.edx = cpu.esi;
-    cpu.ecx -= cpu.eax;
-    cpu.edx >>= cpu.cl & 31;
-    cpu.cl = cpu.al;
-    cpu.edi -= cpu.eax;
-    cpu.esi <<= cpu.cl & 31;
-    if (sreg32(cpu.edi) < 0)
-        goto l50f7bf;
-    cpu.cl = cpu.al;
-    cpu.eax = 1;
-    goto l50f214;
-l50f7bf:
-    cpu.ebx = at(app, f + kSource);
-    cpu.ecx = 0;
-    cpu.cl = byte(app, cpu.ebx);
-    cpu.ebx = at(app, f + kCountWord);
-    cpu.ebx |= cpu.ecx;
-    cpu.ecx = at(app, f + kSource);
-    put(app, f + kWord, cpu.ebx);
-    cpu.ebx = 0;
-    cpu.bl = byte(app, cpu.ecx + 0x1);
-    cpu.ecx = at(app, f + kWord);
-    cpu.ecx <<= 8;
-    cpu.ebx |= cpu.ecx;
-    cpu.ecx = cpu.edi;
-    cpu.esi = cpu.ebx;
-    cpu.ecx = 0 - cpu.ecx;
-    put(app, f + kWord, cpu.ebx);
-    cpu.esi <<= cpu.cl & 31;
-    cpu.ecx = at(app, f + kCountSource);
-    cpu.edi += 0x10;
-    put(app, f + kSource, cpu.ecx);
-    cpu.cl = cpu.al;
-    cpu.eax = 1;
-    goto l50f214;
-l50f81e:
-    cpu.ebx = cpu.esi;
-    cpu.edi -= 3;
-    cpu.esi <<= 3;
-    cpu.ebx >>= 0x1d;
-    if (sreg32(cpu.edi) >= 0)
-        goto l50f39d;
-    cpu.edx = at(app, f + kSource);
-    cpu.ecx = 0;
-    cpu.cl = byte(app, cpu.edx);
-    cpu.edx = at(app, f + kWord);
-    cpu.edx <<= 8;
-    cpu.ecx |= cpu.edx;
-    cpu.edx = at(app, f + kSource);
-    put(app, f + kWord, cpu.ecx);
-    cpu.ecx = 0;
-    cpu.cl = byte(app, cpu.edx + 0x1);
-    cpu.edx = at(app, f + kWord);
-    cpu.ebp = at(app, f + kSource);
-    cpu.edx <<= 8;
-    cpu.ebp += 2;
-    cpu.ecx |= cpu.edx;
-    put(app, f + kSource, cpu.ebp);
-    put(app, f + kWord, cpu.ecx);
-    cpu.ecx = cpu.edi;
-    cpu.esi = at(app, f + kWord);
-    cpu.ecx = 0 - cpu.ecx;
-    cpu.edi += 0x10;
-    cpu.esi <<= cpu.cl & 31;
-    goto l50f39d;
-l50f894:
-    cpu.ebx = at(app, f + kSource);
-    cpu.ecx = 0;
-    cpu.cl = byte(app, cpu.ebx);
-    cpu.ebx = at(app, f + kWord);
-    cpu.ebx <<= 8;
-    cpu.ecx |= cpu.ebx;
-    put(app, f + kWord, cpu.ecx);
-    cpu.ecx = at(app, f + kSource);
-    cpu.ebx = 0;
-    cpu.bl = byte(app, cpu.ecx + 0x1);
-    cpu.ecx = at(app, f + kWord);
-    cpu.ebp = at(app, f + kSource);
-    cpu.ecx <<= 8;
-    cpu.ebp += 2;
-    cpu.ebx |= cpu.ecx;
-    put(app, f + kSource, cpu.ebp);
-    put(app, f + kWord, cpu.ebx);
-    cpu.ecx = cpu.edi;
-    cpu.esi = cpu.ebx;
-    cpu.ecx = 0 - cpu.ecx;
-    cpu.edi += 0x10;
-    cpu.esi <<= cpu.cl & 31;
-    goto l50f316;
-l50f8f2:
-    cpu.edx = 2;
-l50f8f7:
-    cpu.ebp = cpu.esi;
-    ++cpu.edx;
-    --cpu.edi;
-    cpu.ebp >>= 0x1f;
-    cpu.esi += cpu.esi;
-    if (sreg32(cpu.edi) < 0)
-        goto l50f90d;
-    if (cpu.ebp == 0)
-        goto l50f8f7;
-    goto l50f316;
-l50f90d:
-    cpu.ecx = at(app, f + kSource);
-    cpu.ebx = 0;
-    cpu.bl = byte(app, cpu.ecx);
-    cpu.ecx = at(app, f + kWord);
-    cpu.ecx <<= 8;
-    cpu.ebx |= cpu.ecx;
-    cpu.ecx = at(app, f + kSource);
-    put(app, f + kWord, cpu.ebx);
-    cpu.ebx = 0;
-    cpu.bl = byte(app, cpu.ecx + 0x1);
-    cpu.ecx = at(app, f + kWord);
-    cpu.ecx <<= 8;
-    cpu.ebx |= cpu.ecx;
-    put(app, f + kWord, cpu.ebx);
-    cpu.ecx = cpu.edi;
-    cpu.esi = cpu.ebx;
-    cpu.ebx = at(app, f + kSource);
-    cpu.ecx = 0 - cpu.ecx;
-    cpu.edi += 0x10;
-    cpu.ebx += 2;
-    cpu.esi <<= cpu.cl & 31;
-    put(app, f + kSource, cpu.ebx);
-    if (cpu.ebp == 0)
-        goto l50f8f7;
-    goto l50f316;
-l50f96f:
-    cpu.esi = at(app, f + kSource);
-    cpu.ecx = 0;
-    cpu.cl = byte(app, cpu.esi);
-    cpu.ecx |= cpu.ebp;
-    cpu.esi = byte(app, cpu.esi + 0x1);
-    put(app, f + kWord, cpu.ecx);
-    cpu.ecx <<= 8;
-    cpu.esi |= cpu.ecx;
-    cpu.ecx = cpu.edi;
-    cpu.ecx = 0 - cpu.ecx;
-    put(app, f + kWord, cpu.esi);
-    cpu.esi <<= cpu.cl & 31;
-    cpu.ecx = at(app, f + kSymbolSource);
-    cpu.edi += 0x10;
-    put(app, f + kSource, cpu.ecx);
-    goto l50f36c;
-l50f9af:
-    cpu.ecx = at(app, f + kWord);
-    cpu.esi = at(app, f + kSource);
-    cpu.ecx <<= 8;
-    cpu.esi = byte(app, cpu.esi);
-    cpu.esi |= cpu.ecx;
-    cpu.ebp = at(app, f + kSource);
-    put(app, f + kWord, cpu.esi);
-    cpu.ebp += 2;
-    cpu.ecx = at(app, f + kWord);
-    cpu.esi = at(app, f + kSource);
-    cpu.ecx <<= 8;
-    cpu.esi = byte(app, cpu.esi + 0x1);
-    put(app, f + kSource, cpu.ebp);
-    cpu.esi |= cpu.ecx;
-    cpu.ecx = cpu.edi;
-    put(app, f + kWord, cpu.esi);
-    cpu.ecx = 0 - cpu.ecx;
-    cpu.edi += 0x10;
-    cpu.esi <<= cpu.cl & 31;
-    goto l50f386;
-l50fa09:
-    cpu.ecx = 0x20;
-    cpu.ebx = cpu.esi;
-    cpu.ecx -= cpu.edx;
-    cpu.ebx >>= cpu.cl & 31;
-    cpu.cl = cpu.dl;
-    cpu.edi -= cpu.edx;
-    cpu.esi <<= cpu.cl & 31;
-    if (sreg32(cpu.edi) >= 0)
-        goto l50f392;
-    cpu.esi = at(app, f + kSource);
-    cpu.ecx = 0;
-    cpu.cl = byte(app, cpu.esi);
-    cpu.ecx |= cpu.ebp;
-    cpu.esi = byte(app, cpu.esi + 0x1);
-    put(app, f + kWord, cpu.ecx);
-    cpu.ecx <<= 8;
-    cpu.esi |= cpu.ecx;
-    cpu.ecx = cpu.edi;
-    cpu.ecx = 0 - cpu.ecx;
-    put(app, f + kWord, cpu.esi);
-    cpu.esi <<= cpu.cl & 31;
-    cpu.ecx = at(app, f + kSymbolSource);
-    cpu.edi += 0x10;
-    put(app, f + kSource, cpu.ecx);
-    goto l50f392;
-l50fa62:
-    cpu.ebp = at(app, f + kTableOffset);
-    cpu.eax = at(app, f + kTableShift);
-    cpu.ecx = at(app, f + kTableLength);
-    cpu.ebp += 4;
-    --cpu.eax;
-    ++cpu.ecx;
-    put(app, f + kTableOffset, cpu.ebp);
-    put(app, f + kTableShift, cpu.eax);
-    cpu.ebp = at(app, f + kLongest);
-    put(app, f + kTableLength, cpu.ecx);
-    if (sreg32(cpu.ecx) <= sreg32(cpu.ebp))
-        goto l50f454;
-    goto l50ee5e;
-l50faa5:
-    cpu.edi -= 0x10;
-    cpu.edi += cpu.eax;
-    if (cpu.eax == 0x60)
-        goto l50fb17;
-    cpu.eax = 8;
-    cpu.edx = cpu.esi;
-    cpu.ecx = 0x20;
-    cpu.edx >>= 0x10;
-l50fabe:
-    ++cpu.eax;
-    cpu.ebp = at(app, f + cpu.ecx + kLimits + 4);
-    cpu.ecx += 4;
-    if (reg32(cpu.edx) >= reg32(cpu.ebp))
-        goto l50fabe;
-l50facd:
-    cpu.ecx = 0x20;
-    cpu.edx = cpu.esi;
-    cpu.ecx -= cpu.eax;
-    cpu.edx >>= cpu.cl & 31;
-    cpu.cl = cpu.al;
-    cpu.edi -= cpu.eax;
-    cpu.esi <<= cpu.cl & 31;
-    cpu.ecx = at(app, f + cpu.eax * 4 + kOffsets);
-    cpu.eax = cpu.edx;
-    cpu.eax -= cpu.ecx;
-    cpu.dl = byte(app, f + kClue);
-    cpu.al = byte(app, f + kSymbols + cpu.eax);
-    if (cpu.al == cpu.dl)
-        goto l50fb20;
-    if (sreg32(cpu.edi) < 0)
-        goto l50fb20;
-    cpu.edx = at(app, f + kDest);
-    putByte(app, cpu.edx, cpu.al);
-    cpu.eax = cpu.edx + 0x1;
-    put(app, f + kDest, cpu.eax);
-    goto l50ee73;
-l50fb17:
-    cpu.eax = at(app, f + kClueLength);
-    goto l50facd;
-l50fb20:
-    if (sreg32(cpu.edi) < 0)
-        goto l50fb45;
-l50fb24:
-    if (cpu.al == byte(app, f + kClue))
-        goto l50fba8;
-    cpu.edx = at(app, f + kDest);
-    cpu.ebp = cpu.edx + 0x1;
-    putByte(app, cpu.edx, cpu.al);
-    put(app, f + kDest, cpu.ebp);
-    goto l50ee73;
-l50fb45:
-    cpu.edx = at(app, f + kSource);
-    cpu.ecx = 0;
-    cpu.cl = byte(app, cpu.edx);
-    cpu.edx = at(app, f + kWord);
-    cpu.edx <<= 8;
-    cpu.ecx |= cpu.edx;
-    cpu.edx = at(app, f + kSource);
-    put(app, f + kWord, cpu.ecx);
-    cpu.ecx = 0;
-    cpu.cl = byte(app, cpu.edx + 0x1);
-    cpu.edx = at(app, f + kWord);
-    cpu.ebp = at(app, f + kSource);
-    cpu.edx <<= 8;
-    cpu.ebp += 2;
-    cpu.ecx |= cpu.edx;
-    put(app, f + kSource, cpu.ebp);
-    put(app, f + kWord, cpu.ecx);
-    cpu.ecx = cpu.edi;
-    cpu.esi = at(app, f + kWord);
-    cpu.ecx = 0 - cpu.ecx;
-    cpu.edi += 0x10;
-    cpu.esi <<= cpu.cl & 31;
-    goto l50fb24;
-l50fba8:
-    cpu.edx = at(app, f + kDest);
-    if (sreg32(cpu.esi) < 0)
-        goto l50fcae;
-    cpu.eax = cpu.esi;
-    cpu.eax >>= 0x10;
-    if (cpu.eax == 0)
-        goto l50fd8d;
-    cpu.eax = 2;
-l50fbc9:
-    cpu.esi += cpu.esi;
-    ++cpu.eax;
-    if (sreg32(cpu.esi) >= 0)
-        goto l50fbc9;
-    cpu.ecx = cpu.eax - 0x1;
-    cpu.edi -= cpu.ecx;
-    cpu.esi += cpu.esi;
-    if (sreg32(cpu.edi) < 0)
-        goto l50fd39;
-l50fbdf:
-    cpu.ecx = at(app, f + kWord);
-    cpu.ecx <<= 8;
-    put(app, f + kRunWord, cpu.ecx);
-    cpu.ecx = at(app, f + kSource);
-    cpu.ecx += 2;
-    put(app, f + kRunSource, cpu.ecx);
-    if (sreg32(cpu.eax) <= sreg32(0x10))
-        goto l50fed0;
-    cpu.ecx = cpu.eax - 0x10;
-    put(app, f + kHighBits, cpu.ecx);
-    cpu.ecx = 0x20;
-    cpu.ecx -= at(app, f + kHighBits);
-    cpu.ebp = cpu.esi;
-    cpu.ebp >>= cpu.cl & 31;
-    cpu.cl = byte(app, f + kHighBits);
-    cpu.esi <<= cpu.cl & 31;
-    cpu.edi -= at(app, f + kHighBits);
-    put(app, f + kRun, cpu.ebp);
-    if (sreg32(cpu.edi) < 0)
-        goto l50fe19;
-l50fc43:
-    cpu.ecx = cpu.esi;
-    cpu.edi -= 0x10;
-    cpu.ecx >>= 0x10;
-    cpu.esi <<= 0x10;
-    put(app, f + kRunLow, cpu.ecx);
-    if (sreg32(cpu.edi) < 0)
-        goto l50fe6e;
-l50fc5d:
-    cpu.ecx = at(app, f + kRun);
-    cpu.ebp = at(app, f + kRunLow);
-    cpu.ecx <<= 0x10;
-    cpu.ebp |= cpu.ecx;
-    cpu.cl = cpu.al;
-    cpu.eax = 1;
-    cpu.eax <<= cpu.cl & 31;
-    cpu.eax += cpu.ebp;
-l50fc7b:
-    cpu.eax -= 4;
-    put(app, f + kRun, cpu.eax);
-l50fc85:
-    cpu.ebp = at(app, f + kRun);
-    if (cpu.ebp == 0)
-        goto l50ff5b;
-    cpu.cl = byte(app, cpu.edx - 0x1);
-    cpu.eax = cpu.edx + cpu.ebp;
-l50fc9a:
-    ++cpu.edx;
-    putByte(app, cpu.edx - 0x1, cpu.cl);
-    if (reg32(cpu.edx) < reg32(cpu.eax))
-        goto l50fc9a;
-    put(app, f + kDest, cpu.edx);
-    goto l50ee73;
-l50fcae:
-    cpu.eax = cpu.esi;
-    cpu.edi -= 3;
-    cpu.eax >>= 0x1d;
-    cpu.esi <<= 3;
-    put(app, f + kRun, cpu.eax);
-    if (sreg32(cpu.edi) < 0)
-        goto l50fcce;
-    put(app, f + kRun, reg32(at(app, f + kRun) - 4));
-    goto l50fc85;
-l50fcce:
-    cpu.ecx = at(app, f + kSource);
-    cpu.eax = 0;
-    cpu.al = byte(app, cpu.ecx);
-    cpu.ecx = at(app, f + kWord);
-    cpu.ecx <<= 8;
-    cpu.eax |= cpu.ecx;
-    put(app, f + kWord, cpu.eax);
-    cpu.eax = at(app, f + kSource);
-    cpu.ecx = 0;
-    cpu.cl = byte(app, cpu.eax + 0x1);
-    cpu.eax = at(app, f + kWord);
-    cpu.eax <<= 8;
-    cpu.ecx |= cpu.eax;
-    put(app, f + kWord, cpu.ecx);
-    cpu.eax = at(app, f + kSource);
-    cpu.esi = at(app, f + kWord);
-    cpu.ecx = cpu.edi;
-    cpu.eax += 2;
-    cpu.ecx = 0 - cpu.ecx;
-    put(app, f + kSource, cpu.eax);
-    cpu.edi += 0x10;
-    cpu.esi <<= cpu.cl & 31;
-    put(app, f + kRun, reg32(at(app, f + kRun) - 4));
-    goto l50fc85;
-l50fd39:
-    cpu.esi = at(app, f + kSource);
-    cpu.ecx = 0;
-    cpu.cl = byte(app, cpu.esi);
-    cpu.esi = at(app, f + kWord);
-    cpu.ebp = at(app, f + kSource);
-    cpu.esi <<= 8;
-    cpu.ebp += 2;
-    cpu.ecx |= cpu.esi;
-    cpu.esi = at(app, f + kSource);
-    put(app, f + kWord, cpu.ecx);
-    cpu.ecx <<= 8;
-    cpu.esi = byte(app, cpu.esi + 0x1);
-    put(app, f + kSource, cpu.ebp);
-    cpu.esi |= cpu.ecx;
-    cpu.ecx = cpu.edi;
-    put(app, f + kWord, cpu.esi);
-    cpu.ecx = 0 - cpu.ecx;
-    cpu.edi += 0x10;
-    cpu.esi <<= cpu.cl & 31;
-    goto l50fbdf;
-l50fd8d:
-    cpu.eax = 2;
-    cpu.ebp = 0;
-l50fd94:
-    cpu.ecx = cpu.esi;
-    ++cpu.eax;
-    --cpu.edi;
-    cpu.ecx >>= 0x1f;
-    cpu.esi += cpu.esi;
-    put(app, f + kBit, cpu.ecx);
-    if (sreg32(cpu.edi) < 0)
-        goto l50fdb6;
-    if (cpu.ebp == at(app, f + kBit))
-        goto l50fd94;
-    goto l50fbdf;
-l50fdb6:
-    cpu.ecx = at(app, f + kWord);
-    cpu.esi = at(app, f + kSource);
-    cpu.ecx <<= 8;
-    cpu.esi = byte(app, cpu.esi);
-    cpu.esi |= cpu.ecx;
-    put(app, f + kWord, cpu.esi);
-    cpu.ecx = at(app, f + kWord);
-    cpu.esi = at(app, f + kSource);
-    cpu.ecx <<= 8;
-    cpu.esi = byte(app, cpu.esi + 0x1);
-    cpu.esi |= cpu.ecx;
-    cpu.ecx = cpu.edi;
-    cpu.ecx = 0 - cpu.ecx;
-    put(app, f + kWord, cpu.esi);
-    cpu.esi <<= cpu.cl & 31;
-    cpu.ecx = at(app, f + kSource);
-    cpu.ecx += 2;
-    cpu.edi += 0x10;
-    put(app, f + kSource, cpu.ecx);
-    if (cpu.ebp == at(app, f + kBit))
-        goto l50fd94;
-    goto l50fbdf;
-l50fe19:
-    cpu.esi = at(app, f + kSource);
-    cpu.ecx = 0;
-    cpu.cl = byte(app, cpu.esi);
-    cpu.esi = at(app, f + kRunWord);
-    cpu.esi |= cpu.ecx;
-    put(app, f + kWord, cpu.esi);
-    cpu.ecx = at(app, f + kWord);
-    cpu.esi = at(app, f + kSource);
-    cpu.ecx <<= 8;
-    cpu.esi = byte(app, cpu.esi + 0x1);
-    cpu.esi |= cpu.ecx;
-    cpu.ecx = cpu.edi;
-    cpu.ecx = 0 - cpu.ecx;
-    put(app, f + kWord, cpu.esi);
-    cpu.esi <<= cpu.cl & 31;
-    cpu.ecx = at(app, f + kRunSource);
-    cpu.edi += 0x10;
-    put(app, f + kSource, cpu.ecx);
-    goto l50fc43;
-l50fe6e:
-    cpu.ecx = at(app, f + kWord);
-    cpu.esi = at(app, f + kSource);
-    cpu.ecx <<= 8;
-    cpu.esi = byte(app, cpu.esi);
-    cpu.esi |= cpu.ecx;
-    put(app, f + kWord, cpu.esi);
-    cpu.esi = at(app, f + kSource);
-    cpu.ecx = 0;
-    cpu.cl = byte(app, cpu.esi + 0x1);
-    cpu.esi = at(app, f + kWord);
-    cpu.ebp = at(app, f + kSource);
-    cpu.esi <<= 8;
-    cpu.ebp += 2;
-    cpu.ecx |= cpu.esi;
-    put(app, f + kSource, cpu.ebp);
-    put(app, f + kWord, cpu.ecx);
-    cpu.ecx = cpu.edi;
-    cpu.esi = at(app, f + kWord);
-    cpu.ecx = 0 - cpu.ecx;
-    cpu.edi += 0x10;
-    cpu.esi <<= cpu.cl & 31;
-    goto l50fc5d;
-l50fed0:
-    cpu.ecx = 0x20;
-    cpu.ebp = cpu.esi;
-    cpu.ecx -= cpu.eax;
-    cpu.edi -= cpu.eax;
-    cpu.ebp >>= cpu.cl & 31;
-    cpu.cl = cpu.al;
-    put(app, f + kRun, cpu.ebp);
-    cpu.esi <<= cpu.cl & 31;
-    if (sreg32(cpu.edi) < 0)
-        goto l50ff01;
-l50feec:
-    cpu.cl = cpu.al;
-    cpu.eax = 1;
-    cpu.eax <<= cpu.cl & 31;
-    cpu.eax += at(app, f + kRun);
-    goto l50fc7b;
-l50ff01:
-    cpu.esi = at(app, f + kSource);
-    cpu.ecx = 0;
-    cpu.cl = byte(app, cpu.esi);
-    cpu.esi = at(app, f + kRunWord);
-    cpu.esi |= cpu.ecx;
-    put(app, f + kWord, cpu.esi);
-    cpu.esi = at(app, f + kSource);
-    cpu.ecx = 0;
-    cpu.cl = byte(app, cpu.esi + 0x1);
-    cpu.esi = at(app, f + kWord);
-    cpu.esi <<= 8;
-    cpu.ecx |= cpu.esi;
-    put(app, f + kWord, cpu.ecx);
-    cpu.ecx = cpu.edi;
-    cpu.esi = at(app, f + kWord);
-    cpu.ecx = 0 - cpu.ecx;
-    cpu.esi <<= cpu.cl & 31;
-    cpu.ecx = at(app, f + kRunSource);
-    cpu.edi += 0x10;
-    put(app, f + kSource, cpu.ecx);
-    goto l50feec;
-l50ff5b:
-    cpu.ebp = cpu.esi;
-    --cpu.edi;
-    cpu.ebp >>= 0x1f;
-    cpu.esi += cpu.esi;
-    if (sreg32(cpu.edi) < 0)
-        goto l50ffc2;
-l50ff67:
-    if (cpu.ebp == 0)
-        goto l510020;
-    cpu.edi = at(app, f + kStart);
-    cpu.ebx = at(app, f + kLength);
-    cpu.esi = at(app, f + kType);
-    cpu.edi += cpu.ebx;
-    if (cpu.esi != 0x32fb)
-        goto l5100b0;
-    cpu.eax = at(app, f + kStart);
-    cpu.ebx = cpu.edi;
-    cpu.ecx = 0;
-    if (reg32(cpu.edi) <= reg32(cpu.eax))
-        goto l50ffb0;
-l50ffa1:
-    cpu.edx = 0;
-    cpu.dl = byte(app, cpu.eax);
-    ++cpu.eax;
-    cpu.ecx += cpu.edx;
-    putByte(app, cpu.eax - 0x1, cpu.cl);
-    if (reg32(cpu.eax) < reg32(cpu.ebx))
-        goto l50ffa1;
-    ;
-l50ffb0:
-    cpu.eax = at(app, f + kLength);
-    cpu.esp += 0x544;
-    cpu.ebp = pop(app, cpu);
-    cpu.edi = pop(app, cpu);
-    cpu.esi = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
-    cpu.esp += 4;
-    return;
-l50ffc2:
-    cpu.eax = at(app, f + kSource);
-    cpu.edx = 0;
-    cpu.dl = byte(app, cpu.eax);
-    cpu.eax = at(app, f + kWord);
-    cpu.eax <<= 8;
-    cpu.edx |= cpu.eax;
-    cpu.eax = at(app, f + kSource);
-    put(app, f + kWord, cpu.edx);
-    cpu.edx = 0;
-    cpu.ecx = cpu.edi;
-    cpu.dl = byte(app, cpu.eax + 0x1);
-    cpu.eax = at(app, f + kWord);
-    cpu.ecx = 0 - cpu.ecx;
-    cpu.eax <<= 8;
-    cpu.edi += 0x10;
-    cpu.edx |= cpu.eax;
-    cpu.eax = at(app, f + kSource);
-    put(app, f + kWord, cpu.edx);
-    cpu.esi = cpu.edx;
-    cpu.eax += 2;
-    cpu.esi <<= cpu.cl & 31;
-    put(app, f + kSource, cpu.eax);
-    goto l50ff67;
-l510020:
-    cpu.eax = cpu.esi;
-    cpu.edi -= 8;
-    cpu.eax >>= 0x18;
-    cpu.esi <<= 8;
-    putByte(app, f + kLiteral, cpu.al);
-    if (sreg32(cpu.edi) < 0)
-        goto l510055;
-l510036:
-    cpu.edx = at(app, f + kDest);
-    cpu.al = byte(app, f + kLiteral);
-    cpu.ecx = cpu.edx + 0x1;
-    putByte(app, cpu.edx, cpu.al);
-    put(app, f + kDest, cpu.ecx);
-    goto l50ee73;
-l510055:
-    cpu.eax = at(app, f + kSource);
-    cpu.edx = 0;
-    cpu.dl = byte(app, cpu.eax);
-    cpu.eax = at(app, f + kWord);
-    cpu.eax <<= 8;
-    cpu.edx |= cpu.eax;
-    cpu.eax = at(app, f + kSource);
-    put(app, f + kWord, cpu.edx);
-    cpu.edx = 0;
-    cpu.dl = byte(app, cpu.eax + 0x1);
-    cpu.eax = at(app, f + kWord);
-    cpu.eax <<= 8;
-    cpu.ecx = cpu.edi;
-    cpu.edx |= cpu.eax;
-    cpu.ecx = 0 - cpu.ecx;
-    put(app, f + kWord, cpu.edx);
-    cpu.esi = cpu.edx;
-    cpu.edx = at(app, f + kSource);
-    cpu.edi += 0x10;
-    cpu.edx += 2;
-    cpu.esi <<= cpu.cl & 31;
-    put(app, f + kSource, cpu.edx);
-    goto l510036;
-l5100b0:
-    if (cpu.esi != 0x34fb)
-        goto l50ffb0;
-    cpu.eax = at(app, f + kStart);
-    cpu.esi = cpu.edi;
-    cpu.edx = 0;
-    cpu.ecx = 0;
-    if (reg32(cpu.edi) <= reg32(cpu.eax))
-        goto l50ffb0;
-l5100d1:
-    cpu.ebx = 0;
-    cpu.bl = byte(app, cpu.eax);
-    cpu.ecx += cpu.ebx;
-    ++cpu.eax;
-    cpu.edx += cpu.ecx;
-    putByte(app, cpu.eax - 0x1, cpu.dl);
-    if (reg32(cpu.eax) < reg32(cpu.esi))
-        goto l5100d1;
-    cpu.eax = at(app, f + kLength);
-    cpu.esp += 0x544;
-    cpu.ebp = pop(app, cpu);
-    cpu.edi = pop(app, cpu);
-    cpu.esi = pop(app, cpu);
-    cpu.ecx = pop(app, cpu);
-    cpu.esp += 4;
-    return;
 
+/* EA's Huffman's bits, read from the top: `bits` those not yet taken,
+ * left-justified, `left` how many past 16 of them (signed, below 0 once
+ * they run short), `word` the bytes read so far, the last at the bottom,
+ * `source` the next two.  `bits` is always `word` shifted up 16 - `left`. */
+struct HuffBits
+{
+    App* app;
+    reg32 source, word, bits, left;
+
+    /* Two bytes more, once `left` is below 0. */
+    void refill()
+    {
+        word = word << 8 | byte(app, source);
+        word = word << 8 | byte(app, source + 1);
+        source += 2;
+        bits = word << ((0 - left) & 31);
+        left += 16;
+    }
+
+    /* The top `n` bits taken (shifts as the code's, by `n` & 31). */
+    reg32 take(reg32 n)
+    {
+        const reg32 value = bits >> ((0x20 - n) & 31);
+        bits <<= n & 31;
+        left -= n;
+        if (sreg32(left) < 0)
+            refill();
+        return value;
+    }
+
+    /* A count: 1 and 2 bits as 4 to 7; else 2 + n bits after n 0s and a 1
+     * (3 + n where the next 16 bits are all 0), and 1 above them; less 4.
+     * `kept` not 0 (a run's): where the n bits are read from written there,
+     * as the code keeps it before reading them. */
+    reg32 count(reg32 kept = 0)
+    {
+        if (sreg32(bits) < 0)
+            return take(3) - 4;
+        reg32 n = 2;
+        if (bits >> 16 == 0)
+            while (++n, take(1) == 0)
+                ;
+        else
+        {
+            do
+            {
+                bits += bits;
+                ++n;
+            } while (sreg32(bits) >= 0);
+            left -= n - 1;
+            bits += bits;
+            if (sreg32(left) < 0)
+                refill();
+        }
+        if (kept != 0)
+            put(app, kept, source + 2);
+        reg32 value;
+        if (sreg32(n) <= 0x10)
+            value = take(n);
+        else
+        {
+            const reg32 high = take(n - 0x10);
+            value = high << 16 | take(0x10);
+        }
+        return value + (1u << (n & 31)) - 4;
+    }
+};
+
+/* The frame of 0x50ed50 at `frame`, at the code's depth: the symbols taken,
+ * the first byte's lookup -- its symbol and its length (0x40 a longer code,
+ * 0x60 the clue's) -- the symbols in their codes' order; by length (+ 4 *
+ * length) the codes' counts, their limits (16 bits, left-justified), their
+ * first's offset in the symbols; the clue's length, the clue.  The 16-bit
+ * offset (+0x4c0) is where a run's long count keeps where it reads. */
+constexpr reg32 kHuffUsed = 0, kHuffLookupSymbols = 0x100, kHuffLookupLengths = 0x200, kHuffSymbols = 0x300;
+constexpr reg32 kHuffCounts = 0x400, kHuffLimits = 0x440, kHuffOffsets = 0x480, kHuffRunSource = 0x4c0;
+constexpr reg32 kHuffClueLength = 0x4d0, kHuffClue = 0x540, kHuffFrame = 0x554;
+// A lookup's length for the clue's code.
+constexpr reg8 kHuffClueCode = 0x60;
+// The kinds delta coded after: the sums, the sums of the sums.
+constexpr reg32 kHuffSums = 0x32fb, kHuffSumsOfSums = 0x34fb;
+
+/* The tables of the frame `f` read: the clue, the counts of each length from
+ * 1 on (their limits and offsets with them) until a count fills the code
+ * space, the symbols, and the first byte's lookup. */
+void readHuffTables(App* app, HuffBits& in, reg32 f)
+{
+    putByte(app, f + kHuffClue, reg8(in.take(8)));
+    reg32 base = 0, total = 0, length = 1, shift = 0xf;
+    for (;; ++length, --shift)
+    {
+        base += base;
+        put(app, f + kHuffOffsets + length * 4, base - total);
+        const reg32 count = in.count();
+        base += count;
+        total += count;
+        put(app, f + kHuffCounts + length * 4, count);
+        const reg32 limit = count == 0 ? 0 : base << (shift & 31) & 0xffff;
+        put(app, f + kHuffLimits + length * 4, limit);
+        if (count != 0 && limit == 0)
+            break;
+    }
+    const reg32 longest = length;
+    put(app, f + kHuffLimits + longest * 4, 0xffffffff);
+    for (reg32 i = 0; i < 0x100; i += 4)
+        put(app, f + kHuffUsed + i, 0);
+    reg8 symbol = 0xff;
+    for (reg32 index = 0; sreg32(index) < sreg32(total); ++index)
+    {
+        // How many not yet taken to skip, past the one before.
+        reg32 skip = in.count() + 1;
+        do
+        {
+            ++symbol;
+            if (byte(app, f + kHuffUsed + symbol) == 0)
+                --skip;
+        } while (skip != 0);
+        putByte(app, f + kHuffUsed + symbol, 1);
+        putByte(app, f + kHuffSymbols + index, symbol);
+    }
+    for (reg32 i = 0; i < 0x100; i += 4)
+        put(app, f + kHuffLookupLengths + i, 0x40404040);
+    reg32 symbolAt = f + kHuffSymbols, lookupSymbol = f + kHuffLookupSymbols, lookupLength = f + kHuffLookupLengths;
+    for (reg32 bitsLength = 1, entriesShift = 7; sreg32(bitsLength) <= sreg32(longest); ++bitsLength, --entriesShift)
+    {
+        reg32 count = at(app, f + kHuffCounts + bitsLength * 4);
+        if (sreg32(bitsLength) >= 9)
+            break;
+        const reg32 entries = 1u << (entriesShift & 31);
+        while (count-- != 0)
+        {
+            const reg8 symbol = byte(app, symbolAt);
+            ++symbolAt;
+            reg8 entryLength = reg8(bitsLength);
+            if (byte(app, f + kHuffClue) == symbol)
+            {
+                put(app, f + kHuffClueLength, bitsLength);
+                entryLength = kHuffClueCode;
+            }
+            for (reg32 entry = 0; sreg32(entry) < sreg32(entries); ++entry)
+            {
+                putByte(app, lookupSymbol++, symbol);
+                putByte(app, lookupLength++, entryLength);
+            }
+        }
+    }
+}
+
+}  // namespace
+
+/* 0x50ed50: EA's Huffman with runs (0x30fb, 0x32fb and 0x34fb -- each with
+ * the packed length too when odd) unpacked from `source` to `to`, its
+ * tables read first when `withTables` is not 0 (else those its frame `f`
+ * holds); the length unpacked, as the header says (0 for no source).  The
+ * bits are read from the top, 16 at a time (HuffBits): the clue byte; how
+ * many codes of each length, from 1 bit until they fill the code space; the
+ * symbols, each as how many not yet taken to skip; then codes -- up to 8
+ * bits looked up by their first byte, longer ones by the limits of each
+ * length -- each a byte, or the clue's code: then a count, a run of the byte
+ * before that long, or with 0 a bit: 1 the end, 0 a byte as it is.  0x32fb's
+ * bytes are the sums of those unpacked, 0x34fb's the sums of their sums.  A
+ * 16-bit code's offset (the frame's +0x4c0) is where a run's long count
+ * keeps where it reads: kept, the game's own clash.  The tables stay in the
+ * frame at the code's depth (with `withTables` 0 they are what it holds
+ * there); a byte is written before the bits after a short code are read
+ * further, a longer code's after, as the code goes. */
+reg32 unpackHuffman(App* app, reg32 f, reg32 source, reg32 to, reg32 withTables)
+{
+    if (source == 0)
+        return 0;
+    const reg32 start = to;
+    HuffBits in{app, source + 4, bigEndian(app, source, 4), 0, 0};
+    in.bits = in.word << 16;
+    reg32 type = in.word >> 16;
+    if ((type & 0x100) != 0)
+    {
+        // The packed length skipped.
+        in.word = bigEndian(app, source + 4, 4);
+        in.source = source + 8;
+        in.left = 8;
+        in.bits = in.word << 8;
+    }
+    type &= ~reg32(0x100);
+    const reg32 high = in.take(8);
+    const reg32 length = in.take(0x10) | high << 16;
+    if (withTables != 0)
+        readHuffTables(app, in, f);
+    for (;;)
+    {
+        const reg8 first = reg8(in.bits >> 24);
+        const reg32 bitsLength = byte(app, f + kHuffLookupLengths + first);
+        if (sreg32(in.left - bitsLength) >= -0x10)
+        {
+            // A short code: its byte, then the bits after it.
+            putByte(app, to, byte(app, f + kHuffLookupSymbols + first));
+            ++to;
+            in.bits <<= bitsLength & 31;
+            in.left -= bitsLength;
+            if (sreg32(in.left) < 0)
+                in.refill();
+            continue;
+        }
+        reg32 n;
+        if (bitsLength == kHuffClueCode)
+            n = at(app, f + kHuffClueLength);
+        else
+        {
+            const reg32 top = in.bits >> 16;
+            n = 8;
+            do
+                ++n;
+            while (top >= at(app, f + kHuffLimits + n * 4));
+        }
+        const reg32 code = in.take(n);
+        const reg8 symbol = byte(app, f + kHuffSymbols + (code - at(app, f + kHuffOffsets + n * 4)));
+        if (symbol != byte(app, f + kHuffClue))
+        {
+            putByte(app, to, symbol);
+            ++to;
+            continue;
+        }
+        const reg32 run = in.count(f + kHuffRunSource);
+        if (run != 0)
+        {
+            const reg8 again = byte(app, to - 1);
+            const reg32 end = to + run;
+            do
+                putByte(app, to++, again);
+            while (to < end);
+            continue;
+        }
+        if (in.take(1) != 0)
+            break;
+        putByte(app, to, reg8(in.take(8)));
+        ++to;
+    }
+    // The sums.
+    const reg32 end = start + length;
+    reg32 sum = 0, sumOfSums = 0;
+    if (type == kHuffSums)
+        for (reg32 at = start; at < end; ++at)
+        {
+            sum += byte(app, at);
+            putByte(app, at, reg8(sum));
+        }
+    else if (type == kHuffSumsOfSums)
+        for (reg32 at = start; at < end; ++at)
+        {
+            sum += byte(app, at);
+            sumOfSums += sum;
+            putByte(app, at, reg8(sumOfSums));
+        }
+    return length;
+}
+
+/* 0x50ed50: unpackHuffman from eax to edx, the tables read for ebx not 0;
+ * the frame under the 4 registers the code pushes. */
+void huffUnpack(App* app, CPU& cpu)
+{
+    answer(cpu, unpackHuffman(app, cpu.esp - kHuffFrame, cpu.eax, cpu.edx, cpu.ebx));
 }
 
 /* ---- The typed cores of native_ea_net.h's list for the game's other code (guest::direct): the

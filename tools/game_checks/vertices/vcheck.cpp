@@ -6,10 +6,13 @@
  * loads, and a world of records made up for each case.  The native runs on
  * one, the generated code on the other, both from the same registers and the
  * same x87 control word; then every byte of memory (all but the stack below
- * the esp the call returns with), the registers, the flags (CF PF AF ZF SF
- * OF), the x87's control and status words, its depth and live registers, and
- * every call out (THRASH's, the game's functions left as stand-ins) are
- * compared.  The functions the natives call that both sides run as the game's
+ * the esp the call returns with), the registers as game_checks compares them
+ * -- every one but the function's own register arguments (entry_regs.py),
+ * which Watcom's convention leaves its callers no longer, and eax where a
+ * caller reads it after the call; not the arithmetic flags, which no caller
+ * reads after a call -- the x87's
+ * control and status words, its depth and live registers, and every call out
+ * (THRASH's, the game's functions left as stand-ins) are compared.  The functions the natives call that both sides run as the game's
  * code are gen_vertices.py's PIECES.
  *
  *     vcheck [cases] [name ...] */
@@ -91,6 +94,8 @@ struct Tested
     const char* name;
     Function generated;
     Function native;
+    unsigned arguments;  // how many of eax, edx, ebx and ecx it takes
+    bool result;         // whether a caller reads its eax
 };
 const Tested kTested[] = {
 #include "tested.inc"
@@ -1167,7 +1172,8 @@ struct Counts
     unsigned cases = 0, failed = 0;
 };
 
-bool compare(VApp& n, VApp& g, const x86::CPU& nc, const x86::CPU& gc, char* what, size_t size)
+bool compare(VApp& n, VApp& g, const x86::CPU& nc, const x86::CPU& gc, unsigned arguments, bool result, char* what,
+             size_t size)
 {
     if (nc.terminate != gc.terminate)
         return std::snprintf(what, size, "terminate %d native, %d generated", nc.terminate, gc.terminate), false;
@@ -1195,15 +1201,15 @@ bool compare(VApp& n, VApp& g, const x86::CPU& nc, const x86::CPU& gc, char* wha
         ++g_stopped;
         return true;
     }
-    const struct { const char* name; x86::reg32 a, b; } regs[] = {
-        {"eax", nc.eax, gc.eax}, {"ebx", nc.ebx, gc.ebx}, {"ecx", nc.ecx, gc.ecx}, {"edx", nc.edx, gc.edx},
-        {"esi", nc.esi, gc.esi}, {"edi", nc.edi, gc.edi}, {"ebp", nc.ebp, gc.ebp}, {"esp", nc.esp, gc.esp}};
+    // eax where its callers read it; edx, ebx and ecx where the function is not handed an
+    // argument in them (eax, edx, ebx, ecx in that order); the rest always.
+    const struct { const char* name; x86::reg32 a, b; bool compared; } regs[] = {
+        {"eax", nc.eax, gc.eax, result}, {"ebx", nc.ebx, gc.ebx, arguments < 3}, {"ecx", nc.ecx, gc.ecx, arguments < 4},
+        {"edx", nc.edx, gc.edx, arguments < 2}, {"esi", nc.esi, gc.esi, true}, {"edi", nc.edi, gc.edi, true},
+        {"ebp", nc.ebp, gc.ebp, true}, {"esp", nc.esp, gc.esp, true}};
     for (const auto& r : regs)
-        if (r.a != r.b)
+        if (r.compared && r.a != r.b)
             return std::snprintf(what, size, "%s %08x native, %08x generated", r.name, r.a, r.b), false;
-    if ((nc.flags.lo & 0xd5) != (gc.flags.lo & 0xd5) || nc.flags.of != gc.flags.of)
-        return std::snprintf(what, size, "flags %02x/%u native, %02x/%u generated", nc.flags.lo & 0xd5,
-                             unsigned(nc.flags.of), gc.flags.lo & 0xd5, unsigned(gc.flags.of)), false;
     if (nc.fpu.control.word != gc.fpu.control.word || nc.fpu.count != gc.fpu.count)
         return std::snprintf(what, size, "fpu control %04x/%04x depth %u/%u",
                              nc.fpu.control.word, gc.fpu.control.word,
@@ -1380,7 +1386,7 @@ int main(int argc, char** argv)
                 t.generated(&generatedApp, gc);
                 ++counts.cases;
                 char what[600] = "";
-                if (compare(nativeApp, generatedApp, nc, gc, what, sizeof what))
+                if (compare(nativeApp, generatedApp, nc, gc, t.arguments, t.result, what, sizeof what))
                     continue;
                 if (++counts.failed <= 3)
                 {

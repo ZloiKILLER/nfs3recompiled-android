@@ -5,7 +5,7 @@
 #include "native_windows.h"
 #include "host_threads.h"
 #include "host_window.h"
-#include <winapi/kernel32.h>
+#include "host_system.h"
 
 #include <cstdint>
 #include <initializer_list>
@@ -308,7 +308,7 @@ bool startInput(App* app, CPU& cpu)
     put(app, kJoystickCount, 0);
     cpu.eax = kEffectsMade;  // as the effects' count leaves it: GetModuleHandle may hand it back
     const std::optional<reg32> instance =
-        callWindows<kGetModuleHandle, &win32::kernel32::GetModuleHandleA>(app, cpu, 0);
+        callWindows<kGetModuleHandle, &host::moduleHandle>(app, cpu, 0);
     if (!instance)
         return false;
     // DirectInputCreateA(the instance, version 5, &DirectInput, no outer)
@@ -354,7 +354,7 @@ bool stopInput(App* app, CPU& cpu)
         if (at(app, kMouse) != 0)
         {
             const reg32 event = at(app, kMouseEvent);
-            if (event != 0 && !callWindows<kCloseHandle, &win32::kernel32::CloseHandle>(app, cpu, event))
+            if (event != 0 && !callWindows<kCloseHandle, &host::closeHandle>(app, cpu, event))
                 return false;
             if (!callMethod(app, cpu, Object::Device, at(app, kMouse), kUnacquire, {}))
                 return false;

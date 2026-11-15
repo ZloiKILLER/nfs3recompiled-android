@@ -6,8 +6,8 @@
 #include "native_watcom.h"
 #include "native_windows.h"
 #include "host_threads.h"
-#include <winapi/kernel32.h>
-#include <winapi/user32.h>
+#include "host_files.h"
+#include "host_system.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -188,8 +188,8 @@ auto asCalled(CPU& cpu, Core core, reg32 handed = 0)
 /* A call by address: eax, edx, ebx and ecx from `registers`, as many as given, the rest left as
  * they are; `words` pushed (cdecl or stdcall: esp back where it was after).  What it leaves in eax
  * back; nullopt when the game stopped.  Where that is used, eax is given as the code has it before
- * the call: the checks' stand-in of a function that answers nothing of its own (a lock made,
- * GetLogicalDrives, OutputDebugString) now and then leaves it as it was. */
+ * the call: the checks' stand-in of a function that answers nothing of its own (a lock made)
+ * now and then leaves it as it was. */
 Answer call(App* app, CPU& cpu, reg32 target, std::initializer_list<reg32> registers,
             std::initializer_list<reg32> words = {})
 {
@@ -378,7 +378,10 @@ Answer report(App* app, CPU& cpu, reg32 threshold, reg32 level, reg32 format, re
         return std::nullopt;
     const reg32 way = at(app, kReportOutput);
     if (way == kToDebugger)
-        return call(app, cpu, at(app, kOutputDebugStringA), {text}, {text});
+    {
+        cpu.eax = text;  // as the code has it before the call; OutputDebugString leaves it
+        return windows<kOutputDebugStringA, &host::debugString>(app, cpu, text);
+    }
     if (way == kToStdout)
     {
         if (!call(app, cpu, kMessage, {text}, {text}))
@@ -408,7 +411,7 @@ Answer reportError(App* app, CPU& cpu, reg32 format, reg32 code)
 /* GetLastError's error reported with `format`. */
 Answer reportLastError(App* app, CPU& cpu, reg32 format)
 {
-    const Answer code = windows<kGetLastError, &win32::kernel32::GetLastError>(app, cpu);
+    const Answer code = windows<kGetLastError, &host::lastError>(app, cpu);
     if (!code)
         return std::nullopt;
     return reportError(app, cpu, format, *code & 0xffff);
@@ -451,16 +454,16 @@ Answer closeSlot(App* app, CPU& cpu, reg32 handle)
     if (!index)
         return 0;
     const reg32 drive = byte(app, slotAt(app, *index) + kDrive);
-    if (!windows<kEnterCriticalSection, &host::enterLock>(app, cpu, driveLock(app, drive)) || !windows<kSetLastError, &win32::kernel32::SetLastError>(app, cpu, 0))
+    if (!windows<kEnterCriticalSection, &host::enterLock>(app, cpu, driveLock(app, drive)) || !windows<kSetLastError, &host::setLastError>(app, cpu, 0))
         return std::nullopt;
     if (at(app, slotAt(app, *index) + kMapping) != kNone)
     {
-        if (!windows<kUnmapViewOfFile, &win32::kernel32::UnmapViewOfFile>(app, cpu, at(app, slotAt(app, *index) + kMemory))
-            || !windows<kCloseHandle, &win32::kernel32::CloseHandle>(app, cpu, at(app, slotAt(app, *index) + kMapping)))
+        if (!windows<kUnmapViewOfFile, &host::unmapViewOfFile>(app, cpu, at(app, slotAt(app, *index) + kMemory))
+            || !windows<kCloseHandle, &host::closeHandle>(app, cpu, at(app, slotAt(app, *index) + kMapping)))
             return std::nullopt;
     }
     const reg32 file = at(app, slotAt(app, *index) + kFile);
-    if (file != kNone && !windows<kCloseHandle, &win32::kernel32::CloseHandle>(app, cpu, file))
+    if (file != kNone && !windows<kCloseHandle, &host::closeHandle>(app, cpu, file))
         return std::nullopt;
     if (!windows<kLeaveCriticalSection, &host::leaveLock>(app, cpu, driveLock(app, drive)))
         return std::nullopt;
@@ -508,7 +511,7 @@ Answer allocatePages(App* app, CPU& cpu, reg32 bytes)
     const reg32 info = frame - 0x24;
     if (at(app, kPageSize) == 0)
     {
-        if (!windows<kGetSystemInfo, &win32::kernel32::GetSystemInfo>(app, cpu, info))
+        if (!windows<kGetSystemInfo, &host::systemInfo>(app, cpu, info))
             return std::nullopt;
         put(app, kPageSize, at(app, info + 4));
     }
@@ -517,7 +520,7 @@ Answer allocatePages(App* app, CPU& cpu, reg32 bytes)
     const std::int64_t dividend = sreg32(at(app, bytes) + page - 1);
     const reg32 rounded = reg32(dividend / std::int64_t(sreg32(page))) * page;
     put(app, bytes, rounded);
-    return windows<kVirtualAlloc, &win32::kernel32::VirtualAlloc>(app, cpu, 0, rounded, kMemCommitReserve, kPageReadWrite);
+    return windows<kVirtualAlloc, &host::virtualAlloc>(app, cpu, 0, rounded, kMemCommitReserve, kPageReadWrite);
 }
 
 namespace
@@ -527,7 +530,7 @@ namespace
  * (MEM_RELEASE); VirtualFree's answer. */
 Answer freePages(App* app, CPU& cpu, reg32 pages)
 {
-    return windows<kVirtualFree, &win32::kernel32::VirtualFree>(app, cpu, pages, 0, kMemRelease);
+    return windows<kVirtualFree, &host::virtualFree>(app, cpu, pages, 0, kMemRelease);
 }
 
 /* What touchMemoryPages leaves: in eax the pages' count (or what the last
@@ -672,7 +675,7 @@ Answer fullPath(App* app, CPU& cpu, reg32 path, reg32 out, reg32 room)
     const GuestFrame frame(cpu, 0x10, 0x250);
     const reg32 found = frame - 0x250, root = found + 0x140, flags = found + 0x244;
     const reg32 longest = found + 0x248, namePart = found + 0x24c;
-    const Answer length = windows<kGetFullPathNameA, &win32::kernel32::GetFullPathNameA>(app, cpu, path, room, out, namePart);
+    const Answer length = windows<kGetFullPathNameA, &host::fullPathName>(app, cpu, path, room, out, namePart);
     if (!length)
         return std::nullopt;
     if (*length == 0)
@@ -683,7 +686,7 @@ Answer fullPath(App* app, CPU& cpu, reg32 path, reg32 out, reg32 room)
     }
     if (!rootOf(app, cpu, out, root))
         return std::nullopt;
-    const Answer told = windows<kGetVolumeInformationA, &win32::kernel32::GetVolumeInformationA>(app, cpu, root, 0, 0, 0, longest, flags, 0, 0);
+    const Answer told = windows<kGetVolumeInformationA, &host::volumeInformation>(app, cpu, root, 0, 0, 0, longest, flags, 0, 0);
     if (!told)
         return std::nullopt;
     if (*told == 0)
@@ -692,16 +695,16 @@ Answer fullPath(App* app, CPU& cpu, reg32 path, reg32 out, reg32 room)
             return std::nullopt;
         return 0;
     }
-    if ((byte(app, flags) & kCaseSensitive) == 0 && !windows<kCharUpperA, &win32::user32::CharUpperA>(app, cpu, out))
+    if ((byte(app, flags) & kCaseSensitive) == 0 && !windows<kCharUpperA, &host::charUpper>(app, cpu, out))
         return std::nullopt;
     if ((byte(app, flags) & kUnicodeOnDisk) == 0)
     {
-        const Answer find = windows<kFindFirstFileA, &win32::kernel32::FindFirstFileA>(app, cpu, path, found);
+        const Answer find = windows<kFindFirstFileA, &host::findFirstFile>(app, cpu, path, found);
         if (!find)
             return std::nullopt;
         if (*find != kNotFound)
         {
-            if (!windows<kFindClose, &win32::kernel32::FindClose>(app, cpu, *find))
+            if (!windows<kFindClose, &host::findClose>(app, cpu, *find))
                 return std::nullopt;
             copyText(app, at(app, namePart), found + kFoundName);
         }
@@ -719,7 +722,7 @@ Answer driveOf(App* app, CPU& cpu, reg32 path, reg32 root)
     const GuestFrame frame(cpu, 0x14, 0xc);
     const reg32 bytes = frame - 0xc;
     put(app, bytes, 0x1000);
-    if (!windows<kSetLastError, &win32::kernel32::SetLastError>(app, cpu, 0))
+    if (!windows<kSetLastError, &host::setLastError>(app, cpu, 0))
         return std::nullopt;
     Answer buffer = typed<0x501110, ea::allocatePages>(app, cpu, {bytes}, bytes);
     if (!buffer)
@@ -731,7 +734,7 @@ Answer driveOf(App* app, CPU& cpu, reg32 path, reg32 root)
         return std::nullopt;
     if (!rootOf(app, cpu, *buffer, root))
         return std::nullopt;
-    const Answer needed = windows<kGetLogicalDriveStringsA, &win32::kernel32::GetLogicalDriveStringsA>(app, cpu, 0, *buffer);
+    const Answer needed = windows<kGetLogicalDriveStringsA, &host::logicalDriveStrings>(app, cpu, 0, *buffer);
     if (!needed)
         return std::nullopt;
     if (sreg32(*needed) > 0xfff)
@@ -743,9 +746,10 @@ Answer driveOf(App* app, CPU& cpu, reg32 path, reg32 root)
         if (!buffer)
             return std::nullopt;
     }
-    if (!windows<kGetLogicalDriveStringsA, &win32::kernel32::GetLogicalDriveStringsA>(app, cpu, *needed, *buffer))
+    if (!windows<kGetLogicalDriveStringsA, &host::logicalDriveStrings>(app, cpu, *needed, *buffer))
         return std::nullopt;
-    const Answer drives = call(app, cpu, at(app, kGetLogicalDrives), {0});
+    cpu.eax = 0;  // as the code has it before the call
+    const Answer drives = windows<kGetLogicalDrives, &host::logicalDrives>(app, cpu);
     if (!drives)
         return std::nullopt;
     reg32 index = 0;
@@ -788,8 +792,8 @@ Answer letterOf(App* app, CPU& cpu, reg32 path)
     }
     const GuestFrame frame(cpu, 0xc, 0x10c);
     const reg32 full = frame - 0x10c, namePart = full + 0x108;
-    const Answer length = windows<kGetFullPathNameA, &win32::kernel32::GetFullPathNameA>(app, cpu, path != 0 ? path : kNoPath, 0x105, full, namePart);
-    if (!length || !windows<kCharUpperA, &win32::user32::CharUpperA>(app, cpu, full))
+    const Answer length = windows<kGetFullPathNameA, &host::fullPathName>(app, cpu, path != 0 ? path : kNoPath, 0x105, full, namePart);
+    if (!length || !windows<kCharUpperA, &host::charUpper>(app, cpu, full))
         return std::nullopt;
     if (sreg32(*length) <= 1 || byte(app, full + 1) != ':')
         return 0;
@@ -803,9 +807,9 @@ Answer bytesFree(App* app, CPU& cpu, reg32 root)
 {
     const GuestFrame frame(cpu, 0xc, 0x10);
     const reg32 sectors = frame - 0x10, sectorBytes = sectors + 4, free = sectors + 8, clusters = sectors + 0xc;
-    if (!windows<kSetLastError, &win32::kernel32::SetLastError>(app, cpu, 0))
+    if (!windows<kSetLastError, &host::setLastError>(app, cpu, 0))
         return std::nullopt;
-    const Answer told = windows<kGetDiskFreeSpaceA, &win32::kernel32::GetDiskFreeSpaceA>(app, cpu, root, sectors, sectorBytes, free, clusters);
+    const Answer told = windows<kGetDiskFreeSpaceA, &host::diskFreeSpace>(app, cpu, root, sectors, sectorBytes, free, clusters);
     if (!told || *told == 0)
         return told;
     return at(app, free) * at(app, sectors) * at(app, sectorBytes);
@@ -826,9 +830,9 @@ Answer numberOf(App* app, CPU& cpu, reg32 path)
 Answer changeDirectory(App* app, CPU& cpu, reg32 path)
 {
     const GuestFrame frame(cpu, 0xc, 0);
-    if (!windows<kSetLastError, &win32::kernel32::SetLastError>(app, cpu, 0))
+    if (!windows<kSetLastError, &host::setLastError>(app, cpu, 0))
         return std::nullopt;
-    const Answer changed = windows<kSetCurrentDirectoryA, &win32::kernel32::SetCurrentDirectoryA>(app, cpu, path);
+    const Answer changed = windows<kSetCurrentDirectoryA, &host::setCurrentDirectory>(app, cpu, path);
     if (!changed || *changed != 0)
         return changed;
     const GuestFrame saved(cpu, 4, 0);  // esi pushed for the Error
@@ -843,9 +847,9 @@ Answer changeDirectory(App* app, CPU& cpu, reg32 path)
 Answer currentDirectory(App* app, CPU& cpu, reg32 buffer)
 {
     const GuestFrame frame(cpu, 0xc, 0);
-    if (!windows<kSetLastError, &win32::kernel32::SetLastError>(app, cpu, 0))
+    if (!windows<kSetLastError, &host::setLastError>(app, cpu, 0))
         return std::nullopt;
-    const Answer length = windows<kGetCurrentDirectoryA, &win32::kernel32::GetCurrentDirectoryA>(app, cpu, 0x1ff, buffer);
+    const Answer length = windows<kGetCurrentDirectoryA, &host::currentDirectory>(app, cpu, 0x1ff, buffer);
     if (!length || (*length != 0 && *length <= 0x1ff))
         return length;
     const GuestFrame saved(cpu, 4, 0);  // esi pushed for the Error
@@ -971,9 +975,9 @@ Answer takeSlot(App* app, CPU& cpu)
  * answer. */
 Answer removeFile(App* app, CPU& cpu, reg32 name)
 {
-    if (!windows<kSetLastError, &win32::kernel32::SetLastError>(app, cpu, 0))
+    if (!windows<kSetLastError, &host::setLastError>(app, cpu, 0))
         return std::nullopt;
-    return windows<kDeleteFileA, &win32::kernel32::DeleteFileA>(app, cpu, name);
+    return windows<kDeleteFileA, &host::deleteFile>(app, cpu, name);
 }
 
 /* openFileHandle (0x4e3620): the file named `name` opened as `flags` say,
@@ -994,7 +998,7 @@ Answer openFile(App* app, CPU& cpu, reg32 name, reg32 flags, reg32 block, reg32 
         return std::nullopt;
     const reg32 index = *taken;
     put(app, handleOut, 0);
-    if (!windows<kSetLastError, &win32::kernel32::SetLastError>(app, cpu, 0))
+    if (!windows<kSetLastError, &host::setLastError>(app, cpu, 0))
         return std::nullopt;
     if (sreg32(index) < 0 || sreg32(index) >= sreg32(at(app, kHandleCount)))
         return 0;
@@ -1035,12 +1039,12 @@ Answer openFile(App* app, CPU& cpu, reg32 name, reg32 flags, reg32 block, reg32 
     }
     if (!windows<kEnterCriticalSection, &host::enterLock>(app, cpu, driveLock(app, *drive)))
         return std::nullopt;
-    const Answer told = windows<kGetDiskFreeSpaceA, &win32::kernel32::GetDiskFreeSpaceA>(app, cpu, root, sectors, sectorBytes, free, clusters);
+    const Answer told = windows<kGetDiskFreeSpaceA, &host::diskFreeSpace>(app, cpu, root, sectors, sectorBytes, free, clusters);
     if (!told)
         return std::nullopt;
     if (*told == 0)
         put(app, sectorBytes, kNoDiskSector);
-    const Answer file = windows<kCreateFileA, &win32::kernel32::CreateFileA>(app, cpu, name, access, share, 0, creation, attributes, 0);
+    const Answer file = windows<kCreateFileA, &host::createFile>(app, cpu, name, access, share, 0, creation, attributes, 0);
     if (!file)
         return std::nullopt;
     const reg32 slot = slotAt(app, index);
@@ -1059,7 +1063,7 @@ Answer openFile(App* app, CPU& cpu, reg32 name, reg32 flags, reg32 block, reg32 
             put(app, slot + kBlock, block > sector ? (block + sector - 1) / sector * sector : sector);
         else
             put(app, slotAt(app, index) + kBlock, kDefaultBlock);
-        const Answer length = windows<kGetFileSize, &win32::kernel32::GetFileSize>(app, cpu, at(app, slotAt(app, index) + kFile), 0);
+        const Answer length = windows<kGetFileSize, &host::fileSize>(app, cpu, at(app, slotAt(app, index) + kFile), 0);
         if (!length)
             return std::nullopt;
         put(app, slotAt(app, index) + kLength, *length);
@@ -1067,14 +1071,14 @@ Answer openFile(App* app, CPU& cpu, reg32 name, reg32 flags, reg32 block, reg32 
         if (windowsHow & kMappedHigh)
         {
             const bool write = (how & 2) != 0;
-            const Answer mapping = windows<kCreateFileMappingA, &win32::kernel32::CreateFileMappingA>(app, cpu, at(app, slotAt(app, index) + kFile), 0, write ? kCommitReadWrite : kCommitReadOnly, 0, 0, 0);
+            const Answer mapping = windows<kCreateFileMappingA, &host::createFileMapping>(app, cpu, at(app, slotAt(app, index) + kFile), 0, write ? kCommitReadWrite : kCommitReadOnly, 0, 0, 0);
             if (!mapping)
                 return std::nullopt;
             const reg32 mapSlot = slotAt(app, index);
             put(app, mapSlot + kMapping, *mapping);
             if (*mapping != 0)
             {
-                const Answer view = windows<kMapViewOfFile, &win32::kernel32::MapViewOfFile>(app, cpu, *mapping, write ? kMapWrite : kMapRead, 0, 0, at(app, mapSlot + kLength));
+                const Answer view = windows<kMapViewOfFile, &host::mapViewOfFile>(app, cpu, *mapping, write ? kMapWrite : kMapRead, 0, 0, at(app, mapSlot + kLength));
                 if (!view)
                     return std::nullopt;
                 put(app, slotAt(app, index) + kMemory, *view);
@@ -1110,7 +1114,7 @@ Answer infoOf(App* app, CPU& cpu, reg32 handle, reg32 howOut, reg32 blockOut, re
     if (!index)
         return 0;
     const reg32 drive = byte(app, slotAt(app, *index) + kDrive);
-    if (!windows<kEnterCriticalSection, &host::enterLock>(app, cpu, driveLock(app, drive)) || !windows<kSetLastError, &win32::kernel32::SetLastError>(app, cpu, 0))
+    if (!windows<kEnterCriticalSection, &host::enterLock>(app, cpu, driveLock(app, drive)) || !windows<kSetLastError, &host::setLastError>(app, cpu, 0))
         return std::nullopt;
     if (howOut != 0)
         put(app, howOut, at(app, slotAt(app, *index) + kHow));
@@ -1123,7 +1127,7 @@ Answer infoOf(App* app, CPU& cpu, reg32 handle, reg32 howOut, reg32 blockOut, re
     {
         copyText(app, root, kDriveRoot);
         putByte(app, root, reg8(drive + 0x40));
-        const Answer got = windows<kGetDiskFreeSpaceA, &win32::kernel32::GetDiskFreeSpaceA>(app, cpu, root, sectors, sectorBytes, free, clusters);
+        const Answer got = windows<kGetDiskFreeSpaceA, &host::diskFreeSpace>(app, cpu, root, sectors, sectorBytes, free, clusters);
         if (!got)
             return std::nullopt;
         if (*got != 0)
@@ -1155,7 +1159,7 @@ Answer readBytes(App* app, CPU& cpu, reg32 handle, reg32 buffer, reg32 count)
         return 0;
     const reg32 offset = *index << kSlotShift;
     const reg32 drive = byte(app, slotAt(app, *index) + kDrive);
-    if (!windows<kEnterCriticalSection, &host::enterLock>(app, cpu, driveLock(app, drive)) || !windows<kSetLastError, &win32::kernel32::SetLastError>(app, cpu, 0))
+    if (!windows<kEnterCriticalSection, &host::enterLock>(app, cpu, driveLock(app, drive)) || !windows<kSetLastError, &host::setLastError>(app, cpu, 0))
         return std::nullopt;
     reg32 slot = at(app, kHandles) + offset;
     if (sreg32(at(app, slot + kPlace)) > sreg32(at(app, slot + kLength)))
@@ -1185,12 +1189,12 @@ Answer readBytes(App* app, CPU& cpu, reg32 handle, reg32 buffer, reg32 count)
         }
         else
         {
-            const Answer read = windows<kReadFile, &win32::kernel32::ReadFile>(app, cpu, at(app, slot + kFile), buffer, block, got, 0);
+            const Answer read = windows<kReadFile, &host::readFile>(app, cpu, at(app, slot + kFile), buffer, block, got, 0);
             if (!read)
                 return std::nullopt;
             if (*read == 0)
             {
-                const Answer code = windows<kGetLastError, &win32::kernel32::GetLastError>(app, cpu);
+                const Answer code = windows<kGetLastError, &host::lastError>(app, cpu);
                 if (!code)
                     return std::nullopt;
                 if (*code != kIoPending)
@@ -1237,7 +1241,7 @@ Answer writeBytes(App* app, CPU& cpu, reg32 handle, reg32 buffer, reg32 count)
         return 0;
     const reg32 offset = *index << kSlotShift;
     const reg32 drive = byte(app, slotAt(app, *index) + kDrive);
-    if (!windows<kEnterCriticalSection, &host::enterLock>(app, cpu, driveLock(app, drive)) || !windows<kSetLastError, &win32::kernel32::SetLastError>(app, cpu, 0))
+    if (!windows<kEnterCriticalSection, &host::enterLock>(app, cpu, driveLock(app, drive)) || !windows<kSetLastError, &host::setLastError>(app, cpu, 0))
         return std::nullopt;
     reg32 slot = at(app, kHandles) + offset;
     if (sreg32(at(app, slot + kPlace)) > sreg32(at(app, slot + kLength)))
@@ -1263,12 +1267,12 @@ Answer writeBytes(App* app, CPU& cpu, reg32 handle, reg32 buffer, reg32 count)
         }
         else
         {
-            const Answer written = windows<kWriteFile, &win32::kernel32::WriteFile>(app, cpu, at(app, slot + kFile), buffer, block, wrote, 0);
+            const Answer written = windows<kWriteFile, &host::writeFile>(app, cpu, at(app, slot + kFile), buffer, block, wrote, 0);
             if (!written)
                 return std::nullopt;
             if (*written == 0)
             {
-                const Answer code = windows<kGetLastError, &win32::kernel32::GetLastError>(app, cpu);
+                const Answer code = windows<kGetLastError, &host::lastError>(app, cpu);
                 if (!code)
                     return std::nullopt;
                 if (*code != kIoPending)
@@ -1312,7 +1316,7 @@ Answer seekTo(App* app, CPU& cpu, reg32 handle, reg32 to)
     if (!index)
         return 0;
     const reg32 drive = byte(app, slotAt(app, *index) + kDrive);
-    if (!windows<kEnterCriticalSection, &host::enterLock>(app, cpu, driveLock(app, drive)) || !windows<kSetLastError, &win32::kernel32::SetLastError>(app, cpu, 0))
+    if (!windows<kEnterCriticalSection, &host::enterLock>(app, cpu, driveLock(app, drive)) || !windows<kSetLastError, &host::setLastError>(app, cpu, 0))
         return std::nullopt;
     reg32 slot = slotAt(app, *index);
     const reg32 length = at(app, slot + kLength);
@@ -1324,7 +1328,7 @@ Answer seekTo(App* app, CPU& cpu, reg32 handle, reg32 to)
     slot = slotAt(app, *index);
     if (at(app, slot + kMemory) == 0)
     {
-        const Answer place = windows<kSetFilePointer, &win32::kernel32::SetFilePointer>(app, cpu, at(app, slot + kFile), at(app, slot + kPlace), 0, 0);
+        const Answer place = windows<kSetFilePointer, &host::setFilePointer>(app, cpu, at(app, slot + kFile), at(app, slot + kPlace), 0, 0);
         if (!place)
             return std::nullopt;
         put(app, sought, 1);
@@ -1344,12 +1348,12 @@ Answer placeOf(App* app, CPU& cpu, reg32 handle)
     if (!index)
         return 0;
     const GuestFrame kept(cpu, 8, 0);  // edi and ecx pushed for the rest
-    if (!windows<kSetLastError, &win32::kernel32::SetLastError>(app, cpu, 0))
+    if (!windows<kSetLastError, &host::setLastError>(app, cpu, 0))
         return std::nullopt;
     const reg32 slot = slotAt(app, *index);
     if (at(app, slot + kMemory) == 0)
     {
-        const Answer place = windows<kSetFilePointer, &win32::kernel32::SetFilePointer>(app, cpu, at(app, slot + kFile), 0, 0, kFileCurrent);
+        const Answer place = windows<kSetFilePointer, &host::setFilePointer>(app, cpu, at(app, slot + kFile), 0, 0, kFileCurrent);
         if (!place)
             return std::nullopt;
         put(app, slotAt(app, *index) + kPlace, *place);
@@ -1888,7 +1892,7 @@ void fullPathName(App* app, CPU& cpu)
 void logicalDrives(App* app, CPU& cpu)
 {
     const Kept kept(cpu);
-    returns(cpu, windows<kGetLogicalDrives, &win32::kernel32::GetLogicalDrives>(app, cpu));
+    returns(cpu, windows<kGetLogicalDrives, &host::logicalDrives>(app, cpu));
 }
 
 /* 0x4e3120: driveOf of path eax, its root to edx.  No caller in the game. */

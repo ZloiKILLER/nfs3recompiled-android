@@ -37,7 +37,11 @@
  * which sets neither.  So the 3D functions always
  * take eacsnd's way without DirectSound: they keep what they are given, and
  * play3d, asked to play with no 3D, releases and clears the three pointers
- * at the caller's esi, as eacsnd does. */
+ * at the caller's esi, as eacsnd does.
+ *
+ * The game keeps a pointer to each export but the first two at 0x9ef61c on
+ * (kDirect*, kExports below); native code calls them through it,
+ * guest::sound (isnd_calls.h). */
 
 #include <x86.h>
 
@@ -45,6 +49,48 @@ namespace nfs3hp
 {
 namespace isnd
 {
+
+/* The game's pointers to the exports, iSNDloaddll's lookups after
+ * setfunctions (native_game.cpp), in their order. */
+constexpr x86::reg32 kDirectCaps = 0x9ef61c;
+constexpr x86::reg32 kDirectStart = 0x9ef620;
+constexpr x86::reg32 kDirectStop = 0x9ef624;
+constexpr x86::reg32 kDirectRecordStart = 0x9ef628;
+constexpr x86::reg32 kDirectRecordPacket = 0x9ef62c;
+constexpr x86::reg32 kDirectRecordStop = 0x9ef630;
+constexpr x86::reg32 kDirectServe = 0x9ef634;
+constexpr x86::reg32 kDirectCreate3dBuf = 0x9ef638;
+constexpr x86::reg32 kDirectRemoveBuf = 0x9ef63c;
+constexpr x86::reg32 kDirectPlay3d = 0x9ef640;
+constexpr x86::reg32 kDirectPos3d = 0x9ef644;
+constexpr x86::reg32 kDirectVol = 0x9ef648;
+constexpr x86::reg32 kDirectRate = 0x9ef64c;
+constexpr x86::reg32 kDirectStopBuf = 0x9ef650;
+
+/* Each pointer with its export: eacsnd's address of it (the list above) and
+ * the bytes of its words. */
+struct Export
+{
+    x86::reg32 slot, eacsnd, bytes;
+};
+
+constexpr Export kExports[] = {
+    {kDirectCaps, 0xa32c28, 4},         {kDirectStart, 0xa3382c, 8},        {kDirectStop, 0xa3387c, 0},
+    {kDirectRecordStart, 0xa338fc, 16}, {kDirectRecordPacket, 0xa33904, 4}, {kDirectRecordStop, 0xa3390c, 0},
+    {kDirectServe, 0xa33b24, 0},        {kDirectCreate3dBuf, 0xa33f4c, 28}, {kDirectRemoveBuf, 0xa33fc0, 4},
+    {kDirectPlay3d, 0xa34014, 28},      {kDirectPos3d, 0xa33e68, 12},       {kDirectVol, 0xa33e18, 8},
+    {kDirectRate, 0xa33f0c, 8},         {kDirectStopBuf, 0xa341b0, 4},
+};
+
+/* The export whose pointer is at `slot`; one of no address for another
+ * slot. */
+constexpr Export exportAt(x86::reg32 slot)
+{
+    for (const Export& e : kExports)
+        if (e.slot == slot)
+            return e;
+    return {slot, 0, 0};
+}
 
 /* iSNDdllversion's answer: 16.3. */
 constexpr x86::reg32 kVersion = 0x00100003;

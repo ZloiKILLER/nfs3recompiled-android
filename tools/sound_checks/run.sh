@@ -4,7 +4,9 @@
 # port's own generator (generate.py, which needs capstone; PYTHON=... for one
 # that has it) -- once with the default FPU (doubles) and once with
 # WITH_PEDANTIC_FPU (80 bits).  CASES=n for more or fewer cases, JOBS=n
-# compilers at once.
+# compilers at once.  NFS_SOUND_CHECKS: the natives' calls of the game's
+# functions always through eacsnd's pointers, to the stand-ins
+# (src/nfs3hp/isnd_calls.h).
 #
 # Everything but port_snd_isnd.cpp is built once into build/<fpu>/base/, which
 # mutations.py links each of its mutants against.
@@ -18,7 +20,7 @@ for fpu in double; do
     out="$build/$fpu"
     rm -rf "$out"
     mkdir -p "$out/base"
-    flags="-std=c++17 -O1 -fno-strict-aliasing -DWITH_MMX -w"
+    flags="-std=c++17 -O1 -fno-strict-aliasing -DWITH_MMX -DNFS_SOUND_CHECKS -w"
     sources="$(ls "$build"/generated/eacsnd.*.cpp) $root/src/lib/cpu.cpp $here/sound_checks.cpp"
     includes="-I$build/generated -I$root/sdl3/include -I$root/include -I$root/src/nfs3hp"
     printf '%s\n' $sources | xargs -P "${JOBS:-4}" -I{} \

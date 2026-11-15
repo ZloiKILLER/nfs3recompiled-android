@@ -18,7 +18,8 @@
 #include "port_sound_effects.h"
 #include <nfs3hp.h>
 #include <fpu.h>
-#include <winapi/kernel32.h>
+#include <lib/winapp.h>
+#include <winapi/types.h>
 #include <cstdint>
 #include <cstring>
 #include <optional>

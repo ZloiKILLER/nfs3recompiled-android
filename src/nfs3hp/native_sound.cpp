@@ -1,5 +1,5 @@
 #include <nfs3hp.h>
-#include "isnd.h"
+#include "isnd_calls.h"
 #include <lib/memmap.h>
 #include <SDL3/SDL.h>
 #include <atomic>
@@ -39,8 +39,14 @@
  * whenever it ran dry -- serve on time, or late by a pause the game's sound
  * thread takes now and then, which the stream then has to bridge.
  *
+ * Each is here as C++ with its words and its result (port::eacsnd,
+ * isnd_calls.h), what native code calls through the game's pointer to it, and
+ * as the export, a thin wrapper of it.  The mixer and the tick are called
+ * through eacsnd's pointers to them, guest::sound: as C++ when they lead to
+ * native_game.cpp's natives.
+ *
  * eacsnd's twelve other exports -- the version, the game's functions,
- * recording, the 3D buffers -- are native in native_isnd.cpp.  With no 3D
+ * recording, the 3D buffers -- are native in port_snd_isnd.cpp.  With no 3D
  * buffers (caps) the game creates none, and vol, rate and pos3d only store what
  * they are given while eacsnd's DirectSound flag [0xa3c0b0] is 0, which nothing
  * here sets. */
@@ -52,8 +58,6 @@ namespace
 {
 
 constexpr x86::reg32 kCaps = isnd::kCapsKept;          // iSNDdirectcaps's answer, kept; -1 until asked
-constexpr x86::reg32 kMixer = isnd::kFunctionMix;      // the game's mixer: stdcall (buffer, frames)
-constexpr x86::reg32 kTick = isnd::kFunctionTick;      // the game's 100 Hz tick: no arguments
 constexpr x86::reg32 kCapsValue = isnd::kCaps16BitStereo | isnd::kCapsAnyRate;  // 0x3e08: stereo 16-bit at every rate
 constexpr x86::reg32 kMixFrames = 0x4000;      // the most mixed at once: 0.37 s at 44100 Hz
 
@@ -62,30 +66,12 @@ x86::reg32 get(win32::WinApplication* app, x86::reg32 address)
     return app->getMemory<x86::reg32>(address);
 }
 
-x86::reg32 stdcall(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 address,
-                   std::initializer_list<x86::reg32> arguments)
-{
-    const x86::reg32 esp = cpu.esp;
-    const x86::reg32 first = esp - 4 * x86::reg32(arguments.size());
-    x86::reg32 slot = first;
-    for (const x86::reg32 argument : arguments)
-    {
-        app->getMemory<x86::reg32>(slot) = argument;
-        slot += 4;
-    }
-    cpu.esp = first - 4;
-    app->dynamic_call(address, cpu);
-    cpu.esp = esp;
-    return cpu.eax;
-}
-
 /* A stdcall export's return: the result in eax, the return address and the
  * arguments off the stack. */
-bool returned(x86::CPU& cpu, x86::reg32 result, x86::reg32 argumentBytes)
+void returned(x86::CPU& cpu, x86::reg32 result, x86::reg32 argumentBytes)
 {
     cpu.eax = result;
     cpu.esp += 4 + argumentBytes;
-    return true;
 }
 
 struct Sound
@@ -187,19 +173,26 @@ bool openDevice(Sound& s, const SDL_AudioSpec& game)
     return true;
 }
 
-/* iSNDdirectcaps(window), stdcall: the formats, as eacsnd's sub_a32c28 found them
- * on our DirectSound, kept where it kept them. */
-bool capsNative(win32::WinApplication* app, x86::CPU& cpu)
+}  // namespace
+
+namespace port
+{
+namespace eacsnd
+{
+
+/* iSNDdirectcaps(window): the formats, as eacsnd's sub_a32c28 found them on
+ * our DirectSound, kept where it kept them. */
+reg32 caps(App* app, CPU&, reg32)
 {
     app->getMemory<x86::reg32>(kCaps) = kCapsValue;
-    return returned(cpu, kCapsValue, 4);
+    return kCapsValue;
 }
 
-/* iSNDdirectstart(flags, window), stdcall: the rate in the second byte of the
- * flags, the format in the first, as sub_a33150 reads them. */
-bool startNative(win32::WinApplication* app, x86::CPU& cpu)
+/* iSNDdirectstart(flags, window): the rate in the second byte of the flags,
+ * the format in the first, as sub_a33150 reads them.  0, or -1 for none or
+ * no device. */
+reg32 start(App*, CPU&, reg32 flags, reg32)
 {
-    const x86::reg32 flags = get(app, cpu.esp + 4);
     x86::reg32 rate = 0;
     if (flags & isnd::kCaps22050)
         rate = 22050;
@@ -224,13 +217,13 @@ bool startNative(win32::WinApplication* app, x86::CPU& cpu)
     if (rate == 0 || game.channels == 0)
     {
         SDL_Log("[SND] start: no rate or format in 0x%x", flags);
-        return returned(cpu, x86::reg32(-1), 8);
+        return x86::reg32(-1);
     }
 
     Sound& s = sound();
     std::lock_guard<std::mutex> guard(s.lock);
     if (!openDevice(s, game))
-        return returned(cpu, x86::reg32(-1), 8);
+        return x86::reg32(-1);
     if (!s.mixMap)
         s.mixMap = new win32::MemMap(kMixFrames * 4);
     SDL_ClearAudioStream(s.stream);
@@ -257,11 +250,11 @@ bool startNative(win32::WinApplication* app, x86::CPU& cpu)
     s.tickFrames = 0;
     s.started = true;
     SDL_ResumeAudioDevice(s.device);
-    return returned(cpu, 0, 8);
+    return 0;
 }
 
-/* iSNDdirectstop(), stdcall.  The device stays open for the next start. */
-bool stopNative(win32::WinApplication*, x86::CPU& cpu)
+/* iSNDdirectstop().  The device stays open for the next start.  0. */
+reg32 stop(App*, CPU&)
 {
     Sound& s = sound();
     std::lock_guard<std::mutex> guard(s.lock);
@@ -270,20 +263,28 @@ bool stopNative(win32::WinApplication*, x86::CPU& cpu)
         SDL_PauseAudioDevice(s.device);
     if (s.stream)
         SDL_ClearAudioStream(s.stream);
-    return returned(cpu, 0, 0);
+    return 0;
 }
+
+}  // namespace eacsnd
+}  // namespace port
+
+namespace
+{
 
 /* The game mixes frames into buffer, with its tick between every hundredth of
  * a second of them, as sub_a33910 has it do: the frames to the next tick worked
- * out from the ticks so far, so none drift. */
-void mix(win32::WinApplication* app, x86::CPU& cpu, Sound& s, x86::reg32 buffer, x86::reg32 frames)
+ * out from the ticks so far, so none drift.  Both through eacsnd's pointers to
+ * them (guest::sound).  False when the game stopped in one. */
+bool mixFrames(win32::WinApplication* app, x86::CPU& cpu, Sound& s, x86::reg32 buffer, x86::reg32 frames)
 {
     while (frames > 0)
     {
         if (s.toTick <= 0)
         {
             ++s.ticks;
-            stdcall(app, cpu, get(app, kTick), {});
+            if (!guest::sound<isnd::kFunctionTick, &tickSoundOf>(app, cpu))
+                return false;
             const x86::reg32 due = x86::reg32(uint64_t(s.ticks) * s.rate / 100) - s.tickFrames;
             s.toTick = int(due & 0xffffff0);
             s.tickFrames += x86::reg32(s.toTick);
@@ -297,27 +298,37 @@ void mix(win32::WinApplication* app, x86::CPU& cpu, Sound& s, x86::reg32 buffer,
         }
         const x86::reg32 now = frames < x86::reg32(s.toTick) ? frames : x86::reg32(s.toTick);
         s.toTick -= int(now);
-        stdcall(app, cpu, get(app, kMixer), {buffer, now});
+        if (!guest::sound<isnd::kFunctionMix, &acquireSoundDataOf>(app, cpu, buffer, now))
+            return false;
         frames -= now;
         buffer += now * s.frameBytes;
     }
+    return true;
 }
 
-/* iSNDdirectserve(), stdcall: the stream topped up to its write-ahead.  The
+}  // namespace
+
+namespace port
+{
+namespace eacsnd
+{
+
+/* iSNDdirectserve(): the stream topped up to its write-ahead.  The
  * game's sound thread comes every 10 to 16 ms; one that ran dry raises the
  * write-ahead by what was missing.  Late by more than 60 ms, it paused: the
  * write-ahead has to bridge such a pause if it comes again, so it is raised to
  * the pause's length, up to 120 ms.  Late by more than 150 ms, the game was
  * busy elsewhere -- a race loading -- and that leaves it be, or one load would
- * keep the sound that much behind for good. */
-bool serveNative(win32::WinApplication* app, x86::CPU& cpu)
+ * keep the sound that much behind for good.  0, or nullopt when the game
+ * stopped in its mixer or its tick. */
+std::optional<reg32> serve(App* app, CPU& cpu)
 {
     Sound& s = sound();
     SDL_AudioStream* stream;
     {
         std::lock_guard<std::mutex> guard(s.lock);
         if (!s.started || !s.stream || !s.mixMap)
-            return returned(cpu, 0, 0);
+            return 0;
         stream = s.stream;
     }
 
@@ -347,44 +358,49 @@ bool serveNative(win32::WinApplication* app, x86::CPU& cpu)
     const int queuedBytes = SDL_GetAudioStreamQueued(stream);
     const x86::reg32 queued = queuedBytes > 0 ? x86::reg32(queuedBytes) / s.frameBytes : 0;
     if (queued >= s.ahead)
-        return returned(cpu, 0, 0);
+        return 0;
     x86::reg32 frames = (s.ahead - queued) & ~0xfu;
     if (frames > kMixFrames)
         frames = kMixFrames;
     if (frames == 0)
-        return returned(cpu, 0, 0);
+        return 0;
 
     const x86::reg32 buffer = s.mixMap->getBlockStart();
     std::memset(&app->getMemory<x86::reg8>(buffer), 0, frames * s.frameBytes);
-    mix(app, cpu, s, buffer, frames);
+    if (!mixFrames(app, cpu, s, buffer, frames))
+        return std::nullopt;
 
     std::lock_guard<std::mutex> guard(s.lock);
     if (s.started && s.stream == stream)
         SDL_PutAudioStreamData(stream, &app->getMemory<x86::reg8>(buffer), int(frames * s.frameBytes));
-    return returned(cpu, 0, 0);
+    return 0;
 }
 
-}
+}  // namespace eacsnd
+}  // namespace port
 
-/* eacsnd's exports of these names (disassemble_nfs3hp.py). */
+/* eacsnd's exports of these names (disassemble_nfs3hp.py): each a thin
+ * wrapper of its typed function, the words off the stack and popped; the
+ * registers as the typed function leaves them. */
 void iSNDdirectcaps(win32::WinApplication* app, x86::CPU& cpu)
 {
-    capsNative(app, cpu);
+    returned(cpu, port::eacsnd::caps(app, cpu, get(app, cpu.esp + 4)), 4);
 }
 
 void iSNDdirectstart(win32::WinApplication* app, x86::CPU& cpu)
 {
-    startNative(app, cpu);
+    returned(cpu, port::eacsnd::start(app, cpu, get(app, cpu.esp + 4), get(app, cpu.esp + 8)), 8);
 }
 
 void iSNDdirectstop(win32::WinApplication* app, x86::CPU& cpu)
 {
-    stopNative(app, cpu);
+    returned(cpu, port::eacsnd::stop(app, cpu), 0);
 }
 
 void iSNDdirectserve(win32::WinApplication* app, x86::CPU& cpu)
 {
-    serveNative(app, cpu);
+    if (const std::optional<x86::reg32> result = port::eacsnd::serve(app, cpu))
+        returned(cpu, *result, 0);
 }
 
 }

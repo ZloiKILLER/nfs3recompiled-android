@@ -9,8 +9,8 @@
 #include "native_load_track.h"
 #include "native_watcom.h"
 #include "native_windows.h"
-#include <winapi/kernel32.h>
-#include <winapi/ole32.h>
+#include "host_files.h"
+#include "host_system.h"
 
 #include <cstdint>
 #include <initializer_list>
@@ -647,7 +647,7 @@ std::optional<bool> wanted(App* app, CPU& cpu, const Walk& walk)
 /* The walk's search closed: FindClose on its handle, 0 there. */
 bool closeSearch(App* app, CPU& cpu, const Walk& walk)
 {
-    if (!windows<kFindClose, &win32::kernel32::FindClose>(app, cpu, at(app, walk.handle)))
+    if (!windows<kFindClose, &host::findClose>(app, cpu, at(app, walk.handle)))
         return false;
     put(app, walk.handle, 0);
     return true;
@@ -663,7 +663,7 @@ std::optional<reg32> firstFound(App* app, CPU& cpu, const Walk& walk, reg32 fold
     const reg32 path = frame - 0x12c;
     if (!searchPath(app, cpu, path, folder))
         return std::nullopt;
-    const auto handle = windows<kFindFirstFileA, &win32::kernel32::FindFirstFileA>(app, cpu, path, walk.data);
+    const auto handle = windows<kFindFirstFileA, &host::findFirstFile>(app, cpu, path, walk.data);
     if (!handle)
         return std::nullopt;
     put(app, walk.handle, *handle);
@@ -680,7 +680,7 @@ std::optional<reg32> firstFound(App* app, CPU& cpu, const Walk& walk, reg32 fold
         if (*found)
             return walk.name;
         const auto more =
-            windows<kFindNextFileA, &win32::kernel32::FindNextFileA>(app, cpu, at(app, walk.handle), walk.data);
+            windows<kFindNextFileA, &host::findNextFile>(app, cpu, at(app, walk.handle), walk.data);
         if (!more)
             return std::nullopt;
         if (*more == 0)
@@ -702,7 +702,7 @@ std::optional<reg32> nextFound(App* app, CPU& cpu, const Walk& walk)
     for (;;)
     {
         const auto more =
-            windows<kFindNextFileA, &win32::kernel32::FindNextFileA>(app, cpu, at(app, walk.handle), walk.data);
+            windows<kFindNextFileA, &host::findNextFile>(app, cpu, at(app, walk.handle), walk.data);
         if (!more)
             return std::nullopt;
         if (*more == 0)
@@ -2297,7 +2297,7 @@ std::optional<reg32> copyAsNew(App* app, CPU& cpu, reg32 name, reg32 car)
         put(app, *entry + 0x24, *block);
         put(app, *entry + 0x20, at(app, *entry + 0x20) + stringLength(app, name) + 1);
         cpu.edx = *entry;  // as the code has it at the call, left where it fails
-        const auto created = windows<kCoCreateGuid, &win32::ole32::CoCreateGuid>(app, cpu, guid);
+        const auto created = windows<kCoCreateGuid, &host::createGuid>(app, cpu, guid);
         if (!created)
             return std::nullopt;
         if (*created != 0)

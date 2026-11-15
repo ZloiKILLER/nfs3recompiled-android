@@ -38,16 +38,17 @@
  * bytes.
  *
  * Each is a typed function under a name of its own (its core), with an adapter
- * under the game's name for the callers still on registers and the dispatch.
- * The cores call each other as C++, and other typed files' functions as C++ too
- * (guest::direct, their headers) but where what a callee leaves in the
- * registers, which its core does not give back, is what a function here
- * leaves or reads; every other function of the game's is
- * called by address, its arguments in the registers and on the stack as the
- * code hands them, at the stack's depth the code has it (Frame, Calling), so
- * that the locals a callee is handed a pointer to lie where the code's do.  A
- * core keeps the registers its code saves (Kept) and leaves the others as the
- * code does: the check compares them all.  The x87's arithmetic is fp's, in the
+ * under the game's name for the callers still on registers and the dispatch
+ * (adapts): every register but eax as the caller had it, eax what the core
+ * gives back -- what the code leaves there -- and, where the code leaves a
+ * register that is no argument of its otherwise, that one so.  The cores call
+ * each other as C++, and other typed files' functions as C++ too (guest::direct,
+ * their headers) but where the eax a callee leaves, which its core does not give
+ * back, is what a function here leaves or reads; every other function of the
+ * game's is called by address, only its argument registers set (guest::watcom,
+ * callGame) and its words on the stack as the code hands them, at the stack's
+ * depth the code has it (Frame, Calling), so that the locals a callee is handed
+ * a pointer to lie where the code's do.  The x87's arithmetic is fp's, in the
  * code's order of operands, a float kept where the code stores one; a status
  * word the code leaves in eax is fp::compare's.  The two switches go by the
  * targets nfs3.exe's tables hold (0x422a7c, 0x422c88). */
@@ -96,15 +97,6 @@ void push(App* app, CPU& cpu, reg32 value)
 {
     cpu.esp -= 4;
     put(app, cpu.esp, value);
-}
-
-/* A call as the code makes it: the return address's slot, and esp as the
- * callee leaves it.  False when the game stopped in it. */
-bool byAddress(App* app, CPU& cpu, reg32 target)
-{
-    cpu.esp -= 4;
-    app->dynamic_call(target, cpu);
-    return !cpu.terminate;
 }
 
 // The x87's loads, as the code has them.
@@ -209,75 +201,74 @@ private:
     const reg32 esp_;
 };
 
-// The registers a function's code saves (pushes and pops).
-constexpr reg32 kSaveEbx = 1, kSaveEcx = 2, kSaveEdx = 4, kSaveEsi = 8, kSaveEdi = 0x10, kSaveEbp = 0x20,
-                kSaveAll = 0x3f;
-
-/* The registers a function's code saves and restores, as they were on entry whatever its callees
- * leave; the others left as the code and its callees leave them.  A function's core keeps them so,
- * that a core calling it leaves the registers as the code does. */
-class Kept
+/* An adapter's run of its core: every register but eax as the caller had it after it (the code
+ * pushes and pops what it uses; its other registers are its arguments, which no caller reads), eax
+ * what the core gives -- a core that gives nothing, or answers only whether the game went on (a
+ * bool), leaves eax as it is -- and the return address and `popped` bytes of the caller's words
+ * popped.  False when the game stopped. */
+template <typename T>
+struct IsOptional : std::false_type
 {
-public:
-    explicit Kept(CPU& cpu, reg32 saved = kSaveAll)
-        : cpu_(cpu), saved_(saved), ebx_(cpu.ebx), ecx_(cpu.ecx), edx_(cpu.edx), esi_(cpu.esi), edi_(cpu.edi),
-          ebp_(cpu.ebp)
-    {
-    }
-    ~Kept()
-    {
-        if (saved_ & kSaveEbx)
-            cpu_.ebx = ebx_;
-        if (saved_ & kSaveEcx)
-            cpu_.ecx = ecx_;
-        if (saved_ & kSaveEdx)
-            cpu_.edx = edx_;
-        if (saved_ & kSaveEsi)
-            cpu_.esi = esi_;
-        if (saved_ & kSaveEdi)
-            cpu_.edi = edi_;
-        if (saved_ & kSaveEbp)
-            cpu_.ebp = ebp_;
-    }
-
-private:
-    CPU& cpu_;
-    const reg32 saved_;
-    reg32 ebx_, ecx_, edx_, esi_, edi_, ebp_;
 };
 
-/* The game's functions called by address, their arguments in registers as the code hands them;
- * false (nullopt) when the game stopped in one. */
-bool call(App* app, CPU& cpu, reg32 target, reg32 eax)
+template <typename T>
+struct IsOptional<std::optional<T>> : std::true_type
 {
-    cpu.eax = eax;
-    return byAddress(app, cpu, target);
+};
+
+template <typename Core>
+bool adapts(CPU& cpu, Core&& core, reg32 popped = 0)
+{
+    using Result = std::decay_t<decltype(core())>;
+    std::optional<reg32> left;
+    {
+        const guest::KeptRegisters kept(cpu);
+        if constexpr (std::is_void_v<Result>)
+            core();
+        else if constexpr (std::is_same_v<Result, bool>)
+        {
+            if (!core())
+                return false;
+        }
+        else if constexpr (IsOptional<Result>::value)
+        {
+            const Result result = core();
+            if (!result)
+                return false;
+            left = reg32(*result);
+        }
+        else
+            left = reg32(core());
+    }
+    if (left)
+        cpu.eax = *left;
+    cpu.esp += 4 + popped;
+    return true;
 }
 
-bool call(App* app, CPU& cpu, reg32 target, reg32 eax, reg32 edx)
-{
-    cpu.edx = edx;
-    return call(app, cpu, target, eax);
-}
+/* The caller's word `n` (from 1) on the guest's stack, above the return address. */
+reg32 word(App* app, const CPU& cpu, reg32 n) { return at(app, cpu.esp + 4 * n); }
 
-bool call(App* app, CPU& cpu, reg32 target, reg32 eax, reg32 edx, reg32 ebx)
+/* A call by address with `registers` (eax, edx, ebx, ecx in turn) and `words` pushed (the first
+ * lowest), every register but eax kept: the eax it leaves; nullopt when the game stopped. */
+std::optional<reg32> callGame(App* app, CPU& cpu, reg32 target, std::initializer_list<reg32> registers,
+                              std::initializer_list<reg32> words = {})
 {
-    cpu.ebx = ebx;
-    return call(app, cpu, target, eax, edx);
-}
-
-bool call(App* app, CPU& cpu, reg32 target, reg32 eax, reg32 edx, reg32 ebx, reg32 ecx)
-{
-    cpu.ecx = ecx;
-    return call(app, cpu, target, eax, edx, ebx);
+    const guest::KeptRegisters kept(cpu);
+    reg32* const into[] = {&cpu.eax, &cpu.edx, &cpu.ebx, &cpu.ecx};
+    unsigned i = 0;
+    for (const reg32 value : registers)
+        *into[i++] = value;
+    if (!guest::call(app, cpu, target, words))
+        return std::nullopt;
+    return cpu.eax;
 }
 
 /* A native_frontend_* file's typed core called as C++ (guest::direct): nothing (false) when the
  * game stopped in it (its calls into the game throw fe::Terminated).  tools/game_checks does not
  * build those files: there it goes by address, through its ByAddress, as the game's code calls it,
- * every register but eax kept.  A reg32 result is the eax the function leaves: eax set to it (in the
- * game too); after any other, eax spoilt there, so that code still reading what the callee left in
- * eax differs there. */
+ * every register but eax kept.  A reg32 result is the eax the function leaves, given back; eax is
+ * spoilt there after it, so that code still reading what the callee left in eax differs there. */
 template <reg32 Address, auto Core, typename... Args>
 auto feCore(App* app, CPU& cpu, Args... args)
 {
@@ -313,10 +304,7 @@ auto feCore(App* app, CPU& cpu, Args... args)
         try
         {
             const Result result = run();
-            if constexpr (std::is_same_v<Result, x86::reg32>)
-                cpu.eax = result;  // a menu core's result: the eax it leaves, as the call by address does
-            else
-                spoil();
+            spoil();
             return cpu.terminate ? std::optional<Result>() : std::optional<Result>(result);
         }
         catch (const fe::Terminated&)
@@ -326,36 +314,16 @@ auto feCore(App* app, CPU& cpu, Args... args)
     }
 }
 
-/* A menu file's core (feCore) where the code calls it with `loads` in eax, edx, ebx and ecx: those
- * loaded as the call loads them (the code after it goes on with them, as the callee keeps them),
- * the core's result -- the eax it leaves -- in eax.  False when the game stopped. */
-template <reg32 Address, auto Core, typename... Args>
-bool loadedCall(App* app, CPU& cpu, std::initializer_list<reg32> loads, Args... args)
-{
-    reg32* const into[] = {&cpu.eax, &cpu.edx, &cpu.ebx, &cpu.ecx};
-    unsigned i = 0;
-    for (const reg32 value : loads)
-        *into[i++] = value;
-    const auto result = feCore<Address, Core>(app, cpu, args...);
-    if (!result)
-        return false;
-    if constexpr (!std::is_same_v<std::decay_t<decltype(result)>, bool>)
-        cpu.eax = *result;
-    return true;
-}
-
 /* 0x4dbde0 (simc's): the view set; what it leaves in eax. */
 std::optional<reg32> setView(App* app, CPU& cpu, reg32 view)
 {
-    if (!loadedCall<0x4dbde0, frontend::simc::setView>(app, cpu, {view}, view))
-        return std::nullopt;
-    return cpu.eax;
+    return feCore<0x4dbde0, frontend::simc::setView>(app, cpu, view);
 }
 
 /* 0x426450 (sima's): mode's sound for the player. */
 bool modeSound(App* app, CPU& cpu, reg32 mode, reg32 player)
 {
-    return loadedCall<0x426450, frontend::sima::cameraStep>(app, cpu, {mode, player}, mode, player);
+    return feCore<0x426450, frontend::sima::cameraStep>(app, cpu, mode, player).has_value();
 }
 
 /* An int's size as the code has it: the lowest int stays itself. */
@@ -365,8 +333,8 @@ reg32 magnitude(reg32 value)
 }
 
 // This file's own, defined below, as C++.
-bool putCameraMode(App* app, CPU& cpu, reg32 player, reg32 mode);
-bool putOverrideMode(App* app, CPU& cpu, reg32 player, reg32 mode);
+std::optional<reg32> putCameraMode(App* app, CPU& cpu, reg32 player, reg32 mode);
+std::optional<reg32> putOverrideMode(App* app, CPU& cpu, reg32 player, reg32 mode);
 void buildCycle(App* app);
 
 }  // namespace
@@ -420,7 +388,7 @@ void chaseOffsetLevel(App* app, CPU& cpu);
 void idleHook(App* app, CPU& cpu)
 {
     (void)app;
-    cpu.esp += 4;
+    adapts(cpu, [] {});
 }
 
 void idleHookToo(App* app, CPU& cpu)
@@ -431,20 +399,19 @@ void idleHookToo(App* app, CPU& cpu)
 namespace
 {
 
-bool updateView(App* app, CPU& cpu, reg32 player, reg32 view, reg32 flag);
+std::optional<reg32> updateView(App* app, CPU& cpu, reg32 player, reg32 view, reg32 flag);
 
 /* 0x421380's: the view of the camera: updated (its flag at +0, its player +4, the view +8 --
- * updateView), then set (0x4dbde0); eax as that leaves it.  False when the game stopped. */
-bool viewOfCamera(App* app, CPU& cpu, reg32 view)
+ * updateView), then set (0x4dbde0); eax as that leaves it.  Nullopt when the game stopped. */
+std::optional<reg32> viewOfCamera(App* app, CPU& cpu, reg32 view)
 {
     const Frame frame(cpu, 0x10, 0);
-    const Kept kept(cpu, kSaveEbx | kSaveEcx | kSaveEdx | kSaveEbp);
     {
         const Calling calling(cpu);
         if (!updateView(app, cpu, at(app, view + 4), view + 8, at(app, view)))
-            return false;
+            return std::nullopt;
     }
-    return setView(app, cpu, view).has_value();
+    return setView(app, cpu, view);
 }
 
 }  // namespace
@@ -452,9 +419,7 @@ bool viewOfCamera(App* app, CPU& cpu, reg32 view)
 /* 0x421380: viewOfCamera for view eax. */
 void viewFromCamera(App* app, CPU& cpu)
 {
-    if (!viewOfCamera(app, cpu, cpu.eax))
-        return;
-    cpu.esp += 4;
+    adapts(cpu, [&, view = cpu.eax] { return viewOfCamera(app, cpu, view); });
 }
 
 namespace
@@ -465,14 +430,13 @@ constexpr reg32 kScreenCamera = 8;
 
 /* 0x4213b0's: the view set (0x4dbde0); where its player's camera is of mode 8, the view's frustum
  * (0x56009c..) and its corners (0x564434..) from the camera's own (0x5e1020..); the player's mark
- * of a change cleared; eax the view's player, as the code leaves it.  False when the game
+ * of a change cleared; eax the view's player, as the code leaves it.  Nullopt when the game
  * stopped. */
-bool screenView(App* app, CPU& cpu, reg32 view)
+std::optional<reg32> screenView(App* app, CPU& cpu, reg32 view)
 {
     const Frame frame(cpu, 0x10, 0);
-    const Kept kept(cpu, kSaveEbx | kSaveEcx | kSaveEdx | kSaveEbp);
     if (!setView(app, cpu, view))
-        return false;
+        return std::nullopt;
     const reg32 camera = cameraInUse(app, at(app, view + 4));
     if (camera != 0 && at(app, camera + kCamMode) == kScreenCamera)
     {
@@ -487,8 +451,7 @@ bool screenView(App* app, CPU& cpu, reg32 view)
     }
     const reg32 player = at(app, view + 4);
     put(app, kChanged + player * 4, 0);
-    cpu.eax = player;
-    return true;
+    return player;
 }
 
 }  // namespace
@@ -496,27 +459,25 @@ bool screenView(App* app, CPU& cpu, reg32 view)
 /* 0x4213b0: screenView of view eax. */
 void viewFromScreenCamera(App* app, CPU& cpu)
 {
-    if (!screenView(app, cpu, cpu.eax))
-        return;
-    cpu.esp += 4;
+    adapts(cpu, [&, view = cpu.eax] { return screenView(app, cpu, view); });
 }
 
 namespace
 {
 
 /* 0x421450's: the view kept (0x552ec4) and set the way `how` says: 0 by its camera, 2 as a
- * screen's, any other not at all.  False when the game stopped. */
-bool chooseHow(App* app, CPU& cpu, reg32 view, reg32 how)
+ * screen's, any other not at all; eax as the one taken leaves it, else the view.  Nullopt when the
+ * game stopped. */
+std::optional<reg32> chooseHow(App* app, CPU& cpu, reg32 view, reg32 how)
 {
     const Frame frame(cpu, 4, 0);
-    const Kept kept(cpu, kSaveEbp);
     put(app, 0x552ec4, view);
     const Calling calling(cpu);
     if (how == 0)
         return viewOfCamera(app, cpu, view);
     if (how == 2)
         return screenView(app, cpu, view);
-    return true;
+    return view;
 }
 
 }  // namespace
@@ -524,9 +485,7 @@ bool chooseHow(App* app, CPU& cpu, reg32 view, reg32 how)
 /* 0x421450: chooseHow for view eax, edx how. */
 void chooseView(App* app, CPU& cpu)
 {
-    if (!chooseHow(app, cpu, cpu.eax, cpu.edx))
-        return;
-    cpu.esp += 4;
+    adapts(cpu, [&, view = cpu.eax, how = cpu.edx] { return chooseHow(app, cpu, view, how); });
 }
 
 namespace
@@ -580,8 +539,7 @@ reg32 chaseNode(App* app, reg32 player)
 /* 0x421490: chaseNode for player eax. */
 void pickChaseNode(App* app, CPU& cpu)
 {
-    cpu.eax = chaseNode(app, cpu.eax);
-    cpu.esp += 4;
+    adapts(cpu, [&, player = cpu.eax] { return chaseNode(app, player); });
 }
 
 namespace
@@ -604,8 +562,7 @@ void turnedAround(App* app, reg32 from, reg32 to)
 /* 0x421570: turnedAround from eax into edx. */
 void turnAround(App* app, CPU& cpu)
 {
-    turnedAround(app, cpu.eax, cpu.edx);
-    cpu.esp += 4;
+    adapts(cpu, [&, from = cpu.eax, to = cpu.edx] { turnedAround(app, from, to); });
 }
 
 namespace
@@ -617,19 +574,16 @@ constexpr reg32 kPursuitMode = 0x11;
 
 /* 0x4215c0's: player's cameras put on the car (if it is one of the race's): a pursuit's radio
  * stopped, the mode's sound (0x426310), the change marked where the car is another, and each camera
- * of modes 1 to 24 given the car, its place and its orientation; then mode 3.  The registers as the
- * code leaves them.  False when the game stopped. */
-bool attach(App* app, CPU& cpu, reg32 player, reg32 car)
+ * of modes 1 to 24 given the car, its place and its orientation; then mode 3.  eax as the code
+ * leaves it: the cars' count where the car is none of them, else as putCameraMode leaves it.
+ * Nullopt when the game stopped. */
+std::optional<reg32> attach(App* app, CPU& cpu, reg32 player, reg32 car)
 {
     const Frame frame(cpu, 0x14, 4);
-    const Kept kept(cpu, kSaveEbx | kSaveEcx | kSaveEsi | kSaveEdi | kSaveEbp);
     const reg32 index = playerIndex(app, player);
     const reg32 cars = at(app, kCopCount) + at(app, kRaceCarCount);
     if (sreg32(car) >= sreg32(cars))
-    {
-        cpu.eax = cars;
-        return true;
-    }
+        return cars;
     if (activeMode(app, index) == kPursuitMode)
     {
         const reg32 pursuit = at(app, kPursuits + index * 4);
@@ -638,12 +592,12 @@ bool attach(App* app, CPU& cpu, reg32 player, reg32 car)
         {
             guest::direct<0x40f460, aiplan::endAnimation>(app, cpu, animation);
             if (cpu.terminate)
-                return false;
+                return std::nullopt;
             put(app, pursuit + 0x118, 0xffffffff);
         }
     }
-    if (!loadedCall<0x426310, frontend::sima::cameraBackFromWait>(app, cpu, {index}, index))
-        return false;
+    if (!feCore<0x426310, frontend::sima::cameraBackFromWait>(app, cpu, index))
+        return std::nullopt;
     for (const reg32 field : {kCamTarget, kCamCar})
         if (at(app, activeCamera(app, index) + field) != at(app, kCars + car * 4))
             put(app, kChanged + index * 4, 1);
@@ -660,7 +614,6 @@ bool attach(App* app, CPU& cpu, reg32 player, reg32 car)
         for (reg32 k = 0; k < 0x24; k += 4)
             put(app, camera + kCamOrientation + k, at(app, from + k));
     }
-    cpu.ecx = 0;  // rep movsd's count
     const Calling calling(cpu);
     return putCameraMode(app, cpu, index, 3);
 }
@@ -670,9 +623,7 @@ bool attach(App* app, CPU& cpu, reg32 player, reg32 car)
 /* 0x4215c0: attach player eax's cameras to car edx. */
 void attachCameras(App* app, CPU& cpu)
 {
-    if (!attach(app, cpu, cpu.eax, cpu.edx))
-        return;
-    cpu.esp += 4;
+    adapts(cpu, [&, player = cpu.eax, car = cpu.edx] { return attach(app, cpu, player, car); });
 }
 
 namespace
@@ -688,11 +639,10 @@ constexpr reg32 kIdentity = 0x564498;
  * +0x920 and +0x924, by the head's mode) scaled (0x536e0c, 0x536e10; more past 60 at +0x5a4,
  * compared as bits as the code does), the turn's matrices about two axes (of the identity) into the
  * frame, multiplied into the camera's orientation (0x4e0280); eax as the last call leaves it.
- * False when the game stopped. */
-bool turnHead(App* app, CPU& cpu, reg32 camera)
+ * Nullopt when the game stopped. */
+std::optional<reg32> turnHead(App* app, CPU& cpu, reg32 camera)
 {
     const Frame frame(cpu, 0x10, 0x74);
-    const Kept kept(cpu, kSaveEbx | kSaveEcx | kSaveEdx | kSaveEbp);
     const reg32 e = frame.base;
     const reg32 physics = at(app, camera + kCamCar);
     reg32 a, b, other;
@@ -711,22 +661,20 @@ bool turnHead(App* app, CPU& cpu, reg32 camera)
     // The turns' angles pushed where the code pushes them: simc's cores take their addresses.
     push(app, cpu, e - 0x74);
     push(app, cpu, b);
-    if (!loadedCall<0x4ea820, frontend::simc::turnAboutLastRow>(app, cpu, {kIdentity, other, e - 0x2c}, kIdentity,
-                                                                cpu.esp, e - 0x74))
-        return false;
+    if (!feCore<0x4ea820, frontend::simc::turnAboutLastRow>(app, cpu, kIdentity, cpu.esp, e - 0x74))
+        return std::nullopt;
     cpu.esp += 8;
     push(app, cpu, e - 0x50);
     push(app, cpu, bitsOf(float(fp::add(floatIn(a), f32(app, camera + kCamRoll)))));
-    if (!loadedCall<0x4ea680, frontend::simc::turnAboutFirstRow>(app, cpu, {kIdentity, e - 0x50}, kIdentity, cpu.esp,
-                                                                 e - 0x50))
-        return false;
+    if (!feCore<0x4ea680, frontend::simc::turnAboutFirstRow>(app, cpu, kIdentity, cpu.esp, e - 0x50))
+        return std::nullopt;
     cpu.esp += 8;
-    // The two turns' matrices multiplied: the code's edx and ebx as the turns' calls handed them.
+    // The two turns' matrices multiplied.
     guest::direct<0x4e0280, vertices::multiplyMatrix>(app, cpu, e - 0x74, e - 0x50, e - 0x2c);
     if (cpu.terminate)
-        return false;
+        return std::nullopt;
     // By address: its eax is what turnHead leaves.
-    return call(app, cpu, kMultiply, e - 0x2c, camera + kCamOrientation, camera + kCamOrientation);
+    return guest::watcomEax(app, cpu, kMultiply, {e - 0x2c, camera + kCamOrientation, camera + kCamOrientation});
 }
 
 }  // namespace
@@ -734,9 +682,7 @@ bool turnHead(App* app, CPU& cpu, reg32 camera)
 /* 0x421730: turnHead for camera eax. */
 void headTurn(App* app, CPU& cpu)
 {
-    if (!turnHead(app, cpu, cpu.eax))
-        return;
-    cpu.esp += 4;
+    adapts(cpu, [&, camera = cpu.eax] { return turnHead(app, cpu, camera); });
 }
 
 /* 0x4217e0's: the track's node player's camera keeps to: of the active camera -- for a blend
@@ -753,8 +699,7 @@ reg32 nodeOfCamera(App* app, reg32 player)
 /* 0x4217e0: nodeOfCamera for player eax. */
 void cameraNode(App* app, CPU& cpu)
 {
-    cpu.eax = nodeOfCamera(app, cpu.eax);
-    cpu.esp += 4;
+    adapts(cpu, [&, player = cpu.eax] { return nodeOfCamera(app, player); });
 }
 
 namespace
@@ -762,12 +707,11 @@ namespace
 
 /* 0x421880's: camera's place on the track for its place: the place in the track's fixed point
  * (scaled by 0x536e14, in the frame), the car's place on the track (its physics' +0xc, 30 dwords)
- * as the start, then found (0x41e420) and its node (0x41f6e0); eax as the last call leaves it, edx
- * the camera's track place, as the code leaves them.  False when the game stopped. */
-bool findTrackPlace(App* app, CPU& cpu, reg32 camera, reg32 place)
+ * as the start, then found (0x41e420) and its node (0x41f6e0); eax as the last call leaves it.
+ * Nullopt when the game stopped. */
+std::optional<reg32> findTrackPlace(App* app, CPU& cpu, reg32 camera, reg32 place)
 {
     const Frame frame(cpu, 0x14, 0xc);
-    const Kept kept(cpu, kSaveEbx | kSaveEcx | kSaveEsi | kSaveEdi | kSaveEbp);
     const reg32 fixed = frame.base - 0xc;
     for (const reg32 k : {0u, 4u, 8u})
         put(app, fixed + k, reg32(fp::toInteger<sreg32>(fp::mul(f32(app, place + k), f64(app, 0x536e14)))));
@@ -776,12 +720,9 @@ bool findTrackPlace(App* app, CPU& cpu, reg32 camera, reg32 place)
         put(app, trackPlace + k, at(app, from + k));
     guest::direct<0x41e420, trackdata::followToNearest>(app, cpu, fixed, trackPlace);
     if (cpu.terminate)
-        return false;
+        return std::nullopt;
     // By address: its eax is what findTrackPlace leaves.
-    if (!call(app, cpu, kTrackNode, fixed, trackPlace, 1, trackPlace))
-        return false;
-    cpu.edx = trackPlace;
-    return true;
+    return guest::watcomEax(app, cpu, kTrackNode, {fixed, trackPlace, 1});
 }
 
 }  // namespace
@@ -789,9 +730,7 @@ bool findTrackPlace(App* app, CPU& cpu, reg32 camera, reg32 place)
 /* 0x421880: findTrackPlace for camera eax and place edx. */
 void cameraTrackPlace(App* app, CPU& cpu)
 {
-    if (!findTrackPlace(app, cpu, cpu.eax, cpu.edx))
-        return;
-    cpu.esp += 4;
+    adapts(cpu, [&, camera = cpu.eax, place = cpu.edx] { return findTrackPlace(app, cpu, camera, place); });
 }
 
 namespace
@@ -817,12 +756,20 @@ std::optional<Float> dot(App* app, CPU& cpu, reg32 a, reg32 b)
     return Float(product);
 }
 
-/* The same by address, for a caller that keeps the eax it leaves. */
-std::optional<Float> dotByAddress(App* app, CPU& cpu, reg32 a, reg32 b)
+/* What the dot product by address leaves: the product, off the x87's stack, and its eax. */
+struct Product
 {
-    if (!call(app, cpu, kDot, a, b))
+    Float value;
+    reg32 eax;
+};
+
+/* The same by address, for a caller that keeps the eax it leaves. */
+std::optional<Product> dotByAddress(App* app, CPU& cpu, reg32 a, reg32 b)
+{
+    const std::optional<reg32> left = guest::watcomEax(app, cpu, kDot, {a, b});
+    if (!left)
         return std::nullopt;
-    return cpu.fpu.take();
+    return Product{cpu.fpu.take(), *left};
 }
 
 /* An x87 fabs in the code's two steps: only a value under 0 is negated, the rest kept to the bit. */
@@ -835,12 +782,11 @@ float sizeOf(float value)
  * near enough (the distance to it against its size and a margin), the place in the car's axes;
  * inside the box of its half sizes (plus 0x536e24) and inside the ellipse of its sides, it is
  * pushed out sideways onto it (a square root) and back into the world by the car's axes
- * transposed.  eax left as the code leaves it (the compares' status words among it).  False when
- * the game stopped. */
-bool pushOutOfCars(App* app, CPU& cpu, reg32 place)
+ * transposed.  eax as the code leaves it (the compares' status words among it).  Nullopt when the
+ * game stopped. */
+std::optional<reg32> pushOutOfCars(App* app, CPU& cpu, reg32 place)
 {
     const Frame frame(cpu, 0x18, 0x88);
-    const Kept kept(cpu);
     const reg32 e = frame.base - 0x82;
     const reg32 way = e + 0x2a, axes = e - 6, pushed = e + 0x36;
     reg32 left = place;
@@ -852,11 +798,9 @@ bool pushOutOfCars(App* app, CPU& cpu, reg32 place)
         if (shown == 0 || byte(app, car + kCarWrecked) != 0)
             continue;
         const Float reach = fp::add(f32(app, car + kCarSize), f64(app, 0x536e1c));
-        cpu.eax = car + kCarPlace;
-        cpu.edx = place;
         const auto measured = feCore<0x4965b0, frontend::sima::quickDistanceOf>(app, cpu, car + kCarPlace, place);
         if (!measured)
-            return false;
+            return std::nullopt;
         const Float distance = measured->value;
         left = statusInto(measured->eax, distance, reach);
         if (distance > reach)
@@ -865,13 +809,13 @@ bool pushOutOfCars(App* app, CPU& cpu, reg32 place)
             putFloat(app, way + k, float(fp::sub(f32(app, place + k), f32(app, car + kCarPlace + k))));
         std::optional<Float> d = dot(app, cpu, way, car + kCarOrientation);
         if (!d)
-            return false;
+            return std::nullopt;
         const float a = float(*d);
         if (!(d = dot(app, cpu, way, car + kCarOrientation + 0xc)))
-            return false;
+            return std::nullopt;
         const float b = float(*d);
         if (!(d = dot(app, cpu, way, car + kCarOrientation + 0x18)))
-            return false;
+            return std::nullopt;
         const float c = float(*d);
         const Float margin = f32(app, 0x536e24);
         const float sx = float(fp::add(f32(app, car + kCarHalfSizes), margin));
@@ -901,11 +845,10 @@ bool pushOutOfCars(App* app, CPU& cpu, reg32 place)
         left = statusInto(left, 0.0, rest);
         if (0.0 > Float(rest))
             continue;
-        cpu.eax = left;  // as the code leaves it
         const std::optional<double> rooted =
             feCore<0x4ea920, frontend::simc::squareRootOf>(app, cpu, bitsOf(float(fp::mul(fp::mul(Float(sy), Float(sy)), Float(rest)))));
         if (!rooted)
-            return false;
+            return std::nullopt;
         const float root = float(*rooted);
         left = statusInto(left, sizeB, root);  // the root's eax: the one it is handed
         if (Float(sizeB) >= Float(root))
@@ -913,25 +856,24 @@ bool pushOutOfCars(App* app, CPU& cpu, reg32 place)
         put(app, pushed, bitsOf(a));
         put(app, pushed + 8, bitsOf(c));
         putFloat(app, pushed + 4, float(fp::mul(Float(root), Float(side))));
-        if (!loadedCall<0x4e0110, frontend::simd::transpose>(app, cpu, {car + kCarOrientation, axes},
-                                                              car + kCarOrientation, axes))
-            return false;
+        if (!feCore<0x4e0110, frontend::simd::transpose>(app, cpu, car + kCarOrientation, axes))
+            return std::nullopt;
         if (!(d = dot(app, cpu, pushed, axes)))
-            return false;
+            return std::nullopt;
         const float x = float(*d);
         if (!(d = dot(app, cpu, pushed, axes + 0xc)))
-            return false;
+            return std::nullopt;
         const float y = float(*d);
-        if (!(d = dotByAddress(app, cpu, pushed, axes + 0x18)))
-            return false;
-        const float z = float(*d);
-        left = cpu.eax;
+        const std::optional<Product> last = dotByAddress(app, cpu, pushed, axes + 0x18);
+        if (!last)
+            return std::nullopt;
+        const float z = float(last->value);
+        left = last->eax;
         putFloat(app, place, float(fp::add(f32(app, car + kCarPlace), Float(x))));
         putFloat(app, place + 4, float(fp::add(f32(app, car + kCarPlace + 4), Float(y))));
         putFloat(app, place + 8, float(fp::add(f32(app, car + kCarPlace + 8), Float(z))));
     }
-    cpu.eax = left;
-    return true;
+    return left;
 }
 
 }  // namespace
@@ -939,9 +881,7 @@ bool pushOutOfCars(App* app, CPU& cpu, reg32 place)
 /* 0x421900: pushOutOfCars for the place eax. */
 void keepOutOfCars(App* app, CPU& cpu)
 {
-    if (!pushOutOfCars(app, cpu, cpu.eax))
-        return;
-    cpu.esp += 4;
+    adapts(cpu, [&, place = cpu.eax] { return pushOutOfCars(app, cpu, place); });
 }
 
 namespace
@@ -959,21 +899,13 @@ constexpr reg32 kNodeSize = 0x24, kSurfaceHeights = 0x552e54;
 // The surfaces with no ground of their own.
 constexpr reg32 kNoSurface = 0, kWaterSurface = 0xe;
 
-/* Words pushed for a call, in their order, and the call. */
-bool callWords(App* app, CPU& cpu, reg32 target, std::initializer_list<reg32> pushed)
-{
-    for (const reg32 word : pushed)
-        push(app, cpu, word);
-    return byAddress(app, cpu, target);
-}
-
-/* 0x4968a0: the height of the plane (12 floats) at the place, from the plane's point (ret 0x18). */
+/* 0x4968a0: the height of the plane (12 floats) at the place, from the plane's point (ret 0x18):
+ * the point's words and the place's on the stack, the point's first lowest. */
 std::optional<Float> planeHeight(App* app, CPU& cpu, reg32 plane, reg32 place, reg32 point)
 {
-    cpu.eax = plane;
-    if (!callWords(app, cpu, kPlaneHeight,
-                   {at(app, place + 8), at(app, place + 4), at(app, place), at(app, point + 8), at(app, point + 4),
-                    at(app, point)}))
+    if (!callGame(app, cpu, kPlaneHeight, {plane},
+                  {at(app, point), at(app, point + 4), at(app, point + 8), at(app, place), at(app, place + 4),
+                   at(app, place + 8)}))
         return std::nullopt;
     return cpu.fpu.take();
 }
@@ -985,55 +917,47 @@ bool carPlane(App* app, CPU& cpu, reg32 camera, reg32 points, reg32 plane)
     for (reg32 i = 0; i < 4; ++i)
         for (reg32 k = 0; k < 0xc; k += 4)
             put(app, points + i * 0xc + k, at(app, at(app, camera + kCamPoints + i * 4) + k));
-    return loadedCall<0x496a50, frontend::simd::frameOfTriangle>(app, cpu, {points, plane}, points, plane);
+    return feCore<0x496a50, frontend::simd::frameOfTriangle>(app, cpu, points, plane).has_value();
 }
 
 /* 0x421b90's: the camera's place kept above the road: the road's height there -- the car's plane's
  * where the camera follows a car on a surface it knows (and not off its side), else the node's
  * (scaled by 0x536e34) -- plus the surface's own (by inTunnel's say, else 25.0) and a margin
  * (0x536e2c); the height that where it is not under it (the code's compare, kept as it is).
- * eax and edx as the code leaves them (the height, and the last word it loaded).  False when the
- * game stopped. */
-bool keepRoadHeight(App* app, CPU& cpu, reg32 camera, reg32 place)
+ * eax as the code leaves it, the height.  Nullopt when the game stopped. */
+std::optional<reg32> keepRoadHeight(App* app, CPU& cpu, reg32 camera, reg32 place)
 {
     const Frame frame(cpu, 0x14, 0x60);
-    const Kept kept(cpu, kSaveEbx | kSaveEcx | kSaveEsi | kSaveEdi | kSaveEbp);
     const reg32 trackPlace = camera + kCamTrackPlace;
     const reg32 node = at(app, trackPlace + 0x10);
     const reg32 kind = guest::direct<0x4207e0, trackdata::placeSurface>(app, cpu, trackPlace, 1) & 0x3f;
     if (cpu.terminate)
-        return false;
-    cpu.edx = kind;
-    cpu.eax = at(app, place + 4);  // as the code leaves it, its pushes' register
-    if (!callWords(app, cpu, kInTunnel, {node, at(app, place + 8), at(app, place + 4), at(app, place)}))
-        return false;
-    const float own = cpu.eax != 0 ? floatOf(at(app, at(app, kSurfaceHeights) + node * 4)) : 25.0f;
+        return std::nullopt;
+    // inTunnel (stdcall) of the place's words and the node, the place's first lowest; eax the
+    // place's y, the register the code pushes it through (what the check's stand-in may leave).
+    const std::optional<reg32> tunnel = callGame(app, cpu, kInTunnel, {at(app, place + 4)},
+                                                 {at(app, place), at(app, place + 4), at(app, place + 8), node});
+    if (!tunnel)
+        return std::nullopt;
+    const float own = *tunnel != 0 ? floatOf(at(app, at(app, kSurfaceHeights) + node * 4)) : 25.0f;
     Float height;
-    reg32 edx;
     if (at(app, camera + kCamFollows) != 0 && at(app, camera + kCamKnown) != 0 && at(app, camera + kCamSide) == 0
         && kind != kNoSurface && kind != kWaterSurface)
     {
         const reg32 plane = frame.base - 0x30;
         if (!carPlane(app, cpu, camera, frame.base - 0x60, plane))
-            return false;
-        const reg32 point = at(app, camera + kCamPoints);
-        edx = at(app, point + 4);
-        const std::optional<Float> h = planeHeight(app, cpu, plane, place, point);
+            return std::nullopt;
+        const std::optional<Float> h = planeHeight(app, cpu, plane, place, at(app, camera + kCamPoints));
         if (!h)
-            return false;
+            return std::nullopt;
         height = *h;
     }
     else
-    {
-        edx = at(app, kNodes);
-        height = fp::mul(Float(sreg32(at(app, edx + node * kNodeSize + 4))), f64(app, 0x536e34));
-    }
+        height = fp::mul(Float(sreg32(at(app, at(app, kNodes) + node * kNodeSize + 4))), f64(app, 0x536e34));
     const float limit = float(fp::add(fp::add(height, Float(own)), f64(app, 0x536e2c)));
     const reg32 result = f32(app, place + 4) >= Float(limit) ? bitsOf(limit) : at(app, place + 4);
     put(app, place + 4, result);
-    cpu.eax = result;
-    cpu.edx = edx;
-    return true;
+    return result;
 }
 
 }  // namespace
@@ -1041,9 +965,7 @@ bool keepRoadHeight(App* app, CPU& cpu, reg32 camera, reg32 place)
 /* 0x421b90: keepRoadHeight for camera eax and place edx. */
 void keepAboveRoad(App* app, CPU& cpu)
 {
-    if (!keepRoadHeight(app, cpu, cpu.eax, cpu.edx))
-        return;
-    cpu.esp += 4;
+    adapts(cpu, [&, camera = cpu.eax, place = cpu.edx] { return keepRoadHeight(app, cpu, camera, place); });
 }
 
 namespace
@@ -1059,23 +981,17 @@ using Vector = std::array<reg32, 3>;
  * point (the near end) to the place (the far end) halved 10 times (0x536e3c), each middle tried on
  * the track (0x41e990, its place in the track's fixed point by 0x536e44, the camera's track place
  * copied into the frame) and on a known surface (0x4207e0); the place the near end, and its track
- * place found.  eax and edx left as the code leaves them.  False when the game stopped. */
-bool keepPlaceOnTrack(App* app, CPU& cpu, reg32 camera, reg32 place, const Vector& from)
+ * place found.  eax as the code leaves it.  Nullopt when the game stopped. */
+std::optional<reg32> keepPlaceOnTrack(App* app, CPU& cpu, reg32 camera, reg32 place, const Vector& from)
 {
     const Frame frame(cpu, 0x14, 0xbc);
-    const Kept kept(cpu, kSaveEbx | kSaveEcx | kSaveEsi | kSaveEdi | kSaveEbp);
-    const auto leave = [&](reg32 eax, reg32 edx) {
-        cpu.eax = eax;
-        cpu.edx = edx;
-        return true;
-    };
     const reg32 e = frame.base - 0x7e;
     const reg32 fixed = e + 0x52, track = e - 0x3e;
     const reg32 trackPlace = camera + kCamTrackPlace;
     Vector nearEnd = from;
     reg32 kind = guest::direct<0x4207e0, trackdata::placeSurface>(app, cpu, trackPlace, 1) & 0x3f;
     if (cpu.terminate)
-        return false;
+        return std::nullopt;
     Vector farEnd = {at(app, place), at(app, place + 4), at(app, place + 8)};
     Vector middle = farEnd, last;
     for (reg32 k = 0; k < 0x78; k += 4)
@@ -1088,18 +1004,18 @@ bool keepPlaceOnTrack(App* app, CPU& cpu, reg32 camera, reg32 place, const Vecto
         if (sides != 0)
         {
             if (side == 1 && x86::sreg16(app->getMemory<reg16>(sides + 4)) >= 0)
-                return leave(physics, side);
+                return physics;
             if (at(app, camera + kCamSide) == 2)
             {
                 const reg32 again = at(app, at(app, camera + kCamCar) + kPhysSides);
                 if (x86::sreg16(app->getMemory<reg16>(again + 6)) >= 0)
-                    return leave(again, side);
+                    return again;
             }
         }
     }
     else if (at(app, camera + kCamFollows) != 0 && at(app, camera + kCamKnown) != 0 && kind != kNoSurface
              && kind != kWaterSurface)
-        return leave(kind, side);
+        return kind;
     const Float half = f64(app, 0x536e3c), toFixed = f64(app, 0x536e44);
     for (int step = 0; step < 10; ++step)
     {
@@ -1114,13 +1030,13 @@ bool keepPlaceOnTrack(App* app, CPU& cpu, reg32 camera, reg32 place, const Vecto
         const std::optional<trackdata::Searched> searched =
             guest::direct<0x41e990, trackdata::searchQuad>(app, cpu, fixed, track);
         if (!searched)
-            return false;
+            return std::nullopt;
         const reg32 onTrack = searched->found;
         if (onTrack != 0)
         {
             kind = guest::direct<0x4207e0, trackdata::placeSurface>(app, cpu, track, 1) & 0x3f;
             if (cpu.terminate)
-                return false;
+                return std::nullopt;
         }
         if (onTrack == 0 || kind == kNoSurface || kind == kWaterSurface || at(app, track + 0x14) == 0
             || at(app, track + 0x18) == 0)
@@ -1143,10 +1059,12 @@ bool keepPlaceOnTrack(App* app, CPU& cpu, reg32 camera, reg32 place, const Vecto
 /* 0x421cc0: keepPlaceOnTrack for camera eax, place edx, from the point on the stack (ret 0xc). */
 void keepOnTrack(App* app, CPU& cpu)
 {
-    const Vector from = {at(app, cpu.esp + 4), at(app, cpu.esp + 8), at(app, cpu.esp + 0xc)};
-    if (!keepPlaceOnTrack(app, cpu, cpu.eax, cpu.edx, from))
-        return;
-    cpu.esp += 4 + 0xc;
+    adapts(
+        cpu,
+        [&, camera = cpu.eax, place = cpu.edx, from = Vector{word(app, cpu, 1), word(app, cpu, 2), word(app, cpu, 3)}] {
+            return keepPlaceOnTrack(app, cpu, camera, place, from);
+        },
+        0xc);
 }
 
 namespace
@@ -1162,12 +1080,12 @@ reg32 nodeByte(reg32 r)
 /* 0x421e80's and 0x421f90's body: the camera's place moved by the node's sideways vector (its
  * bytes at +0x15.., scaled by `scale` and `across`) -- toward the wall on one side, away on the
  * other -- its track place found from there, kept on the track from the moved-toward point, and
- * moved back; eax and edx as the code leaves them.  False when the game stopped.  The node's bytes
- * are ints times constants, never NaN. */
-bool keepFromWall(App* app, CPU& cpu, reg32 camera, reg32 place, reg32 scale, reg32 across, bool right)
+ * moved back; eax as the code leaves it.  Nullopt when the game stopped.  The node's bytes are
+ * ints times constants, never NaN. */
+std::optional<reg32> keepFromWall(App* app, CPU& cpu, reg32 camera, reg32 place, reg32 scale, reg32 across,
+                                  bool right)
 {
     const Frame frame(cpu, 0x14, 0x28);
-    const Kept kept(cpu, kSaveEbx | kSaveEcx | kSaveEsi | kSaveEdi | kSaveEbp);
     const reg32 moved = frame.base - 0x10;
     // fsub on the right's side where the left's has fadd, and the other way.
     const auto toward = [&](const Float& v, const Float& m) { return right ? fp::sub(v, m) : fp::add(v, m); };
@@ -1187,12 +1105,12 @@ bool keepFromWall(App* app, CPU& cpu, reg32 camera, reg32 place, reg32 scale, re
     {
         const Calling calling(cpu);
         if (!findTrackPlace(app, cpu, camera, moved))
-            return false;
+            return std::nullopt;
     }
     {
         const Calling calling(cpu, 3);
         if (!keepPlaceOnTrack(app, cpu, camera, moved, towardPoint))
-            return false;
+            return std::nullopt;
     }
     putFloat(app, place, float(toward(f32(app, moved), dx)));
     putFloat(app, place + 4, float(toward(f32(app, moved + 4), dy)));
@@ -1207,17 +1125,17 @@ bool keepFromWall(App* app, CPU& cpu, reg32 camera, reg32 place, reg32 scale, re
  * 0x536e4c and 0x536e54). */
 void keepFromRightWall(App* app, CPU& cpu)
 {
-    if (!keepFromWall(app, cpu, cpu.eax, cpu.edx, 0x536e4c, 0x536e54, true))
-        return;
-    cpu.esp += 4;
+    adapts(cpu, [&, camera = cpu.eax, place = cpu.edx] {
+        return keepFromWall(app, cpu, camera, place, 0x536e4c, 0x536e54, true);
+    });
 }
 
 /* 0x421f90: and on the other (0x536e5c, 0x536e64). */
 void keepFromLeftWall(App* app, CPU& cpu)
 {
-    if (!keepFromWall(app, cpu, cpu.eax, cpu.edx, 0x536e5c, 0x536e64, false))
-        return;
-    cpu.esp += 4;
+    adapts(cpu, [&, camera = cpu.eax, place = cpu.edx] {
+        return keepFromWall(app, cpu, camera, place, 0x536e5c, 0x536e64, false);
+    });
 }
 
 namespace
@@ -1229,29 +1147,25 @@ constexpr reg32 kGroundScale = 0x536e74;
 /* 0x4220a0's: the camera's place kept above the ground under it: the car's plane's height there
  * where it follows a car on a known surface, else the node's plane's -- its place and two of its
  * vectors from its bytes (scaled by 0x536e74), into the frame -- plus 0x536e6c: no lower than that.
- * eax and edx as the code leaves them.  False when the game stopped.  The node's numbers
- * are ints times a constant, so never NaN: the products' order does not matter, but is kept. */
-bool keepGroundHeight(App* app, CPU& cpu, reg32 camera, reg32 place)
+ * eax as the code leaves it, the height.  Nullopt when the game stopped.  The node's numbers are
+ * ints times a constant, so never NaN: the products' order does not matter, but is kept. */
+std::optional<reg32> keepGroundHeight(App* app, CPU& cpu, reg32 camera, reg32 place)
 {
     const Frame frame(cpu, 0x14, 0x6c);
-    const Kept kept(cpu, kSaveEbx | kSaveEcx | kSaveEsi | kSaveEdi | kSaveEbp);
     const reg32 e = frame.base;
     const reg32 trackPlace = camera + kCamTrackPlace;
     const reg32 node = at(app, trackPlace + 0x10);
     const reg32 kind = guest::direct<0x4207e0, trackdata::placeSurface>(app, cpu, trackPlace, 1) & 0x3f;
     if (cpu.terminate)
-        return false;
+        return std::nullopt;
     const reg32 plane = e - 0x3c;
-    reg32 edx;
     std::optional<Float> height;
     if (at(app, camera + kCamFollows) != 0 && at(app, camera + kCamKnown) != 0 && kind != kNoSurface
         && kind != kWaterSurface)
     {
         if (!carPlane(app, cpu, camera, e - 0x6c, plane))
-            return false;
-        const reg32 point = at(app, camera + kCamPoints);
-        edx = at(app, point + 4);
-        height = planeHeight(app, cpu, plane, place, point);
+            return std::nullopt;
+        height = planeHeight(app, cpu, plane, place, at(app, camera + kCamPoints));
     }
     else
     {
@@ -1275,17 +1189,14 @@ bool keepGroundHeight(App* app, CPU& cpu, reg32 camera, reg32 place)
         putFloat(app, e - 0x24, float(fp::mul(byteAt(0x11), scale)));
         putFloat(app, e - 0x20, float(fp::mul(byteAt(0x12), scale)));
         putFloat(app, e - 0x1c, float(fp::mul(scale, byteAt(0x13))));
-        edx = at(app, e - 0x10);
         height = planeHeight(app, cpu, plane, place, e - 0x18);
     }
     if (!height)
-        return false;
+        return std::nullopt;
     const float limit = float(fp::add(*height, f64(app, 0x536e6c)));
     const reg32 result = !(f32(app, place + 4) > Float(limit)) ? bitsOf(limit) : at(app, place + 4);
     put(app, place + 4, result);
-    cpu.eax = result;
-    cpu.edx = edx;
-    return true;
+    return result;
 }
 
 }  // namespace
@@ -1293,9 +1204,7 @@ bool keepGroundHeight(App* app, CPU& cpu, reg32 camera, reg32 place)
 /* 0x4220a0: keepGroundHeight for camera eax and place edx. */
 void keepAboveGround(App* app, CPU& cpu)
 {
-    if (!keepGroundHeight(app, cpu, cpu.eax, cpu.edx))
-        return;
-    cpu.esp += 4;
+    adapts(cpu, [&, camera = cpu.eax, place = cpu.edx] { return keepGroundHeight(app, cpu, camera, place); });
 }
 
 namespace
@@ -1311,11 +1220,10 @@ constexpr reg32 kTurnCameras = 0x552f18;
  * up (0x4212d0, or the camera's own +0x38 where the forward is too steep, 0x536e7c) crossed with
  * it into the side and the up
  * (0x4e01a0, 0x4e0160); then the camera's roll (+0x50, 0x4ea680) and for mode 10 its car's turn
- * (0x4eaab0).  eax and edx as the code leaves them.  False when the game stopped. */
-bool lookAt(App* app, CPU& cpu, reg32 camera, reg32 place)
+ * (0x4eaab0).  eax as the code leaves it.  Nullopt when the game stopped. */
+std::optional<reg32> lookAt(App* app, CPU& cpu, reg32 camera, reg32 place)
 {
     const Frame frame(cpu, 0x14, 0x40);
-    const Kept kept(cpu, kSaveEbx | kSaveEcx | kSaveEsi | kSaveEdi | kSaveEbp);
     const reg32 e = frame.base;
     const reg32 forward = camera + 0x44, side = camera + kCamOrientation, up = camera + 0x38;
     const reg32 upWay = e - 0x40, fromTarget = e - 0x34, target = e - 0x28, length = e - 0x1c;
@@ -1325,39 +1233,34 @@ bool lookAt(App* app, CPU& cpu, reg32 camera, reg32 place)
         put(app, target + k, at(app, at(app, camera + kCamTarget) + kCarPlace + k));
     guest::direct<0x4e0000, vertices::offsetVectorList<false>>(app, cpu, 1, target, place, fromTarget);
     if (cpu.terminate)
-        return false;
+        return std::nullopt;
     guest::direct<0x4e0000, vertices::offsetVectorList<false>>(app, cpu, 1, target, place, forward);
     if (cpu.terminate)
-        return false;
+        return std::nullopt;
     guest::direct<0x4e01c0, vertices::makeUnitVector>(app, cpu, forward, forward);
     if (cpu.terminate)
-        return false;
-    // The code's ebx and ecx as the normalizing's call handed them: the forward, the frame's word.
+        return std::nullopt;
     guest::direct<0x4e0210, vertices::dotProductsOf>(app, cpu, 1, upWay, forward, length);
     if (cpu.terminate)
-        return false;
+        return std::nullopt;
     // The dot product, as the call left it in the frame.
     if (Float(sizeOf(floatOf(at(app, length)))) > f64(app, 0x536e7c))
         for (reg32 k = 0; k < 0xc; k += 4)
             put(app, upWay + k, at(app, up + k));
-    if (!loadedCall<0x4e01a0, frontend::simd::unitCross>(app, cpu, {upWay, forward, side}, upWay, forward, side)
-        || !loadedCall<0x4e0160, frontend::simd::cross>(app, cpu, {forward, side, up}, forward, side, up))
-        return false;
+    if (!feCore<0x4e01a0, frontend::simd::unitCross>(app, cpu, upWay, forward, side)
+        || !feCore<0x4e0160, frontend::simd::cross>(app, cpu, forward, side, up))
+        return std::nullopt;
     // The roll pushed where the code pushes it: simc's core takes its address.
     push(app, cpu, side);
     push(app, cpu, at(app, camera + kCamRoll));
-    if (!loadedCall<0x4ea680, frontend::simc::turnAboutFirstRow>(app, cpu, {side, side}, side, cpu.esp, side))
-        return false;
+    if (!feCore<0x4ea680, frontend::simc::turnAboutFirstRow>(app, cpu, side, cpu.esp, side))
+        return std::nullopt;
     cpu.esp += 8;
     if (at(app, camera + kCamMode) != 0xa)
-    {
-        cpu.eax = camera;
-        return true;
-    }
-    const reg32 orientation = cpu.edx;  // as the call left it
-    return loadedCall<0x4eaab0, frontend::simd::rotateY>(
-        app, cpu, {orientation}, orientation,
-        at(app, at(app, kTurnCameras + at(app, camera + kCamPlayer) * 4) + kCamBlendTarget), orientation);
+        return camera;
+    // The orientation in edx, as the roll's call loaded it: the side's, the camera's.
+    return feCore<0x4eaab0, frontend::simd::rotateY>(
+        app, cpu, side, at(app, at(app, kTurnCameras + at(app, camera + kCamPlayer) * 4) + kCamBlendTarget), side);
 }
 
 }  // namespace
@@ -1365,9 +1268,7 @@ bool lookAt(App* app, CPU& cpu, reg32 camera, reg32 place)
 /* 0x422290: lookAt for camera eax from its place edx. */
 void lookAtTarget(App* app, CPU& cpu)
 {
-    if (!lookAt(app, cpu, cpu.eax, cpu.edx))
-        return;
-    cpu.esp += 4;
+    adapts(cpu, [&, camera = cpu.eax, place = cpu.edx] { return lookAt(app, cpu, camera, place); });
 }
 
 namespace
@@ -1381,18 +1282,15 @@ constexpr reg32 kBlendTime = 0x110, kBlendFrom = 0x118, kBlendStart = 0x120, kBl
  * the one it takes: a logistic weight of its time (by 0x536e84 and 0x536e88, through fprem, f2xm1
  * and fscale), the orientations as quaternions -- the old one turned round first where `turned` is
  * 1 -- slerped back into the orientation, the places mixed (0x4dffb0, 0x4e0050) into the place.
- * The registers as the code leaves them.  False when the game stopped. */
-bool blend(App* app, CPU& cpu, reg32 orientation, reg32 place, reg32 player, reg32 turned)
+ * eax as the last call leaves it, the orientation's where there is no blend.  Nullopt when the game
+ * stopped. */
+std::optional<reg32> blend(App* app, CPU& cpu, reg32 orientation, reg32 place, reg32 player, reg32 turned)
 {
     const Frame frame(cpu, 0xc, 0xb0);
-    const Kept kept(cpu, kSaveEsi | kSaveEdi | kSaveEbp);
     const reg32 e = frame.base - 0x82;
     const reg32 record = at(app, kBlendRecord + player * 4);
     if (at(app, record + kBlendFrom) == 0 || at(app, record + kCamBlendTarget) == 0)
-    {
-        cpu.edx = record;
-        return true;
-    }
+        return orientation;
     const Float time = fp::mul(fp::add(f32(app, record + kBlendTime), f32(app, 0x536e84)), f32(app, 0x536e88));
     const Float power = fp::mul(Float(1.4426950408889634), time);
     const Float raised = fp::scale(fp::add(1.0, fp::f2xm1(cpu.fpu.rem(power, 1.0))), power);
@@ -1403,32 +1301,32 @@ bool blend(App* app, CPU& cpu, reg32 orientation, reg32 place, reg32 player, reg
         put(app, quat + k, at(app, record + kBlendStart + k));
     if (turned == 1)
     {
-        if (!loadedCall<0x4b7590, frontend::simc::matrixFromQuat>(app, cpu, {quat, e - 0xa}, quat, e - 0xa))
-            return false;
+        if (!feCore<0x4b7590, frontend::simc::matrixFromQuat>(app, cpu, quat, e - 0xa))
+            return std::nullopt;
         turnedAround(app, e - 0xa, e - 0x2e);
-        if (!loadedCall<0x4b73c0, frontend::simc::quatFromMatrix>(app, cpu, {e - 0x2e, quat}, e - 0x2e, quat))
-            return false;
+        if (!feCore<0x4b73c0, frontend::simc::quatFromMatrix>(app, cpu, e - 0x2e, quat))
+            return std::nullopt;
     }
-    if (!loadedCall<0x4b73c0, frontend::simc::quatFromMatrix>(app, cpu, {orientation, carQuat}, orientation, carQuat)
-        || !loadedCall<0x4b7300, frontend::simc::quatNearer>(app, cpu, {quat, carQuat}, quat, carQuat))
-        return false;
-    if (!loadedCall<0x4b71e0, frontend::simc::quatSlerp>(app, cpu, {quat, carQuat}, quat, carQuat, bitsOf(weight), mixed)
-        || !loadedCall<0x4b7590, frontend::simc::matrixFromQuat>(app, cpu, {mixed, orientation}, mixed, orientation))
-        return false;
+    if (!feCore<0x4b73c0, frontend::simc::quatFromMatrix>(app, cpu, orientation, carQuat)
+        || !feCore<0x4b7300, frontend::simc::quatNearer>(app, cpu, quat, carQuat))
+        return std::nullopt;
+    if (!feCore<0x4b71e0, frontend::simc::quatSlerp>(app, cpu, quat, carQuat, bitsOf(weight), mixed)
+        || !feCore<0x4b7590, frontend::simc::matrixFromQuat>(app, cpu, mixed, orientation))
+        return std::nullopt;
     const reg32 target = cameraOfMode(app, player, at(app, record + kCamBlendTarget));
     const reg32 offset = e + 0x62, scaledOffset = e + 0x4a, scaledPlace = e + 0x56;
     guest::direct<0x4dffb0, vertices::offsetVectorList<true>>(app, cpu, 1, record + kBlendOffset,
                                                                at(app, target + kCamCar) + kCarPlace, offset);
     if (cpu.terminate)
-        return false;
+        return std::nullopt;
     guest::direct<0x4e0050, vertices::scaleVectorsBy>(app, cpu, 1, offset, rest, scaledOffset);
     if (cpu.terminate)
-        return false;
+        return std::nullopt;
     guest::direct<0x4e0050, vertices::scaleVectorsBy>(app, cpu, 1, place, weight, scaledPlace);
     if (cpu.terminate)
-        return false;
-    // By address: the registers it leaves are blend's.
-    return call(app, cpu, kRotate, 1, scaledOffset, scaledPlace, place);
+        return std::nullopt;
+    // By address: the eax it leaves is blend's.
+    return guest::watcomEax(app, cpu, kRotate, {1, scaledOffset, scaledPlace, place});
 }
 
 }  // namespace
@@ -1437,9 +1335,9 @@ bool blend(App* app, CPU& cpu, reg32 orientation, reg32 place, reg32 player, reg
  * is 1. */
 void blendCamera(App* app, CPU& cpu)
 {
-    if (!blend(app, cpu, cpu.eax, cpu.edx, cpu.ebx, cpu.ecx))
-        return;
-    cpu.esp += 4;
+    adapts(cpu, [&, orientation = cpu.eax, place = cpu.edx, player = cpu.ebx, turned = cpu.ecx] {
+        return blend(app, cpu, orientation, place, player, turned);
+    });
 }
 
 namespace
@@ -1449,63 +1347,62 @@ namespace
  * and onto the track, then kept from the walls, on the track (from its car's place), above the
  * road and the ground, out of the cars, looking at its target, as its mode says; its orientation
  * to `matrix` -- its car's turned round where `turned` is 1, else its own -- and its track place
- * found again.  The registers as the code leaves them.  False when the game stopped. */
-bool place(App* app, CPU& cpu, reg32 camera, reg32 matrix, reg32 into, reg32 turned)
+ * found again.  eax as that leaves it.  Nullopt when the game stopped. */
+std::optional<reg32> place(App* app, CPU& cpu, reg32 camera, reg32 matrix, reg32 into, reg32 turned)
 {
     const Frame frame(cpu, 0xc, 8);
-    const Kept kept(cpu, kSaveEsi | kSaveEdi | kSaveEbp);
     if (at(app, camera + kCamHead) != 0)
     {
         const Calling calling(cpu);
         if (!turnHead(app, cpu, camera))
-            return false;
+            return std::nullopt;
     }
     for (reg32 k = 0; k < 0xc; k += 4)
         put(app, into + k, at(app, camera + kCamPlace + k));
     {
         const Calling calling(cpu);
         if (!findTrackPlace(app, cpu, camera, into))
-            return false;
+            return std::nullopt;
     }
     if (at(app, camera + kCamWalls) != 0)
     {
         {
             const Calling calling(cpu);
             if (!keepFromWall(app, cpu, camera, into, 0x536e4c, 0x536e54, true))
-                return false;
+                return std::nullopt;
         }
         {
             const Calling calling(cpu);
             if (!keepFromWall(app, cpu, camera, into, 0x536e5c, 0x536e64, false))
-                return false;
+                return std::nullopt;
         }
         const reg32 car = at(app, camera + kCamCar);
         const Vector from = {at(app, car + kCarPlace), at(app, car + kCarPlace + 4), at(app, car + kCarPlace + 8)};
         {
             const Calling calling(cpu, 3);
             if (!keepPlaceOnTrack(app, cpu, camera, into, from))
-                return false;
+                return std::nullopt;
         }
         {
             const Calling calling(cpu);
             if (!keepRoadHeight(app, cpu, camera, into))
-                return false;
+                return std::nullopt;
         }
         const Calling calling(cpu);
         if (!keepGroundHeight(app, cpu, camera, into))
-            return false;
+            return std::nullopt;
     }
     if (at(app, camera + kCamCars) != 0)
     {
         const Calling calling(cpu);
         if (!pushOutOfCars(app, cpu, into))
-            return false;
+            return std::nullopt;
     }
     if (at(app, camera + kCamLooks) != 0)
     {
         const Calling calling(cpu);
         if (!lookAt(app, cpu, camera, into))
-            return false;
+            return std::nullopt;
     }
     if (turned == 1)
         turnedAround(app, at(app, camera + kCamCar) + kCarOrientation, matrix);
@@ -1513,7 +1410,6 @@ bool place(App* app, CPU& cpu, reg32 camera, reg32 matrix, reg32 into, reg32 tur
     {
         for (reg32 k = 0; k < 0x24; k += 4)
             put(app, matrix + k, at(app, camera + kCamOrientation + k));
-        cpu.ecx = 0;  // rep movsd's count
     }
     const Calling calling(cpu);
     return findTrackPlace(app, cpu, camera, into);
@@ -1525,9 +1421,9 @@ bool place(App* app, CPU& cpu, reg32 camera, reg32 matrix, reg32 into, reg32 tur
  * is 1. */
 void placeCamera(App* app, CPU& cpu)
 {
-    if (!place(app, cpu, cpu.eax, cpu.edx, cpu.ebx, cpu.ecx))
-        return;
-    cpu.esp += 4;
+    adapts(cpu, [&, camera = cpu.eax, matrix = cpu.edx, into = cpu.ebx, turned = cpu.ecx] {
+        return place(app, cpu, camera, matrix, into, turned);
+    });
 }
 
 namespace
@@ -1537,11 +1433,11 @@ namespace
  * in use (its +0x58 flags), with the same cars and the player's own car, the switch kept on the
  * blend's record (the mode it goes to, the start's orientation as a quaternion, its place's offset,
  * the time cleared, the mode left), the modes' sounds and the blend taken; else straight to the
- * mode (putCameraMode).  The registers as the code leaves them.  False when the game stopped. */
-bool switchTo(App* app, CPU& cpu, reg32 mode, reg32 player)
+ * mode (putCameraMode).  eax as the code leaves it: putCameraMode's, or the mode left.  Nullopt
+ * when the game stopped. */
+std::optional<reg32> switchTo(App* app, CPU& cpu, reg32 mode, reg32 player)
 {
     const Frame frame(cpu, 0x14, 0x60);
-    const Kept kept(cpu, kSaveEbx | kSaveEcx | kSaveEsi | kSaveEdi | kSaveEbp);
     const reg32 e = frame.base;
     const reg32 record = at(app, kBlendRecord + player * 4);
     const reg32 inUse = cameraInUse(app, player);
@@ -1559,39 +1455,37 @@ bool switchTo(App* app, CPU& cpu, reg32 mode, reg32 player)
         return straight();
     put(app, record + kCamBlendTarget, mode);
     if (current != 0x10 && current != 0x18 && !modeSound(app, cpu, current, player))
-        return false;
+        return std::nullopt;
     const reg32 orientation = e - 0x60, fromPlace = e - 0x2c, toPlace = e - 0x20;
     {
         const Calling calling(cpu);
         if (!place(app, cpu, cameraOfMode(app, player, current), orientation, fromPlace, 0))
-            return false;
+            return std::nullopt;
     }
     const reg32 start = record + kBlendStart;
-    if (!loadedCall<0x4b73c0, frontend::simc::quatFromMatrix>(app, cpu, {orientation, start}, orientation, start)
+    if (!feCore<0x4b73c0, frontend::simc::quatFromMatrix>(app, cpu, orientation, start)
         || !modeSound(app, cpu, mode, player))
-        return false;
+        return std::nullopt;
     {
         const Calling calling(cpu);
         if (!place(app, cpu, cameraOfMode(app, player, mode), orientation, toPlace, 0))
-            return false;
+            return std::nullopt;
     }
     const reg32 car = at(app, cameraOfMode(app, player, current) + kCamCar);
     guest::direct<0x4e0000, vertices::offsetVectorList<false>>(app, cpu, 1, fromPlace, car + kCarPlace,
                                                                 record + kBlendOffset);
     if (cpu.terminate
-        || !loadedCall<0x4b73c0, frontend::simc::quatFromMatrix>(app, cpu, {orientation, e - 0x3c}, orientation, e - 0x3c)
-        || !loadedCall<0x4b7300, frontend::simc::quatNearer>(app, cpu, {e - 0x3c, start}, e - 0x3c, start))
-        return false;
+        || !feCore<0x4b73c0, frontend::simc::quatFromMatrix>(app, cpu, orientation, e - 0x3c)
+        || !feCore<0x4b7300, frontend::simc::quatNearer>(app, cpu, e - 0x3c, start))
+        return std::nullopt;
     {
         const Calling calling(cpu);
         if (!putCameraMode(app, cpu, player, kBlend))
-            return false;
+            return std::nullopt;
     }
     put(app, record + kBlendTime, 0);
     put(app, record + kBlendFrom, current);
-    cpu.eax = current;
-    cpu.edx = record;
-    return true;
+    return current;
 }
 
 }  // namespace
@@ -1599,9 +1493,7 @@ bool switchTo(App* app, CPU& cpu, reg32 mode, reg32 player)
 /* 0x422610: switchTo mode eax for player edx. */
 void switchCamera(App* app, CPU& cpu)
 {
-    if (!switchTo(app, cpu, cpu.eax, cpu.edx))
-        return;
-    cpu.esp += 4;
+    adapts(cpu, [&, mode = cpu.eax, player = cpu.edx] { return switchTo(app, cpu, mode, player); });
 }
 
 /* 0x4227e0's: for a view of mode 0 its player's active camera's zoom, where that is not 0. */
@@ -1619,11 +1511,11 @@ std::optional<reg32> ownZoom(App* app, reg32 view)
  * is the camera's, as the code leaves it. */
 void cameraZoom(App* app, CPU& cpu)
 {
-    const std::optional<reg32> own = ownZoom(app, cpu.eax);
-    if (own)
-        cpu.eax = *own;
-    cpu.fpu.push(Float(own ? floatOf(*own) : 1.0f));
-    cpu.esp += 4;
+    adapts(cpu, [&, view = cpu.eax] {
+        const std::optional<reg32> own = ownZoom(app, view);
+        cpu.fpu.push(Float(own ? floatOf(*own) : 1.0f));
+        return own ? *own : view;
+    });
 }
 
 
@@ -1647,18 +1539,15 @@ void turnByMatrix(App* app, const float (&v)[3], reg32 m, reg32 into)
 
 /* 0x422850's: the view's matrix: its orientation (+0xc) transposed to +0x3c (0x4e0110), its place
  * negated and turned by it into +0x30; eax its frame's base, the code's pointer past the vector.
- * False when the game stopped. */
-bool makeViewMatrix(App* app, CPU& cpu, reg32 view)
+ * Nullopt when the game stopped. */
+std::optional<reg32> makeViewMatrix(App* app, CPU& cpu, reg32 view)
 {
     const Frame frame(cpu, 0x14, 0xc);
-    const Kept kept(cpu, kSaveEbx | kSaveEcx | kSaveEdx | kSaveEsi | kSaveEbp);
-    if (!loadedCall<0x4e0110, frontend::simd::transpose>(app, cpu, {view + 0xc, view + 0x3c, view + 0x30, view},
-                                                          view + 0xc, view + 0x3c))
-        return false;
+    if (!feCore<0x4e0110, frontend::simd::transpose>(app, cpu, view + 0xc, view + 0x3c))
+        return std::nullopt;
     const float v[3] = {float(-f32(app, view)), float(-f32(app, view + 4)), float(-f32(app, view + 8))};
     turnByMatrix(app, v, view + 0x3c, view + 0x30);
-    cpu.eax = frame.base;
-    return true;
+    return frame.base;
 }
 
 }  // namespace
@@ -1666,9 +1555,7 @@ bool makeViewMatrix(App* app, CPU& cpu, reg32 view)
 /* 0x422850: makeViewMatrix for view eax. */
 void viewMatrix(App* app, CPU& cpu)
 {
-    if (!makeViewMatrix(app, cpu, cpu.eax))
-        return;
-    cpu.esp += 4;
+    adapts(cpu, [&, view = cpu.eax] { return makeViewMatrix(app, cpu, view); });
 }
 
 namespace
@@ -1677,12 +1564,11 @@ namespace
 /* 0x4228e0's: player's view updated: where its camera is blending, the camera of the mode it goes
  * to stands in while it is placed; the active camera placed (`flag` its turn-round flag) into the
  * view's place and orientation, the blend applied; the view's matrix, and the view kept as the
- * player's where `flag` is 0.  The registers as the code leaves them.  False when the game
- * stopped. */
-bool updateView(App* app, CPU& cpu, reg32 player, reg32 view, reg32 flag)
+ * player's where `flag` is 0.  eax as the code leaves it: the view's place among the players'
+ * where it is kept, else the matrix's.  Nullopt when the game stopped. */
+std::optional<reg32> updateView(App* app, CPU& cpu, reg32 player, reg32 view, reg32 flag)
 {
     const Frame frame(cpu, 0x10, 0xc);
-    const Kept kept(cpu, kSaveEcx | kSaveEsi | kSaveEdi | kSaveEbp);
     const reg32 index = playerIndex(app, player);
     const reg32 inUse = cameraInUse(app, index);
     const bool blending = inUse != 0 && at(app, inUse + kCamMode) == kBlend;
@@ -1692,31 +1578,28 @@ bool updateView(App* app, CPU& cpu, reg32 player, reg32 view, reg32 flag)
     {
         const Calling calling(cpu);
         if (!place(app, cpu, activeCamera(app, index), view + 0xc, view, flag))
-            return false;
+            return std::nullopt;
     }
     if (blending)
     {
         {
             const Calling calling(cpu);
             if (!blend(app, cpu, view + 0xc, view, index, flag))
-                return false;
+                return std::nullopt;
         }
-        cpu.edx = inUse;
         put(app, kCamera + index * 4, inUse);
     }
+    std::optional<reg32> matrix;
     {
         const Calling calling(cpu);
-        if (!makeViewMatrix(app, cpu, view))
-            return false;
+        if (!(matrix = makeViewMatrix(app, cpu, view)))
+            return std::nullopt;
     }
-    cpu.ebx = flag;
-    if (flag == 0)
-    {
-        for (reg32 k = 0; k < 0x60; k += 4)
-            put(app, kViews + index * 0x60 + k, at(app, view + k));
-        cpu.eax = index * 0x60;
-    }
-    return true;
+    if (flag != 0)
+        return matrix;
+    for (reg32 k = 0; k < 0x60; k += 4)
+        put(app, kViews + index * 0x60 + k, at(app, view + k));
+    return index * 0x60;
 }
 
 }  // namespace
@@ -1724,9 +1607,7 @@ bool updateView(App* app, CPU& cpu, reg32 player, reg32 view, reg32 flag)
 /* 0x4228e0: updateView for player eax, view edx, flag ebx. */
 void updateCamera(App* app, CPU& cpu)
 {
-    if (!updateView(app, cpu, cpu.eax, cpu.edx, cpu.ebx))
-        return;
-    cpu.esp += 4;
+    adapts(cpu, [&, player = cpu.eax, view = cpu.edx, flag = cpu.ebx] { return updateView(app, cpu, player, view, flag); });
 }
 
 namespace
@@ -1761,13 +1642,15 @@ ViewSource copyView(App* app, reg32 player, reg32 to)
 }  // namespace
 
 /* 0x4229c0: copyView for player eax to edx; eax the camera and ebx its mode, as the code leaves
- * them. */
+ * them (ebx no argument of its). */
 void cameraView(App* app, CPU& cpu)
 {
-    const ViewSource source = copyView(app, cpu.eax, cpu.edx);
-    cpu.eax = source.camera;
+    ViewSource source{};
+    adapts(cpu, [&, player = cpu.eax, to = cpu.edx] {
+        source = copyView(app, player, to);
+        return source.camera;
+    });
     cpu.ebx = source.mode;
-    cpu.esp += 4;
 }
 
 namespace
@@ -1806,8 +1689,7 @@ bool insideView(App* app, reg32 player)
 /* 0x422aa0: insideView for player eax, 1 or 0. */
 void cockpitShown(App* app, CPU& cpu)
 {
-    cpu.eax = insideView(app, cpu.eax) ? 1 : 0;
-    cpu.esp += 4;
+    adapts(cpu, [&, player = cpu.eax] { return insideView(app, player) ? 1u : 0u; });
 }
 
 /* 0x422ba0's: the car player's camera rides with. */
@@ -1819,8 +1701,7 @@ reg32 carOfCamera(App* app, reg32 player)
 /* 0x422ba0: carOfCamera for player eax. */
 void cameraCar(App* app, CPU& cpu)
 {
-    cpu.eax = carOfCamera(app, cpu.eax);
-    cpu.esp += 4;
+    adapts(cpu, [&, player = cpu.eax] { return carOfCamera(app, player); });
 }
 
 /* 0x422bd0's: the car player's camera looks at. */
@@ -1832,8 +1713,7 @@ reg32 targetOfCamera(App* app, reg32 player)
 /* 0x422bd0: targetOfCamera for player eax. */
 void cameraTarget(App* app, CPU& cpu)
 {
-    cpu.eax = targetOfCamera(app, cpu.eax);
-    cpu.esp += 4;
+    adapts(cpu, [&, player = cpu.eax] { return targetOfCamera(app, player); });
 }
 
 namespace
@@ -1939,11 +1819,10 @@ constexpr reg32 kZeros = 0x4212dc, kOrigin = 0x56448c, kWideView = 0x552ee0, kZo
  * of modes built; for each player (two in a split screen) mode 0x10 taken, no override, and each
  * camera of modes 1 to 24 reset onto the player's car (the camera of mode 0x10 in use for a car of
  * +0x200 bit 0x20) with its mode's settings; the HUD's (0x41ffa0) and the chase's state cleared;
- * eax 0, as the code leaves it.  False when the game stopped. */
-bool setUpCameras(App* app, CPU& cpu)
+ * eax 0, as the code leaves it.  Nullopt when the game stopped. */
+std::optional<reg32> setUpCameras(App* app, CPU& cpu)
 {
     const Frame frame(cpu, 0x18, 0x7c);
-    const Kept kept(cpu);
     const reg32 split = gameSettings(app).playMode == 1 ? 1 : 0;
     reg32 zeros[0x1e];
     for (reg32 k = 0; k < 0x1e; ++k)
@@ -1964,12 +1843,12 @@ bool setUpCameras(App* app, CPU& cpu)
         {
             const Calling calling(cpu);
             if (!putCameraMode(app, cpu, player, 0x10))
-                return false;
+                return std::nullopt;
         }
         {
             const Calling calling(cpu);
             if (!putOverrideMode(app, cpu, player, 0))
-                return false;
+                return std::nullopt;
         }
         for (reg32 mode = 1; mode < 0x19; ++mode)
         {
@@ -2021,11 +1900,10 @@ bool setUpCameras(App* app, CPU& cpu)
     }
     guest::direct<0x41ffa0, trackdata::setLanes>(app, cpu, 0x1e, 3);
     if (cpu.terminate)
-        return false;
+        return std::nullopt;
     for (reg32 a = kChaseMark; a <= kChaseBand + 4; a += 4)
         put(app, a, 0);
-    cpu.eax = 0;
-    return true;
+    return 0;
 }
 
 }  // namespace
@@ -2033,9 +1911,7 @@ bool setUpCameras(App* app, CPU& cpu)
 /* 0x422cf0: setUpCameras. */
 void initCameras(App* app, CPU& cpu)
 {
-    if (!setUpCameras(app, cpu))
-        return;
-    cpu.esp += 4;
+    adapts(cpu, [&] { return setUpCameras(app, cpu); });
 }
 
 namespace
@@ -2043,12 +1919,11 @@ namespace
 
 /* 0x4238b0's: player's camera put to the mode: the change marked (unless either end is a blend,
  * or the mode the same); for modes 3 to 6 the mode's sound (with the player's mark around it
- * unless leaving a blend); the mode's camera in use; eax and edx as the code leaves them.  False
- * when the game stopped. */
-bool putCameraMode(App* app, CPU& cpu, reg32 player, reg32 mode)
+ * unless leaving a blend); the mode's camera in use; eax as the code leaves it, the player's
+ * place among the cameras (its edx the mode's camera).  Nullopt when the game stopped. */
+std::optional<reg32> putCameraMode(App* app, CPU& cpu, reg32 player, reg32 mode)
 {
     const Frame frame(cpu, 0x14, 0);
-    const Kept kept(cpu, kSaveEbx | kSaveEcx | kSaveEsi | kSaveEdi | kSaveEbp);
     const reg32 current = activeMode(app, player);
     if (mode != kBlend && current != kBlend && current != mode)
         put(app, kChanged + player * 4, 1);
@@ -2057,20 +1932,18 @@ bool putCameraMode(App* app, CPU& cpu, reg32 player, reg32 mode)
         if (current == kBlend)
         {
             if (!modeSound(app, cpu, mode, player))
-                return false;
+                return std::nullopt;
         }
         else
         {
             put(app, kSoundMark + player * 8, 1);
             if (!modeSound(app, cpu, mode, player))
-                return false;
+                return std::nullopt;
             put(app, kSoundMark + player * 8, 0);
         }
     }
     put(app, kCamera + player * 4, cameraOfMode(app, player, mode));
-    cpu.eax = player * 4;
-    cpu.edx = cameraOfMode(app, player, mode);
-    return true;
+    return player * 4;
 }
 
 }  // namespace
@@ -2078,9 +1951,7 @@ bool putCameraMode(App* app, CPU& cpu, reg32 player, reg32 mode)
 /* 0x4238b0: putCameraMode for player eax and mode edx. */
 void setCameraMode(App* app, CPU& cpu)
 {
-    if (!putCameraMode(app, cpu, cpu.eax, cpu.edx))
-        return;
-    cpu.esp += 4;
+    adapts(cpu, [&, player = cpu.eax, mode = cpu.edx] { return putCameraMode(app, cpu, player, mode); });
 }
 
 namespace
@@ -2088,11 +1959,10 @@ namespace
 
 /* 0x423960's: player's overriding camera put to the mode (0 none): the change marked as
  * putCameraMode does, the sound of modes 3 to 6 with the player's mark around it, the mode's camera
- * overriding; eax and edx as the code leaves them.  False when the game stopped. */
-bool putOverrideMode(App* app, CPU& cpu, reg32 player, reg32 mode)
+ * overriding; eax as putCameraMode's.  Nullopt when the game stopped. */
+std::optional<reg32> putOverrideMode(App* app, CPU& cpu, reg32 player, reg32 mode)
 {
     const Frame frame(cpu, 0x14, 0);
-    const Kept kept(cpu, kSaveEbx | kSaveEcx | kSaveEsi | kSaveEdi | kSaveEbp);
     const reg32 current = activeMode(app, player);
     const reg32 overriding = modeOf(app, overridingCamera(app, player));
     if ((mode != 0 || overriding != 0) && mode != kBlend && current != kBlend && current != mode)
@@ -2101,13 +1971,11 @@ bool putOverrideMode(App* app, CPU& cpu, reg32 player, reg32 mode)
     {
         put(app, kSoundMark + player * 8, 1);
         if (!modeSound(app, cpu, mode, player))
-            return false;
+            return std::nullopt;
         put(app, kSoundMark + player * 8, 0);
     }
     put(app, kOverride + player * 4, cameraOfMode(app, player, mode));
-    cpu.eax = player * 4;
-    cpu.edx = cameraOfMode(app, player, mode);
-    return true;
+    return player * 4;
 }
 
 }  // namespace
@@ -2115,9 +1983,7 @@ bool putOverrideMode(App* app, CPU& cpu, reg32 player, reg32 mode)
 /* 0x423960: putOverrideMode for player eax and mode edx. */
 void setOverrideMode(App* app, CPU& cpu)
 {
-    if (!putOverrideMode(app, cpu, cpu.eax, cpu.edx))
-        return;
-    cpu.esp += 4;
+    adapts(cpu, [&, player = cpu.eax, mode = cpu.edx] { return putOverrideMode(app, cpu, player, mode); });
 }
 
 namespace
@@ -2145,8 +2011,7 @@ reg32 nextChoice(App* app, bool fromStart)
 /* 0x423a20: nextChoice, from the start where eax is not 0. */
 void nextCycleMode(App* app, CPU& cpu)
 {
-    cpu.eax = nextChoice(app, cpu.eax != 0);
-    cpu.esp += 4;
+    adapts(cpu, [&, fromStart = cpu.eax != 0] { return nextChoice(app, fromStart); });
 }
 
 namespace
@@ -2169,9 +2034,10 @@ void buildCycle(App* app)
 /* 0x423a60: buildCycle; eax 0 as the code leaves it. */
 void buildCameraCycle(App* app, CPU& cpu)
 {
-    buildCycle(app);
-    cpu.eax = 0;
-    cpu.esp += 4;
+    adapts(cpu, [&] {
+        buildCycle(app);
+        return 0u;
+    });
 }
 
 namespace
@@ -2192,8 +2058,7 @@ bool inCycle(App* app, reg32 mode)
 /* 0x423ab0: inCycle for mode eax, 1 or 0. */
 void modeInCycle(App* app, CPU& cpu)
 {
-    cpu.eax = inCycle(app, cpu.eax) ? 1 : 0;
-    cpu.esp += 4;
+    adapts(cpu, [&, mode = cpu.eax] { return inCycle(app, mode) ? 1u : 0u; });
 }
 
 namespace
@@ -2213,8 +2078,7 @@ bool remember(App* app, reg32 player, reg32 mode)
 /* 0x423ae0: remember mode edx for player eax; eax 1 or 0. */
 void rememberMode(App* app, CPU& cpu)
 {
-    cpu.eax = remember(app, cpu.eax, cpu.edx) ? 1 : 0;
-    cpu.esp += 4;
+    adapts(cpu, [&, player = cpu.eax, mode = cpu.edx] { return remember(app, player, mode) ? 1u : 0u; });
 }
 
 /* 0x423b00's: player's camera's mode (activeMode). */
@@ -2226,19 +2090,17 @@ reg32 modeOfCamera(App* app, reg32 player)
 /* 0x423b00: modeOfCamera for player eax. */
 void cameraMode(App* app, CPU& cpu)
 {
-    cpu.eax = modeOfCamera(app, cpu.eax);
-    cpu.esp += 4;
+    adapts(cpu, [&, player = cpu.eax] { return modeOfCamera(app, player); });
 }
 
 namespace
 {
 
-/* 0x423b50's: player's camera put to the mode (putCameraMode), 0x5600ec cleared first.  False
- * when the game stopped. */
-bool takeModeAnew(App* app, CPU& cpu, reg32 player, reg32 mode)
+/* 0x423b50's: player's camera put to the mode (putCameraMode), 0x5600ec cleared first; eax as
+ * that leaves it.  Nullopt when the game stopped. */
+std::optional<reg32> takeModeAnew(App* app, CPU& cpu, reg32 player, reg32 mode)
 {
     const Frame frame(cpu, 0xc, 0);
-    const Kept kept(cpu, kSaveEbx | kSaveEcx);
     put(app, 0x5600ec, 0);
     const Calling calling(cpu);
     return putCameraMode(app, cpu, playerIndex(app, player), mode);
@@ -2246,12 +2108,13 @@ bool takeModeAnew(App* app, CPU& cpu, reg32 player, reg32 mode)
 
 }  // namespace
 
-/* 0x423b50: takeModeAnew for player eax and mode edx. */
+/* 0x423b50: takeModeAnew for player eax and mode edx; edx the mode's camera as putCameraMode's
+ * code leaves it (its code keeps ebx and ecx only; edx is no argument of its by its reading). */
 void setModeAnew(App* app, CPU& cpu)
 {
-    if (!takeModeAnew(app, cpu, cpu.eax, cpu.edx))
-        return;
-    cpu.esp += 4;
+    const reg32 player = cpu.eax, mode = cpu.edx;
+    if (adapts(cpu, [&] { return takeModeAnew(app, cpu, player, mode); }))
+        cpu.edx = cameraOfMode(app, playerIndex(app, player), mode);
 }
 
 namespace
@@ -2264,25 +2127,18 @@ constexpr reg32 kChaseMode = 9;
 /* 0x423b80's: player's camera brought back to what the player chose, where it looks at the
  * player's own car: a network pursuit's camera or a cop's (+0x2c4 3) to the mode for it, else on
  * to the next mode of the cycle (switchTo); a blend's target taken, a mode past 6 replaced, mode 9's
- * chase node picked, and the mode remembered.  eax as the code leaves it.  False when the game
+ * chase node picked, and the mode remembered.  eax as the code leaves it.  Nullopt when the game
  * stopped. */
-bool settle(App* app, CPU& cpu, reg32 player)
+std::optional<reg32> settle(App* app, CPU& cpu, reg32 player)
 {
     const Frame frame(cpu, 0x18, 0);
-    const Kept kept(cpu);
     const reg32 index = playerIndex(app, player);
     const reg32 owner = gameSettings(app).playMode == 1 ? player : gameSettings(app).localPlayer;
     const reg32 inUse = cameraInUse(app, index);
     if (inUse != 0 && at(app, inUse + kCamMode) == 0x10)
-    {
-        cpu.eax = 0x10;
-        return true;
-    }
+        return 0x10;
     if (at(app, kCars + owner * 4) != at(app, cameraInUse(app, index) + kCamTarget))
-    {
-        cpu.eax = cameraInUse(app, index);
-        return true;
-    }
+        return cameraInUse(app, index);
     const auto anew = [&](reg32 mode) {
         const Calling calling(cpu);
         return takeModeAnew(app, cpu, index, mode);
@@ -2292,7 +2148,7 @@ bool settle(App* app, CPU& cpu, reg32 player)
     if (sreg32(gameSettings(app).playMode) > 1 && at(app, cameraInUse(app, index) + kCamMode) == kPursuitMode)
     {
         if (!anew(at(app, kPursuitView)))
-            return false;
+            return std::nullopt;
         settled = true;
     }
     if (!settled && gameSettings(app).playMode == 1)
@@ -2301,7 +2157,7 @@ bool settle(App* app, CPU& cpu, reg32 player)
         if ((byte(app, car + 0x200) & 1) != 0 && at(app, car + 0x2c4) == 3)
         {
             if (!anew(at(app, kCopViews + modeOf(app, cameraInUse(app, index)) * 4)))
-                return false;
+                return std::nullopt;
             settled = true;
         }
     }
@@ -2311,7 +2167,7 @@ bool settle(App* app, CPU& cpu, reg32 player)
         {
             const Calling calling(cpu);
             if (!switchTo(app, cpu, next, index))
-                return false;
+                return std::nullopt;
         }
         if (modeOf(app, cameraInUse(app, index)) == kBlend)
         {
@@ -2323,20 +2179,19 @@ bool settle(App* app, CPU& cpu, reg32 player)
     {
         const reg32 blending = cameraInUse(app, index);
         if (blending != 0 && at(app, blending + kCamMode) == kBlend && !anew(at(app, blending + kCamBlendTarget)))
-            return false;
+            return std::nullopt;
         const reg32 camera = cameraInUse(app, index);
         if (camera != 0 && sreg32(at(app, camera + kCamMode)) > 6)
         {
             const Calling calling(cpu);
             if (!putCameraMode(app, cpu, index, at(app, kPursuitView)))
-                return false;
+                return std::nullopt;
         }
         if (modeOf(app, cameraInUse(app, index)) == kChaseMode)
             chaseNode(app, index);
         remembered = modeOf(app, cameraInUse(app, index));
     }
-    cpu.eax = remember(app, index, remembered) ? 1 : 0;
-    return true;
+    return remember(app, index, remembered) ? 1 : 0;
 }
 
 }  // namespace
@@ -2344,9 +2199,7 @@ bool settle(App* app, CPU& cpu, reg32 player)
 /* 0x423b80: settle player eax's camera. */
 void settleCamera(App* app, CPU& cpu)
 {
-    if (!settle(app, cpu, cpu.eax))
-        return;
-    cpu.esp += 4;
+    adapts(cpu, [&, player = cpu.eax] { return settle(app, cpu, player); });
 }
 
 namespace
@@ -2360,11 +2213,10 @@ constexpr reg32 kSpotSize = 0x1c, kSpotScale = 0x536e8c;
 /* 0x423d90's: the spot nearest player's car along the track (by node, round the track), within 30
  * nodes; or -1 -- also where the car, seen from the spot's place and orientation (0x4e0000,
  * 0x4e01c0, 0x4b7590, 0x4b79c0, 0x4e0210, its result in the frame), is out of its view (its cosine
- * past 0.4, compared as bits as the code does).  eax the spot.  False when the game stopped. */
-bool nearest(App* app, CPU& cpu, reg32 player)
+ * past 0.4, compared as bits as the code does).  Nullopt when the game stopped. */
+std::optional<reg32> nearest(App* app, CPU& cpu, reg32 player)
 {
     const Frame frame(cpu, 0x18, 0x60);
-    const Kept kept(cpu);
     const reg32 e = frame.base;
     const reg32 index = playerIndex(app, player);
     const reg32 node = at(app, at(app, at(app, kSpotCameras + index * 4) + kCamCar) + kPhysSlice);
@@ -2391,28 +2243,25 @@ bool nearest(App* app, CPU& cpu, reg32 player)
         const reg32 car = at(app, at(app, kSpotCameras + index * 4) + kCamCar);
         guest::direct<0x4e0000, vertices::offsetVectorList<false>>(app, cpu, 1, e - 0x2c, car + kCarPlace, e - 0x20);
         if (cpu.terminate)
-            return false;
+            return std::nullopt;
         guest::direct<0x4e01c0, vertices::makeUnitVector>(app, cpu, e - 0x20, e - 0x20);
         if (cpu.terminate)
-            return false;
+            return std::nullopt;
         record = spotAt + at(app, kSpots);
         const auto half = [&](reg32 k) { return Float(sreg32(reg32(sreg32(at(app, record + k)) >> 0x10) << 2)); };
         for (const reg32 k : {0xau, 0xcu, 0xeu})
             putFloat(app, e - 0x3c + (k - 0xa) * 2, float(fp::mul(half(k), scale)));
         putFloat(app, e - 0x30, float(fp::mul(half(0x10), scale)));
-        if (!loadedCall<0x4b7590, frontend::simc::matrixFromQuat>(app, cpu, {e - 0x3c, e - 0x60, e - 0x20, e - 0x14},
-                                                                  e - 0x3c, e - 0x60)
-            || !loadedCall<0x4b79c0, frontend::simc::matrixQuarterTurn>(app, cpu, {e - 0x60, e - 0x48}, e - 0x60))
-            return false;
-        // The code's edx, ebx and ecx as the two calls before handed them.
+        if (!feCore<0x4b7590, frontend::simc::matrixFromQuat>(app, cpu, e - 0x3c, e - 0x60)
+            || !feCore<0x4b79c0, frontend::simc::matrixQuarterTurn>(app, cpu, e - 0x60))
+            return std::nullopt;
         guest::direct<0x4e0210, vertices::dotProductsOf>(app, cpu, 1, e - 0x48, e - 0x20, e - 0x14);
         if (cpu.terminate)
-            return false;
+            return std::nullopt;
         if (sreg32(at(app, e - 0x14)) > 0x3ecccccd)
             spot = 0xffffffff;
     }
-    cpu.eax = spot;
-    return true;
+    return spot;
 }
 
 }  // namespace
@@ -2420,9 +2269,7 @@ bool nearest(App* app, CPU& cpu, reg32 player)
 /* 0x423d90: the spot nearest player eax's car. */
 void nearestSpot(App* app, CPU& cpu)
 {
-    if (!nearest(app, cpu, cpu.eax))
-        return;
-    cpu.esp += 4;
+    adapts(cpu, [&, player = cpu.eax] { return nearest(app, cpu, player); });
 }
 
 /* 0x423fb0's: the value scaled by 0x536e94 where the record's +4 is set, through a float. */
@@ -2437,12 +2284,13 @@ float scaledWhereSet(App* app, reg32 record, reg32 value)
  * stack; eax the float's bits where the record's is not set, as the code leaves it. */
 void scaledIfSet(App* app, CPU& cpu)
 {
-    const reg32 value = at(app, cpu.esp + 4);
-    const float scaled = scaledWhereSet(app, cpu.eax, value);
-    if (at(app, cpu.eax + 4) == 0)
-        cpu.eax = value;
-    cpu.fpu.push(Float(scaled));
-    cpu.esp += 4 + 4;
+    adapts(
+        cpu,
+        [&, record = cpu.eax, value = word(app, cpu, 1)] {
+            cpu.fpu.push(Float(scaledWhereSet(app, record, value)));
+            return at(app, record + 4) == 0 ? value : record;
+        },
+        4);
 }
 
 namespace
@@ -2465,8 +2313,7 @@ bool bitsNotOneRun(reg32 value)
 /* 0x423fe0: bitsNotOneRun of eax, 1 or 0. */
 void bitsBroken(App* app, CPU& cpu)
 {
-    cpu.eax = bitsNotOneRun(cpu.eax) ? 1 : 0;
-    cpu.esp += 4;
+    adapts(cpu, [&, value = cpu.eax] { return bitsNotOneRun(value) ? 1u : 0u; });
 }
 
 namespace
@@ -2504,8 +2351,9 @@ reg32 damp(App* app, reg32 car, reg32 weight, reg32 vector)
 /* 0x424030: damp, car eax, the weight and the vector on the stack (ret 8). */
 void dampVector(App* app, CPU& cpu)
 {
-    cpu.eax = damp(app, cpu.eax, at(app, cpu.esp + 4), at(app, cpu.esp + 8));
-    cpu.esp += 4 + 8;
+    adapts(
+        cpu, [&, car = cpu.eax, weight = word(app, cpu, 1), vector = word(app, cpu, 2)] { return damp(app, car, weight, vector); },
+        8);
 }
 
 namespace
@@ -2513,26 +2361,24 @@ namespace
 
 /* 0x4240c0's and 0x424260's end: the camera's offset turned by its car's orientation into `turned`,
  * added to the car's place (in the frame at `carPlace`) into the camera's (0x4dffb0); its
- * orientation the car's, turned round for a player looking back; eax as the code leaves it.  False
- * when the game stopped. */
-bool offsetFromCar(App* app, CPU& cpu, reg32 camera, const float (&offset)[3], reg32 turned, reg32 carPlace)
+ * orientation the car's, turned round for a player looking back; eax as the code leaves it: the
+ * car's orientation, or the car.  Nullopt when the game stopped. */
+std::optional<reg32> offsetFromCar(App* app, CPU& cpu, reg32 camera, const float (&offset)[3], reg32 turned,
+                                   reg32 carPlace)
 {
     turnByMatrix(app, offset, at(app, camera + kCamCar) + kCarOrientation, turned);
     guest::direct<0x4dffb0, vertices::offsetVectorList<true>>(app, cpu, 1, carPlace, turned, camera + kCamPlace);
     if (cpu.terminate)
-        return false;
+        return std::nullopt;
+    const reg32 car = at(app, camera + kCamCar);
     if (at(app, kPlayerOut + at(app, camera + kCamPlayer) * 4) != 0)
     {
-        cpu.eax = at(app, camera + kCamCar) + kCarOrientation;
-        turnedAround(app, cpu.eax, camera + kCamOrientation);
+        turnedAround(app, car + kCarOrientation, camera + kCamOrientation);
+        return car + kCarOrientation;
     }
-    else
-    {
-        cpu.eax = at(app, camera + kCamCar);
-        for (reg32 k = 0; k < 0x24; k += 4)
-            put(app, camera + kCamOrientation + k, at(app, cpu.eax + kCarOrientation + k));
-    }
-    return true;
+    for (reg32 k = 0; k < 0x24; k += 4)
+        put(app, camera + kCamOrientation + k, at(app, car + kCarOrientation + k));
+    return car;
 }
 
 }  // namespace
@@ -2546,11 +2392,11 @@ constexpr reg32 kReplaying = 0x7922fc;
 /* 0x4240c0's: chase camera placed behind its car: its offset (+0x110) -- in a race without a replay
  * its height from the car's (+0x11c, by 0x536eac) and none sideways, in a replay sideways by the
  * car's side of view (+0x9a8) -- its height scaled (its target's +0x10c), mirrored for a player
- * looking back, then offsetFromCar.  Its roll set.  False when the game stopped. */
-bool chase(App* app, CPU& cpu, reg32 camera)
+ * looking back, then offsetFromCar.  Its roll set.  eax as that leaves it; nullopt when the game
+ * stopped. */
+std::optional<reg32> chase(App* app, CPU& cpu, reg32 camera)
 {
     const Frame frame(cpu, 0x18, 0x28);
-    const Kept kept(cpu);
     const reg32 e = frame.base;
     reg32 offset[3] = {at(app, camera + 0x110), at(app, camera + 0x114), at(app, camera + 0x118)};
     for (const reg32 k : {0u, 4u, 8u})
@@ -2584,9 +2430,7 @@ bool chase(App* app, CPU& cpu, reg32 camera)
 /* 0x4240c0: chase for camera eax. */
 void chaseOffset(App* app, CPU& cpu)
 {
-    if (!chase(app, cpu, cpu.eax))
-        return;
-    cpu.esp += 4;
+    adapts(cpu, [&, camera = cpu.eax] { return chase(app, cpu, camera); });
 }
 
 namespace
@@ -2594,11 +2438,10 @@ namespace
 
 /* 0x424260's: chase camera placed behind its car at its own offset (+0x110): its height scaled
  * (its target's +0x10c), its distance from the car's (+0x11c, by 0x536eb4), mirrored for a player
- * looking back, then offsetFromCar.  False when the game stopped. */
-bool chaseLevel(App* app, CPU& cpu, reg32 camera)
+ * looking back, then offsetFromCar.  eax as that leaves it; nullopt when the game stopped. */
+std::optional<reg32> chaseLevel(App* app, CPU& cpu, reg32 camera)
 {
     const Frame frame(cpu, 0x18, 0x28);
-    const Kept kept(cpu);
     const reg32 e = frame.base;
     reg32 offset[3] = {at(app, camera + 0x110), at(app, camera + 0x114), at(app, camera + 0x118)};
     for (const reg32 k : {0u, 4u, 8u})
@@ -2616,9 +2459,7 @@ bool chaseLevel(App* app, CPU& cpu, reg32 camera)
 /* 0x424260: chaseLevel for camera eax. */
 void chaseOffsetLevel(App* app, CPU& cpu)
 {
-    if (!chaseLevel(app, cpu, cpu.eax))
-        return;
-    cpu.esp += 4;
+    adapts(cpu, [&, camera = cpu.eax] { return chaseLevel(app, cpu, camera); });
 }
 
 }  // namespace carstate

@@ -16,7 +16,8 @@
 #include "host_net.h"
 #include "port_snd_stream_calls.h"
 #include <nfs3hp.h>
-#include <winapi/kernel32.h>
+#include "host_files.h"
+#include "host_system.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -888,7 +889,7 @@ x86::reg32 frontend::netc::loadRasApi(App* app, CPU& cpu)
     const fe::Frame ownFrame(guest, cpu, 0x10);
     if (guest.dword(kRasLibrary) != 0)
         return 1;
-    const reg32 library = callImport<kLoadLibrary, &win32::kernel32::LoadLibraryA>(guest, cpu, 0x550504);
+    const reg32 library = callImport<kLoadLibrary, &host::loadLibrary>(guest, cpu, 0x550504);
     guest.setDword(kRasLibrary, library);
     if (library == 0)
     {
@@ -896,9 +897,9 @@ x86::reg32 frontend::netc::loadRasApi(App* app, CPU& cpu)
         guest.setDword(kRasEnum, 0);
         return 0;
     }
-    const reg32 enumerate = callImport<kGetProcAddress, &win32::kernel32::GetProcAddress>(guest, cpu, library, 0x550514);
+    const reg32 enumerate = callImport<kGetProcAddress, &host::procAddress>(guest, cpu, library, 0x550514);
     guest.setDword(kRasEnum, enumerate);
-    const reg32 projection = callImport<kGetProcAddress, &win32::kernel32::GetProcAddress>(guest, cpu, guest.dword(kRasLibrary), 0x550528);
+    const reg32 projection = callImport<kGetProcAddress, &host::procAddress>(guest, cpu, guest.dword(kRasLibrary), 0x550528);
     guest.setDword(kRasProjection, projection);
     return guest.dword(kRasEnum) != 0 && projection != 0 ? 1 : 0;
 }
@@ -2947,12 +2948,12 @@ x86::reg32 frontend::netc::serialStartIo(App* app, CPU& cpu, reg32 record)
         const reg32 top = sign(at) >= sign(first) ? serial::kRingSize : first;
         for (reg32 i = 0; i < 4; ++i)
             guest.setDword(record + serial::kInOverlapped + 4 * i, 0);
-        if (callImport<kReadFile, &win32::kernel32::ReadFile>(guest, cpu, guest.dword(record + serial::kHandle),
+        if (callImport<kReadFile, &host::readFile>(guest, cpu, guest.dword(record + serial::kHandle),
                                                               at + record + serial::kInRing, top - at, record + serial::kInGot,
                                                               record + serial::kInOverlapped)
             == 0)
         {
-            const reg32 error = callImport<kGetLastError, &win32::kernel32::GetLastError>(guest, cpu);
+            const reg32 error = callImport<kGetLastError, &host::lastError>(guest, cpu);
             if (error == 0 || error == kErrorIoPending)
                 guest.setDword(record + serial::kReading, 1);
             break;
@@ -2968,12 +2969,12 @@ x86::reg32 frontend::netc::serialStartIo(App* app, CPU& cpu, reg32 record)
         const reg32 length = sign(count + first) > sign(serial::kRingSize) ? serial::kRingSize - first : count;
         for (reg32 i = 0; i < 4; ++i)
             guest.setDword(record + serial::kOutOverlapped + 4 * i, 0);
-        if (callImport<kWriteFile, &win32::kernel32::WriteFile>(guest, cpu, guest.dword(record + serial::kHandle),
+        if (callImport<kWriteFile, &host::writeFile>(guest, cpu, guest.dword(record + serial::kHandle),
                                                                 first + record + serial::kOutRing, length, record + serial::kOutSent,
                                                                 record + serial::kOutOverlapped)
             == 0)
         {
-            const reg32 error = callImport<kGetLastError, &win32::kernel32::GetLastError>(guest, cpu);
+            const reg32 error = callImport<kGetLastError, &host::lastError>(guest, cpu);
             if (error == 0 || error == kErrorIoPending)
                 guest.setDword(record + serial::kWriting, 1);
             break;
@@ -3012,7 +3013,7 @@ x86::reg32 frontend::netc::serialFinishIo(App* app, CPU& cpu, reg32 record)
         }
         else
         {
-            guest.setDword(record + serial::kReading, callImport<kGetLastError, &win32::kernel32::GetLastError>(guest, cpu) == kErrorIoPending ? 1 : 0);
+            guest.setDword(record + serial::kReading, callImport<kGetLastError, &host::lastError>(guest, cpu) == kErrorIoPending ? 1 : 0);
         }
     }
     if (guest.dword(record + serial::kWriting) != 0 && guest.call(kPollEvent, args({ guest.dword(record + serial::kOutEvent) })) != 0)
@@ -3029,7 +3030,7 @@ x86::reg32 frontend::netc::serialFinishIo(App* app, CPU& cpu, reg32 record)
         }
         else
         {
-            guest.setDword(record + serial::kWriting, callImport<kGetLastError, &win32::kernel32::GetLastError>(guest, cpu) == kErrorIoPending ? 1 : 0);
+            guest.setDword(record + serial::kWriting, callImport<kGetLastError, &host::lastError>(guest, cpu) == kErrorIoPending ? 1 : 0);
         }
     }
     return leavePorts(guest, cpu);
@@ -3113,7 +3114,7 @@ x86::reg32 frontend::netc::serialThread(App* app, CPU& cpu)
                 {
                     callImport<kPurgeComm, &host::serialPurge>(guest, cpu, guest.dword(record + serial::kHandle), 0xf);
                     guest::direct<0x51ad70, serialFinishIo>(app, cpu, record);
-                    callImport<kCloseHandle, &win32::kernel32::CloseHandle>(guest, cpu, guest.dword(record + serial::kHandle));
+                    callImport<kCloseHandle, &host::closeHandle>(guest, cpu, guest.dword(record + serial::kHandle));
                     directKept<0x4dfc00, ea::eventClosed, 1>(guest.app(), guest.cpu(), guest.dword(record + serial::kInEvent));
                     directKept<0x4dfc00, ea::eventClosed, 1>(guest.app(), guest.cpu(), guest.dword(record + serial::kOutEvent));
                     guest.setDword(kPorts + number * 4, 0);
@@ -3239,7 +3240,7 @@ x86::reg32 frontend::netc::serialOpenHandle(App* app, CPU& cpu, reg32 number, re
     // The arguments where the game's code hands them: the code below reads them there.
     cpu.eax = number; cpu.edx = handle;
     const reg32 timeouts = guest.frame();
-    callImport<kClearError, &win32::kernel32::SetLastError>(guest, cpu, 0);
+    callImport<kClearError, &host::setLastError>(guest, cpu, 0);
     if (number == 0xffffffff)
     {
         number = 0xf;
@@ -3314,11 +3315,11 @@ x86::reg32 frontend::netc::serialOpen(App* app, CPU& cpu, reg32 number)
     const reg32 name = guest.frame();
     if (sign(number) < 0 || sign(number) >= 0x10)
         reportError(guest, kSourceFile, 0x550bc8, 0x269, 0x550bd4, number);
-    callImport<kClearError, &win32::kernel32::SetLastError>(guest, cpu, 0);
+    callImport<kClearError, &host::setLastError>(guest, cpu, 0);
     if (portRecord(guest, number) != 0)
         return guest.eax();
     fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.cpu(), name, 0x550bf4, guest::Words{number + 1});
-    const reg32 handle = callImport<kCreateFile, &win32::kernel32::CreateFileA>(guest, cpu, name, 0xc0000000, 0, 0, 3, 0x40000080, 0);
+    const reg32 handle = callImport<kCreateFile, &host::createFile>(guest, cpu, name, 0xc0000000, 0, 0, 3, 0x40000080, 0);
     if (handle == 0xffffffff)
         return handle;
     return guest::direct<0x51b2f0, serialOpenHandle>(app, cpu, number, handle);
@@ -3412,7 +3413,7 @@ x86::reg32 frontend::netc::serialSet(App* app, CPU& cpu, reg32 number, reg32 spe
     cpu.eax = number; cpu.edx = speed; cpu.ebx = parity; cpu.ecx = stopBits;
     const reg32 state = guest.frame();
     guest.leaveEbx(stopBits);
-    callImport<kClearError, &win32::kernel32::SetLastError>(guest, cpu, 0);
+    callImport<kClearError, &host::setLastError>(guest, cpu, 0);
     ensurePortsLock(guest, cpu);
     enterPorts(guest, cpu);
     if (guest::direct<0x51b030, serialIsOpen>(app, cpu, number) == 0)

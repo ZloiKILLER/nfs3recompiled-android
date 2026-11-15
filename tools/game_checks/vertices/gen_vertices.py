@@ -9,8 +9,9 @@ the same on both sides (PIECES) as the generator writes them, with the port's
 changes the natives carry (tools/game_checks/generate.py's PORT_CHANGES, the
 mirror's and the alpha intensity's elsewhere); nfs3hp.h: class Application
 with every one of them and, for whatever else they call, a stand-in that goes
-through dynamic_call; tested.inc: the functions with their natives;
-game_data.cpp: the game's data as it loads."""
+through dynamic_call; tested.inc: the functions with their natives and their
+register arguments and whether a caller reads their eax (entry_regs.py); game_data.cpp: the game's data as it
+loads."""
 import io
 import re
 import sys
@@ -23,6 +24,7 @@ from disasm import disassembler  # noqa: E402
 from disasm.codegen import fpu as fpu_codegen  # noqa: E402
 import disassemble_nfs3hp as nfs3hp  # noqa: E402
 from tools.game_checks.generate import PORT_CHANGES, alpha_intensity, mirror_detail  # noqa: E402
+from tools.game_checks.entry_regs import Reader as ArgumentReader  # noqa: E402
 
 # What the natives' functions call that both sides run as the game's code.
 PIECES = [0x41a3e0, 0x41a120, 0x4bbde0, 0x4bbe40, 0x4bbe70, 0x4bbf80, 0x4227e0, 0x41e070, 0x422ba0, 0x423b00,
@@ -67,10 +69,12 @@ def main():
         for address in wanted + called:
             h.write("    static void sub_%x(WinApplication* app, x86::CPU& cpu);\n" % address)
         h.write("};\n\n}\n\n#endif\n")
+    arguments = ArgumentReader()
     with open(out / "tested.inc", "w") as f:
         for address, name in sorted(natives.items()):
-            f.write('{0x%x, "%s", &nfs3hp::Application::sub_%x, &nfs3hp::vertices::%s},\n'
-                    % (address, name, address, name))
+            f.write('{0x%x, "%s", &nfs3hp::Application::sub_%x, &nfs3hp::vertices::%s, %d, %s},\n'
+                    % (address, name, address, name, arguments.register_arguments(address),
+                       "true" if arguments.result_read(address) else "false"))
     with open(out / "pieces.inc", "w") as f:
         for address in PIECES:
             f.write('{0x%x, &nfs3hp::Application::sub_%x},\n' % (address, address))

@@ -1,7 +1,8 @@
 #include "port_snd_stream.h"
 #include "host_threads.h"
 
-#include <winapi/kernel32.h>
+#include <lib/winapp.h>
+#include <winapi/types.h>
 
 #include <cstdint>
 

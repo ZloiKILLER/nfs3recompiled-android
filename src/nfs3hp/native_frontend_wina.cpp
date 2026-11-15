@@ -25,10 +25,8 @@ struct SDL_Semaphore;
 #include "host_threads.h"
 #include "host_video.h"
 #include "host_window.h"
-#include <winapi/advapi32.h>
-#include <winapi/kernel32.h>
-#include <winapi/user32.h>
-#include <winapi/version.h>
+#include "host_files.h"
+#include "host_system.h"
 #include <cstdint>
 #include <optional>
 #include <type_traits>
@@ -1650,13 +1648,13 @@ x86::reg32 frontend::wina::fileSizeAndSeek(App* app, CPU& cpu, reg32 handle, reg
         return 0;
     const reg32 lockIndex = guest.byte(table + place + 1);
     enterLock(guest, cpu, guest.dword(lockIndex * 4 + kLocks));
-    callImport<0x5345f4, &win32::kernel32::SetLastError>(guest, cpu, 0);
+    callImport<0x5345f4, &host::setLastError>(guest, cpu, 0);
     const reg32 entry = guest.dword(kTable) + place;
     reg32 size = 0;
     if (guest.dword(entry + 0x14) == 0)
     {
-        size = callImport<0x5345d8, &win32::kernel32::SetEndOfFile>(guest, cpu, guest.dword(entry + 4));
-        const reg32 moved = callImport<0x5345f0, &win32::kernel32::SetFilePointer>(
+        size = callImport<0x5345d8, &host::setEndOfFile>(guest, cpu, guest.dword(entry + 4));
+        const reg32 moved = callImport<0x5345f0, &host::setFilePointer>(
             guest, cpu, guest.dword(guest.dword(kTable) + place + 4), offset, 0, 0);
         guest.setDword(guest.dword(kTable) + place + 0x18, moved);
     }
@@ -1771,7 +1769,7 @@ x86::reg32 frontend::wina::postMessage(App* app, CPU& cpu, reg32 message, reg32 
     }
     else if (callImport<0x534768, &host::postMessage>(guest, cpu, hwnd, message, wParam, lParam) == 0)
     {
-        failed = callImport<kLastError, &win32::kernel32::GetLastError>(guest, cpu);
+        failed = callImport<kLastError, &host::lastError>(guest, cpu);
     }
     guest.leaveEbx(failed);
     return failed == 0 ? 1 : 0;
@@ -2412,7 +2410,7 @@ x86::reg32 frontend::wina::openWindow(App* app, CPU& cpu, reg32 width, reg32 hei
         guest.setDword(kMessageLock, *fe::direct<0x4eb2e0, ea::newLock>(app, cpu));
     if (guest.byte(kClassMade) == 0)
     {
-        guest.setDword(kInstance, callImport<0x53454c, &win32::kernel32::GetModuleHandleA>(guest, cpu, 0));
+        guest.setDword(kInstance, callImport<0x53454c, &host::moduleHandle>(guest, cpu, 0));
         if (guest.dword(kClassName) == 0)
         {
             const reg32 names = guest.dword(0x9f38c0);
@@ -2433,7 +2431,7 @@ x86::reg32 frontend::wina::openWindow(App* app, CPU& cpu, reg32 width, reg32 hei
         guest.setDword(frame + 36, guest.dword(kWindowName));
         if ((callImport<0x534774, &host::registerClass>(guest, cpu, frame) & 0xffff) == 0)
         {
-            const reg32 code = callImport<kLastError, &win32::kernel32::GetLastError>(guest, cpu);
+            const reg32 code = callImport<kLastError, &host::lastError>(guest, cpu);
             fe::direct<kError, ea::error>(guest.app(), guest.cpu(), 0x540468, guest::Words{code});
             return 0;
         }
@@ -2686,12 +2684,12 @@ x86::reg32 frontend::wina::versionText(App* app, CPU& cpu, reg32 buffer, reg32 l
     copyDwords(guest, path, kDefaultPath, 0x40);
     guest.leaveEdx(0);
     guest.setDword(frame + 0x110, 0);
-    reg32 size = callThunk<kVersionInfoSize, &win32::version::GetFileVersionInfoSizeA>(guest, cpu, path, handle);
+    reg32 size = callThunk<kVersionInfoSize, &host::fileVersionInfoSize>(guest, cpu, path, handle);
     guest.leaveEdx(size);
     if (size == 0)
     {
-        callImport<0x534544, &win32::kernel32::GetModuleFileNameA>(guest, cpu, size, path, 0xff);
-        size = callThunk<kVersionInfoSize, &win32::version::GetFileVersionInfoSizeA>(guest, cpu, path, handle);
+        callImport<0x534544, &host::moduleFileName>(guest, cpu, size, path, 0xff);
+        size = callThunk<kVersionInfoSize, &host::fileVersionInfoSize>(guest, cpu, path, handle);
         guest.leaveEdx(size);
         if (size == 0)
             return 0;
@@ -2699,9 +2697,9 @@ x86::reg32 frontend::wina::versionText(App* app, CPU& cpu, reg32 buffer, reg32 l
     const reg32 memory = fe::direct<0x4f7900, watcom::clib::malloc>(guest.app(), guest.cpu(), size);
     if (memory == 0)
         return guest.dword(frame + 0x110);
-    if (callThunk<kVersionInfo, &win32::version::GetFileVersionInfoA>(guest, cpu, path, guest.dword(handle), cpu.edx,
+    if (callThunk<kVersionInfo, &host::fileVersionInfo>(guest, cpu, path, guest.dword(handle), cpu.edx,
                                                                      memory) != 0
-        && callThunk<kQueryVersionValue, &win32::version::VerQueryValueA>(guest, cpu, memory, kVersionKey, value,
+        && callThunk<kQueryVersionValue, &host::versionQueryValue>(guest, cpu, memory, kVersionKey, value,
                                                                          valueLength) != 0)
     {
         reg32 count = guest.dword(valueLength);
@@ -2743,21 +2741,21 @@ x86::reg32 frontend::wina::checkLibrary(App* app, CPU& cpu, reg32 library, reg32
         const reg32 name = guest.dword(names + cpu.edx * 4);
         guest.leaveEdx(name);
         fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.cpu(), text, name, guest::Words({}));
-        callImport<kMessageBox, &win32::user32::MessageBoxA>(guest, cpu, 0, text, kTitle, 0x30);
+        callImport<kMessageBox, &host::messageBox>(guest, cpu, 0, text, kTitle, 0x30);
         fe::direct<0x4f2a7d, eab::exitGameNow>(app, cpu);
     }
     const reg32 place = guest.dword(frame + 0x230) << 2;
     guest.setDword(frame + 0x238, place);
-    const reg32 module = callImport<kLoadLibrary, &win32::kernel32::LoadLibraryA>(guest, cpu, guest.dword(place + kLibraries));
+    const reg32 module = callImport<kLoadLibrary, &host::loadLibrary>(guest, cpu, guest.dword(place + kLibraries));
     guest.setDword(frame + 0x234, module);
     if (module == 0)
     {
         copyDwords(guest, formats, kNoLibrary, 6);
         fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.cpu(), frame, guest.dword(formats + language * 4), guest::Words{guest.dword(guest.dword(frame + 0x238) + kLibraries)});
-        callImport<kMessageBox, &win32::user32::MessageBoxA>(guest, cpu, 0, frame, kTitle, 0x30);
+        callImport<kMessageBox, &host::messageBox>(guest, cpu, 0, frame, kTitle, 0x30);
         fe::direct<0x4f2a7d, eab::exitGameNow>(app, cpu);
     }
-    callImport<kFreeLibrary, &win32::kernel32::FreeLibrary>(guest, cpu, guest.dword(frame + 0x234));
+    callImport<kFreeLibrary, &host::freeLibrary>(guest, cpu, guest.dword(frame + 0x234));
     return guest.eax();
 }
 
@@ -2769,7 +2767,7 @@ x86::reg32 frontend::wina::fatalMessage(App* app, CPU& cpu, reg32 language)
     const reg32 frame = guest.frame();
     copyDwords(guest, frame, 0x4b55c8, 6);
     copyDwords(guest, frame + 0x18, 0x4b55e0, 6);
-    callImport<kMessageBox, &win32::user32::MessageBoxA>(guest, cpu, 0, guest.dword(frame + language * 4),
+    callImport<kMessageBox, &host::messageBox>(guest, cpu, 0, guest.dword(frame + language * 4),
                                                          guest.dword(frame + 0x18 + language * 4), 0x31);
     return fe::direct<0x4f2a7d, eab::exitGameNow>(app, cpu);
 }
@@ -2782,7 +2780,7 @@ x86::reg32 frontend::wina::checkMemory(App* app, CPU& cpu, reg32 language)
     constexpr reg32 kStatus = 0x7a3ac0, kEnoughMemory = 0x1000000;
     const reg32 frame = guest.frame();
     guest.setDword(kStatus, 0x20);
-    callImport<0x534580, &win32::kernel32::GlobalMemoryStatus>(guest, cpu, kStatus);
+    callImport<0x534580, &host::memoryStatus>(guest, cpu, kStatus);
     const reg32 total = guest.dword(0x7a3acc) + guest.dword(0x7a3ad4);
     guest.leaveEdx(total);
     // By address: the check holds the hook's words as the code pushes them, which its core does not take.
@@ -2791,7 +2789,7 @@ x86::reg32 frontend::wina::checkMemory(App* app, CPU& cpu, reg32 language)
     {
         copyDwords(guest, frame + 0x30, 0x4b5628, 6);
         copyDwords(guest, frame + 0x48, 0x4b5640, 6);
-        if (callImport<kMessageBox, &win32::user32::MessageBoxA>(guest, cpu, 0, guest.dword(frame + 0x30 + language * 4),
+        if (callImport<kMessageBox, &host::messageBox>(guest, cpu, 0, guest.dword(frame + 0x30 + language * 4),
                                                                  guest.dword(frame + 0x48 + language * 4), 0x31) == 2)
             fe::direct<0x4f2a7d, eab::exitGameNow>(app, cpu);
     }
@@ -2801,7 +2799,7 @@ x86::reg32 frontend::wina::checkMemory(App* app, CPU& cpu, reg32 language)
     copyDwords(guest, frame, 0x4b5658, 6);
     copyDwords(guest, frame + 0x18, 0x4b5670, 6);
     // eax the answer the box leaves, or what exit's call does.
-    if (callImport<kMessageBox, &win32::user32::MessageBoxA>(guest, cpu, 0, guest.dword(frame + language * 4),
+    if (callImport<kMessageBox, &host::messageBox>(guest, cpu, 0, guest.dword(frame + language * 4),
                                                              guest.dword(frame + 0x18 + language * 4), 0x31) == 2)
         return fe::direct<0x4f2a7d, eab::exitGameNow>(app, cpu);
     return guest.eax();
@@ -2823,13 +2821,13 @@ x86::reg32 frontend::wina::thrashDevice(App* app, CPU& cpu, reg32 buffer)
     const reg32 frame = guest.frame();
     guest.setDword(frame, 0x40);
     guest.setDword(frame + 12, 4);
-    if (callImport<kRegOpen, &win32::advapi32::RegOpenKeyExA>(guest, cpu, 0x80000002, 0x53fe50, 0, 0xf003f, frame + 16) == 0
-        && callImport<kRegQuery, &win32::advapi32::RegQueryValueExA>(guest, cpu, guest.dword(frame + 16), 0x53fe7c, 0, 0,
+    if (callImport<kRegOpen, &host::registryOpen>(guest, cpu, 0x80000002, 0x53fe50, 0, 0xf003f, frame + 16) == 0
+        && callImport<kRegQuery, &host::registryQuery>(guest, cpu, guest.dword(frame + 16), 0x53fe7c, 0, 0,
                                                                      buffer, frame) == 0)
     {
         const reg32 key = guest.dword(frame + 16);
         guest.setDword(frame + 4, 4);
-        if (callImport<kRegQuery, &win32::advapi32::RegQueryValueExA>(guest, cpu, key, 0x53fe8c, 0, frame + 12, frame + 8,
+        if (callImport<kRegQuery, &host::registryQuery>(guest, cpu, key, 0x53fe8c, 0, frame + 12, frame + 8,
                                                                       frame + 4) != 0)
             return guest.eax();
         const reg32 memory = guest.dword(frame + 8);
@@ -2848,8 +2846,8 @@ x86::reg32 frontend::wina::thrashDescription(App* app, CPU& cpu, reg32 buffer)
     const fe::Frame ownFrame(guest, cpu, 24);
     const reg32 frame = guest.frame();
     guest.setDword(frame, 0x32);
-    if (callImport<kRegOpen, &win32::advapi32::RegOpenKeyExA>(guest, cpu, 0x80000002, 0x53fe50, 0, 0xf003f, frame + 4) == 0)
-        callImport<kRegQuery, &win32::advapi32::RegQueryValueExA>(guest, cpu, guest.dword(frame + 4), 0x53fe98, 0, 0, buffer, frame);
+    if (callImport<kRegOpen, &host::registryOpen>(guest, cpu, 0x80000002, 0x53fe50, 0, 0xf003f, frame + 4) == 0)
+        callImport<kRegQuery, &host::registryQuery>(guest, cpu, guest.dword(frame + 4), 0x53fe98, 0, 0, buffer, frame);
     return guest.eax();
 }
 
@@ -2862,8 +2860,8 @@ x86::reg32 frontend::wina::desktopSetting(App* app, CPU& cpu)
     const reg32 frame = guest.frame();
     guest.setDword(frame, 0x100);
     fe::direct<kMemset, watcom::clib::memset>(guest.app(), guest.cpu(), kBuffer, 0, 0x100);
-    if (callImport<kRegOpen, &win32::advapi32::RegOpenKeyExA>(guest, cpu, 0x80000001, 0x53feb0, 0, 0xf003f, frame + 4) == 0)
-        callImport<kRegQuery, &win32::advapi32::RegQueryValueExA>(guest, cpu, guest.dword(frame + 4), 0x53fef4, 0, 0, kBuffer, frame);
+    if (callImport<kRegOpen, &host::registryOpen>(guest, cpu, 0x80000001, 0x53feb0, 0, 0xf003f, frame + 4) == 0)
+        callImport<kRegQuery, &host::registryQuery>(guest, cpu, guest.dword(frame + 4), 0x53fef4, 0, 0, kBuffer, frame);
     return kBuffer;
 }
 
@@ -2882,17 +2880,17 @@ x86::reg32 frontend::wina::directXVersion(App* app, CPU& cpu)
     guest.setDword(surface, 0);
     guest.setDword(third, 0);
     guest.setDword(version, 0x94);
-    const reg32 got = callImport<0x534570, &win32::kernel32::GetVersionExA>(guest, cpu, version);
+    const reg32 got = callImport<0x534570, &host::windowsVersionEx>(guest, cpu, version);
     if (got == 0)
         return 0;
     if (guest.dword(version + 0x10) == kPlatformNt && guest.dword(version + 4) < 5)
         return 0;
-    const reg32 module = callImport<kLoadLibrary, &win32::kernel32::LoadLibraryA>(guest, cpu, 0x53fefc);
+    const reg32 module = callImport<kLoadLibrary, &host::loadLibrary>(guest, cpu, 0x53fefc);
     if (module == 0)
         return 0;
-    const reg32 create = callImport<kGetProcAddress, &win32::kernel32::GetProcAddress>(guest, cpu, module, 0x53ff08);
+    const reg32 create = callImport<kGetProcAddress, &host::procAddress>(guest, cpu, module, 0x53ff08);
     const auto freeLibrary = [&](reg32 answer) {
-        callImport<kFreeLibrary, &win32::kernel32::FreeLibrary>(guest, cpu, module);
+        callImport<kFreeLibrary, &host::freeLibrary>(guest, cpu, module);
         return answer;
     };
     if (create == 0)
@@ -2988,7 +2986,7 @@ x86::reg32 frontend::wina::releaseDriverSlot(App* app, CPU& cpu)
     {
         const reg32 ecx = cpu.ecx;
         cpu.esp -= 4;
-        callImport<kFreeLibrary, &win32::kernel32::FreeLibrary>(guest, cpu, module);
+        callImport<kFreeLibrary, &host::freeLibrary>(guest, cpu, module);
         cpu.esp += 4;
         guest.leaveEcx(ecx);
     }
@@ -3453,7 +3451,7 @@ x86::reg32 frontend::wina::driverMessage(App* app, CPU& cpu, reg32 level, reg32 
         break;
     case 3:
         cpu.eax = text;
-        callImport<0x53459c, &win32::kernel32::OutputDebugStringA>(guest, cpu, text);
+        callImport<0x53459c, &host::debugString>(guest, cpu, text);
         break;
     default:
         return text;
