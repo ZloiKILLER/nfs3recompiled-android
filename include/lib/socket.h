@@ -9,7 +9,7 @@
 namespace win32
 {
 
-/* One of the game's sockets, on one of the host's (src/lib/winapi/wsock32.cpp).
+/* One of the game's sockets, on one of the host's (src/nfs3hp/host_net.cpp).
  *
  * The host's socket is always non-blocking.  A Winsock call the game makes on a
  * blocking socket waits in wait() instead, so the caller can let the guest lock
@@ -69,7 +69,7 @@ public:
     bool nonBlocking = false;
 
     /* Opened by the game as IPX: a datagram socket whose addresses Winsock's
-     * callers see as IPX's (src/lib/winapi/wsock32.cpp). */
+     * callers see as IPX's (src/nfs3hp/host_net.cpp). */
     bool ipx = false;
 
     /* How many of its calls have gone into the log: the first few of each

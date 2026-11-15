@@ -3,17 +3,23 @@
 #include "native_aidrive.h"
 #include "native_aiplan.h"
 #include "native_carstate.h"
+#include "native_frontend_sima.h"
+#include "native_frontend_simc.h"
+#include "native_frontend_simd.h"
+#include "native_game.h"
 #include "native_guest.h"
 #include "native_pursuit.h"
 #include "native_racestart.h"
 #include "native_trackdata.h"
 #include "native_vertices.h"
+#include "native_watcom.h"
 
 #include <cstdint>
 #include <cstring>
 #include <initializer_list>
 #include <iterator>
 #include <optional>
+#include <type_traits>
 
 /* The opponents' and the cops' driving, the middle of nfs3.exe's AI module
  * (0x404d30 to 0x408acb): the cops' Hot Pursuit -- their places at the start,
@@ -117,14 +123,15 @@ constexpr reg32 kSeed = 0x554f10, kProduct = 0x554f14, kMultiplier = 0x554f18;
 // speed's damping, the force and turn handed to the step (three floats).
 constexpr reg32 kStep = 0x56ec58, kSubsteps = 0x56ec78, kHeadingError = 0x56ec60, kDamping = 0x56ec68;
 constexpr reg32 kPush = 0x56ec6c, kPushY = 0x56ec70, kPushZ = 0x56ec74;
-// What is called by address: the opponents' pull and heading (native_frontend_sima.cpp),
-// the cops' sounds, chop, the fill, the distance of two cars, a matrix transposed; and of the
-// typed files' those whose registers an adapter here leaves, which their headers do not give: the
-// car at rest settled, the dot product where its eax is read after it.
-constexpr reg32 kAiPull = 0x4064f0, kAiHeading = 0x4070c0;
+// What is called by address: the cops' sounds, the lane votes (0x40de30, its adapter's
+// NFS_CAR_TRACE record); and of the typed files' those whose registers an adapter here leaves,
+// which their headers do not give: the car at rest settled, the dot product where its eax is read
+// after it.  The menu files' -- the opponents' pull and heading, the distance of two cars, a matrix
+// transposed, the sirens, a turn skipped (native_frontend_sim*.cpp) -- are called as C++ (feCore),
+// the eax they leave put back; so are chop and the fill (guest::direct).
 constexpr reg32 kCopEffect = 0x418c30, kCarFlagTest = 0x4127b0;
-constexpr reg32 kSettleAtRest = 0x4aa8e7, kChop = 0x4dfd56, kFillZero = 0x4e070c, kDistance = 0x4965b0;
-constexpr reg32 kTranspose = 0x4e0110, kDot = 0x4e01f0;
+constexpr reg32 kSettleAtRest = 0x4aa8e7, kChop = 0x4dfd56;
+constexpr reg32 kDot = 0x4e01f0;
 // A traffic car's step, by address: what it gives is its eax, which its header's countdownDoneOf
 // gives only as whether.
 constexpr reg32 kTrafficStep = 0x40c210;
@@ -213,6 +220,60 @@ bool byAddress(App* app, CPU& cpu, reg32 target)
     return !cpu.terminate;
 }
 
+/* A native_frontend_* file's typed core called as C++ (guest::direct): nothing (false) when the
+ * game stopped in it (its calls into the game throw fe::Terminated).  tools/game_checks does not
+ * build those files: there it goes by address, through its ByAddress, as the game's code calls it,
+ * every register but eax kept.  A reg32 result is the eax the function leaves: eax set to it (in the
+ * game too); after any other, eax spoilt there, so that code still reading what the callee left in
+ * eax differs there. */
+template <reg32 Address, auto Core, typename... Args>
+auto feCore(App* app, CPU& cpu, Args... args)
+{
+    const auto run = [&] {
+#ifdef NFS_GAME_CHECKS
+        const guest::KeptRegisters kept(cpu);
+        return guest::ByAddress<Core>::template call<Address>(app, cpu, args...);
+#else
+        return guest::direct<Address, Core>(app, cpu, args...);
+#endif
+    };
+    using Result = decltype(run());
+    const auto spoil = [&] {
+#ifdef NFS_GAME_CHECKS
+        cpu.eax = 0x5b0115edu;
+#endif
+    };
+    if constexpr (std::is_void_v<Result>)
+    {
+        try
+        {
+            run();
+        }
+        catch (const fe::Terminated&)
+        {
+            return false;
+        }
+        spoil();
+        return !cpu.terminate;
+    }
+    else
+    {
+        try
+        {
+            const Result result = run();
+            if constexpr (std::is_same_v<Result, x86::reg32>)
+                cpu.eax = result;  // a menu core's result: the eax it leaves, as the call by address does
+            else
+                spoil();
+            return cpu.terminate ? std::optional<Result>() : std::optional<Result>(result);
+        }
+        catch (const fe::Terminated&)
+        {
+            return std::optional<Result>();
+        }
+    }
+}
+
 // The game's floats and doubles, as the x87 loads them.
 Float f32(App* app, reg32 a) { return Float(app->getMemory<float>(a)); }
 Float f64(App* app, reg32 a) { return Float(app->getMemory<double>(a)); }
@@ -238,7 +299,7 @@ std::optional<Float> dot(App* app, CPU& cpu, reg32 a, reg32 b)
 }
 
 /* 0x4e01f0 by address, off the x87's stack: where the eax it leaves is read after it (its header
- * gives none). */
+ * gives none; the check's row for it models what it leaves). */
 std::optional<Float> dotLeavingEax(App* app, CPU& cpu, reg32 a, reg32 b)
 {
     cpu.eax = a;
@@ -250,16 +311,17 @@ std::optional<Float> dotLeavingEax(App* app, CPU& cpu, reg32 a, reg32 b)
     return product;
 }
 
-/* 0x4965b0: the distance from the place at a to the place at d, off the x87's stack. */
+/* 0x4965b0 (sima's): the distance from the place at a to the place at d; edx as the code hands it
+ * (the function keeps it), eax as it leaves it. */
 std::optional<Float> distance(App* app, CPU& cpu, reg32 a, reg32 d)
 {
-    cpu.eax = a;
     cpu.edx = d;
-    if (!byAddress(app, cpu, kDistance))
+    const std::optional<frontend::sima::FloatLeft> apart =
+        feCore<0x4965b0, frontend::sima::quickDistanceOf>(app, cpu, a, d);
+    if (!apart)
         return std::nullopt;
-    const Float apart = cpu.fpu.st(0);
-    cpu.fpu.pop();
-    return apart;
+    cpu.eax = apart->eax;
+    return Float(apart->value);
 }
 
 /* The distance's size the code's way: fldz; fcompp; jae -- the distance worked out again either
@@ -404,26 +466,22 @@ std::optional<i32> sliceGap(App* app, CPU& cpu, reg32 from, reg32 to)
 // The slices within which a car counts as near.
 constexpr i32 kNearSlices = 0x32;
 
-/* 0x4dfd56 (__CHP): `value` chopped to an integer, towards 0, by the game's own; nullopt when the
- * game stopped. */
+/* 0x4dfd56 (__CHP): `value` chopped to an integer, towards 0; never nullopt (the optional is the
+ * callers' stop signal). */
 std::optional<Float> chop(App* app, CPU& cpu, const Float& value)
 {
-    cpu.fpu.push(value);
-    if (!byAddress(app, cpu, kChop))
-        return std::nullopt;
-    const Float chopped = cpu.fpu.st(0);
-    cpu.fpu.pop();
-    return chopped;
+    return Float(guest::direct<kChop, watcom::clib::chop>(app, cpu, double(value)));
 }
 
-/* 0x4064f0: an opponent's pull for car, off the x87's stack; nullopt when the game stopped. */
+/* 0x4064f0 (sima's): an opponent's pull for car, eax as it leaves it; nullopt when the game
+ * stopped. */
 std::optional<Float> pullOf(App* app, CPU& cpu, reg32 car)
 {
-    if (!call(app, cpu, kAiPull, car))
+    const std::optional<frontend::sima::FloatLeft> pull = feCore<0x4064f0, frontend::sima::enginePullOf>(app, cpu, car);
+    if (!pull)
         return std::nullopt;
-    const Float pull = cpu.fpu.st(0);
-    cpu.fpu.pop();
-    return pull;
+    cpu.eax = pull->eax;
+    return Float(pull->value);
 }
 
 }  // namespace
@@ -575,9 +633,8 @@ constexpr reg32 kCarRoadblockButton = 0x512, kCarRoadblockHeld = 0x513, kCarPlay
                 kCarRoadblock = 0x714;
 constexpr reg32 kRoadblockSize = 0x50, kRoadblockEnd = 0x4c, kRoadblockFrames = 0xc0;
 constexpr reg32 kSoundRoadblockDown = 0x11, kSoundRoadblockUp = 0x12, kSoundRoadblockSet = 0x10;
-// The roadblock taken down and set up (a siren off and on); the radio told its side
-// (pursuit::radioStoppedOf, 0x40b9c0).
-constexpr reg32 kRoadblockDown = 0x4c9f50, kRoadblockSetUp = 0x4c9dd0;
+// The roadblock taken down and set up (a siren off and on, 0x4c9f50 and 0x4c9dd0, simc's); the
+// radio told its side (pursuit::radioStoppedOf, 0x40b9c0).
 
 /* 0x404e40: a player's cop calls a roadblock ([+0x512], its button, once a press: [+0x513]).  Its
  * roadblock ([kRoadblocks] + 0x50 * [+0x714]) up already: taken down if its time is past
@@ -603,9 +660,10 @@ std::optional<reg32> callRoadblockFor(App* app, CPU& cpu, reg32 cop)
     {
         if (i32(at(app, kRaceFrame)) >= i32(at(app, kRoadblocks + block + kRoadblockEnd)))
         {
-            const auto down = call(app, cpu, kRoadblockDown, index);
+            const auto down = feCore<0x4c9f50, frontend::simc::sirenOff>(app, cpu, index);
             if (!down)
                 return std::nullopt;
+            cpu.eax = *down;
             left = *down;
             sound = kSoundRoadblockDown;
         }
@@ -619,8 +677,11 @@ std::optional<reg32> callRoadblockFor(App* app, CPU& cpu, reg32 cop)
         cpu.ebx = lane;
         cpu.ecx = at(app, kRaceFrame) + kRoadblockFrames;
         cpu.edx = at(app, cop + kCarSlice);
-        if (!call(app, cpu, kRoadblockSetUp, at(app, cop + kCarRoadblock)))
+        const auto up = feCore<0x4c9dd0, frontend::simc::sirenOn>(app, cpu, at(app, cop + kCarRoadblock), cpu.edx,
+                                                                   cpu.ebx, cpu.ecx);
+        if (!up)
             return std::nullopt;
+        cpu.eax = *up;
         const auto told = guest::direct<0x40b9c0, pursuit::radioStoppedOf>(app, cpu, cop, side);
         if (!told)
             return std::nullopt;
@@ -2464,11 +2525,16 @@ void wayToGo(App* app, CPU& cpu)
 constexpr reg32 kCarAxesForce = 0x4e0, kCarAcceleration = 0x2e8, kCarSpinChange = 0x2f4;
 constexpr reg32 kIntegratePushed = 0x10, kIntegrateFrame = 0x58;
 
-/* 0x4e0110: the matrix at `matrix` transposed to `to`; false when the game stopped. */
+/* 0x4e0110 (simd's): the matrix at `matrix` transposed to `to`, eax and edx as the code hands
+ * them and it leaves them; false when the game stopped. */
 bool transpose(App* app, CPU& cpu, reg32 matrix, reg32 to)
 {
     cpu.edx = to;
-    return call(app, cpu, kTranspose, matrix).has_value();
+    const auto left = feCore<0x4e0110, frontend::simd::transpose>(app, cpu, matrix, to);
+    if (!left)
+        return false;
+    cpu.eax = *left;
+    return true;
 }
 
 /* 0x4071a0: the computer's car's step integrated: the force in its axes (+0x4e0) and the push
@@ -3156,7 +3222,8 @@ bool fillZero(App* app, CPU& cpu, reg32 to, reg32 bytes)
 {
     cpu.ecx = to;
     cpu.edx = bytes;
-    return call(app, cpu, kFillZero, to).has_value();
+    guest::direct<0x4e070c, ea::clearBytes>(app, cpu, to, bytes);
+    return !cpu.terminate;
 }
 
 /* 0x408520: car rides with the car it follows ([+0x624], read again for each, as the code does):
@@ -3238,7 +3305,7 @@ void easeLane(App* app, CPU& cpu)
 // (+0x2e4), a ghost driven by its target (+0x88), its speed and spin in its axes (+0x4ec on).
 // +0x620's: off the road, riding with the car it follows.  Held under this upright (a double,
 // 0.9); its revs down by 500 toward the idle.
-constexpr reg32 kTurnSkipped = 0x4be1a0, kTurnKind = 0x20, kStepBits = 0x3d000000;
+constexpr reg32 kTurnKind = 0x20, kStepBits = 0x3d000000;
 constexpr reg32 kCarHeldStill = 0x8a, kCarStepAcceleration = 0x2e4, kCarGhost = 0x88;
 constexpr reg8 kAiOffRoad = 4, kAiRidesWith = 0x80;
 constexpr reg32 kHeldUpright = 0x5363d4, kRevsDown = 0x1f4;
@@ -3283,8 +3350,10 @@ std::optional<reg32> runPhysics(App* app, CPU& cpu, reg32 car, reg32 noGear)
     if (!atDepth(cpu, [&] { return runEngine(app, cpu, car, noGear); }))
         return std::nullopt;
     reverseCheckFor(app, car);
-    if (!call(app, cpu, kAiHeading, car))
+    const auto heading = feCore<0x4070c0, frontend::sima::headingError>(app, cpu, car);
+    if (!heading)
         return std::nullopt;
+    cpu.eax = *heading;
     if (i32(at(app, kRaceFrame)) < i32(at(app, car + kCarTrafficTime)) && (byte(app, car + kCarKind) & kKindTraffic) != 0)
         put(app, car + kCarSpeedWanted, 0);
     const float grip = floatAt(
@@ -3359,9 +3428,10 @@ std::optional<reg32> stepCar(App* app, CPU& cpu, reg32 car)
 {
     const GuestFrame frame(cpu, kStepPushed, kStepFrame);
     cpu.edx = at(app, car);
-    const auto skipped = call(app, cpu, kTurnSkipped, kTurnKind);
+    const auto skipped = feCore<0x4be1a0, frontend::simc::offBeat>(app, cpu, kTurnKind, cpu.edx);
     if (!skipped)
         return std::nullopt;
+    cpu.eax = *skipped;
     if (*skipped != 0)
         return *skipped;
     put(app, kStep, kStepBits);

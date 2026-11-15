@@ -30,7 +30,8 @@ using sreg32 = x86::sreg32;
 reg32 carDataReadInteger(App* app, CPU& cpu, reg32 line, reg32 wanted);
 // The game's 0x4b07b0: the wanted integer of a line of values, for a field the caller keeps a byte of.
 reg32 carDataReadByte(App* app, CPU& cpu, reg32 line, reg32 wanted);
-// The game's 0x4b07d0: the wanted float of a line of values on the x87, its bits in eax.
+// The game's 0x4b07d0: the wanted float of a line of values: its bits (eax); the float itself its code leaves on
+// the x87's stack.
 reg32 carDataReadFloat(App* app, CPU& cpu, reg32 line, reg32 wanted);
 // The game's 0x4b08b0: a float of the file as 16.16 fixed point.
 reg32 carDataReadFixed(App* app, CPU& cpu, reg32 line, reg32 wanted);
@@ -253,7 +254,9 @@ struct ByAddress<frontend::wata::carDataReadFloat>
     template <x86::reg32 Address>
     static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 line, x86::reg32 wanted)
     {
-        return fe::callByAddress(app, cpu, Address, fe::args({ line, wanted }));
+        const x86::reg32 bits = fe::callByAddress(app, cpu, Address, fe::args({ line, wanted }));
+        cpu.fpu.take();  // the float, which the bits are
+        return bits;
     }
 };
 

@@ -1,4 +1,6 @@
 #include "native_frontend_options.h"
+#include "native_watcom.h"
+#include "native_game.h"
 #include "game_settings.h"
 #include "native_controls_devices.h"
 #include "native_controls_input.h"
@@ -158,12 +160,10 @@ x86::reg32 passKey(Guest& guest, x86::reg32 handler, x86::reg32 item, x86::reg32
     return guest.call(handler, fe::args({ item, menu, x86::reg32(std::int32_t(std::int16_t(key))) }));
 }
 
-/* A slider's value, as 0x46c9b0 leaves it on the x87; eax as its code leaves it, which the glue's
- * core does as the code does. */
+/* A slider's value, as 0x46c9b0 gives it. */
 x86::Float readSliderValue(Guest& guest, CPU& cpu, x86::reg32 item, x86::reg32 end)
 {
-    fe::direct<0x46c9b0, frontend::glue::sliderValue>(guest.app(), cpu, item, end);
-    return guest.fpu().pop();
+    return fe::direct<0x46c9b0, frontend::glue::sliderValue>(guest.app(), cpu, item, end);
 }
 
 /* A float as the dword pushed for it. */
@@ -811,6 +811,7 @@ x86::reg32 frontend::options::onVolumeSliderDraw(App* app, CPU& cpu, reg32 item,
         streamVolume(guest, cpu, kMusicStream, gameSettings(guest).menuMusicVolume);
         stopSample(guest, cpu);
     }
+    // By address: the slider's drawing leaves edx for this function's caller, which its core does not hand back.
     return guest.call(kSliderDraw, fe::args({ item, selected }));
 }
 
@@ -881,14 +882,14 @@ x86::reg32 frontend::options::onControlsEnter(App* app, CPU& cpu, reg32 menu)
 
     const x86::reg32 name = guest.frame();   // char[0x50]
     const x86::reg32 art = guest.dword(kFrontendArt);
-    guest.call(kSprintf, fe::args({}, { name, kPathFormat.address, kArtFolder, kJoysFile.address }));
+    fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.cpu(), name, kPathFormat.address, guest::Words{kArtFolder, kJoysFile.address});
     // ebx handed on as the copy's count left it; the game's code clears edx here for its loop.
     guest.setDword(kFrontendArt,
                    x86::reg32(*fe::direct<0x44ac90, port::buttons::shapesLoaded>(app, cpu, cpu.esp - 4, name,
                                                                                  kControlsBytes)));
     for (std::uint32_t i = 0; i < kJoyShapeCount; ++i)
     {
-        guest.call(kSprintf, fe::args({}, { name, kJoyShapeFormat.address, i + 1 }));
+        fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.cpu(), name, kJoyShapeFormat.address, guest::Words{i + 1});
         if (guest.byte(name + 2) == ' ')
             guest.setByte(name + 2, '0');
         guest.setWord(kJoyShapes + 2 * i,
@@ -1134,7 +1135,6 @@ x86::reg32 frontend::options::onAxisMoved(App* app, CPU& cpu, reg32 item)
     const x86::reg32 axis = guest::direct<0x442e60, axisIndex>(app, cpu, item);
     const float first = float(readSliderValue(guest, cpu, item, 0));
     const float second = float(readSliderValue(guest, cpu, item, 1));
-    x86::FPU& fpu = guest.fpu();
     const x86::Float firstFromBottom = fp::sub(x86::Float(1.0), x86::Float(first));
     const float gap = float(fp::abs(fp::sub(firstFromBottom, x86::Float(second))));
     fe::X87 x87(guest);
@@ -1182,6 +1182,7 @@ x86::reg32 frontend::options::onAxisDraw(App* app, CPU& cpu, reg32 item, reg32 s
     const float value = float(x87.sub(x86::Float(1.0), position));
     setSliderValue(guest, cpu, item, value, 2);   // edx, onMove here, is for the next call
     setSliderOnMove(guest, cpu, item, onMove);
+    // By address: the slider's drawing leaves edx for this function's caller, which its core does not hand back.
     return guest.call(kSliderDraw, fe::args({ item, selected }));
 }
 
@@ -1288,7 +1289,7 @@ x86::reg32 frontend::options::onDeadZoneEnter(App* app, CPU& cpu, reg32 menu)
          ++controller)
         copyBytes(guest, cpu, kRangesKept + kRangesKeptSize * controller, controllerRanges(controller),
                   kRangesKeptSize);
-    guest.call(kFillZero, fe::args({ kDeadZoneData, kDeadZoneDataBytes }));
+    fe::direct<kFillZero, ea::clearBytes>(guest.app(), guest.cpu(), kDeadZoneData, kDeadZoneDataBytes);
     for (std::uint32_t axis = 0; axis < kAxes; ++axis)
         guest.setDword(kAxisSliders + 4 * axis, fe::findItem(guest, menu, kAxisCodelinks[axis]).address());
     guest::direct<0x443070, showController>(app, cpu, menu, x86::reg32(0));
@@ -1382,7 +1383,7 @@ x86::reg32 frontend::options::onForceEnter(App* app, CPU& cpu, reg32 menu)
         return 0;
     if (inRace(guest))
         dimBehind(guest, cpu);
-    guest.call(kFillZero, fe::args({ kForceSliders, kForceSliderBytes }));
+    fe::direct<kFillZero, ea::clearBytes>(guest.app(), guest.cpu(), kForceSliders, kForceSliderBytes);
     if (Item credits = fe::findItem(guest, menu, kForceCredits))
     {
         if (networkRace(guest))
@@ -1463,7 +1464,7 @@ x86::reg32 frontend::options::onForceExit(App* app, CPU& cpu)
         copyBytes(guest, cpu, SETTINGS_ADDRESS(forceCollision), kForceEffectsKept, kForceEffectsBytes);
         gameSettings(guest).devices[0].gain = guest.dword(kStrengthKept);
     }
-    guest.call(kFillZero, fe::args({ kForceSliders, kForceSliderBytes }));
+    fe::direct<kFillZero, ea::clearBytes>(guest.app(), guest.cpu(), kForceSliders, kForceSliderBytes);
     fe::direct<0x435df0, controls::gain>(app, cpu, x86::reg32(0), gameSettings(guest).devices[0].gain);
     return 0;
 }

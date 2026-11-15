@@ -36,6 +36,9 @@ inline std::optional<x86::reg32> reserved(win32::WinApplication* app, x86::CPU& 
 std::optional<x86::reg32> purgeBlock(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 body);
 // The game's 0x4ea4f0, memmove: `count` bytes from `from` to `to`.
 bool moveMemory(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 to, x86::reg32 from, x86::reg32 count);
+// The game's 0x4e15e0: the name of the block at `body`, past its body and its class's bytes; 0 for
+// one not named.
+x86::reg32 blockNameOf(win32::WinApplication* app, x86::reg32 body);
 
 }  // namespace ea
 
@@ -84,6 +87,17 @@ struct ByAddress<ea::moveMemory>
     static bool call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 to, x86::reg32 from, x86::reg32 count)
     {
         return watcom(app, cpu, Address, {from, to, count});
+    }
+};
+
+// The body in eax; the name back in eax, every other register kept.
+template <>
+struct ByAddress<ea::blockNameOf>
+{
+    template <x86::reg32 Address>
+    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 body)
+    {
+        return watcomEax(app, cpu, Address, {body}).value_or(0);
     }
 };
 

@@ -50,6 +50,8 @@ reg32 turnAboutFirstRow(App* app, CPU& cpu, reg32 matrix, reg32 angleAt, reg32 o
 reg32 turnAboutLastRow(App* app, CPU& cpu, reg32 matrix, reg32 angleAt, reg32 out);
 // The game's 0x4ea920: the square root of the float `value`, onto the x87.
 void squareRoot(App* app, CPU& cpu, reg32 value);
+// The same root as a double, for a caller in C++ (what squareRoot pushes).
+double squareRootOf(App* app, reg32 value);
 // The game's 0x4bc470: a view's pass: the view's record filled, the frame drawn through it.
 reg32 viewPass(App* app, CPU& cpu, reg32 pass, reg32 record4, reg32 record68, reg32 record6c, reg32 record70);
 // The game's 0x4dbde0: the projection of the view.
@@ -252,6 +254,18 @@ struct ByAddress<frontend::simc::squareRoot>
     static void call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 value)
     {
         fe::callByAddress(app, cpu, Address, fe::args({}, { value }));
+    }
+};
+
+// `value` on the stack (ret 4); the root taken off the x87's stack.
+template <>
+struct ByAddress<frontend::simc::squareRootOf>
+{
+    template <x86::reg32 Address>
+    static double call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 value)
+    {
+        fe::callByAddress(app, cpu, Address, fe::args({}, { value }));
+        return double(cpu.fpu.take());
     }
 };
 

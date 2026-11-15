@@ -2,15 +2,19 @@
 #include "native_controls_devices.h"
 #include "native_controls_input.h"
 #include "native_controls_race.h"
+#include "native_frontend_simd.h"
 #include "native_guest.h"
 #include "native_trackdata.h"
 #include "native_vertices.h"
+#include "native_watcom.h"
+#include "port_snd_stream_calls.h"
 
 #include <array>
 #include <cstdint>
 #include <cstring>
 #include <initializer_list>
 #include <optional>
+#include <type_traits>
 
 /* The controls read in a race, and kept in config.dat: the force-feedback
  * controller a race plays its forces on -- the four effects the game makes on
@@ -134,8 +138,6 @@ constexpr reg32 kAllDevices = 0x10;
 // An effect's parameters set: played (1, started if it does not play); for ever.
 constexpr reg32 kPlay = 1, kForEver = 0xffffff;
 // The rest of the game.
-constexpr reg32 kTranspose = 0x4e0110, kAtan2 = 0x4ea9c0;
-constexpr reg32 kRunTimers = 0x4e7630, kAddTimer = 0x4be250;
 constexpr reg32 kControllersChanged = 0x43c040;
 constexpr reg32 kRaceForcesFrame = 0x471e10, kForcesEvery = 0xa;
 // Their constants.
@@ -342,27 +344,70 @@ std::optional<reg32> call(App* app, CPU& cpu, void (*function)(App*, CPU&), std:
     return cpu.eax;
 }
 
-/* __CHP: the value rounded toward zero. */
-std::optional<Float> chop(App* app, CPU& cpu, const Float& value)
+/* A native_frontend_* file's typed core called as C++ (guest::direct): nothing (false) when the
+ * game stopped in it (its calls into the game throw fe::Terminated).  tools/game_checks does not
+ * build those files: there it goes by address, through its ByAddress, as the game's code calls it,
+ * every register but eax kept.  A reg32 result is the eax the function leaves: eax set to it (in the
+ * game too); after any other, eax spoilt there, so that code still reading what the callee left in
+ * eax differs there. */
+template <reg32 Address, auto Core, typename... Args>
+auto feCore(App* app, CPU& cpu, Args... args)
 {
-    const KeptRegisters kept(cpu);
-    cpu.fpu.push(value);
-    if (!direct(app, cpu, watcom::CHP))
-        return std::nullopt;
-    return cpu.fpu.take();
+    const auto run = [&] {
+#ifdef NFS_GAME_CHECKS
+        const guest::KeptRegisters kept(cpu);
+        return guest::ByAddress<Core>::template call<Address>(app, cpu, args...);
+#else
+        return guest::direct<Address, Core>(app, cpu, args...);
+#endif
+    };
+    using Result = decltype(run());
+    const auto spoil = [&] {
+#ifdef NFS_GAME_CHECKS
+        cpu.eax = 0x5b0115edu;
+#endif
+    };
+    if constexpr (std::is_void_v<Result>)
+    {
+        try
+        {
+            run();
+        }
+        catch (const fe::Terminated&)
+        {
+            return false;
+        }
+        spoil();
+        return !cpu.terminate;
+    }
+    else
+    {
+        try
+        {
+            const Result result = run();
+            if constexpr (std::is_same_v<Result, x86::reg32>)
+                cpu.eax = result;  // a menu core's result: the eax it leaves, as the call by address does
+            else
+                spoil();
+            return cpu.terminate ? std::optional<Result>() : std::optional<Result>(result);
+        }
+        catch (const fe::Terminated&)
+        {
+            return std::optional<Result>();
+        }
+    }
 }
 
-/* atan2 (0x4ea9c0, stdcall) of the two words, the first on top. */
+/* __CHP: the value rounded toward zero; never nullopt (the optional is the callers' stop signal). */
+std::optional<Float> chop(App* app, CPU& cpu, const Float& value)
+{
+    return Float(guest::direct<0x4dfd56, watcom::clib::chop>(app, cpu, double(value)));
+}
+
+/* atan2 (simd's, 0x4ea9c0, stdcall) of the two words, the first on top. */
 std::optional<Float> atan2Of(App* app, CPU& cpu, reg32 first, reg32 second)
 {
-    const KeptRegisters kept(cpu);
-    cpu.esp -= 4;
-    put(app, cpu.esp, second);
-    cpu.esp -= 4;
-    put(app, cpu.esp, first);
-    if (!byAddress(app, cpu, kAtan2))
-        return std::nullopt;
-    return cpu.fpu.take();
+    return feCore<0x4ea9c0, frontend::simd::angleOfFloatsValue>(app, cpu, first, second);
 }
 
 /* What setEffect leaves in eax, ebx and edx -- a stdcall that may change ebx,
@@ -529,7 +574,8 @@ std::optional<reg32> silenceEngine(App* app, CPU& cpu, reg32 unchanged)
     const reg32 controller = at(app, kForceController);
     if (controller == kNoController)
         return unchanged;
-    if (!call(app, cpu, kUnloadEffect, {handle(app, controller, kEngineHandle)}))
+    guest::direct<0x436310, controls::unloadOne>(app, cpu, handle(app, controller, kEngineHandle));
+    if (cpu.terminate)
         return std::nullopt;
     const auto set = setEffect(app, cpu, handle(app, at(app, kForceController), kEngineHandle), 0, 0, 0,
                                {0, 0, frame - 4, 0});
@@ -638,7 +684,8 @@ std::optional<reg32> stopAll(App* app, CPU& cpu, reg32 unchanged)
         return unchanged;
     if (!stopEffects(app, cpu, unchanged))
         return std::nullopt;
-    if (!call(app, cpu, kStopEffect, {handle(app, at(app, kForceController), kRoadHandle)}))
+    guest::direct<0x436230, controls::stopOne>(app, cpu, handle(app, at(app, kForceController), kRoadHandle));
+    if (cpu.terminate)
         return std::nullopt;
     return call(app, cpu, kStopEffect, {handle(app, at(app, kForceController), kJoltHandle)});
 }
@@ -657,7 +704,8 @@ std::optional<reg32> stopAllOr(App* app, CPU& cpu, reg32 unchanged, reg32 actuat
         return call(app, cpu, actuators, {kAllDevices});
     if (!stopEffects(app, cpu, *microsoft))
         return std::nullopt;
-    if (!call(app, cpu, kStopEffect, {handle(app, at(app, kForceController), kRoadHandle)}))
+    guest::direct<0x436230, controls::stopOne>(app, cpu, handle(app, at(app, kForceController), kRoadHandle));
+    if (cpu.terminate)
         return std::nullopt;
     return call(app, cpu, kStopEffect, {handle(app, at(app, kForceController), kJoltHandle)});
 }
@@ -719,7 +767,7 @@ std::optional<reg32> startForces(App* app, CPU& cpu, reg32 unchanged)
     put(app, kBumped, 0);
     put(app, kAirborne, 0);
     put(app, kSurface, 1);
-    const auto added = call(app, cpu, kAddTimer, {timers, kRaceForcesFrame, *car, kForcesEvery});
+    const auto added = feCore<0x4be250, frontend::simd::taskListAdd>(app, cpu, timers, kRaceForcesFrame, *car, kForcesEvery);
     if (!added)
         return std::nullopt;
     return stopEffects(app, cpu, *added);
@@ -1154,7 +1202,7 @@ std::optional<reg32> crash(App* app, CPU& cpu, reg32 car)
     guest::direct<0x4e0000, vertices::offsetVectorList<false>>(app, cpu, 1, blow, car + kCarPlace, vector);
     if (cpu.terminate)
         return std::nullopt;
-    if (!call(app, cpu, kTranspose, {car + kCarOrientation, matrix, vector}))
+    if (!feCore<0x4e0110, frontend::simd::transpose>(app, cpu, car + kCarOrientation, matrix))
         return std::nullopt;
     Float x = fp::mul(floatAt(app, vector), floatAt(app, matrix));
     Float y = fp::mul(floatAt(app, vector), floatAt(app, matrix + 4));
@@ -1465,7 +1513,7 @@ std::optional<reg32> loadDevices(App* app, CPU& cpu)
     gameSettings(app).deviceCount = *found;
     gameSettings(app).forceDeviceCount = 0;
     bool changed = before != *found;
-    if (!call(app, cpu, kRunTimers, {0}))
+    if (!guest::direct<0x4e7630, port::stream::runDueTasks>(app, cpu, cpu.esp - 4, 0u) || cpu.terminate)
         return std::nullopt;
     for (reg32 controller = 0; sreg32(controller) < sreg32(kControllers); ++controller)
     {
@@ -1473,7 +1521,7 @@ std::optional<reg32> loadDevices(App* app, CPU& cpu)
         const auto theirs = guest::direct<0x435690, controls::describe>(app, cpu, controller);
         if (!theirs)
             return std::nullopt;
-        if (!call(app, cpu, kRunTimers, {0}))
+        if (!guest::direct<0x4e7630, port::stream::runDueTasks>(app, cpu, cpu.esp - 4, 0u) || cpu.terminate)
             return std::nullopt;
         const reg32 record = *theirs;
         const reg32 mine = controller * kControllerBytes + SETTINGS_ADDRESS(devices);

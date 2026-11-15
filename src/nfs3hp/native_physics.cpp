@@ -1,6 +1,9 @@
 #include "game_settings.h"
 #include "native_aidrive.h"
 #include "native_drivetrain.h"
+#include "native_frontend_loopb.h"
+#include "native_frontend_sima.h"
+#include "native_frontend_simd.h"
 #include "native_guest.h"
 #include "native_handling.h"
 #include "native_physics.h"
@@ -11,6 +14,7 @@
 #include <cstdint>
 #include <cstring>
 #include <optional>
+#include <type_traits>
 #include <utility>
 
 /* A car's physics, frame by frame: the step the race calls for each car
@@ -87,16 +91,16 @@ constexpr reg32 kRaceFrame = 0x7d3684;
 constexpr reg32 kGravity = 0x7a3a40, kGravityY = 0x7a3a44, kGravityZ = 0x7a3a48;
 // The surfaces' grips, a float each by the car's surface.
 constexpr reg32 kSurfaceGrip = 0x55ed30;
-// What these call by address: a matrix transposed, a vector's length, two
-// floats' length, vectors scaled; the car's sounds.  The AI's step, the car at
-// rest, the engine, the driver's inputs, the wheels' loads and forces are
-// native_aidrive.h's, native_handling.h's and native_drivetrain.h's, called as
-// C++ (guest::direct); so are vectors scaled (native_vertices.h's) where the
+// What these call by address: a vector's length, vectors scaled.  The AI's
+// step, the car at rest, the engine, the driver's inputs, the wheels' loads and
+// forces are native_aidrive.h's, native_handling.h's and native_drivetrain.h's,
+// called as C++ (guest::direct), and so are a matrix transposed, two floats'
+// length and the car's sounds (simd's, sima's, loopb's: feCore); so are
+// vectors scaled (native_vertices.h's) where the
 // eax they leave is not what the caller leaves -- where it is, and for the
 // vector's length (dampYaw leaves its eax), they stay by address: vertices'
 // cores give back nothing of eax.
-constexpr reg32 kTranspose = 0x4e0110, kLength = 0x4e06a0, kPlanarLength = 0x4967e0, kScaleVectors = 0x4e0050;
-constexpr reg32 kCarSounds = 0x4cdf10;
+constexpr reg32 kLength = 0x4e06a0, kScaleVectors = 0x4e0050;
 
 reg16 half(App* app, reg32 a) { return app->getMemory<reg16>(a); }
 x86::Float f32(App* app, reg32 a) { return x86::Float(app->getMemory<float>(a)); }
@@ -115,6 +119,60 @@ bool byAddress(App* app, CPU& cpu, reg32 target)
     cpu.esp -= 4;
     app->dynamic_call(target, cpu);
     return !cpu.terminate;
+}
+
+/* A native_frontend_* file's typed core called as C++ (guest::direct): nothing (false) when the
+ * game stopped in it (its calls into the game throw fe::Terminated).  tools/game_checks does not
+ * build those files: there it goes by address, through its ByAddress, as the game's code calls it,
+ * every register but eax kept.  A reg32 result is the eax the function leaves: eax set to it (in the
+ * game too); after any other, eax spoilt there, so that code still reading what the callee left in
+ * eax differs there. */
+template <reg32 Address, auto Core, typename... Args>
+auto feCore(App* app, CPU& cpu, Args... args)
+{
+    const auto run = [&] {
+#ifdef NFS_GAME_CHECKS
+        const guest::KeptRegisters kept(cpu);
+        return guest::ByAddress<Core>::template call<Address>(app, cpu, args...);
+#else
+        return guest::direct<Address, Core>(app, cpu, args...);
+#endif
+    };
+    using Result = decltype(run());
+    const auto spoil = [&] {
+#ifdef NFS_GAME_CHECKS
+        cpu.eax = 0x5b0115edu;
+#endif
+    };
+    if constexpr (std::is_void_v<Result>)
+    {
+        try
+        {
+            run();
+        }
+        catch (const fe::Terminated&)
+        {
+            return false;
+        }
+        spoil();
+        return !cpu.terminate;
+    }
+    else
+    {
+        try
+        {
+            const Result result = run();
+            if constexpr (std::is_same_v<Result, x86::reg32>)
+                cpu.eax = result;  // a menu core's result: the eax it leaves, as the call by address does
+            else
+                spoil();
+            return cpu.terminate ? std::optional<Result>() : std::optional<Result>(result);
+        }
+        catch (const fe::Terminated&)
+        {
+            return std::optional<Result>();
+        }
+    }
 }
 
 /* Room on the guest's stack for what a callee is handed the address of: the game's frame
@@ -287,26 +345,11 @@ std::optional<reg32> scaleVectorBy(App* app, CPU& cpu, reg32 vector, reg32 facto
     return cpu.eax;
 }
 
-/* 0x4967e0, stdcall: the game's quick length of two floats; nullopt when the game stopped. */
+/* 0x4967e0 (sima's), stdcall: the game's quick length of two floats; nullopt when the game
+ * stopped. */
 std::optional<x86::Float> planarLength(App* app, CPU& cpu, float first, float second)
 {
-    const KeptRegisters kept(cpu);
-    push(app, cpu, floatBits(second));
-    push(app, cpu, floatBits(first));
-    if (!byAddress(app, cpu, kPlanarLength))
-        return std::nullopt;
-    return cpu.fpu.take();
-}
-
-/* A Watcom function of the car's by address, the car in eax: its eax back; nullopt when the game
- * stopped. */
-std::optional<reg32> carCall(App* app, CPU& cpu, reg32 target, reg32 car)
-{
-    const KeptRegisters kept(cpu);
-    cpu.eax = car;
-    if (!byAddress(app, cpu, target))
-        return std::nullopt;
-    return cpu.eax;
+    return feCore<0x4967e0, frontend::sima::planarLengthOf>(app, cpu, floatBits(first), floatBits(second));
 }
 
 /* 0x4e0050 (vertices') for one vector, its own: the floats at `vector` times the float of
@@ -318,13 +361,10 @@ bool scaleVectorOnly(App* app, CPU& cpu, reg32 vector, reg32 factorBits)
     return !cpu.terminate;
 }
 
-/* 0x4e0110: the matrix at `matrix` transposed to `to` (eax and edx); false when the game stopped. */
+/* 0x4e0110 (simd's): the matrix at `matrix` transposed to `to`; false when the game stopped. */
 bool transposeTo(App* app, CPU& cpu, reg32 matrix, reg32 to)
 {
-    const KeptRegisters kept(cpu);
-    cpu.eax = matrix;
-    cpu.edx = to;
-    return byAddress(app, cpu, kTranspose);
+    return feCore<0x4e0110, frontend::simd::transpose>(app, cpu, matrix, to).has_value();
 }
 
 
@@ -555,7 +595,7 @@ std::optional<reg32> stepCar(App* app, CPU& cpu, reg32 car)
     reg32 left = car;
     if (at(app, car + kCarQuiet) == 0 && byte(app, car + kCarGear) != 0)
     {
-        const std::optional<reg32> sounds = carCall(app, cpu, kCarSounds, car);
+        const std::optional<reg32> sounds = feCore<0x4cdf10, frontend::loopb::performanceTimes>(app, cpu, car);
         if (!sounds)
             return std::nullopt;
         left = *sounds;
@@ -1259,4 +1299,31 @@ void physicsStep(App* app, CPU& cpu)
 }
 
 }  // namespace physics
+
+#ifdef NFS_GAME_CHECKS
+/* tools/game_checks does not build native_frontend.cpp, whose Guest::call the menu files' ByAddress
+ * (fe::callByAddress) call by address through -- which feCore does there, in this file and in the
+ * other simulation files (native_carstate.cpp, native_handling.cpp, ...).  The same function as
+ * native_frontend.cpp's, for that build alone: keep the two the same. */
+x86::reg32 fe::Guest::call(x86::reg32 function, const Arguments& arguments)
+{
+    x86::reg32* const registers[4] = {&m_cpu.eax, &m_cpu.edx, &m_cpu.ebx, &m_cpu.ecx};
+    for (std::size_t i = 0; i < arguments.registerCount; ++i)
+        *registers[i] = arguments.registers[i];
+    const x86::reg32 esp = m_cpu.esp;
+    for (std::size_t i = arguments.stackCount; i-- > 0;)
+    {
+        m_cpu.esp -= 4;
+        setDword(m_cpu.esp, arguments.stack[i]);
+    }
+    // The return address's slot, left unwritten as the generated code leaves it.
+    m_cpu.esp -= 4;
+    m_app->dynamic_call(function, m_cpu);
+    if (m_cpu.terminate)
+        throw Terminated();
+    m_cpu.esp = esp;
+    return m_cpu.eax;
+}
+#endif
+
 }  // namespace nfs3hp

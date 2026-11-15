@@ -1,4 +1,5 @@
 #include "native_frontend_tracks.h"
+#include "native_watcom.h"
 #include "game_settings.h"
 #include "native_ea_memory.h"
 #include "native_frontend.h"
@@ -161,7 +162,7 @@ x86::reg32 frontend::tracks::placeTrackPlaces(App* app, CPU& cpu)
         const x86::reg32 t = gameSettings(guest).track;
         if (std::int32_t(i) >= std::int32_t(guest.dword(kTrackPlaceCounts + 4 * t)))
             return t;
-        guest.call(kSprintf, fe::args({}, { name, guest.dword(kTrackPlaceNames + 16 * t + 4 * i) }));
+        fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.cpu(), name, guest.dword(kTrackPlaceNames + 16 * t + 4 * i), guest::Words({}));
         const x86::reg32 shape = guest.call(kFindShapeFormat, fe::args({ guest.dword(kInfoArt), name }));
         const x86::reg32 opaque = (guest.byte(kDisplayFlags) & kNoTranslucency) ? 0xffffffff : 0;
         const auto texture = fe::direct<0x4d6390, port::shapes::artTexturesOf>(app, cpu, cpu.esp - 4, shape,
@@ -190,8 +191,7 @@ x86::reg32 frontend::tracks::infoEnter(App* app, CPU& cpu, reg32 menu)
     guest.setWord(kFlagShape,
                   std::uint16_t(*fe::direct<0x4d5db0, port::shapes::shapeNamed>(app, cpu, cpu.esp - 4, kFlag.address)));
     const x86::reg32 name = guest.frame();   // char[0x50]
-    guest.call(kSprintf, fe::args({}, { name, kArtName.address, kArtFolder,
-                                        guest.dword(kTrackArtNames + 4 * gameSettings(guest).track) }));
+    fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.cpu(), name, kArtName.address, guest::Words{kArtFolder, guest.dword(kTrackArtNames + 4 * gameSettings(guest).track)});
     // The game's code hands it "trkinfomask" in edx too, which it does not read.
     guest.setDword(kInfoArt,
                    reg32(*fe::direct<0x44ac90, port::buttons::shapesLoaded>(app, cpu, cpu.esp - 4, name, cpu.ebx)));
@@ -220,7 +220,8 @@ x86::reg32 frontend::tracks::speak(App* app, CPU& cpu, reg32 language, reg32 tra
     if (shown < std::size(kLanguageFolders))
         guest.copyString(folder, kLanguageFolders[shown]);
     const x86::reg32 speaker = guest.dword(kLanguageSpeakers + 4 * language);
-    guest.call(kSprintf, fe::args({}, { path, kDescriptionName.address, folder, speaker, track }));
+    fe::direct<kSprintf, watcom::clib::sprintf>(app, cpu, path, kDescriptionName.address,
+                                                guest::Words{folder, speaker, track});
     guest.leaveEdx(speaker);
     const x86::reg32 started = guest.call(kStartStream, fe::args({ path }));
     if (started != 0)

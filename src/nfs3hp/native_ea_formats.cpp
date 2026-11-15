@@ -4,8 +4,12 @@
 #include "native_ea_net.h"
 #include "native_ea_support.h"
 #include "native_ea_threads.h"
+#include "native_frontend_glue.h"
+#include "native_game.h"
 #include "native_guest.h"
+#include "port_snd_stream_calls.h"
 #include "native_windows.h"
+#include "host_threads.h"
 #include <winapi/kernel32.h>
 
 #include <initializer_list>
@@ -113,7 +117,7 @@ constexpr reg32 kFromTop = 0x10;
 // Windows' functions, by their imports' slots.
 constexpr reg32 kEnterCriticalSection = 0x5344b8, kLeaveCriticalSection = 0x534588;
 // The game's functions, by address.
-constexpr reg32 kError = 0x401010, kExit = 0x4dfd04, kRunSystemTasks = 0x4e7630, kTakeKey = 0x4cc970;
+constexpr reg32 kExit = 0x4dfd04;
 // The unpackers called by address, by code.
 constexpr reg32 kUnpack10 = 0x5102a4, kUnpack30 = 0x50ed50, kUnpack4a = 0x510110;
 
@@ -212,7 +216,8 @@ bool packError(App* app, CPU& cpu, reg32 function, reg32 line, reg32 format, reg
     put(app, kWhereFile, kUnpackC);
     put(app, kWhereFunction, function);
     put(app, kWhereLine, line);
-    return guest::call(app, cpu, kError, {format, bigEndian(app, data, 2)});
+    guest::direct<0x401010, ea::error>(app, cpu, format, guest::Words({bigEndian(app, data, 2)}));
+    return !cpu.terminate;
 }
 
 /* A code's unpacker: `data` unpacked to `to`, ebx `third` at the call -- 1 for those that take it,
@@ -334,9 +339,11 @@ std::optional<reg32> waitKey(App* app, CPU& cpu)
     {
         if (app->contextWanted())
             app->yieldContext(cpu);
-        cpu.eax = 0;
-        if (!guest::call(app, cpu, kRunSystemTasks))
+        // Its result left in eax, as the call by address leaves it, for the key hook after it.
+        const port::Result done = guest::direct<0x4e7630, port::stream::runDueTasks>(app, cpu, cpu.esp - 4, 0u);
+        if (!done)
             return std::nullopt;
+        cpu.eax = *done;
         std::optional<reg32> next;
         {
             // The call's return address.
@@ -360,9 +367,10 @@ bool flushMenuKeys(App* app, CPU& cpu)
     {
         if (app->contextWanted())
             app->yieldContext(cpu);
-        if (!guest::call(app, cpu, kTakeKey))
+        const reg32 key = guest::direct<0x4cc970, frontend::glue::nextKey>(app, cpu);
+        if (cpu.terminate)
             return false;
-        if (cpu.eax == 0)
+        if (key == 0)
             return true;
     }
 }
@@ -483,12 +491,12 @@ std::optional<reg32> stopTimer(App* app, CPU& cpu, reg32 unchanged)
         return unchanged;
     // ebx, ecx and edx pushed.
     const GuestFrame pushed(cpu, 0xc, 0);
-    if (!windows<kEnterCriticalSection, &win32::kernel32::EnterCriticalSection>(app, cpu, lock))
+    if (!windows<kEnterCriticalSection, &host::enterLock>(app, cpu, lock))
         return std::nullopt;
     const reg32 thread = at(app, kTimerThreadId);
     put(app, kTimerLock, 0);
     if (!guest::direct<0x4dfb30, ea::eventSet>(app, cpu, thread)
-        || !windows<kLeaveCriticalSection, &win32::kernel32::LeaveCriticalSection>(app, cpu, lock)
+        || !windows<kLeaveCriticalSection, &host::leaveLock>(app, cpu, lock)
         || !guest::direct<0x4eb360, ea::lockFreed>(app, cpu, lock))
         return std::nullopt;
     const std::optional<bool> onThread = guest::direct<0x4df930, ea::isThreadNow>(app, cpu, kTimerThread);
@@ -523,7 +531,7 @@ std::optional<reg32> removeTimer(App* app, CPU& cpu, reg32 callback)
         return callback;
     // ebx, ecx, edx and esi pushed.
     const GuestFrame pushed(cpu, 0x10, 0);
-    if (!windows<kEnterCriticalSection, &win32::kernel32::EnterCriticalSection>(app, cpu, lock))
+    if (!windows<kEnterCriticalSection, &host::enterLock>(app, cpu, lock))
         return std::nullopt;
     reg32 slot = 0;
     if (callback != at(app, kTimerCallbacks))
@@ -538,7 +546,7 @@ std::optional<reg32> removeTimer(App* app, CPU& cpu, reg32 callback)
             put(app, kTimerCallbacks + (i - 1) * 4, at(app, kTimerCallbacks + i * 4));
         put(app, kLastTimerCallback, 0);
     }
-    if (!windows<kLeaveCriticalSection, &win32::kernel32::LeaveCriticalSection>(app, cpu, at(app, kTimerLock)))
+    if (!windows<kLeaveCriticalSection, &host::leaveLock>(app, cpu, at(app, kTimerLock)))
         return std::nullopt;
     if (at(app, kTimerCallbacks) != 0)
         return 0;

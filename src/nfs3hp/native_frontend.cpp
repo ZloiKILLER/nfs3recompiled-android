@@ -1,4 +1,7 @@
 #include "native_frontend.h"
+#include "native_frontend_dialogs.h"
+#include "native_watcom.h"
+#include "port_text.h"
 #include <SDL3/SDL.h>
 #include <string>
 
@@ -94,41 +97,59 @@ Item findItem(Guest& guest, x86::reg32 menu, const GuestString& codelink)
     return Item(guest, guest.call(kFindItem, args({ menu, codelink.address })));
 }
 
+/* The helpers below call their typed cores as C++ (fe::direct) and leave the result in eax as the
+ * call by address left it: callers return guest.eax() after them, "what the calls left". */
 x86::reg32 text(Guest& guest, std::uint32_t id)
 {
-    return guest.call(kText, args({ id }));
+    x86::CPU& cpu = guest.cpu();
+    // edx handed on as the caller has it, as the call by address hands it.
+    const x86::reg32 line =
+        x86::reg32(*direct<kText, port::text::lineText>(guest.app(), cpu, cpu.esp - 4, std::int32_t(id), cpu.edx));
+    cpu.eax = line;
+    return line;
 }
 
 std::int32_t textWidth(Guest& guest, x86::reg32 text, std::uint32_t font)
 {
-    return std::int32_t(guest.call(kTextWidth, args({ text, font })));
+    x86::CPU& cpu = guest.cpu();
+    const x86::reg32 width =
+        x86::reg32(*direct<kTextWidth, port::text::menuTextWidth>(guest.app(), cpu, cpu.esp - 4, text, font));
+    cpu.eax = width;
+    cpu.edx = font;  // as the call by address leaves it: loaded, and given back by the adapter as it came
+    return std::int32_t(width);
 }
 
 void messageBox(Guest& guest, std::uint32_t textId)
 {
-    guest.call(kMessageBox, args({ textId }));
+    guest.cpu().eax = direct<kMessageBox, frontend::dialogs::messageById>(guest.app(), guest.cpu(), textId);
 }
 
 void openDialog(Guest& guest, const Dialog& dialog)
 {
-    guest.call(kOpenDialog, args({ dialog.lineCount, dialog.lines, dialog.buttonCount, dialog.buttons },
-                                 { dialog.focus, dialog.edit, dialog.editLength, dialog.editMode, dialog.callback }));
+    guest.cpu().eax = direct<kOpenDialog, frontend::dialogs::openEdit>(
+        guest.app(), guest.cpu(), dialog.lineCount, dialog.lines, dialog.buttonCount, dialog.buttons, dialog.focus,
+        dialog.edit, dialog.editLength, dialog.editMode, dialog.callback);
 }
 
 void openQuestion(Guest& guest, const Question& question)
 {
-    guest.call(kOpenQuestion, args({ question.lineCount, question.lines, question.buttonCount, question.buttons },
-                                   { question.buttonHelp, question.focus, question.column, question.callback }));
+    guest.cpu().eax = direct<kOpenQuestion, frontend::dialogs::openQuestion>(
+        guest.app(), guest.cpu(), question.lineCount, question.lines, question.buttonCount, question.buttons,
+        question.buttonHelp, question.focus, question.column, question.callback);
 }
 
 x86::reg32 dialogEditText(Guest& guest)
 {
-    return guest.call(kDialogEditText);
+    const x86::reg32 typed = direct<kDialogEditText, frontend::dialogs::editText>(guest.app(), guest.cpu());
+    guest.cpu().eax = typed;
+    return typed;
 }
 
 std::uint32_t dialogFocus(Guest& guest)
 {
-    return guest.call(kDialogFocus);
+    const x86::reg32 focus = direct<kDialogFocus, frontend::dialogs::focusedButton>(guest.app(), guest.cpu());
+    guest.cpu().eax = focus;
+    return focus;
 }
 
 bool X87::above(const x86::Float& a, const x86::Float& b)
@@ -145,9 +166,8 @@ bool X87::below(const x86::Float& a, const x86::Float& b)
 
 std::int32_t X87::truncated(const x86::Float& value)
 {
-    m_fpu.push(value);
-    m_guest.call(kTruncate);
-    return m_fpu.toInteger<x86::sreg32>(m_fpu.pop());
+    const double chopped = direct<kTruncate, watcom::clib::chop>(m_guest.app(), m_guest.cpu(), double(value));
+    return fp::toInteger<x86::sreg32>(chopped);  // fistp
 }
 
 void checkStrings(Guest& guest, Site& site)

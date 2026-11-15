@@ -1,7 +1,7 @@
 #include "port_snd_stream.h"
+#include "host_threads.h"
 
 #include <winapi/kernel32.h>
-#include <winapi/winmm.h>
 
 #include <cstdint>
 
@@ -107,7 +107,7 @@ Result runTimer(App* app, CPU& cpu, reg32 esp)
 {
     const HeldEbp ebp(cpu, esp - 5 * 4);
     Calls c{app, cpu, esp - 5 * 4, cpu.eax};
-    if (!c.windows<kTimeGetTime, &win32::kernel32::GetTickCount>())
+    if (!c.windows<kTimeGetTime, &host::ticks>())
         return {};
     reg32 last = c.eax;
     if (!c.go(kCreateEvent))
@@ -131,7 +131,7 @@ Result runTimer(App* app, CPU& cpu, reg32 esp)
         }
         kClockTicks.set(app, kClockTicks(app) + 1);
         kThreadTicks.set(app, kThreadTicks(app) + 1);
-        if (!c.windows<kTimeGetTime, &win32::kernel32::GetTickCount>())
+        if (!c.windows<kTimeGetTime, &host::ticks>())
             return {};
         const reg32 now = c.eax;
         fraction = int32_t(reg32(fraction) + (now - last) * 0x4a9u);
@@ -177,7 +177,7 @@ Result tickTimer(App* app, CPU& cpu, reg32 esp)
     kTimeNext.set(app, kTimeNext(app) + c.eax);
     if (running)
     {
-        if (!c.windows<kTimeGetTime, &win32::kernel32::GetTickCount>())
+        if (!c.windows<kTimeGetTime, &host::ticks>())
             return {};
         const reg32 late = kTimeNext(app) - c.eax;
         c.eax = late - 1;
@@ -185,7 +185,7 @@ Result tickTimer(App* app, CPU& cpu, reg32 esp)
         {
             if (int32_t(c.eax) < -1000)
             {
-                if (!c.windows<kTimeGetTime, &win32::kernel32::GetTickCount>())
+                if (!c.windows<kTimeGetTime, &host::ticks>())
                     return {};
                 c.eax += 1;
                 kTimeNext.set(app, c.eax);
@@ -194,7 +194,7 @@ Result tickTimer(App* app, CPU& cpu, reg32 esp)
             c.eax = 1;
         }
         // timeSetEvent(delay, resolution, this callback, 0, one shot)
-        if (!c.windows<kTimeSetEvent, &win32::winmm::timeSetEvent>(c.eax, kTimerResolution(app), kTickFunction, 0, 0))
+        if (!c.windows<kTimeSetEvent, &host::startTimer>(c.eax, kTimerResolution(app), kTickFunction, 0, 0))
             return {};
         kTimerHandle.set(app, c.eax);
         if (c.eax == 0)
@@ -202,7 +202,7 @@ Result tickTimer(App* app, CPU& cpu, reg32 esp)
             const reg32 resolution = kTimerResolution(app);
             kTimerRate.set(app, 0);
             kTimerRunning.set(app, 0);
-            if (!c.windows<kTimeEndPeriod, &win32::winmm::timeEndPeriod>(resolution))
+            if (!c.windows<kTimeEndPeriod, &host::timerPeriodEnd>(resolution))
                 return {};
         }
     }
@@ -278,9 +278,9 @@ Result stopClock(App* app, CPU& cpu, reg32 esp, reg32 eax)
         const reg32 handle = kTimerHandle(app);
         kTimerRunning.set(app, 0);
         kTimerRate.set(app, 0);
-        if (handle != 0 && !c.windows<kTimeKillEvent, &win32::winmm::timeKillEvent>(handle))
+        if (handle != 0 && !c.windows<kTimeKillEvent, &host::killTimer>(handle))
             return {};
-        if (!c.windowsWith<kTimeEndPeriod, &win32::winmm::timeEndPeriod>({kTimerResolution(app), cpu.edx, cpu.ebx, 0},
+        if (!c.windowsWith<kTimeEndPeriod, &host::timerPeriodEnd>({kTimerResolution(app), cpu.edx, cpu.ebx, 0},
                                                                          kTimerResolution(app)))
             return {};
         const reg32 event = kTimerEvent(app);
@@ -340,7 +340,7 @@ Result startClock(App* app, CPU& cpu, reg32 esp, reg32 rate)
         kTimeWhole.set(app, 0);
         const reg32 capabilities = ebpValue - 8;
         c.eax = capabilities;
-        if (!c.windows<kTimeGetDevCaps, &win32::winmm::timeGetDevCaps>(capabilities, 8))
+        if (!c.windows<kTimeGetDevCaps, &host::timerCaps>(capabilities, 8))
             return {};
         if (c.eax != 0)
         {
@@ -368,7 +368,7 @@ Result startClock(App* app, CPU& cpu, reg32 esp, reg32 rate)
             return 0;
         }
         const reg32 resolution = kTimerResolution(app);
-        if (!c.windowsWith<kTimeBeginPeriod, &win32::winmm::timeBeginPeriod>({c.eax, resolution, cpu.ebx, cpu.ecx},
+        if (!c.windowsWith<kTimeBeginPeriod, &host::timerPeriodBegin>({c.eax, resolution, cpu.ebx, cpu.ecx},
                                                                              resolution))
             return {};
         if (c.eax != 0)
@@ -391,7 +391,7 @@ Result startClock(App* app, CPU& cpu, reg32 esp, reg32 rate)
             const reg32 busy = kBusy(app);
             kBusy.set(app, 1);
             c.eax = 1;
-            if (!c.windows<kTimeGetTime, &win32::kernel32::GetTickCount>())
+            if (!c.windows<kTimeGetTime, &host::ticks>())
                 return {};
             kTimeNext.set(app, c.eax);
             // call 0x48ed30 with five words of 0, which it does not read
@@ -404,7 +404,7 @@ Result startClock(App* app, CPU& cpu, reg32 esp, reg32 rate)
         // The game's tick waited for to move on, for 5 ticks of the rate at most.
         const reg32 before = kClockTicks(app);
         c.eax = before;
-        if (!c.windows<kTimeGetTime, &win32::kernel32::GetTickCount>())
+        if (!c.windows<kTimeGetTime, &host::ticks>())
             return {};
         // eax = 5 * the rate (lea, add) while the first look at the clock is made.
         const reg32 started = c.eax;
@@ -413,7 +413,7 @@ Result startClock(App* app, CPU& cpu, reg32 esp, reg32 rate)
         for (;;)
         {
             safepoint(app, cpu);
-            if (!c.windows<kTimeGetTime, &win32::kernel32::GetTickCount>())
+            if (!c.windows<kTimeGetTime, &host::ticks>())
                 return {};
             if (c.eax >= deadline)
                 break;

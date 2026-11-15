@@ -1,4 +1,6 @@
 #include "native_frontend_neta.h"
+#include "native_watcom.h"
+#include "native_game.h"
 #include "game_settings.h"
 #include "native_ea_formats.h"
 #include "native_ea_memory.h"
@@ -16,6 +18,8 @@
 #include "native_frontend_watb.h"
 #include "native_load_cardb.h"
 #include "native_windows.h"
+#include "host_threads.h"
+#include "host_window.h"
 #include "port.h"
 #include "port_buttons.h"
 #include "port_dialogs.h"
@@ -24,11 +28,47 @@
 #include <nfs3hp.h>
 #include <fpu.h>
 #include <winapi/kernel32.h>
-#include <winapi/user32.h>
-#include <winapi/wsock32.h>
+#include "host_net.h"
 #include <cstdint>
 #include <cstring>
 #include <optional>
+#include <type_traits>
+#include <utility>
+#include <cstddef>
+
+namespace nfs3hp
+{
+namespace
+{
+
+/* A typed core called as C++ (fe::direct) whose function changes no register but eax (as
+ * tools/frontend_checks/specs_from_exe.py reads it): the registers left as the call by address
+ * leaves them -- `words` in eax, edx, ebx and ecx as that call loads them, the first `Taken` of
+ * them the core's arguments -- and its result in eax, which the call by address leaves there. */
+template <x86::reg32 Address, auto Core, std::size_t... I>
+auto directOf(win32::WinApplication* app, x86::CPU& cpu, const x86::reg32* words, std::index_sequence<I...>)
+{
+    return fe::direct<Address, Core>(app, cpu, words[I]...);
+}
+
+template <x86::reg32 Address, auto Core, std::size_t Taken, typename... Words>
+x86::reg32 directKept(win32::WinApplication* app, x86::CPU& cpu, Words... words)
+{
+    const x86::reg32 all[] = { x86::reg32(words)..., 0 };
+    x86::reg32* const into[] = { &cpu.eax, &cpu.edx, &cpu.ebx, &cpu.ecx };
+    for (std::size_t i = 0; i < sizeof...(Words) && i < 4; ++i)
+        *into[i] = all[i];
+    const auto result = directOf<Address, Core>(app, cpu, all, std::make_index_sequence<Taken>{});
+    if constexpr (std::is_same_v<std::remove_cv_t<decltype(result)>, x86::reg32>)
+        cpu.eax = result;
+    else
+        cpu.eax = *result;
+    return cpu.eax;
+}
+
+}  // namespace
+}  // namespace nfs3hp
+
 
 /* The network, decompiled: what the game says over it and how it gets there.
  *
@@ -190,12 +230,12 @@ reg32 thunked(Guest& guest, CPU& cpu, Words... words)
 
 void enter(Guest& guest, CPU& cpu, reg32 lock)
 {
-    windows<kEnterCriticalSection, &win32::kernel32::EnterCriticalSection>(guest, cpu, guest.dword(lock));
+    windows<kEnterCriticalSection, &host::enterLock>(guest, cpu, guest.dword(lock));
 }
 
 reg32 leave(Guest& guest, CPU& cpu, reg32 lock)
 {
-    return windows<kLeaveCriticalSection, &win32::kernel32::LeaveCriticalSection>(guest, cpu, guest.dword(lock));
+    return windows<kLeaveCriticalSection, &host::leaveLock>(guest, cpu, guest.dword(lock));
 }
 
 /* sub_4a60e0 called as C++ for a caller whose exit shows what it leaves: the packet sent, edx and
@@ -272,7 +312,7 @@ reg32 frontend::neta::raceQuitVote(App* app, CPU& cpu, reg32 vote)
     // The game's code hands it the ticks in eax, which it does not read.
     reg32 key = fe::direct<0x4cc970, frontend::glue::nextKey>(app, cpu) & 0xffff;
     if (sreg32(key) < 0xff)
-        key = guest.call(kToUpper, args({ key }));
+        key = fe::direct<kToUpper, watcom::clib::toupper>(guest.app(), guest.cpu(), key);
     const bool sameKey = key == guest.dword(kLastKey);
     if (key != 0 && (!sameKey || sreg32(ticks) > sreg32(guest.dword(kKeyRepeat))))
         guest.setDword(kKeyRepeat, ticks + (sameKey ? 5 : 15));
@@ -316,7 +356,7 @@ reg32 frontend::neta::raceQuitVote(App* app, CPU& cpu, reg32 vote)
             if (going)
             {
                 if (guest.dword(kLinkKind) != 0)
-                    guest.call(kAnnounceMachineLeft, args({ machine }));
+                    directKept<0x49ecf0, ea::machineLeftAnnounced, 1>(guest.app(), guest.cpu(), machine);
                 else
                     vote = 3;
             }
@@ -415,7 +455,7 @@ reg32 frontend::neta::lobbyChanged(App* app, CPU& cpu)
     constexpr reg32 kPlayersChanged = 0x7a22a8;
     const reg32 joined = guest::direct<0x49eae0, hostLobby>(app, cpu);
     const reg32 colours = guest.frame() + 4;
-    const reg32 machine = widened(guest.call(kPlayerMachine, args({ signedWord(guest, kThisMachine) })));
+    const reg32 machine = widened(directKept<0x4a6690, ea::machineOfPlayerNumber, 1>(guest.app(), guest.cpu(), signedWord(guest, kThisMachine)));
     reg32 changed = 0;
     if (machine != reg32(-1))
     {
@@ -427,7 +467,7 @@ reg32 frontend::neta::lobbyChanged(App* app, CPU& cpu)
         const bool same = guest.byte(0x79f92c) == guest.dword(kPlayerCar)
             && guest.byte(0x79f92d) == guest.dword(kPlayerColour)
             && guest.byte(0x79f920) == guest.dword(kPlayerTransmission)
-            && guest.call(kStrcmp, args({ 0x79f921, kPlayerName })) == 0
+            && fe::direct<kStrcmp, watcom::clib::strcmp>(guest.app(), guest.cpu(), 0x79f921, kPlayerName) == 0
             && joined == 0
             && guest.byte(mine + 0x79f604) == guest.dword(kPlayerCar)
             && guest.byte(mine + 0x79f605) == guest.dword(kPlayerColour)
@@ -513,7 +553,7 @@ reg32 frontend::neta::ipxOpen(App* app, CPU& cpu, reg32 portNumber, reg32 flagVa
     guest.setDword(kWhereFunction, 0x54d228);
 
     const reg32 state = reg32(*fe::direct<0x4e1620, ea::reserved>(app, cpu, 0x54d238, kStateBytes, guest.dword(0x5643f4)));
-    guest.call(kFillZero, args({ state, kStateBytes }));
+    fe::direct<kFillZero, ea::clearBytes>(guest.app(), guest.cpu(), state, kStateBytes);
     const reg32 freeQueue = state + 0x70;
     guest::direct<0x50dcd0, netb::qinit>(app, cpu, freeQueue, 0, 0);
     guest::direct<0x50dcd0, netb::qinit>(app, cpu, state + 0x8c, 0, 0);
@@ -522,7 +562,7 @@ reg32 frontend::neta::ipxOpen(App* app, CPU& cpu, reg32 portNumber, reg32 flagVa
         guest::direct<0x50de50, netb::qpush>(app, cpu, freeQueue, packet);
     guest.leaveEbx(freeQueue);  // as the calls by address left it: the queue went in ebx too
 
-    const reg32 socket = thunked<kSocket, &win32::wsock32::socket>(guest, cpu, kAfIpx, kSockDgram, kNsProtoIpx);
+    const reg32 socket = thunked<kSocket, &host::socketOpen>(guest, cpu, kAfIpx, kSockDgram, kNsProtoIpx);
     guest.setDword(state + 0x20, 1);
     guest.setDword(state + 0x58, socket);
     const reg32 flag = guest.dword(frame + 0x24);
@@ -537,26 +577,26 @@ reg32 frontend::neta::ipxOpen(App* app, CPU& cpu, reg32 portNumber, reg32 flagVa
     {
         guest.setDword(option, 1);
         guest.leaveEbx(guest.dword(state + 0x58));
-        thunked<kSetSockOpt, &win32::wsock32::setsockopt>(guest, cpu, guest.dword(state + 0x58), kSolSocket,
+        thunked<kSetSockOpt, &host::socketSetOption>(guest, cpu, guest.dword(state + 0x58), kSolSocket,
                                                           kSoBroadcast, option, 4);
         guest.setDword(option, 0);
-        thunked<kSetSockOpt, &win32::wsock32::setsockopt>(guest, cpu, guest.dword(state + 0x58), kSolSocket,
+        thunked<kSetSockOpt, &host::socketSetOption>(guest, cpu, guest.dword(state + 0x58), kSolSocket,
                                                           kIpxReceiveBroadcast, option, 4);
-        thunked<kSetSockOpt, &win32::wsock32::setsockopt>(guest, cpu, guest.dword(state + 0x58), kNsProtoIpx,
+        thunked<kSetSockOpt, &host::socketSetOption>(guest, cpu, guest.dword(state + 0x58), kNsProtoIpx,
                                                           kIpxReceiveBroadcast, option, 4);
         guest.setDword(option, 0);
         guest.leaveEbx(guest.dword(state + 0x58));
-        thunked<kIoctlSocket, &win32::wsock32::ioctlsocket>(guest, cpu, guest.dword(state + 0x58), kFionBio, option);
+        thunked<kIoctlSocket, &host::socketControl>(guest, cpu, guest.dword(state + 0x58), kFionBio, option);
 
         guest.call(kFillZero, args({ name, kSockaddrBytes }));
         const reg32 hostPort = guest.word(port);
         guest.setWord(name, kAfIpx);
         cpu.eax = hostPort;  // as the code has it at the call
-        guest.setWord(name + 0xc, reg16(thunked<kHtons, &win32::wsock32::htons>(guest, cpu, hostPort)));
-        if (thunked<kBind, &win32::wsock32::bind>(guest, cpu, guest.dword(state + 0x58), name, kSockaddrBytes) == 0)
+        guest.setWord(name + 0xc, reg16(thunked<kHtons, &host::byteSwap16>(guest, cpu, hostPort)));
+        if (thunked<kBind, &host::socketBind>(guest, cpu, guest.dword(state + 0x58), name, kSockaddrBytes) == 0)
         {
             guest.setDword(nameBytes, kSockaddrBytes);
-            if (thunked<kGetSockName, &win32::wsock32::getsockname>(guest, cpu, guest.dword(state + 0x58), name,
+            if (thunked<kGetSockName, &host::socketName>(guest, cpu, guest.dword(state + 0x58), name,
                                                                     nameBytes) == 0
                 && guest.dword(nameBytes) == kSockaddrBytes)
             {
@@ -577,9 +617,9 @@ reg32 frontend::neta::ipxOpen(App* app, CPU& cpu, reg32 portNumber, reg32 flagVa
         guest::direct<0x512180, netb::commEvent>(app, cpu, 0x54d240, 0, 0, 0, 1, 0);
     const reg32 openSocket = guest.dword(state + 0x58);
     if (openSocket != reg32(-1)
-        && thunked<kCloseSocket, &win32::wsock32::closesocket>(guest, cpu, openSocket) == reg32(-1))
+        && thunked<kCloseSocket, &host::socketClose>(guest, cpu, openSocket) == reg32(-1))
     {
-        const reg32 error = thunked<kWsaGetLastError, &win32::wsock32::WSAGetLastError>(guest, cpu);
+        const reg32 error = thunked<kWsaGetLastError, &host::netLastError>(guest, cpu);
         const reg32 level = guest.dword(kLogLevel);
         guest.leaveEdx(level);
         guest.setDword(frame + 0x1c, error);
@@ -613,7 +653,7 @@ reg32 frontend::neta::npsStart(App* app, CPU& cpu, reg32 name, reg32 localPort, 
     const reg32 loaded = fe::direct<0x4a59c0, frontend::wata::npsEnsureDll>(app, cpu, 0);
     if (loaded == 0)
         return loaded;
-    guest.call(kFillZero, args({ kNpsState, 0xbc }));
+    fe::direct<kFillZero, ea::clearBytes>(guest.app(), guest.cpu(), kNpsState, 0xbc);
     if (name == 0)
         name = 0x53dba4;
     guest.copyString(kNpsName, name);
@@ -649,7 +689,8 @@ reg32 frontend::neta::npsStart(App* app, CPU& cpu, reg32 name, reg32 localPort, 
     guest.copyString(listing + 0x2a, 0x53dbb4);
     guest.setDword(listing + 0x34, 0x29a);
     guest.setDword(listing + 0x38, 0);
-    guest.call(kMemset, args({ listing + 0x3c, 0, 0x100 }));
+    fe::direct<0x4e0640, watcom::clib::memset>(app, cpu, listing + 0x3c, 0u, 0x100u);
+    guest.leaveEbx(0x100);  // as the code loads it for it, which it keeps
     guest.copyString(listing + 0x3c, 0x53dbc0);
     const reg32 version = guest.dword(kNpsVersion);
     guest.leaveEdx(version);
@@ -712,7 +753,7 @@ reg32 frontend::neta::barrier(App* app, CPU& cpu, reg32 seconds, reg32 point)
                 guest.leaveEdx(machine * 2);
                 if (signedWord(guest, barrier) == guest.dword(frame + 4))
                     break;
-                const reg32 tasks = guest.call(kRunSystemTasks, args({ 0 }));
+                const reg32 tasks = reg32(*fe::direct<0x4e7630, port::stream::runDueTasks>(app, cpu, cpu.esp - 4, 0u));
                 if (guest.word(kSessionOver) != 0)
                 {
                     guest.setWord(barrier, 0);
@@ -734,7 +775,7 @@ reg32 frontend::neta::barrier(App* app, CPU& cpu, reg32 seconds, reg32 point)
                 }
             }
             if (wasDropped)
-                guest.call(kAnnounceMachineLeft, args({ machine }));
+                directKept<0x49ecf0, ea::machineLeftAnnounced, 1>(guest.app(), guest.cpu(), machine);
             enter(guest, cpu, kBarrierLock);
             guest.leaveEdx(machine * 2);
             if (signedWord(guest, barrier) == guest.dword(frame + 4))
@@ -754,7 +795,7 @@ reg32 frontend::neta::barrier(App* app, CPU& cpu, reg32 seconds, reg32 point)
             leave(guest, cpu, kBarrierLock);
             return sendLeaving(app, cpu, kEndpoints, frame, kPacketBytes);
         }
-        guest.call(kRunSystemTasks, args({ 0 }));
+        fe::direct<0x4e7630, port::stream::runDueTasks>(app, cpu, cpu.esp - 4, 0u);
         if (guest.word(kSessionOver) != 0 || guest.dword(kEndpointUsed) == 0)
         {
             guest.setWord(kSessionFailed, 1);
@@ -934,11 +975,11 @@ reg32 frontend::neta::exchangeCars(App* app, CPU& cpu)
     }
     else
     {
-        const reg32 mine = widened(guest.call(kPlayerMachine, args({ signedWord(guest, kThisMachine) })));
+        const reg32 mine = widened(directKept<0x4a6690, ea::machineOfPlayerNumber, 1>(guest.app(), guest.cpu(), signedWord(guest, kThisMachine)));
         const reg32 car = reg32(*fe::direct<0x439520, load::idOf>(app, cpu, guest.dword(kPlayerCar)));
         for (reg32 i = 0; sreg32(i) < sreg32(signedWord(guest, kMachineCount)); ++i)
         {
-            const reg32 machine = widened(guest.call(kPlayerMachine, args({ i })));
+            const reg32 machine = widened(directKept<0x4a6690, ea::machineOfPlayerNumber, 1>(guest.app(), guest.cpu(), i));
             if (machine != reg32(-1) && machine == mine
                 && fe::direct<0x439530, frontend::loada::carIdIsPlain>(app, cpu, car) != 0)
             {
@@ -956,13 +997,13 @@ reg32 frontend::neta::exchangeCars(App* app, CPU& cpu)
     {
         for (reg32 i = 0; (count = signedWord(guest, kMachineCount)), sreg32(i) < sreg32(count); ++i)
         {
-            const reg32 machine = widened(guest.call(kPlayerMachine, args({ i })));
+            const reg32 machine = widened(directKept<0x4a6690, ea::machineOfPlayerNumber, 1>(guest.app(), guest.cpu(), i));
             if (machine != reg32(-1))
             {
                 const reg32 id = kPlayerRecords + machine * kPlayerRecordSize + 0x19;
                 const reg32 car = fe::direct<0x439990, load::placeById>(app, cpu, id);
                 if (car == reg32(-1))
-                    guest.call(kError, args({}, { 0x53c5b0 }));
+                    fe::direct<0x401010, ea::error>(app, cpu, 0x53c5b0u, guest::Words({}));
                 if (fe::direct<0x439530, frontend::loada::carIdIsPlain>(app, cpu, id) != 0)
                 {
                     const reg32 header = frame + 0x1c4, body = frame;
@@ -1011,7 +1052,7 @@ reg32 frontend::neta::hostLobby(App* app, CPU& cpu)
             if (guest.dword(kEndpointUsed + at) == 0 && guest.dword(kEndpointOffered + at) != 0)
             {
                 guest.leaveEcx(1);
-                guest.call(kDropMachine, args({ kEndpoints + at }));
+                directKept<0x49ecb0, ea::connectionDropped, 1>(guest.app(), guest.cpu(), kEndpoints + at);
                 guest.setWord(changedPlace, 1);
             }
         }
@@ -1175,7 +1216,7 @@ reg32 frontend::neta::sendMyCar(App* app, CPU& cpu)
     Guest guest(app, cpu);
     const fe::Frame locals(guest, cpu, 0x18);
     guest.setByte(kMyRecord, 3);
-    const reg32 machine = widened(guest.call(kPlayerMachine, args({ signedWord(guest, kThisMachine) })));
+    const reg32 machine = widened(directKept<0x4a6690, ea::machineOfPlayerNumber, 1>(guest.app(), guest.cpu(), signedWord(guest, kThisMachine)));
     guest.setDword(0x79f91c, machine);
     if (machine == reg32(-1))
         return machine;
@@ -1184,9 +1225,10 @@ reg32 frontend::neta::sendMyCar(App* app, CPU& cpu)
     const reg32 id = reg32(*fe::direct<0x439520, load::idOf>(app, cpu, guest.dword(kPlayerCar)));
     copyBytes(guest, 0x79f931, id, 0x10);
     reg32 text = reg32(*fe::direct<0x439ab0, port::fields::carTextOf>(app, cpu, cpu.esp - 4, guest.dword(kPlayerCar), std::int32_t(0)));
-    guest.call(kStrncpy, args({ 0x79f941, text, 0xf }));
+    fe::direct<kStrncpy, watcom::clib::strncpy>(guest.app(), guest.cpu(), 0x79f941, text, 0xf);
     guest.setByte(0x79f950, 0);
     text = reg32(*fe::direct<0x439ab0, port::fields::carTextOf>(app, cpu, cpu.esp - 4, guest.dword(kPlayerCar), std::int32_t(1)));
+    // By address: the ebx and edx it leaves may be left at the end; eax is read after it.
     guest.call(kStrncpy, args({ 0x79f951, text, 0x10 }));
     guest.setByte(0x79f960, 0);
     fe::direct<0x472360, port::fields::customColoursRefreshed>(app, cpu, cpu.esp - 4, cpu.eax);
@@ -1311,7 +1353,7 @@ reg32 frontend::neta::playersToRace(App* app, CPU& cpu)
     reg32 left = guest::direct<0x4a6a10, barrier>(app, cpu, 0x1e, 0x1f);
     for (reg32 i = 0; sreg32(i) < sreg32(signedWord(guest, kMachineCount)); ++i)
     {
-        left = guest.call(kPlayerMachine, args({ i }));
+        left = directKept<0x4a6690, ea::machineOfPlayerNumber, 1>(guest.app(), guest.cpu(), i);
         const reg32 machine = widened(left);
         if (machine == reg32(-1))
             continue;
@@ -1368,16 +1410,16 @@ reg32 frontend::neta::compareVersions(App* app, CPU& cpu, reg32 link)
         if (guest.byte(kGameQuits) != 0 || guest.word(kSessionOver) != 0)
             return 0;
     }
-    if (guest.call(kStrcmp, args({ kHostVersion, version })) == 0)
+    if (fe::direct<kStrcmp, watcom::clib::strcmp>(guest.app(), guest.cpu(), kHostVersion, version) == 0)
     {
         guest.setByte(kHostVersion, 0);
         return 1;
     }
-    guest.call(kCloseNetwork);
+    directKept<0x4a65e0, ea::networkClosed, 0>(guest.app(), guest.cpu());
     reg32 file = kSourceFile;
-    if (guest.call(kStrrchr, args({ kSourceFile, kBackslash })) != 0)
-        file = guest.call(kStrrchr, args({ kSourceFile, kBackslash })) + 1;
-    guest.call(kError, args({}, { kVersionsDiffer, 1, file, kLine, kHostVersion, version }));
+    if (fe::direct<kStrrchr, watcom::clib::strrchr>(guest.app(), guest.cpu(), kSourceFile, kBackslash) != 0)
+        file = fe::direct<kStrrchr, watcom::clib::strrchr>(guest.app(), guest.cpu(), kSourceFile, kBackslash) + 1;
+    fe::direct<kError, ea::error>(guest.app(), guest.cpu(), kVersionsDiffer, guest::Words{1, file, kLine, kHostVersion, version});
     return 0;
 }
 
@@ -1402,7 +1444,7 @@ reg32 frontend::neta::initService(App* app, CPU& cpu, reg32 service, reg32 name,
     guest.setDword(frame + 4, name);
     guest.setDword(frame, first);
     guest.setDword(frame + 8, second);
-    guest.call(kNetTrace, args({ 0x54d0d0 }));
+    directKept<0x4f4c50, ea::netCallTraced, 1>(guest.app(), guest.cpu(), 0x54d0d0);
     if (guest.dword(kReady) == 0)
     {
         guest::direct<0x50dcd0, netb::qinit>(app, cpu, kServicesQueue, 0, 0);
@@ -1413,7 +1455,7 @@ reg32 frontend::neta::initService(App* app, CPU& cpu, reg32 service, reg32 name,
     }
     if (guest.call(kQueueFindPosition, args({ kServicesQueue, service })) != reg32(-1))
         guest::direct<0x4f4e60, killService>(app, cpu, service);
-    guest.call(kFillZero, args({ service, kRecordBytes }));
+    fe::direct<kFillZero, ea::clearBytes>(guest.app(), guest.cpu(), service, kRecordBytes);
     guest.setDword(frame + 0xc, 0);
     reg32 result = 0;
     if (sreg32(guest.dword(kServiceCount)) > 0)
@@ -1476,7 +1518,7 @@ reg32 frontend::neta::sendCarFile(App* app, CPU& cpu, reg32 packet, reg32 file, 
     while (sreg32(left) > 0)
     {
         const reg32 chunk = sreg32(left) < sreg32(kPacketRoom) ? left : kPacketRoom;
-        if (guest.call(kFread, args({ packet + 1, chunk, 1, file })) == 0)
+        if (fe::direct<kFread, watcom::clib::fread>(guest.app(), guest.cpu(), packet + 1, chunk, 1, file) == 0)
             return reg32(-1);
         fe::direct<0x4e7630, port::stream::runDueTasks>(app, cpu, cpu.esp - 4, 0);
         fe::direct<0x4a60e0, ea::packetSent>(app, cpu, 0, packet, chunk + 1);
@@ -1486,7 +1528,7 @@ reg32 frontend::neta::sendCarFile(App* app, CPU& cpu, reg32 packet, reg32 file, 
     if (viv != 0)
         fe::direct<0x43b9b0, ea::vivClosed>(app, cpu, viv, filePlace);
     else
-        guest.call(kFclose, args({ file }));
+        fe::direct<kFclose, watcom::clib::fclose>(guest.app(), guest.cpu(), file);
     reg32 sent = 0;
     sreg32 tail = kTailBytes;
     do
@@ -1523,7 +1565,7 @@ reg32 frontend::neta::allReady(App* app, CPU& cpu)
         {
             for (reg32 i = 0; sreg32(i) < sreg32(signedWord(guest, kMachineCount)); ++i)
             {
-                const reg32 machine = widened(guest.call(kPlayerMachine, args({ i })));
+                const reg32 machine = widened(directKept<0x4a6690, ea::machineOfPlayerNumber, 1>(guest.app(), guest.cpu(), i));
                 if (machine == reg32(-1))
                     return 0;
                 if (guest.byte(machine * kPlayerRecordSize + 0x79f5f8) == 0)
@@ -1546,7 +1588,7 @@ reg32 frontend::neta::allReady(App* app, CPU& cpu)
             guest::direct<0x49aa80, sendSettings>(app, cpu);
         }
         guest::direct<0x49a8e0, sendMyCar>(app, cpu);
-        guest.call(kFillZero, args({ kMachineGone, 0x10 }));
+        fe::direct<kFillZero, ea::clearBytes>(guest.app(), guest.cpu(), kMachineGone, 0x10);
         guest::direct<0x4a6a10, barrier>(app, cpu, 0x3c, 1);
         guest::direct<0x4a6a10, barrier>(app, cpu, 0x1e, 1);
     }
@@ -1610,7 +1652,7 @@ reg32 frontend::neta::inputPacket(App* app, CPU& cpu, reg32 packet, reg32 size)
     }
     guest.leaveEbx(guest.dword(kInputLock));
     cpu.eax = eax;
-    return windows<kLeaveCriticalSection, &win32::kernel32::LeaveCriticalSection>(guest, cpu, guest.dword(kInputLock));
+    return windows<kLeaveCriticalSection, &host::leaveLock>(guest, cpu, guest.dword(kInputLock));
 }
 
 void frontend::netInputPacket(App* app, CPU& cpu)
@@ -1692,13 +1734,13 @@ reg32 frontend::neta::ipxSend(App* app, CPU& cpu, reg32 state, reg32 whom, reg32
     else
         guest::direct<0x4f5900, portToSockaddr>(app, cpu, signedWord(guest, state + 0x24), to);
     enter(guest, cpu, kSocketLock);
-    const reg32 sent = thunked<kSendTo, &win32::wsock32::sendto>(guest, cpu, guest.dword(state + 0x58), frame,
+    const reg32 sent = thunked<kSendTo, &host::socketSendTo>(guest, cpu, guest.dword(state + 0x58), frame,
                                                                  bytes + 4, 0, to, kSockaddrBytes);
     guest.setDword(frame + 0x134, sent);
     leave(guest, cpu, kSocketLock);
     if (sent == reg32(-1))
     {
-        const reg32 error = thunked<kWsaGetLastError, &win32::wsock32::WSAGetLastError>(guest, cpu);
+        const reg32 error = thunked<kWsaGetLastError, &host::netLastError>(guest, cpu);
         const reg32 level = guest.dword(kLogLevel);
         guest.leaveEcx(level);
         guest.setDword(frame + 0x130, error);
@@ -1734,7 +1776,7 @@ reg32 frontend::neta::ipxRecvFrom(App* app, CPU& cpu, reg32 state, reg32 packet)
     constexpr reg32 kSockaddrBytes = 0xe, kRoom = 0x11c;
     const reg32 from = guest.frame(), fromBytes = from + 0x10, data = packet + 0x24;
     guest.setDword(fromBytes, kSockaddrBytes);
-    const reg32 got = thunked<kRecvFrom, &win32::wsock32::recvfrom>(guest, cpu, guest.dword(state + 0x58), data,
+    const reg32 got = thunked<kRecvFrom, &host::socketRecvFrom>(guest, cpu, guest.dword(state + 0x58), data,
                                                                     kRoom, 0, from, fromBytes);
     guest.setDword(packet + 8, got);
     if (sreg32(got) <= 0)
@@ -2087,7 +2129,7 @@ reg32 frontend::neta::playerPacket(App* app, CPU& cpu, reg32 packet)
     guest.leaveEdx(guest.dword(kPlayersLock));
     enter(guest, cpu, kPlayersLock);
     if (std::int16_t(guest.word(kThisMachine)) >= 0
-        && widened(guest.call(kPlayerMachine, args({ signedWord(guest, kThisMachine) }))) == guest.dword(packet + 4))
+        && widened(directKept<0x4a6690, ea::machineOfPlayerNumber, 1>(guest.app(), guest.cpu(), signedWord(guest, kThisMachine))) == guest.dword(packet + 4))
     {
         guest.leaveEbx(guest.dword(kPlayersLock));
         return leave(guest, cpu, kPlayersLock);
@@ -2134,7 +2176,7 @@ reg32 frontend::neta::rasPhoneBook(App* app, CPU& cpu, reg32 names)
             const reg32 name = names + i * 21;
             const reg32 entry = kEntries + i * kEntrySize + 4;
             guest.setDword(bytes + 4, entry);
-            guest.call(kStrncpy, args({ name, entry, 0x14 }));
+            fe::direct<kStrncpy, watcom::clib::strncpy>(guest.app(), guest.cpu(), name, entry, 0x14);
             guest.setByte(name + 0x14, 0);
         }
     }
@@ -2302,9 +2344,9 @@ reg32 frontend::neta::ipxClose(App* app, CPU& cpu, reg32 state)
     const reg32 event = guest.dword(state + 0x1c);
     guest.setDword(state + 0x20, 0);
     fe::direct<0x4dfb30, ea::eventSet>(app, cpu, event);
-    if (thunked<kCloseSocket, &win32::wsock32::closesocket>(guest, cpu, guest.dword(state + 0x58)) == reg32(-1))
+    if (thunked<kCloseSocket, &host::socketClose>(guest, cpu, guest.dword(state + 0x58)) == reg32(-1))
     {
-        const reg32 error = thunked<kWsaGetLastError, &win32::wsock32::WSAGetLastError>(guest, cpu);
+        const reg32 error = thunked<kWsaGetLastError, &host::netLastError>(guest, cpu);
         const reg32 errorPlace = guest.frame() + 8;
         guest.setDword(errorPlace, error);
         if (sreg32(guest.dword(kLogLevel)) >= kEnoughLog)
@@ -2312,8 +2354,8 @@ reg32 frontend::neta::ipxClose(App* app, CPU& cpu, reg32 state)
     }
     while (guest.dword(state + 0x1c) != 0)
         fe::direct<0x4df8e0, ea::sleepFor>(app, cpu, 0);
-    guest.call(kQueueFree, args({ state + 0x70 }));
-    guest.call(kQueueFree, args({ state + 0x8c }));
+    directKept<0x50dde0, ea::queueLockFreed, 1>(guest.app(), guest.cpu(), state + 0x70);
+    directKept<0x50dde0, ea::queueLockFreed, 1>(guest.app(), guest.cpu(), state + 0x8c);
     fe::direct<0x4e1890, ea::purgeBlock>(app, cpu, state);
     return 1;
 }
@@ -2393,7 +2435,7 @@ reg32 frontend::neta::sessionReset(App* app, CPU& cpu)
     guest.setDword(kMemoryFlags, 0x10);
     guest::direct<0x4f5230, servicesReady>(app, cpu);
     guest.setDword(kMemoryFlags, 0);
-    guest.call(kFillZero, args({ kEndpoints, kEndpointsBytes }));
+    fe::direct<kFillZero, ea::clearBytes>(guest.app(), guest.cpu(), kEndpoints, kEndpointsBytes);
     reg32 last = 0;
     for (reg32 i = 0; i < 7; ++i)
         last = guest::direct<0x4a6410, endpointHandlers>(app, cpu, kEndpoints + i * kEndpointSize);
@@ -2426,7 +2468,7 @@ reg32 carFileComing(Guest& guest, reg32 packet, bool received)
     guest.leaveEdx(id);
     copyBytes(guest, kFileId, id, 0x10);
     guest.setDword(kFileTime, guest.dword(packet + 0x14));
-    const reg32 car = guest.call(kFindCarById, args({ id }));
+    const reg32 car = fe::direct<0x439990, load::placeById>(guest.app(), guest.cpu(), id);
     if (car != reg32(-1))
     {
         guest.setDword(kFileDone, 1);
@@ -2472,7 +2514,7 @@ reg32 frontend::neta::joinRaceNet(App* app, CPU& cpu)
     Guest guest(app, cpu);
     const fe::Frame locals(guest, cpu, 0xc);
     constexpr reg32 kResetNetwork = 0x4a6390, kFailed = 0xc2;
-    guest.call(kResetNetwork, args({ 1, 0, 0xfffffffe }));
+    directKept<0x4a6390, ea::networkReset, 1>(guest.app(), guest.cpu(), 1, 0, 0xfffffffe);
     guest.setWord(kIsHost, 0);
     guest.setWord(kThisMachine, 0xfffe);
     guest.setWord(kMachineCount, 0);
@@ -2485,7 +2527,7 @@ reg32 frontend::neta::joinRaceNet(App* app, CPU& cpu)
         {
             fe::direct<0x444be0, frontend::dialogs::messageById>(app, cpu, kFailed);
             guest.setWord(kSessionOver, 1);
-            guest.call(kCloseNetwork);
+            directKept<0x4a65e0, ea::networkClosed, 0>(guest.app(), guest.cpu());
             return 0;
         }
     }
@@ -2495,7 +2537,7 @@ reg32 frontend::neta::joinRaceNet(App* app, CPU& cpu)
         // The game's code hands it 1 in edx too, which it does not read.
         fe::direct<0x444be0, frontend::dialogs::messageById>(app, cpu, kFailed);
         guest.setWord(kSessionOver, 1);
-        guest.call(kCloseNetwork);
+        directKept<0x4a65e0, ea::networkClosed, 0>(guest.app(), guest.cpu());
         return 0;
     }
     return 1;
@@ -2556,7 +2598,7 @@ reg32 frontend::neta::getServices(App* app, CPU& cpu, reg32 callback, reg32 one,
     const fe::Frame locals(guest, cpu, 0x1c);
     constexpr reg32 kServiceCount = 0x566de4, kServiceNames = 0x9f25d0, kServiceTables = 0x9f25b0;
     constexpr reg32 kBigEnough = 0x20;
-    guest.call(kNetTrace, args({ 0x54d0c0, 1 }));
+    directKept<0x4f4c50, ea::netCallTraced, 1>(guest.app(), guest.cpu(), 0x54d0c0, 1);
     reg32 going = 1;
     guest.leaveEcx(0);
     guest.leaveEbx(guest.dword(kServiceCount));
@@ -2626,7 +2668,7 @@ reg32 frontend::neta::ipxThread(App* app, CPU& cpu)
             }
         } while (guest.dword(state + 0x20) != 0);
     }
-    const reg32 closed = guest.call(kCloseEvent, args({ guest.dword(state + 0x1c) }));
+    const reg32 closed = directKept<0x4dfc00, ea::eventClosed, 1>(guest.app(), guest.cpu(), guest.dword(state + 0x1c));
     guest.setDword(state + 0x1c, 0);
     return closed;
 }
@@ -2716,9 +2758,9 @@ reg32 frontend::neta::ipxReady(App* app, CPU& cpu, reg32 state)
     const fe::Frame locals(guest, cpu, 0x14);
     constexpr reg32 kQueueLength = 0x50e1d0, kFionRead = 0x4004667f;
     const reg32 frame = guest.frame();
-    if (guest.call(kQueueLength, args({ state + 0x8c })) != 0)
+    if (directKept<0x50e1d0, ea::queueLengthOf, 1>(guest.app(), guest.cpu(), state + 0x8c) != 0)
         return 1;
-    const reg32 answer = thunked<kIoctlSocket, &win32::wsock32::ioctlsocket>(guest, cpu, guest.dword(state + 0x58),
+    const reg32 answer = thunked<kIoctlSocket, &host::socketControl>(guest, cpu, guest.dword(state + 0x58),
                                                                              kFionRead, frame + 4);
     guest.setDword(frame, answer);
     if (answer == reg32(-1))
@@ -2830,18 +2872,18 @@ reg32 frontend::neta::networkThere(App* app, CPU& cpu)
     Guest guest(app, cpu);
     const fe::Frame locals(guest, cpu, 0x19c);
     constexpr reg32 kGetSystemMetrics = 0x534750, kSmNetwork = 0x3f;
-    if ((windows<kGetSystemMetrics, &win32::user32::GetSystemMetrics>(guest, cpu, kSmNetwork) & 1) != 0)
+    if ((windows<kGetSystemMetrics, &host::systemMetrics>(guest, cpu, kSmNetwork) & 1) != 0)
         return 1;
-    if (thunked<kWsaStartup, &win32::wsock32::WSAStartup>(guest, cpu, 0x101, guest.frame()) != 0)
+    if (thunked<kWsaStartup, &host::netStartup>(guest, cpu, 0x101, guest.frame()) != 0)
         return 0;
-    const reg32 socket = thunked<kSocket, &win32::wsock32::socket>(guest, cpu, 2, 1, 0);
+    const reg32 socket = thunked<kSocket, &host::socketOpen>(guest, cpu, 2, 1, 0);
     if (socket == reg32(-1))
     {
-        thunked<kWsaCleanup, &win32::wsock32::WSACleanup>(guest, cpu);
+        thunked<kWsaCleanup, &host::netCleanup>(guest, cpu);
         return 0;
     }
-    thunked<kCloseSocket, &win32::wsock32::closesocket>(guest, cpu, socket);
-    thunked<kWsaCleanup, &win32::wsock32::WSACleanup>(guest, cpu);
+    thunked<kCloseSocket, &host::socketClose>(guest, cpu, socket);
+    thunked<kWsaCleanup, &host::netCleanup>(guest, cpu);
     return 1;
 }
 
@@ -2880,7 +2922,7 @@ reg32 frontend::neta::ipxAnswerName(App* app, CPU& cpu, reg32 state, reg32 whom,
     const fe::Frame locals(guest, cpu, 0x14);
     constexpr reg32 kStrncmp = 0x4eb390, kNameTag = 0xea737276;
     guest.setDword(guest.frame() + 8, whom);
-    const reg32 differs = guest.call(kStrncmp, args({ name, state + 0x26, 0x30 }));
+    const reg32 differs = fe::direct<kStrncmp, watcom::clib::strncmp>(guest.app(), guest.cpu(), name, state + 0x26, 0x30);
     if (differs != 0)
         return differs;
     return guest::direct<0x4f60b0, ipxSend>(app, cpu, state, whom, kNameTag, name, guest.length(name) + 1);
@@ -2925,7 +2967,7 @@ reg32 frontend::neta::lobbyClose(App* app, CPU& cpu)
         return eax;
     if (guest.dword(kLinkKind) != 2)
     {
-        eax = guest.call(kSessionIndex, args({ guest.dword(0x55e71c) })) * 11;
+        eax = directKept<0x49f1c0, ea::sessionIndexOf, 1>(guest.app(), guest.cpu(), guest.dword(0x55e71c)) * 11;
         if (guest.dword(0x55e738 + eax * 4) != 0)
             eax = guest.call(kShutGame, args({ 0x7a0390, 0 }));
     }
@@ -3051,7 +3093,7 @@ reg32 frontend::neta::lobbyOpen(App* app, CPU& cpu)
         return eax;
     if (guest.dword(kLinkKind) != 2)
     {
-        eax = guest.call(kSessionIndex, args({ guest.dword(0x55e71c) })) * 11;
+        eax = directKept<0x49f1c0, ea::sessionIndexOf, 1>(guest.app(), guest.cpu(), guest.dword(0x55e71c)) * 11;
         if (guest.dword(0x55e738 + eax * 4) != 0)
             eax = guest::direct<0x4f4f70, openGame>(app, cpu, 0x7a0390);
     }
@@ -3071,7 +3113,7 @@ reg32 frontend::neta::killService(App* app, CPU& cpu, reg32 service)
     Guest guest(app, cpu);
     const fe::Frame locals(guest, cpu, 0xc);
     constexpr reg32 kServicesQueue = 0x9f25f0, kQueueRemove = 0x50e150;
-    guest.call(kNetTrace, args({ 0x54d0e0 }));
+    directKept<0x4f4c50, ea::netCallTraced, 1>(guest.app(), guest.cpu(), 0x54d0e0);
     if (guest.call(kQueueFindPosition, args({ kServicesQueue, service })) == reg32(-1))
         return 0;
     const reg32 result = guest.call(guest.dword(guest.dword(service + 4) + 0xc), args({ service, service }));
@@ -3135,7 +3177,7 @@ reg32 frontend::neta::endpointLost(App* app, CPU& cpu, reg32 endpoint)
     {
         const reg32 machine = widened(fe::direct<0x4a6650, ea::machineOf>(app, cpu, endpoint));
         if (sreg32(machine) > -1)
-            guest.call(kAnnounceMachineLeft, args({ machine }));
+            directKept<0x49ecf0, ea::machineLeftAnnounced, 1>(guest.app(), guest.cpu(), machine);
         return 0;
     }
     guest.setWord(kSessionFailed, 1);
@@ -3156,7 +3198,7 @@ reg32 frontend::neta::ipxStartup(App* app, CPU& cpu)
     Guest guest(app, cpu);
     const fe::Frame locals(guest, cpu, 0x198);
     const reg32 data = guest.frame();
-    if (thunked<kWsaStartup, &win32::wsock32::WSAStartup>(guest, cpu, 0x101, data) != 0)
+    if (thunked<kWsaStartup, &host::netStartup>(guest, cpu, 0x101, data) != 0)
         return 0;
     const reg16 most = guest.word(data + 0x188);
     return most != 0 ? reg32(most) : 0x2000;
@@ -3258,7 +3300,7 @@ reg32 frontend::neta::dropGone(App* app, CPU& cpu)
     {
         if (guest.word(kMachineGone + machine * 2) != 2)
             continue;
-        guest.call(kDropMachine, args({ guest.dword(kMachineLinks + machine * 4) }));
+        directKept<0x49ecb0, ea::connectionDropped, 1>(guest.app(), guest.cpu(), guest.dword(kMachineLinks + machine * 4));
         guest.setWord(kMachineGone + machine * 2, 1);
     }
     return guest.eax();
@@ -3294,8 +3336,8 @@ reg32 frontend::neta::portToSockaddr(App* app, CPU& cpu, reg32 port, reg32 to)
     constexpr reg32 kFillBytes = 0x4e0716, kAfIpx = 6;
     guest.setDword(guest.frame(), port);
     guest.setWord(to, kAfIpx);
-    guest.call(kFillBytes, args({ to + 2, 4, 0 }));
-    guest.call(kFillBytes, args({ to + 6, 6, 0xff }));
+    fe::direct<kFillBytes, ea::fillBytes>(guest.app(), guest.cpu(), to + 2, 4, 0);
+    fe::direct<kFillBytes, ea::fillBytes>(guest.app(), guest.cpu(), to + 6, 6, 0xff);
     return guest.call(kMemmove, args({ guest.frame(), to + 0xc, 2 }));
 }
 
@@ -3422,7 +3464,7 @@ reg32 frontend::neta::hostRaceNet(App* app, CPU& cpu)
     Guest guest(app, cpu);
     const fe::Frame locals(guest, cpu, 0xc);
     constexpr reg32 kResetNetwork = 0x4a6390;
-    guest.call(kResetNetwork, args({ 1, 1 }));
+    directKept<0x4a6390, ea::networkReset, 1>(guest.app(), guest.cpu(), 1, 1);
     guest.leaveEbx(0);
     guest.setWord(kIsHost, 1);
     guest.setWord(kThisMachine, 0);
@@ -3469,7 +3511,7 @@ reg32 frontend::neta::exitNet(App* app, CPU& cpu)
             break;
         guest::direct<0x4f4e60, killService>(app, cpu, service);
     }
-    const reg32 freed = guest.call(kQueueFree, args({ kServicesQueue }));
+    const reg32 freed = directKept<0x50dde0, ea::queueLockFreed, 1>(guest.app(), guest.cpu(), kServicesQueue);
     guest.setDword(kReady, 0);
     return freed;
 }
@@ -3632,7 +3674,7 @@ reg32 frontend::neta::winsockClose(App* app, CPU& cpu)
 {
     Guest guest(app, cpu);
     const fe::Frame locals(guest, cpu, 8);
-    return thunked<kWsaCleanup, &win32::wsock32::WSACleanup>(guest, cpu) == 0 ? 1 : 0;
+    return thunked<kWsaCleanup, &host::netCleanup>(guest, cpu) == 0 ? 1 : 0;
 }
 
 void frontend::netWinsockClose(App* app, CPU& cpu)
@@ -3662,7 +3704,7 @@ namespace
 /* NET_'s calls, each to the service's table by its place, what it was called with going on. */
 reg32 callThroughTable(Guest& guest, reg32 service, reg32 name, reg32 place)
 {
-    guest.call(kNetTrace, args({ name }));
+    directKept<0x4f4c50, ea::netCallTraced, 1>(guest.app(), guest.cpu(), name);
     return guest.call(guest.dword(guest.dword(service + 4) + place), args({ service }));
 }
 
@@ -3715,7 +3757,7 @@ reg32 frontend::neta::openGame(App* app, CPU& cpu, reg32 service)
 {
     Guest guest(app, cpu);
     const fe::Frame locals(guest, cpu, 8);
-    guest.call(kNetTrace, args({ 0x54d148, service }));
+    directKept<0x4f4c50, ea::netCallTraced, 1>(guest.app(), guest.cpu(), 0x54d148, service);
     const reg32 table = guest.dword(service + 4);
     guest.leaveEcx(table);
     return guest.call(guest.dword(table + 0x28), args({ service, service }));
@@ -3787,7 +3829,7 @@ reg32 frontend::neta::ipxSetName(App* app, CPU& cpu, reg32 state, reg32 name)
 {
     Guest guest(app, cpu);
     const fe::Frame locals(guest, cpu, 8);
-    guest.call(kStrncpy, args({ state + 0x26, name, 0x30 }));
+    fe::direct<kStrncpy, watcom::clib::strncpy>(guest.app(), guest.cpu(), state + 0x26, name, 0x30);
     return guest::direct<0x5127d0, netb::ipxBroadcastOpen>(app, cpu, guest.dword(state + 0x58));
 }
 
@@ -4022,9 +4064,9 @@ reg32 frontend::neta::closeServices(App* app, CPU& cpu)
     constexpr reg32 kConnRestore = 0x4f5280, kQueueFree = 0x50dde0;
     if (guest.dword(0x566df4) == 0)
         return guest.eax();
-    guest.call(kConnRestore);
-    guest.call(kQueueFree, args({ 0x9f2628 }));
-    return guest.call(kQueueFree, args({ 0x9f260c }));
+    directKept<0x4f5280, ea::connectionsRestored, 1>(guest.app(), guest.cpu(), guest.cpu().eax);
+    directKept<0x50dde0, ea::queueLockFreed, 1>(guest.app(), guest.cpu(), 0x9f2628);
+    return directKept<0x50dde0, ea::queueLockFreed, 1>(guest.app(), guest.cpu(), 0x9f260c);
 }
 
 void frontend::netCloseServices(App* app, CPU& cpu)

@@ -1,4 +1,6 @@
 #include "port_menus.h"
+#include "native_ea_formats.h"
+#include "native_watcom.h"
 #include "port_buttons.h"
 #include "port_text.h"
 
@@ -269,6 +271,25 @@ struct Caller
     {
         return callGame(app, cpu, esp, target, a, stack, r);
     }
+    /* A typed core called as C++ (the C library's, EA's key wait, the language's text) from `esp`,
+     * where the game's code calls it: its result in r; false when the game stopped in it.  The
+     * registers the call by address loaded are not loaded: nothing here reads them after it. */
+    template <reg32 Address, auto Core, typename... A>
+    bool direct(reg32 esp, A... args)
+    {
+        cpu.esp = esp;
+        const auto result = guest::direct<Address, Core>(app, cpu, args...);
+        if (cpu.terminate)
+            return false;
+        r = valueOf(result);
+        return true;
+    }
+    static reg32 valueOf(reg32 value) { return value; }
+    template <class T>
+    static reg32 valueOf(const std::optional<T>& value)
+    {
+        return reg32(*value);
+    }
 };
 
 /* A rewrite called from here as the game's code calls it: its entry esp is
@@ -292,16 +313,18 @@ Result codelinkMatched(App* app, CPU& cpu, reg32 esp, reg32 codelink, reg32 name
     const reg32 copy = esp - 16 - 0x200;
     copyString(app, copy, codelink);
     Caller call{app, cpu};
-    if (!call(copy, kStrtok, {copy, kSeparators, ebx, name}))
+    // The game's code has ebx and the name in ebx and ecx too, which strtok and strcmp do not read.
+    (void)ebx;
+    if (!call.direct<kStrtok, watcom::clib::strtok>(copy, copy, kSeparators))
         return {};
     while (call.r != 0)
     {
         const reg32 token = call.r;
-        if (!call(copy, kStrcmp, {token, name, ebx, name}))
+        if (!call.direct<kStrcmp, watcom::clib::strcmp>(copy, token, name))
             return {};
         if (call.r == 0)
             return 1;
-        if (!call(copy, kStrtok, {0, kSeparators, ebx, name}))
+        if (!call.direct<kStrtok, watcom::clib::strtok>(copy, reg32(0), kSeparators))
             return {};
     }
     return 0;
@@ -321,7 +344,7 @@ Result handlersAssigned(App* app, CPU& cpu, reg32 esp, reg32 menu)
     const reg32 at = esp - 16;
     for (reg32 entry = kHandlerTable.at; word(app, entry) != 0; entry += sizeof(Handlers))
     {
-        if (!call(at, kStricmp, {word(app, entry), word(app, menu + 0x14), menu, entry}))
+        if (!call.direct<kStricmp, watcom::clib::stricmp>(at, word(app, entry), word(app, menu + 0x14)))
             return {};
         eax = call.r;
         if (eax != 0)
@@ -348,7 +371,7 @@ Result keywordFound(App* app, CPU& cpu, reg32 esp, reg32 keyword, reg32 type)
         const Keyword& row = kKeywords(app, int32_t(i));
         if (row.widget == 0)
             return -1;
-        if (!call(at, kStrcmp, {keyword, row.name, i << 4, i}))
+        if (!call.direct<kStrcmp, watcom::clib::strcmp>(at, keyword, row.name))
             return {};
         if (call.r == 0 && (type == row.widget || row.widget == kAnyWidget))
             return int32_t(i);
@@ -377,7 +400,7 @@ Result widgetTyped(App* app, CPU& cpu, reg32 esp, reg32 name)
         const Widget& w = kWidgets(app, i);
         if (w.type == 0)
             return -1;
-        if (!call(at, kStrcmp, {name, w.name, name, reg32(i)}))
+        if (!call.direct<kStrcmp, watcom::clib::strcmp>(at, name, w.name))
             return {};
         if (call.r == 0)
             return int32_t(w.type);
@@ -432,7 +455,10 @@ Result sectionTyped(App* app, CPU& cpu, reg32 esp, reg32 key)
 Result numberParsed(App* app, CPU& cpu, reg32 esp, reg32 text, reg32 convert, const Args& in)
 {
     Caller call{app, cpu};
-    if (!call(esp - 12, convert, {text, text, in.ebx, in.ecx}))
+    // atol is atoi's code (watcom::clib::atoi), called at its own address.
+    (void)in;
+    if (!(convert == kAtol ? call.direct<kAtol, watcom::clib::atoi>(esp - 12, text)
+                           : call.direct<kAtoi, watcom::clib::atoi>(esp - 12, text)))
         return {};
     for (reg32 c = text; byteAt(app, c) != 0; ++c)
         if (!isDigit(app, byteAt(app, c)))
@@ -440,15 +466,17 @@ Result numberParsed(App* app, CPU& cpu, reg32 esp, reg32 text, reg32 convert, co
     return int32_t(call.r);
 }
 
-/* 0x4491b0's: a float, left on the x87's stack, when sscanf reads one and
- * every character is a digit, '.', or '-'; 0.0 otherwise.  eax: sscanf's
- * result if it read none, the float's bits, or where the first other
- * character is. */
-Result floatParsed(App* app, CPU& cpu, reg32 esp, reg32 text, const Args& in)
+/* 0x4491b0's: a float, into `parsed` (the adapter leaves it on the x87's
+ * stack), when sscanf reads one and every character is a digit, '.', or '-';
+ * 0.0 otherwise.  eax: sscanf's result if it read none, the float's bits, or
+ * where the first other character is. */
+Result floatParsed(App* app, CPU& cpu, reg32 esp, reg32 text, const Args& in, float& parsed)
 {
     const reg32 value = esp - 16 - 8;  // [ebp - 8]: sscanf's float; [ebp - 4] the one loaded
     const reg32 loaded = value + 4;
     Caller call{app, cpu};
+    // By address: sscanf runs the runtime's own code below the words it pushes, which a direct call
+    // would put 4 bytes lower than the game's call does.
     if (!call(value, kSscanf, {value, text, in.ebx, in.ecx}, {text, kFloatFormat, value}))
         return {};
     reg32 eax = call.r;
@@ -475,7 +503,7 @@ Result floatParsed(App* app, CPU& cpu, reg32 esp, reg32 text, const Args& in)
             break;
         }
     }
-    cpu.fpu.push(Float(floatAt(app, loaded)));
+    parsed = float(Float(floatAt(app, loaded)));  // fld dword
     return int32_t(eax);
 }
 
@@ -514,12 +542,12 @@ Result fieldSet(App* app, CPU& cpu, reg32 esp, reg32 index, reg32 keyword, reg32
         const reg32 string = reg32(*stringStored(app, value));
         reg32 line = 0;
         Caller call{app, cpu};
-        if (!call(at, kStrstr, {string, kTextPrefix, 0, row.field - kItems}))
+        if (!call.direct<kStrstr, watcom::clib::strstr>(at, string, kTextPrefix))
             return {};
         bool named = call.r == string;
         if (!named)
         {
-            if (!call(at, kStrstr, {string, kMenuPrefix, 0, row.field - kItems}))
+            if (!call.direct<kStrstr, watcom::clib::strstr>(at, string, kMenuPrefix))
                 return {};
             named = call.r == string;
         }
@@ -528,11 +556,12 @@ Result fieldSet(App* app, CPU& cpu, reg32 esp, reg32 index, reg32 keyword, reg32
             for (int32_t id = 0; id < kTextNameCount; ++id)
             {
                 const reg32 name = kTextNames(app, id);
-                if (!call(at, kStrcmp, {string, name, reg32(id), row.field - kItems}))
+                if (!call.direct<kStrcmp, watcom::clib::strcmp>(at, string, name))
                     return {};
                 if (call.r != 0)
                     continue;
-                if (!call(at, kLanguageText, {reg32(id), name, reg32(id), row.field - kItems}))
+                // edx the name, handed on as the game's code has it there.
+                if (!call.direct<0x4d1850, text::lineText>(at, entered(at), id, name))
                     return {};
                 line = call.r;
                 break;
@@ -543,10 +572,10 @@ Result fieldSet(App* app, CPU& cpu, reg32 esp, reg32 index, reg32 keyword, reg32
     }
     case kFloat:
     {
-        const Result r = floatParsed(app, cpu, entered(at), value, none);
+        float f = 0.0f;
+        const Result r = floatParsed(app, cpu, entered(at), value, none, f);
         if (!r)
             return {};
-        const float f = float(cpu.fpu.pop());
         std::memcpy(&app->getMemory<uint8_t>(field), &f, sizeof f);
         return 4;
     }
@@ -609,7 +638,7 @@ Result entryRead(App* app, CPU& cpu, reg32 esp, reg32 file, reg32 key, reg32 val
         if (byteAt(app, line + index) == 0 && byteAt(app, key + keyLength - 1) != ']')
         {
             // Neither a section nor a key with a value: no '=', or nothing after it.
-            if (!call(at, kKeyWait, {index, keyLength, 0, key + keyLength}))
+            if (!call.direct<kKeyWait, ea::waitKey>(at))
                 return {};
             continue;
         }
@@ -736,7 +765,7 @@ Result menusLoaded(App* app, CPU& cpu, reg32 esp, reg32 name, reg32 reset, const
         int32_t i = 0;
         for (; i < kMenuCount(app); ++i)
         {
-            if (!call(at, kStrcmp, {name, kMenus(app, i).name, in.ebx, reg32(i)}))
+            if (!call.direct<kStrcmp, watcom::clib::strcmp>(at, name, kMenus(app, i).name))
                 return {};
             if (call.r == 0)
                 break;
@@ -751,7 +780,7 @@ Result menusLoaded(App* app, CPU& cpu, reg32 esp, reg32 name, reg32 reset, const
     const auto addMenu = [&](reg32 menuName, bool fromItem) -> bool {
         const int32_t count = kMenuCount(app);
         const reg32 menu = kMenus.address(count);
-        if (!call(at, kMemset, {menu, 0, sizeof(Menu), in.ecx}))
+        if (!call.direct<kMemset, watcom::clib::memset>(at, menu, reg32(0), reg32(sizeof(Menu))))
             return false;
         kMenus(app, count).name = fromItem ? word(app, itemAt(kLastItem(app)) + kNextMenuField) : menuName;
         kMenuCount.set(app, count + 1);
@@ -766,9 +795,10 @@ Result menusLoaded(App* app, CPU& cpu, reg32 esp, reg32 name, reg32 reset, const
         const reg32 menu = kMenus.address(index);
         copyString(app, path, kMenusDirectory);
         backslashAppended(app, path);
-        if (!call(at, kSprintf, {}, {path + length(app, path), kMenuFileFormat, word(app, menu + 0x14)}))
+        if (!call.direct<kSprintf, watcom::clib::sprintf>(at, path + length(app, path), kMenuFileFormat,
+                                                          guest::Words{word(app, menu + 0x14)}))
             return {};
-        if (!call(at, kFopen, {path, kReadBinary, 0, 0}))
+        if (!call.direct<kFopen, watcom::clib::fopen>(at, path, kReadBinary))
             return {};
         const reg32 file = call.r;
         if (file == 0)
@@ -814,7 +844,7 @@ Result menusLoaded(App* app, CPU& cpu, reg32 esp, reg32 name, reg32 reset, const
             const Keyword& row = kKeywords(app, *keyword);
             if (row.widget != kButton)
                 continue;
-            if (!call(at, kStrcmp, {row.name, kNextMenu, reg32(*keyword) << 4, in.ecx}))
+            if (!call.direct<kStrcmp, watcom::clib::strcmp>(at, row.name, kNextMenu))
                 return {};
             if (call.r != 0)
                 continue;
@@ -823,9 +853,8 @@ Result menusLoaded(App* app, CPU& cpu, reg32 esp, reg32 name, reg32 reset, const
             int32_t known = 0;
             for (; known < kMenuCount(app); ++known)
             {
-                if (!call(at, kStrcmp,
-                          {word(app, itemAt(kLastItem(app)) + kNextMenuField), kMenus(app, known).name, in.ebx,
-                           reg32(known)}))
+                if (!call.direct<kStrcmp, watcom::clib::strcmp>(
+                        at, word(app, itemAt(kLastItem(app)) + kNextMenuField), kMenus(app, known).name))
                     return {};
                 if (call.r == 0)
                     break;
@@ -835,7 +864,7 @@ Result menusLoaded(App* app, CPU& cpu, reg32 esp, reg32 name, reg32 reset, const
             if (!addMenu(0, true))
                 return {};
         }
-        if (!call(at, kFclose, {file}))
+        if (!call.direct<kFclose, watcom::clib::fclose>(at, file))
             return {};
         // The screen's end: an item made of type 0, which leaves it as it is.
         const int32_t end = kLastItem(app) + 1;
@@ -936,7 +965,11 @@ void parseLong(App* app, CPU& cpu)
 void parseFloat(App* app, CPU& cpu)
 {
     const Entry e(cpu);
-    e.finish(cpu, floatParsed(app, cpu, e.esp, e.eax, regsOf(e)));
+    float parsed = 0.0f;
+    const Result r = floatParsed(app, cpu, e.esp, e.eax, regsOf(e), parsed);
+    if (r)
+        cpu.fpu.push(Float(parsed));
+    e.finish(cpu, r);
 }
 
 /* 0x449240: item eax's field for keyword edx set from the value at ebx. */

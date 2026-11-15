@@ -1,8 +1,11 @@
 #include "native_ea_files.h"
 #include "native_ea_threads.h"
+#include "native_game.h"
 #include "native_guest.h"
+#include "native_watcom.h"
 #include "native_vertices.h"
 #include "native_windows.h"
+#include "host_threads.h"
 #include <winapi/kernel32.h>
 
 #include <cstdint>
@@ -97,9 +100,9 @@ constexpr reg32 kInfinite = 0xffffffff;
 constexpr reg32 kSameAccess = 2, kCreateSuspended = 4, kAlertable = 1;
 constexpr reg32 kMemoryStatusBytes = 0x20, kTotalPhys = 8;
 // What is called by address.
-constexpr reg32 kError = 0x401010, kSprintf = 0x4df690, kFillZero = 0x4e070c, kEaRandom = 0x4e0d88;
+constexpr reg32 kEaRandom = 0x4e0d88;
 constexpr reg32 kSineCosine = 0x4ea970;
-constexpr reg32 kIsThreadAt = 0x4df930, kLockMadeAt = 0x4eb2e0, kSurfaceLockedAt = 0x4f9070;
+constexpr reg32 kIsThreadAt = 0x4df930;
 constexpr reg32 kThreadStart = 0x4df730;
 // The imports' slots.
 constexpr reg32 kCloseHandle = 0x534488, kCreateEventA = 0x534494, kCreateThread = 0x5344a4;
@@ -197,7 +200,8 @@ bool threadsError(App* app, CPU& cpu, reg32 function, reg32 line, reg32 text)
     put(app, kWhereFile, kThreadsFile);
     put(app, kWhereFunction, function);
     put(app, kWhereLine, line);
-    return guest::call(app, cpu, kError, {text});
+    guest::direct<0x401010, ea::error>(app, cpu, text, guest::Words({}));
+    return !cpu.terminate;
 }
 
 /* `ticks` of the game's in ms: times 1000 (as the code works it out, by
@@ -260,7 +264,7 @@ std::optional<Wait> waitForHandles(App* app, CPU& cpu, reg32 count, reg32 handle
 {
     const Kept kept(cpu, kKeepEcx);
     cpu.edx = handles;
-    const auto result = windows<kWaitForMultipleObjectsEx, &win32::kernel32::WaitForMultipleObjectsEx>(
+    const auto result = windows<kWaitForMultipleObjectsEx, &host::waitMany>(
         app, cpu, count, handles, 0, ms, 0);
     if (!result)
         return std::nullopt;
@@ -283,26 +287,27 @@ bool runThread(App* app, CPU& cpu, reg32 function)
 std::optional<reg32> setUpThreads(App* app, CPU& cpu)
 {
     const Kept kept(cpu, kKeepEcx | kKeepEdx);
-    const auto id = windows<kGetCurrentThreadId, &win32::kernel32::GetCurrentThreadId>(app, cpu);
+    const auto id = windows<kGetCurrentThreadId, &host::currentThreadId>(app, cpu);
     if (!id)
         return std::nullopt;
     put(app, kMainThreadId, *id);
     const auto target = windows<kGetCurrentProcess, &win32::kernel32::GetCurrentProcess>(app, cpu);
     if (!target)
         return std::nullopt;
-    const auto thread = windows<kGetCurrentThread, &win32::kernel32::GetCurrentThread>(app, cpu);
+    const auto thread = windows<kGetCurrentThread, &host::currentThread>(app, cpu);
     if (!thread)
         return std::nullopt;
     const auto source = windows<kGetCurrentProcess, &win32::kernel32::GetCurrentProcess>(app, cpu);
     if (!source)
         return std::nullopt;
-    if (!windows<kDuplicateHandle, &win32::kernel32::DuplicateHandle>(app, cpu, *source, *thread, *target, kMainThread, 0,
+    if (!windows<kDuplicateHandle, &host::duplicateThread>(app, cpu, *source, *thread, *target, kMainThread, 0,
                                                                        0, kSameAccess))
         return std::nullopt;
     put(app, kThreadsReady, 1);
-    const auto lock = game(app, cpu, kLockMadeAt);
+    const auto lock = guest::direct<0x4eb2e0, ea::newLock>(app, cpu);
     if (!lock)
         return std::nullopt;
+    cpu.eax = *lock;  // as the call by address leaves it
     put(app, kGameLock, *lock);
     return *lock;
 }
@@ -324,7 +329,7 @@ std::optional<reg32> threadHandle(App* app, CPU& cpu, reg32 thread)
     if (thread == kTheMainThread)
         return at(app, kMainThread);
     if (thread == kThisThread)
-        return windows<kGetCurrentThread, &win32::kernel32::GetCurrentThread>(app, cpu);
+        return windows<kGetCurrentThread, &host::currentThread>(app, cpu);
     return at(app, thread + kHandle);
 }
 
@@ -338,7 +343,7 @@ std::optional<reg32> setPriority(App* app, CPU& cpu, reg32 thread, reg32 priorit
     const auto handle = threadHandle(app, cpu, thread);
     if (!handle)
         return std::nullopt;
-    return windows<kSetThreadPriority, &win32::kernel32::SetThreadPriority>(app, cpu, *handle,
+    return windows<kSetThreadPriority, &host::setThreadPriority>(app, cpu, *handle,
                                                                             windowsPriority(priority));
 }
 
@@ -353,10 +358,9 @@ std::optional<reg32> startThread(App* app, CPU& cpu, reg32 function, reg32 stack
     // esi, edi and ebp pushed; the thread's id below them.
     const GuestFrame frame(cpu, 0xc, 4);
     const reg32 id = frame - 4;
-    const auto locked = game(app, cpu, kSurfaceLockedAt);
-    if (!locked)
-        return std::nullopt;
-    if (*locked != 0)
+    const bool locked = guest::direct<0x4f9070, ea::surfaceIsLocked>(app, cpu);
+    cpu.eax = locked ? 1 : 0;  // as the call by address leaves it
+    if (locked)
     {
         cpu.eax = kCreateThreadLine;  // as the code has it, with the file's and the function's names
         if (!threadsError(app, cpu, kCreateThreadName, kCreateThreadLine, kCreateThreadText))
@@ -365,7 +369,7 @@ std::optional<reg32> startThread(App* app, CPU& cpu, reg32 function, reg32 stack
     if (!threadsReady(app, cpu))
         return std::nullopt;
     const auto handle =
-        windows<kCreateThread, &win32::kernel32::CreateThread>(app, cpu, 0, stackBytes, kThreadStart, function,
+        windows<kCreateThread, &host::createThread>(app, cpu, 0, stackBytes, kThreadStart, function,
                                                                kCreateSuspended, id);
     if (!handle)
         return std::nullopt;
@@ -381,8 +385,8 @@ std::optional<reg32> startThread(App* app, CPU& cpu, reg32 function, reg32 stack
         cpu.eax = record;
         cpu.edx = priority;
         if (!setPriority(app, cpu, record, priority)
-            || !windows<kResumeThread, &win32::kernel32::ResumeThread>(app, cpu, *handle)
-            || !windows<kSleepEx, &win32::kernel32::SleepEx>(app, cpu, 0, kAlertable))
+            || !windows<kResumeThread, &host::resumeThread>(app, cpu, *handle)
+            || !windows<kSleepEx, &host::sleep>(app, cpu, 0, kAlertable))
             return std::nullopt;
     }
     return *handle != 0 ? 1 : 0;
@@ -408,7 +412,7 @@ std::optional<reg32> endThread(App* app, CPU& cpu, reg32 thread, reg32 stale)
     }
     else if (thread == kThisThread)
     {
-        const auto current = windows<kGetCurrentThread, &win32::kernel32::GetCurrentThread>(app, cpu);
+        const auto current = windows<kGetCurrentThread, &host::currentThread>(app, cpu);
         if (!current)
             return std::nullopt;
         handle = *current;
@@ -417,7 +421,7 @@ std::optional<reg32> endThread(App* app, CPU& cpu, reg32 thread, reg32 stale)
     {
         handle = at(app, thread + kHandle);
     }
-    if (!windows<kTerminateThread, &win32::kernel32::TerminateThread>(app, cpu, handle, 0))
+    if (!windows<kTerminateThread, &host::terminateThread>(app, cpu, handle, 0))
         return std::nullopt;
     return windows<kCloseHandle, &win32::kernel32::CloseHandle>(app, cpu, handle);
 }
@@ -428,7 +432,7 @@ std::optional<reg32> sleepFor(App* app, CPU& cpu, reg32 ms)
 {
     const Kept kept(cpu, kKeepEcx | kKeepEdx);
     cpu.eax = ms;
-    return windows<kSleepEx, &win32::kernel32::SleepEx>(app, cpu, ms, kAlertable);
+    return windows<kSleepEx, &host::sleep>(app, cpu, ms, kAlertable);
 }
 
 /* Whether this is `thread` (the main thread; any, for this one), by its id.
@@ -436,7 +440,7 @@ std::optional<reg32> sleepFor(App* app, CPU& cpu, reg32 ms)
 std::optional<bool> isThreadNow(App* app, CPU& cpu, reg32 thread)
 {
     const Kept kept(cpu, kKeepEcx | kKeepEdx);
-    const auto id = windows<kGetCurrentThreadId, &win32::kernel32::GetCurrentThreadId>(app, cpu);
+    const auto id = windows<kGetCurrentThreadId, &host::currentThreadId>(app, cpu);
     if (!id || !threadsReady(app, cpu))
         return std::nullopt;
     if (thread == kTheMainThread)
@@ -458,7 +462,7 @@ std::optional<reg32> priorityOf(App* app, CPU& cpu, reg32 thread)
     const auto handle = threadHandle(app, cpu, thread);
     if (!handle)
         return std::nullopt;
-    const auto priority = windows<kGetThreadPriority, &win32::kernel32::GetThreadPriority>(app, cpu, *handle);
+    const auto priority = windows<kGetThreadPriority, &host::threadPriority>(app, cpu, *handle);
     if (!priority)
         return std::nullopt;
     return eaPriority(*priority);
@@ -477,7 +481,7 @@ std::optional<reg32> windowsKept(App* app, CPU& cpu, Words... words)
 
 std::optional<reg32> eventSet(App* app, CPU& cpu, reg32 event)
 {
-    return windowsKept<kSetEvent, &win32::kernel32::SetEvent>(app, cpu, event);
+    return windowsKept<kSetEvent, &host::setEvent>(app, cpu, event);
 }
 
 namespace
@@ -485,12 +489,12 @@ namespace
 
 std::optional<reg32> eventReset(App* app, CPU& cpu, reg32 event)
 {
-    return windowsKept<kResetEvent, &win32::kernel32::ResetEvent>(app, cpu, event);
+    return windowsKept<kResetEvent, &host::resetEvent>(app, cpu, event);
 }
 
 std::optional<reg32> eventPulsed(App* app, CPU& cpu, reg32 event)
 {
-    return windowsKept<kPulseEvent, &win32::kernel32::PulseEvent>(app, cpu, event);
+    return windowsKept<kPulseEvent, &host::pulseEvent>(app, cpu, event);
 }
 
 std::optional<reg32> handleClosed(App* app, CPU& cpu, reg32 handle)
@@ -505,18 +509,18 @@ std::optional<reg32> lastErrorSet(App* app, CPU& cpu, reg32 code)
 
 std::optional<reg32> lockEntered(App* app, CPU& cpu, reg32 lock)
 {
-    return windowsKept<kEnterCriticalSection, &win32::kernel32::EnterCriticalSection>(app, cpu, lock);
+    return windowsKept<kEnterCriticalSection, &host::enterLock>(app, cpu, lock);
 }
 
 std::optional<reg32> lockLeft(App* app, CPU& cpu, reg32 lock)
 {
-    return windowsKept<kLeaveCriticalSection, &win32::kernel32::LeaveCriticalSection>(app, cpu, lock);
+    return windowsKept<kLeaveCriticalSection, &host::leaveLock>(app, cpu, lock);
 }
 
 /* An event, not set, unnamed: manual-reset or not.  ecx and edx kept. */
 std::optional<reg32> newEvent(App* app, CPU& cpu, reg32 manual)
 {
-    return windowsKept<kCreateEventA, &win32::kernel32::CreateEventA>(app, cpu, 0, manual, 0, 0);
+    return windowsKept<kCreateEventA, &host::createEvent>(app, cpu, 0, manual, 0, 0);
 }
 
 /* pollEvent's and the event waits' frame: two registers pushed, the event's
@@ -566,7 +570,7 @@ namespace
 std::optional<reg32> eventSetAndClosed(App* app, CPU& cpu, reg32 event)
 {
     const Kept kept(cpu, kKeepEcx | kKeepEdx);
-    if (!windows<kSetEvent, &win32::kernel32::SetEvent>(app, cpu, event))
+    if (!windows<kSetEvent, &host::setEvent>(app, cpu, event))
         return std::nullopt;
     return windows<kCloseHandle, &win32::kernel32::CloseHandle>(app, cpu, event);
 }
@@ -581,7 +585,9 @@ std::optional<reg32> errorText(App* app, CPU& cpu, reg32 buffer)
     {
         const GuestFrame frame(cpu, 4, 0);
         put(app, frame - 0, cpu.edx);
-        if (!guest::call(app, cpu, kSprintf, {buffer, kNotImplemented, at(app, kErrorCode) & 0xffff}))
+        guest::direct<0x4df690, watcom::clib::sprintf>(app, cpu, buffer, kNotImplemented,
+                                                       guest::Words({at(app, kErrorCode) & 0xffff}));
+        if (cpu.terminate)
             return std::nullopt;
     }
     return at(app, kErrorCode) & 0xffff;
@@ -820,10 +826,12 @@ std::optional<reg32> newLock(App* app, CPU& cpu)
     if (lock == 0)
         return 0;
     put(app, kFreeLocks, at(app, lock + kLockLink));
+    // eax and edx as the call by address loads them (edx kept; eax Windows' after).
     cpu.eax = lock;
     cpu.edx = kSectionBytes;
-    if (!guest::call(app, cpu, kFillZero)
-        || !windows<kInitializeCriticalSection, &win32::kernel32::InitializeCriticalSection>(app, cpu, lock))
+    guest::direct<0x4e070c, ea::clearBytes>(app, cpu, lock, kSectionBytes);
+    if (cpu.terminate
+        || !windows<kInitializeCriticalSection, &host::initLock>(app, cpu, lock))
         return std::nullopt;
     return lock;
 }
@@ -835,7 +843,7 @@ std::optional<reg32> lockFreed(App* app, CPU& cpu, reg32 lock)
     if (lock == 0)
         return 0;
     const Kept kept(cpu, kKeepEcx | kKeepEdx);
-    if (!windows<kDeleteCriticalSection, &win32::kernel32::DeleteCriticalSection>(app, cpu, lock))
+    if (!windows<kDeleteCriticalSection, &host::deleteLock>(app, cpu, lock))
         return std::nullopt;
     const reg32 head = at(app, kFreeLocks);
     put(app, lock + kLockTag, kFree);
@@ -1027,7 +1035,7 @@ void setThreadPriority(win32::WinApplication* app, x86::CPU& cpu)
 /* 0x4dfaf0: this thread ended (ExitThread(0)).  No caller in the game. */
 void exitThread(win32::WinApplication* app, x86::CPU& cpu)
 {
-    const auto result = windowsKept<kExitThread, &win32::kernel32::ExitThread>(app, cpu, 0);
+    const auto result = windowsKept<kExitThread, &host::exitThread>(app, cpu, 0);
     if (!result)
         return;
     cpu.eax = *result;
@@ -1284,6 +1292,17 @@ void physicalMemory(win32::WinApplication* app, x86::CPU& cpu)
         return;
     cpu.eax = *bytes;
     cpu.esp += 4;
+}
+
+/* 0x4dfc00's and 0x4dfcf0's typed cores (native_ea_threads.h): as their adapters run them. */
+std::optional<reg32> eventClosed(App* app, CPU& cpu, reg32 event)
+{
+    return handleClosed(app, cpu, event);
+}
+
+std::optional<reg32> lastErrorOf(App* app, CPU& cpu)
+{
+    return windowsKept<kGetLastError, &win32::kernel32::GetLastError>(app, cpu);
 }
 
 }  // namespace ea

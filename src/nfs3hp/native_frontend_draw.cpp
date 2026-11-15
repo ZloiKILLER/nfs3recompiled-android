@@ -156,41 +156,6 @@ x86::Float halfInteger(win32::WinApplication* app, reg32 address)
     return x86::Float(x86::sreg16(half(app, address)));
 }
 
-/* fistp: st(0) as the control word rounds it, popped. */
-void storeInteger(win32::WinApplication* app, x86::CPU& cpu, reg32 address)
-{
-    put(app, address, reg32(fp::toInteger<sreg32>(cpu.fpu.st(0))));
-    cpu.fpu.count -= 1;
-}
-
-void exchange(x86::CPU& cpu, int i)
-{
-    std::swap(cpu.fpu.st(0), cpu.fpu.st(i));
-}
-
-/* fdivp st(i): st(i) = st(i) / st(0), popped. */
-void divPop(x86::CPU& cpu, int i)
-{
-    cpu.fpu.st(i) = fp::div(cpu.fpu.st(i), cpu.fpu.st(0));
-    cpu.fpu.count -= 1;
-}
-
-/* fcomp with `with`, fnstsw ax, sahf: popped. */
-void comparePop(x86::CPU& cpu, const x86::Float& with)
-{
-    cpu.fpu.compare(cpu.fpu.st(0), with);
-    cpu.ax = cpu.fpu.status.word;
-    cpu.fpu.count -= 1;
-}
-
-/* fcompp, fnstsw ax, sahf. */
-void compareTwo(x86::CPU& cpu)
-{
-    cpu.fpu.compare(cpu.fpu.st(0), cpu.fpu.st(1));
-    cpu.ax = cpu.fpu.status.word;
-    cpu.fpu.count -= 2;
-}
-
 /* What sahf makes of the compare: jb, jbe. */
 bool below(const x86::CPU& cpu)
 {
@@ -304,25 +269,28 @@ void inlineAppend(win32::WinApplication* app, x86::CPU& cpu)
 
 }  // namespace
 
-/* 0x469520: the value of the slider at eax, onto the x87's stack. */
-void draw::sliderStoredValue(App* app, CPU& cpu, reg32 slider)
+/* 0x469520: the value of the slider at eax (fld dword; its adapter leaves it on the x87's stack). */
+double draw::sliderStoredValue(App* app, CPU& cpu, reg32 slider)
 {
     cpu.eax = slider;
     push(app, cpu, cpu.ebp);
     cpu.ebp = cpu.esp;
-    cpu.fpu.push(loadFloat(app, cpu.eax + 0x54));
+    const x86::Float value = loadFloat(app, cpu.eax + 0x54);
     cpu.ebp = pop(app, cpu);
+    return value;
 }
 
-/* 0x46afd0: value edx of the two-axis slider at eax, onto the x87's stack. */
-void draw::twoAxisValue(App* app, CPU& cpu, reg32 slider, reg32 end)
+/* 0x46afd0: value edx of the two-axis slider at eax (fld dword; its adapter leaves it on the x87's
+ * stack). */
+double draw::twoAxisValue(App* app, CPU& cpu, reg32 slider, reg32 end)
 {
     cpu.eax = slider;
     cpu.edx = end;
     push(app, cpu, cpu.ebp);
     cpu.ebp = cpu.esp;
-    cpu.fpu.push(loadFloat(app, cpu.eax + cpu.edx * 4 + 0x54));
+    const x86::Float value = loadFloat(app, cpu.eax + cpu.edx * 4 + 0x54);
     cpu.ebp = pop(app, cpu);
+    return value;
 }
 
 /* 0x4956f0: the .qfs file named at eax loaded (the formats' 0x4f2e20,
@@ -376,13 +344,13 @@ x86::reg32 draw::loadQfs(App* app, CPU& cpu, reg32 fileName)
  * arguments from the registers, the core, the ret. */
 void sliderStoredValue(win32::WinApplication* app, x86::CPU& cpu)
 {
-    draw::sliderStoredValue(app, cpu, cpu.eax);
+    cpu.fpu.push(x86::Float(draw::sliderStoredValue(app, cpu, cpu.eax)));
     ret(cpu);
 }
 
 void twoAxisValue(win32::WinApplication* app, x86::CPU& cpu)
 {
-    draw::twoAxisValue(app, cpu, cpu.eax, cpu.edx);
+    cpu.fpu.push(x86::Float(draw::twoAxisValue(app, cpu, cpu.eax, cpu.edx)));
     ret(cpu);
 }
 

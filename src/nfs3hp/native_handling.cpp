@@ -1,13 +1,18 @@
 #include "game_settings.h"
+#include "native_frontend_rendc.h"
+#include "native_frontend_simc.h"
+#include "native_frontend_simd.h"
 #include "native_guest.h"
 #include "native_handling.h"
 #include "native_vertices.h"
+#include "native_watcom.h"
 
 #include <cstdint>
 #include <cstring>
 #include <initializer_list>
 #include <iterator>
 #include <optional>
+#include <type_traits>
 
 /* A car's handling in the race, as nfs3.exe's physics (0x4a78d6..0x4af3a1)
  * has it: its handling made for the race from the player's setup
@@ -70,8 +75,8 @@ constexpr reg32 kDefaultSetup = 0x55d024;
 // atan2 and the square root of a stack float, a 2D turn by an angle; n
 // vectors added (settleCar's last call, see there).  A vector's dot product
 // and n vectors scaled, less others, added are vertices' (guest::direct).
-constexpr reg32 kChop = 0x4dfd56, kExp = 0x4f8116, kSine = 0x4ea930, kAtan2 = 0x4ea9c0, kSqrt = 0x4ea920;
-constexpr reg32 kRotate = 0x496bf0, kAdd = 0x4dffb0;
+constexpr reg32 kChop = 0x4dfd56, kExp = 0x4f8116;
+constexpr reg32 kAdd = 0x4dffb0;
 
 reg16 half(App* app, reg32 a) { return app->getMemory<reg16>(a); }
 x86::Float f32(App* app, reg32 a) { return x86::Float(app->getMemory<float>(a)); }
@@ -125,6 +130,60 @@ bool stackCall(App* app, CPU& cpu, reg32 target, std::initializer_list<reg32> wo
     return running;
 }
 
+/* A native_frontend_* file's typed core called as C++ (guest::direct): nothing (false) when the
+ * game stopped in it (its calls into the game throw fe::Terminated).  tools/game_checks does not
+ * build those files: there it goes by address, through its ByAddress, as the game's code calls it,
+ * every register but eax kept.  A reg32 result is the eax the function leaves: eax set to it (in the
+ * game too); after any other, eax spoilt there, so that code still reading what the callee left in
+ * eax differs there. */
+template <reg32 Address, auto Core, typename... Args>
+auto feCore(App* app, CPU& cpu, Args... args)
+{
+    const auto run = [&] {
+#ifdef NFS_GAME_CHECKS
+        const guest::KeptRegisters kept(cpu);
+        return guest::ByAddress<Core>::template call<Address>(app, cpu, args...);
+#else
+        return guest::direct<Address, Core>(app, cpu, args...);
+#endif
+    };
+    using Result = decltype(run());
+    const auto spoil = [&] {
+#ifdef NFS_GAME_CHECKS
+        cpu.eax = 0x5b0115edu;
+#endif
+    };
+    if constexpr (std::is_void_v<Result>)
+    {
+        try
+        {
+            run();
+        }
+        catch (const fe::Terminated&)
+        {
+            return false;
+        }
+        spoil();
+        return !cpu.terminate;
+    }
+    else
+    {
+        try
+        {
+            const Result result = run();
+            if constexpr (std::is_same_v<Result, x86::reg32>)
+                cpu.eax = result;  // a menu core's result: the eax it leaves, as the call by address does
+            else
+                spoil();
+            return cpu.terminate ? std::optional<Result>() : std::optional<Result>(result);
+        }
+        catch (const fe::Terminated&)
+        {
+            return std::optional<Result>();
+        }
+    }
+}
+
 /* What the callee left on the x87, taken off. */
 x86::Float popResult(CPU& cpu)
 {
@@ -145,13 +204,12 @@ std::optional<x86::Float> watcomExp(App* app, CPU& cpu, x86::Float power)
     return popResult(cpu);
 }
 
-/* Watcom's chop of the x87's top, then fistp. */
+/* Watcom's chop of the value, then fistp; never nullopt (the optional is the callers' stop
+ * signal). */
 std::optional<i32> chop(App* app, CPU& cpu, x86::Float value)
 {
-    cpu.fpu.push(value);
-    if (!stackCall(app, cpu, kChop))
-        return std::nullopt;
-    return fp::toInteger<i32>(popResult(cpu));
+    const double whole = guest::direct<kChop, watcom::clib::chop>(app, cpu, double(value));
+    return fp::toInteger<i32>(x86::Float(whole));
 }
 
 /* The registers on entry to an adapter, for those the function keeps. */
@@ -532,18 +590,18 @@ void tyreSlide(App* app, CPU& cpu)
     cpu.esp += 4;
 }
 
-/* The 2D turn of the words at x and y by the axle's wheels' angle, by address. */
+/* The 2D turn of the words at x and y by the axle's wheels' angle (rendc's, 0x496bf0). */
 bool turnByWheels(App* app, CPU& cpu, reg32 axle, reg32 x, reg32 y)
 {
-    return stackCall(app, cpu, kRotate, { at(app, x), at(app, y), at(app, axle + kAxleAngle), x, y });
+    return feCore<0x496bf0, frontend::rendc::rotatePlane>(app, cpu, at(app, x), at(app, y), at(app, axle + kAxleAngle),
+                                                         x, y)
+        .has_value();
 }
 
-/* The game's sine of a stack float, by address, onto the x87. */
+/* The game's sine of a float (simd's, 0x4ea930). */
 std::optional<x86::Float> sine(App* app, CPU& cpu, float angle)
 {
-    if (!stackCall(app, cpu, kSine, { bitsOf(angle) }))
-        return std::nullopt;
-    return popResult(cpu);
+    return feCore<0x4ea930, frontend::simd::sineValue>(app, cpu, bitsOf(angle));
 }
 
 /* The force across a sliding axle's tyres: the sine, taken twice as the code does, of the slip's
@@ -637,9 +695,11 @@ AxleEnd axleTyres(App* app, CPU& cpu, reg32 car, reg32 axle)
         floatAt(app, axle + kAxleSlip) = i32(at(app, kFrame)) % 4 == 0 ? 3.0f : 0.0f;
     }
 
-    if (!stackCall(app, cpu, kAtan2, { at(app, axle + kAxleAcross), bitsOf(size(floatAt(app, axle + kAxleAlong))) }))
+    const std::optional<double> turned = feCore<0x4ea9c0, frontend::simd::angleOfFloatsValue>(
+        app, cpu, at(app, axle + kAxleAcross), bitsOf(size(floatAt(app, axle + kAxleAlong))));
+    if (!turned)
         return AxleEnd::Stopped;
-    const float angle = float(popResult(cpu));
+    const float angle = float(*turned);
     const auto force = gear == kGearReverse ? sideForce(app, cpu, angle, kept, kReverseAngleScale, kReverseForceScale)
                                             : sideForce(app, cpu, angle, kept, kGearAngleScale, kGearForceScale);
     if (!force)
@@ -823,9 +883,10 @@ bool tuneHandling(App* app, CPU& cpu, reg32 car)
         floatAt(app, handling + 0x254) = float(fp::mul(f32(app, fifth), f32(app, handling + 0x254)));
         holdBitsAtLeast(app, handling + 0x254, 0x3e99999a);
         holdBitsAtMost(app, handling + 0x254, 0x3f333333);
-        if (!stackCall(app, cpu, kSqrt, { at(app, fifth) }))
+        const std::optional<double> root = feCore<0x4ea920, frontend::simc::squareRootOf>(app, cpu, at(app, fifth));
+        if (!root)
             return false;
-        floatAt(app, handling + 0x294) = float(fp::div(f32(app, handling + 0x294), popResult(cpu)));
+        floatAt(app, handling + 0x294) = float(fp::div(f32(app, handling + 0x294), x86::Float(*root)));
     }
     if (computerDrives && tuned)
         floatAt(app, handling + 0x254) = float(fp::add(f32(app, handling + 0x254), f32(app, 0x53dc58)));

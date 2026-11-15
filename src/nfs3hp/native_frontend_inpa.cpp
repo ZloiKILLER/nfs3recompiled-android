@@ -20,6 +20,7 @@
 #include "native_frontend_tail.h"
 #include "native_frontend_wina.h"
 #include "native_windows.h"
+#include "host_threads.h"
 #include "port_snd_stream_calls.h"
 // What lib/thread.h holds pointers to and the checks' stand-in for SDL does not declare.
 struct SDL_AtomicInt;
@@ -696,13 +697,13 @@ x86::reg32 frontend::inpa::networkHold(App* app, CPU& cpu, reg32 mayAsk)
             }
             else
             {
-                windows<kEnterCriticalSection, &win32::kernel32::EnterCriticalSection>(guest, cpu, guest.dword(kNetworkLock));
+                windows<kEnterCriticalSection, &host::enterLock>(guest, cpu, guest.dword(kNetworkLock));
                 const reg32 frameNow = guest.call(kSyncFrame);
                 guest.setDword(kHoldUntil, frameNow);
                 guest.setDword(packet + kPacketFrame, frameNow);
                 guest.setDword(kHoldAsked, 1);
                 fe::direct<0x4a60e0, ea::packetSent>(app, cpu, reg32(0), packet, kHoldPacketBytes);
-                windows<kLeaveCriticalSection, &win32::kernel32::LeaveCriticalSection>(guest, cpu, guest.dword(kNetworkLock));
+                windows<kLeaveCriticalSection, &host::leaveLock>(guest, cpu, guest.dword(kNetworkLock));
             }
         }
     }

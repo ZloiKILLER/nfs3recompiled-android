@@ -4,17 +4,23 @@
 #include "native_aiplan.h"
 #include "native_ea_memory.h"
 #include "native_ea_support.h"
+#include "native_frontend_loopa.h"
+#include "native_frontend_sima.h"
+#include "native_frontend_simb.h"
+#include "native_frontend_simc.h"
 #include "native_guest.h"
 #include "native_handling.h"
 #include "native_load_track.h"
 #include "native_pursuit.h"
 #include "native_vertices.h"
+#include "native_watcom.h"
 
 #include <cstdint>
 #include <cstddef>
 #include <cstring>
 #include <initializer_list>
 #include <optional>
+#include <type_traits>
 #include <vector>
 #include <utility>
 
@@ -132,22 +138,23 @@ constexpr reg32 kVoiceRecords = 0x571124;
 // Constants of the game's.
 constexpr reg32 kVolume = 0x53684c, kTicks = 0x79c1a4;
 
-// What is called by address: the traffic's top speed (0x40bfe0, its eax
-// left by slowForPolice), the AI-votes trace hook (0x40de30,
-// apply_native_vertices), and the game's/other parts' natives (stood in for
-// where they would run on a made-up world): a traffic car linked (0x404690,
-// whose eax resetTrafficCar leaves) and vectors scaled (0x4e0050) where the
-// eax they leave is an adapter's.  The other chunks' AI functions (0x40c160,
-// 0x40c2f0, 0x40bff0, 0x40c270, 0x401240, 0x405cd0..0x405e20), the drive
-// reset (0x4aa79f), the opponents' speeds (0x40e000), the free (0x4e1890),
-// the trace (0x42d510) and vectors scaled elsewhere are called as C++
-// (guest::direct).
-constexpr reg32 kSpeedFloat = 0x40bfe0, kAiVotes = 0x40de30;
+// What is called by address: the AI-votes trace hook (0x40de30, its
+// adapter's NFS_CAR_TRACE record), the police chase (0x411750, no core), the
+// traffic's top speed (0x40bfe0, its eax left by slowForPolice), and
+// the game's/other parts' natives (stood in for where they would run on a
+// made-up world): a traffic car linked (0x404690, whose eax resetTrafficCar
+// leaves) and vectors scaled (0x4e0050) where the eax they leave is an
+// adapter's.  The other chunks' AI functions (0x40c160, 0x40c2f0, 0x40bff0,
+// 0x40c270, 0x401240, 0x405cd0..0x405e20),
+// the drive reset (0x4aa79f), the opponents' speeds (0x40e000), the free
+// (0x4e1890), the trace (0x42d510), memset (0x4e0640) and vectors scaled
+// elsewhere are called as C++ (guest::direct); the menu files' (a car put on
+// the road 0x4a0aa0, the poses 0x4b70f0, 0x4b7590, 0x4b6a30, 0x4b6ca0) too
+// (feCore).
+constexpr reg32 kAiVotes = 0x40de30;
 constexpr reg32 kCopChaseSet = 0x411750;
-constexpr reg32 kPlaceOnRoad = 0x4a0aa0, kScaleAdd = 0x4e0050;
-constexpr reg32 kMemset = 0x4e0640;
+constexpr reg32 kScaleAdd = 0x4e0050;
 constexpr reg32 kChop = 0x4dfd56;
-constexpr reg32 kPoseBlend = 0x4b70f0, kPoseMatrix = 0x4b7590, kPlaceBlend = 0x4b6a30, kQuatMatrix = 0x4b6ca0;
 constexpr reg32 kSndInit = 0x4e2630, kSndCaps = 0x4e21b0, kSndRate = 0x4e2228, kBusInit = 0x418740;
 
 // The game's floats and doubles where it keeps them, as the x87 loads them.
@@ -310,15 +317,11 @@ reg16 statusWord(CPU& cpu, const Float& a, const Float& b)
     return cpu.fpu.status.word;
 }
 
-/* 0x4dfd56 (__CHP): value to an integer towards 0, as a whole value through the x87's stack; nullopt
- * when the game stopped. */
+/* 0x4dfd56 (__CHP): value to an integer towards 0, as a whole value; never nullopt (the optional
+ * is the callers' stop signal). */
 std::optional<Float> chop(App* app, CPU& cpu, const Float& value)
 {
-    const KeptRegisters kept(cpu);
-    cpu.fpu.push(value);
-    if (!guest::call(app, cpu, kChop))
-        return std::nullopt;
-    return cpu.fpu.pop();
+    return Float(guest::direct<kChop, watcom::clib::chop>(app, cpu, double(value)));
 }
 
 /* A call by address as the code makes it: the registers handed over (eax, edx, ebx, ecx in that
@@ -335,6 +338,60 @@ bool callGame(App* app, CPU& cpu, reg32 target, std::initializer_list<reg32> reg
     return guest::call(app, cpu, target, words);
 }
 
+/* A native_frontend_* file's typed core called as C++ (guest::direct): nothing (false) when the
+ * game stopped in it (its calls into the game throw fe::Terminated).  tools/game_checks does not
+ * build those files: there it goes by address, through its ByAddress, as the game's code calls it,
+ * every register but eax kept.  A reg32 result is the eax the function leaves: eax set to it (in the
+ * game too); after any other, eax spoilt there, so that code still reading what the callee left in
+ * eax differs there. */
+template <reg32 Address, auto Core, typename... Args>
+auto feCore(App* app, CPU& cpu, Args... args)
+{
+    const auto run = [&] {
+#ifdef NFS_GAME_CHECKS
+        const guest::KeptRegisters kept(cpu);
+        return guest::ByAddress<Core>::template call<Address>(app, cpu, args...);
+#else
+        return guest::direct<Address, Core>(app, cpu, args...);
+#endif
+    };
+    using Result = decltype(run());
+    const auto spoil = [&] {
+#ifdef NFS_GAME_CHECKS
+        cpu.eax = 0x5b0115edu;
+#endif
+    };
+    if constexpr (std::is_void_v<Result>)
+    {
+        try
+        {
+            run();
+        }
+        catch (const fe::Terminated&)
+        {
+            return false;
+        }
+        spoil();
+        return !cpu.terminate;
+    }
+    else
+    {
+        try
+        {
+            const Result result = run();
+            if constexpr (std::is_same_v<Result, x86::reg32>)
+                cpu.eax = result;  // a menu core's result: the eax it leaves, as the call by address does
+            else
+                spoil();
+            return cpu.terminate ? std::optional<Result>() : std::optional<Result>(result);
+        }
+        catch (const fe::Terminated&)
+        {
+            return std::optional<Result>();
+        }
+    }
+}
+
 /* 0x404690 (airace::setRammingRules, below this file) on car (eax), by address: the eax it leaves
  * is resetTrafficCar's, and its core gives nothing back.  False when the game stopped. */
 bool linkTraffic(App* app, CPU& cpu, reg32 car)
@@ -343,10 +400,11 @@ bool linkTraffic(App* app, CPU& cpu, reg32 car)
 }
 
 /* 0x40bfe0: the traffic's top speed, off the x87's stack; nullopt when the game stopped.  By
- * address: slowForPolice leaves the eax it leaves, which pursuit's core does not give back. */
+ * address: slowForPolice leaves the eax it leaves, which pursuit's core does not give back (the
+ * check's stand-in leaves one of its own). */
 std::optional<Float> trafficTopSpeed(App* app, CPU& cpu, reg32 car)
 {
-    if (!callGame(app, cpu, kSpeedFloat, {car}))
+    if (!callGame(app, cpu, 0x40bfe0, {car}))
         return std::nullopt;
     return cpu.fpu.pop();
 }
@@ -367,7 +425,7 @@ bool callChase(App* app, CPU& cpu, reg32 car)
  * against the track. */
 bool placeOnRoad(App* app, CPU& cpu, reg32 car, reg32 node, reg32 place, reg32 direction)
 {
-    return callGame(app, cpu, kPlaceOnRoad, {car, node, place, direction});
+    return feCore<0x4a0aa0, frontend::simb::placeOnRoad>(app, cpu, car, node, place, direction).has_value();
 }
 
 /* 0x4e0050 (stdcall): `count` vectors from `from` scaled by the float of `scale`'s bits into `to`,
@@ -891,7 +949,9 @@ void advanceCarAi(App* app, CPU& cpu)
  * game stopped. */
 bool clearSensed(App* app, CPU& cpu)
 {
-    if (!callGame(app, cpu, kMemset, {kSensed, 0, 0x48}))
+    // eax as the clearing leaves it: the buffer.
+    cpu.eax = guest::direct<0x4e0640, watcom::clib::memset>(app, cpu, kSensed, 0, 0x48);
+    if (cpu.terminate)
         return false;
     put(app, kSensedRound, 0);
     return true;
@@ -1363,7 +1423,9 @@ void sumLaneVotes(App* app, CPU& cpu)
  * (voteForCurrentLane) and the traffic sensed (senseCars).  False when the game stopped. */
 bool beginPlanning(App* app, CPU& cpu, reg32 car)
 {
-    if (!callGame(app, cpu, kMemset, {kLaneCostA, 0, 0xa8}) || !callGame(app, cpu, kMemset, {kSensed, 0, 0x48}))
+    guest::direct<0x4e0640, watcom::clib::memset>(app, cpu, kLaneCostA, 0, 0xa8);
+    guest::direct<0x4e0640, watcom::clib::memset>(app, cpu, kSensed, 0, 0x48);
+    if (cpu.terminate)
         return false;
     findCarSlices(app, car);
     voteForCurrentLane(app, car);
@@ -2534,10 +2596,10 @@ std::optional<reg32> poseAt(App* app, CPU& cpu, reg32 path, reg32 mode, i32 time
     };
     place(point, firstPlace);
     place(nextPoint, secondPlace);
-    if (!callGame(app, cpu, kPoseBlend, {first, second, firstPlace, secondPlace},
-                  {bitsOf(float(fraction)), frame - 0x7c, blendWord}))
+    if (!feCore<0x4b70f0, frontend::simc::poseBlend>(app, cpu, first, second, firstPlace, secondPlace,
+                                                     bitsOf(float(fraction)), frame - 0x7c, blendWord))
         return std::nullopt;
-    if (!callGame(app, cpu, kPoseMatrix, {frame - 0x7c, matrix}))
+    if (!feCore<0x4b7590, frontend::simc::matrixFromQuat>(app, cpu, frame - 0x7c, matrix))
         return std::nullopt;
     return 1;
 }
@@ -2573,8 +2635,8 @@ std::optional<reg32> placeAt(App* app, CPU& cpu, reg32 path, reg32 mode, i32 tim
         put(app, first + i, at(app, path + kPathPointList + reg32(index) * kPointSize + i));
     for (reg32 i = 0; i < 0xc; i += 4)
         put(app, second + i, at(app, path + kPathPointList + reg32(index + 1) * kPointSize + i));
-    if (!callGame(app, cpu, kPlaceBlend, {frame - 0x1c, frame - 0x24, first, second},
-                  {reg32(fraction), frame - 0x2c, blendWord}))
+    if (!feCore<0x4b6a30, frontend::loopa::blend>(app, cpu, frame - 0x1c, frame - 0x24, first, second,
+                                                  reg32(fraction), frame - 0x2c, blendWord))
         return std::nullopt;
     const i32 length = i32(reg32(frames) * reg32(pathSpans(app, path)));
     put(app, timeOut, reg32(remainder(time, length)));
@@ -2625,7 +2687,12 @@ bool lastPose(App* app, CPU& cpu, reg32 path, reg32 placeOut, reg32 matrix)
     put(app, frame - 4, at(app, point + kPointOrientation + 4));
     for (reg32 i = 0; i < 0xc; i += 4)
         put(app, placeOut + i, at(app, point + i));
-    return callGame(app, cpu, kQuatMatrix, {frame - 8, matrix});
+    // eax as 0x4b6ca0 leaves it (animationLastPose leaves it).
+    const std::optional<reg32> left = feCore<0x4b6ca0, frontend::loopa::matrixOfRotation>(app, cpu, frame - 8, matrix);
+    if (!left)
+        return false;
+    cpu.eax = *left;
+    return true;
 }
 
 /* 0x40f880 (stdcall, 1 word: where the matrix goes): lastPose of path eax, its place to [ecx]; eax as

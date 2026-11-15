@@ -5,6 +5,11 @@
 #include "native_controls_queue.h"
 #include "native_ea_files.h"
 #include "native_ea_memory.h"
+#include "native_frontend_loopb.h"
+#include "native_frontend_menue.h"
+#include "native_frontend_sima.h"
+#include "native_frontend_simb.h"
+#include "native_game.h"
 #include "native_graphics.h"
 #include "native_guest.h"
 #include "native_raceload.h"
@@ -12,10 +17,12 @@
 #include "native_track.h"
 #include "native_trackdata.h"
 #include "native_vertices.h"
+#include "native_watcom.h"
 
 #include <cstdint>
 #include <cstring>
 #include <optional>
+#include <type_traits>
 
 /* The game's collisions -- car with car, car with the track's walls, car with
  * the track's objects -- the COLL file of a track's objects, and the drawing
@@ -130,6 +137,60 @@ void safepoint(App* app, CPU& cpu)
         app->yieldContext(cpu);
 }
 
+/* A native_frontend_* file's typed core called as C++ (guest::direct): nothing (false) when the
+ * game stopped in it (its calls into the game throw fe::Terminated).  tools/game_checks does not
+ * build those files: there it goes by address, through its ByAddress, as the game's code calls it,
+ * every register but eax kept.  A reg32 result is the eax the function leaves: eax set to it (in the
+ * game too); after any other, eax spoilt there, so that code still reading what the callee left in
+ * eax differs there. */
+template <reg32 Address, auto Core, typename... Args>
+auto feCore(App* app, CPU& cpu, Args... args)
+{
+    const auto run = [&] {
+#ifdef NFS_GAME_CHECKS
+        const guest::KeptRegisters kept(cpu);
+        return guest::ByAddress<Core>::template call<Address>(app, cpu, args...);
+#else
+        return guest::direct<Address, Core>(app, cpu, args...);
+#endif
+    };
+    using Result = decltype(run());
+    const auto spoil = [&] {
+#ifdef NFS_GAME_CHECKS
+        cpu.eax = 0x5b0115edu;
+#endif
+    };
+    if constexpr (std::is_void_v<Result>)
+    {
+        try
+        {
+            run();
+        }
+        catch (const fe::Terminated&)
+        {
+            return false;
+        }
+        spoil();
+        return !cpu.terminate;
+    }
+    else
+    {
+        try
+        {
+            const Result result = run();
+            if constexpr (std::is_same_v<Result, x86::reg32>)
+                cpu.eax = result;  // a menu core's result: the eax it leaves, as the call by address does
+            else
+                spoil();
+            return cpu.terminate ? std::optional<Result>() : std::optional<Result>(result);
+        }
+        catch (const fe::Terminated&)
+        {
+            return std::optional<Result>();
+        }
+    }
+}
+
 reg16 half(App* app, reg32 address)
 {
     return app->getMemory<reg16>(address);
@@ -161,15 +222,6 @@ Float floatAt(reg32 bits)
     float f;
     std::memcpy(&f, &bits, sizeof f);
     return Float(f);
-}
-
-/* What a callee left on the x87's stack, taken off it as the generated code
- * does: st(0) read, the stack one shorter. */
-Float popTop(CPU& cpu)
-{
-    const Float value = cpu.fpu.st(0);
-    cpu.fpu.count -= 1;
-    return value;
 }
 
 /* fcom's answers as the code's jumps read them: "below" (C0) for less or
@@ -873,9 +925,8 @@ void clearOfWall(App* app, CPU& cpu)
 // quad an edge leads to (0x41f870), the wall's surface (0x42ee10: the car,
 // its corner, the normal, the surface's corner), the scrape's sound
 // (0x406160) and a jolt (0x4aa4f4).
-// All but the turn as C++ (guest::direct) -- and but the jolt, whose eax
+// All as C++ (guest::direct; the turn simb's, feCore) but the jolt, whose eax
 // againstWalls leaves.
-constexpr reg32 kTurn = 0x4a2cc0;
 constexpr reg32 kWallJolt = 0x4aa4f4;
 constexpr reg32 kCarSlice = 0x1c, kCarTurn = 0xe4, kCarHalfHeight = 0x118;
 constexpr reg32 kPlaceWords = 0x1e;  // a track position's record, copied whole
@@ -919,9 +970,11 @@ std::optional<reg32> againstWalls(App* app, CPU& cpu, reg32 car)
         const float turnZ = float(fp::mul(loadFloat(app, car + kCarTurn + 8), by));
         const float turnY = float(fp::mul(loadFloat(app, car + kCarTurn + 4), by));
         const float turnX = float(fp::mul(by, loadFloat(app, car + kCarTurn)));
-        cpu.eax = turned;
-        if (!guest::call(app, cpu, kTurn, {bitsOf(turnX), bitsOf(turnY), bitsOf(turnZ), turnWord}))
+        const std::optional<reg32> turnedAny = feCore<0x4a2cc0, frontend::simb::turnMatrix>(
+            app, cpu, turned, bitsOf(turnX), bitsOf(turnY), bitsOf(turnZ), turnWord);
+        if (!turnedAny)
             return std::nullopt;
+        cpu.eax = *turnedAny;  // as the call by address leaves it
     }
     if (cpu.eax != 0)
     {
@@ -1101,8 +1154,8 @@ std::optional<reg32> againstWalls(App* app, CPU& cpu, reg32 car)
         cpu.eax = normal;
         if (!guest::call(app, cpu, kNormalize))
             return std::nullopt;
-        const reg16 word = fcom(cpu, 0.0, cpu.fpu.st(0));
-        popTop(cpu);
+        const Float length = cpu.fpu.take();
+        const reg16 word = fcom(cpu, 0.0, length);
         if (word & kC3)
             return (cpu.eax & 0xffff0000) | word;
         // The wall's corner by the edges' bits: its polygon's, scaled, for
@@ -1511,11 +1564,10 @@ void addCarToList(App* app, CPU& cpu)
 // it (+0x89), its countdown before it collides again (+0x174), what it
 // collides with (+0x188: 0x40 the track's objects, 0x80 its walls).
 constexpr reg32 kCarOut = 0x88, kCarIn = 0x89, kCarCountdown = 0x174, kCarCollides = 0x188;
-constexpr reg32 kAfterCollisions = 0x4a0140;  // what follows a car's collisions, eax the car
 
 /* A car's collisions for the frame: its countdown on; for a car in the race
  * the other cars (once the countdown is out), the track's objects (by the
- * flag 0x40, likewise) and walls (0x80), then kAfterCollisions.  False when
+ * flag 0x40, likewise) and walls (0x80), then 0x4a0140 (sima's).  False when
  * the game stopped; eax as the code leaves it. */
 bool frameCollisions(App* app, CPU& cpu, reg32 car)
 {
@@ -1544,8 +1596,11 @@ bool frameCollisions(App* app, CPU& cpu, reg32 car)
         if (!againstWalls(app, cpu, car))
             return false;
     }
-    cpu.eax = car;
-    return guest::call(app, cpu, kAfterCollisions);
+    const std::optional<reg32> onRoad = feCore<0x4a0140, frontend::sima::carOntoRoad>(app, cpu, car);
+    if (!onRoad)
+        return false;
+    cpu.eax = *onRoad;  // as the call by address leaves it
+    return true;
 }
 
 /* 0x4311d0 (a car's +0x618): frameCollisions for car eax; every other
@@ -1635,7 +1690,6 @@ constexpr reg32 kCollHeaderBytes = 0x10, kCollVersionWanted = 0xb;
 // EA's files (native_ea_files.h) are called as C++, but readColl's read: the edx it leaves is
 // readCollFile's.
 constexpr reg32 kFileRead = 0x4e2de0;   // the handle eax, to edx, ebx bytes
-constexpr reg32 kStrncmp = 0x4eb390;    // eax and edx, ebx characters
 
 /* The COLL file `handle` closed, its handle 0 -- as the code writes it,
  * edx's 0 as the close keeps it; eax what the close gives back.  False when
@@ -1667,10 +1721,12 @@ std::optional<reg32> openColl(App* app, CPU& cpu, reg32 name)
     bool good = false;
     if (*read != 0)
     {
+        // The registers as the code loads them for it (ebx reaches the close).
         cpu.eax = kCollHeader;
         cpu.edx = kCollMagic;
         cpu.ebx = 4;
-        if (!guest::call(app, cpu, kStrncmp))
+        cpu.eax = guest::direct<0x4eb390, watcom::clib::strncmp>(app, cpu, kCollHeader, kCollMagic, 4u);
+        if (cpu.terminate)
             return std::nullopt;
         good = cpu.eax == 0 && at(app, kCollVersion) == kCollVersionWanted;
     }
@@ -2472,12 +2528,14 @@ void drawRecords(App* app, CPU& cpu)
     cpu.esp += 4;
 }
 
-/* 0x434990: the race's text for the frame (0x4bed70 with 0x7cdac0). */
+/* 0x434990: the race's text for the frame (0x4bed70, loopb's, with 0x7cdac0); eax as it leaves
+ * it. */
 void raceTextFrame(App* app, CPU& cpu)
 {
-    cpu.eax = 0x7cdac0;
-    if (!guest::call(app, cpu, 0x4bed70))
+    const std::optional<reg32> clipped = feCore<0x4bed70, frontend::loopb::useClip>(app, cpu, 0x7cdac0u);
+    if (!clipped)
         return;
+    cpu.eax = *clipped;
     cpu.esp += 4;
 }
 
@@ -2591,8 +2649,8 @@ constexpr reg32 kVertexX = 0, kVertexY = 4, kVertexZ = 8, kVertexW = 0xc, kVerte
 constexpr reg32 kVertexClip = 0x14, kVertexU = 0x18, kVertexV = 0x1c;
 constexpr reg32 kJustUnderOne = 0x3f7fff00, kWhite = 0xffffffff;
 // The mouse's position (its four words to eax, edx, ebx and ecx), the view's
-// corner (to eax and edx), a quad drawn (its corners eax, edx, ebx, ecx).
-constexpr reg32 kViewCorner = 0x4dab10;
+// corner (0x4dab10, menue's: to eax and edx), a quad drawn (its corners eax,
+// edx, ebx, ecx).
 // The pointers' records (0x2c bytes: the texture, then the corners' u and
 // v), which is shown.
 constexpr reg32 kPointers = 0x8b41dc, kPointer = 0x563d3c, kPointerRecordBytes = 0x2c;
@@ -2637,9 +2695,7 @@ bool pointer(App* app, CPU& cpu)
     const reg32 corners[4] = {f - 0x1a, f + 6, f + 0x26, f + 0x46};
     if (!guest::direct<0x435310, controls::mouseRead>(app, cpu, mouse, mouse + 4, mouse + 8, mouse + 0xc))
         return false;
-    cpu.eax = view;
-    cpu.edx = view + 4;
-    if (!guest::call(app, cpu, kViewCorner))
+    if (!feCore<0x4dab10, frontend::menue::pointerHotSpot>(app, cpu, view, view + 4))
         return false;
     // The corners' x and y: the mouse's, and 32 on, each a float as stored.
     const float left = float(Float(sreg32(at(app, mouse + 4) - at(app, view))));
@@ -2714,7 +2770,6 @@ constexpr reg32 kChannelBytes = 0x494, kChannelKept = 0, kChannelFirst = 4, kCha
 constexpr reg32 kLineBytes = 0x74, kLineStart = 0, kLineFrom = 4, kLineCount = 8, kLineText = 0xc;
 constexpr reg32 kCopyLineBytes = 0x65;
 constexpr reg32 kMessagesAdded = 0x5f3fd8;  // the texts added, counted
-constexpr reg32 kFillZero = 0x4e070c;
 
 namespace
 {
@@ -2729,9 +2784,8 @@ std::optional<reg32> allocate(App* app, CPU& cpu, reg32 bytes)
 /* The game's fill with zeros (0x4e070c): `bytes` at `block`. */
 bool fillZero(App* app, CPU& cpu, reg32 block, reg32 bytes)
 {
-    cpu.eax = block;
-    cpu.edx = bytes;
-    return guest::call(app, cpu, kFillZero);
+    guest::direct<0x4e070c, ea::clearBytes>(app, cpu, block, bytes);
+    return !cpu.terminate;
 }
 
 /* The game's memmove (0x4ea4f0, ea::memmove): `bytes` from `from` to `to`. */

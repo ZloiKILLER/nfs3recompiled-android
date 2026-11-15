@@ -1,4 +1,7 @@
 #include "game_settings.h"
+#include "native_ea_support.h"
+#include "port_snd_voices.h"
+#include "port_sound_effects.h"
 #include "port_sound_slice.h"
 
 #include <cstdint>
@@ -52,12 +55,17 @@ void copBeepTick(App* app, CPU& cpu)
     reg32 eax = e.eax;
     if (kBeeps(app, player) != 0)
     {
-        if (!g.call(kSoundStatus, {reg32(kBeepSounds(app, player)), e.edx, side, e.ecx}, eax))
+        g.atCall();
+        if (!tookEax(guest::direct<kSoundStatus, soundStatus>(app, cpu, g.esp - 4, reg32(kBeepSounds(app, player))),
+                     eax))
             return;
         if (eax != 0)
         {
             const reg32 effect = kChaseLevels(app, player) < kBeeps(app, player) ? 0x31 : 0x30;
-            if (!g.call(kEffectBank, {reg32(kCopBank(app)), effect, side, 0x7f}, {0x40}, eax))
+            g.atCall();
+            if (!tookEax(guest::direct<kEffectBank, bankEffect>(app, cpu, g.esp - 8, kCopBank(app), int32_t(effect),
+                                                                 0x7f, side, uint8_t(0x40)),
+                         eax))
                 return;
             kBeepSounds.set(app, player, int32_t(eax));
             kBeeps.set(app, player, int32_t(reg32(kBeeps(app, player)) - 1));
@@ -66,21 +74,28 @@ void copBeepTick(App* app, CPU& cpu)
     e.back(cpu, eax);
 }
 
-/* 0x418930: player edx's beeps started: eax of them, the first high. */
+/* 0x418930: player `player`'s beeps started: `count` of them, the first
+ * high.  The beep's handle; esp the frame base. */
+Result beepsStarted(App* app, CPU& cpu, reg32 esp, int32_t count, int32_t player)
+{
+    const reg32 frame = esp - 4 * 4;
+    const HeldEbp ebp(cpu, frame);
+    Game g(app, cpu, frame);
+    g.esi = reg32(player) * 4;
+    kBeeps.set(app, player, count);
+    g.atCall();
+    const Result sound = guest::direct<kEffectBank, bankEffect>(app, cpu, g.esp - 8, kCopBank(app), 0x31, 0x7f,
+                                                                 sideOf(app, reg32(player)), uint8_t(0x40));
+    if (!sound)
+        return std::nullopt;
+    kBeepSounds.set(app, player, *sound);
+    return sound;
+}
+
 void copBeepStart(App* app, CPU& cpu)
 {
     const Entry e(cpu);
-    const reg32 frame = e.frame(4);
-    const HeldEbp ebp(cpu, frame);
-    Game g(app, cpu, frame);
-    const int32_t player = int32_t(e.edx);
-    g.esi = e.edx * 4;
-    kBeeps.set(app, player, int32_t(e.eax));
-    reg32 eax;
-    if (!g.call(kEffectBank, {reg32(kCopBank(app)), 0x31, sideOf(app, e.edx), 0x7f}, {0x40}, eax))
-        return;
-    kBeepSounds.set(app, player, int32_t(eax));
-    e.back(cpu, eax);
+    e.finish(cpu, beepsStarted(app, cpu, e.esp, int32_t(e.eax), int32_t(e.edx)));
 }
 
 /* 0x418c30: effect eax of the cops' bank, at full volume. */
@@ -92,31 +107,38 @@ void copEffect(App* app, CPU& cpu)
     Game g(app, cpu, frame);
     g.esi = reg32(kCopBank(app));
     reg32 eax;
-    if (!g.call(kEffectBank, {g.esi, e.eax, 0, 0x7f}, {0x40}, eax))
+    g.atCall();
+    if (!tookEax(guest::direct<kEffectBank, bankEffect>(app, cpu, g.esp - 8, int32_t(g.esi), int32_t(e.eax), 0x7f,
+                                                         0u, uint8_t(0x40)),
+                 eax))
         return;
     e.back(cpu, eax);
 }
 
 /* 0x418c60: the music's event back after an interruption (the race's own
  * music on, playing, not muted): the chase's, or the calm one. */
-void musicEventResume(App* app, CPU& cpu)
+Result musicEventResumed(App* app, CPU& cpu, reg32 esp, reg32 eax, reg32 edx)
 {
-    const Entry e(cpu);
-    const reg32 frame = e.frame(2);
+    const reg32 frame = esp - 2 * 4;
     const HeldEbp ebp(cpu, frame);
     Game g(app, cpu, frame);
-    reg32 eax = e.eax;
     if (kMenuMusic(app) != 0 && kMusicOn(app) != 0 && gameSettings(app).installIsRemote == 0 && gameSettings(app).raceMusicVolume != 0
         && kOwnTune(app) == 0)
     {
-        if (!g.call(kPathEventInterrupt, {0, e.edx}, eax))
-            return;
+        if (!g.call(kPathEventInterrupt, {0, edx}, eax))
+            return std::nullopt;
         // The chase's event while the music has a level of its own, else the calm one.
         const reg32 event = kMusicLevel(app) != -1 ? 1 : reg32(kCalmEvent(app));
         if (!g.call(kPathEvent, {event, 0}, eax))
-            return;
+            return std::nullopt;
     }
-    e.back(cpu, eax);
+    return int32_t(eax);
+}
+
+void musicEventResume(App* app, CPU& cpu)
+{
+    const Entry e(cpu);
+    e.finish(cpu, musicEventResumed(app, cpu, e.esp, e.eax, e.edx));
 }
 
 /* 0x418990: player edx's chase at level eax: the beeps when it rises; the
@@ -133,7 +155,12 @@ void chaseLevel(App* app, CPU& cpu)
     const int32_t player = int32_t(e.edx);
     reg32 eax = e.eax;
     const reg32 ebx = e.edx, ecx = e.eax;  // the player and the level, as the code keeps them
-    const auto trace = [&](reg32 text) { return g.call(kTrace, {eax, e.edx, ebx, ecx}, {0x64, 1, text}, eax); };
+    // The game's trace, compiled out (its words, 0x64, 1 and the text, the caller's to push): nothing.
+    const auto trace = [&](reg32) {
+        g.atCall();
+        guest::direct<kTrace, ea::traceOff>(app, cpu);
+        return !cpu.terminate;
+    };
     const auto path = [&](reg32 target, reg32 first, reg32 second) {
         return g.call(target, {first, second, ebx, ecx}, eax);
     };
@@ -147,8 +174,11 @@ void chaseLevel(App* app, CPU& cpu)
         eax = reg32(player) * 4;
         if (level == was)
             return false;
-        if (level > was && !g.call(kBeepStart, {reg32(level), reg32(player), ebx, ecx}, eax))
-            stopped = true;
+        if (level > was)
+        {
+            g.atCall();
+            stopped = !tookEax(guest::direct<kBeepStart, beepsStarted>(app, cpu, g.esp - 4, level, player), eax);
+        }
         return true;
     };
     const auto keep = [&] {

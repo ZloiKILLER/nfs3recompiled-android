@@ -43,6 +43,10 @@ std::optional<x86::reg32> lockFreed(win32::WinApplication* app, x86::CPU& cpu, x
 bool surfaceIsLocked(win32::WinApplication* app);
 // The game's 0x5221f0: the machine's physical memory in bytes.
 std::optional<x86::reg32> physicalBytes(win32::WinApplication* app, x86::CPU& cpu);
+// The game's 0x4dfc00: the event `event` closed (CloseHandle): Windows' answer.
+std::optional<x86::reg32> eventClosed(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 event);
+// The game's 0x4dfcf0: Windows' last error (GetLastError).
+std::optional<x86::reg32> lastErrorOf(win32::WinApplication* app, x86::CPU& cpu);
 
 }  // namespace ea
 
@@ -219,6 +223,28 @@ struct ByAddress<ea::surfaceIsLocked>
 // Nothing handed; the bytes back in eax.
 template <>
 struct ByAddress<ea::physicalBytes>
+{
+    template <x86::reg32 Address>
+    static std::optional<x86::reg32> call(win32::WinApplication* app, x86::CPU& cpu)
+    {
+        return watcomEax(app, cpu, Address, {});
+    }
+};
+
+// The event in eax; Windows' answer back in eax, every other register kept.
+template <>
+struct ByAddress<ea::eventClosed>
+{
+    template <x86::reg32 Address>
+    static std::optional<x86::reg32> call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 event)
+    {
+        return watcomEax(app, cpu, Address, {event});
+    }
+};
+
+// Nothing handed; the error back in eax, every other register kept.
+template <>
+struct ByAddress<ea::lastErrorOf>
 {
     template <x86::reg32 Address>
     static std::optional<x86::reg32> call(win32::WinApplication* app, x86::CPU& cpu)

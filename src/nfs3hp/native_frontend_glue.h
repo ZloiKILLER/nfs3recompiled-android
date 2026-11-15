@@ -29,8 +29,9 @@ using reg32 = x86::reg32;
 reg32 bindingIsDigital(App* app, CPU& cpu, reg32 binding);
 // The game's 0x43c040: the game mode's control set looked at, whose steering, throttle and brake are digital.
 void noteDigitalControls(App* app, CPU& cpu);
-// The game's 0x46c9b0: the slider's value (a range's end `end`) onto the x87's stack, as a float.
-void sliderValue(App* app, CPU& cpu, reg32 slider, reg32 end);
+// The game's 0x46c9b0: the slider's value (a range's end `end`), as a float, which its code leaves on the x87's
+// stack.
+double sliderValue(App* app, CPU& cpu, reg32 slider, reg32 end);
 // The game's 0x46cac0: the function the slider's moves go to.
 void sliderSetOnMove(App* app, CPU& cpu, reg32 slider, reg32 function);
 // The game's 0x46cca0: the slider's bar's colours, `first` (bl, +0x3e) and `second` (dl, +0x3f).
@@ -86,11 +87,13 @@ template <>
 struct ByAddress<frontend::glue::sliderValue>
 {
     template <x86::reg32 Address>
-    static void call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 slider, x86::reg32 end)
+    static double call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 slider, x86::reg32 end)
     {
         cpu.eax = slider;
         cpu.edx = end;
-        guest::call(app, cpu, Address);
+        if (!guest::call(app, cpu, Address))
+            return 0.0;
+        return double(cpu.fpu.take());
     }
 };
 

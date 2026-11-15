@@ -1,3 +1,5 @@
+#include "native_ea_memory.h"
+#include "native_ea_support.h"
 #include "native_snd.h"
 
 /* The speech's one function that stays register-level native (native_snd.h
@@ -31,15 +33,17 @@ void descriptionLoad(App* app, CPU& cpu)
     copyString(app, cpu, name, cpu.eax);
     appendString(app, cpu, name, 0x54033c);
     cpu.edi = name;
-    cpu.eax = name;
-    if (!call(app, cpu, 0x4e0e60))
+    const std::optional<bool> there = guest::direct<0x4e0e60, ea::fileThere>(app, cpu, name);
+    if (!there)
         return;
+    cpu.eax = *there ? 1 : 0;
     if (cpu.eax == 0 || at(app, 0x7dd838) != 0)
         return none();
-    cpu.eax = name;
     cpu.edx = 0;
-    if (!call(app, cpu, 0x4e0ec0))
+    const std::optional<reg32> file = guest::direct<0x4e0ec0, ea::loadWhole>(app, cpu, name, cpu.edx);
+    if (!file)
         return;
+    cpu.eax = *file;
     cpu.ecx = cpu.eax;
     cpu.ebx = cpu.eax;
     cpu.edx = cpu.eax;
@@ -54,16 +58,20 @@ void descriptionLoad(App* app, CPU& cpu)
             return;
         cpu.ebx ^= cpu.ecx;
         cpu.edx = cpu.eax;
-        cpu.eax = 0x540344;
-        if (!call(app, cpu, 0x4e1620))
+        // ebx and edx after it are the code's own again at once, ecx the bank's (kept).
+        const std::optional<reg32> copy = guest::direct<0x4e1620, ea::reserved>(app, cpu, 0x540344u, cpu.edx, cpu.ebx);
+        if (!copy)
             return;
+        cpu.eax = *copy;
         cpu.edx = at(app, cpu.ebp - 4);
         cpu.ebx = cpu.eax;
         if (!call(app, cpu, 0x4e8e20))
             return;
-        cpu.eax = cpu.ecx;
-        if (!call(app, cpu, 0x4e1890))
+        // ebx (the copy) kept across it, as the code counts on.
+        const std::optional<reg32> purged = guest::direct<0x4e1890, ea::purgeBlock>(app, cpu, cpu.ecx);
+        if (!purged)
             return;
+        cpu.eax = *purged;
     }
     if (i32(cpu.edi) < 0)
         return none();

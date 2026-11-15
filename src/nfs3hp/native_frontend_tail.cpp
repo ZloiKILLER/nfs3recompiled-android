@@ -1,4 +1,5 @@
 #include "native_frontend_tail.h"
+#include "native_game.h"
 #include "native_carstate.h"
 #include "native_ea_memory.h"
 #include "native_ea_threads.h"
@@ -12,6 +13,7 @@
 #include "native_load_saves.h"
 #include "native_vertices.h"
 #include "native_windows.h"
+#include "host_threads.h"
 #include "port_snd_stream_calls.h"
 #include "port_sound_effects.h"
 #include <nfs3hp.h>
@@ -278,12 +280,12 @@ x86::reg32 frontend::tail::queuesClear(App* app, CPU& cpu)
 {
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 12);
-    windows<kEnterCriticalSection, &win32::kernel32::EnterCriticalSection>(guest, cpu, guest.dword(kQueueLock));
-    guest.call(kFillZero, args({ 0x7dd070, 0xa0 }));
-    guest.call(kFillZero, args({ 0x7dd010, 0x60 }));
+    windows<kEnterCriticalSection, &host::enterLock>(guest, cpu, guest.dword(kQueueLock));
+    fe::direct<kFillZero, ea::clearBytes>(guest.app(), guest.cpu(), 0x7dd070, 0xa0);
+    fe::direct<kFillZero, ea::clearBytes>(guest.app(), guest.cpu(), 0x7dd010, 0x60);
     guest.call(kFillZero, args({ 0x7dd2a0, 0x8c }));
     guest.call(kFillZero, args({ 0x7dd110, 0x190 }));
-    windows<kLeaveCriticalSection, &win32::kernel32::LeaveCriticalSection>(guest, cpu, guest.dword(kQueueLock));
+    windows<kLeaveCriticalSection, &host::leaveLock>(guest, cpu, guest.dword(kQueueLock));
     return guest.eax();
 }
 
@@ -607,9 +609,9 @@ x86::reg32 frontend::tail::weatherStart(App* app, CPU& cpu)
 {
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 24 + 0xc);
-    guest.call(kFillZero, args({ kWeather, kWeatherBytes }));
-    guest.call(kFillZero, args({ kDrops, kDropsBytes }));
-    guest.call(kFillZero, args({ kSplashes, kSplashesBytes }));
+    fe::direct<kFillZero, ea::clearBytes>(guest.app(), guest.cpu(), kWeather, kWeatherBytes);
+    fe::direct<kFillZero, ea::clearBytes>(guest.app(), guest.cpu(), kDrops, kDropsBytes);
+    fe::direct<kFillZero, ea::clearBytes>(guest.app(), guest.cpu(), kSplashes, kSplashesBytes);
     guest.setDword(kSharesSeen, 0);
     guest.setDword(kSharesSeen + 4, 0);
 

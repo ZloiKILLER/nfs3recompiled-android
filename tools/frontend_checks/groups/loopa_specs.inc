@@ -34,7 +34,7 @@
 { 0x4b5720, { EAX, 0, 0, 0, Kind::Plain } },
 { 0x4b5860, { EAX | EDX, 0, 0, EDX, Kind::Plain } },
 { 0x4b59c0, { EAX | ECX | EDX | EDI, 0, 0, EDX, Kind::Plain } },
-{ 0x4b5e50, { EAX | EBX, 0, 0, EBX, Kind::Plain } },
+{ 0x4b5e50, { EAX, 0, 0, EBX, Kind::Plain } },  // reads eax alone: the message box, then exit(0) -- what exit's finalizers read never reaches the game
 { 0x4b5ea0, { EAX | EDX, 0, 0, EDX, Kind::Plain } },
 { 0x4b5f10, { EAX, 0, 0, 0, Kind::Plain } },
 { 0x4b6250, { EBX, 0, 0, EBX, Kind::Plain } },  // EBX changed only if the indirect calls at 4010a3 401174 401186 ... change them; those calls may read ECX | EDX

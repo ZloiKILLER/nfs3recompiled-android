@@ -11,8 +11,9 @@
  * stand-ins).  Each calls the game's other functions by address on `cpu` and throws fe::Terminated
  * when the game stopped in one, as Guest::call does; its result is what the game's function leaves
  * in eax.  Several also leave registers they do not save as their code does (coneSideOffset's and
- * skyRandomBetween's edx, modelTransformPart's ecx and edx, its depth on the x87): a caller that
- * reads such a register calls by address. */
+ * skyRandomBetween's edx, modelTransformPart's ecx and edx): a caller that reads such a register
+ * calls by address.  modelTransformAll and modelTransformPart give back the depth their adapters leave
+ * on the x87 besides their eax (Nearest). */
 namespace nfs3hp
 {
 namespace frontend
@@ -23,6 +24,14 @@ namespace rendc
 using App = win32::WinApplication;
 using CPU = x86::CPU;
 using reg32 = x86::reg32;
+
+// What modelTransformAll and modelTransformPart give back: what the game's function leaves in eax,
+// and the nearest depth it leaves on the x87's stack (0 for none).
+struct Nearest
+{
+    reg32 eax;
+    double depth;
+};
 
 // The game's 0x491120: the colour of track light `light`, 0 while it blinks off.
 reg32 blinkColour(App* app, CPU& cpu, reg32 light);
@@ -80,9 +89,9 @@ reg32 objectsEnd(App* app, CPU& cpu, reg32 out);
 reg32 objectsCopy(App* app, CPU& cpu, reg32 out);
 // The game's 0x49d5a0: a model's data and the model given back.
 reg32 modelFree(App* app, CPU& cpu, reg32 model);
-// The game's 0x49d5c0: all of a model's parts at their places: the nearest depth on the x87.
-reg32 modelTransformAll(App* app, CPU& cpu, reg32 model, reg32 matrix1, reg32 place1, reg32 matrix2, reg32 place2,
-                        reg32 environment);
+// The game's 0x49d5c0: all of a model's parts at their places: the nearest depth among them.
+Nearest modelTransformAll(App* app, CPU& cpu, reg32 model, reg32 matrix1, reg32 place1, reg32 matrix2, reg32 place2,
+                          reg32 environment);
 // The game's 0x49d720: the alphas a model is drawn with, `high` and `low`.
 reg32 modelSetAlphas(App* app, CPU& cpu, reg32 high, reg32 low);
 // The game's 0x49d750: whether a model's vertices are lit by their normals.
@@ -94,9 +103,15 @@ reg32 modelSetEnvironment(App* app, CPU& cpu, reg32 direction);
 // The game's 0x49d8f0: the colour a model is lit from.
 reg32 modelSetColour(App* app, CPU& cpu, reg32 colour);
 // The game's 0x49de20: part `part` of a model transformed by up to three steps and projected, its polygons culled:
-// the nearest depth on the x87.
-reg32 modelTransformPart(App* app, CPU& cpu, reg32 model, reg32 part, reg32 matrix0, reg32 place0, reg32 matrix1,
-                         reg32 place1, reg32 matrix2, reg32 place2, reg32 environment);
+// the nearest depth of its vertices.
+Nearest modelTransformPart(App* app, CPU& cpu, reg32 model, reg32 part, reg32 matrix0, reg32 place0, reg32 matrix1,
+                           reg32 place1, reg32 matrix2, reg32 place2, reg32 environment);
+/* The game's 0x49d5c0 and 0x49de20 as the game's code calls them, for register code (native_render.cpp):
+ * their arguments in eax, edx, ebx, ecx and on the stack above the return address's slot at esp, every
+ * register and esp left as their adapters leave them (the stack's arguments taken off); the depth the
+ * adapters leave on the x87, nullopt when the game stopped in them. */
+std::optional<double> modelTransformAllCalled(App* app, CPU& cpu);
+std::optional<double> modelTransformPartCalled(App* app, CPU& cpu);
 // The game's 0x4a4060: a whole number from `a` to `b`, either way round, from the game's table of random bytes.
 reg32 skyRandomBetween(App* app, CPU& cpu, reg32 a, reg32 b);
 // The game's 0x4a40c0: sky sprite `sprite` put back in at an edge of the screen.
@@ -393,16 +408,18 @@ struct ByAddress<frontend::rendc::modelFree>
     }
 };
 
-// Four in eax, edx, ebx and ecx, two on the stack (ret 8).
+// Four in eax, edx, ebx and ecx, two on the stack (ret 8); the depth taken off the x87's stack.
 template <>
 struct ByAddress<frontend::rendc::modelTransformAll>
 {
     template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 model, x86::reg32 matrix1,
-                           x86::reg32 place1, x86::reg32 matrix2, x86::reg32 place2, x86::reg32 environment)
+    static frontend::rendc::Nearest call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 model,
+                                         x86::reg32 matrix1, x86::reg32 place1, x86::reg32 matrix2, x86::reg32 place2,
+                                         x86::reg32 environment)
     {
-        return fe::callByAddress(app, cpu, Address, fe::args({ model, matrix1, place1, matrix2 }, { place2,
-                                 environment }));
+        const x86::reg32 eax = fe::callByAddress(app, cpu, Address, fe::args({ model, matrix1, place1, matrix2 },
+                                                 { place2, environment }));
+        return { eax, double(cpu.fpu.take()) };
     }
 };
 
@@ -456,17 +473,19 @@ struct ByAddress<frontend::rendc::modelSetColour>
     }
 };
 
-// Four in eax, edx, ebx and ecx, five on the stack (ret 0x14).
+// Four in eax, edx, ebx and ecx, five on the stack (ret 0x14); the depth taken off the x87's stack.
 template <>
 struct ByAddress<frontend::rendc::modelTransformPart>
 {
     template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 model, x86::reg32 part,
-                           x86::reg32 matrix0, x86::reg32 place0, x86::reg32 matrix1, x86::reg32 place1,
-                           x86::reg32 matrix2, x86::reg32 place2, x86::reg32 environment)
+    static frontend::rendc::Nearest call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 model,
+                                         x86::reg32 part, x86::reg32 matrix0, x86::reg32 place0, x86::reg32 matrix1,
+                                         x86::reg32 place1, x86::reg32 matrix2, x86::reg32 place2,
+                                         x86::reg32 environment)
     {
-        return fe::callByAddress(app, cpu, Address, fe::args({ model, part, matrix0, place0 }, { matrix1, place1,
-                                 matrix2, place2, environment }));
+        const x86::reg32 eax = fe::callByAddress(app, cpu, Address, fe::args({ model, part, matrix0, place0 },
+                                                 { matrix1, place1, matrix2, place2, environment }));
+        return { eax, double(cpu.fpu.take()) };
     }
 };
 

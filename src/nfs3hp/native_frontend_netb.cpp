@@ -1,4 +1,8 @@
 #include "native_frontend_netb.h"
+#include "native_ea_files.h"
+#include "native_ea_net.h"
+#include "native_watcom.h"
+#include "native_game.h"
 #include "native_ea_memory.h"
 #include "native_ea_threads.h"
 #include "native_frontend.h"
@@ -8,14 +12,52 @@
 #include "native_frontend_wata.h"
 #include "native_frontend_watc.h"
 #include "native_windows.h"
+#include "host_threads.h"
 #include "port_snd_stream_calls.h"
 #include <nfs3hp.h>
 #include <winapi/kernel32.h>
-#include <winapi/user32.h>
-#include <winapi/wsock32.h>
+#include "host_net.h"
+#include "host_window.h"
 #include <cstdint>
 #include <initializer_list>
 #include <optional>
+#include <type_traits>
+#include <utility>
+#include <cstddef>
+
+namespace nfs3hp
+{
+namespace
+{
+
+/* A typed core called as C++ (fe::direct) whose function changes no register but eax (as
+ * tools/frontend_checks/specs_from_exe.py reads it): the registers left as the call by address
+ * leaves them -- `words` in eax, edx, ebx and ecx as that call loads them, the first `Taken` of
+ * them the core's arguments -- and its result in eax, which the call by address leaves there. */
+template <x86::reg32 Address, auto Core, std::size_t... I>
+auto directOf(win32::WinApplication* app, x86::CPU& cpu, const x86::reg32* words, std::index_sequence<I...>)
+{
+    return fe::direct<Address, Core>(app, cpu, words[I]...);
+}
+
+template <x86::reg32 Address, auto Core, std::size_t Taken, typename... Words>
+x86::reg32 directKept(win32::WinApplication* app, x86::CPU& cpu, Words... words)
+{
+    const x86::reg32 all[] = { x86::reg32(words)..., 0 };
+    x86::reg32* const into[] = { &cpu.eax, &cpu.edx, &cpu.ebx, &cpu.ecx };
+    for (std::size_t i = 0; i < sizeof...(Words) && i < 4; ++i)
+        *into[i] = all[i];
+    const auto result = directOf<Address, Core>(app, cpu, all, std::make_index_sequence<Taken>{});
+    if constexpr (std::is_same_v<std::remove_cv_t<decltype(result)>, x86::reg32>)
+        cpu.eax = result;
+    else
+        cpu.eax = *result;
+    return cpu.eax;
+}
+
+}  // namespace
+}  // namespace nfs3hp
+
 
 /* EA's network library, the parts of it left:
  *
@@ -94,8 +136,8 @@ reg32 thunked(Guest& g, x86::CPU& cpu, Words... words)
     return *eax;
 }
 
-void enterLock(Guest& g, x86::CPU& cpu, reg32 lock) { windows<kEnterLock, &win32::kernel32::EnterCriticalSection>(g, cpu, lock); }
-void leaveLock(Guest& g, x86::CPU& cpu, reg32 lock) { windows<kLeaveLock, &win32::kernel32::LeaveCriticalSection>(g, cpu, lock); }
+void enterLock(Guest& g, x86::CPU& cpu, reg32 lock) { windows<kEnterLock, &host::enterLock>(g, cpu, lock); }
+void leaveLock(Guest& g, x86::CPU& cpu, reg32 lock) { windows<kLeaveLock, &host::leaveLock>(g, cpu, lock); }
 
 reg32 swapped(reg32 v)
 {
@@ -320,7 +362,7 @@ reg32 frontend::netb::sendGameInfo(App* app, CPU& cpu, reg32 game, reg32 to, reg
     g.setDword(frame + 0x60, swapped(g.dword(game + 0x84)));
     g.setDword(frame + 0x74, swapped(g.dword(game + 0x50)));
     copyDwords(g, frame + 0xc, net + kOwnPlayer, 5);
-    g.call(kStrncpy, args({ frame + 0x30, game + 0x54, 0x20 }));
+    fe::direct<kStrncpy, watcom::clib::strncpy>(g.app(), g.cpu(), frame + 0x30, game + 0x54, 0x20);
     for (reg32 i = 0; i < 8; ++i)
         g.setByte(frame + 0x28 + i, g.byte(net + 0x94 + i));
     g.setDword(frame + 0x20, swapped(g.dword(net + 0x8c)));
@@ -474,7 +516,9 @@ reg32 frontend::netb::sessionMessage(App* app, CPU& cpu, reg32 session, reg32 fr
         const reg32 game = g.dword(net + 0x14);
         if (game == 0)
             break;
-        if (g.call(kStrncmp, args({ game + 0xc, message, 0x20 })) != 0)
+        const reg32 differs = fe::direct<kStrncmp, watcom::clib::strncmp>(g.app(), g.cpu(), game + 0xc, message, 0x20);
+        cpu.eax = differs;  // what the function gives back when it leaves here: strncmp's answer, as the code has it
+        if (differs != 0)
             break;
         g.call(kSendGameInfo, args({ g.dword(net + 0x14), from, 0 }));
         break;
@@ -601,7 +645,7 @@ reg32 frontend::netb::sessionMessage(App* app, CPU& cpu, reg32 session, reg32 fr
             else
             {
                 const reg32 password = g.dword(net + 0x14) + 0x3c;
-                if (g.byte(password) != 0 && g.call(kStrncmp, args({ password, message + 0x18, 0x10 })) != 0)
+                if (g.byte(password) != 0 && fe::direct<kStrncmp, watcom::clib::strncmp>(g.app(), g.cpu(), password, message + 0x18, 0x10) != 0)
                 {
                     verdict = 0xffffffff;
                     text = 0x550324;
@@ -740,6 +784,7 @@ reg32 frontend::netb::sessionMessage(App* app, CPU& cpu, reg32 session, reg32 fr
         g.setDword(session + 0x44, bigEndian(g, cpu, message + 0x50, 4));
         g.setDword(session + 0x48, bigEndian(g, cpu, message + 0x54, 4));
         g.setDword(session + 0x4c, bigEndian(g, cpu, message + 0x58, 4));
+        // By address: the ebx and edx it leaves may be left at the end.
         g.call(kStrncpy, args({ session + 0x1c, message + 0x28, 0x20 }));
         const reg32 mask = bigEndian(g, cpu, message + 0x6c, 4);
         g.setDword(session + 4, 1);
@@ -790,7 +835,7 @@ constexpr reg32 kQCount = 0, kQFlags = 4, kQFirst = 8, kQLast = 0xc, kQPriority 
 void reportQueue(Guest& g, reg32 function, reg32 line, reg32 queue)
 {
     setErrorAt(g, kQueueFile, function, line);
-    g.call(kError, args({}, { kQueueUninitialized, function, queue }));
+    fe::direct<kError, ea::error>(g.app(), g.cpu(), kQueueUninitialized, guest::Words{function, queue});
 }
 
 void setChanged(Guest& g, reg32 queue)
@@ -1223,14 +1268,14 @@ reg32 frontend::netb::layerCallUnpacker(App* app, CPU& cpu, reg32 first, reg32 i
     Guest g(app, cpu);
     const fe::Frame locals(g, cpu, 0xc);
     cpu.ebx = layers;
-    if (sreg32(index) >= 0 && index < g.call(0x50e1d0, args({ layers })))
+    if (sreg32(index) >= 0 && index < directKept<0x50e1d0, ea::queueLengthOf, 1>(g.app(), g.cpu(), layers))
     {
         g.setDword(layers + 0x1c, index);
         const reg32 layer = g.call(0x50e470, args({ layers }));
         if (layer == 0)
         {
             setErrorAt(g, 0x550194, 0x5501f4, 0x78);
-            g.call(kError, args({ 0x5501f4, 0x78 }, { 0x5501e0 }));
+            fe::direct<0x401010, ea::error>(app, cpu, 0x5501e0u, guest::Words({}));
         }
         return g.call(g.dword(layer + 8), args({ first, g.dword(layer + 0xc), second, pieces }, { layers }));
     }
@@ -1318,12 +1363,12 @@ constexpr reg32 kRecvFrom = 0x533e5c, kGetSockName = 0x533e3e;
 // The two the code calls most: WSAGetLastError, and __WSAFDIsSet (FD_ISSET).
 reg32 lastError(Guest& g, x86::CPU& cpu)
 {
-    return thunked<kWsaLastError, &win32::wsock32::WSAGetLastError>(g, cpu);
+    return thunked<kWsaLastError, &host::netLastError>(g, cpu);
 }
 
 reg32 isSet(Guest& g, x86::CPU& cpu, reg32 socket, reg32 set)
 {
-    return thunked<kFdIsSet, &win32::wsock32::__WSAFDIsSet>(g, cpu, socket, set);
+    return thunked<kFdIsSet, &host::socketIsSet>(g, cpu, socket, set);
 }
 constexpr reg32 kGetTickCount = 0x534568;
 constexpr reg32 kWouldBlock = 0x2733, kInProgress = 0x2747;  // WSAEWOULDBLOCK and what send gives while connecting
@@ -1405,7 +1450,7 @@ reg32 frontend::netb::ipxOpenWinsock(App* app, CPU& cpu, reg32 remember)
     constexpr reg32 kOpened = 0x566e84, kRemembered = 0x566e24, kRecord = 0x566e28, kTable = 0x5689e8;
     if (g.dword(kNetLock) == 0)
         g.setDword(kNetLock, reg32(*fe::direct<0x4eb2e0, ea::newLock>(app, cpu)));
-    if (g.dword(kOpened) == 0 && thunked<kWsaStartup, &win32::wsock32::WSAStartup>(g, cpu, 0x101, g.frame()) == 0)
+    if (g.dword(kOpened) == 0 && thunked<kWsaStartup, &host::netStartup>(g, cpu, 0x101, g.frame()) == 0)
     {
         const reg32 found = guest::direct<0x4f5c10, neta::ipxOpen>(app, cpu, 0, 0, 0);
         if (found != 0)
@@ -1416,7 +1461,7 @@ reg32 frontend::netb::ipxOpenWinsock(App* app, CPU& cpu, reg32 remember)
             if (remember != 0)
                 g.setDword(kRemembered, remember);
         }
-        thunked<kWsaCleanup, &win32::wsock32::WSACleanup>(g, cpu);
+        thunked<kWsaCleanup, &host::netCleanup>(g, cpu);
     }
     return g.dword(kOpened) != 0 ? kRecord : 0;
 }
@@ -1438,20 +1483,20 @@ reg32 frontend::netb::tcpOpenWinsock(App* app, CPU& cpu, reg32 remember)
     constexpr reg32 kGetSystemMetrics = 0x534750, kSmNetwork = 0x3f;
     if (g.dword(kNetLock) == 0)
         g.setDword(kNetLock, reg32(*fe::direct<0x4eb2e0, ea::newLock>(app, cpu)));
-    if (g.dword(kOpened) == 0 && (windows<kGetSystemMetrics, &win32::user32::GetSystemMetrics>(g, cpu, kSmNetwork) & 1) != 0
-        && thunked<kWsaStartup, &win32::wsock32::WSAStartup>(g, cpu, 0x101, 0x9f3660) == 0)
+    if (g.dword(kOpened) == 0 && (windows<kGetSystemMetrics, &host::systemMetrics>(g, cpu, kSmNetwork) & 1) != 0
+        && thunked<kWsaStartup, &host::netStartup>(g, cpu, 0x101, 0x9f3660) == 0)
     {
-        const reg32 probe = thunked<kSocket, &win32::wsock32::socket>(g, cpu, 2, 1, 0);
+        const reg32 probe = thunked<kSocket, &host::socketOpen>(g, cpu, 2, 1, 0);
         if (probe != 0xffffffff)
         {
             addNetKind(g, kRemembered, kTable);
             cpu.edx = g.dword(kNetCount) - 1;
-            thunked<kCloseSocket, &win32::wsock32::closesocket>(g, cpu, probe);
+            thunked<kCloseSocket, &host::socketClose>(g, cpu, probe);
             g.setDword(kOpened, 1);
             if (remember != 0)
                 g.setDword(kRemembered, remember);
         }
-        thunked<kWsaCleanup, &win32::wsock32::WSACleanup>(g, cpu);
+        thunked<kWsaCleanup, &host::netCleanup>(g, cpu);
     }
     return g.dword(kOpened) != 0 ? kRecord : 0;
 }
@@ -1470,18 +1515,18 @@ reg32 frontend::netb::tcpListenSocket(App* app, CPU& cpu, reg32 port)
     Guest g(app, cpu);
     const fe::Frame locals(g, cpu, 0x20);
     const reg32 address = g.frame();
-    const reg32 socket = thunked<kSocket, &win32::wsock32::socket>(g, cpu, 2, 1, 0);
+    const reg32 socket = thunked<kSocket, &host::socketOpen>(g, cpu, 2, 1, 0);
     if (socket == 0xffffffff)
         return 0xffffffff;
-    g.call(0x4e070c, args({ address, 0x10 }));
+    fe::direct<0x4e070c, ea::clearBytes>(app, cpu, address, 0x10u);
     g.setWord(address, 2);
     cpu.eax = port & 0xffff;  // eax and edx as the code has them at the call
     cpu.edx = 2;
-    const reg32 network = thunked<kHtons, &win32::wsock32::htons>(g, cpu, port & 0xffff);
+    const reg32 network = thunked<kHtons, &host::byteSwap16>(g, cpu, port & 0xffff);
     g.setWord(address + 2, std::uint16_t(network));
-    if (thunked<kBind, &win32::wsock32::bind>(g, cpu, socket, address, 0x10) == 0)
+    if (thunked<kBind, &host::socketBind>(g, cpu, socket, address, 0x10) == 0)
         return socket;
-    thunked<kCloseSocket, &win32::wsock32::closesocket>(g, cpu, socket);
+    thunked<kCloseSocket, &host::socketClose>(g, cpu, socket);
     return 0xffffffff;
 }
 
@@ -1500,11 +1545,11 @@ reg32 frontend::netb::tcpSetSocketOptions(App* app, CPU& cpu, reg32 socket)
     const reg32 on = g.frame();
     constexpr reg32 kFionbio = 0x8004667e, kSolSocket = 0xffff, kSoReuseAddr = 8, kIpProtoTcp = 6, kTcpNoDelay = 1;
     g.setDword(on, 1);
-    thunked<kIoctlSocket, &win32::wsock32::ioctlsocket>(g, cpu, socket, kFionbio, on);
+    thunked<kIoctlSocket, &host::socketControl>(g, cpu, socket, kFionbio, on);
     g.setDword(on, 1);
-    thunked<kSetSockOpt, &win32::wsock32::setsockopt>(g, cpu, socket, kSolSocket, kSoReuseAddr, on, 4);
+    thunked<kSetSockOpt, &host::socketSetOption>(g, cpu, socket, kSolSocket, kSoReuseAddr, on, 4);
     g.setDword(on, 1);
-    return thunked<kSetSockOpt, &win32::wsock32::setsockopt>(g, cpu, socket, kIpProtoTcp, kTcpNoDelay, on, 4);
+    return thunked<kSetSockOpt, &host::socketSetOption>(g, cpu, socket, kIpProtoTcp, kTcpNoDelay, on, 4);
 }
 
 void frontend::tcpSetSocketOptions(win32::WinApplication* app, x86::CPU& cpu)
@@ -1571,7 +1616,7 @@ reg32 frontend::netb::tcpReceivePacket(App* app, CPU& cpu, reg32 listener, reg32
     const reg32 data = g.frame();
     const reg32 buffer = g.dword(connection + kConnBuffer);
     const auto receive = [&](reg32 bytes, reg32 flags) {
-        return thunked<kRecv, &win32::wsock32::recv>(g, cpu, g.dword(connection + kConnSocket), data, bytes, flags);
+        return thunked<kRecv, &host::socketRecv>(g, cpu, g.dword(connection + kConnSocket), data, bytes, flags);
     };
     enterLock(g, cpu, g.dword(kNetLock));
     reg32 dead = 0;
@@ -1630,7 +1675,7 @@ reg32 frontend::netb::tcpSendPending(App* app, CPU& cpu, reg32 connection)
     if (g.word(buffer + 6) == 0)
         return 0;
     enterLock(g, cpu, g.dword(kNetLock));
-    const reg32 sent = thunked<kSend, &win32::wsock32::send>(g, cpu, g.dword(connection + kConnSocket),
+    const reg32 sent = thunked<kSend, &host::socketSend>(g, cpu, g.dword(connection + kConnSocket),
                                                              g.dword(buffer + 8), g.word(buffer + 6), 0);
     reg32 dead = 0;
     if (sent == 0xffffffff)
@@ -1664,7 +1709,7 @@ reg32 frontend::netb::tcpConnectionDropped(App* app, CPU& cpu, reg32 connection)
     Guest g(app, cpu);
     const fe::Frame locals(g, cpu, 0xc);
     cpu.ebx = connection;
-    thunked<kCloseSocket, &win32::wsock32::closesocket>(g, cpu, g.dword(connection + kConnSocket));
+    thunked<kCloseSocket, &host::socketClose>(g, cpu, g.dword(connection + kConnSocket));
     g.setDword(connection + kConnSocket, 0xffffffff);
     const reg32 removed = g.call(kQRemove, args({ kOpenQueue, connection }));
     if (removed == 0)
@@ -1710,7 +1755,7 @@ reg32 frontend::netb::tcpServerThread(App* app, CPU& cpu)
                 stale = sreg32(g.dword(kNow)) > sreg32(g.dword(listener + kAcceptedBy));
             if (stale)
             {
-                thunked<kCloseSocket, &win32::wsock32::closesocket>(g, cpu, g.dword(listener + kAccepted));
+                thunked<kCloseSocket, &host::socketClose>(g, cpu, g.dword(listener + kAccepted));
                 g.setDword(listener + kAccepted, 0xffffffff);
             }
         }
@@ -1748,12 +1793,12 @@ reg32 frontend::netb::tcpServerThread(App* app, CPU& cpu)
         leaveLock(g, cpu, g.dword(kNetLock));
         g.setDword(wait, 0);
         g.setDword(wait + 4, 0x61a8);
-        if (thunked<kSelect, &win32::wsock32::select>(g, cpu, 0, reading, writing, excepting, wait) != 0xffffffff)
+        if (thunked<kSelect, &host::socketSelect>(g, cpu, 0, reading, writing, excepting, wait) != 0xffffffff)
         {
             if (isSet(g, cpu, g.dword(listener + kListenSocket), reading) != 0)
             {
                 g.setDword(peerLength, 0x10);
-                const reg32 socket = thunked<kAccept, &win32::wsock32::accept>(g, cpu, g.dword(listener + kListenSocket),
+                const reg32 socket = thunked<kAccept, &host::socketAccept>(g, cpu, g.dword(listener + kListenSocket),
                                                                                peer, peerLength);
                 g.setDword(listener + kAccepted, socket);
                 if (socket == 0xffffffff)
@@ -1926,7 +1971,7 @@ reg32 frontend::netb::tcpOpenConnection(App* app, CPU& cpu, reg32 connection, re
             const reg32 socket = guest::direct<0x4f6490, tcpListenSocket>(app, cpu, 0);
             cpu.ebx = socket;
             g.setDword(socketAt, socket);
-            const reg32 until = windows<kGetTickCount, &win32::kernel32::GetTickCount>(g, cpu) + 0x3e8;
+            const reg32 until = windows<kGetTickCount, &host::ticks>(g, cpu) + 0x3e8;
             if (socket == 0xffffffff)
             {
                 waiting = true;
@@ -1935,14 +1980,14 @@ reg32 frontend::netb::tcpOpenConnection(App* app, CPU& cpu, reg32 connection, re
                 break;
             }
             guest::direct<0x4f6510, tcpSetSocketOptions>(app, cpu, socket);
-            thunked<kConnect, &win32::wsock32::connect>(g, cpu, socket, g.dword(addressAt), 0x10);
+            thunked<kConnect, &host::socketConnect>(g, cpu, socket, g.dword(addressAt), 0x10);
             const reg32 error = lastError(g, cpu);
             if (error == kWouldBlock)
             {
                 g.setDword(connection + kConnSocket, socket);
                 while (g.dword(listener + kConnecting) != 0)
                 {
-                    if (until <= windows<kGetTickCount, &win32::kernel32::GetTickCount>(g, cpu))
+                    if (until <= windows<kGetTickCount, &host::ticks>(g, cpu))
                         break;
                     bool failed = false;
                     if (reg32(*fe::direct<0x4df930, ea::isThreadNow>(app, cpu, 0)) != 0)
@@ -1970,7 +2015,7 @@ reg32 frontend::netb::tcpOpenConnection(App* app, CPU& cpu, reg32 connection, re
                     continue;
                 break;
             }
-            thunked<kCloseSocket, &win32::wsock32::closesocket>(g, cpu, g.dword(socketAt));
+            thunked<kCloseSocket, &host::socketClose>(g, cpu, g.dword(socketAt));
             if (g.dword(listener + kConnecting) == 0)
                 break;
         }
@@ -2009,7 +2054,9 @@ reg32 frontend::netb::tcpSendConnection(App* app, CPU& cpu, reg32 connection, re
     if (length > room)
     {
         setErrorAt(g, 0x54d2d0, 0x54d2f8, 0x22e);
-        g.call(kError, args({ room, 0x54d2d0, 0x22e }, { 0x54d30c, room }));
+        g.leaveEdx(0x54d2d0);  // as the code loads them for it, which Error keeps
+        g.leaveEbx(0x22e);
+        fe::direct<0x401010, ea::error>(app, cpu, 0x54d30cu, guest::Words({ room }));
     }
     if (g.word(buffer + 6) != 0)
         return 0;
@@ -2019,7 +2066,7 @@ reg32 frontend::netb::tcpSendConnection(App* app, CPU& cpu, reg32 connection, re
     const reg32 whole = length + 2;
     g.setDword(buffer + 8, buffer + 0xc);
     g.setWord(buffer + 6, std::uint16_t(whole));
-    const reg32 sent = thunked<kSend, &win32::wsock32::send>(g, cpu, g.dword(connection + kConnSocket),
+    const reg32 sent = thunked<kSend, &host::socketSend>(g, cpu, g.dword(connection + kConnSocket),
                                                              g.dword(buffer + 8), whole & 0xffff, 0);
     if (sent == 0xffffffff)
     {
@@ -2060,9 +2107,9 @@ reg32 frontend::netb::tcpCloseConnection(App* app, CPU& cpu, reg32 connection)
     const fe::Frame locals(g, cpu, 0x10);
     if (g.call(kQRemove, args({ kOpenQueue, connection })) != 0)
     {
-        thunked<kShutdown, &win32::wsock32::shutdown>(g, cpu, g.dword(connection + kConnSocket), 2);
+        thunked<kShutdown, &host::socketShutdown>(g, cpu, g.dword(connection + kConnSocket), 2);
         fe::direct<0x4df8e0, ea::sleepFor>(app, cpu, 1);
-        thunked<kCloseSocket, &win32::wsock32::closesocket>(g, cpu, g.dword(connection + kConnSocket));
+        thunked<kCloseSocket, &host::socketClose>(g, cpu, g.dword(connection + kConnSocket));
         g.setDword(connection + kConnSocket, 0xffffffff);
         g.setDword(connection + kConnUp, 0);
         guest::direct<0x50de50, qpush>(app, cpu, kFreeQueue, connection);
@@ -2134,8 +2181,8 @@ reg32 frontend::netb::tcpHostGame(App* app, CPU& cpu, reg32 net, reg32 player, r
     g.setDword(net + 0x9c, 1);
     g.setDword(net + 0x14, 0);
     fe::direct<0x4ea4f0, ea::moveMemory>(app, cpu, net + 0x8c, player, cpu.ebx);
-    g.call(kStrncpy, args({ net + 0x44, gameName, 0x33 }));
-    g.call(kStrncpy, args({ net + 0x78, playerName, 0x13 }));
+    fe::direct<kStrncpy, watcom::clib::strncpy>(g.app(), g.cpu(), net + 0x44, gameName, 0x33);
+    fe::direct<kStrncpy, watcom::clib::strncpy>(g.app(), g.cpu(), net + 0x78, playerName, 0x13);
     return g.dword(kOpenResult);
 }
 
@@ -2216,14 +2263,14 @@ reg32 frontend::netb::tcpStartWinsock(App* app, CPU& cpu)
     Guest g(app, cpu);
     const fe::Frame locals(g, cpu, 8);
     constexpr reg32 kUsers = 0x566e88;
-    if (g.dword(kUsers) == 0 && thunked<kWsaStartup, &win32::wsock32::WSAStartup>(g, cpu, 0x101, 0x9f3660) != 0)
+    if (g.dword(kUsers) == 0 && thunked<kWsaStartup, &host::netStartup>(g, cpu, 0x101, 0x9f3660) != 0)
         return 0;
-    const reg32 socket = thunked<kSocket, &win32::wsock32::socket>(g, cpu, 2, 1, 0);
+    const reg32 socket = thunked<kSocket, &host::socketOpen>(g, cpu, 2, 1, 0);
     if (socket != 0xffffffff)
     {
         cpu.edx = socket;
         fe::direct<0x5150f0, frontend::eab::netLocalAddress>(app, cpu, 0xa0b120);
-        thunked<kCloseSocket, &win32::wsock32::closesocket>(g, cpu, socket);
+        thunked<kCloseSocket, &host::socketClose>(g, cpu, socket);
     }
     g.setDword(kUsers, g.dword(kUsers) + 1);
     const reg32 maximum = g.word(kMaxPacket);
@@ -2250,7 +2297,7 @@ reg32 frontend::netb::tcpStopWinsock(App* app, CPU& cpu)
     if (users == 0)
         return 0;
     g.setDword(kUsers, users - 1);
-    if (users - 1 == 0 && thunked<kWsaCleanup, &win32::wsock32::WSACleanup>(g, cpu) != 0)
+    if (users - 1 == 0 && thunked<kWsaCleanup, &host::netCleanup>(g, cpu) != 0)
         return 0;
     return 1;
 }
@@ -2281,14 +2328,14 @@ constexpr reg32 kStateConnected = 9;
 void fileReport(Guest& g, reg32 text)
 {
     g.setDword(kReportText, text);
-    g.call(kFileReport, args({}, { kReportStream, 1, text }));
+    g.cpu().eax = *fe::direct<0x501050, ea::reportedAt>(g.app(), g.cpu(), kReportStream, 1u, text, guest::Words({}));
 }
 
 /* The modem's thread told to stop: its message queue gets WM_USER+200. */
 void postQuit(Guest& g, x86::CPU& cpu, reg32 settings)
 {
     g.setDword(settings + 0x34, 0);
-    windows<kPostThreadMessage, &win32::user32::PostThreadMessageA>(g, cpu, g.dword(kThreadId), kConnectionQuit, 0, 0);
+    windows<kPostThreadMessage, &host::postThreadMessage>(g, cpu, g.dword(kThreadId), kConnectionQuit, 0, 0);
 }
 
 /* What sub_4fa550 and sub_4fa780 share: the timeouts a network's settings leave at 0 taken from
@@ -2336,7 +2383,7 @@ reg32 frontend::netb::tapiSelectModem(App* app, CPU& cpu, reg32 index)
     if (sreg32(index) >= sreg32(g.dword(kModemCount)))
     {
         setErrorAt(g, kTapiFile, 0x54daec, 0x176);
-        g.call(kError, args({}, { 0x54dafc }));
+        fe::direct<kError, ea::error>(g.app(), g.cpu(), 0x54dafc, guest::Words({}));
         return 0;
     }
     g.setDword(kChosenDevice, g.dword(g.dword(kModems) + index * 8));
@@ -2359,7 +2406,7 @@ reg32 frontend::netb::tapiEnumerateModems(App* app, CPU& cpu)
     constexpr reg32 kListBytes = 0xa0, kGetWindowLong = 0x534758, kCapsDatamodem = 0x10;
     g.setDword(kModemCount, 0);
     const reg32 window = g.call(0x4eba70);
-    const reg32 instance = windows<kGetWindowLong, &win32::user32::GetWindowLongA>(g, cpu, window, 0xfffffffa);
+    const reg32 instance = windows<kGetWindowLong, &host::windowLong>(g, cpu, window, 0xfffffffa);
     cpu.eax = instance;  // eax as the code has it at the call, which the stub does not read
     if (fe::direct<0x5310be, frontend::watc::lineInitialize>(app, cpu, kLineApp, instance, 0x4f9500, 0, kDeviceCount) != 0)
         return 0;
@@ -2405,7 +2452,7 @@ reg32 frontend::netb::tapiEnumerateModems(App* app, CPU& cpu)
         const reg32 place = g.dword(kModems) + (g.dword(kModemCount) << 3);
         g.setDword(place + 4, name);
         const reg32 caps2 = g.dword(kDevCaps);
-        g.call(kStrncpy, args({ g.dword(place + 4), g.dword(caps2 + 0x24) + caps2, g.dword(caps2 + 0x20) }));
+        fe::direct<kStrncpy, watcom::clib::strncpy>(g.app(), g.cpu(), g.dword(place + 4), g.dword(caps2 + 0x24) + caps2, g.dword(caps2 + 0x20));
         const reg32 place2 = g.dword(kModems) + (g.dword(kModemCount) << 3);
         g.setByte(g.dword(place2 + 4) + g.dword(g.dword(kDevCaps) + 0x20), 0);
         g.setDword(place2, device);
@@ -2468,7 +2515,8 @@ reg32 frontend::netb::tapiGetCommHandleConfig(App* app, CPU& cpu)
     const fe::Frame locals(g, cpu, 0x1f58);
     constexpr reg32 kBytes = 0x1f40, kGetCommConfig = 0x5344ec, kCloseHandle = 0x534488;
     const reg32 id = g.frame();
-    g.call(kMemset, args({ id, 0, kBytes }));
+    fe::direct<0x4e0640, watcom::clib::memset>(app, cpu, id, 0u, kBytes);
+    g.leaveEbx(kBytes);  // as the code loads it for it, which it keeps
     g.setDword(id, kBytes);
     cpu.eax = id;  // eax as the code has it at the call, which the stub does not read
     if (fe::direct<0x530a4e, frontend::watc::lineGetID>(app, cpu, g.dword(kLine), 0, 0, 1, id, kCommClass) != 0)
@@ -2476,7 +2524,7 @@ reg32 frontend::netb::tapiGetCommHandleConfig(App* app, CPU& cpu)
     const reg32 handleAt = id + g.dword(id + 0x14);
     g.setWord(kCommDcb, 0x1000);
     g.setDword(kCommDcb + 0x34, 0xe73cf52e);
-    const reg32 read = windows<kGetCommConfig, &win32::kernel32::GetCommProperties>(g, cpu, g.dword(handleAt), kCommDcb);
+    const reg32 read = windows<kGetCommConfig, &host::serialGetProperties>(g, cpu, g.dword(handleAt), kCommDcb);
     windows<kCloseHandle, &win32::kernel32::CloseHandle>(g, cpu, g.dword(handleAt));
     if (read == 0)
         return 0;
@@ -2498,7 +2546,8 @@ reg32 frontend::netb::tapiSetCommConfig(App* app, CPU& cpu)
     const fe::Frame locals(g, cpu, 0x1f54);
     constexpr reg32 kBytes = 0x1f40;
     const reg32 config = g.frame() + 4;
-    g.call(kMemset, args({ config, 0, kBytes }));
+    fe::direct<0x4e0640, watcom::clib::memset>(app, cpu, config, 0u, kBytes);
+    g.leaveEbx(kBytes);  // as the code loads it for it, which it keeps
     g.setDword(config, kBytes);
     cpu.eax = config;  // eax as the code has it at the call, which the stub does not read
     if (fe::direct<0x53083d, frontend::watc::lineGetDevConfig>(app, cpu, g.dword(kChosenDevice), config, kCommClass) != 0
@@ -2574,11 +2623,12 @@ reg32 frontend::netb::tapiMakeCall(App* app, CPU& cpu, reg32 number)
         return 0;
     setErrorAt(g, kTapiFile, 0x54db70, 0x287);
     const reg32 parameters = reg32(*fe::direct<0x4e1620, ea::reserved>(app, cpu, 0x54db80, 0x70, g.dword(kMemoryGroup)));
-    g.call(kMemset, args({ parameters, 0, 0x70 }));
+    fe::direct<kMemset, watcom::clib::memset>(g.app(), g.cpu(), parameters, 0, 0x70);
     g.setDword(parameters, 0x70);
     g.setDword(parameters + 4, 1);
     g.setDword(parameters + 0x10, 0x10);
     g.setDword(parameters + 0x2c, 0xbb8);
+    cpu.eax = parameters;  // eax as the code has it at the call (memset's answer), which the stub does not read
     const reg32 result = fe::direct<0x5311c0, frontend::watc::lineMakeCall>(app, cpu, g.dword(kLine), kCall, number, 0, parameters);
     cpu.ecx = result;
     fe::direct<0x4e1890, ea::purgeBlock>(app, cpu, parameters);
@@ -2683,14 +2733,14 @@ reg32 frontend::netb::tapiThread(App* app, CPU& cpu)
         cpu.ebx = 0;
         while (g.dword(g.dword(kModemSettings) + 0x34) != 0)
         {
-            if (windows<kGetMessage, &win32::user32::GetMessageA>(g, cpu, message, 0, 0, 0) == 0)
+            if (windows<kGetMessage, &host::getMessage>(g, cpu, message, 0, 0, 0) == 0)
             {
                 fe::direct<0x4df8e0, ea::sleepFor>(app, cpu, 1);
             }
             else
             {
-                windows<kTranslateMessage, &win32::user32::TranslateMessage>(g, cpu, message);
-                windows<kDispatchMessage, &win32::user32::DispatchMessageA>(g, cpu, message);
+                windows<kTranslateMessage, &host::translateMessage>(g, cpu, message);
+                windows<kDispatchMessage, &host::dispatchMessage>(g, cpu, message);
             }
         }
         guest::direct<0x4fa1d0, tapiHangUp>(app, cpu);
@@ -3074,14 +3124,14 @@ reg32 frontend::netb::ipxBroadcastOpen(App* app, CPU& cpu, reg32 socket)
     g.setWord(address, 6);
     cpu.edx = 6;  // edx and ebx as the code has them at the call
     cpu.ebx = 0xff;
-    const reg32 port = thunked<kHtons, &win32::wsock32::htons>(g, cpu, kIpxSocket);
+    const reg32 port = thunked<kHtons, &host::byteSwap16>(g, cpu, kIpxSocket);
     g.setWord(address + 0xc, std::uint16_t(port));
-    g.call(0x4e0716, args({ address + 2, 4, 0xff }));
-    g.call(0x4e0716, args({ address + 6, 6, 0xff }));
+    fe::direct<0x4e0716, ea::fillBytes>(g.app(), g.cpu(), address + 2, 4, 0xff);
+    fe::direct<0x4e0716, ea::fillBytes>(g.app(), g.cpu(), address + 6, 6, 0xff);
     g.setWord(packet, std::uint16_t(swapped(1) >> 16));
     g.setWord(packet + 2, std::uint16_t(swapped(kGameProtocol) >> 16));
     enterLock(g, cpu, g.dword(kNetLock));
-    const reg32 sent = thunked<kSendTo, &win32::wsock32::sendto>(g, cpu, socket, packet, 4, 0, address, 0xe);
+    const reg32 sent = thunked<kSendTo, &host::socketSendTo>(g, cpu, socket, packet, 4, 0, address, 0xe);
     leaveLock(g, cpu, g.dword(kNetLock));
     return sent != 0xffffffff ? 1 : 0;
 }
@@ -3100,7 +3150,7 @@ reg32 frontend::netb::ipxScanInterfaces(App* app, CPU& cpu, reg32 owner, reg32 h
     Guest g(app, cpu);
     const fe::Frame locals(g, cpu, 0x14);
     constexpr reg32 kEntry = 0x40;
-    const reg32 port = thunked<kHtons, &win32::wsock32::htons>(g, cpu, kIpxSocket);
+    const reg32 port = thunked<kHtons, &host::byteSwap16>(g, cpu, kIpxSocket);
     if (std::uint16_t(port) != g.word(header + 0xc))
         return 0;
     const reg32 version = bigEndian(g, cpu, data, 2);
@@ -3133,7 +3183,7 @@ reg32 frontend::netb::ipxAdvertiseTo(App* app, CPU& cpu, reg32 to)
     Guest g(app, cpu);
     const fe::Frame locals(g, cpu, 0xc);
     enterLock(g, cpu, g.dword(kNetLock));
-    thunked<kSendTo, &win32::wsock32::sendto>(g, cpu, g.dword(kAdvertSocket), kAdvertPacket, 0x42, 0, to, 0xe);
+    thunked<kSendTo, &host::socketSendTo>(g, cpu, g.dword(kAdvertSocket), kAdvertPacket, 0x42, 0, to, 0xe);
     leaveLock(g, cpu, g.dword(kNetLock));
     return cpu.eax;
 }
@@ -3170,25 +3220,25 @@ reg32 frontend::netb::ipxServerSocket(App* app, CPU& cpu, reg32 address)
     const fe::Frame locals(g, cpu, 0x1c);
     constexpr reg32 kSoBroadcast = 0x20, kSolSocket = 0xffff, kNsProto = 0x3e8, kOption = 0x400f, kAddressBytes = 0xe;
     const reg32 on = g.frame(), length = on + 4;
-    const reg32 socket = thunked<kSocket, &win32::wsock32::socket>(g, cpu, 6, 2, kNsProto);
+    const reg32 socket = thunked<kSocket, &host::socketOpen>(g, cpu, 6, 2, kNsProto);
     if (socket == 0xffffffff)
         return 0xffffffff;
     g.setDword(on, 1);
-    thunked<kSetSockOpt, &win32::wsock32::setsockopt>(g, cpu, socket, kSolSocket, kSoBroadcast, on, 4);
-    thunked<kSetSockOpt, &win32::wsock32::setsockopt>(g, cpu, socket, kSolSocket, kOption, on, 4);
-    thunked<kSetSockOpt, &win32::wsock32::setsockopt>(g, cpu, socket, kNsProto, kOption, on, 4);
-    g.call(0x4e070c, args({ address, kAddressBytes }));
+    thunked<kSetSockOpt, &host::socketSetOption>(g, cpu, socket, kSolSocket, kSoBroadcast, on, 4);
+    thunked<kSetSockOpt, &host::socketSetOption>(g, cpu, socket, kSolSocket, kOption, on, 4);
+    thunked<kSetSockOpt, &host::socketSetOption>(g, cpu, socket, kNsProto, kOption, on, 4);
+    fe::direct<0x4e070c, ea::clearBytes>(g.app(), g.cpu(), address, kAddressBytes);
     g.setWord(address, 6);
-    const reg32 port = thunked<kHtons, &win32::wsock32::htons>(g, cpu, kIpxSocket);
+    const reg32 port = thunked<kHtons, &host::byteSwap16>(g, cpu, kIpxSocket);
     g.setWord(address + 0xc, std::uint16_t(port));
-    if (thunked<kBind, &win32::wsock32::bind>(g, cpu, socket, address, kAddressBytes) == 0)
+    if (thunked<kBind, &host::socketBind>(g, cpu, socket, address, kAddressBytes) == 0)
     {
         g.setDword(length, kAddressBytes);
-        if (thunked<kGetSockName, &win32::wsock32::getsockname>(g, cpu, socket, address, length) == 0
+        if (thunked<kGetSockName, &host::socketName>(g, cpu, socket, address, length) == 0
             && g.dword(length) == kAddressBytes)
             return socket;
     }
-    thunked<kCloseSocket, &win32::wsock32::closesocket>(g, cpu, socket);
+    thunked<kCloseSocket, &host::socketClose>(g, cpu, socket);
     return 0xffffffff;
 }
 
@@ -3212,7 +3262,7 @@ reg32 frontend::netb::ipxServerThread(App* app, CPU& cpu)
     const auto advertise = [&](reg32 to) { cpu.eax = guest::direct<0x512940, ipxAdvertiseTo>(app, cpu, to); };
     reg32 next = ticks() + 4;
     g.setWord(everyone, 6);
-    const reg32 port = thunked<kHtons, &win32::wsock32::htons>(g, cpu, kIpxSocket);
+    const reg32 port = thunked<kHtons, &host::byteSwap16>(g, cpu, kIpxSocket);
     guest::direct<0x4f5900, neta::portToSockaddr>(app, cpu, reg32(sreg32(std::int16_t(port))), everyone);
     g.setDword(kAdvertRunning, 1);
     reg32 sentAny = 0;
@@ -3222,7 +3272,7 @@ reg32 frontend::netb::ipxServerThread(App* app, CPU& cpu)
         g.setDword(wait, reg32(sreg32(next) / 1000));
         g.setDword(wait + 4, reg32((sreg32(next) % 1000) * 1000));
         g.setDword(set, 1);
-        const reg32 ready = thunked<kSelect, &win32::wsock32::select>(g, cpu, 0, set, 0, 0, wait);
+        const reg32 ready = thunked<kSelect, &host::socketSelect>(g, cpu, 0, set, 0, 0, wait);
         if (ready == 0xffffffff)
         {
             cpu.ebx = 0;
@@ -3233,7 +3283,7 @@ reg32 frontend::netb::ipxServerThread(App* app, CPU& cpu)
         {
             g.setDword(fromLength, 0x10);
             enterLock(g, cpu, g.dword(kNetLock));
-            const reg32 got = thunked<kRecvFrom, &win32::wsock32::recvfrom>(g, cpu, g.dword(kAdvertSocket), data,
+            const reg32 got = thunked<kRecvFrom, &host::socketRecvFrom>(g, cpu, g.dword(kAdvertSocket), data,
                                                                             0x200, 0, from, fromLength);
             leaveLock(g, cpu, g.dword(kNetLock));
             // 4 in edx too, which it does not read.
@@ -3279,7 +3329,8 @@ reg32 frontend::netb::ipxStartServer(App* app, CPU& cpu, reg32 owner, reg32 id, 
     g.setWord(kAdvertPacket, std::uint16_t(swapped(2) >> 16));
     g.setWord(0xa0b0d4, std::uint16_t(swapped(kGameProtocol) >> 16));
     g.setWord(0xa0b112, std::uint16_t(swapped(1) >> 16));
-    g.call(kStrncpy, args({ 0xa0b0d6, name, 0x30, 0xffffffff }));
+    fe::direct<0x4e0e30, watcom::clib::strncpy>(app, cpu, 0xa0b0d6u, name, 0x30u);
+    g.leaveEcx(0xffffffff);  // as the code loads it for it, which it keeps: the thread's maker reads it
     copyDwords(g, 0xa0b106, id, 3);
     g.setDword(kAdvertDone, 0);
     if (g.call(kCreateThread, args({ 0x512ad0, 0, 1 }, { 0xa0b0a0 })) != 0)
@@ -3289,7 +3340,7 @@ reg32 frontend::netb::ipxStartServer(App* app, CPU& cpu, reg32 owner, reg32 id, 
             fe::direct<0x4df8e0, ea::sleepFor>(app, cpu, 1);
     }
     if (g.dword(kAdvertDone) != 0)
-        thunked<kCloseSocket, &win32::wsock32::closesocket>(g, cpu, g.dword(kAdvertSocket));
+        thunked<kCloseSocket, &host::socketClose>(g, cpu, g.dword(kAdvertSocket));
     return g.dword(kAdvertRunning);
 }
 
@@ -3309,7 +3360,7 @@ reg32 frontend::netb::ipxStopServer(App* app, CPU& cpu)
     {
         const reg32 socket = g.dword(kAdvertSocket);
         g.setDword(kAdvertRunning, 0);
-        thunked<kCloseSocket, &win32::wsock32::closesocket>(g, cpu, socket);
+        thunked<kCloseSocket, &host::socketClose>(g, cpu, socket);
         while (g.dword(kAdvertDone) == 0)
             fe::direct<0x4df8e0, ea::sleepFor>(app, cpu, 1);
     }
@@ -3331,9 +3382,7 @@ reg32 frontend::netb::gameGuidText(App* app, CPU& cpu, reg32 guid, reg32 text)
 {
     Guest g(app, cpu);
     const fe::Frame locals(g, cpu, 4);
-    return g.call(0x4df690, args({}, { text, 0x55022c, g.dword(guid), g.word(guid + 4), g.word(guid + 6),
-                                       g.byte(guid + 8), g.byte(guid + 9), g.byte(guid + 0xa), g.byte(guid + 0xb),
-                                       g.byte(guid + 0xc), g.byte(guid + 0xd), g.byte(guid + 0xe), g.byte(guid + 0xf) }));
+    return fe::direct<0x4df690, watcom::clib::sprintf>(g.app(), g.cpu(), text, 0x55022c, guest::Words{g.dword(guid), g.word(guid + 4), g.word(guid + 6), g.byte(guid + 8), g.byte(guid + 9), g.byte(guid + 0xa), g.byte(guid + 0xb), g.byte(guid + 0xc), g.byte(guid + 0xd), g.byte(guid + 0xe), g.byte(guid + 0xf)});
 }
 
 void frontend::gameGuidText(win32::WinApplication* app, x86::CPU& cpu)

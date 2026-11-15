@@ -46,9 +46,9 @@ reg32 groupDropLast(App* app, CPU& cpu, reg32 group);
 reg32 refreshPane(App* app, CPU& cpu, reg32 view);
 // The game's 0x48eb60: the zoom stepped in the views.
 reg32 stepZoom(App* app, CPU& cpu, reg32 step);
-// The game's 0x497590 (stdcall): the length of the vector x, y (floats' bits) onto the x87's stack; eax as it
-// came.
-void vectorLength(App* app, CPU& cpu, reg32 x, reg32 y);
+// The game's 0x497590 (stdcall): the length of the vector x, y (floats' bits), which its code leaves on the x87's
+// stack; eax as it came.
+double vectorLength(App* app, CPU& cpu, reg32 x, reg32 y);
 // The game's 0x49bef0: a surface empty, its indices in order.
 reg32 resetSurface(App* app, CPU& cpu, reg32 surface);
 // The game's 0x49bf40: `pairs` pairs of vertices taken from a surface, the first one's address put at `first`.
@@ -203,14 +203,15 @@ struct ByAddress<frontend::hudx::stepZoom>
     }
 };
 
-// x and y on the stack, popped.
+// x and y on the stack, popped; the length off the x87's stack.
 template <>
 struct ByAddress<frontend::hudx::vectorLength>
 {
     template <x86::reg32 Address>
-    static void call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 x, x86::reg32 y)
+    static double call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 x, x86::reg32 y)
     {
         fe::callByAddress(app, cpu, Address, fe::args({}, { x, y }));
+        return double(cpu.fpu.take());
     }
 };
 

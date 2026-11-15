@@ -1,4 +1,5 @@
 #include "native_frontend_simd.h"
+#include "native_watcom.h"
 #include "game_settings.h"
 #include "native_frontend.h"
 #include "native_frontend_sima.h"
@@ -17,6 +18,8 @@
 #include "native_trackdata.h"
 #include "native_vertices.h"
 #include "native_windows.h"
+#include "host_threads.h"
+#include "native_carstate.h"
 #include <nfs3hp.h>
 #include <fpu.h>
 #include <winapi/kernel32.h>
@@ -365,8 +368,9 @@ reg32 chaseRate(Guest& guest, reg32 camera, reg32 car, reg32 offset)
     }
     else if (guest.dword(camera + kCameraAirWait) == 0)
     {
-        guest.call(kScaledIfSet, args({ camera }, { guest.dword(camera + kCameraOwn11c) }));
-        const reg32 rate = bitsOf(float(guest.fpu().take()));
+        const reg32 own = guest.dword(camera + kCameraOwn11c);
+        const reg32 rate = bitsOf(guest::direct<kScaledIfSet, carstate::scaledWhereSet>(guest.app(), guest.cpu(), camera, own));
+        guest.cpu().eax = guest.dword(camera + 4) == 0 ? own : camera;  // as the callee leaves it
         if (guest.dword(kLookingBack + guest.dword(camera + kCameraView) * 4) == 0)
             guest.call(kDampVector, args({ car }, { guest.dword(camera + kCameraOwn120), offset }));
         return rate;
@@ -675,14 +679,14 @@ struct GoesTo
 GoesTo cameraGoesTo(x86::CPU& cpu, Guest& guest, reg32 camera, reg32 spot)
 {
     copyDwords(guest, camera + kCameraPlace, spot, 3);
-    guest::direct<0x4965b0, frontend::sima::quickDistance>(guest.app(), cpu,
-                                                            guest.dword(camera + kCameraTargetCar) + kCarPlace, spot);
-    const Float first = guest.fpu().take();
+    const Float first = Float(guest::direct<0x4965b0, frontend::sima::quickDistanceOf>(
+                                   guest.app(), cpu, guest.dword(camera + kCameraTargetCar) + kCarPlace, spot)
+                                   .value);
     const bool below = jumpsAbove(fp::compare(0.0, first));
-    const reg32 eax = guest::direct<0x4965b0, frontend::sima::quickDistance>(
+    const frontend::sima::FloatLeft again = guest::direct<0x4965b0, frontend::sima::quickDistanceOf>(
         guest.app(), cpu, guest.dword(camera + kCameraTargetCar) + kCarPlace, spot);
-    const Float second = guest.fpu().take();
-    return { float(below ? -second : second), eax };
+    const Float second = Float(again.value);
+    return { float(below ? -second : second), again.eax };
 }
 
 }  // namespace
@@ -728,7 +732,7 @@ x86::reg32 frontend::simd::cameraGlideTowards(App* app, CPU& cpu, reg32 camera, 
     reg32 words[4];
     std::memcpy(words, &shownDistance, 8);
     std::memcpy(words + 2, &shownZoom, 8);
-    const reg32 result = guest.call(kSprintf, args({}, { frame + kLocalText, kFormat, words[0], words[1], words[2], words[3] }));
+    const reg32 result = fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.cpu(), frame + kLocalText, kFormat, guest::Words{words[0], words[1], words[2], words[3]});
     guest.setDword(kCount, 0);
     return result;
 }
@@ -907,12 +911,12 @@ x86::reg32 frontend::simd::frameOfTriangle(App* app, CPU& cpu, reg32 points, reg
     guest.leaveEdx(toThird);
     for (const reg32 vector : { toFirst, normal, toThird })
     {
-        guest.call(kNormalise, args({ vector }));
-        const reg16 status = fp::compare(0.0, guest.fpu().take());
+        const float length = guest::direct<kNormalise, vertices::normaliseVector>(app, cpu, vector);
+        const reg16 status = fp::compare(0.0, Float(length));
         if (jumpsEqual(status))
         {
             copyDwords(guest, out, kIdentity, 9);
-            return withStatus(guest.eax(), status);
+            return withStatus(vector, status);  // eax as the callee leaves it: the vector
         }
     }
     copyDwords(guest, out, toFirst, 3);
@@ -1081,7 +1085,7 @@ x86::reg32 frontend::simd::raceOpen(App* app, CPU& cpu)
     guest::direct<0x4be250, taskListAdd>(app, cpu, guest.dword(kRaceTasksA), kCarLoadStep, 0, kCarLoadPriority);
     fe::direct<0x4a33d0, loada::stopCheck>(app, cpu);
     const reg32 frame = guest.frame();
-    guest.call(kSprintf, args({}, { frame + kLocalPath, kFormat, kGlyphsDirectory }));
+    fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.cpu(), frame + kLocalPath, kFormat, guest::Words{kGlyphsDirectory});
     guest.call(0x475240, args({ frame + kLocalPath, 0 }));
     fe::direct<0x4a33d0, loada::stopCheck>(app, cpu);
     guest.call(0x4371d0, args({ gameSettings(guest).raceSeed }));
@@ -1186,14 +1190,14 @@ x86::reg32 frontend::simd::netSendPlace(App* app, CPU& cpu, reg32 eax)
     else
     {
         const reg32 slot = reg32((sreg32(eax) >> 5) % kRingLength);
-        windows<kEnterCriticalSection, &win32::kernel32::EnterCriticalSection>(guest, cpu, guest.dword(kLock));
+        windows<kEnterCriticalSection, &host::enterLock>(guest, cpu, guest.dword(kLock));
         guest.setDword(kRingFrames + slot * kRingBytes, eax);
         for (sreg32 i = 0; i < sreg32(gameSettings(guest).opponentCount); ++i)
         {
             const reg32 car = guest.dword(kNetCars + reg32(i) * 4);
             guest.setWord(kRingCars + slot * kRingBytes + 2 * reg32(i), guest.word(car + kCarStamp));
         }
-        windows<kLeaveCriticalSection, &win32::kernel32::LeaveCriticalSection>(guest, cpu, guest.dword(kLock));
+        windows<kLeaveCriticalSection, &host::leaveLock>(guest, cpu, guest.dword(kLock));
         bytes = kShortPacket;
     }
     const ea::Regs sent = *fe::direct<0x4a60e0, ea::packetSent>(app, cpu, 0, packet, bytes);
@@ -1446,16 +1450,26 @@ void frontend::simUnitCross(win32::WinApplication* app, x86::CPU& cpu)
 }
 
 /* sub_4ea930, sub_4ea950: the sine, the cosine, of the stack's float, on the x87. */
+double frontend::simd::sineValue(App* app, reg32 angle)
+{
+    constexpr reg32 kSineUnit = 0x54b6b0;
+    return fp::sin(fp::mul(Float(floatOf(angle)), Float(app->getMemory<double>(kSineUnit))));
+}
+
+double frontend::simd::cosineValue(App* app, reg32 angle)
+{
+    constexpr reg32 kCosineUnit = 0x54b6b8;
+    return fp::cos(fp::mul(Float(floatOf(angle)), Float(app->getMemory<double>(kCosineUnit))));
+}
+
 void frontend::simd::sine(App* app, CPU& cpu, reg32 angle)
 {
-    Guest guest(app, cpu);
-    guest.fpu().push(sineOf(guest, floatOf(angle)));
+    cpu.fpu.push(Float(sineValue(app, angle)));
 }
 
 void frontend::simd::cosine(App* app, CPU& cpu, reg32 angle)
 {
-    Guest guest(app, cpu);
-    guest.fpu().push(cosineOf(guest, floatOf(angle)));
+    cpu.fpu.push(Float(cosineValue(app, angle)));
 }
 
 void frontend::simSine(win32::WinApplication* app, x86::CPU& cpu)
@@ -1496,6 +1510,11 @@ void frontend::simSineCosine(win32::WinApplication* app, x86::CPU& cpu)
 /* sub_4ea9c0: the angle of the stack's two floats in the game's units, on the x87. */
 void frontend::simd::angleOfFloats(App* app, CPU& cpu, reg32 first, reg32 second)
 {
+    cpu.fpu.push(Float(angleOfFloatsValue(app, cpu, first, second)));
+}
+
+double frontend::simd::angleOfFloatsValue(App* app, CPU& cpu, reg32 first, reg32 second)
+{
     constexpr reg32 kUnitsPerRadian = 0x54b6c0;
     Guest guest(app, cpu);
     const fe::Frame locals(guest, cpu, 4);
@@ -1503,8 +1522,7 @@ void frontend::simd::angleOfFloats(App* app, CPU& cpu, reg32 first, reg32 second
     fpu.push(Float(floatOf(second)));
     fpu.push(Float(floatOf(first)));
     guest.call(kArcTangent);
-    const Float angle = fp::mul(fpu.take(), doubleAt(guest, kUnitsPerRadian));
-    fpu.push(angle);
+    return fp::mul(fpu.take(), doubleAt(guest, kUnitsPerRadian));
 }
 
 void frontend::simAngleOfFloats(win32::WinApplication* app, x86::CPU& cpu)

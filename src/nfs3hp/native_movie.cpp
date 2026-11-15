@@ -1,11 +1,22 @@
 #include <nfs3hp.h>
+#include "native_ea_memory.h"
+#include "native_frontend.h"
+#include "native_frontend_eab.h"
+#include "native_frontend_mova.h"
+#include "native_frontend_wina.h"
+#include "native_game.h"
+#include "native_guest.h"
 #include "native_thrash.h"
+#include "port_snd_stream_calls.h"
+#include "port_text.h"
 #include <lib/renderer.h>
 #include <SDL3/SDL.h>
 #include <cmath>
 #include <cstddef>
 #include <cstring>
 #include <initializer_list>
+#include <optional>
+#include <type_traits>
 #include <vector>
 
 extern "C" {
@@ -205,6 +216,40 @@ struct Game
         return result;
     }
 
+    /* A function of the game's with a typed core, called as C++ (guest::direct) with what it takes:
+     * the registers kept around it as call keeps them; its result as the game's eax, 0 once the
+     * game stopped. */
+    static u32 valueOf(x86::reg32 v) { return v; }
+    template <typename T>
+    static u32 valueOf(const std::optional<T>& v)
+    {
+        return v ? u32(*v) : 0;
+    }
+
+    template <x86::reg32 Address, auto Core, typename... Args>
+    u32 direct(Args... args)
+    {
+        if (dead)
+            return 0;
+        const Registers saved(cpu);
+        u32 result = 0;
+        try
+        {
+            if constexpr (std::is_void_v<decltype(guest::direct<Address, Core>(app, cpu, args...))>)
+                guest::direct<Address, Core>(app, cpu, args...);
+            else
+                result = valueOf(guest::direct<Address, Core>(app, cpu, args...));
+        }
+        catch (const fe::Terminated&)
+        {
+            dead = true;
+        }
+        if (cpu.terminate)
+            dead = true;
+        saved.restore(cpu);
+        return result;
+    }
+
     /* The waits of the original are loops, where the game's other threads
      * get their turn (safepoints); these are the same waits. */
     void letOthersRun()
@@ -226,25 +271,25 @@ Game& game(void* user)
 void* hostAlloc(void* u, uint32_t size)
 {
     Game& G = game(u);
-    return G.h(G.call(0x4e1620, 0x53be88, size, r32(G.m, 0x5643f4)));
+    return G.h(G.direct<0x4e1620, ea::reserved>(0x53be88u, size, r32(G.m, 0x5643f4)));
 }
 
 void hostRelease(void* u, void* block)
 {
     Game& G = game(u);
-    G.call(0x4e1890, G.g(block));
+    G.direct<0x4e1890, ea::purgeBlock>(G.g(block));
 }
 
 void* hostStreamCreate(void* u, void* buffer, uint32_t size)
 {
     Game& G = game(u);
-    return G.h(G.call(0x4cfa80, 2, 2, 2, G.g(buffer), {size}));
+    return G.h(G.direct<0x4cfa80, frontend::wina::streamCreate>(2u, 2u, 2u, G.g(buffer), size));
 }
 
 void* hostStreamChannel(void* u, void* stream)
 {
     Game& G = game(u);
-    return G.h(G.call(0x4cfe70, G.g(stream), 2, 0xffff, 0x4353));
+    return G.h(G.direct<0x4cfe70, frontend::wina::streamChannel>(G.g(stream), 2u));
 }
 
 /* sub_4cfca0 takes four registers and the stack: channel 1, the sound's,
@@ -255,46 +300,46 @@ void* hostStreamChannel(void* u, void* stream)
 void hostStreamSetup(void* u, void* stream)
 {
     Game& G = game(u);
-    G.call(0x4cfca0, G.g(stream), 1, 0xffff, 0x4353, {2});
+    G.direct<0x4cfca0, frontend::wina::streamSetRule>(G.g(stream), 1u, 0xffffu, 0x4353u, 2u);
 }
 
 void* hostStreamOpen(void* u, void* stream, const char* path)
 {
     Game& G = game(u);
-    return G.h(G.call(0x4cfef0, G.g(stream), G.g(path), 0, 0));
+    return G.h(G.direct<0x4cfef0, frontend::wina::streamOpenFile>(G.g(stream), G.g(path), 0u, 0u));
 }
 
 const uint8_t* hostStreamNext(void* u, void* channel)
 {
     Game& G = game(u);
     G.letOthersRun();
-    return static_cast<const uint8_t*>(G.h(G.call(0x4d0300, G.g(channel))));
+    return static_cast<const uint8_t*>(G.h(G.direct<0x4d0300, frontend::wina::streamNextChunk>(G.g(channel))));
 }
 
 void hostStreamRelease(void* u, void* channel, const uint8_t* chunk)
 {
     Game& G = game(u);
-    G.call(0x4d03c0, G.g(channel), G.g(chunk));
+    G.direct<0x4d03c0, frontend::wina::streamFreeChunk>(G.g(channel), G.g(chunk));
 }
 
 int32_t hostStreamEnded(void* u, void* channel)
 {
     Game& G = game(u);
     G.letOthersRun();
-    const i32 ended = i32(G.call(0x4d04c0, G.g(channel)));
+    const i32 ended = i32(G.direct<0x4d04c0, frontend::wina::channelDone>(G.g(channel)));
     return G.dead ? 1 : ended;
 }
 
 int32_t hostStreamPending(void* u, void* channel)
 {
     Game& G = game(u);
-    return i32(G.call(0x4d0460, G.g(channel)));
+    return i32(G.direct<0x4d0460, frontend::wina::channelBytes>(G.g(channel)));
 }
 
 void hostStreamClose(void* u, void* stream)
 {
     Game& G = game(u);
-    G.call(0x4cfd30, G.g(stream));
+    G.direct<0x4cfd30, frontend::wina::streamClose>(G.g(stream));
 }
 
 void hostSoundDefaults(void* u, void* params, int32_t count)
@@ -351,7 +396,7 @@ uint32_t hostTicks(void* u)
 {
     Game& G = game(u);
     G.letOthersRun();
-    const u32 now = G.call(0x4f2790);
+    const u32 now = G.direct<0x4f2790, frontend::eab::lowTimerTicks>();
     if (G.dead || G.skipping())
         return G.lastTicks += 0x10000000;
     return G.lastTicks = now;
@@ -360,26 +405,26 @@ uint32_t hostTicks(void* u)
 void hostPump(void* u)
 {
     Game& G = game(u);
-    G.call(0x4e7630, 0);
+    G.direct<0x4e7630, port::stream::runDueTasks>(G.cpu.esp - 4, 0u);
 }
 
 int32_t hostDisplayMode(void* u)
 {
     Game& G = game(u);
-    return i32(G.call(0x4df340));
+    return i32(G.direct<0x4df340, frontend::mova::displayMode>());
 }
 
 int32_t hostKeyPressed(void* u)
 {
     Game& G = game(u);
-    const i32 pressed = i32(G.call(0x451960, 1));
+    const i32 pressed = i32(G.direct<0x451960, port::text::menuKeyOf>(G.cpu.esp - 4, 1u));
     return G.dead || G.skipping() ? 1 : pressed;
 }
 
 void hostDisplayOpen(void* u, int32_t x, int32_t y, int32_t w, int32_t hgt, int32_t quality, int32_t software)
 {
     Game& G = game(u);
-    G.call(0x4df1f0, u32(x), u32(y), u32(w), u32(hgt), {u32(quality), u32(software)});
+    G.direct<0x4df1f0, frontend::mova::displayOpen>(u32(x), u32(y), u32(w), u32(hgt), u32(quality), u32(software));
 }
 
 void hostDisplayFrame(void* u, const uint8_t* frame)
@@ -392,14 +437,14 @@ void hostDisplayFrame(void* u, const uint8_t* frame)
 void hostDisplayClose(void* u)
 {
     Game& G = game(u);
-    G.call(0x4df310);
+    G.direct<0x4df310, frontend::mova::displayClose>();
 }
 
 void hostFatal(void* u, const char* message)
 {
     Game& G = game(u);
     SDL_strlcpy(reinterpret_cast<char*>(G.m + G.scratch + Game::kMessage), message, 0x60);
-    G.call(0x401010, 0, 0, 0, 0, {G.scratch + Game::kMessage});
+    G.direct<0x401010, ea::error>(G.scratch + Game::kMessage, guest::Words({}));
     G.dead = true;
 }
 

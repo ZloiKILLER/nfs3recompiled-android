@@ -35,11 +35,28 @@ x86::reg32 carOfCamera(win32::WinApplication* app, x86::reg32 player);
 x86::reg32 targetOfCamera(win32::WinApplication* app, x86::reg32 player);
 // The game's 0x423b00: the mode of player's camera.
 x86::reg32 modeOfCamera(win32::WinApplication* app, x86::reg32 player);
+// The game's 0x423fb0: the float with the bits `value`, scaled where the record's +4 is set.
+float scaledWhereSet(win32::WinApplication* app, x86::reg32 record, x86::reg32 value);
 
 }  // namespace carstate
 
 namespace guest
 {
+
+// The record in eax, the value on the stack (ret 4); the result left on the x87's stack.
+template <>
+struct ByAddress<carstate::scaledWhereSet>
+{
+    template <x86::reg32 Address>
+    static float call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 record, x86::reg32 value)
+    {
+        const KeptRegisters kept(cpu);
+        cpu.eax = record;
+        if (!guest::call(app, cpu, Address, {value}))
+            return 0.0f;
+        return float(cpu.fpu.take());
+    }
+};
 
 // The player in eax; the node in eax.
 template <>

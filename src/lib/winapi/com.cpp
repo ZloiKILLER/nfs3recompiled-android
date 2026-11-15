@@ -1,11 +1,5 @@
 #include <winapi/com.h>
 #include <winapi/wrapper.h>
-#include <winapi/ddraw/idirectdraw2.h>
-#include <winapi/ddraw/idirectdrawpalette.h>
-#include <winapi/ddraw/idirectdrawsurface.h>
-#include <winapi/dsound/idirectsound.h>
-#include <winapi/dsound/idirectsoundbuffer.h>
-#include <winapi/dsound/idirectsound3dlistener.h>
 
 namespace win32 { namespace com
 {
@@ -43,12 +37,7 @@ bool InitialiseComMemory(WinApplication* app)
     x86::reg8* blockStart = &app->getMemory<x86::reg8>(s_memory->getBlockStart());
     x86::reg8* blockEnd = &app->getMemory<x86::reg8>(s_memory->getBlockStart() + s_memory->getBlockSize()-1);
     blockOffset += IUnknown::init(app, s_memory->getBlockStart() + blockOffset, blockStart + blockOffset);
-    blockOffset += ddraw::IDirectDraw2::init(app, s_memory->getBlockStart() + blockOffset, blockStart + blockOffset);
-    blockOffset += ddraw::IDirectDrawPalette::init(app, s_memory->getBlockStart() + blockOffset, blockStart + blockOffset);
-    blockOffset += ddraw::IDirectDrawSurface::init(app, s_memory->getBlockStart() + blockOffset, blockStart + blockOffset);
-    blockOffset += dsound::IDirectSound::init(app, s_memory->getBlockStart() + blockOffset, blockStart + blockOffset);
-    blockOffset += dsound::IDirectSoundBuffer::init(app, s_memory->getBlockStart() + blockOffset, blockStart + blockOffset);
-    blockOffset += dsound::IDirectSound3DListener::init(app, s_memory->getBlockStart() + blockOffset, blockStart + blockOffset);
+    // DirectDraw's objects and tables are the port's own now (src/nfs3hp/host_video.cpp).
     s_firstFreeBlock = s_memory->getBlockStart() + blockOffset;
     const x86::reg32 blockSize = sizeof(IUnknown);
     for (x86::reg8* block = blockStart + blockOffset;

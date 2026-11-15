@@ -1,4 +1,5 @@
 #include "native_frontend_menuc.h"
+#include "native_watcom.h"
 #include "native_frontend_menub.h"
 #include "game_settings.h"
 #include "native_collide.h"
@@ -501,7 +502,7 @@ reg32 drawLapTimesPopup(App* app, CPU& cpu, Guest& guest, reg32 item)
             fe::direct<0x4cee40, frontend::menue::timeText>(app, cpu, guest.dword(record + kRacerLaps + 4 * lap),
                                                             buffer);
             t.text(buffer, left + width - 8, lineY, kAlignRight, colour);
-            guest.call(kSprintf, fe::args({}, { buffer, kFormatLapNumber, reg32(lap + 1) }));
+            fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.cpu(), buffer, kFormatLapNumber, guest::Words{reg32(lap + 1)});
             last = reg32(*fe::direct<0x452190, port::text::menuTextDrawn>(app, cpu, cpu.esp - 12, buffer,
                                                                           reg32(left + 8), reg32(lineY), kFont,
                                                                           kAlignLeft, colour));
@@ -517,7 +518,7 @@ void lastColumnText(App* app, CPU& cpu, const Table& t, reg32 record, reg32 buff
 {
     Guest& guest = t.g;
     if (gameSettings(guest).raceType == kRaceDuel)
-        guest.call(kSprintf, fe::args({}, { buffer, kFormatNumber, guest.dword(record + kRacerLapsDone) }));
+        fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.cpu(), buffer, kFormatNumber, guest::Words{guest.dword(record + kRacerLapsDone)});
     else
         guest::direct<0x455720, frontend::menub::resultsTopSpeedText>(app, cpu, record, buffer);
 }
@@ -581,7 +582,7 @@ void drawResultsRow(App* app, CPU& cpu, const Table& t, reg32 record, reg32 buff
     x += t.width(2);
     if (gameSettings(guest).raceType == kRaceDuel)
     {
-        guest.call(kSprintf, fe::args({}, { buffer, kFormatOfTotal, guest.dword(record + kRacerLapsDone), gameSettings(guest).pursuitOutCount }));
+        fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.cpu(), buffer, kFormatOfTotal, guest::Words{guest.dword(record + kRacerLapsDone), gameSettings(guest).pursuitOutCount});
         t.text(buffer, x + half(t.width(3)), rowY, kAlignCentre, colour);
     }
     else
@@ -1083,11 +1084,11 @@ void drawStandings(App* app, CPU& cpu, Guest& guest, reg32 item, bool pointing)
         else
         {
             guest::direct<0x4555c0, frontend::menub::resultsPlaceText>(app, cpu, record, placeName);
-            guest.call(kSprintf, fe::args({}, { buffer, kFormatNumberAndName, guest.dword(firstRank), placeName }));
+            fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.cpu(), buffer, kFormatNumberAndName, guest::Words{guest.dword(firstRank), placeName});
             t.text(buffer, x + half(t.width(1)), rowY, kAlignCentre, colour);
         }
         x += t.width(1);
-        guest.call(kSprintf, fe::args({}, { buffer, kFormatNumber, guest.dword(secondRank) }));
+        fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.cpu(), buffer, kFormatNumber, guest::Words{guest.dword(secondRank)});
         t.text(buffer, x + half(t.width(2)), rowY, kAlignCentre, colour);
         rowY += t.rowHeight();
     }
@@ -1171,11 +1172,11 @@ void drawRounds(App* app, CPU& cpu, Guest& guest, reg32 item, bool pointing)
             {
                 const reg32 winner = reg32(*fe::direct<0x4d1850, port::text::lineText>(
                     app, cpu, cpu.esp - 4, kLineWinner, cpu.edx));
-                guest.call(kSprintf, fe::args({}, { buffer, kFormatOfTotalAndName, reg32(won), reg32(toWin), winner }));
+                fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.cpu(), buffer, kFormatOfTotalAndName, guest::Words{reg32(won), reg32(toWin), winner});
             }
             else
             {
-                guest.call(kSprintf, fe::args({}, { buffer, kFormatOfTotal, reg32(won), reg32(toWin) }));
+                fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.cpu(), buffer, kFormatOfTotal, guest::Words{reg32(won), reg32(toWin)});
             }
             t.text(buffer, x + half(t.width(1)), rowY, kAlignCentre, colour);
             x += t.width(1);
@@ -1435,7 +1436,7 @@ reg32 drawTitle(App* app, CPU& cpu, Guest& guest)
     fe::direct<0x4daf80, port::draw2d::resetScreens>(app, cpu, cpu.esp - 4,
                                                      port::Args{ cpu.eax, cpu.edx, cpu.ebx, cpu.ecx });
     const std::uint32_t code = guest.byte(codes + guest.dword(kLanguageIndex));
-    guest.call(kSprintf, fe::args({}, { name, kFormatTitle, kArtFolder, code }));
+    fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.cpu(), name, kFormatTitle, guest::Words{kArtFolder, code});
     // By address, as the shape's textures below: the flags in edx (and the 0 in ebx there), which the
     // cores do not take, are part of the calls this group's check sees.
     const reg32 file = guest.call(kReadFile, fe::args({ name, kLoadFlags }));

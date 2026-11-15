@@ -25,6 +25,14 @@ using reg32 = x86::reg32;
 reg32 laneSteer(App* app, CPU& cpu, reg32 car);
 // The game's 0x4064f0: the pull of an opponent's engine at its speed, onto the x87.
 reg32 enginePull(App* app, CPU& cpu, reg32 car);
+// What a function that leaves a float on the x87's stack and a word in eax gives back as C++.
+struct FloatLeft
+{
+    double value;
+    reg32 eax;
+};
+// enginePull's core: the pull and the eax it leaves.
+FloatLeft enginePullOf(App* app, CPU& cpu, reg32 car);
 // The game's 0x4070c0: how far the way the driver wants to go is from the way its car points.
 reg32 headingError(App* app, CPU& cpu, reg32 car);
 // The game's 0x425060: camera mode 8, beside the road near the car.
@@ -53,8 +61,12 @@ reg32 forcedMode(App* app, CPU& cpu, reg32 view);
 reg32 camerasStep(App* app, CPU& cpu);
 // The game's 0x4965b0: the distance between the points at `a` and `b` without a root, onto the x87.
 reg32 quickDistance(App* app, CPU& cpu, reg32 a, reg32 b);
+// quickDistance's core: the distance and the eax it leaves.
+FloatLeft quickDistanceOf(App* app, CPU& cpu, reg32 a, reg32 b);
 // The game's 0x4967e0: a length in the plane without a root, of two floats (their bits), onto the x87.
 void planarLength(App* app, CPU& cpu, reg32 a, reg32 b);
+// planarLength's core: the length.
+double planarLengthOf(App* app, CPU& cpu, reg32 a, reg32 b);
 // The game's 0x49fde0: whether a car leans over too far: 1 or 0.
 reg32 carTiltedOver(App* app, CPU& cpu, reg32 car);
 // The game's 0x49fee0: the track's heading at a slice, as a fixed angle.
@@ -84,6 +96,18 @@ struct ByAddress<frontend::sima::laneSteer>
     static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 car)
     {
         return fe::callByAddress(app, cpu, Address, fe::args({ car }));
+    }
+};
+
+// The car in eax; the pull taken off the x87's stack.
+template <>
+struct ByAddress<frontend::sima::enginePullOf>
+{
+    template <x86::reg32 Address>
+    static frontend::sima::FloatLeft call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 car)
+    {
+        const x86::reg32 eax = fe::callByAddress(app, cpu, Address, fe::args({ car }));
+        return { double(cpu.fpu.take()), eax };
     }
 };
 
@@ -228,6 +252,18 @@ struct ByAddress<frontend::sima::camerasStep>
     }
 };
 
+// `a` in eax, `b` in edx; the distance taken off the x87's stack.
+template <>
+struct ByAddress<frontend::sima::quickDistanceOf>
+{
+    template <x86::reg32 Address>
+    static frontend::sima::FloatLeft call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 a, x86::reg32 b)
+    {
+        const x86::reg32 eax = fe::callByAddress(app, cpu, Address, fe::args({ a, b }));
+        return { double(cpu.fpu.take()), eax };
+    }
+};
+
 template <>
 struct ByAddress<frontend::sima::quickDistance>
 {
@@ -235,6 +271,18 @@ struct ByAddress<frontend::sima::quickDistance>
     static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 a, x86::reg32 b)
     {
         return fe::callByAddress(app, cpu, Address, fe::args({ a, b }));
+    }
+};
+
+// The two floats on the stack (ret 8); the length taken off the x87's stack.
+template <>
+struct ByAddress<frontend::sima::planarLengthOf>
+{
+    template <x86::reg32 Address>
+    static double call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 a, x86::reg32 b)
+    {
+        fe::callByAddress(app, cpu, Address, fe::args({}, { a, b }));
+        return double(cpu.fpu.take());
     }
 };
 

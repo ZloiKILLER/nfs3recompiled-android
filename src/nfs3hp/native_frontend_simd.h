@@ -58,10 +58,15 @@ reg32 unitCross(App* app, CPU& cpu, reg32 a, reg32 b, reg32 out);
 void sine(App* app, CPU& cpu, reg32 angle);
 // The game's 0x4ea950: the cosine of the float `angle` in the game's units, onto the x87.
 void cosine(App* app, CPU& cpu, reg32 angle);
+// The same sine and cosine as doubles, for a caller in C++ (what sine and cosine push).
+double sineValue(App* app, reg32 angle);
+double cosineValue(App* app, reg32 angle);
 // The game's 0x4ea970: the sine and the cosine of the float at `angleAt`.
 reg32 sineCosine(App* app, CPU& cpu, reg32 angleAt, reg32 sineAt, reg32 cosineAt);
 // The game's 0x4ea9c0: the angle of two floats in the game's units, onto the x87.
 void angleOfFloats(App* app, CPU& cpu, reg32 first, reg32 second);
+// angleOfFloats' core: the angle (the runtime's atan2 it calls still runs on the x87's stack).
+double angleOfFloatsValue(App* app, CPU& cpu, reg32 first, reg32 second);
 // The game's 0x4ea9e0: the matrix turned by the float `angle` about its first row, to `out`.
 reg32 rotateX(App* app, CPU& cpu, reg32 matrix, reg32 angle, reg32 out);
 // The game's 0x4eaab0: about its second row.
@@ -321,6 +326,29 @@ struct ByAddress<frontend::simd::cosine>
     }
 };
 
+// `angle` on the stack (ret 4); the result taken off the x87's stack.
+template <>
+struct ByAddress<frontend::simd::sineValue>
+{
+    template <x86::reg32 Address>
+    static double call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 angle)
+    {
+        fe::callByAddress(app, cpu, Address, fe::args({}, { angle }));
+        return double(cpu.fpu.take());
+    }
+};
+
+template <>
+struct ByAddress<frontend::simd::cosineValue>
+{
+    template <x86::reg32 Address>
+    static double call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 angle)
+    {
+        fe::callByAddress(app, cpu, Address, fe::args({}, { angle }));
+        return double(cpu.fpu.take());
+    }
+};
+
 // `angleAt` in eax; `sineAt` in edx; `cosineAt` in ebx.
 template <>
 struct ByAddress<frontend::simd::sineCosine>
@@ -329,6 +357,18 @@ struct ByAddress<frontend::simd::sineCosine>
     static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 angleAt, x86::reg32 sineAt, x86::reg32 cosineAt)
     {
         return fe::callByAddress(app, cpu, Address, fe::args({ angleAt, sineAt, cosineAt }));
+    }
+};
+
+// `first`, `second` on the stack (ret 8); the angle taken off the x87's stack.
+template <>
+struct ByAddress<frontend::simd::angleOfFloatsValue>
+{
+    template <x86::reg32 Address>
+    static double call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 first, x86::reg32 second)
+    {
+        fe::callByAddress(app, cpu, Address, fe::args({}, { first, second }));
+        return double(cpu.fpu.take());
     }
 };
 

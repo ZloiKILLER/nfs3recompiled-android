@@ -50,6 +50,10 @@ inline float groundHeightAt(win32::WinApplication* app, x86::reg32 matrix, float
 }
 // The game's 0x4972f0: the vector at `vector` made of length 1 in place; its length, 0 for a zero one.
 float normaliseVector(win32::WinApplication* app, x86::reg32 vector);
+// The game's 0x49d9d0: `count` vertices of an object at `in` by `matrix` and `position` into view
+// space and onto the screen at `out`, each given `colour`; the nearest z of them, 65535 for none.
+float colouredNearestZ(win32::WinApplication* app, x86::CPU& cpu, std::int32_t count, x86::reg32 in, x86::reg32 out,
+                       x86::reg32 matrix, x86::reg32 position, x86::reg32 colour);
 // The game's 0x4bf4c0: `count` vertices of an object at `in` by `matrix` and `position` into view
 // space and onto the screen at `out`.
 void objectVerticesOf(win32::WinApplication* app, x86::CPU& cpu, std::int32_t count, x86::reg32 in, x86::reg32 matrix,
@@ -170,6 +174,21 @@ struct ByAddress<vertices::normaliseVector>
     {
         const std::optional<x86::Float> length = watcomFloat(app, cpu, Address, {vector});
         return length ? float(*length) : 0.0f;
+    }
+};
+
+// The count in eax, the vertices in edx, out in ebx, the matrix in ecx; the position and the colour on the
+// stack (ret 8); the nearest z left on the x87's stack.
+template <>
+struct ByAddress<vertices::colouredNearestZ>
+{
+    template <x86::reg32 Address>
+    static float call(win32::WinApplication* app, x86::CPU& cpu, std::int32_t count, x86::reg32 in, x86::reg32 out,
+                      x86::reg32 matrix, x86::reg32 position, x86::reg32 colour)
+    {
+        if (!vertices::stackCallKeeping(app, cpu, Address, {x86::reg32(count), in, out, matrix}, {position, colour}))
+            return 0.0f;
+        return float(cpu.fpu.take());
     }
 };
 

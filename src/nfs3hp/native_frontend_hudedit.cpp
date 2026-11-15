@@ -1,4 +1,5 @@
 #include "native_frontend_hudedit.h"
+#include "native_watcom.h"
 #include "game_settings.h"
 #include "native_carstate.h"
 #include "native_ea_memory.h"
@@ -133,7 +134,7 @@ void append(Guest& guest, x86::reg32 to, x86::reg32 from)
 void imageName(Guest& guest, x86::reg32 buffer, x86::reg32 name, x86::reg32 player)
 {
     if (player == 2)
-        guest.call(kSprintf, fe::args({}, { buffer, kNameAndChar.address, name, kCharTwo }));
+        fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.cpu(), buffer, kNameAndChar.address, guest::Words{name, kCharTwo});
     else
         guest.copyString(buffer, name);
 }
@@ -610,15 +611,15 @@ x86::reg32 frontend::hudedit::loadDefaults(App* app, CPU& cpu)
     const x86::reg32 letters = guest.frame() + 0x180;
     copyBytes(guest, letters, kLanguageLetters, 7);
     const std::uint32_t letter = guest.byte(letters + gameSettings(guest).language);
-    guest.call(kSprintf, fe::args({}, { path, kDefaultsName.address, kHudFolder, letter }));
+    fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.cpu(), path, kDefaultsName.address, guest::Words{kHudFolder, letter});
     const x86::reg32 file = *fe::direct<0x4e0ec0, ea::loadWhole>(app, cpu, path, kLoadFileFlags);
     if (file == 0)
         return 0;
     const x86::reg32 separators = kDefaultsSeparators.address;
-    x86::reg32 token = guest.call(kStrtok, fe::args({ file, separators }));
+    x86::reg32 token = fe::direct<kStrtok, watcom::clib::strtok>(guest.app(), guest.cpu(), file, separators);
     const auto scan = [&](x86::reg32 format, x86::reg32 to) {
-        guest.call(kSscanf, fe::args({}, { token, format, to }));
-        token = guest.call(kStrtok, fe::args({ 0, separators }));
+        fe::direct<kSscanf, watcom::clib::sscanf>(guest.app(), guest.cpu(), token, format, guest::Words{to});
+        token = fe::direct<kStrtok, watcom::clib::strtok>(guest.app(), guest.cpu(), 0, separators);
     };
     for (x86::reg32 player = 0; player < 3; ++player)
     {
@@ -841,8 +842,7 @@ x86::reg32 frontend::hudedit::hudEnter(App* app, CPU& cpu, reg32 menu)
                 moveToMiniature(guest, item);
             for (x86::reg32 i = 0; i < kImageCount; ++i)
             {
-                guest.call(kSprintf,
-                           fe::args({}, { name, kNameAndChar.address, guest.dword(kImages + kImageBytes * i), kCharTwo }));
+                fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.cpu(), name, kNameAndChar.address, guest::Words{guest.dword(kImages + kImageBytes * i), kCharTwo});
                 if (Item item = find(guest, menu, name))
                     moveToMiniature(guest, item);
             }
@@ -953,8 +953,7 @@ x86::reg32 frontend::hudedit::hudEnter(App* app, CPU& cpu, reg32 menu)
             hide(guest, menu, kSplitImage.address);
         for (x86::reg32 i = 0; i < kImageCount; ++i)
         {
-            guest.call(kSprintf,
-                       fe::args({}, { name, kNameAndChar.address, guest.dword(kImages + kImageBytes * i), kCharTwo }));
+            fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.cpu(), name, kNameAndChar.address, guest::Words{guest.dword(kImages + kImageBytes * i), kCharTwo});
             hide(guest, menu, name);
         }
     }
@@ -1042,7 +1041,7 @@ x86::reg32 frontend::hudedit::setScreenArt(App* app, CPU& cpu, reg32 menu, reg32
         hide(guest, menu, kPlayer2Selected.address);
     }
     guest.leaveEbx(art);
-    if (guest.call(kStrcmp, fe::args({ art, guest.dword(at + kItemArt) })) == 0)
+    if (fe::direct<kStrcmp, watcom::clib::strcmp>(guest.app(), guest.cpu(), art, guest.dword(at + kItemArt)) == 0)
         return 0;
     guest.call(kSprintf, fe::args({}, { path, kTwoStrings.address, kArtFolder, guest.dword(at + kItemFile) }));
     const x86::reg32 file =
@@ -1093,7 +1092,7 @@ x86::reg32 frontend::hudedit::hudFrame(App* app, CPU& cpu, reg32 menu)
             const x86::reg32 image = guest.dword(kImages + kImageBytes * i);
             guest.copyString(name, image);
             find(guest, menu, name);
-            guest.call(kSprintf, fe::args({}, { name, kNameAndChar.address, image, kCharTwo }));
+            fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.cpu(), name, kNameAndChar.address, guest::Words{image, kCharTwo});
             find(guest, menu, name);
         }
     }

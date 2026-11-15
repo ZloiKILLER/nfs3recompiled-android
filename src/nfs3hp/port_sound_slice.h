@@ -85,6 +85,15 @@ public:
         cpu.esi = esi;
         cpu.edi = edi;
     }
+    /* esi, edi and esp into the cpu as the game's code has them at a call, for
+     * a typed core called as C++ in its place (guest::direct; the words the
+     * call pushes its ByAddress pushes in the checks). */
+    void atCall()
+    {
+        cpu.esi = esi;
+        cpu.edi = edi;
+        cpu.esp = esp;
+    }
 
 private:
     reg32 savedEsi, savedEdi;
@@ -116,6 +125,46 @@ private:
     }
 };
 
+// port_sound_pursuit.cpp's: the game's 0x418930, player `player`'s beeps started (`count` of them, the first
+// high): the beep's handle; esp the frame base.
+Result beepsStarted(App* app, CPU& cpu, reg32 esp, int32_t count, int32_t player);
+// port_sound_pursuit.cpp's: the game's 0x418c60, the music's event back after an interruption (`edx` handed on to
+// the interruption's end): eax as the code leaves it; esp the frame base.
+Result musicEventResumed(App* app, CPU& cpu, reg32 esp, reg32 eax, reg32 edx);
+
+}  // namespace port
+
+namespace guest
+{
+
+// The count in eax, the player in edx; eax back.
+template <>
+struct ByAddress<port::beepsStarted>
+{
+    template <x86::reg32 Address>
+    static port::Result call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32, std::int32_t count,
+                             std::int32_t player)
+    {
+        return watcomEax(app, cpu, Address, {x86::reg32(count), x86::reg32(player)});
+    }
+};
+
+// `eax` in eax, `edx` in edx; eax back.
+template <>
+struct ByAddress<port::musicEventResumed>
+{
+    template <x86::reg32 Address>
+    static port::Result call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32, x86::reg32 eax, x86::reg32 edx)
+    {
+        return watcomEax(app, cpu, Address, {eax, edx});
+    }
+};
+
+}  // namespace guest
+
+namespace port
+{
+
 /* A loop's safepoint, as the game's generated code has one at each loop's
  * head: the guest's context handed over when another thread waits for it. */
 inline void safepoint(App* app, CPU& cpu)
@@ -138,6 +187,22 @@ constexpr reg32 kStreamAutoVolume = 0x4e7470, kStreamGetVolume = 0x4e74f0, kRunS
 constexpr reg32 kStreamRestore = 0x4e784c, kStreamPurge = 0x4e7b28, kStreamMake = 0x4e4790, kStreamDelete = 0x4e4b50;
 constexpr reg32 kSoundRestore = 0x4e26b4;
 constexpr reg32 kEffectBank = 0x4182b0;  // port_sound_effects.cpp's bankEffect, as the game calls it
+
+/* A typed core's result, called as C++ (guest::direct), as the game's code
+ * has it in eax after the call: false when the game stopped in it. */
+template <class T>
+bool tookEax(const std::optional<T>& result, reg32& eax)
+{
+    if (!result)
+        return false;
+    eax = reg32(*result);
+    return true;
+}
+inline bool tookEax(CPU& cpu, reg32 result, reg32& eax)
+{
+    eax = result;
+    return !cpu.terminate;
+}
 
 /* A string of the game's, its length not counting the end. */
 inline reg32 textLength(App* app, reg32 at)

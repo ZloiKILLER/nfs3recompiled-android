@@ -1,6 +1,9 @@
 #include "game_settings.h"
 #include "native_aiplan.h"
 #include "native_carstate.h"
+#include "native_frontend_sima.h"
+#include "native_frontend_simc.h"
+#include "native_frontend_simd.h"
 #include "native_guest.h"
 #include "native_trackdata.h"
 #include "native_vertices.h"
@@ -9,6 +12,7 @@
 #include <cstring>
 #include <initializer_list>
 #include <optional>
+#include <type_traits>
 #include <utility>
 
 /* The race's cameras, native whole.  disassemble_nfs3hp.py binds each address
@@ -83,12 +87,10 @@ constexpr reg32 kPlayerCars = 0x5efa48;
 // here leaves or reads: a track place's node (0x41f6e0), the last dot product of pushOutOfCars
 // (0x4e01f0), the last vectors added of blend (0x4dffb0) and matrices multiplied of turnHead
 // (0x4e0280).
-constexpr reg32 kSetView = 0x4dbde0, kDot = 0x4e01f0, kTranspose = 0x4e0110;
+constexpr reg32 kDot = 0x4e01f0;
 constexpr reg32 kTrackNode = 0x41f6e0;
-constexpr reg32 kCross = 0x4e0160;
-constexpr reg32 kCrossNormal = 0x4e01a0, kRotate = 0x4dffb0;
+constexpr reg32 kRotate = 0x4dffb0;
 constexpr reg32 kMultiply = 0x4e0280;
-constexpr reg32 kModeSound = 0x426450;
 
 void push(App* app, CPU& cpu, reg32 value)
 {
@@ -270,18 +272,90 @@ bool call(App* app, CPU& cpu, reg32 target, reg32 eax, reg32 edx, reg32 ebx, reg
     return call(app, cpu, target, eax, edx, ebx);
 }
 
-/* 0x4dbde0: the view set; what it leaves in eax. */
+/* A native_frontend_* file's typed core called as C++ (guest::direct): nothing (false) when the
+ * game stopped in it (its calls into the game throw fe::Terminated).  tools/game_checks does not
+ * build those files: there it goes by address, through its ByAddress, as the game's code calls it,
+ * every register but eax kept.  A reg32 result is the eax the function leaves: eax set to it (in the
+ * game too); after any other, eax spoilt there, so that code still reading what the callee left in
+ * eax differs there. */
+template <reg32 Address, auto Core, typename... Args>
+auto feCore(App* app, CPU& cpu, Args... args)
+{
+    const auto run = [&] {
+#ifdef NFS_GAME_CHECKS
+        const guest::KeptRegisters kept(cpu);
+        return guest::ByAddress<Core>::template call<Address>(app, cpu, args...);
+#else
+        return guest::direct<Address, Core>(app, cpu, args...);
+#endif
+    };
+    using Result = decltype(run());
+    const auto spoil = [&] {
+#ifdef NFS_GAME_CHECKS
+        cpu.eax = 0x5b0115edu;
+#endif
+    };
+    if constexpr (std::is_void_v<Result>)
+    {
+        try
+        {
+            run();
+        }
+        catch (const fe::Terminated&)
+        {
+            return false;
+        }
+        spoil();
+        return !cpu.terminate;
+    }
+    else
+    {
+        try
+        {
+            const Result result = run();
+            if constexpr (std::is_same_v<Result, x86::reg32>)
+                cpu.eax = result;  // a menu core's result: the eax it leaves, as the call by address does
+            else
+                spoil();
+            return cpu.terminate ? std::optional<Result>() : std::optional<Result>(result);
+        }
+        catch (const fe::Terminated&)
+        {
+            return std::optional<Result>();
+        }
+    }
+}
+
+/* A menu file's core (feCore) where the code calls it with `loads` in eax, edx, ebx and ecx: those
+ * loaded as the call loads them (the code after it goes on with them, as the callee keeps them),
+ * the core's result -- the eax it leaves -- in eax.  False when the game stopped. */
+template <reg32 Address, auto Core, typename... Args>
+bool loadedCall(App* app, CPU& cpu, std::initializer_list<reg32> loads, Args... args)
+{
+    reg32* const into[] = {&cpu.eax, &cpu.edx, &cpu.ebx, &cpu.ecx};
+    unsigned i = 0;
+    for (const reg32 value : loads)
+        *into[i++] = value;
+    const auto result = feCore<Address, Core>(app, cpu, args...);
+    if (!result)
+        return false;
+    if constexpr (!std::is_same_v<std::decay_t<decltype(result)>, bool>)
+        cpu.eax = *result;
+    return true;
+}
+
+/* 0x4dbde0 (simc's): the view set; what it leaves in eax. */
 std::optional<reg32> setView(App* app, CPU& cpu, reg32 view)
 {
-    if (!call(app, cpu, kSetView, view))
+    if (!loadedCall<0x4dbde0, frontend::simc::setView>(app, cpu, {view}, view))
         return std::nullopt;
     return cpu.eax;
 }
 
-/* 0x426450: mode's sound for the player. */
+/* 0x426450 (sima's): mode's sound for the player. */
 bool modeSound(App* app, CPU& cpu, reg32 mode, reg32 player)
 {
-    return call(app, cpu, kModeSound, mode, player);
+    return loadedCall<0x426450, frontend::sima::cameraStep>(app, cpu, {mode, player}, mode, player);
 }
 
 /* An int's size as the code has it: the lowest int stays itself. */
@@ -539,7 +613,7 @@ namespace
 
 // The race's cars and the cops' count; each player's pursuit's record.
 constexpr reg32 kRaceCarCount = 0x5efd98, kCopCount = 0x5efda4, kPursuits = 0x552f50;
-constexpr reg32 kPursuitMode = 0x11, kCamerasSound = 0x426310;
+constexpr reg32 kPursuitMode = 0x11;
 
 /* 0x4215c0's: player's cameras put on the car (if it is one of the race's): a pursuit's radio
  * stopped, the mode's sound (0x426310), the change marked where the car is another, and each camera
@@ -568,7 +642,7 @@ bool attach(App* app, CPU& cpu, reg32 player, reg32 car)
             put(app, pursuit + 0x118, 0xffffffff);
         }
     }
-    if (!call(app, cpu, kCamerasSound, index))
+    if (!loadedCall<0x426310, frontend::sima::cameraBackFromWait>(app, cpu, {index}, index))
         return false;
     for (const reg32 field : {kCamTarget, kCamCar})
         if (at(app, activeCamera(app, index) + field) != at(app, kCars + car * 4))
@@ -609,7 +683,6 @@ namespace
 constexpr reg32 kCamHead = 0x104, kCamWalls = 0xf4, kCamCars = 0xf8, kCamLooks = 0x108;
 // The identity orientation.
 constexpr reg32 kIdentity = 0x564498;
-constexpr reg32 kTurnAboutX = 0x4ea820, kTurnAboutY = 0x4ea680;
 
 /* 0x421730's: the cockpit camera's head turned with the car's steering: the steering (its physics'
  * +0x920 and +0x924, by the head's mode) scaled (0x536e0c, 0x536e10; more past 60 at +0x5a4,
@@ -635,14 +708,19 @@ bool turnHead(App* app, CPU& cpu, reg32 camera)
     }
     if (sreg32(at(app, physics + 0x5a4)) > 0x42700000)
         b = bitsOf(float(fp::mul(floatIn(b), f32(app, 0x536e10))));
+    // The turns' angles pushed where the code pushes them: simc's cores take their addresses.
     push(app, cpu, e - 0x74);
     push(app, cpu, b);
-    if (!call(app, cpu, kTurnAboutX, kIdentity, other, e - 0x2c))
+    if (!loadedCall<0x4ea820, frontend::simc::turnAboutLastRow>(app, cpu, {kIdentity, other, e - 0x2c}, kIdentity,
+                                                                cpu.esp, e - 0x74))
         return false;
+    cpu.esp += 8;
     push(app, cpu, e - 0x50);
     push(app, cpu, bitsOf(float(fp::add(floatIn(a), f32(app, camera + kCamRoll)))));
-    if (!call(app, cpu, kTurnAboutY, kIdentity, e - 0x50))
+    if (!loadedCall<0x4ea680, frontend::simc::turnAboutFirstRow>(app, cpu, {kIdentity, e - 0x50}, kIdentity, cpu.esp,
+                                                                 e - 0x50))
         return false;
+    cpu.esp += 8;
     // The two turns' matrices multiplied: the code's edx and ebx as the turns' calls handed them.
     guest::direct<0x4e0280, vertices::multiplyMatrix>(app, cpu, e - 0x74, e - 0x50, e - 0x2c);
     if (cpu.terminate)
@@ -719,7 +797,6 @@ void cameraTrackPlace(App* app, CPU& cpu)
 namespace
 {
 
-constexpr reg32 kDistance = 0x4965b0, kSqrt = 0x4ea920;
 // A car's: shown (+0x89), wrecked (+0x88), its axes (+0xc0, +0xcc, +0xd8), its half sizes
 // (+0x114..), its size (+0x120).
 constexpr reg32 kCarShown = 0x89, kCarWrecked = 0x88, kCarHalfSizes = 0x114, kCarSize = 0x120;
@@ -775,10 +852,13 @@ bool pushOutOfCars(App* app, CPU& cpu, reg32 place)
         if (shown == 0 || byte(app, car + kCarWrecked) != 0)
             continue;
         const Float reach = fp::add(f32(app, car + kCarSize), f64(app, 0x536e1c));
-        if (!call(app, cpu, kDistance, car + kCarPlace, place))
+        cpu.eax = car + kCarPlace;
+        cpu.edx = place;
+        const auto measured = feCore<0x4965b0, frontend::sima::quickDistanceOf>(app, cpu, car + kCarPlace, place);
+        if (!measured)
             return false;
-        const Float distance = cpu.fpu.take();
-        left = statusInto(cpu.eax, distance, reach);
+        const Float distance = measured->value;
+        left = statusInto(measured->eax, distance, reach);
         if (distance > reach)
             continue;
         for (const reg32 k : {0u, 4u, 8u})
@@ -821,18 +901,20 @@ bool pushOutOfCars(App* app, CPU& cpu, reg32 place)
         left = statusInto(left, 0.0, rest);
         if (0.0 > Float(rest))
             continue;
-        push(app, cpu, bitsOf(float(fp::mul(fp::mul(Float(sy), Float(sy)), Float(rest)))));
         cpu.eax = left;  // as the code leaves it
-        if (!byAddress(app, cpu, kSqrt))
+        const std::optional<double> rooted =
+            feCore<0x4ea920, frontend::simc::squareRootOf>(app, cpu, bitsOf(float(fp::mul(fp::mul(Float(sy), Float(sy)), Float(rest)))));
+        if (!rooted)
             return false;
-        const float root = float(cpu.fpu.take());
-        left = statusInto(cpu.eax, sizeB, root);
+        const float root = float(*rooted);
+        left = statusInto(left, sizeB, root);  // the root's eax: the one it is handed
         if (Float(sizeB) >= Float(root))
             continue;
         put(app, pushed, bitsOf(a));
         put(app, pushed + 8, bitsOf(c));
         putFloat(app, pushed + 4, float(fp::mul(Float(root), Float(side))));
-        if (!call(app, cpu, kTranspose, car + kCarOrientation, axes))
+        if (!loadedCall<0x4e0110, frontend::simd::transpose>(app, cpu, {car + kCarOrientation, axes},
+                                                              car + kCarOrientation, axes))
             return false;
         if (!(d = dot(app, cpu, pushed, axes)))
             return false;
@@ -868,7 +950,7 @@ namespace
 // inTunnel (0x420bf0) by address: the code hands it a copy of the place, on the stack.  A plane's
 // height (0x4968a0) by address too: the code takes it off the x87's stack as wide as it is there,
 // where vertices' core gives back a float.
-constexpr reg32 kInTunnel = 0x420bf0, kPlaneFrom = 0x496a50, kPlaneHeight = 0x4968a0;
+constexpr reg32 kInTunnel = 0x420bf0, kPlaneHeight = 0x4968a0;
 // A camera's: following a car (+0x88) on a surface it knows (+0x8c), the car's side of the road
 // (+0xe0), the car's four points (+0xc8..+0xd4, a vector each).
 constexpr reg32 kCamFollows = 0x88, kCamKnown = 0x8c, kCamSide = 0xe0, kCamPoints = 0xc8;
@@ -903,7 +985,7 @@ bool carPlane(App* app, CPU& cpu, reg32 camera, reg32 points, reg32 plane)
     for (reg32 i = 0; i < 4; ++i)
         for (reg32 k = 0; k < 0xc; k += 4)
             put(app, points + i * 0xc + k, at(app, at(app, camera + kCamPoints + i * 4) + k));
-    return call(app, cpu, kPlaneFrom, points, plane);
+    return loadedCall<0x496a50, frontend::simd::frameOfTriangle>(app, cpu, {points, plane}, points, plane);
 }
 
 /* 0x421b90's: the camera's place kept above the road: the road's height there -- the car's plane's
@@ -1222,7 +1304,6 @@ namespace
 constexpr reg32 kUpVector = 0x4212d0;
 // Each player's camera that looks at another's turn (mode 10).
 constexpr reg32 kTurnCameras = 0x552f18;
-constexpr reg32 kTurnBy = 0x4eaab0;
 
 /* 0x422290's: the camera made to look at its target from the place: the ways from the target's
  * place to the place and to the camera's look-at point (+0x44) (0x4e0000), the second normalized
@@ -1259,21 +1340,24 @@ bool lookAt(App* app, CPU& cpu, reg32 camera, reg32 place)
     if (Float(sizeOf(floatOf(at(app, length)))) > f64(app, 0x536e7c))
         for (reg32 k = 0; k < 0xc; k += 4)
             put(app, upWay + k, at(app, up + k));
-    if (!call(app, cpu, kCrossNormal, upWay, forward, side) || !call(app, cpu, kCross, forward, side, up))
+    if (!loadedCall<0x4e01a0, frontend::simd::unitCross>(app, cpu, {upWay, forward, side}, upWay, forward, side)
+        || !loadedCall<0x4e0160, frontend::simd::cross>(app, cpu, {forward, side, up}, forward, side, up))
         return false;
+    // The roll pushed where the code pushes it: simc's core takes its address.
     push(app, cpu, side);
     push(app, cpu, at(app, camera + kCamRoll));
-    if (!call(app, cpu, kTurnAboutY, side, side))
+    if (!loadedCall<0x4ea680, frontend::simc::turnAboutFirstRow>(app, cpu, {side, side}, side, cpu.esp, side))
         return false;
+    cpu.esp += 8;
     if (at(app, camera + kCamMode) != 0xa)
     {
         cpu.eax = camera;
         return true;
     }
     const reg32 orientation = cpu.edx;  // as the call left it
-    push(app, cpu, orientation);
-    push(app, cpu, at(app, at(app, kTurnCameras + at(app, camera + kCamPlayer) * 4) + kCamBlendTarget));
-    return call(app, cpu, kTurnBy, orientation);
+    return loadedCall<0x4eaab0, frontend::simd::rotateY>(
+        app, cpu, {orientation}, orientation,
+        at(app, at(app, kTurnCameras + at(app, camera + kCamPlayer) * 4) + kCamBlendTarget), orientation);
 }
 
 }  // namespace
@@ -1289,7 +1373,6 @@ void lookAtTarget(App* app, CPU& cpu)
 namespace
 {
 
-constexpr reg32 kQuatToMatrix = 0x4b7590, kMatrixToQuat = 0x4b73c0, kQuatAlign = 0x4b7300, kSlerp = 0x4b71e0;
 // A blend's record: its time, the mode it leaves (0 none), the mode it goes to, the start's
 // orientation as a quaternion, its place's offset.
 constexpr reg32 kBlendTime = 0x110, kBlendFrom = 0x118, kBlendStart = 0x120, kBlendOffset = 0x130;
@@ -1320,17 +1403,17 @@ bool blend(App* app, CPU& cpu, reg32 orientation, reg32 place, reg32 player, reg
         put(app, quat + k, at(app, record + kBlendStart + k));
     if (turned == 1)
     {
-        if (!call(app, cpu, kQuatToMatrix, quat, e - 0xa))
+        if (!loadedCall<0x4b7590, frontend::simc::matrixFromQuat>(app, cpu, {quat, e - 0xa}, quat, e - 0xa))
             return false;
         turnedAround(app, e - 0xa, e - 0x2e);
-        if (!call(app, cpu, kMatrixToQuat, e - 0x2e, quat))
+        if (!loadedCall<0x4b73c0, frontend::simc::quatFromMatrix>(app, cpu, {e - 0x2e, quat}, e - 0x2e, quat))
             return false;
     }
-    if (!call(app, cpu, kMatrixToQuat, orientation, carQuat) || !call(app, cpu, kQuatAlign, quat, carQuat))
+    if (!loadedCall<0x4b73c0, frontend::simc::quatFromMatrix>(app, cpu, {orientation, carQuat}, orientation, carQuat)
+        || !loadedCall<0x4b7300, frontend::simc::quatNearer>(app, cpu, {quat, carQuat}, quat, carQuat))
         return false;
-    push(app, cpu, mixed);
-    push(app, cpu, bitsOf(weight));
-    if (!call(app, cpu, kSlerp, quat, carQuat) || !call(app, cpu, kQuatToMatrix, mixed, orientation))
+    if (!loadedCall<0x4b71e0, frontend::simc::quatSlerp>(app, cpu, {quat, carQuat}, quat, carQuat, bitsOf(weight), mixed)
+        || !loadedCall<0x4b7590, frontend::simc::matrixFromQuat>(app, cpu, {mixed, orientation}, mixed, orientation))
         return false;
     const reg32 target = cameraOfMode(app, player, at(app, record + kCamBlendTarget));
     const reg32 offset = e + 0x62, scaledOffset = e + 0x4a, scaledPlace = e + 0x56;
@@ -1484,7 +1567,8 @@ bool switchTo(App* app, CPU& cpu, reg32 mode, reg32 player)
             return false;
     }
     const reg32 start = record + kBlendStart;
-    if (!call(app, cpu, kMatrixToQuat, orientation, start) || !modeSound(app, cpu, mode, player))
+    if (!loadedCall<0x4b73c0, frontend::simc::quatFromMatrix>(app, cpu, {orientation, start}, orientation, start)
+        || !modeSound(app, cpu, mode, player))
         return false;
     {
         const Calling calling(cpu);
@@ -1494,8 +1578,9 @@ bool switchTo(App* app, CPU& cpu, reg32 mode, reg32 player)
     const reg32 car = at(app, cameraOfMode(app, player, current) + kCamCar);
     guest::direct<0x4e0000, vertices::offsetVectorList<false>>(app, cpu, 1, fromPlace, car + kCarPlace,
                                                                 record + kBlendOffset);
-    if (cpu.terminate || !call(app, cpu, kMatrixToQuat, orientation, e - 0x3c)
-        || !call(app, cpu, kQuatAlign, e - 0x3c, start))
+    if (cpu.terminate
+        || !loadedCall<0x4b73c0, frontend::simc::quatFromMatrix>(app, cpu, {orientation, e - 0x3c}, orientation, e - 0x3c)
+        || !loadedCall<0x4b7300, frontend::simc::quatNearer>(app, cpu, {e - 0x3c, start}, e - 0x3c, start))
         return false;
     {
         const Calling calling(cpu);
@@ -1567,7 +1652,8 @@ bool makeViewMatrix(App* app, CPU& cpu, reg32 view)
 {
     const Frame frame(cpu, 0x14, 0xc);
     const Kept kept(cpu, kSaveEbx | kSaveEcx | kSaveEdx | kSaveEsi | kSaveEbp);
-    if (!call(app, cpu, kTranspose, view + 0xc, view + 0x3c, view + 0x30, view))
+    if (!loadedCall<0x4e0110, frontend::simd::transpose>(app, cpu, {view + 0xc, view + 0x3c, view + 0x30, view},
+                                                          view + 0xc, view + 0x3c))
         return false;
     const float v[3] = {float(-f32(app, view)), float(-f32(app, view + 4)), float(-f32(app, view + 8))};
     turnByMatrix(app, v, view + 0x3c, view + 0x30);
@@ -2269,7 +2355,7 @@ namespace
 // The spots (0x1c bytes each: a place, a quaternion's halves at +0xa.., its node at +0x18) and their
 // count; each player's camera that looks from them.
 constexpr reg32 kSpots = 0x552e50, kSpotCount = 0x552e4c, kSpotCameras = 0x552f58;
-constexpr reg32 kSpotSize = 0x1c, kSpotScale = 0x536e8c, kMatrixInverse = 0x4b79c0;
+constexpr reg32 kSpotSize = 0x1c, kSpotScale = 0x536e8c;
 
 /* 0x423d90's: the spot nearest player's car along the track (by node, round the track), within 30
  * nodes; or -1 -- also where the car, seen from the spot's place and orientation (0x4e0000,
@@ -2314,8 +2400,9 @@ bool nearest(App* app, CPU& cpu, reg32 player)
         for (const reg32 k : {0xau, 0xcu, 0xeu})
             putFloat(app, e - 0x3c + (k - 0xa) * 2, float(fp::mul(half(k), scale)));
         putFloat(app, e - 0x30, float(fp::mul(half(0x10), scale)));
-        if (!call(app, cpu, kQuatToMatrix, e - 0x3c, e - 0x60, e - 0x20, e - 0x14)
-            || !call(app, cpu, kMatrixInverse, e - 0x60, e - 0x48))
+        if (!loadedCall<0x4b7590, frontend::simc::matrixFromQuat>(app, cpu, {e - 0x3c, e - 0x60, e - 0x20, e - 0x14},
+                                                                  e - 0x3c, e - 0x60)
+            || !loadedCall<0x4b79c0, frontend::simc::matrixQuarterTurn>(app, cpu, {e - 0x60, e - 0x48}, e - 0x60))
             return false;
         // The code's edx, ebx and ecx as the two calls before handed them.
         guest::direct<0x4e0210, vertices::dotProductsOf>(app, cpu, 1, e - 0x48, e - 0x20, e - 0x14);
@@ -2338,9 +2425,6 @@ void nearestSpot(App* app, CPU& cpu)
     cpu.esp += 4;
 }
 
-namespace
-{
-
 /* 0x423fb0's: the value scaled by 0x536e94 where the record's +4 is set, through a float. */
 float scaledWhereSet(App* app, reg32 record, reg32 value)
 {
@@ -2348,8 +2432,6 @@ float scaledWhereSet(App* app, reg32 record, reg32 value)
         return float(fp::mul(Float(floatOf(value)), f32(app, 0x536e94)));
     return floatOf(value);
 }
-
-}  // namespace
 
 /* 0x423fb0: scaledWhereSet for the record eax and the float on the stack (ret 4), onto the x87's
  * stack; eax the float's bits where the record's is not set, as the code leaves it. */

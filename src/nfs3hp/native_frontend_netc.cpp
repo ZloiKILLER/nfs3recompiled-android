@@ -1,4 +1,8 @@
 #include "native_frontend_netc.h"
+#include "native_ea_files.h"
+#include "native_ea_net.h"
+#include "native_watcom.h"
+#include "native_game.h"
 #include "native_ea_memory.h"
 #include "native_ea_threads.h"
 #include "native_frontend.h"
@@ -8,6 +12,8 @@
 #include "native_frontend_wata.h"
 #include "native_frontend_wina.h"
 #include "native_windows.h"
+#include "host_threads.h"
+#include "host_net.h"
 #include "port_snd_stream_calls.h"
 #include <nfs3hp.h>
 #include <winapi/kernel32.h>
@@ -17,6 +23,41 @@
 #include <initializer_list>
 #include <optional>
 #include <type_traits>
+#include <utility>
+
+namespace nfs3hp
+{
+namespace
+{
+
+/* A typed core called as C++ (fe::direct) whose function changes no register but eax (as
+ * tools/frontend_checks/specs_from_exe.py reads it): the registers left as the call by address
+ * leaves them -- `words` in eax, edx, ebx and ecx as that call loads them, the first `Taken` of
+ * them the core's arguments -- and its result in eax, which the call by address leaves there. */
+template <x86::reg32 Address, auto Core, std::size_t... I>
+auto directOf(win32::WinApplication* app, x86::CPU& cpu, const x86::reg32* words, std::index_sequence<I...>)
+{
+    return fe::direct<Address, Core>(app, cpu, words[I]...);
+}
+
+template <x86::reg32 Address, auto Core, std::size_t Taken, typename... Words>
+x86::reg32 directKept(win32::WinApplication* app, x86::CPU& cpu, Words... words)
+{
+    const x86::reg32 all[] = { x86::reg32(words)..., 0 };
+    x86::reg32* const into[] = { &cpu.eax, &cpu.edx, &cpu.ebx, &cpu.ecx };
+    for (std::size_t i = 0; i < sizeof...(Words) && i < 4; ++i)
+        *into[i] = all[i];
+    const auto result = directOf<Address, Core>(app, cpu, all, std::make_index_sequence<Taken>{});
+    if constexpr (std::is_same_v<std::remove_cv_t<decltype(result)>, x86::reg32>)
+        cpu.eax = result;
+    else
+        cpu.eax = *result;
+    return cpu.eax;
+}
+
+}  // namespace
+}  // namespace nfs3hp
+
 
 /* The last of EA's network library, native whole: the gathering's server side
  * (cmn\netgathr.c), the serial port and its thread (win\comm.c) with the
@@ -177,7 +218,7 @@ void reportError(Guest& guest, reg32 file, reg32 function, reg32 line, reg32 mes
     guest.setDword(kErrorFile, file);
     guest.setDword(kErrorFunction, function);
     guest.setDword(kErrorLine, line);
-    guest.call(kReportError, args({}, { message }));
+    fe::direct<kReportError, ea::error>(guest.app(), guest.cpu(), message, guest::Words({}));
 }
 
 void reportError(Guest& guest, reg32 file, reg32 function, reg32 line, reg32 message, reg32 argument)
@@ -185,7 +226,7 @@ void reportError(Guest& guest, reg32 file, reg32 function, reg32 line, reg32 mes
     guest.setDword(kErrorFile, file);
     guest.setDword(kErrorFunction, function);
     guest.setDword(kErrorLine, line);
-    guest.call(kReportError, args({}, { message, argument }));
+    fe::direct<kReportError, ea::error>(guest.app(), guest.cpu(), message, guest::Words{argument});
 }
 
 }  // namespace
@@ -379,7 +420,7 @@ x86::reg32 frontend::netc::gatherJoin(App* app, CPU& cpu, reg32 self, reg32 play
     copyDwords(guest, frame + 4, player, conn::kPlayerDwords);
     copyDwords(guest, self + conn::kPlayer, player, conn::kPlayerDwords);
     if (name != 0)
-        guest.call(kStrncpy, args({ frame + 0x18, name, 0x10 }));
+        fe::direct<kStrncpy, watcom::clib::strncpy>(guest.app(), guest.cpu(), frame + 0x18, name, 0x10);
     else
         guest.setByte(guest.dword(self + conn::kGame) + game::kName, 0);
     guest.call(kRequest, args({ self, reply, kMessageAdd, frame }, { 0x88, guest.dword(kTicksPerSecond) * 2 }));
@@ -459,7 +500,7 @@ x86::reg32 frontend::netc::gatherNewGame(App* app, CPU& cpu, reg32 self, reg32 i
     guest.setDword(self + conn::kPulse, guest.dword(kPulsePeriod));
     copyDwords(guest, self + conn::kPlayer, self + conn::kOwnPlayer, conn::kPlayerDwords);
     if (name != 0)
-        guest.call(kStrncpy, args({ guest.dword(self + conn::kGame) + game::kName, name, 0x10 }));
+        fe::direct<kStrncpy, watcom::clib::strncpy>(guest.app(), guest.cpu(), guest.dword(self + conn::kGame) + game::kName, name, 0x10);
     else
         guest.setByte(guest.dword(self + conn::kGame) + game::kName, 0);
     loaded<0x512f60, frontend::netb::gameGuidText>(app, cpu, self + conn::kRequests, guest.dword(self + conn::kGame) + game::kAddress);
@@ -1547,6 +1588,7 @@ x86::reg32 frontend::netc::unreliableClose(App* app, CPU& cpu, reg32 connection)
                 if (tries == 0xffffffff
                     || guest.call(guest.dword(ops + stream::kReady), args({ connection })) == 0)
                     break;
+                // By address: the edx it leaves is handed to the stream's functions after it.
                 if (guest.call(kFrameControl, args({ self, kFrameClose })) != 0)
                     tries = 0;
                 else
@@ -1555,7 +1597,7 @@ x86::reg32 frontend::netc::unreliableClose(App* app, CPU& cpu, reg32 connection)
             loaded<0x4f06e0, frontend::wata::timerWait>(app, cpu, 3);
             guest.call(guest.dword(ops + stream::kClose), args({ connection }));
         }
-        guest.call(kQueueAdd, args({ kClosedConnections, connection }));
+        fe::direct<0x50de50, netb::qpush>(app, cpu, kClosedConnections, connection);
     }
     if (guest.call(kQueueRemove, args({ kClosedConnections, connection })) == 0)
         return 0;
@@ -2131,6 +2173,7 @@ x86::reg32 frontend::netc::packetNotify(App* app, CPU& cpu, reg32 connection)
             if (traceLevel(guest) >= 3)
                 trace(guest, 0x55101c, next + packet::kNumber, next + packet::kData, guest.byte(next + packet::kLength),
                       0, guest.byte(self + rely::kId));
+            // By address: the ebx and edx it leaves are handed to the calls after it.
             if (guest.call(kDeliver, args({ connection, next + packet::kData, guest.byte(next + packet::kLength) })) == 0)
             {
                 if (traceLevel(guest) >= 3)
@@ -2503,6 +2546,7 @@ x86::reg32 frontend::netc::packetClose(App* app, CPU& cpu, reg32 connection)
                 if (tries == 0xffffffff
                     || guest.call(guest.dword(ops + stream::kReady), args({ connection })) == 0)
                     break;
+                // By address: the ebx and edx it leaves are handed to the stream's functions after it.
                 if (guest.call(kPacketControl, args({ guest.dword(self + rely::kFirstPacket), self, kFrameClose })) != 0)
                     tries = 0;
                 else
@@ -2511,14 +2555,14 @@ x86::reg32 frontend::netc::packetClose(App* app, CPU& cpu, reg32 connection)
             loaded<0x4f06e0, frontend::wata::timerWait>(app, cpu, 3);
             guest.call(guest.dword(ops + stream::kClose), args({ connection }));
         }
-        guest.call(kQueueAdd, args({ kClosedConnections, connection }));
+        fe::direct<0x50de50, netb::qpush>(app, cpu, kClosedConnections, connection);
     }
     if (guest.call(kQueueRemove, args({ kClosedConnections, connection })) == 0)
         return 0;
-    guest.call(kQueueFree, args({ self + rely::kFree }));
-    guest.call(kQueueFree, args({ self + rely::kUnacked }));
-    guest.call(kQueueFree, args({ self + rely::kReceiving }));
-    guest.call(kQueueFree, args({ self + rely::kReceivedQueue }));
+    directKept<0x50dde0, ea::queueLockFreed, 1>(guest.app(), guest.cpu(), self + rely::kFree);
+    directKept<0x50dde0, ea::queueLockFreed, 1>(guest.app(), guest.cpu(), self + rely::kUnacked);
+    directKept<0x50dde0, ea::queueLockFreed, 1>(guest.app(), guest.cpu(), self + rely::kReceiving);
+    directKept<0x50dde0, ea::queueLockFreed, 1>(guest.app(), guest.cpu(), self + rely::kReceivedQueue);
     reg32(*fe::direct<0x4eb360, ea::lockFreed>(app, cpu, guest.dword(self + rely::kLock)));
     if (guest.byte(self + layer::kOwned) != 0)
     {
@@ -2578,12 +2622,12 @@ void ensurePortsLock(Guest& guest, x86::CPU& cpu)
 
 void enterPorts(Guest& guest, x86::CPU& cpu)
 {
-    callImport<kEnterLock, &win32::kernel32::EnterCriticalSection>(guest, cpu, guest.dword(kPortsLock));
+    callImport<kEnterLock, &host::enterLock>(guest, cpu, guest.dword(kPortsLock));
 }
 
 reg32 leavePorts(Guest& guest, x86::CPU& cpu)
 {
-    return callImport<kLeaveLock, &win32::kernel32::LeaveCriticalSection>(guest, cpu, guest.dword(kPortsLock));
+    return callImport<kLeaveLock, &host::leaveLock>(guest, cpu, guest.dword(kPortsLock));
 }
 
 /* The modem's patience, a quarter of a second, worked out once. */
@@ -2597,7 +2641,7 @@ void ensureModemWait(Guest& guest)
 void modemLog(Guest& guest, reg32 text)
 {
     if (guest.dword(kModemLog) != 0)
-        guest.call(kFileReport, args({}, { kModemLog, 1, text }));
+        guest.cpu().eax = *fe::direct<0x501050, ea::reportedAt>(guest.app(), guest.cpu(), kModemLog, 1u, text, guest::Words({}));
 }
 
 /* Time let pass, as a thread or not.  False if the game's tasks say stop. */
@@ -2656,13 +2700,14 @@ x86::reg32 frontend::netc::modemResponse(App* app, CPU& cpu, reg32 number, reg32
                 for (row = sign(guest.dword(kModemRows)) - 1; row >= 0; --row)
                 {
                     const reg32 entry = kModemTable + reg32(row) * kModemRowSize;
-                    if (guest.call(kStrstr, args({ text, guest.dword(entry + column * 4) })) == 0)
+                    if (fe::direct<kStrstr, watcom::clib::strstr>(guest.app(), guest.cpu(), text, guest.dword(entry + column * 4)) == 0)
                         continue;
                     guest.setDword(kModemConnected, guest.dword(kModemConnected) | (column > 0 ? 1 : 0));
                     if (guest.dword(kModemLog) != 0)
                     {
                         guest.leaveEdx(guest.dword(entry));
-                        guest.call(kFileReport, args({}, { kModemLog, 1, 0x550adc, text, guest.dword(entry) }));
+                        guest.cpu().eax = *fe::direct<0x501050, ea::reportedAt>(guest.app(), guest.cpu(), kModemLog, 1u, 0x550adcu,
+                                                                                guest::Words({ text, guest.dword(entry) }));
                     }
                     if (!modemPause(guest, cpu, guest.dword(kModemWait)))
                     {
@@ -2671,17 +2716,18 @@ x86::reg32 frontend::netc::modemResponse(App* app, CPU& cpu, reg32 number, reg32
                     }
                     const reg32 word = guest.dword(entry);
                     guest.setDword(kModemResponseText, word);
-                    return guest.call(kAtoi, args({ guest.dword(entry + 8), word }));
+                    guest.leaveEdx(word);  // as the code loads it for it, which it keeps
+                    return fe::direct<0x4f0430, watcom::clib::atoi>(app, cpu, guest.dword(entry + 8));
                 }
             }
             if (firstDigit != 0 && !digit && guest.dword(kModemConnected) != 0)
             {
-                const std::int32_t said = sign(guest.call(kAtoi, args({ firstDigit })));
+                const std::int32_t said = sign(fe::direct<kAtoi, watcom::clib::atoi>(guest.app(), guest.cpu(), firstDigit));
                 const std::int32_t code = said >= 10 ? 1 : said >= 0 ? said : -1;
                 guest.leaveEdx(reg32(code));
                 if (guest.dword(kModemLog) != 0 && code >= 0)
-                    guest.call(kFileReport, args({}, { kModemLog, 1, 0x550adc, firstDigit,
-                                                       guest.dword(kModemTable + reg32(code) * kModemRowSize) }));
+                    guest.cpu().eax = *fe::direct<0x501050, ea::reportedAt>(guest.app(), guest.cpu(), kModemLog, 1u, 0x550adcu,
+                        guest::Words({ firstDigit, guest.dword(kModemTable + reg32(code) * kModemRowSize) }));
                 if (code >= 0)
                     guest.setDword(kModemResponseText, guest.dword(kModemTable + reg32(row) * kModemRowSize));
                 if (!modemPause(guest, cpu, guest.dword(kModemWait)))
@@ -2757,16 +2803,16 @@ x86::reg32 frontend::netc::modemCommand(App* app, CPU& cpu, reg32 number, reg32 
     {
         got += guest.call(kWaitIn, args({ number, 1, kModemEchoBuffer + got, 1 }));
         guest.setByte(got + kModemEchoBuffer, 0);
-        guest.setDword(kModemEcho, guest.call(kStrstr, args({ kModemEchoBuffer, command })));
+        guest.setDword(kModemEcho, fe::direct<kStrstr, watcom::clib::strstr>(guest.app(), guest.cpu(), kModemEchoBuffer, command));
     }
     if (guest.dword(kModemLog) != 0)
     {
         const reg32 echo = guest.dword(kModemEcho);
         guest.leaveEbx(echo);
         if (echo != 0)
-            guest.call(kFileReport, args({}, { kModemLog, 1, 0x550b08, echo }));
+            guest.cpu().eax = *fe::direct<0x501050, ea::reportedAt>(guest.app(), guest.cpu(), kModemLog, 1u, 0x550b08u, guest::Words({ echo }));
         else
-            guest.call(kFileReport, args({}, { kModemLog, 1, 0x550b1c }));
+            guest.cpu().eax = *fe::direct<0x501050, ea::reportedAt>(guest.app(), guest.cpu(), kModemLog, 1u, 0x550b1cu, guest::Words({}));
     }
     return guest.dword(kModemEcho) != 0 ? 1 : 0;
 }
@@ -2957,7 +3003,7 @@ x86::reg32 frontend::netc::serialFinishIo(App* app, CPU& cpu, reg32 record)
     enterPorts(guest, cpu);
     if (guest.dword(record + serial::kReading) != 0 && guest.call(kPollEvent, args({ guest.dword(record + serial::kInEvent) })) != 0)
     {
-        if (callImport<kOverlappedResult, &win32::kernel32::GetOverlappedResult>(guest, cpu, guest.dword(record + serial::kHandle), record + serial::kInOverlapped, got, 0) != 0)
+        if (callImport<kOverlappedResult, &host::serialOverlappedResult>(guest, cpu, guest.dword(record + serial::kHandle), record + serial::kInOverlapped, got, 0) != 0)
         {
             const reg32 bytes = guest.dword(got);
             if (bytes != 0)
@@ -2971,7 +3017,7 @@ x86::reg32 frontend::netc::serialFinishIo(App* app, CPU& cpu, reg32 record)
     }
     if (guest.dword(record + serial::kWriting) != 0 && guest.call(kPollEvent, args({ guest.dword(record + serial::kOutEvent) })) != 0)
     {
-        if (callImport<kOverlappedResult, &win32::kernel32::GetOverlappedResult>(guest, cpu, guest.dword(record + serial::kHandle), record + serial::kOutOverlapped, got, 0) != 0)
+        if (callImport<kOverlappedResult, &host::serialOverlappedResult>(guest, cpu, guest.dword(record + serial::kHandle), record + serial::kOutOverlapped, got, 0) != 0)
         {
             const reg32 bytes = guest.dword(got);
             if (bytes != 0)
@@ -3051,25 +3097,25 @@ x86::reg32 frontend::netc::serialThread(App* app, CPU& cpu)
                 const reg32 command = guest.dword(record + serial::kCommand);
                 if (command == serial::kCommandDropInput)
                 {
-                    callImport<kPurgeComm, &win32::kernel32::PurgeComm>(guest, cpu, guest.dword(record + serial::kHandle), 0xa);
+                    callImport<kPurgeComm, &host::serialPurge>(guest, cpu, guest.dword(record + serial::kHandle), 0xa);
                     guest::direct<0x51ad70, serialFinishIo>(app, cpu, record);
                     guest.setDword(record + serial::kInFirst, 0);
                     guest.setDword(record + serial::kInCount, 0);
                 }
                 else if (command == serial::kCommandDropOutput)
                 {
-                    callImport<kPurgeComm, &win32::kernel32::PurgeComm>(guest, cpu, guest.dword(record + serial::kHandle), 5);
+                    callImport<kPurgeComm, &host::serialPurge>(guest, cpu, guest.dword(record + serial::kHandle), 5);
                     guest::direct<0x51ad70, serialFinishIo>(app, cpu, record);
                     guest.setDword(record + serial::kOutFirst, 0);
                     guest.setDword(record + serial::kOutCount, 0);
                 }
                 else if (command == serial::kCommandClose)
                 {
-                    callImport<kPurgeComm, &win32::kernel32::PurgeComm>(guest, cpu, guest.dword(record + serial::kHandle), 0xf);
+                    callImport<kPurgeComm, &host::serialPurge>(guest, cpu, guest.dword(record + serial::kHandle), 0xf);
                     guest::direct<0x51ad70, serialFinishIo>(app, cpu, record);
                     callImport<kCloseHandle, &win32::kernel32::CloseHandle>(guest, cpu, guest.dword(record + serial::kHandle));
-                    guest.call(kCloseEvent, args({ guest.dword(record + serial::kInEvent) }));
-                    guest.call(kCloseEvent, args({ guest.dword(record + serial::kOutEvent) }));
+                    directKept<0x4dfc00, ea::eventClosed, 1>(guest.app(), guest.cpu(), guest.dword(record + serial::kInEvent));
+                    directKept<0x4dfc00, ea::eventClosed, 1>(guest.app(), guest.cpu(), guest.dword(record + serial::kOutEvent));
                     guest.setDword(kPorts + number * 4, 0);
                 }
                 guest.setDword(record + serial::kCommand, 0);
@@ -3079,7 +3125,7 @@ x86::reg32 frontend::netc::serialThread(App* app, CPU& cpu)
                 guest::direct<0x51abc0, serialStartIo>(app, cpu, record);
         }
     }
-    const reg32 closed = guest.call(kCloseEvent, args({ guest.dword(kPortsEvent) }));
+    const reg32 closed = directKept<0x4dfc00, ea::eventClosed, 1>(guest.app(), guest.cpu(), guest.dword(kPortsEvent));
     guest.setDword(kPortsEvent, 0);
     return closed;
 }
@@ -3233,17 +3279,17 @@ x86::reg32 frontend::netc::serialOpenHandle(App* app, CPU& cpu, reg32 number, re
     const reg32 record = guest.call(kAllocate, args({ 0x550bbc, serial::kRecordSize, guest.dword(kMemoryType), 0x550ba8 }));
     guest.setDword(record + serial::kReading, 0);
     guest.setDword(record + serial::kHandle, handle);
-    guest.setDword(record + serial::kInEvent, callImport<kCreateEventApi, &win32::kernel32::CreateEventA>(guest, cpu, 0, 1, 0, 0));
+    guest.setDword(record + serial::kInEvent, callImport<kCreateEventApi, &host::createEvent>(guest, cpu, 0, 1, 0, 0));
     guest.setDword(record + serial::kInFirst, 0);
     guest.setDword(record + serial::kInCount, 0);
     guest.setDword(record + serial::kWriting, 0);
-    const reg32 outEvent = callImport<kCreateEventApi, &win32::kernel32::CreateEventA>(guest, cpu, 0, 1, 0, 0);
+    const reg32 outEvent = callImport<kCreateEventApi, &host::createEvent>(guest, cpu, 0, 1, 0, 0);
     guest.setDword(record + serial::kOutFirst, 0);
     guest.setDword(record + serial::kOutEvent, outEvent);
     guest.setDword(record + serial::kOutCount, 0);
-    guest.call(kFillZero, args({ timeouts, 0x14 }));
+    fe::direct<kFillZero, ea::clearBytes>(guest.app(), guest.cpu(), timeouts, 0x14);
     guest.setDword(timeouts + 8, 0x19);
-    callImport<kSetTimeouts, &win32::kernel32::SetCommTimeouts>(guest, cpu, handle, timeouts);
+    callImport<kSetTimeouts, &host::serialSetTimeouts>(guest, cpu, handle, timeouts);
     guest.setDword(kPorts + number * 4, record);
     // edx as the call by address loads it, which sub_51ab70 keeps: the function leaves it.
     guest.leaveEdx(1);
@@ -3271,7 +3317,7 @@ x86::reg32 frontend::netc::serialOpen(App* app, CPU& cpu, reg32 number)
     callImport<kClearError, &win32::kernel32::SetLastError>(guest, cpu, 0);
     if (portRecord(guest, number) != 0)
         return guest.eax();
-    guest.call(kSprintf, args({}, { name, 0x550bf4, number + 1 }));
+    fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.cpu(), name, 0x550bf4, guest::Words{number + 1});
     const reg32 handle = callImport<kCreateFile, &win32::kernel32::CreateFileA>(guest, cpu, name, 0xc0000000, 0, 0, 3, 0x40000080, 0);
     if (handle == 0xffffffff)
         return handle;
@@ -3374,7 +3420,7 @@ x86::reg32 frontend::netc::serialSet(App* app, CPU& cpu, reg32 number, reg32 spe
         reportError(guest, kSourceFile, 0x550c00, 0x356, 0x550c0c);
         guest.leaveEbx(0x550c00);
     }
-    else if (callImport<kGetCommState, &win32::kernel32::GetCommState>(guest, cpu, guest.dword(portRecord(guest, number) + serial::kHandle), state) != 0)
+    else if (callImport<kGetCommState, &host::serialGetState>(guest, cpu, guest.dword(portRecord(guest, number) + serial::kHandle), state) != 0)
     {
         guest.setByte(state + 8, guest.byte(state + 8) | 1);
         guest.setWord(state + 8, guest.word(state + 8) & 0xb0fd);
@@ -3384,7 +3430,7 @@ x86::reg32 frontend::netc::serialSet(App* app, CPU& cpu, reg32 number, reg32 spe
         guest.setByte(state + 0x12, std::uint8_t(std::uint8_t(wordBits) + 5));
         guest.setByte(state + 0x14, stopBits == 1 ? 2 : 0);
         guest.setByte(state + 0x13, parity == 1 ? 1 : parity == 3 ? 2 : 0);
-        callImport<kSetCommState, &win32::kernel32::SetCommState>(guest, cpu, guest.dword(portRecord(guest, number) + serial::kHandle), state);
+        callImport<kSetCommState, &host::serialSetState>(guest, cpu, guest.dword(portRecord(guest, number) + serial::kHandle), state);
     }
     return leavePorts(guest, cpu);
 }

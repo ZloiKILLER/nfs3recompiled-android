@@ -2,14 +2,19 @@
 #include "native_ai_race.h"
 #include "native_aidrive.h"
 #include "native_aiplan.h"
+#include "native_frontend_sima.h"
+#include "native_frontend_simb.h"
+#include "native_frontend_simc.h"
 #include "native_guest.h"
 #include "native_pursuit.h"
 #include "native_trackdata.h"
 #include "native_vertices.h"
+#include "native_watcom.h"
 
 #include <cstdint>
 #include <cstring>
 #include <optional>
+#include <type_traits>
 
 /* The police of a Hot Pursuit race, native whole.  disassemble_nfs3hp.py
  * binds each address to the function of that name here (AI_NATIVES), and the
@@ -105,16 +110,18 @@ constexpr reg32 kRadioMessages = 0x55224c, kByTickets = 0x5521ac, kSirens = 0x7d
 // The ramming rules of each racer (0x14 bytes each).
 constexpr reg32 kRamming = 0x56ea70;
 
-// What is called by address: the game's, Watcom's __CHP and ea::yRotation (whose frame on the
-// guest's stack sits under the angle the code pushes); and the typed files' calls whose adapters
-// here leave what the callee leaves in a register beyond what its header gives -- the nodes' gap's
-// edx, the vectors' subtraction's eax and edx, the timer's, the stop's, the horn's end's, a node's
-// and a ram's eax.  The other typed files' functions are called as C++ (guest::direct).
-constexpr reg32 kNodeGap = 0x40e120, kDistance = 0x4965b0;
-constexpr reg32 kChop = 0x4dfd56, kMemset = 0x4e0640, kYRotation = 0x4dfde0, kSubtract = 0x4e0000;
+// What is called by address: the game's, ea::yRotation (whose frame on the guest's stack sits
+// under the angle the code pushes), the lane votes (0x40de30, its adapter's NFS_CAR_TRACE record);
+// and the typed files' calls whose adapters here leave what the callee leaves in a register beyond
+// what its header gives -- the nodes' gap's edx, the vectors' subtraction's eax and edx, the
+// timer's, the stop's, the horn's end's, a node's and a ram's eax.  The other typed files'
+// functions are called as C++ (guest::direct), the menu files' (the distance, a key, the sirens,
+// a car settled) too (feCore), their eax put back where the code leaves it.
+constexpr reg32 kNodeGap = 0x40e120;
+constexpr reg32 kChop = 0x4dfd56, kYRotation = 0x4dfde0, kSubtract = 0x4e0000;
 constexpr reg32 kCarRadio = 0x4127c0, kPlayerCopRadio = 0x412880;
-constexpr reg32 kCopChaseSet = 0x411750, kSirenOff = 0x4c9f50, kSirenOn = 0x4c9dd0;
-constexpr reg32 kKeyState = 0x4be1a0, kParkCar = 0x4a0980, kCarSettled = 0x4a2690;
+constexpr reg32 kCopChaseSet = 0x411750;
+constexpr reg32 kParkCar = 0x4a0980;
 constexpr reg32 kSetTimer = 0x405fd0, kSteer = 0x40de30, kStop = 0x40ce70;
 constexpr reg32 kAtNode = 0x40f000, kRamWait = 0x40f050, kRivalNear = 0x40deb0;
 
@@ -125,6 +132,70 @@ bool byAddress(App* app, CPU& cpu, reg32 target)
     cpu.esp -= 4;
     app->dynamic_call(target, cpu);
     return !cpu.terminate;
+}
+
+/* A native_frontend_* file's typed core called as C++ (guest::direct): nothing (false) when the
+ * game stopped in it (its calls into the game throw fe::Terminated).  tools/game_checks does not
+ * build those files: there it goes by address, through its ByAddress, as the game's code calls it,
+ * every register but eax kept.  A reg32 result is the eax the function leaves: eax set to it (in the
+ * game too); after any other, eax spoilt there, so that code still reading what the callee left in
+ * eax differs there. */
+template <reg32 Address, auto Core, typename... Args>
+auto feCore(App* app, CPU& cpu, Args... args)
+{
+    const auto run = [&] {
+#ifdef NFS_GAME_CHECKS
+        const guest::KeptRegisters kept(cpu);
+        return guest::ByAddress<Core>::template call<Address>(app, cpu, args...);
+#else
+        return guest::direct<Address, Core>(app, cpu, args...);
+#endif
+    };
+    using Result = decltype(run());
+    const auto spoil = [&] {
+#ifdef NFS_GAME_CHECKS
+        cpu.eax = 0x5b0115edu;
+#endif
+    };
+    if constexpr (std::is_void_v<Result>)
+    {
+        try
+        {
+            run();
+        }
+        catch (const fe::Terminated&)
+        {
+            return false;
+        }
+        spoil();
+        return !cpu.terminate;
+    }
+    else
+    {
+        try
+        {
+            const Result result = run();
+            if constexpr (std::is_same_v<Result, x86::reg32>)
+                cpu.eax = result;  // a menu core's result: the eax it leaves, as the call by address does
+            else
+                spoil();
+            return cpu.terminate ? std::optional<Result>() : std::optional<Result>(result);
+        }
+        catch (const fe::Terminated&)
+        {
+            return std::optional<Result>();
+        }
+    }
+}
+
+/* A menu core's result (feCore's) put in eax, as its call by address left it: false when the game
+ * stopped. */
+bool leftInEax(CPU& cpu, const std::optional<reg32>& eax)
+{
+    if (!eax)
+        return false;
+    cpu.eax = *eax;
+    return true;
 }
 
 reg16 word(App* app, reg32 a) { return app->getMemory<reg16>(a); }
@@ -403,15 +474,14 @@ std::optional<Float> nodeSpeed(App* app, CPU& cpu, reg32 node)
     return Float(speed);
 }
 
-/* 0x4be1a0: the state of key `key` of the input `input`; nullopt when the game stopped. */
+/* 0x4be1a0 (simc's): the state of key `key` of the input `input`, in eax too; nullopt when the
+ * game stopped. */
 std::optional<reg32> keyState(App* app, CPU& cpu, reg32 key, reg32 input)
 {
-    const KeptRegisters kept(cpu);
-    cpu.eax = key;
-    cpu.edx = input;
-    if (!byAddress(app, cpu, kKeyState))
+    const std::optional<reg32> state = feCore<0x4be1a0, frontend::simc::offBeat>(app, cpu, key, input);
+    if (!leftInEax(cpu, state))
         return std::nullopt;
-    return cpu.eax;
+    return state;
 }
 
 /* A call by address with the registers `set` puts in, eax left as the callee leaves it (a word
@@ -428,33 +498,30 @@ bool callWith(App* app, CPU& cpu, reg32 target, Set set)
 reg32 orderNode(App* app, reg32 car) { return reg32(i32(at(app, at(app, car + kCarOrder))) >> 16); }
 reg32 orderWord(App* app, reg32 car) { return reg32(i32(at(app, at(app, car + kCarOrder) + 2)) >> 16); }
 
-/* 0x4c9f50: cop `index`'s siren off; false when the game stopped. */
+/* 0x4c9f50 (simc's): cop `index`'s siren off, eax as it leaves it; false when the game stopped. */
 bool sirenOff(App* app, CPU& cpu, reg32 index)
 {
-    return callWith(app, cpu, kSirenOff, [&] { cpu.eax = index; });
+    return leftInEax(cpu, feCore<0x4c9f50, frontend::simc::sirenOff>(app, cpu, index));
 }
 
-/* __CHP: the value to an integer, towards 0, as a whole value; nullopt when the game stopped. */
+/* __CHP: the value to an integer, towards 0, as a whole value; never nullopt (the optional is the
+ * callers' stop signal). */
 std::optional<Float> chop(App* app, CPU& cpu, const Float& value)
 {
-    const KeptRegisters kept(cpu);
-    cpu.fpu.push(value);
-    if (!byAddress(app, cpu, kChop))
-        return std::nullopt;
-    return cpu.fpu.take();
+    return Float(guest::direct<kChop, watcom::clib::chop>(app, cpu, double(value)));
 }
 
 
-/* 0x4965b0: the distance from the place at `from` to that at `to`; nullopt when the game
- * stopped. */
+/* 0x4965b0 (sima's): the distance from the place at `from` to that at `to`, eax as it leaves it;
+ * nullopt when the game stopped. */
 std::optional<Float> distance(App* app, CPU& cpu, reg32 from, reg32 to)
 {
-    const KeptRegisters kept(cpu);
-    cpu.eax = from;
-    cpu.edx = to;
-    if (!byAddress(app, cpu, kDistance))
+    const std::optional<frontend::sima::FloatLeft> left =
+        feCore<0x4965b0, frontend::sima::quickDistanceOf>(app, cpu, from, to);
+    if (!left)
         return std::nullopt;
-    return cpu.fpu.take();
+    cpu.eax = left->eax;
+    return Float(left->value);
 }
 
 /* Its size as the code asks it: twice, the second negated where the first was not over 0. */
@@ -619,14 +686,12 @@ std::optional<reg32> nodeOn(App* app, CPU& cpu, reg32 car, reg32 count)
     return node;
 }
 
-/* 0x4e0640: memset of `count` bytes at `to` to `value`; false when the game stopped. */
+/* 0x4e0640 (watcom's): memset of `count` bytes at `to` to `value`, eax as it leaves it (the
+ * buffer); false when the game stopped. */
 bool clearBytes(App* app, CPU& cpu, reg32 to, reg32 value, reg32 count)
 {
-    return callWith(app, cpu, kMemset, [&] {
-        cpu.eax = to;
-        cpu.edx = value;
-        cpu.ebx = count;
-    });
+    cpu.eax = guest::direct<0x4e0640, watcom::clib::memset>(app, cpu, to, value, count);
+    return !cpu.terminate;
 }
 
 
@@ -3031,7 +3096,7 @@ std::optional<Park> parkCopOf(App* app, CPU& cpu, reg32 cop)
         return std::nullopt;
     const reg32 angle = byte(app, at(app, cop + kCarOrder) + kOrderFlag) != 0 ? kQuarterTurnBits : kThreeQuartersBits;
     if (!yRotation(app, cpu, turn, angle) || !multiply(app, cpu, cop + kCarOrientation, turn, cop + kCarOrientation)
-        || !callFor(app, cpu, kCarSettled, cop))
+        || !leftInEax(cpu, feCore<0x4a2690, frontend::simb::settle>(app, cpu, cop)))
         return std::nullopt;
     const reg8 side = byte(app, cop + kCarSide);
     put(app, cop + kCarWanted, 0);
@@ -3071,12 +3136,8 @@ bool roadblockSirenOf(App* app, CPU& cpu, reg32 cop)
         side = 2 - side;
         lane = 0xe - lane;
     }
-    if (!callWith(app, cpu, kSirenOn, [&] {
-            cpu.ecx = at(app, kClock);
-            cpu.edx = at(app, cop + kCarNode);
-            cpu.eax = at(app, cop + kCarCopIndex);
-            cpu.ebx = lane;
-        }))
+    if (!leftInEax(cpu, feCore<0x4c9dd0, frontend::simc::sirenOn>(app, cpu, at(app, cop + kCarCopIndex),
+                                                                    at(app, cop + kCarNode), lane, at(app, kClock))))
         return false;
     if (!guest::direct<0x40b9c0, pursuit::radioStoppedOf>(app, cpu, cop, side))
         return false;

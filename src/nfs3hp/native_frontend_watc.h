@@ -164,8 +164,9 @@ reg32 initThreadSignals(App* app, CPU& cpu);
 reg32 finiThreadSignals(App* app, CPU& cpu);
 // The game's 0x526420: the two above hooked.
 reg32 hookThreadSignals(App* app, CPU& cpu);
-// The game's 0x52b523: pow's bad cases: the error reported, or 0 where the answer is 0 with no error.
-reg32 powError(App* app, CPU& cpu, reg32 arguments);
+// The game's 0x52b523: pow's bad cases: the error reported, or 0 where the answer is 0 with no error; the answer,
+// which its code leaves on the x87's stack (eax as it came).
+double powError(App* app, CPU& cpu, reg32 arguments);
 // The game's 0x52b6c0: a rect's clip, each edge held inside its width and height.
 reg32 setRectClip(App* app, CPU& cpu,
                   reg32 rect, reg32 leftAsked, reg32 topAsked, reg32 rightAsked, reg32 bottomAsked);
@@ -994,12 +995,13 @@ template <>
 struct ByAddress<frontend::watc::powError>
 {
     template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 arguments)
+    static double call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 arguments)
     {
         fe::Arguments words = fe::args({  });
         for (x86::reg32 i = 0; i < 5; ++i)
             words.stack[words.stackCount++] = app->getMemory<x86::reg32>(arguments + 4 * i);
-        return fe::callByAddress(app, cpu, Address, words);
+        fe::callByAddress(app, cpu, Address, words);
+        return double(cpu.fpu.take());
     }
 };
 

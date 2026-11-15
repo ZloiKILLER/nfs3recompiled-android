@@ -3,6 +3,8 @@
 
 #include "native_guest.h"
 
+#include <type_traits>
+
 /* native_ea_net.cpp's typed functions that other files call as C++ (guest::direct), and how the
  * game's code calls each by address (ByAddress, for the check's stand-ins).  Each may call the
  * game's other functions by address on `cpu`, and is false or nullopt when the game stopped in one.
@@ -44,6 +46,31 @@ Regs unpackDxt(win32::WinApplication* app, x86::reg32 source, x86::reg32 to, x86
 // The game's 0x510870: EA's byte pairs unpacked from `source` to `to`: eax (the length) and edx as
 // the code leaves them, ebx and ecx 0.
 Regs unpackPairs(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 source, x86::reg32 to);
+// The game's 0x49f1c0: the index of the session `id` in the sessions' table, or -1.
+x86::reg32 sessionIndexOf(win32::WinApplication* app, x86::reg32 id);
+// The game's 0x49ecb0: the connection `connection` dropped: eax as the code leaves it.
+std::optional<x86::reg32> connectionDropped(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 connection);
+// The game's 0x49ecf0: the machine `machine` announced gone to the others (the registers as the
+// caller has them pushed, as the code pushes them): eax as the code leaves it.
+std::optional<x86::reg32> machineLeftAnnounced(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 machine);
+// The game's 0x4a6390: the network's state made anew, the second lost flag cleared too for
+// `alsoLostToo` not 0: eax as the last clearing leaves it.
+std::optional<x86::reg32> networkReset(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 alsoLostToo);
+// The game's 0x4a65e0: the network closed: eax as the code leaves it.
+std::optional<x86::reg32> networkClosed(win32::WinApplication* app, x86::CPU& cpu);
+// The game's 0x4a6690: the machine of the player `player` (its low 16 bits).
+x86::reg32 machineOfPlayerNumber(win32::WinApplication* app, x86::reg32 player);
+// The game's 0x4f4c50: NET's trace of the call named `name`: eax as the code leaves it.
+std::optional<x86::reg32> netCallTraced(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 name);
+// The game's 0x4f5280: the connections restored, `handed` the eax the code hands it: eax as the code
+// leaves it.
+std::optional<x86::reg32> connectionsRestored(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 handed);
+// The game's 0x50dc20: the element `element` unlinked from the queue `queue`: eax as the code leaves it.
+x86::reg32 queueUnlinked(win32::WinApplication* app, x86::reg32 queue, x86::reg32 element);
+// The game's 0x50dde0: the queue `queue`'s lock freed: eax as the code leaves it.
+std::optional<x86::reg32> queueLockFreed(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 queue);
+// The game's 0x50e1d0: how many elements the queue `queue` holds.
+std::optional<x86::reg32> queueLengthOf(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 queue);
 
 }  // namespace ea
 
@@ -122,6 +149,35 @@ struct ByAddress<ea::unpackPairs>
         return ea::Regs{cpu.eax, cpu.edx, 0, 0};
     }
 };
+
+
+/* Those above by address: their words in eax and edx, every other register kept (none of them
+ * changes one but eax); eax back. */
+template <typename Result, typename... Words>
+struct EaNetByAddress
+{
+    template <x86::reg32 Address>
+    static Result call(win32::WinApplication* app, x86::CPU& cpu, Words... words)
+    {
+        const std::optional<x86::reg32> eax = watcomEax(app, cpu, Address, {x86::reg32(words)...});
+        if constexpr (std::is_same_v<Result, x86::reg32>)
+            return eax.value_or(0);
+        else
+            return eax;
+    }
+};
+
+template <> struct ByAddress<ea::sessionIndexOf> : EaNetByAddress<x86::reg32, x86::reg32> {};
+template <> struct ByAddress<ea::connectionDropped> : EaNetByAddress<std::optional<x86::reg32>, x86::reg32> {};
+template <> struct ByAddress<ea::machineLeftAnnounced> : EaNetByAddress<std::optional<x86::reg32>, x86::reg32> {};
+template <> struct ByAddress<ea::networkReset> : EaNetByAddress<std::optional<x86::reg32>, x86::reg32> {};
+template <> struct ByAddress<ea::networkClosed> : EaNetByAddress<std::optional<x86::reg32>> {};
+template <> struct ByAddress<ea::machineOfPlayerNumber> : EaNetByAddress<x86::reg32, x86::reg32> {};
+template <> struct ByAddress<ea::netCallTraced> : EaNetByAddress<std::optional<x86::reg32>, x86::reg32> {};
+template <> struct ByAddress<ea::connectionsRestored> : EaNetByAddress<std::optional<x86::reg32>, x86::reg32> {};
+template <> struct ByAddress<ea::queueUnlinked> : EaNetByAddress<x86::reg32, x86::reg32, x86::reg32> {};
+template <> struct ByAddress<ea::queueLockFreed> : EaNetByAddress<std::optional<x86::reg32>, x86::reg32> {};
+template <> struct ByAddress<ea::queueLengthOf> : EaNetByAddress<std::optional<x86::reg32>, x86::reg32> {};
 
 }  // namespace guest
 }  // namespace nfs3hp

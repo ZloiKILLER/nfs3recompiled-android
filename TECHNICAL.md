@@ -352,7 +352,7 @@ inputs, so the port works the x87 as a PC does in a race (every player needs
 the same precision, see below), and the game's
 version is checked when a machine joins. The port reports nfs3.exe's own,
 "27, 2.0" — the version resource the phone has no copy of, and the string the
-Modern Patch keeps in its data. Winsock 1.1 is in `src/lib/winapi/wsock32.cpp`
+Modern Patch keeps in its data. Winsock 1.1 is in `src/nfs3hp/host_net.cpp`
 over the phone's sockets (`src/lib/socket.cpp`); `NFS_NET_TRACE=1` writes a
 join into the log in debug mode (switch `net_trace`).
 

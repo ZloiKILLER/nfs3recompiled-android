@@ -2,10 +2,12 @@
 #include "native_carstate.h"
 #include "native_ea_memory.h"
 #include "native_ea_support.h"
+#include "native_game.h"
 #include "native_guest.h"
 #include "native_raceload.h"
 #include "native_trackdata.h"
 #include "native_vertices.h"
+#include "native_watcom.h"
 
 #include <cstdint>
 #include <initializer_list>
@@ -86,11 +88,14 @@ constexpr reg32 kCcmName = 0x536d7c, kSimHeightsName = 0x536d94, kNotFound = 0x5
 constexpr reg32 kFixed = 0x536dac, kUnfixed = 0x536db4, kUnfixedToo = 0x536dbc, kNear = 0x536dcc;
 constexpr reg32 kFixedToo = 0x536dd4, kUnfixedThree = 0x536ddc, kUnfixedFour = 0x536de4;
 constexpr reg32 kFixedThree = 0x536dec;
-// What is called by address.  The loads and the free (0x4e0ec0, 0x4e0fe0, 0x4e1890), the ground's
+// Other typed files' functions, called as C++ (guest::direct): sprintf, __CHP and the fill below;
+// the loads and the free (0x4e0ec0, 0x4e0fe0, 0x4e1890), the ground's
 // distance (0x41aab0), the trace (0x42d500), vectors less another and a dot product (0x4e0000,
-// 0x4e01f0) and a car's node (0x4217e0) are other typed files', called as C++ (guest::direct).
+// 0x4e01f0) and a car's node (0x4217e0).
 constexpr reg32 kSprintf = 0x4df690;
 constexpr reg32 kChop = 0x4dfd56, kFillZero = 0x4e070c;
+// By address: the height on a plane (0x4969c0), native_frontend_simd's, which tools/game_checks
+// does not build.
 constexpr reg32 kOnSurface = 0x4969c0;
 
 reg16 half(App* app, reg32 a) { return app->getMemory<reg16>(a); }
@@ -105,15 +110,6 @@ void push(App* app, CPU& cpu, reg32 value)
 {
     cpu.esp -= 4;
     put(app, cpu.esp, value);
-}
-
-/* A call as the code makes it: the return address's slot, and esp as the callee leaves it.  False
- * when the game stopped in it. */
-bool byAddress(App* app, CPU& cpu, reg32 target)
-{
-    cpu.esp -= 4;
-    app->dynamic_call(target, cpu);
-    return !cpu.terminate;
 }
 
 /* What fcom leaves in its status word for a below b, or unordered: C0. */
@@ -295,14 +291,10 @@ reg32 remainderOf(reg32 n, reg32 d)
  * its call, the stack taken back.  False when the game stopped. */
 bool print(App* app, CPU& cpu, reg32 to, reg32 format, std::initializer_list<reg32> words)
 {
-    const reg32 esp = cpu.esp;
-    for (auto word = std::rbegin(words); word != std::rend(words); ++word)
-        push(app, cpu, *word);
-    push(app, cpu, format);
-    push(app, cpu, to);
-    if (!byAddress(app, cpu, kSprintf))
+    const reg32 printed = guest::direct<kSprintf, watcom::clib::sprintf>(app, cpu, to, format, guest::Words(words));
+    if (cpu.terminate)
         return false;
-    cpu.esp = esp;
+    cpu.eax = printed;
     return true;
 }
 
@@ -872,14 +864,12 @@ float sizeOf(float value)
     return 0.0 > Float(value) ? float(-Float(value)) : value;
 }
 
-/* __CHP (0x4dfd56): the value truncated on the x87's stack, then fistp'd; nullopt when the game
- * stopped. */
+/* __CHP (0x4dfd56): the value truncated, then fistp'd; never nullopt (the optional is the
+ * callers' stop signal). */
 std::optional<reg32> chopped(App* app, CPU& cpu, const Float& value)
 {
-    cpu.fpu.push(value);
-    if (!byAddress(app, cpu, kChop))
-        return std::nullopt;
-    return reg32(fp::toInteger<sreg32>(cpu.fpu.take()));
+    const double whole = guest::direct<kChop, watcom::clib::chop>(app, cpu, double(value));
+    return reg32(fp::toInteger<sreg32>(Float(whole)));
 }
 
 /* How far the point is from the quad's corners at +0x54 and +0x5c, along x and z: each
@@ -1717,7 +1707,8 @@ bool fillZero(App* app, CPU& cpu, reg32 to, reg32 bytes)
 {
     cpu.eax = to;
     cpu.edx = bytes;
-    return byAddress(app, cpu, kFillZero);
+    guest::direct<kFillZero, ea::clearBytes>(app, cpu, to, bytes);
+    return !cpu.terminate;
 }
 
 /* 0x4969c0 (stdcall, six words: the corner's three, the point's three): the height of the surface
@@ -1729,7 +1720,9 @@ std::optional<reg32> surfaceHeight(App* app, CPU& cpu, reg32 axes, reg32 corner,
     for (reg32 k = 12; k != 0; k -= 4)
         push(app, cpu, at(app, corner + k - 4));
     cpu.eax = axes;
-    if (!byAddress(app, cpu, kOnSurface))
+    cpu.esp -= 4;
+    app->dynamic_call(kOnSurface, cpu);
+    if (cpu.terminate)
         return std::nullopt;
     return cpu.eax;
 }

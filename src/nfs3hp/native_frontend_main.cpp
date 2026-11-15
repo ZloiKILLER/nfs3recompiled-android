@@ -1,4 +1,5 @@
 #include "native_frontend_main.h"
+#include "native_game.h"
 #include "game_settings.h"
 #include "native_frontend.h"
 #include "native_frontend_dialogs.h"
@@ -555,7 +556,7 @@ x86::reg32 frontend::mainmenu::multiEnter(App* app, CPU& cpu, reg32 menu)
         if (guest.dword(kNetworkJoin) == kNetworkJoinFollow)
         {
             const RaceType type = raceType(guest);
-            guest.call(kFillZero, fe::args({ kRaceListChoices, 2 * kRaceListChoiceCount }));
+            fe::direct<kFillZero, ea::clearBytes>(guest.app(), guest.cpu(), kRaceListChoices, 2 * kRaceListChoiceCount);
             x86::reg32 line = type;
             if (type == kTournament)
                 line += 1;

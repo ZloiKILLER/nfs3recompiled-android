@@ -6,6 +6,7 @@
 #include "native_frontend_eab.h"
 #include "native_graphics.h"
 #include "port_shapes.h"
+#include "native_watcom.h"
 #include <nfs3hp.h>
 #include <cstring>
 
@@ -97,16 +98,15 @@ x86::reg32 frontend::menue::metricText(App* app, CPU& cpu, float speed, reg32 bu
     const fe::Frame frame(guest, cpu, 12);
     if (!belowOrUnordered(Float(1.0), Float(speed)))
     {
-        guest.call(kSprintf, args({}, { buffer, kNoSpeed.address }));
-        return guest.eax();
+        return fe::direct<kSprintf, watcom::clib::sprintf>(app, cpu, buffer, kNoSpeed.address, guest::Words({}));
     }
     const std::uint32_t units = gameSettings(guest).hud[0].speedometerForm;
     const reg32 toUnits = units == kKilometresA || units == kKilometresB ? kToKilometres : kToMiles;
     const double shown = fp::mul(Float(speed), Float(guest.floatAt(toUnits)));
     std::uint64_t bits;
     std::memcpy(&bits, &shown, sizeof bits);
-    guest.call(kSprintf, args({}, { buffer, kSpeedFormat, reg32(bits), reg32(bits >> 32) }));
-    return guest.eax();
+    return fe::direct<kSprintf, watcom::clib::sprintf>(app, cpu, buffer, kSpeedFormat,
+                                                       guest::Words{reg32(bits), reg32(bits >> 32)});
 }
 
 namespace
@@ -137,8 +137,9 @@ x86::reg32 frontend::menue::timeText(App* app, CPU& cpu, reg32 time, reg32 buffe
     const reg32 secondMark = guest.byte(language + kSecondMarks);
     const reg32 minuteMark = guest.byte(language + kMinuteMarks);
     guest.leaveEdx(secondMark);
-    guest.call(kSprintf, args({}, { buffer, kTimeFormat.address, reg32(minutes), minuteMark, reg32(seconds), secondMark, reg32(rest) }));
-    return guest.eax();
+    return fe::direct<kSprintf, watcom::clib::sprintf>(
+        app, cpu, buffer, kTimeFormat.address,
+        guest::Words{reg32(minutes), minuteMark, reg32(seconds), secondMark, reg32(rest)});
 }
 
 /* ---------------------------------------------------------------------------
@@ -550,7 +551,9 @@ x86::reg32 frontend::menue::loadPointer(App* app, CPU& cpu, reg32 file)
     {
         for (std::int32_t frame = 0; frame < kPointerFrames; ++frame)
         {
-            guest.call(kSprintf, args({ name }, { name, kPointerName.address, reg32(kind), reg32(frame) }));
+            // eax, loaded with the name for it by the game's code, is the result's again after it.
+            fe::direct<kSprintf, watcom::clib::sprintf>(app, cpu, name, kPointerName.address,
+                                                        guest::Words{reg32(kind), reg32(frame)});
             const reg32 shape = guest.call(kFindShape, args({ file, name }));
             if (shape == 0)
                 continue;

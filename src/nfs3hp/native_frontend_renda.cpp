@@ -682,8 +682,9 @@ x86::reg32 renda::bandPoints(App* app, CPU& cpu, reg32 view, reg32 riseBits, reg
     putVector(guest, points, rotated(guest, kSkyWind, view + kViewSkyMatrix));
     guest.setDword(points + 4, 0);
     fe::direct<0x4e01c0, vertices::makeUnitVector>(app, cpu, points, points);
-    fe::direct<0x4ea9c0, frontend::simd::angleOfFloats>(app, cpu, guest.dword(points), guest.dword(points + 8));
-    const Float angle = fp::add(fp::add(guest.fpu().pop(), fld(guest, kPhase)), fld(guest, kSkyTurn));
+    const Float heading = fe::direct<0x4ea9c0, frontend::simd::angleOfFloatsValue>(app, cpu, guest.dword(points),
+                                                                                  guest.dword(points + 8));
+    const Float angle = fp::add(fp::add(heading, fld(guest, kPhase)), fld(guest, kSkyTurn));
     guest.setFloat(turn, float(angle));
     guest::direct<0x4964d0, frontend::rendc::wrapFraction>(app, cpu, turn);
     subtractOne(guest, cpu, kSkyCentre, points, towardsCentre);
@@ -1083,8 +1084,8 @@ x86::reg32 renda::sun(App* app, CPU& cpu, reg32 view)
         const Vector towards = rotated(guest, kSunTowards, matrix);
         const float x = float(fp::sub(Float(towards.x), Float(at.x)));
         const float y = float(fp::sub(Float(towards.y), Float(at.y)));
-        fe::direct<0x4ea9c0, frontend::simd::angleOfFloats>(app, cpu, bitsOf(y), bitsOf(x));
-        angle = fp::add(guest.fpu().pop(), doubleAt(guest, kEighth));
+        const Float heading = fe::direct<0x4ea9c0, frontend::simd::angleOfFloatsValue>(app, cpu, bitsOf(y), bitsOf(x));
+        angle = fp::add(heading, doubleAt(guest, kEighth));
     }
     else
     {
@@ -1094,10 +1095,10 @@ x86::reg32 renda::sun(App* app, CPU& cpu, reg32 view)
         angle = fp::div(Float(at.x), Float(at.z));
     }
     const reg32 angleBits = bitsOf(float(angle));
-    fe::direct<0x4ea930, frontend::simd::sine>(app, cpu, angleBits);
-    const float sine = float(fp::mul(guest.fpu().pop(), fld(guest, kSunSize)));
-    fe::direct<0x4ea950, frontend::simd::cosine>(app, cpu, angleBits);
-    const Float cosine = fp::mul(guest.fpu().pop(), fld(guest, kSunSize));
+    const Float sineOfAngle = fe::direct<0x4ea930, frontend::simd::sineValue>(app, cpu, angleBits);
+    const float sine = float(fp::mul(sineOfAngle, fld(guest, kSunSize)));
+    const Float cosineOfAngle = fe::direct<0x4ea950, frontend::simd::cosineValue>(app, cpu, angleBits);
+    const Float cosine = fp::mul(cosineOfAngle, fld(guest, kSunSize));
     const Float x = Float(at.x), y = Float(at.y), s = Float(sine);
     const reg32 z = bitsOf(at.z);
     guest.setFloat(points, float(fp::sub(x, s)));
@@ -1234,8 +1235,8 @@ x86::reg32 renda::pointHeight(App* app, CPU& cpu, reg32 point)
     guest.setDword(flat + 8, guest.dword(point + 8));
     const Float length = Float(fe::direct<0x4e06a0, vertices::vectorLength>(app, cpu, flat));
     const Float angle = fp::mul(fp::mul(length, doubleAt(guest, kQuarter)), doubleAt(guest, kPerDegree));
-    fe::direct<0x4ea950, frontend::simd::cosine>(app, cpu, bitsOf(float(angle)));
-    const Float curve = fp::mul(guest.fpu().pop(), fld(guest, kSkyCurveScale));
+    const Float cosine = fe::direct<0x4ea950, frontend::simd::cosineValue>(app, cpu, bitsOf(float(angle)));
+    const Float curve = fp::mul(cosine, fld(guest, kSkyCurveScale));
     guest.setFloat(point + 4, float(fp::add(curve, fld(guest, kSkyCurveShift))));
     // eax as the code leaves it: the flat vector's address, which the length's function and the
     // cosine leave there.
@@ -1300,8 +1301,9 @@ x86::reg32 renda::cloudGrid(App* app, CPU& cpu)
         {
             const float centred = float(fp::mul(fp::add(fld(guest, cell(row, column)), fld(guest, kMinus128)), fld(guest, kPerByte)));
             const Float sign = Float(jumpBelowOrEqual(fp::compare(Float(0.0), Float(centred))) ? 1.0f : -1.0f);
-            fe::direct<0x4ea920, frontend::simc::squareRoot>(app, cpu, bitsOf(float(fp::mul(Float(centred), sign))));
-            const float root = float(fp::mul(guest.fpu().pop(), sign));
+            const Float magnitude = fe::direct<0x4ea920, frontend::simc::squareRootOf>(
+                app, cpu, bitsOf(float(fp::mul(Float(centred), sign))));
+            const float root = float(fp::mul(magnitude, sign));
             const Float scaled = fp::mul(fp::mul(fp::add(Float(1.0), Float(root)), fld(guest, kHalf)), fld(guest, kFull));
             guest.setFloat(cell(row, column), float(scaled));
         }
@@ -1546,8 +1548,8 @@ x86::reg32 renda::skyWeather(App* app, CPU& cpu)
                 guest.setDword(place + 4, 0);
                 guest.setFloat(place + 8, float(Float(sreg32(z))));
                 fe::direct<0x4e01c0, vertices::makeUnitVector>(app, cpu, place, unit);
-                fe::direct<0x4ea9c0, frontend::simd::angleOfFloats>(app, cpu, guest.dword(unit + 8), guest.dword(unit));
-                const float angle = float(guest.fpu().pop());
+                const float angle = float(fe::direct<0x4ea9c0, frontend::simd::angleOfFloatsValue>(
+                    app, cpu, guest.dword(unit + 8), guest.dword(unit)));
                 guest::direct<0x47adc0, pointHeight>(app, cpu, place);
                 guest::direct<0x4945a0, frontend::rendc::boltStrike>(app, cpu, guest.dword(place), guest.dword(place + 4),
                                                                      guest.dword(place + 8), bitsOf(angle));

@@ -1,4 +1,7 @@
 #include "native_frontend_eab.h"
+#include "native_ea_net.h"
+#include "native_watcom.h"
+#include "native_game.h"
 #include "native_ea_files.h"
 #include "native_ea_formats.h"
 #include "native_ea_memory.h"
@@ -16,22 +19,57 @@
 #include "port_snd_stream_calls.h"
 #include "native_frontend.h"
 #include "native_windows.h"
+#include "host_threads.h"
+#include "host_video.h"
+#include "host_window.h"
 // What lib/thread.h holds pointers to and the checks' stand-in for SDL does not declare.
 struct SDL_AtomicInt;
 struct SDL_Semaphore;
 #include <lib/thread.h>
 #include <nfs3hp.h>
 #include <winapi/advapi32.h>
-#include <winapi/com.h>
-#include <winapi/ddraw/idirectdraw2.h>
-#include <winapi/ddraw/idirectdrawpalette.h>
-#include <winapi/ddraw/idirectdrawsurface.h>
 #include <winapi/kernel32.h>
-#include <winapi/user32.h>
-#include <winapi/wsock32.h>
+#include "host_net.h"
 #include <cstdint>
 #include <initializer_list>
 #include <optional>
+#include <type_traits>
+#include <utility>
+#include <cstddef>
+
+namespace nfs3hp
+{
+namespace
+{
+
+/* A typed core called as C++ (fe::direct) whose function changes no register but eax (as
+ * tools/frontend_checks/specs_from_exe.py reads it): the registers left as the call by address
+ * leaves them -- `words` in eax, edx, ebx and ecx as that call loads them, the first `Taken` of
+ * them the core's arguments -- and its result in eax, which the call by address leaves there. */
+template <x86::reg32 Address, auto Core, std::size_t... I>
+auto directOf(win32::WinApplication* app, x86::CPU& cpu, const x86::reg32* words, std::index_sequence<I...>)
+{
+    return fe::direct<Address, Core>(app, cpu, words[I]...);
+}
+
+template <x86::reg32 Address, auto Core, std::size_t Taken, typename... Words>
+x86::reg32 directKept(win32::WinApplication* app, x86::CPU& cpu, Words... words)
+{
+    const x86::reg32 all[] = { x86::reg32(words)..., 0 };
+    x86::reg32* const into[] = { &cpu.eax, &cpu.edx, &cpu.ebx, &cpu.ecx };
+    for (std::size_t i = 0; i < sizeof...(Words) && i < 4; ++i)
+        *into[i] = all[i];
+    const auto result = directOf<Address, Core>(app, cpu, all, std::make_index_sequence<Taken>{});
+    if constexpr (std::is_same_v<std::remove_cv_t<decltype(result)>, x86::reg32>)
+        cpu.eax = result;
+    else
+        cpu.eax = *result;
+    return cpu.eax;
+}
+
+}  // namespace
+}  // namespace nfs3hp
+
 
 /* EA's libraries from 0x4ec870 up, what was left of them:
  *
@@ -165,9 +203,6 @@ using fe::runWhole;
 using fe::Site;
 using x86::reg32;
 using x86::sreg32;
-using win32::ddraw::IDirectDraw2;
-using win32::ddraw::IDirectDrawPalette;
-using win32::ddraw::IDirectDrawSurface;
 
 constexpr reg32 kDefaultDisplay = 0x9f38d0;
 constexpr reg32 kDisplayLock = 0x564480;       // its critical section, by value
@@ -208,7 +243,13 @@ void errorAt(Guest& g, reg32 file, reg32 function, reg32 line)
     g.setDword(0x552198, line);
 }
 
-reg32 error(Guest& g, reg32 text, std::initializer_list<reg32> values = {})
+void error(Guest& g, reg32 text, std::initializer_list<reg32> values = {})
+{
+    fe::direct<0x401010, ea::error>(g.app(), g.cpu(), text, guest::Words(values));
+}
+
+/* The same by address where what it leaves in eax is handed back, which ea::error does not give. */
+reg32 errorLeft(Guest& g, reg32 text, std::initializer_list<reg32> values = {})
 {
     Arguments arguments;
     arguments.stack[arguments.stackCount++] = text;
@@ -220,17 +261,12 @@ reg32 error(Guest& g, reg32 text, std::initializer_list<reg32> values = {})
 // sub_501050 on DirectDraw's log.
 reg32 report(Guest& g, reg32 level, reg32 text, std::initializer_list<reg32> values = {})
 {
-    Arguments arguments;
-    arguments.stack[arguments.stackCount++] = kEaLog;
-    arguments.stack[arguments.stackCount++] = level;
-    arguments.stack[arguments.stackCount++] = text;
-    for (const reg32 value : values)
-        arguments.stack[arguments.stackCount++] = value;
-    return g.call(kReport, arguments);
+    // eax as the call by address leaves it: the report's answer (it changes no other register).
+    return g.cpu().eax = *fe::direct<0x501050, ea::reportedAt>(g.app(), g.cpu(), kEaLog, level, text, guest::Words(values));
 }
 
-/* A COM object's method through its table, the object first, stdcall: for a method the port's
- * table holds as a raw handler, not Wrapper's (the palette's GetEntries). */
+/* A COM object's method through its table, the object first, stdcall: for a method the host
+ * answers only through the table (the palette's GetEntries, host_video.cpp). */
 reg32 methodByTable(Guest& g, reg32 object, reg32 slot, std::initializer_list<reg32> values = {})
 {
     Arguments arguments;
@@ -240,13 +276,13 @@ reg32 methodByTable(Guest& g, reg32 object, reg32 slot, std::initializer_list<re
     return g.call(g.dword(g.dword(object) + slot), arguments);
 }
 
-/* A DirectDraw object's method at `Offset` in its table, its words handed: the port's own, called
- * as C++ on the object where the table has that very method there (native_windows.h); anywhere
+/* A DirectDraw object's method at `Offset` in its table, its words handed: the host's, called
+ * as C++ on the object where the table has that very method there (host_video.h); anywhere
  * else, and in the check, through the table.  Terminated when the game stopped in it, as g.call. */
 template <reg32 Offset, auto Method, typename... Words>
 reg32 method(Guest& g, x86::CPU& cpu, reg32 object, Words... words)
 {
-    const std::optional<reg32> eax = guest::method<Offset, Method>(g.app(), cpu, object, words...);
+    const std::optional<reg32> eax = guest::ddraw<Offset, Method>(g.app(), cpu, object, words...);
     if (!eax)
         throw fe::Terminated();
     return *eax;
@@ -355,7 +391,7 @@ x86::reg32 frontend::eab::ddrawSetDisplayMode(App* app, CPU& cpu, reg32 given, r
     const reg32 display = given != 0 ? given : kDefaultDisplay;
     const reg32 description = frame + kDescription;
     g.setDword(description, 0x6c);
-    const reg32 modeError = method<kGetDisplayMode, &IDirectDraw2::GetDisplayMode>(g, cpu, g.dword(display), description);
+    const reg32 modeError = method<kGetDisplayMode, &host::ddraw::drawGetDisplayMode>(g, cpu, g.dword(display), description);
     const reg32 heightNow = g.dword(description + 8);
     g.leaveEdx(heightNow);
     report(g, 0xe, 0x54be38, { modeError & 0xffff, g.dword(description + 0xc), heightNow, g.dword(description + 0x54) });
@@ -364,28 +400,28 @@ x86::reg32 frontend::eab::ddrawSetDisplayMode(App* app, CPU& cpu, reg32 given, r
         // In a window: the client area, centred on the desktop if it never had a place.
         const reg32 rect = frame + kRect;
         const auto clientOnScreen = [&] {
-            windows<0x53473c, &win32::user32::GetClientRect>(g, cpu, g.dword(display + kWindow), rect);
-            windows<0x534700, &win32::user32::ClientToScreen>(g, cpu, g.dword(display + kWindow), rect);
-            windows<0x534700, &win32::user32::ClientToScreen>(g, cpu, g.dword(display + kWindow), rect + 8);
+            windows<0x53473c, &host::clientRect>(g, cpu, g.dword(display + kWindow), rect);
+            windows<0x534700, &host::clientToScreen>(g, cpu, g.dword(display + kWindow), rect);
+            windows<0x534700, &host::clientToScreen>(g, cpu, g.dword(display + kWindow), rect + 8);
         };
         clientOnScreen();
         if (sreg32(g.dword(display + kOffsetX)) < sreg32(kNoOffset))
         {
-            const reg32 screen = windows<0x534750, &win32::user32::GetSystemMetrics>(g, cpu, 0);
+            const reg32 screen = windows<0x534750, &host::systemMetrics>(g, cpu, 0);
             g.setDword(rect, half(screen - g.dword(display + kWidth)));
         }
         if (sreg32(g.dword(display + kOffsetY)) < sreg32(kNoOffset))
         {
-            const reg32 screen = windows<0x534750, &win32::user32::GetSystemMetrics>(g, cpu, 1);
+            const reg32 screen = windows<0x534750, &host::systemMetrics>(g, cpu, 1);
             g.setDword(rect + 4, half(screen - g.dword(display + kHeight)));
         }
         g.setDword(rect + 8, g.dword(rect) + g.dword(display + kWidth));
         g.setDword(rect + 0xc, g.dword(rect + 4) + g.dword(display + kHeight));
-        const reg32 style = windows<0x534758, &win32::user32::GetWindowLongA>(g, cpu, g.dword(display + kWindow), reg32(-0x10));
-        windows<0x5346ec, &win32::user32::AdjustWindowRect>(g, cpu, rect, style, 0);
+        const reg32 style = windows<0x534758, &host::windowLong>(g, cpu, g.dword(display + kWindow), reg32(-0x10));
+        windows<0x5346ec, &host::adjustWindowRect>(g, cpu, rect, style, 0);
         const reg32 left = g.dword(rect), top = g.dword(rect + 4);
         const reg32 wideNow = g.dword(rect + 8) - left, tallNow = g.dword(rect + 0xc) - top;
-        windows<0x53478c, &win32::user32::SetWindowPos>(g, cpu, g.dword(display + kWindow), 0, left, top, wideNow, tallNow, 0x14);
+        windows<0x53478c, &host::setWindowPosition>(g, cpu, g.dword(display + kWindow), 0, left, top, wideNow, tallNow, 0x14);
         clientOnScreen();
         const reg32 leftNow = g.dword(rect);
         g.setDword(display + kWidth, g.dword(rect + 8) - leftNow);
@@ -424,17 +460,17 @@ x86::reg32 frontend::eab::ddrawSetDisplayMode(App* app, CPU& cpu, reg32 given, r
     }
     if (g.dword(display + kPalette) != 0)
     {
-        g.call(kFill, args({ frame, 0x400 }));
-        method<kSetEntries, &IDirectDrawPalette::SetEntries>(g, cpu, g.dword(display + kPalette), 0, 0, 0x100, frame);
+        fe::direct<kFill, ea::clearBytes>(g.app(), g.cpu(), frame, 0x400);
+        method<kSetEntries, &host::ddraw::paletteSetEntries>(g, cpu, g.dword(display + kPalette), 0, 0, 0x100, frame);
         g.setWord(display + kFirstChanged, 0);
         g.setWord(display + kLastChanged, 0xff);
     }
     report(g, 0xf, 0x54beec);
     const reg32 failure =
-        method<kSetDisplayMode, &IDirectDraw2::SetDisplayMode>(g, cpu, g.dword(display), wide, tall, bits, refresh, 0) & 0xffff;
+        method<kSetDisplayMode, &host::ddraw::drawSetDisplayMode>(g, cpu, g.dword(display), wide, tall, bits, refresh, 0) & 0xffff;
     report(g, 0xc, 0x54bf1c, { failure });
     g.setDword(description, 0x6c);
-    method<kGetDisplayMode, &IDirectDraw2::GetDisplayMode>(g, cpu, g.dword(display), description);
+    method<kGetDisplayMode, &host::ddraw::drawGetDisplayMode>(g, cpu, g.dword(display), description);
     // What the mode gives past what was asked for is a border round the picture.
     const reg32 gotWide = g.dword(description + 0xc);
     if (wide < gotWide)
@@ -497,10 +533,10 @@ x86::reg32 frontend::eab::ddrawDisposeDisplay(App* app, CPU& cpu, reg32 given)
     if (g.dword(display) == 0)
         return given;
     report(g, 1, 0x54bf8c);
-    windows<kEnterCriticalSection, &win32::kernel32::EnterCriticalSection>(g, cpu, g.dword(kDisplayLock));
+    windows<kEnterCriticalSection, &host::enterLock>(g, cpu, g.dword(kDisplayLock));
     guest::direct<0x4ec0d0, eaa::ddrawRemoveSurfaces>(app, cpu, display);
     report(g, 0xa, 0x54bfa8);
-    method<kRelease, &win32::com::IUnknown::Release>(g, cpu, g.dword(display));
+    method<kRelease, &host::ddraw::release>(g, cpu, g.dword(display));
     report(g, 0xa, 0x54bfc8);
     const reg32 modes = g.dword(display + kModeTable);
     if (modes != 0)
@@ -509,7 +545,7 @@ x86::reg32 frontend::eab::ddrawDisposeDisplay(App* app, CPU& cpu, reg32 given)
     g.setDword(display + 4, 0);
     g.setDword(display + kPalette, 0);
     g.setDword(display, 0);
-    return windows<kLeaveCriticalSection, &win32::kernel32::LeaveCriticalSection>(g, cpu, g.dword(kDisplayLock));
+    return windows<kLeaveCriticalSection, &host::leaveLock>(g, cpu, g.dword(kDisplayLock));
 }
 
 void frontend::ddrawDisposeDisplay(win32::WinApplication* app, x86::CPU& cpu)
@@ -546,7 +582,7 @@ x86::reg32 frontend::eab::ddrawApplyPalette(App* app, CPU& cpu, reg32 given)
         const reg32 entries = display + kPaletteEntries + first * 4;
         const reg32 palette = g.dword(display + kPalette);
         const reg32 failure =
-            method<kSetEntries, &IDirectDrawPalette::SetEntries>(g, cpu, palette, 0, first, count, entries) & 0xffff;
+            method<kSetEntries, &host::ddraw::paletteSetEntries>(g, cpu, palette, 0, first, count, entries) & 0xffff;
         const reg32 reported = report(g, 1, 0x54c03c, { first, count, failure });
         const reg32 fullscreen = g.byte(display + kFullscreen);
         result = (reported & 0xffff00ff) | (fullscreen << 8);
@@ -588,19 +624,19 @@ x86::reg32 frontend::eab::ddrawLockBitmap(App* app, CPU& cpu, reg32 given, reg32
     }
     const reg32 lock = g.dword(kDisplayLock);
     g.leaveEbx(lock);
-    windows<kEnterCriticalSection, &win32::kernel32::EnterCriticalSection>(g, cpu, lock);
+    windows<kEnterCriticalSection, &host::enterLock>(g, cpu, lock);
     bool mayLock = true;
     if (g.byte(display + kFullscreen) != 0)
     {
         if (fe::direct<0x4f9120, wina::hasFocus>(app, cpu) == 0)
             mayLock = false;
-        else if (windows<0x53475c, &win32::user32::IsIconic>(g, cpu, g.dword(display + kWindow)) != 0)
+        else if (windows<0x53475c, &host::isIconic>(g, cpu, g.dword(display + kWindow)) != 0)
             mayLock = false;
     }
     const reg32 status =
         mayLock ? guest::direct<0x4eb5e0, eaa::ddrawLockSurface>(app, cpu, display, surface, description) : kNotNow;
     g.leaveEbx(status);
-    g.setDword(kLockTime, windows<kGetTickCount, &win32::kernel32::GetTickCount>(g, cpu));
+    g.setDword(kLockTime, windows<kGetTickCount, &host::ticks>(g, cpu));
     if (status != 0)
     {
         const reg32 failedBefore = g.dword(kLockFailed);
@@ -615,7 +651,7 @@ x86::reg32 frontend::eab::ddrawLockBitmap(App* app, CPU& cpu, reg32 given, reg32
         g.leaveEbx(held);
         g.setDword(display + kLockedBits, 0);
         g.setDword(display + kLockedSurface, 0);
-        windows<kLeaveCriticalSection, &win32::kernel32::LeaveCriticalSection>(g, cpu, held);
+        windows<kLeaveCriticalSection, &host::leaveLock>(g, cpu, held);
         g.setDword(kLockedNow, 1);
         return 0;
     }
@@ -663,15 +699,15 @@ x86::reg32 frontend::eab::ddrawUnlockBitmap(App* app, CPU& cpu, reg32 given)
         g.setDword(kLockedNow, 0);
         return given;
     }
-    method<kUnlock, &IDirectDrawSurface::Unlock>(g, cpu, surface, g.dword(display + kLockedBits));
+    method<kUnlock, &host::ddraw::surfaceUnlock>(g, cpu, surface, g.dword(display + kLockedBits));
     g.setDword(display + kLockedSurface, 0);
     g.setDword(display + kLockedBits, 0);
-    const reg32 held = windows<kGetTickCount, &win32::kernel32::GetTickCount>(g, cpu) - g.dword(0x564eec);
+    const reg32 held = windows<kGetTickCount, &host::ticks>(g, cpu) - g.dword(0x564eec);
     g.setDword(0x564ee0, held);
     if (sreg32(held) > sreg32(g.dword(0x564ee4)))
         g.setDword(0x564ee4, held);
     cpu.eax = held;
-    const reg32 result = windows<kLeaveCriticalSection, &win32::kernel32::LeaveCriticalSection>(g, cpu, g.dword(kDisplayLock));
+    const reg32 result = windows<kLeaveCriticalSection, &host::leaveLock>(g, cpu, g.dword(kDisplayLock));
     g.setDword(kLockedNow, 0);
     return result;
 }
@@ -729,7 +765,7 @@ x86::reg32 frontend::eab::windowBitmapCreate(App* app, CPU& cpu, reg32 width, re
     const reg32 wholeBits = reg32((sreg32(roundedBits) / sreg32(cellBits)) * sreg32(cellBits));
     const reg32 rowBytes = reg32(sreg32(wholeBits) >> 3);
     const reg32 size = rowBytes * height + 0x48;
-    g.call(kSprintf, args({ name, kFile, kFunction }, { name, 0x54c37c, width, height, depth }));
+    fe::direct<0x4df690, watcom::clib::sprintf>(app, cpu, name, 0x54c37cu, guest::Words({ width, height, depth }));
     errorAt(g, kFile, kFunction, 0x6a);
     // By address: what it leaves in ebx and edx is what this function leaves there.
     const reg32 block = g.call(kReserve, args({ name, size, cpu.ecx }));
@@ -748,7 +784,7 @@ x86::reg32 frontend::eab::windowBitmapCreate(App* app, CPU& cpu, reg32 width, re
         }
         return 0;
     }
-    g.call(kFill, args({ block, 0x48 }));
+    fe::direct<kFill, ea::clearBytes>(g.app(), g.cpu(), block, 0x48);
     const reg32 header = block + 0x38;
     const reg32 type = fe::direct<0x5098d0, watb::shapeTypeForDepth>(app, cpu, depth);  // header in edx too, not read
     g.setByte(header, 0);
@@ -871,7 +907,7 @@ x86::reg32 frontend::eab::shapeFileFind(App* app, CPU& cpu, reg32 file, reg32 na
     if (g.dword(0x56440c) == 0)
         return 0;
     const reg32 found = fe::direct<0x509c00, watb::findBlockHeader>(app, cpu, file, cpu.edx);
-    const reg32 blockName = g.call(kBlockName, args({ found }));
+    const reg32 blockName = directKept<0x4e15e0, ea::blockNameOf, 1>(g.app(), g.cpu(), found);
     const reg32 shown = blockName != 0 ? blockName : 0x54c47c;
     g.leaveEdx(shown);
     errorAt(g, 0x54c480, 0x54c490, 0x4f);
@@ -1117,7 +1153,7 @@ x86::reg32 frontend::eab::fontUse(App* app, CPU& cpu, reg32 font)
     g.setDword(kFontColourA, 0);
     g.setDword(kFontColourB, 0);
     g.setDword(kFontRampGood, 0);
-    g.call(kFill, args({ kFontRamp, 0x40 }));
+    fe::direct<kFill, ea::clearBytes>(g.app(), g.cpu(), kFontRamp, 0x40);
     const reg32 result = fe::direct<0x50c0d0, watb::initTextDraw>(app, cpu);
     g.setDword(kFontPerChar, 0);
     return result;
@@ -1204,7 +1240,7 @@ x86::reg32 frontend::eab::fontSetColours(App* app, CPU& cpu, reg32 ink, reg32 ba
     if (depth == 8 && ink >= 0x100)
     {
         errorAt(g, 0x54c534, 0x54c544, 0x3c);
-        result = error(g, 0x54c550, { depth, ink, back });
+        result = errorLeft(g, 0x54c550, { depth, ink, back });
     }
     if (ink == g.dword(kFontColourA) && back == g.dword(kFontColourB) && g.dword(kFontRampGood) != 0)
         return result;
@@ -1668,7 +1704,7 @@ x86::reg32 frontend::eab::lowTimerTicks(App* app, CPU& cpu)
 {
     Guest g(app, cpu);
     const fe::Frame frame(g, cpu, 8);
-    return windows<kGetTickCount, &win32::kernel32::GetTickCount>(g, cpu);
+    return windows<kGetTickCount, &host::ticks>(g, cpu);
 }
 
 void frontend::lowTimerTicks(win32::WinApplication* app, x86::CPU& cpu)
@@ -1698,7 +1734,7 @@ x86::reg32 frontend::eab::lowTimerThread(App* app, CPU& cpu)
             const reg32 lock = g.dword(kLowTimerLock);
             if (lock != 0)
             {
-                windows<kEnterCriticalSection, &win32::kernel32::EnterCriticalSection>(g, cpu, lock);
+                windows<kEnterCriticalSection, &host::enterLock>(g, cpu, lock);
                 if (g.dword(kLowTimerTable) != 0)
                 {
                     reg32 slot = 0;
@@ -1710,11 +1746,11 @@ x86::reg32 frontend::eab::lowTimerThread(App* app, CPU& cpu)
                         g.call(g.dword(at + kLowTimerTable), args({ at }));
                     } while (slot < 0x20 && g.dword(slot + kLowTimerTable) != 0);
                 }
-                windows<kLeaveCriticalSection, &win32::kernel32::LeaveCriticalSection>(g, cpu, g.dword(kLowTimerLock));
+                windows<kLeaveCriticalSection, &host::leaveLock>(g, cpu, g.dword(kLowTimerLock));
             }
         } while (g.dword(kLowTimerLock) != 0);
     }
-    const reg32 result = g.call(0x4dfc00, args({ g.dword(kLowTimerEvent), 0 }));
+    const reg32 result = directKept<0x4dfc00, ea::eventClosed, 1>(g.app(), g.cpu(), g.dword(kLowTimerEvent), 0);
     g.setDword(kLowTimerEvent, 0);
     return result;
 }
@@ -1733,13 +1769,13 @@ x86::reg32 frontend::eab::lowTimerStart(App* app, CPU& cpu)
     guest::direct<0x4f2a78, atexitJump>(app, cpu, 0x4f2830u);
     const reg32 lock = *fe::direct<0x4eb2e0, ea::newLock>(app, cpu);
     g.setDword(kLowTimerLock, lock);
-    windows<kEnterCriticalSection, &win32::kernel32::EnterCriticalSection>(g, cpu, lock);
+    windows<kEnterCriticalSection, &host::enterLock>(g, cpu, lock);
     if (g.call(kCreateThread, args({ 0x4f27a0, 0, 2, reg32(-1) }, { 0x9f0c20 })) != 0)
-        return windows<kLeaveCriticalSection, &win32::kernel32::LeaveCriticalSection>(g, cpu, g.dword(kLowTimerLock));
+        return windows<kLeaveCriticalSection, &host::leaveLock>(g, cpu, g.dword(kLowTimerLock));
     fe::direct<0x4eb360, ea::lockFreed>(app, cpu, g.dword(kLowTimerLock));
     g.setDword(kLowTimerLock, 0);
     errorAt(g, 0x54cbd8, 0x54cbe8, 0x4d);
-    return error(g, 0x54cbf8);
+    return errorLeft(g, 0x54cbf8);
 }
 
 void frontend::lowTimerStart(win32::WinApplication* app, x86::CPU& cpu)
@@ -1756,7 +1792,7 @@ x86::reg32 frontend::eab::lowTimerAdd(App* app, CPU& cpu, reg32 function)
     const fe::Frame frame(g, cpu, 0x10);
     if (g.dword(kLowTimerLock) == 0)
         guest::direct<0x4f2890, lowTimerStart>(app, cpu);
-    windows<kEnterCriticalSection, &win32::kernel32::EnterCriticalSection>(g, cpu, g.dword(kLowTimerLock));
+    windows<kEnterCriticalSection, &host::enterLock>(g, cpu, g.dword(kLowTimerLock));
     sreg32 empty = -1;
     for (reg32 i = 0; i < 8; ++i)
     {
@@ -1769,13 +1805,13 @@ x86::reg32 frontend::eab::lowTimerAdd(App* app, CPU& cpu, reg32 function)
         if (function == present)
         {
             cpu.eax = g.dword(kLowTimerLock);
-            return windows<kLeaveCriticalSection, &win32::kernel32::LeaveCriticalSection>(g, cpu, g.dword(kLowTimerLock));
+            return windows<kLeaveCriticalSection, &host::leaveLock>(g, cpu, g.dword(kLowTimerLock));
         }
     }
     if (empty != -1)
         g.setDword(kLowTimerTable + reg32(empty) * 4, function);
     cpu.eax = 0x20;
-    return windows<kLeaveCriticalSection, &win32::kernel32::LeaveCriticalSection>(g, cpu, g.dword(kLowTimerLock));
+    return windows<kLeaveCriticalSection, &host::leaveLock>(g, cpu, g.dword(kLowTimerLock));
 }
 
 void frontend::lowTimerAdd(win32::WinApplication* app, x86::CPU& cpu)
@@ -1819,7 +1855,7 @@ void frontend::atexitJump(win32::WinApplication* app, x86::CPU& cpu)
 x86::reg32 frontend::eab::exitGameNow(App* app, CPU& cpu)
 {
     Guest g(app, cpu);
-    return g.call(0x4dfd04, args({ 0 }));
+    return fe::direct<0x4dfd04, watcom::clib::exit>(g.app(), g.cpu(), 0);
 }
 
 void frontend::exitGameNow(win32::WinApplication* app, x86::CPU& cpu)
@@ -2019,7 +2055,7 @@ x86::reg32 frontend::eab::tcpOpen(App* app, CPU& cpu, reg32 port, reg32 callback
     const reg32 record = *fe::direct<0x4e1620, ea::reserved>(app, cpu, 0x54d368u, 0x48u, g.dword(0x5643f4));
     g.leaveEbx(record);
     g.setEsi(record);
-    g.call(kFill, args({ record, 0x48 }));
+    fe::direct<kFill, ea::clearBytes>(g.app(), g.cpu(), record, 0x48);
     g.setDword(record + 0x1c, reg32(-1));
     const reg32 handle = fe::direct<0x4f6490, netb::tcpListenSocket>(app, cpu, g.dword(portSlot));
     g.setDword(record + kSockHandle, handle);
@@ -2034,7 +2070,7 @@ x86::reg32 frontend::eab::tcpOpen(App* app, CPU& cpu, reg32 port, reg32 callback
     {
         g.setDword(length, 0x10);
         // No port asked for: the one the system gave.
-        if (thunked<kGetSockName, &win32::wsock32::getsockname>(g, cpu, g.dword(record + kSockHandle), address,
+        if (thunked<kGetSockName, &host::socketName>(g, cpu, g.dword(record + kSockHandle), address,
                                                                 length) == 0)
             g.setDword(record + kSockPort, g.word(address + 2));
     }
@@ -2043,7 +2079,7 @@ x86::reg32 frontend::eab::tcpOpen(App* app, CPU& cpu, reg32 port, reg32 callback
     reg32 running = 0;
     const reg32 socket = g.dword(record + kSockHandle);
     g.leaveEbx(socket);
-    if (socket != reg32(-1) && thunked<kListen, &win32::wsock32::listen>(g, cpu, socket, 5) == 0)
+    if (socket != reg32(-1) && thunked<kListen, &host::socketListen>(g, cpu, socket, 5) == 0)
     {
         g.setDword(0x9f37f0, record);
         if (g.call(kCreateThread, args({ 0x4f68c0, 0, 2, reg32(-1) }, { record + kSockThread })) != 0)
@@ -2109,7 +2145,7 @@ x86::reg32 frontend::eab::tcpClose(App* app, CPU& cpu, reg32 record)
     }
     const reg32 socket = g.dword(record + kSockHandle);
     if (socket != reg32(-1))
-        thunked<kCloseSocket, &win32::wsock32::closesocket>(g, cpu, socket);
+        thunked<kCloseSocket, &host::socketClose>(g, cpu, socket);
     fe::direct<0x4e1890, ea::purgeBlock>(app, cpu, record);
     return 1;
 }
@@ -2149,9 +2185,9 @@ x86::reg32 frontend::eab::tcpResolve(App* app, CPU& cpu, reg32 portAt, reg32 nam
     g.leaveEcx(length);
     if (length == 0 || g.byte(name + length - 1) == 0x2e)
         return 0;
-    const reg32 number = thunked<kInetAddr, &win32::wsock32::inet_addr>(g, cpu, name);
+    const reg32 number = thunked<kInetAddr, &host::addressParse>(g, cpu, name);
     g.leaveEcx(number);
-    g.call(kFill, args({ address, 0x14 }));
+    fe::direct<kFill, ea::clearBytes>(g.app(), g.cpu(), address, 0x14);
     g.setWord(address, 2);
     reg32 good = 1;
     if (number != reg32(-1))
@@ -2160,7 +2196,7 @@ x86::reg32 frontend::eab::tcpResolve(App* app, CPU& cpu, reg32 portAt, reg32 nam
     }
     else
     {
-        const reg32 host = thunked<kGetHostByName, &win32::wsock32::gethostbyname>(g, cpu, name);
+        const reg32 host = thunked<kGetHostByName, &host::hostByName>(g, cpu, name);
         g.leaveEcx(host);
         if (host == 0)
         {
@@ -2180,7 +2216,7 @@ x86::reg32 frontend::eab::tcpResolve(App* app, CPU& cpu, reg32 portAt, reg32 nam
             g.leaveEdx(portAt);
             value = g.word(portAt);
         }
-        const reg32 network = thunked<kHtons, &win32::wsock32::htons>(g, cpu, value);
+        const reg32 network = thunked<kHtons, &host::byteSwap16>(g, cpu, value);
         g.leaveEdx(address);
         g.setWord(address + 2, std::uint16_t(network));
     }
@@ -2201,12 +2237,12 @@ x86::reg32 frontend::eab::tcpAddressText(App* app, CPU& cpu, reg32 address, reg3
     const fe::Frame frame(g, cpu, 0x10);
     const reg32 number = g.dword(address + 4);
     g.leaveEdx(number);
-    const reg32 dotted = thunked<kInetNtoa, &win32::wsock32::inet_ntoa>(g, cpu, number);
+    const reg32 dotted = thunked<kInetNtoa, &host::addressText>(g, cpu, number);
     g.copyString(text, dotted);
     if (portOut != 0)
     {
         g.leaveEbx(address);
-        g.setDword(portOut, thunked<kNtohs, &win32::wsock32::ntohs>(g, cpu, g.word(address + 2)) & 0xffff);
+        g.setDword(portOut, thunked<kNtohs, &host::byteSwap16>(g, cpu, g.word(address + 2)) & 0xffff);
     }
     return 1;
 }
@@ -2243,7 +2279,7 @@ x86::reg32 frontend::eab::tcpLocalName(App* app, CPU& cpu, reg32 record, reg32 o
     const reg32 length = g.frame();
     g.setDword(length, 0x14);
     const reg32 socket = g.dword(record + kSockHandle);
-    return thunked<kGetSockName, &win32::wsock32::getsockname>(g, cpu, socket, out, length) != reg32(-1) ? 1 : 0;
+    return thunked<kGetSockName, &host::socketName>(g, cpu, socket, out, length) != reg32(-1) ? 1 : 0;
 }
 
 void frontend::tcpLocalName(win32::WinApplication* app, x86::CPU& cpu)
@@ -2274,7 +2310,7 @@ constexpr reg32 kLineDone = 0x9f4d98, kLineResult = 0x9f4d9c, kLineCall = 0x9f4d
 reg32 lineLog(Guest& g, reg32 text)
 {
     g.setDword(kLineLast, text);
-    return g.call(kReport, args({}, { kLineLog, 1, text }));
+    return g.cpu().eax = *fe::direct<0x501050, ea::reportedAt>(g.app(), g.cpu(), kLineLog, 1u, text, guest::Words({}));
 }
 
 reg32 lineFinish(Guest& g, reg32 result)
@@ -2467,6 +2503,7 @@ x86::reg32 frontend::eab::asyncOpenFile(App* app, CPU& cpu, reg32 name, reg32 mo
     else
     {
         const reg32 length = bar - name;
+        // By address: the ebx and edx it leaves are left at the end (edx read here).
         g.call(kStrncpy, args({ pack, name, length, length }));
         g.leaveEdx(g.edx() & 0xffffff00);
         g.setDword(pack + kMember, bar + 1);
@@ -2504,7 +2541,7 @@ x86::reg32 frontend::eab::asyncFileThread(App* app, CPU& cpu)
     }
     const reg32 queue = thread + 0x1c, done = thread + 0x38;
     const auto failed = [&](reg32 request) { return (sreg32(g.dword(request + 0xc) << 0x1e) >> 0x1f) != 0; };
-    const auto noteError = [&](reg32 request) { g.setDword(request + 0x14, g.call(kLastError)); };
+    const auto noteError = [&](reg32 request) { g.setDword(request + 0x14, directKept<0x4dfcf0, ea::lastErrorOf, 0>(g.app(), g.cpu())); };
     const auto serve = [&](reg32 request) {
         const reg32 operation = g.dword(request + 8);
         switch (operation)
@@ -2539,7 +2576,7 @@ x86::reg32 frontend::eab::asyncFileThread(App* app, CPU& cpu)
             }
             else
             {
-                const reg32 code = g.call(kLastError);
+                const reg32 code = directKept<0x4dfcf0, ea::lastErrorOf, 0>(g.app(), g.cpu());
                 g.setByte(request + 0x10, kFailed);
                 g.setDword(request + 0x14, code);
             }
@@ -2558,7 +2595,7 @@ x86::reg32 frontend::eab::asyncFileThread(App* app, CPU& cpu)
                 g.setByte(request + 0x10, kFinished);
                 g.setDword(request + 0x28, moved);
             }
-            const reg32 code = g.call(kLastError);
+            const reg32 code = directKept<0x4dfcf0, ea::lastErrorOf, 0>(g.app(), g.cpu());
             g.setDword(request + 0x14, code);
             if (code != 0)
                 g.setByte(request + 0x10, kFailed);
@@ -2724,7 +2761,7 @@ x86::reg32 frontend::eab::asyncFilesShutdown(App* app, CPU& cpu)
         if (open == 0)
             break;
         g.call(kCloseHandleSlot, args({ g.dword(open + 0xc) }));
-        g.call(kFreePages, args({ open }));
+        directKept<0x501180, ea::pagesFreed, 1>(g.app(), g.cpu(), open);
     }
     g.setDword(kFileStop, 1);
     for (reg32 at = 0; at != 0xd00; at += kThreadBytes)
@@ -2738,15 +2775,15 @@ x86::reg32 frontend::eab::asyncFilesShutdown(App* app, CPU& cpu)
             safepoint(app, cpu);
             fe::direct<0x4df8e0, ea::sleepFor>(app, cpu, 0u);
         }
-        g.call(0x4dfc00, args({ g.dword(thread + 0x54) }));
+        directKept<0x4dfc00, ea::eventClosed, 1>(g.app(), g.cpu(), g.dword(thread + 0x54));
         g.call(0x4dfc80, args({ g.dword(thread + 0x5c) }));
-        g.call(kQueueFree, args({ thread + 0x38 }));
-        g.call(kQueueFree, args({ thread + 0x1c }));
+        directKept<0x50dde0, ea::queueLockFreed, 1>(g.app(), g.cpu(), thread + 0x38);
+        directKept<0x50dde0, ea::queueLockFreed, 1>(g.app(), g.cpu(), thread + 0x1c);
     }
-    g.call(kFreePages, args({ g.dword(kFileRecords) }));
-    g.call(kFreePages, args({ g.dword(kFileThreads) }));
-    g.call(kQueueFree, args({ kFileFree }));
-    g.call(kQueueFree, args({ kFileHandles }));
+    directKept<0x501180, ea::pagesFreed, 1>(g.app(), g.cpu(), g.dword(kFileRecords));
+    directKept<0x501180, ea::pagesFreed, 1>(g.app(), g.cpu(), g.dword(kFileThreads));
+    directKept<0x50dde0, ea::queueLockFreed, 1>(g.app(), g.cpu(), kFileFree);
+    directKept<0x50dde0, ea::queueLockFreed, 1>(g.app(), g.cpu(), kFileHandles);
     fe::direct<0x4eb360, ea::lockFreed>(app, cpu, g.dword(kFileLock));
     g.setDword(kFileThreads, 0);
     return 0;
@@ -2776,13 +2813,13 @@ x86::reg32 frontend::eab::asyncFilesInit(App* app, CPU& cpu, reg32 handles, reg3
     g.leaveEbx(0xd00);
     g.setDword(size, 0xd00);
     g.setDword(kFileThreads, *fe::direct<0x501110, ea::allocatePages>(app, cpu, size));
-    g.call(kFill, args({ g.dword(kFileThreads), g.dword(size) }));
+    fe::direct<0x4e070c, ea::clearBytes>(app, cpu, g.dword(kFileThreads), g.dword(size));
     g.setDword(size, records * kRecordBytes);
     g.leaveEcx(records * kRecordBytes);
     const reg32 memory = *fe::direct<0x501110, ea::allocatePages>(app, cpu, size);
     g.setDword(kFileRecords, memory);
     g.leaveEcx(kRecordBytes);
-    g.call(kFill, args({ memory, g.dword(size) }));
+    fe::direct<0x4e070c, ea::clearBytes>(app, cpu, memory, g.dword(size));
     const reg32 bytes = g.dword(size);
     g.leaveEdx(bytes % kRecordBytes);
     reg32 record = g.dword(kFileRecords);
@@ -2838,8 +2875,8 @@ x86::reg32 frontend::eab::netOpen(App* app, CPU& cpu, reg32 net, reg32 address, 
     g.call(g.dword(table + 0x44), args({ socket, net + 0x30, 0x10 }));
     g.setDword(net + 0x9c, 1);
     g.call(kMoveMemory, args({ address, net + 0x8c }));
-    g.call(kStrncpy, args({ net + 0x44, name, 0x33 }));
-    g.call(kStrncpy, args({ net + 0x78, password, 0x13 }));
+    fe::direct<kStrncpy, watcom::clib::strncpy>(g.app(), g.cpu(), net + 0x44, name, 0x33);
+    fe::direct<kStrncpy, watcom::clib::strncpy>(g.app(), g.cpu(), net + 0x78, password, 0x13);
     return 0xfa;
 }
 
@@ -2954,13 +2991,13 @@ x86::reg32 frontend::eab::netLocalAddress(App* app, CPU& cpu, reg32 out)
         }
         fe::direct<0x4e1890, ea::purgeBlock>(app, cpu, list);
     }
-    reg32 result = thunked<kGetHostName, &win32::wsock32::gethostname>(g, cpu, host, 0x100);
+    reg32 result = thunked<kGetHostName, &host::hostName>(g, cpu, host, 0x100);
     if (result != 0)
         return result;
-    result = thunked<kGetHostByName, &win32::wsock32::gethostbyname>(g, cpu, host);
+    result = thunked<kGetHostByName, &host::hostByName>(g, cpu, host);
     if (result == 0 || g.word(result + 8) != 2 || g.word(result + 0xa) != 4)
         return result;
-    const reg32 text = thunked<kInetNtoa, &win32::wsock32::inet_ntoa>(g, cpu, g.dword(g.dword(g.dword(result + 0xc))));
+    const reg32 text = thunked<kInetNtoa, &host::addressText>(g, cpu, g.dword(g.dword(g.dword(result + 0xc))));
     g.copyString(out, text);
     return text & 0xffffff00;
 }
@@ -2988,7 +3025,7 @@ x86::reg32 frontend::eab::memPoolDump(App* app, CPU& cpu, reg32 which)
     while (block != 0)
     {
         const reg32 data = block + 0x10;
-        const reg32 named = g.call(kBlockName, args({ data }));
+        const reg32 named = directKept<0x4e15e0, ea::blockNameOf, 1>(g.app(), g.cpu(), data);
         const reg32 name = named != 0 ? named : 0x550658;
         const std::uint8_t flags = g.byte(block + 3);
         if ((flags & 0x40) != 0)
@@ -3151,8 +3188,8 @@ x86::reg32 frontend::eab::exitConfirm(App* app, CPU& cpu)
     {
         if (!*fe::direct<0x4df930, ea::isThreadNow>(app, cpu, 0u))
         {
-            windows<kEnterCriticalSection, &win32::kernel32::EnterCriticalSection>(g, cpu, g.dword(kDisplayLock));
-            windows<kLeaveCriticalSection, &win32::kernel32::LeaveCriticalSection>(g, cpu, g.dword(kDisplayLock));
+            windows<kEnterCriticalSection, &host::enterLock>(g, cpu, g.dword(kDisplayLock));
+            windows<kLeaveCriticalSection, &host::leaveLock>(g, cpu, g.dword(kDisplayLock));
         }
         else
         {
@@ -3184,7 +3221,7 @@ x86::reg32 frontend::eab::blockResize(App* app, CPU& cpu, reg32 block, reg32 siz
     const reg32 lock = g.dword(pool + 0x38);
     g.leaveEdx(lock);
     if (lock != 0)
-        windows<kEnterCriticalSection, &win32::kernel32::EnterCriticalSection>(g, cpu, lock);
+        windows<kEnterCriticalSection, &host::enterLock>(g, cpu, lock);
     reg32 next = g.dword(header + 8);
     if ((g.byte(next + 3) & 0x40) != 0)
     {
@@ -3213,7 +3250,7 @@ x86::reg32 frontend::eab::blockResize(App* app, CPU& cpu, reg32 block, reg32 siz
             error(g, 0x551ec0, { size });
         }
     }
-    g.call(kBlockName, args({ block, owner }));
+    directKept<0x4e15e0, ea::blockNameOf, 1>(g.app(), g.cpu(), block, owner);
     const reg32 overhead = g.call(0x4e11f0);
     const reg32 granule = g.dword(pool + 0x28) - 1;
     reg32 room = ((asked + overhead + 0x10 + granule) & ~granule) - 0x10;
@@ -3237,7 +3274,7 @@ x86::reg32 frontend::eab::blockResize(App* app, CPU& cpu, reg32 block, reg32 siz
     }
     const reg32 lockNow = g.dword(pool + 0x38);
     if (lockNow != 0)
-        windows<kLeaveCriticalSection, &win32::kernel32::LeaveCriticalSection>(g, cpu, lockNow);
+        windows<kLeaveCriticalSection, &host::leaveLock>(g, cpu, lockNow);
     return block;
 }
 

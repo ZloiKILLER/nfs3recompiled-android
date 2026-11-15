@@ -3,7 +3,13 @@
 #include "port_draw2d.h"
 #include "port_text.h"
 #include "native_windows.h"
-#include <winapi/user32.h>
+#include "host_window.h"
+#include "native_ea_memory.h"
+#include "native_frontend_glue.h"
+#include "native_load_cardb.h"
+#include "native_watcom.h"
+#include "port_loop.h"
+#include "native_graphics.h"
 
 #include <cstring>
 #include <functional>
@@ -268,7 +274,7 @@ constexpr reg32 kRenderState = 0x431900, kClipTriangle = 0x4c11b0, kClipQuad = 0
 constexpr guest::Native kSelectFont = text::selectFont, kTextWidth = text::textWidth;         // 0x452100, 0x452020
 constexpr guest::Native kDrawMenuText = text::drawMenuText, kDrawTextAt = text::drawTextAt;   // 0x452190, 0x451590
 constexpr guest::Native kSetTextColour = text::setTextColour, kLanguageText = text::languageText;  // 0x4513c0, 0x4d1850
-constexpr guest::Native kFlushFonts = text::flushFonts, kDrawCharacter = text::drawCharacter;  // 0x4d1340, 0x4d06f0
+constexpr guest::Native kFlushFonts = text::flushFonts;  // 0x4d1340
 constexpr guest::Native kToScreenX = text::toScreenX, kToScreenY = text::toScreenY;  // 0x451400, 0x451440
 constexpr guest::Native kGradient = draw2d::gradientRectangle, kFilled = draw2d::filledRectangle;  // 0x4d8550, 0x4d8910
 constexpr guest::Native kFrame = draw2d::frame, kFieldBox = draw2d::drawFieldBox;  // 0x4d8930, 0x4d8ac0
@@ -388,6 +394,49 @@ void popped(App* app, reg32 esp, std::initializer_list<reg32*> registers)
         *r = word(app, esp -= 4);
 }
 
+reg32 valueOf(reg32 value)
+{
+    return value;
+}
+
+template <class T>
+reg32 valueOf(const std::optional<T>& value)
+{
+    return reg32(*value);
+}
+
+/* A typed core called as C++ where the game's code calls its address: from `esp`, the registers
+ * loaded as the call by address loads them (`a`) and kept after it, as the callee keeps them;
+ * `result` its eax; false when the game stopped in it. */
+template <reg32 Address, auto Core, typename... A>
+bool callCore(App* app, CPU& cpu, reg32 esp, Args a, reg32& result, A... args)
+{
+    cpu.esp = esp;
+    cpu.eax = a.eax;
+    cpu.edx = a.edx;
+    cpu.ebx = a.ebx;
+    cpu.ecx = a.ecx;
+    const auto value = guest::direct<Address, Core>(app, cpu, args...);
+    if (cpu.terminate)
+        return false;
+    result = valueOf(value);
+    cpu.eax = result;
+    return true;
+}
+
+/* The same for a core whose answer is no eax (the render state's): `result` left as it is. */
+template <reg32 Address, auto Core, typename... A>
+bool callCoreNoEax(App* app, CPU& cpu, reg32 esp, Args a, A... args)
+{
+    cpu.esp = esp;
+    cpu.eax = a.eax;
+    cpu.edx = a.edx;
+    cpu.ebx = a.ebx;
+    cpu.ecx = a.ecx;
+    guest::direct<Address, Core>(app, cpu, args...);
+    return !cpu.terminate;
+}
+
 /* The menu loop's: whether `item`, of widget `type`, is on the screen shown. */
 bool shownNow(App* app, CPU& cpu, reg32 esp, reg32 item, reg32 type, reg32& r, reg32 ebx = 0, reg32 ecx = 0)
 {
@@ -397,7 +446,12 @@ bool shownNow(App* app, CPU& cpu, reg32 esp, reg32 item, reg32 type, reg32& r, r
 /* sprintf into `buffer`, its format's words after it. */
 bool format(App* app, CPU& cpu, reg32 esp, std::initializer_list<reg32> words)
 {
-    return callGame(app, cpu, esp, kSprintf, {}, words);
+    const reg32* const w = words.begin();
+    guest::Words more({});
+    for (const reg32* v = w + 2; v != words.end(); ++v)
+        more.word[more.count++] = *v;
+    reg32 ignored;
+    return callCore<kSprintf, watcom::clib::sprintf>(app, cpu, esp, {}, ignored, w[0], w[1], more);
 }
 
 /* The dialog's question, its text at kDialogText: an OK. */
@@ -457,7 +511,7 @@ Result colourRgb(App* app, CPU& cpu, reg32 esp, reg32 car, int32_t colour, int32
 
 bool carRecordOf(App* app, CPU& cpu, reg32 esp, reg32 car, reg32& rec)
 {
-    return callGame(app, cpu, esp, kCarRecord, {car}, {}, rec);
+    return callCore<kCarRecord, load::recordAt>(app, cpu, esp, {car}, rec, car);
 }
 
 }  // namespace
@@ -834,13 +888,14 @@ Result cursorText3d(App* app, CPU& cpu, reg32 esp, reg32 text, int32_t x, int32_
         const reg32 width = byteAt(app, kGlyphWidth3d + index);
         if (i == cursor && show != 0 && !cursor3d(app, cpu, at, place, y, shape, reg32(i)))
             return {};
-        if (!callGame(app, cpu, at, kDrawCharacter,
-                      {index, byteAt(app, kTextureX3d + index), byteAt(app, kTextureY3d + index), reg32(i)},
-                      {bitsOf(place), reg32(y), width, reg32(byteAt(app, kGlyphHeight3d + index)) + 1, colour,
-                       kMeasuring(app)}))
+        const text::WidthResult advance = guest::direct<0x4d06f0, text::characterDrawn>(
+            app, cpu, at - 0x18 - 4,
+            text::Character{index, int32_t(byteAt(app, kTextureX3d + index)), int32_t(byteAt(app, kTextureY3d + index)),
+                            place, y, int32_t(width), int32_t(byteAt(app, kGlyphHeight3d + index)) + 1, colour,
+                            int32_t(kMeasuring(app))});
+        if (cpu.terminate)
             return {};
-        const Float advance = cpu.fpu.pop();
-        place = float(fp::add(advance, Float(place)));
+        place = float(fp::add(Float(advance->value), Float(place)));
     }
     if (i == cursor && show != 0 && !cursor3d(app, cpu, at, place, y, shape, reg32(i)))
         return {};
@@ -884,7 +939,8 @@ Result cursorDrawn(App* app, CPU& cpu, reg32 esp, int32_t x, int32_t y, int32_t 
     setWord(app, kQuad + 0x20, word(app, kQuad + 0x40));
     setFloat(app, kQuad + 0x44, bottom);
     reg32 r;
-    if (!callGame(app, cpu, at, kRenderState, {1, 0, reg32(width), word(app, kQuad + 0x40)}, {}, r))
+    if (!callCoreNoEax<kRenderState, graphics::sendState>(app, cpu, at, {1, 0, reg32(width), word(app, kQuad + 0x40)},
+                                                          reg32(1), reg32(0)))
         return {};
     markCorners(app, 4);
     if (!callGame(app, cpu, at, kClipQuad, {kQuad, kQuad + 0x20, kQuad + 0x40, kQuad + 0x60}, {}, r))
@@ -910,7 +966,8 @@ Result cursorText(App* app, CPU& cpu, reg32 esp, reg32 text, int32_t x, int32_t 
     const reg32 colour = kScreenTextColour(app) | 0xff000000;
     const reg32 cursorColour = kCursorColour(app) | 0xff000000;
     reg32 r;
-    if (!callGame(app, cpu, at, kRenderState, {1, kFontTexture(app), reg32(y), 0}, {}, r))
+    if (!callCoreNoEax<kRenderState, graphics::sendState>(app, cpu, at, {1, kFontTexture(app), reg32(y), 0}, reg32(1),
+                                                          kFontTexture(app)))
         return {};
     int32_t place = x, i = 0;
     for (reg32 s = text;; ++s, ++i)
@@ -1026,7 +1083,8 @@ Result spacedText(App* app, CPU& cpu, reg32 esp, reg32 text, int32_t x, int32_t 
         y = int32_t(int16_t(y)) - halved(int32_t(half(app, ebp - 4)) * spacing);
     for (int16_t i = 0; int32_t(i) < int32_t(half(app, ebp - 4)); ++i)
     {
-        if (!callGame(app, cpu, at, kStrncpy, {character, word(app, ebp - 0x18), 1, reg32(i)}, {}, r))
+        if (!callCore<kStrncpy, watcom::clib::strncpy>(app, cpu, at, {character, word(app, ebp - 0x18), 1, reg32(i)}, r,
+                                                       character, word(app, ebp - 0x18), reg32(1)))
             return {};
         // The font as the code takes it, before the character is written.
         const reg32 fontNow = reg32(int32_t(half(app, ebp - 8)));
@@ -1239,7 +1297,8 @@ Result colourLine(App* app, CPU& cpu, reg32 esp, reg32 item, int32_t colour, int
     }
     else
     {
-        if (!callGame(app, cpu, at, kColourSetState, {item, reg32(colour), reg32(x), reg32(y)}, {}, r))
+        if (!callCore<kColourSetState, loop::keysTakenOf>(app, cpu, at, {item, reg32(colour), reg32(x), reg32(y)}, r,
+                                                          at - 4, item))
             return {};
         textColour = r != 0 ? 0x4a96 : 0xffe440;
     }
@@ -1299,7 +1358,8 @@ Result listDrawn(App* app, CPU& cpu, reg32 esp, reg32 item, reg32 hot)
     {
         if (colourList(app, item).open != 0)
         {
-            if (!callGame(app, cpu, at, kPointerInBox, {item + 0x1a, colourList(app, item).car, hot, item}, {}, r))
+            if (!callCore<kPointerInBox, frontend::glue::pointerInBox>(
+                    app, cpu, at, {item + 0x1a, colourList(app, item).car, hot, item}, r, item + 0x1a))
                 return {};
             if (r != 0)
             {
@@ -1414,7 +1474,7 @@ Result colourChosen(App* app, CPU& cpu, reg32 esp, reg32 item)
     reg32 eax = reg32(*r), menu;
     if (colourList(app, item).player == 0)
     {
-        if (!callGame(app, cpu, at, kMenuNamed, {eax, kFirstCarItem}, {}, menu)
+        if (!callCore<kMenuNamed, loop::currentMenuOf>(app, cpu, at, {eax, kFirstCarItem}, menu)
             || !callGame(app, cpu, at, kFindItem, {menu, kFirstCarItem}, {}, eax))
             return {};
         if (eax != 0)
@@ -1422,7 +1482,7 @@ Result colourChosen(App* app, CPU& cpu, reg32 esp, reg32 item)
     }
     if (colourList(app, item).player == 1)
     {
-        if (!callGame(app, cpu, at, kMenuNamed, {eax, kSecondCarItem}, {}, menu)
+        if (!callCore<kMenuNamed, loop::currentMenuOf>(app, cpu, at, {eax, kSecondCarItem}, menu)
             || !callGame(app, cpu, at, kFindItem, {menu, kSecondCarItem}, {}, eax))
             return {};
         if (eax != 0)
@@ -1477,7 +1537,8 @@ Result listKey(App* app, CPU& cpu, reg32 esp, reg32 item, reg32 ebx)
         return shut();
     if (key != kEnter && key != kLeft)
         return 0;
-    if (!callGame(app, cpu, at, kPointerInBox, {item + 0x1a, 0x7f, ebx, item}, {}, r))
+    if (!callCore<kPointerInBox, frontend::glue::pointerInBox>(app, cpu, at, {item + 0x1a, 0x7f, ebx, item}, r,
+                                                               item + 0x1a))
         return {};
     if (r == 0)
         return shut();
@@ -1489,7 +1550,7 @@ Result listKey(App* app, CPU& cpu, reg32 esp, reg32 item, reg32 ebx)
     if (*custom != colourList(app, item).highlighted)
         return 2;
     reg32 menu, wheel;
-    if (!callGame(app, cpu, at, kMenuNamed, {reg32(*custom), kColourEdit}, {}, menu)
+    if (!callCore<kMenuNamed, loop::currentMenuOf>(app, cpu, at, {reg32(*custom), kColourEdit}, menu)
         || !callGame(app, cpu, at, kFindItem, {menu, kColourEdit}, {}, wheel))
         return {};
     if (wheel != 0 && !wheelGiven(app, cpu, at - 4, wheel, colourList(app, item).player))
@@ -1654,7 +1715,8 @@ Result keyTyped(App* app, CPU& cpu, reg32 esp, reg32 typed, int32_t size, reg32 
     {
         setWord(app, cursor, 0);
         reg32 r;
-        if (!callGame(app, cpu, esp - 0xc - 8, kMemset, {typed, 0, reg32(size), ecx}, {}, r))
+        if (!callCore<kMemset, watcom::clib::memset>(app, cpu, esp - 0xc - 8, {typed, 0, reg32(size), ecx}, r, typed,
+                                                     reg32(0), reg32(size)))
             return {};
         return 2;
     }
@@ -1848,7 +1910,7 @@ Result typingStarted(App* app, CPU& cpu, reg32 at, reg32 item, reg32 typed, reg3
     setHalf(app, item + 0x40, 1);
     setWord(app, cursor, 0);
     reg32 r;
-    if (!callGame(app, cpu, at, kMemset, {typed, 0, size, item}, {}, r))
+    if (!callCore<kMemset, watcom::clib::memset>(app, cpu, at, {typed, 0, size, item}, r, typed, reg32(0), reg32(size)))
         return {};
     record<Item>(app, item).state |= 4;
     return 2;
@@ -1887,6 +1949,8 @@ Result intKey(App* app, CPU& cpu, reg32 esp, reg32 item, reg32 ebx)
         record<IntField>(app, item).editing = 0;
         record<IntField>(app, item).cursor = 0;
         reg32 n;
+        // By address: sscanf runs the runtime's own code below the words it pushes, which a direct
+        // call would put 4 bytes lower than the game's call does.
         if (!callGame(app, cpu, at, kSscanf, {}, {item + 0x60, kD, ebp - 8}, n))
             return {};
         const IntField& f = record<IntField>(app, item);
@@ -1948,6 +2012,8 @@ Result charKey(App* app, CPU& cpu, reg32 esp, reg32 item, reg32 ebx)
         record<CharField>(app, item).editing = 0;
         record<CharField>(app, item).cursor = 0;
         reg32 n;
+        // By address: sscanf runs the runtime's own code below the words it pushes, which a direct
+        // call would put 4 bytes lower than the game's call does.
         if (!callGame(app, cpu, at, kSscanf, {}, {item + 0x58, kD, ebp - 4}, n))
             return {};
         const CharField& f = record<CharField>(app, item);
@@ -2012,6 +2078,8 @@ Result floatKey(App* app, CPU& cpu, reg32 esp, reg32 item, reg32 ebx, bool fixed
         record<FloatField>(app, item).editing = 0;
         record<FloatField>(app, item).cursor = 0;
         reg32 n;
+        // By address: sscanf runs the runtime's own code below the words it pushes, which a direct
+        // call would put 4 bytes lower than the game's call does.
         if (!callGame(app, cpu, at, kSscanf, {}, {item + 0x64, kScanF, ebp - 8}, n))
             return {};
         const FloatField& f = record<FloatField>(app, item);
@@ -2221,7 +2289,9 @@ Result stringKey(App* app, CPU& cpu, reg32 esp, reg32 item, reg32 ebx)
         f.editing = 1;
         if (f.target != 0)
         {
-            if (!callGame(app, cpu, at, kStrncpy, {f.buffer, f.target, reg32(int32_t(f.maxLength) - 1), item}, {}, r))
+            if (!callCore<kStrncpy, watcom::clib::strncpy>(app, cpu, at,
+                                                           {f.buffer, f.target, reg32(int32_t(f.maxLength) - 1), item}, r,
+                                                           f.buffer, f.target, reg32(int32_t(f.maxLength) - 1)))
                 return {};
         }
         else
@@ -2237,7 +2307,9 @@ Result stringKey(App* app, CPU& cpu, reg32 esp, reg32 item, reg32 ebx)
     {
         f.editing = 0;
         if (f.target != 0
-            && !callGame(app, cpu, at, kStrncpy, {f.target, f.buffer, reg32(int32_t(f.maxLength)), item}, {}, r))
+            && !callCore<kStrncpy, watcom::clib::strncpy>(app, cpu, at,
+                                                          {f.target, f.buffer, reg32(int32_t(f.maxLength)), item}, r,
+                                                          f.target, f.buffer, reg32(int32_t(f.maxLength))))
             return {};
         if (!told(app, cpu, at, record<StringField>(app, item).changed, item, 0, 0))
             return {};
@@ -2596,7 +2668,8 @@ void stringFieldShown(App* app, CPU& cpu)
             f.editing = 0;
         if (f.maxLength == 0)
             f.maxLength = 0xb;
-        if (!callGame(app, cpu, at, kAllocate, {kNoName, reg32(int32_t(f.maxLength) + 1), 0, item}, {}, r))
+        if (!callCore<kAllocate, ea::reserved>(app, cpu, at, {kNoName, reg32(int32_t(f.maxLength) + 1), 0, item}, r,
+                                               kNoName, reg32(int32_t(f.maxLength) + 1), reg32(0)))
             return;
         record<StringField>(app, item).buffer = r;
     }
@@ -2619,7 +2692,7 @@ void stringFieldHidden(App* app, CPU& cpu)
             f.editing = 0;
         if (f.buffer != 0)
         {
-            if (!callGame(app, cpu, at, kFree, {f.buffer, f.buffer, item, item}, {}, r))
+            if (!callCore<kFree, ea::purgeBlock>(app, cpu, at, {f.buffer, f.buffer, item, item}, r, f.buffer))
                 return;
             record<StringField>(app, item).buffer = 0;
         }
@@ -2691,7 +2764,8 @@ Result triangle(App* app, CPU& cpu, reg32 esp, int32_t x0, int32_t y0, int32_t x
     setFloat(app, kQuad + 0x24, ofInt(y1));
     setFloat(app, kQuad + 0x44, ofInt(y2));
     setFloat(app, kQuad + 0x40, ofInt(int32_t(word(app, x2At))));
-    if (!callGame(app, cpu, at, kRenderState, {1, 0, reg32(x1), reg32(y1)}, {}, r))
+    if (!callCoreNoEax<kRenderState, graphics::sendState>(app, cpu, at, {1, 0, reg32(x1), reg32(y1)}, reg32(1),
+                                                          reg32(0)))
         return {};
     const reg32 ecx = markCorners(app, 3);
     if (!callGame(app, cpu, at, kClipTriangle, {kQuad, kQuad + 0x20, kQuad + 0x40, ecx}, {}, r))
@@ -3027,7 +3101,7 @@ void listBoxHidden(App* app, CPU& cpu)
     if (r != 0)
     {
         const reg32 lines = listBox(app, item).lines;
-        if (lines != 0 && !callGame(app, cpu, at, kFree, {lines, lines, item, item}, {}, r))
+        if (lines != 0 && !callCore<kFree, ea::purgeBlock>(app, cpu, at, {lines, lines, item, item}, r, lines))
             return;
         listBox(app, item).lines = 0;
     }
@@ -3551,7 +3625,7 @@ Result sliderTracked(App* app, CPU& cpu, reg32 esp, reg32 item)
     const reg32 ebp = esp - 0x18, at = ebp - 0x14;
     HeldEbp held(cpu, ebp);
     reg32 e;
-    if (!callGame(app, cpu, at, kMouseHolds, {item, item}, {}, e))
+    if (!callCore<kMouseHolds, frontend::glue::mouseKey>(app, cpu, at, {item, item}, e))
         return {};
     Slider& s = slider(app, item);
     if (e == 0)
@@ -3656,7 +3730,7 @@ Result twoAxisTracked(App* app, CPU& cpu, reg32 esp, reg32 item)
     const reg32 ebp = esp - 0x18, at = ebp - 0x10;
     HeldEbp held(cpu, ebp);
     reg32 e;
-    if (!callGame(app, cpu, at, kMouseHolds, {item, item}, {}, e))
+    if (!callCore<kMouseHolds, frontend::glue::mouseKey>(app, cpu, at, {item, item}, e))
         return {};
     Slider& s = slider(app, item);
     if (e == 0)
@@ -3771,7 +3845,7 @@ Result twoAxisKeyed(App* app, CPU& cpu, reg32 esp, reg32 item, reg32 ebx)
     cpu.edx = 0;
     cpu.ebx = item;
     cpu.ecx = uint16_t(slider(app, item).held);
-    const std::optional<reg32> r = guest::windows<kGetKeyStateSlot, &win32::user32::GetAsyncKeyState>(app, cpu, 0x10);
+    const std::optional<reg32> r = guest::windows<kGetKeyStateSlot, &host::asyncKeyState>(app, cpu, 0x10);
     if (!r)
         return {};
     const int32_t axis = (*r & 0x8000) != 0 ? 0 : 1;
@@ -3820,7 +3894,8 @@ Result shapeOf(App* app, CPU& cpu, reg32 esp, reg32 name, reg32 ebx)
     for (int32_t i = 0; i < kArtShapeCount(app); ++i)
     {
         ebx = 4;
-        if (!callGame(app, cpu, at, kStrncmp, {kArtShapes + reg32(i) * 0x14 + 0x10, name, 4, name}, {}, r))
+        if (!callCore<kStrncmp, watcom::clib::strncmp>(app, cpu, at, {kArtShapes + reg32(i) * 0x14 + 0x10, name, 4, name},
+                                                       r, kArtShapes + reg32(i) * 0x14 + 0x10, name, reg32(4)))
             return {};
         if (r == 0)
             return i;
@@ -3832,7 +3907,9 @@ Result shapeOf(App* app, CPU& cpu, reg32 esp, reg32 name, reg32 ebx)
         return -1;
     if (!callGame(app, cpu, at, kArtTextures, {shape, 0, ebx, name}, {}, made))
         return {};
-    if (made != 0 && !callGame(app, cpu, at, kStrncpy, {kArtShapes + made * 0x14 + 0x10, name, 4, name}, {}, r))
+    if (made != 0
+        && !callCore<kStrncpy, watcom::clib::strncpy>(app, cpu, at, {kArtShapes + made * 0x14 + 0x10, name, 4, name}, r,
+                                                      kArtShapes + made * 0x14 + 0x10, name, reg32(4)))
         return {};
     return int32_t(made);
 }

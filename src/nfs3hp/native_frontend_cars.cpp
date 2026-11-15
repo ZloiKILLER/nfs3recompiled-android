@@ -1,4 +1,5 @@
 #include "native_frontend_cars.h"
+#include "native_watcom.h"
 #include "game_settings.h"
 #include "native_frontend.h"
 #include "native_frontend_eaa.h"
@@ -171,7 +172,7 @@ x86::reg32 saveFrame(App* app, CPU& cpu, const GuestString& format, x86::reg32 f
     const fe::Frame frame(guest, cpu, 8 + 0x12c);
     const x86::reg32 name = guest.frame();    // char[0x12c]
     const x86::reg32 number = first + guest.dword(kRecordShot);
-    guest.call(kSprintf, fe::args({}, { name, format.address, folder, number }));
+    fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.cpu(), name, format.address, guest::Words{folder, number});
     const x86::reg32 next = guest.dword(kRecordShot) + 1;
     guest.setDword(kRecordShot, next);
     // As the original leaves them for the calls after.
@@ -202,7 +203,6 @@ bool nextFrame(Guest& guest)
 {
     const x86::reg32 frame = guest.dword(kRecordFrame) + 1;
     guest.setDword(kRecordFrame, frame);
-    x86::FPU& fpu = guest.fpu();
     guest.setFloat(kRecordTurn, float(fp::add(x86::Float(guest.floatAt(kRecordTurn)), x86::Float(kTurnStep))));
     return std::int32_t(frame) > kFramesInTurn;
 }
@@ -251,8 +251,8 @@ x86::reg32 frontend::cars::recordCar(App* app, CPU& cpu)
         const x86::reg32 data = *fe::direct<0x439520, load::idOf>(app, cpu, gameSettings(guest).players[0].car);
         const x86::reg32 folder = fe::direct<0x439660, load::numberOf>(app, cpu, data);
         const x86::reg32 name = guest.frame();    // char[0x134]
-        guest.call(kSprintf, fe::args({}, { name, kCarFolderName.address, folder }));
-        return guest.call(kMakeFolder, fe::args({ name }));
+        fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.cpu(), name, kCarFolderName.address, guest::Words{folder});
+        return fe::direct<kMakeFolder, watcom::clib::mkdir>(guest.app(), guest.cpu(), name);
     }
     case 1:
     case 4:
@@ -326,8 +326,8 @@ x86::reg32 frontend::cars::recordTrack(App* app, CPU& cpu)
         guest.setDword(kRecordShot, 0);
         guest.setDword(kRecordViewB, 0);
         const x86::reg32 name = guest.frame();    // char[0x134]
-        guest.call(kSprintf, fe::args({}, { name, kTrackFolderName.address, gameSettings(guest).track }));
-        return guest.call(kMakeFolder, fe::args({ name }));
+        fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.cpu(), name, kTrackFolderName.address, guest::Words{gameSettings(guest).track});
+        return fe::direct<kMakeFolder, watcom::clib::mkdir>(guest.app(), guest.cpu(), name);
     }
     if (step == 1)
     {
@@ -821,10 +821,8 @@ x86::reg32 onSettingMoved(App* app, CPU& cpu, x86::reg32 item, std::uint32_t set
     const fe::Frame frame(guest, cpu, 8 + 0x1c);
     const float least = guest.floatAt(kTuningLeast + 4 * setting);
     const float most = guest.floatAt(kTuningMost + 4 * setting);
-    x86::FPU& fpu = guest.fpu();
     const float range = float(fp::sub(x86::Float(most), x86::Float(least)));
-    fe::direct<0x46c9b0, frontend::glue::sliderValue>(app, cpu, item, 0);
-    const x86::Float slider = fpu.pop();
+    const x86::Float slider = fe::direct<0x46c9b0, frontend::glue::sliderValue>(app, cpu, item, 0);
     const float value = float(fp::add(fp::mul(slider, x86::Float(range)), x86::Float(least)));
     const float atLeast = notAbove(guest, x86::Float(least), x86::Float(value)) ? value : least;
     float result;
@@ -882,7 +880,6 @@ x86::reg32 frontend::cars::setSliders(App* app, CPU& cpu, reg32 menu)
     const fe::Frame frame(guest, cpu, 12 + 0xc);
     if (menu == 0)
         return 0;
-    x86::FPU& fpu = guest.fpu();
     x86::reg32 eax = 0;   // as the last call leaves it
     for (std::uint32_t i = 0; i < kSettings; ++i)
     {
@@ -916,9 +913,13 @@ x86::reg32 frontend::cars::rememberSliders(App* app, CPU& cpu, reg32 menu)
         Item slider = fe::findItem(guest, menu, kSettingCodelinks[i]);
         if (!slider)
             continue;
-        // By address: the eax it leaves is this function's answer, and its core hands back none.
-        guest.call(kSliderValue, fe::args({ slider.address(), 0 }));
-        guest.setFloat(kTuningShown + 4 * i, float(guest.fpu().pop()));
+        // By address (its ByAddress, which takes the value off the x87's stack): the eax it leaves is
+        // this function's answer, and its core hands back none.
+        const double value =
+            guest::ByAddress<frontend::glue::sliderValue>::call<kSliderValue>(app, cpu, slider.address(), 0);
+        if (cpu.terminate)
+            throw fe::Terminated();
+        guest.setFloat(kTuningShown + 4 * i, float(value));
     }
     return guest.eax();
 }
@@ -941,8 +942,7 @@ x86::reg32 frontend::cars::slidersMoved(App* app, CPU& cpu, reg32 menu)
         eax = slider.address();
         if (!slider)
             continue;
-        fe::direct<0x46c9b0, frontend::glue::sliderValue>(app, cpu, slider.address(), 0);
-        const x86::Float value = guest.fpu().pop();
+        const x86::Float value = fe::direct<0x46c9b0, frontend::glue::sliderValue>(app, cpu, slider.address(), 0);
         guest.fpu().compare(value, x86::Float(guest.floatAt(kTuningShown + 4 * i)));
         eax = (eax & 0xffff0000) | guest.fpu().status.word;   // fnstsw ax
         moved = guest.fpu().status.c3 ? 0 : 1;

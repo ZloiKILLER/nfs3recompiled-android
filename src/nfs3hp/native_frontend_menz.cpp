@@ -1,4 +1,6 @@
 #include "native_frontend_menz.h"
+#include "native_watcom.h"
+#include "native_game.h"
 #include "native_ea_memory.h"
 #include "native_ea_threads.h"
 #include "native_frontend_eaa.h"
@@ -10,12 +12,13 @@
 #include "native_frontend_watc.h"
 #include "native_frontend.h"
 #include "native_windows.h"
+#include "host_threads.h"
+#include "host_video.h"
+#include "host_window.h"
 #include "port_snd_stream_calls.h"
 #include <fpu.h>
 #include <nfs3hp.h>
-#include <winapi/ddraw/idirectdraw2.h>
 #include <winapi/kernel32.h>
-#include <winapi/user32.h>
 #include <cstdint>
 #include <cstring>
 #include <initializer_list>
@@ -134,9 +137,6 @@ using fe::kRestoreEdx;
 using fe::kRestoreEsi;
 using fe::runWhole;
 using fe::Site;
-using win32::com::IUnknown;
-using win32::ddraw::IDirectDraw2;
-using win32::ddraw::IDirectDrawSurface;
 using x86::Float;
 using x86::reg32;
 using x86::sreg32;
@@ -160,7 +160,7 @@ constexpr reg32 kErrorFile = 0x552190, kErrorFunction = 0x552194, kErrorLine = 0
 
 // The DirectDraw report's channel and its lock.
 constexpr reg32 kReportChannel = 0x564ed4, kDrawLock = 0x564480;
-// DirectDraw's methods called here, by their offset in an object's table (src/lib/winapi/ddraw):
+// DirectDraw's methods called here, by their offset in an object's table (host_video.h):
 // IUnknown's Release, IDirectDraw2's CreateSurface, the rest IDirectDrawSurface's.
 constexpr reg32 kRelease = 0x08, kCreateSurface = 0x18, kGetAttachedSurface = 0x30, kGetPixelFormat = 0x54;
 constexpr reg32 kGetSurfaceDesc = 0x58, kSetColorKey = 0x74, kSetPalette = 0x7c, kUnlock = 0x80;
@@ -183,13 +183,13 @@ reg32 callImport(Guest& guest, x86::CPU& cpu, Words... words)
 }
 
 /* A method of a DirectDraw object, by its offset in the object's table, the object first on the
- * stack: the port's method called as C++ where the table has it there, else, and in the check,
- * through the table (native_windows.h, guest::method).  Terminated when the game stopped in it, as
+ * stack: the host's method called as C++ where the table has it there, else, and in the check,
+ * through the table (host_video.h, guest::ddraw).  Terminated when the game stopped in it, as
  * Guest::call. */
 template <reg32 Offset, auto Method, typename... Words>
 reg32 callCom(Guest& guest, x86::CPU& cpu, reg32 object, Words... words)
 {
-    const std::optional<reg32> eax = guest::method<Offset, Method>(guest.app(), cpu, object, words...);
+    const std::optional<reg32> eax = guest::ddraw<Offset, Method>(guest.app(), cpu, object, words...);
     if (!eax)
         throw fe::Terminated();
     return *eax;
@@ -207,7 +207,12 @@ void failAt(Guest& guest, reg32 file, reg32 function, reg32 line, std::initializ
     guest.setDword(kErrorFile, file);
     guest.setDword(kErrorFunction, function);
     guest.setDword(kErrorLine, line);
-    guest.call(kError, args({}, formatAndValues));
+    // Error's format and the words after it, as the game's code pushes them.
+    const reg32 format = *formatAndValues.begin();
+    guest::Words words({});
+    for (const reg32* value = formatAndValues.begin() + 1; value != formatAndValues.end(); ++value)
+        words.word[words.count++] = *value;
+    fe::direct<kError, ea::error>(guest.app(), guest.cpu(), format, words);
 }
 
 /* A line of the DirectDraw report: its level, its format, what it says. */
@@ -238,14 +243,14 @@ reg32 frontend::menz::ddrawRelockSurface(App* app, CPU& cpu, reg32 display)
     const reg32 surface = g.dword(display + kDisplayLocked);
     if (surface == 0)
         return 1;
-    callCom<kUnlock, &IDirectDrawSurface::Unlock>(g, cpu, surface, g.dword(display + kDisplayLockedBits));
-    const reg32 held = callImport<kGetTickCount, &win32::kernel32::GetTickCount>(g, cpu) - g.dword(kLockedAt);
+    callCom<kUnlock, &host::ddraw::surfaceUnlock>(g, cpu, surface, g.dword(display + kDisplayLockedBits));
+    const reg32 held = callImport<kGetTickCount, &host::ticks>(g, cpu) - g.dword(kLockedAt);
     g.setDword(kHeld, held);
     if (sreg32(held) > sreg32(g.dword(kHeldLongest)))
         g.setDword(kHeldLongest, held);
-    callImport<kLeaveLock, &win32::kernel32::LeaveCriticalSection>(g, cpu, g.dword(kDrawLock));
-    callImport<kEnterLock, &win32::kernel32::EnterCriticalSection>(g, cpu, g.dword(kDrawLock));
-    g.setDword(kLockedAt, callImport<kGetTickCount, &win32::kernel32::GetTickCount>(g, cpu));
+    callImport<kLeaveLock, &host::leaveLock>(g, cpu, g.dword(kDrawLock));
+    callImport<kEnterLock, &host::enterLock>(g, cpu, g.dword(kDrawLock));
+    g.setDword(kLockedAt, callImport<kGetTickCount, &host::ticks>(g, cpu));
     if (guest::direct<0x4eb5e0, eaa::ddrawLockSurface>(app, cpu, display, surface, g.frame()) == 0)
     {
         const reg32 bits = g.dword(g.frame() + kDescBits);
@@ -255,12 +260,12 @@ reg32 frontend::menz::ddrawRelockSurface(App* app, CPU& cpu, reg32 display)
             return 1;
         }
         g.leaveEdx(bits);
-        callCom<kUnlock, &IDirectDrawSurface::Unlock>(g, cpu, surface, bits);
+        callCom<kUnlock, &host::ddraw::surfaceUnlock>(g, cpu, surface, bits);
     }
     g.setDword(display + kDisplayLockedBits, 0);
     g.setDword(display + kDisplayLocked, 0);
     g.setDword(kHeld, 0);
-    callImport<kLeaveLock, &win32::kernel32::LeaveCriticalSection>(g, cpu, g.dword(kDrawLock));
+    callImport<kLeaveLock, &host::leaveLock>(g, cpu, g.dword(kDrawLock));
     guest::direct<0x4eada0, eaa::bitmapDrawInto>(app, cpu, g.dword(0x5643f0));
     report(g, { 3, 0x54c0bc });
     return 0;
@@ -288,7 +293,7 @@ reg32 frontend::menz::ddrawMakeSurface(App* app, CPU& cpu, reg32 display, reg32 
     const reg32 f = g.frame();
     const reg32 directDraw = g.dword(display + kDisplayObject);
     g.setDword(f + kMade, 0);
-    g.call(kFillZero, args({ f, kDescSize }));
+    fe::direct<kFillZero, ea::clearBytes>(g.app(), g.cpu(), f, kDescSize);
     g.setDword(f, kDescSize);
     g.setDword(f + kDescFlags, 1);
     reg32 caps = capsAsked;
@@ -312,12 +317,12 @@ reg32 frontend::menz::ddrawMakeSurface(App* app, CPU& cpu, reg32 display, reg32 
         {
             g.setByte(f + kDescFlags + 1, g.byte(f + kDescFlags + 1) | 0x10);
             g.setDword(f + kDescFormat, 0x20);
-            callCom<kGetPixelFormat, &IDirectDrawSurface::GetPixelFormat>(g, cpu, g.dword(display + kDisplayPrimary), f + kDescFormat);
+            callCom<kGetPixelFormat, &host::ddraw::surfaceGetPixelFormat>(g, cpu, g.dword(display + kDisplayPrimary), f + kDescFormat);
         }
     }
     report(g, { 0xb, 0x54c120, width, height, pages, backBuffers + 1 });
     g.setDword(f + kDescCaps, caps);
-    const reg32 failure = callCom<kCreateSurface, &IDirectDraw2::CreateSurface>(g, cpu, directDraw, f, f + kMade, 0) & 0xffff;
+    const reg32 failure = callCom<kCreateSurface, &host::ddraw::drawCreateSurface>(g, cpu, directDraw, f, f + kMade, 0) & 0xffff;
     cpu.ebx = failure;
     if (failure != 0)
     {
@@ -329,32 +334,32 @@ reg32 frontend::menz::ddrawMakeSurface(App* app, CPU& cpu, reg32 display, reg32 
         report(g, { 0xf, 0x54c14c });
         if (g.dword(f + kMade) != 0)
         {
-            callImport<kEnterLock, &win32::kernel32::EnterCriticalSection>(g, cpu, g.dword(kDrawLock));
+            callImport<kEnterLock, &host::enterLock>(g, cpu, g.dword(kDrawLock));
             const reg32 lockFailure = guest::direct<0x4eb5e0, eaa::ddrawLockSurface>(app, cpu, 0u, g.dword(f + kMade), f);
             cpu.ebx = lockFailure;
             if (lockFailure != 0)
                 report(g, { 0xb, 0x54c168, lockFailure });
             else
-                callCom<kUnlock, &IDirectDrawSurface::Unlock>(g, cpu, g.dword(f + kMade), g.dword(f + kDescBits));
-            callImport<kLeaveLock, &win32::kernel32::LeaveCriticalSection>(g, cpu, g.dword(kDrawLock));
+                callCom<kUnlock, &host::ddraw::surfaceUnlock>(g, cpu, g.dword(f + kMade), g.dword(f + kDescBits));
+            callImport<kLeaveLock, &host::leaveLock>(g, cpu, g.dword(kDrawLock));
             if (lockFailure != 0 && g.byte(display + kDisplayKeepOnFail) == 0)
             {
-                callCom<kRelease, &IUnknown::Release>(g, cpu, g.dword(f + kMade));
+                callCom<kRelease, &host::ddraw::release>(g, cpu, g.dword(f + kMade));
                 g.leaveEcx(0);
                 g.setDword(f + kMade, 0);
             }
             else
             {
                 g.setDword(f, kDescSize);
-                callCom<kGetSurfaceDesc, &IDirectDrawSurface::GetSurfaceDesc>(g, cpu, g.dword(f + kMade), f);
+                callCom<kGetSurfaceDesc, &host::ddraw::surfaceGetSurfaceDesc>(g, cpu, g.dword(f + kMade), f);
                 g.setDword(f + kDescFormat, 0x20);
-                callCom<kGetPixelFormat, &IDirectDrawSurface::GetPixelFormat>(g, cpu, g.dword(f + kMade), f + kDescFormat);
+                callCom<kGetPixelFormat, &host::ddraw::surfaceGetPixelFormat>(g, cpu, g.dword(f + kMade), f + kDescFormat);
                 const reg32 key = g.dword(f + kDescFormatBits) > 8 ? 0 : 0xff;
                 g.setDword(f + kColourKey + 4, key);
                 g.setDword(f + kColourKey, key);
                 if (key != 0 && palette != 0)
-                    callCom<kSetPalette, &IDirectDrawSurface::SetPalette>(g, cpu, g.dword(f + kMade), palette);
-                callCom<kSetColorKey, &IDirectDrawSurface::SetColorKey>(g, cpu, g.dword(f + kMade), 8, f + kColourKey);
+                    callCom<kSetPalette, &host::ddraw::surfaceSetPalette>(g, cpu, g.dword(f + kMade), palette);
+                callCom<kSetColorKey, &host::ddraw::surfaceSetColorKey>(g, cpu, g.dword(f + kMade), 8, f + kColourKey);
             }
         }
     }
@@ -390,7 +395,7 @@ reg32 frontend::menz::ddrawFreeSurface(App* app, CPU& cpu, reg32 display, reg32 
         display = kMainDisplay;
     if (surface == g.dword(display + kDisplayLocked))
         guest::direct<0x4ed2a0, eab::ddrawUnlockBitmap>(app, cpu, display);
-    return callCom<kRelease, &IUnknown::Release>(g, cpu, g.edx());
+    return callCom<kRelease, &host::ddraw::release>(g, cpu, g.edx());
 }
 
 void frontend::ddrawFreeSurface(win32::WinApplication* app, x86::CPU& cpu)
@@ -409,7 +414,7 @@ reg32 frontend::menz::ddrawBackSurface(App* app, CPU& cpu, reg32 surface)
     const reg32 f = g.frame();
     g.setDword(f, 0);
     g.setDword(f + 4, kCapsBackBuffer);
-    callCom<kGetAttachedSurface, &IDirectDrawSurface::GetAttachedSurface>(g, cpu, surface, f + 4, f);
+    callCom<kGetAttachedSurface, &host::ddraw::surfaceGetAttachedSurface>(g, cpu, surface, f + 4, f);
     return g.dword(f);
 }
 
@@ -429,7 +434,7 @@ reg32 frontend::menz::ddrawSurfaceSize(App* app, CPU& cpu, reg32 surface, reg32 
     const fe::Frame frame(g, cpu, 0x78);
     const reg32 f = g.frame();
     g.setDword(f, kDescSize);
-    reg32 result = callCom<kGetSurfaceDesc, &IDirectDrawSurface::GetSurfaceDesc>(g, cpu, surface, f);
+    reg32 result = callCom<kGetSurfaceDesc, &host::ddraw::surfaceGetSurfaceDesc>(g, cpu, surface, f);
     cpu.ebx = bitsOut;
     if ((result & 0xffff) != 0)
     {
@@ -584,15 +589,15 @@ reg32 frontend::menz::singleInstanceCheck(App* app, CPU& cpu, reg32 name)
         g.setDword(kClassName, name != 0 ? name : g.dword(g.dword(kProgramName)));
     if (name == 0)
         name = g.dword(kClassName);
-    g.setDword(kMutex, callImport<kCreateMutexA, &win32::kernel32::CreateMutexA>(g, cpu, 0, 1, name));
+    g.setDword(kMutex, callImport<kCreateMutexA, &host::createMutex>(g, cpu, 0, 1, name));
     if (callImport<kGetLastError, &win32::kernel32::GetLastError>(g, cpu) != kErrorAlreadyExists)
         return 0;
-    const reg32 window = callImport<kFindWindowA, &win32::user32::FindWindowA>(g, cpu, 0, g.dword(kClassName));
+    const reg32 window = callImport<kFindWindowA, &host::findWindow>(g, cpu, 0, g.dword(kClassName));
     cpu.ebx = window;
     if (window != 0)
     {
-        callImport<kShowWindow, &win32::user32::ShowWindow>(g, cpu, window, 9);
-        callImport<kSetForegroundWindow, &win32::user32::SetForegroundWindow>(g, cpu, window);
+        callImport<kShowWindow, &host::showWindow>(g, cpu, window, 9);
+        callImport<kSetForegroundWindow, &host::setForegroundWindow>(g, cpu, window);
     }
     if (g.dword(kMustLeave) == 0)
         return 1;
@@ -647,7 +652,7 @@ reg32 frontend::menz::eaTextStart(App* app, CPU& cpu)
     constexpr reg32 kStarted = 0x568f30, kState = 0x5671f4, kStateBytes = 0xb8;
     if (g.dword(kStarted) != 0)
         return g.eax();
-    g.call(kFillZero, args({ kState, kStateBytes }));
+    fe::direct<kFillZero, ea::clearBytes>(g.app(), g.cpu(), kState, kStateBytes);
     g.setDword(kStarted, 1);
     return guest::direct<0x4f2a78, eab::atexitJump>(app, cpu, 0x517b70u);
 }
@@ -685,8 +690,8 @@ reg32 frontend::menz::keyboardIsPc98(App* app, CPU& cpu)
     Guest g(app, cpu);
     const fe::Frame frame(g, cpu, 0xc);
     constexpr reg32 kJapanese = 7, kScanTable = 0x561298, kPc98Scans = 0x568f34;
-    const reg32 type = callImport<kGetKeyboardType, &win32::user32::GetKeyboardType>(g, cpu, 0);
-    const sreg32 subtype = sreg32(callImport<kGetKeyboardType, &win32::user32::GetKeyboardType>(g, cpu, 1));
+    const reg32 type = callImport<kGetKeyboardType, &host::keyboardType>(g, cpu, 0);
+    const sreg32 subtype = sreg32(callImport<kGetKeyboardType, &host::keyboardType>(g, cpu, 1));
     if (type != kJapanese || subtype < 0xd01 || subtype > 0xd04)
         return 0;
     g.setDword(kScanTable, kPc98Scans);
@@ -1283,7 +1288,7 @@ reg32 frontend::menz::fileLockEnter(App* app, CPU& cpu, reg32 lock)
 {
     Guest g(app, cpu);
     const fe::Frame frame(g, cpu, 8);
-    callImport<kEnterLock, &win32::kernel32::EnterCriticalSection>(g, cpu, g.dword(lock + 0x18));
+    callImport<kEnterLock, &host::enterLock>(g, cpu, g.dword(lock + 0x18));
     return 0;
 }
 
@@ -1300,7 +1305,7 @@ reg32 frontend::menz::fileLockLeave(App* app, CPU& cpu, reg32 lock, reg32 /*toke
     Guest g(app, cpu);
     const fe::Frame frame(g, cpu, 4);
     cpu.edx = g.dword(lock + 0x18);
-    return callImport<kLeaveLock, &win32::kernel32::LeaveCriticalSection>(g, cpu, cpu.edx);
+    return callImport<kLeaveLock, &host::leaveLock>(g, cpu, cpu.edx);
 }
 
 void frontend::fileLockLeave(win32::WinApplication* app, x86::CPU& cpu)
@@ -1360,7 +1365,7 @@ reg32 frontend::menz::videoWindowMake(App* app, CPU& cpu, reg32 width, reg32 hei
         g.setDword(kErrorLine, 0x41);
         g.leaveEdx(0x41);
         const reg32 largest = g.call(0x4e1580, args({ kFunction }));
-        g.call(kError, args({}, { 0x54f5fc, width, height, largest }));
+        fe::direct<kError, ea::error>(g.app(), g.cpu(), 0x54f5fc, guest::Words{width, height, largest});
         return 0;
     }
     fe::direct<0x508b80, watb::initVideoWindow>(app, cpu, window, width, height, bits, passedOn, passedOn2, passedOn3);
@@ -1568,7 +1573,7 @@ reg32 frontend::menz::fontCreate(App* app, CPU& cpu, reg32 data)
     const reg32 signature = ((first >> 24) | ((first >> 8) & 0xff00) | ((first << 8) & 0xff0000) | (first << 24)) & 0xffffff00;
     if (signature != kSignature)
         failAt(g, 0x550840, 0x550850, 0x6d, { 0x55085c, data });
-    g.call(kMemset, args({ font, 0, kRecordSize }));
+    fe::direct<kMemset, watcom::clib::memset>(g.app(), g.cpu(), font, 0, kRecordSize);
     const auto signedByte = [&](reg32 address) { return reg32(sreg32(std::int8_t(g.byte(address)))); };
     g.setDword(font + kFontVersion, 0x64);
     g.setDword(font + 0x04, signedByte(data + 0x10));
@@ -1964,16 +1969,15 @@ reg32 frontend::menz::doubleDivide(App* app, CPU& cpu, reg32 low, reg32 high, re
     }
     if (g.byte(kFpuKind) != 0)
     {
-        x86::FPU& fpu = g.fpu();
         Float quotient = Float(doubleOf(high, low));
         if (g.byte(kFdivBug) & 1)
         {
-            fpu.push(Float(fpu.st(0)));
-            fpu.push(quotient);
-            guest::direct<0x52700c, safeDivide>(app, cpu, divisorLow, divisorHigh);
-            quotient = fpu.take();
-            const Float above = fpu.take();
-            fpu.st(0) = above;
+            // sub_52700c divides st(0), its st(1) what the caller's x87 has on top: that one is
+            // read here, the x87's stack the caller's interface.
+            const double below = double(g.fpu().st(0));
+            quotient = guest::direct<0x52700c, safeDivide>(app, cpu, double(quotient), below, divisorLow, divisorHigh);
+            if (cpu.terminate)
+                throw fe::Terminated();
         }
         else
         {
@@ -2433,18 +2437,19 @@ void frontend::doubleMultiply(win32::WinApplication* app, x86::CPU& cpu)
     runWhole(app, cpu, site, [&](Guest&) { return menz::doubleMultiply(app, cpu, low, high, otherLow, otherHigh); });
 }
 
-/* sub_526674: the x87's way's end for sub_5267ff, which has jumped here into sub_526642: st(0)
- * the answer, on the stack the other double and the first, below the return address. */
-reg32 frontend::menz::doubleProductFromX87(App* app, CPU& cpu)
+/* sub_526674: the x87's way's end for sub_5267ff, which has jumped here into sub_526642: the
+ * answer `product` (st(0), which its adapter takes off), on the stack the other double and the
+ * first, below the return address. */
+reg32 frontend::menz::doubleProductFromX87(App* app, CPU& cpu, double product)
 {
     Guest g(app, cpu);
-    return answerFromX87(g, double(g.fpu().pop()));
+    return answerFromX87(g, product);
 }
 
 void frontend::doubleProductFromX87(win32::WinApplication* app, x86::CPU& cpu)
 {
     static Site site{ "sub_526674", 0x10, 0, nullptr, 0, 0 };
-    runWhole(app, cpu, site, [&](Guest&) { return menz::doubleProductFromX87(app, cpu); });
+    runWhole(app, cpu, site, [&](Guest&) { return menz::doubleProductFromX87(app, cpu, double(cpu.fpu.pop())); });
 }
 
 /* sub_52699c: edx:eax against ecx:ebx, a denormal taken for zero: -1, 0 or 1.  Its one
@@ -2496,8 +2501,9 @@ reg32 frontend::menz::fdivBugCheck(App* app, CPU& cpu)
     constexpr reg32 kTinyLow = 0xe2308c3a, kTinyHigh = 0x3e45798e;  // 1e-8
     if (g.byte(kFpuKind) < 3)
         return g.eax();
+    // The division's slot on the x87, as the original has it free: the x87's depth its callees see.
     x86::FPU& fpu = g.fpu();
-    fpu.push(Float(fpu.st(0)));  // the division's slot on the x87, as the original has it free
+    fpu.push(Float(fpu.st(0)));
     g.call(0x52643c, args({ kBigLow, kBigHigh, kByLow, kByHigh }));
     const Float top = fpu.take();
     fpu.st(0) = top;
@@ -2515,70 +2521,65 @@ void frontend::fdivBugCheck(win32::WinApplication* app, x86::CPU& cpu)
     runWhole(app, cpu, site, [&](Guest&) { return menz::fdivBugCheck(app, cpu); });
 }
 
-/* sub_52700c: st(0) divided by a double on the stack, safe from the bug: through the
+/* sub_52700c: `top` (st(0)) divided by a double on the stack, safe from the bug: through the
  * runtime's careful division (sub_526f87), whose two x87 slots are made if the stack has
- * room, else one value kept in memory for it.  A NaN or an infinity simply divides. */
-reg32 frontend::menz::safeDivide(App* app, CPU& cpu, reg32 divisorLow, reg32 divisorHigh)
+ * room, else `below` (st(1)) kept in memory for it.  A NaN or an infinity simply divides.  The
+ * quotient, which its adapter leaves in st(0); st(1) as it was (a double through a long double
+ * is itself), eax as it came. */
+double frontend::menz::safeDivide(App* app, CPU& cpu, double top, double below, reg32 divisorLow, reg32 divisorHigh)
 {
     Guest g(app, cpu);
     const fe::Frame frame(g, cpu, 4);
-    const reg32 kept = g.eax();
-    x86::FPU& fpu = g.fpu();
-    Float top = fpu.st(0), below = fpu.st(1);
+    const Float divisor = Float(doubleOf(divisorHigh, divisorLow));
     if ((divisorHigh & 0x7ff00000) == 0x7ff00000)
-    {
-        top = fp::div(top, Float(doubleOf(divisorHigh, divisorLow)));
-    }
-    else if ((fpu.status.word & 0x3800) != 0)
-    {
-        fpu.push(top);
-        fpu.push(Float(doubleOf(divisorHigh, divisorLow)));
-        guest::direct<0x526f87, safeDivideCall>(app, cpu);
-        top = fpu.take();
-    }
-    else
+        return fp::div(Float(top), divisor);
+    if ((g.fpu().status.word & 0x3800) == 0)
     {
         cpu.esp -= 0xc;
-        const reg32 keptAt = cpu.esp;
-        g.app()->getMemory<x86::IEEEf80>(keptAt) = Float(below);
-        fpu.push(top);
-        fpu.push(Float(doubleOf(divisorHigh, divisorLow)));
-        guest::direct<0x526f87, safeDivideCall>(app, cpu);
-        top = fpu.take();
-        below = Float(g.app()->getMemory<x86::IEEEf80>(keptAt));
+        g.app()->getMemory<x86::IEEEf80>(cpu.esp) = Float(below);
     }
-    fpu.st(0) = top;
-    fpu.st(1) = below;
-    return kept;
+    const double quotient = guest::direct<0x526f87, safeDivideCall>(app, cpu, top, double(divisor));
+    if (cpu.terminate)
+        throw fe::Terminated();
+    return quotient;
 }
 
 void frontend::safeDivide(win32::WinApplication* app, x86::CPU& cpu)
 {
     static Site site{ "sub_52700c", 8, 0, nullptr, 0, 0 };
     const reg32 divisorLow = stackWord(app, cpu, 0), divisorHigh = stackWord(app, cpu, 1);
-    runWhole(app, cpu, site, [&](Guest&) { return menz::safeDivide(app, cpu, divisorLow, divisorHigh); });
+    runWhole(app, cpu, site, [&](Guest&) {
+        const reg32 eax = cpu.eax;  // kept
+        const double below = double(cpu.fpu.st(1));
+        const double quotient = menz::safeDivide(app, cpu, double(cpu.fpu.st(0)), below, divisorLow, divisorHigh);
+        cpu.fpu.st(0) = x86::Float(quotient);
+        cpu.fpu.st(1) = x86::Float(below);  // as the code stores it back
+        return eax;
+    });
 }
 
-/* sub_526f87: st(1) and st(0) put in memory as long doubles for the careful division
- * (sub_5269d4), and its answer in their place. */
-reg32 frontend::menz::safeDivideCall(App* app, CPU& cpu)
+/* sub_526f87: `divisor` (st(0)) and `dividend` (st(1)) put in memory as long doubles for the
+ * careful division (sub_5269d4, by address: a stub, see native_dead), and its answer back, which
+ * the adapter leaves in their place; eax as the division leaves it. */
+double frontend::menz::safeDivideCall(App* app, CPU& cpu, double dividend, double divisor)
 {
     Guest g(app, cpu);
     const fe::Frame frame(g, cpu, 0x2c);
-    x86::FPU& fpu = g.fpu();
-    g.app()->getMemory<x86::IEEEf80>(g.frame()) = Float(fpu.st(0));
-    g.app()->getMemory<x86::IEEEf80>(g.frame() + 0xc) = Float(fpu.st(1));
-    const reg32 result = g.call(0x5269d4);
-    const Float answer = fpu.take();
-    fpu.count -= 1;
-    fpu.st(0) = answer;
-    return result;
+    g.app()->getMemory<x86::IEEEf80>(g.frame()) = Float(divisor);
+    g.app()->getMemory<x86::IEEEf80>(g.frame() + 0xc) = Float(dividend);
+    g.call(0x5269d4);
+    return double(g.fpu().take());
 }
 
 void frontend::safeDivideCall(win32::WinApplication* app, x86::CPU& cpu)
 {
     static Site site{ "sub_526f87", 0, 0, nullptr, 0, 0 };
-    runWhole(app, cpu, site, [&](Guest&) { return menz::safeDivideCall(app, cpu); });
+    runWhole(app, cpu, site, [&](Guest&) {
+        const double answer = menz::safeDivideCall(app, cpu, double(cpu.fpu.st(1)), double(cpu.fpu.st(0)));
+        cpu.fpu.count -= 1;
+        cpu.fpu.st(0) = x86::Float(answer);
+        return cpu.eax;
+    });
 }
 
 }  // namespace nfs3hp

@@ -1,7 +1,16 @@
 #include "port_text.h"
 #include "port_draw2d.h"
+#include "port_sound_effects.h"
+#include "native_controls_input.h"
+#include "native_ea_memory.h"
+#include "native_ea_support.h"
+#include "native_frontend_glue.h"
+#include "native_frontend_text.h"
+#include "native_graphics.h"
+#include "native_load_cardb.h"
+#include "native_watcom.h"
 #include "native_windows.h"
-#include <winapi/user32.h>
+#include "host_window.h"
 
 #include <cstdint>
 #include <cstring>
@@ -233,14 +242,15 @@ bool callPort(App* app, CPU& cpu, reg32 esp, guest::Native target, Args a, reg32
     return true;
 }
 
-/* What leaves a value on the x87's stack: eax as the game's code leaves it,
- * and the value. */
-struct Width
+/* A typed core called as C++ where the game's code calls its address, from `esp`: the registers
+ * the call by address loaded are not loaded (the adapters give every one back but eax anyway), its
+ * result as the core gives it; cpu.terminate set when the game stopped in it. */
+template <reg32 Address, auto Core, typename... A>
+auto directAt(App* app, CPU& cpu, reg32 esp, A... args)
 {
-    reg32 eax;
-    Float value;
-};
-using WidthResult = std::optional<Width>;
+    cpu.esp = esp;
+    return guest::direct<Address, Core>(app, cpu, args...);
+}
 
 /* ---- The screen ---- */
 
@@ -296,7 +306,9 @@ Result nameText(App* app, CPU& cpu, reg32 esp, int32_t number, reg32 edx)
     reg32 r;
     if (number >= 0x7a8 && number <= 0x7bc)
     {
-        if (!callGame(app, cpu, at, kDisplayModeName, {reg32(number), edx}, {}, r))
+        cpu.edx = edx;  // pushed and popped by its code, as the call by address hands it
+        r = directAt<kDisplayModeName, frontend::text::displayModeName>(app, cpu, at, reg32(number));
+        if (cpu.terminate)
             return {};
         return int32_t(r);
     }
@@ -307,17 +319,21 @@ Result nameText(App* app, CPU& cpu, reg32 esp, int32_t number, reg32 edx)
             return {};
         if (r != 0)
         {
-            if (!callGame(app, cpu, at, kCarIsPolice, {car, car}, {}, r))
+            const std::optional<reg32> police = directAt<kCarIsPolice, load::policeFlag>(app, cpu, at, car);
+            if (cpu.terminate)
                 return {};
-            return lineText(app, cpu, at - 4, r != 0 ? kPoliceCarText : kCarText, car);
+            return lineText(app, cpu, at - 4, *police != 0 ? kPoliceCarText : kCarText, car);
         }
-        if (!callGame(app, cpu, at, kCarName, {car, car}, {}, r))
+        const std::optional<reg32> name = directAt<kCarName, load::nameOf>(app, cpu, at, car);
+        if (cpu.terminate)
             return {};
-        return int32_t(r);
+        return int32_t(*name);
     }
     if (!(number >= 0x7ef && number <= 0x821) && number >= 0x855 && number <= 0x865)
     {
-        if (!callGame(app, cpu, at, kControllerName, {reg32(number - 0x855), edx}, {}, r))
+        cpu.edx = edx;  // as the call by address hands it; its code sets its own
+        r = directAt<kControllerName, frontend::text::controllerName>(app, cpu, at, reg32(number - 0x855));
+        if (cpu.terminate)
             return {};
         return int32_t(r);
     }
@@ -345,13 +361,20 @@ Result loadedLanguageText(App* app, CPU& cpu, reg32 esp, int32_t language)
         return language;
     const reg32 old = kLanguageTexts(app);
     const reg32 at = esp - 0x10 - 0xfc;  // the file's name is built there
-    reg32 r = reg32(language);
-    if (old != 0 && !callGame(app, cpu, at, kFree, {old, reg32(language), 0, old}, {}, r))
-        return {};
+    if (old != 0)
+    {
+        directAt<kFree, ea::purgeBlock>(app, cpu, at, old);
+        if (cpu.terminate)
+            return {};
+    }
     const reg32 file = kLanguageFiles(app, language);
-    if (!callGame(app, cpu, at, kSprintf, {r, reg32(language), file, old}, {at, kTwoStrings, kGameFolder, file}, r)
-        || !callGame(app, cpu, at, kLoadFile, {at, 0, file, old}, {}, r))
+    directAt<kSprintf, watcom::clib::sprintf>(app, cpu, at, at, kTwoStrings, guest::Words{kGameFolder, file});
+    if (cpu.terminate)
         return {};
+    const std::optional<reg32> loaded = directAt<kLoadFile, ea::loadWhole>(app, cpu, at, at, reg32(0));
+    if (cpu.terminate)
+        return {};
+    const reg32 r = *loaded;
     kLanguageTexts.set(app, r);
     return int32_t(r);
 }
@@ -432,7 +455,8 @@ Result quadsDrawn(App* app, CPU& cpu, reg32 esp, reg32 list)
     const reg32 at = esp - 0x18 - 4;
     const reg32 vertices = list + kListVertices, numbers = list + kListNumbers;
     reg32 r;
-    if (!callGame(app, cpu, at, kRenderState, {1, word(app, list + kListState)}, {}, r)
+    directAt<kRenderState, graphics::sendState>(app, cpu, at, reg32(1), word(app, list + kListState));
+    if (cpu.terminate
         || !callGame(app, cpu, at, kQuadOutcodes,
                      {reg32(int32_t(word(app, list + kListQueued)) >> 2), vertices, numbers, list}, {}, r)
         || !callGame(app, cpu, at, kQuadMesh, {reg32(int32_t(word(app, list + kListQueued)) >> 2), vertices, numbers, list},
@@ -469,8 +493,12 @@ Result fontsDrawn(App* app, CPU& cpu, reg32 esp)
     const reg32 at = esp - 8;
     const bool alpha = (kRenderFlags(app) & 2) != 0;
     reg32 r;
-    if (alpha && !callGame(app, cpu, at, kRenderState, {0x2bf, 1}, {}, r))
-        return {};
+    if (alpha)
+    {
+        directAt<kRenderState, graphics::sendState>(app, cpu, at, reg32(0x2bf), reg32(1));
+        if (cpu.terminate)
+            return {};
+    }
     Result drawn = quadsDrawn(app, cpu, at - 4, kFontQuads);
     if (drawn)
         drawn = quadsDrawn(app, cpu, at - 4, kFontQuads + kFontQuadsBytes);
@@ -523,20 +551,6 @@ int32_t characterDropOf(App* app, CPU& cpu, uint8_t c)
     const Float drop = Float(x86::sreg16(int8_t(byteAt(app, 0x83fa60 + i))));
     return chopped<int32_t>(cpu, fp::mul(drop, Float(kCharacterSize(app))));
 }
-
-/* What 0x4d06f0 is handed: the character's number (0xe0 a font, from the
- * space), its square of the font's texture, where it goes (x a float), its
- * colour, whether it is only measured. */
-struct Character
-{
-    reg32 number;
-    int32_t textureX, textureY;
-    float x;
-    int32_t y;
-    int32_t width, height;
-    reg32 colour;
-    int32_t measured;
-};
 
 /* 0x4d06f0's: a character of the fonts: its quad, unless it is a space, or
  * it is only measured, or it would be no pixel wide or high -- its corners
@@ -709,6 +723,36 @@ WidthResult measured(App* app, CPU& cpu, reg32 esp, reg32 text)
 
 }  // namespace
 
+/* The typed cores of those that leave a value on the x87's stack (port_text.h): the value back. */
+
+double textScaleSet(App* app, CPU& cpu, reg32 scale)
+{
+    const reg32 before = scaleSet(app, cpu, scale);
+    float was;
+    std::memcpy(&was, &before, sizeof was);
+    return Float(was);  // fld dword
+}
+
+WidthResult characterDrawn(App* app, CPU& cpu, reg32 esp, Character ch)
+{
+    return drawnCharacter(app, cpu, esp, ch);
+}
+
+WidthResult textMeasured(App* app, CPU& cpu, reg32 esp, reg32 text)
+{
+    return measured(app, cpu, esp, text);
+}
+
+WidthResult textMeasuredWithOverhang(App* app, CPU& cpu, reg32 esp, reg32 text)
+{
+    return measuredWithOverhang(app, cpu, esp, text);
+}
+
+WidthResult textDrawn(App* app, CPU& cpu, reg32 esp, reg32 text, int32_t x, int32_t y)
+{
+    return drawnText(app, cpu, esp, text, x, y);
+}
+
 /* 0x452020's: how wide text `text` is in font `font`: on the 640 wide screen
  * of the menus when the 3D card draws them, else as the 2D screens draw it;
  * 5 for none. */
@@ -821,9 +865,10 @@ namespace
  * a race's pause screens. */
 Result menuMouseRead(App* app, CPU& cpu, reg32 esp, reg32 buttons, reg32 x, reg32 y, reg32 wheel)
 {
-    reg32 r;
-    if (!callGame(app, cpu, esp - 0xc, kReadMouse, {buttons, x, y, wheel}, {}, r))
+    const std::optional<reg32> read = directAt<kReadMouse, controls::mouseRead>(app, cpu, esp - 0xc, buttons, x, y, wheel);
+    if (cpu.terminate)
         return {};
+    reg32 r = *read;
     if (kInRace(app) != 0)
     {
         setWord(app, x, reg32(onMenuX(app, int32_t(word(app, x)))));
@@ -1105,7 +1150,7 @@ std::optional<bool> keyHeld(App* app, CPU& cpu, reg32 at, reg32 key)
     cpu.edx = 0;
     cpu.ebx = 0;
     cpu.ecx = 0;
-    const std::optional<reg32> state = guest::windows<kGetKeyState, &win32::user32::GetAsyncKeyState>(app, cpu, key);
+    const std::optional<reg32> state = guest::windows<kGetKeyState, &host::asyncKeyState>(app, cpu, key);
     if (!state)
         return {};
     return (*state & 0x8000) != 0;
@@ -1115,8 +1160,11 @@ std::optional<bool> keyHeld(App* app, CPU& cpu, reg32 at, reg32 key)
 bool keysFlushed(App* app, CPU& cpu, reg32 at)
 {
     for (reg32 r = 1; r != 0;)
-        if (!callGame(app, cpu, at, kNextKey, {}, {}, r))
+    {
+        r = directAt<kNextKey, frontend::glue::nextKey>(app, cpu, at);
+        if (cpu.terminate)
             return false;
+    }
     return true;
 }
 
@@ -1140,7 +1188,8 @@ Result menuKeyOf(App* app, CPU& cpu, reg32 esp, reg32 repeating)
     if (eax == 0)
     {
         kKeyFromMouse.set(app, 0);
-        if (!callGame(app, cpu, at, kNextKey, {}, {}, eax))
+        eax = directAt<kNextKey, frontend::glue::nextKey>(app, cpu, at);
+        if (cpu.terminate)
             return {};
     }
     if (eax == 0 && kClock(app) > kJoystickNext(app))
@@ -1161,6 +1210,7 @@ Result menuKeyOf(App* app, CPU& cpu, reg32 esp, reg32 repeating)
     kKeyScanCode.set(app, scanCode);
     if (key != 0)
         kLastKey.set(app, key);
+    // The menu click through its adapter, as C++: the checks run the game's code for it on both sides here.
     if (key == kEnter && !callPort(app, cpu, at, playMenuEffect, {1, 0x7f}, eax))
         return {};
     if (repeating != 0 && kHeldKey(app) != 0)
@@ -1192,9 +1242,13 @@ Result menuKeyOf(App* app, CPU& cpu, reg32 esp, reg32 repeating)
     const reg32 first = reg32(kClock(app)) + 0x2d;
     kRepeatFirst.set(app, int32_t(first));
     kRepeatNext.set(app, int32_t(first + 0xf));
-    reg32 r;
-    if (key != 0 && !callGame(app, cpu, at, kResetAttractTimer, {first + 0xf}, {}, r))
-        return {};
+    if (key != 0)
+    {
+        // The game's code has the next repeat's time in eax, which the reset does not read.
+        directAt<kResetAttractTimer, frontend::glue::resetAttractTimer>(app, cpu, at);
+        if (cpu.terminate)
+            return {};
+    }
     return int32_t(key);
 }
 
@@ -1356,9 +1410,7 @@ void flushFonts(App* app, CPU& cpu)
 void setTextScale(App* app, CPU& cpu)
 {
     const Entry e(cpu);
-    const reg32 before = scaleSet(app, cpu, e.arg(app, 0));
-    float was;
-    std::memcpy(&was, &before, sizeof was);
+    const double was = textScaleSet(app, cpu, e.arg(app, 0));
     e.back(cpu, e.eax, 4);
     cpu.fpu.push(Float(was));
 }

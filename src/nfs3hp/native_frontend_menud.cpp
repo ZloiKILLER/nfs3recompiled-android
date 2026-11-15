@@ -1,4 +1,5 @@
 #include "native_frontend_menud.h"
+#include "native_watcom.h"
 #include "native_frontend.h"
 #include "native_frontend_menua.h"
 #include "native_frontend_menue.h"
@@ -12,6 +13,7 @@
 #include "native_frontend_menub.h"
 #include "native_graphics.h"
 #include "native_windows.h"
+#include "host_threads.h"
 #include "port_buttons.h"
 #include "port_draw2d.h"
 #include "port_shapes.h"
@@ -85,7 +87,7 @@ x86::reg32 frontend::menud::loadPointerArt(App* app, CPU& cpu)
     const fe::Frame frame(guest, cpu, 12);
     if (guest.dword(kPointerArt) == 0)
     {
-        guest.call(kSprintf, args({}, { kPointerPath, kPointerStrings[0].address, kArtFolder }));
+        fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.cpu(), kPointerPath, kPointerStrings[0].address, guest::Words{kArtFolder});
         guest.setDword(kPointerArt, *fe::direct<0x4e0ec0, ea::loadWhole>(app, cpu, kPointerPath, kLoadHigh));
     }
     guest::direct<0x4daa10, menue::loadPointer>(app, cpu, guest.dword(kPointerArt));
@@ -265,11 +267,11 @@ x86::reg32 frontend::menud::drawScreenEffect(App* app, CPU& cpu)
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 12);
     const reg32 name = fe::direct<0x44ae00, loop::currentMenuName>(app, cpu);
-    if (guest.call(kStrcmp, args({ name, kEffectScreens[0].address })) == 0)
+    if (fe::direct<kStrcmp, watcom::clib::strcmp>(guest.app(), guest.cpu(), name, kEffectScreens[0].address) == 0)
         fe::direct<0x453940, menub::carStatsDraw>(app, cpu);
-    if (guest.call(kStrcmp, args({ name, kEffectScreens[1].address })) == 0)
+    if (fe::direct<kStrcmp, watcom::clib::strcmp>(guest.app(), guest.cpu(), name, kEffectScreens[1].address) == 0)
         fe::direct<0x454780, menub::carListDraw>(app, cpu);
-    reg32 result = guest.call(kStrcmp, args({ name, kEffectScreens[2].address }));
+    reg32 result = fe::direct<kStrcmp, watcom::clib::strcmp>(guest.app(), guest.cpu(), name, kEffectScreens[2].address);
     if (result == 0)
         result = fe::direct<0x453f60, menub::carSpecsDraw>(app, cpu);
     return result;
@@ -305,7 +307,8 @@ x86::reg32 frontend::menud::startLogoTexture(App* app, CPU& cpu)
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 20 + 0x100);
     const reg32 path = guest.frame();
-    guest.call(kSprintf, args({}, { path, kLogoStrings[0].address, kArtFolder, kLogoStrings[1].address }));
+    fe::direct<kSprintf, watcom::clib::sprintf>(app, cpu, path, kLogoStrings[0].address,
+                                                guest::Words{kArtFolder, kLogoStrings[1].address});
     guest.leaveEdx(0);  // what loadQfs hands on in edx to the file's loader: its flags
     const reg32 file = fe::direct<0x4956f0, draw::loadQfs>(app, cpu, path);
     const reg32 shape = fe::direct<0x4ef1e0, frontend::eab::shapeFileFind>(app, cpu, file, kLogoStrings[2].address);
@@ -335,7 +338,7 @@ x86::reg32 frontend::menud::loadLogoPictures(App* app, CPU& cpu)
                                                                                        kGlintName.address)));
     // Track info shows the first picture only.
     std::int32_t pictures = kLogoPictureCount;
-    if (name != 0 && guest.call(kStrcmp, args({ name, kTrackInfoScreen.address })) == 0)
+    if (name != 0 && fe::direct<kStrcmp, watcom::clib::strcmp>(guest.app(), guest.cpu(), name, kTrackInfoScreen.address) == 0)
         pictures = 1;
     reg32 record = 0;
     for (std::int32_t i = 0; i < pictures; ++i)
@@ -462,7 +465,7 @@ x86::reg32 frontend::menud::drawLogo(App* app, CPU& cpu, reg32 item, reg32 x, re
     logo.nextPictureColour = (reg32(between) << 24) | 0xffffff;
 
     // Track info holds the first picture.
-    if (name != 0 && guest.call(kStrcmp, args({ name, kTrackInfoScreen.address })) == 0)
+    if (name != 0 && fe::direct<kStrcmp, watcom::clib::strcmp>(guest.app(), guest.cpu(), name, kTrackInfoScreen.address) == 0)
     {
         logo.picture = guest.dword(kLogoPictures);
         logo.nextPicture = 0;
@@ -605,7 +608,7 @@ reg32 languageText(Guest& guest, x86::CPU& cpu, reg32 number)
 void drawPlayerRow(Guest& guest, x86::CPU& cpu, reg32 x, std::int32_t slot, std::int32_t rowY)
 {
     const reg32 record = kPlayerRecords + kPlayerRecordSize * reg32(slot);
-    lobbyLock<kEnterLock, &win32::kernel32::EnterCriticalSection>(guest, cpu);
+    lobbyLock<kEnterLock, &host::enterLock>(guest, cpu);
     const reg32 swatchX = x + kColumnSwatch;
     const reg32 swatchY = reg32(rowY + 2);
     if ((guest.byte(record + kRecordFlags) & kFlagIcon) != 0)
@@ -636,7 +639,7 @@ void drawPlayerRow(Guest& guest, x86::CPU& cpu, reg32 x, std::int32_t slot, std:
         guest.copyString(car + guest.length(car), kLobbyStrings[1].address);
     guest.copyString(car + guest.length(car), record + kRecordCarModel);
     lobbyText(guest, cpu, car, x + kColumnCar, rowY, kAlignLeft, kRowColour);
-    lobbyLock<kLeaveLock, &win32::kernel32::LeaveCriticalSection>(guest, cpu);
+    lobbyLock<kLeaveLock, &host::leaveLock>(guest, cpu);
 
     // The host, at the top, has no light to show.
     if (slot != 0)
@@ -678,10 +681,10 @@ x86::reg32 frontend::menud::drawLobbyPlayers(App* app, CPU& cpu, reg32 x, reg32 
             // Open: a player who has gone is forgotten, under the lock.
             if (reg32(slot) == guest.dword(recordSlot))
             {
-                lobbyLock<kEnterLock, &win32::kernel32::EnterCriticalSection>(guest, cpu);
+                lobbyLock<kEnterLock, &host::enterLock>(guest, cpu);
                 if (std::int16_t(guest.word(machinePlayer)) == -1)
                     guest.setDword(recordSlot, 0);
-                lobbyLock<kLeaveLock, &win32::kernel32::LeaveCriticalSection>(guest, cpu);
+                lobbyLock<kLeaveLock, &host::leaveLock>(guest, cpu);
             }
             lobbyText(guest, cpu, languageText(guest, cpu, kTextOpenSlot), x + kColumnName, rowY + 1, kAlignLeft,
                       kRowColour);

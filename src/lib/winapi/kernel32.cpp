@@ -1,21 +1,14 @@
 #include <winapi/kernel32.h>
 #include <x86.h>
 #include <lib/memmap.h>
-#include <lib/mutex.h>
-#include <lib/event.h>
 #include <lib/file.h>
 #include <lib/library.h>
 #include <lib/process.h>
-#include <lib/timer.h>
 #include <lib/window.h>
 #include <lib/thread.h>
 #include <cstring>
 #include <new>
-#include <vector>
 #include <SDL3/SDL.h>
-#ifndef _WIN32
-# include <unwind.h>
-#endif
 
 namespace win32 { namespace kernel32
 {
@@ -104,15 +97,6 @@ BOOL CreateDirectoryA(WinApplication* app, x86::CPU& cpu,
     return File::createDirectory(lpPathName) ? 1 : 0;
 }
 
-HANDLE CreateEventA(WinApplication* app, x86::CPU& cpu,
-                    LPSECURITY_ATTRIBUTES lpEventAttributes, BOOL bManualReset, BOOL bInitialState, LPCSTR lpName)
-{
-    NFS2_USE(cpu);
-    NFS2_USE(lpEventAttributes);
-    win32::Event* event = new win32::Event(lpName, bManualReset != 0, bInitialState != 0);
-    return app->allocateResource(event);
-}
-
 HANDLE CreateFileA(WinApplication* app, x86::CPU& cpu,
                    LPCSTR lpFileName, DWORD dwDesiredAccess, DWORD dwShareMode,
                    LPSECURITY_ATTRIBUTES lpSecurityAttributes, DWORD dwCreationDisposition,
@@ -170,58 +154,11 @@ HANDLE CreateFileMappingA(WinApplication* app, x86::CPU& cpu,
     return app->allocateResource(file);
 }
 
-HANDLE CreateMutexA(WinApplication* app, x86::CPU& cpu,
-                    LPSECURITY_ATTRIBUTES lpMutexAttributes, BOOL bInitialOwner, LPCSTR lpName)
-{
-    NFS2_USE(cpu);
-    NFS2_USE(lpMutexAttributes);
-    win32::Mutex* mutex = new win32::Mutex(lpName);
-    if (bInitialOwner)
-    {
-        app->unlockContext(cpu);
-        mutex->lock();
-        app->lockContext(cpu);
-    }
-    return app->allocateResource(mutex);
-}
-
-HANDLE CreateThread(WinApplication* app, x86::CPU& cpu,
-                    LPSECURITY_ATTRIBUTES lpThreadAttributes, SIZE_T dwStackSize,
-                    LPTHREAD_START_ROUTINE lpStartAddress, x86::reg32 lpParameter, DWORD dwCreationFlags,
-                    LPDWORD lpThreadId)
-{
-    NFS2_USE(cpu);
-    NFS2_USE(lpThreadAttributes);
-    NFS2_ASSERT(dwStackSize <= 1024*1024);
-    win32::Thread* thread = new win32::Thread(app, lpStartAddress, lpParameter, dwCreationFlags);
-    if ((dwCreationFlags & 0x4) == 0) // CREATE_SUSPENDED
-    {
-        thread->resume();
-    }
-    if (lpThreadId) *lpThreadId = thread->threadId();
-    const HANDLE h = app->allocateResource(thread);
-    if (WinApplication::traceApi())
-    {
-        SDL_Log("[API] CreateThread entry=0x%x param=0x%x flags=0x%x -> h=%u tid=%u",
-                unsigned(lpStartAddress), unsigned(lpParameter), unsigned(dwCreationFlags),
-                unsigned(h), unsigned(thread->threadId()));
-    }
-    return h;
-}
-
 void DebugBreak(WinApplication* app, x86::CPU& cpu)
 {
     NFS2_USE(app);
     NFS2_USE(cpu);
     NFS2_ASSERT(false);
-}
-
-void DeleteCriticalSection(WinApplication* app, x86::CPU& cpu,
-                           LPCRITICAL_SECTION lpCriticalSection)
-{
-    NFS2_USE(app);
-    NFS2_USE(cpu);
-    app->freeResource((*lpCriticalSection)->getResourceIndex());
 }
 
 BOOL DeleteFileA(WinApplication* app, x86::CPU& cpu,
@@ -232,63 +169,6 @@ BOOL DeleteFileA(WinApplication* app, x86::CPU& cpu,
     return File::remove(lpFileName);
 }
 
-BOOL DuplicateHandle(WinApplication* app, x86::CPU& cpu,
-                     HANDLE hSourceProcessHandle, HANDLE hSourceHandle, HANDLE hTargetProcessHandle,
-                     LPHANDLE lpTargetHandle, DWORD dwDesiredAccess, BOOL bInheritHandle, DWORD dwOptions)
-{
-    NFS2_USE(cpu);
-    NFS2_USE(hSourceProcessHandle);
-    NFS2_USE(hTargetProcessHandle);
-    NFS2_USE(dwDesiredAccess);
-    NFS2_USE(bInheritHandle);
-    NFS2_USE(dwOptions);
-    win32::GenericResource* sourceHandle = dynamic_cast<win32::GenericResource*>(app->getResource(hSourceHandle));
-    NFS2_ASSERT(dynamic_cast<win32::Thread*>(sourceHandle));
-    *lpTargetHandle = app->allocateResource(dynamic_cast<win32::Thread*>(sourceHandle)->duplicate());
-    return 1;
-}
-
-void EnterCriticalSection(WinApplication* app, x86::CPU& cpu,
-                          LPCRITICAL_SECTION lpCriticalSection)
-{
-    NFS2_USE(app);
-    NFS2_USE(cpu);
-    /* An uncontended critical section -- overwhelmingly the common case, since
-     * most Win32 critical sections guard something brief -- used to always pay
-     * for releasing and reacquiring the single global guest execution context
-     * anyway.  That context is shared by every guest thread, so on a screen
-     * where more than one thread hammers a critical section at high frequency
-     * (observed on device: one thread alone doing 18000+ Enter/GetTickCount/
-     * Leave triples per second while the Camera/Graphics settings screens are
-     * open, other threads doing the same at the same time), every single call
-     * became a real OS mutex release-then-reacquire against contention from
-     * every other such thread -- a thundering-herd on the context mutex, not
-     * on the critical section it was nominally protecting.  Try the fast,
-     * non-blocking path first; only fall back to the release-context dance
-     * when the critical section is genuinely held by someone else, which is
-     * exactly the case that needs it (another guest thread may itself be
-     * blocked waiting for the execution context, so it cannot be allowed to
-     * make progress and release the critical section unless we let go). */
-    if ((*lpCriticalSection)->tryLock())
-    {
-        return;
-    }
-    app->unlockContext(cpu);
-    (*lpCriticalSection)->lock();
-    app->lockContext(cpu);
-}
-
-BOOL EscapeCommFunction(WinApplication* app, x86::CPU& cpu,
-                        HANDLE hFile, DWORD dwFunc)
-{
-    NFS2_USE(app);
-    NFS2_USE(cpu);
-    NFS2_USE(hFile);
-    NFS2_USE(dwFunc);
-    NFS2_ASSERT(false);
-    return 0;
-}
-
 void ExitProcess(WinApplication* app, x86::CPU& cpu,
                  UINT uExitCode)
 {
@@ -296,14 +176,6 @@ void ExitProcess(WinApplication* app, x86::CPU& cpu,
     SDL_Log("[EXIT] ExitProcess(%u) from 0x%x", unsigned(uExitCode),
             unsigned(app->getMemory<x86::reg32>(cpu.esp)));
     win32::Window::postMessage(0, 0x0012, 0, 0);
-    cpu.terminate = true;
-}
-
-void ExitThread(WinApplication* app, x86::CPU& cpu,
-                DWORD dwExitCode)
-{
-    NFS2_USE(app);
-    NFS2_USE(dwExitCode);
     cpu.terminate = true;
 }
 
@@ -400,39 +272,6 @@ BOOL GetCPInfo(WinApplication* app, x86::CPU& cpu,
     return 1;
 }
 
-BOOL GetCommModemStatus(WinApplication* app, x86::CPU& cpu,
-                        HANDLE hFile, LPDWORD lpModemStat)
-{
-    NFS2_USE(app);
-    NFS2_USE(cpu);
-    NFS2_USE(hFile);
-    NFS2_USE(lpModemStat);
-    NFS2_ASSERT(false);
-    return 0;
-}
-
-BOOL GetCommProperties(WinApplication* app, x86::CPU& cpu,
-                       HANDLE hFile, LPCOMMPROP lpCommProp)
-{
-    NFS2_USE(app);
-    NFS2_USE(cpu);
-    NFS2_USE(hFile);
-    NFS2_USE(lpCommProp);
-    NFS2_ASSERT(false);
-    return 0;
-}
-
-BOOL GetCommState(WinApplication* app, x86::CPU& cpu,
-                  HANDLE hFile, LPDCB lpDCB)
-{
-    NFS2_USE(app);
-    NFS2_USE(cpu);
-    NFS2_USE(hFile);
-    NFS2_USE(lpDCB);
-    NFS2_ASSERT(false);
-    return 0;
-}
-
 x86::reg32 GetCommandLineA(WinApplication* app, x86::CPU& cpu)
 {
     NFS2_USE(cpu);
@@ -479,18 +318,6 @@ DWORD GetCurrentProcessId(WinApplication* app, x86::CPU& cpu)
     NFS2_USE(cpu);
     NFS2_ASSERT(false);
     return 0;
-}
-
-DWORD GetCurrentThreadId(WinApplication* app, x86::CPU& cpu)
-{
-    NFS2_USE(cpu);
-    return app->getMemory<x86::reg32>(cpu.efs + 0x4);
-}
-
-HANDLE GetCurrentThread(WinApplication* app, x86::CPU& cpu)
-{
-    NFS2_USE(cpu);
-    return app->allocateResource(new win32::Thread());
 }
 
 BOOL GetDiskFreeSpaceA(WinApplication* app, x86::CPU& cpu,
@@ -626,14 +453,6 @@ DWORD GetLastError(WinApplication* app, x86::CPU& cpu)
     return 0;
 }
 
-void GetLocalTime(WinApplication* app, x86::CPU& cpu,
-                  LPSYSTEMTIME lpSystemTime)
-{
-    NFS2_USE(app);
-    NFS2_USE(cpu);
-    win32::getSystemTime(lpSystemTime);
-}
-
 DWORD GetLogicalDriveStringsA(WinApplication* app, x86::CPU& cpu,
                               DWORD nBufferLength, LPSTR lpBuffer)
 {
@@ -717,20 +536,6 @@ UINT GetOEMCP(WinApplication* app, x86::CPU& cpu)
     return 850;
 }
 
-BOOL GetOverlappedResult(WinApplication* app, x86::CPU& cpu,
-                         HANDLE hFile, LPOVERLAPPED lpOverlapped,
-                         LPDWORD lpNumberOfBytesTransferred, BOOL bWait)
-{
-    NFS2_USE(app);
-    NFS2_USE(cpu);
-    NFS2_USE(hFile);
-    NFS2_USE(lpOverlapped);
-    NFS2_USE(lpNumberOfBytesTransferred);
-    NFS2_USE(bWait);
-    NFS2_ASSERT(false);
-    return 0;
-}
-
 FARPROC GetProcAddress(WinApplication* app, x86::CPU& cpu,
                        HMODULE hModule, LPCSTR lpProcName)
 {
@@ -793,99 +598,6 @@ void GetSystemInfo(WinApplication* app, x86::CPU& cpu,
     lpSystemInfo->dwAllocationGranularity = 4096;
     lpSystemInfo->wProcessorLevel = 5;
     lpSystemInfo->wProcessorRevision = 0xff50;
-}
-
-int GetThreadPriority(WinApplication* app, x86::CPU& cpu,
-                      HANDLE hThread)
-{
-    NFS2_USE(app);
-    NFS2_USE(cpu);
-    NFS2_USE(hThread);
-    NFS2_ASSERT(false);
-    return 0;
-}
-
-DWORD GetTickCount(WinApplication* app, x86::CPU& cpu)
-{
-    NFS2_USE(app);
-    /* Diagnostic, kept live: this rate-limit trips whenever some guest thread
-     * calls GetTickCount 500+ times in 200ms, which is what a spin-wait poll
-     * loop looks like from here.  Two different capture sessions have now
-     * shown this pattern -- once with real disk I/O happening concurrently on
-     * a *different* thread (paused-race traffic-car streaming, unrelated
-     * background noise it turned out), and once, from a clean main-menu-only
-     * repro of the Camera/Graphics/HUD settings hang, with NO other I/O in
-     * flight at all -- so whatever this second case is polling is not file
-     * read completion, at least not directly.  The backtrace below exists to
-     * find out what it actually is on the NEXT repro, since guessing from the
-     * first (misleading) capture already cost real time once.  Applying a
-     * real sleep while throttling is a no-op that helps if this specific
-     * caller is a bounded livelock and does nothing otherwise; it was tested
-     * against the live hang and did NOT resolve it, ruling out "just needs
-     * a bigger OS scheduling slice" as the fix, whatever the root cause is. */
-    static Uint64 s_windowStartMs = 0;
-    static int s_windowCalls = 0;
-    static bool s_throttling = false;
-    static bool s_dumped = false;
-    const Uint64 now = SDL_GetTicks();
-    if (now - s_windowStartMs > 200)
-    {
-        if (s_throttling && s_windowCalls < 200)
-        {
-            s_throttling = false;
-            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "[STREAMTHROTTLE] released");
-        }
-        s_windowStartMs = now;
-        s_windowCalls = 0;
-    }
-    if (++s_windowCalls == 500 && !s_throttling)
-    {
-        s_throttling = true;
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-                    "[STREAMTHROTTLE] engaged: %d GetTickCount calls in 200ms", s_windowCalls);
-        if (!s_dumped)
-        {
-            s_dumped = true;
-#ifndef _WIN32
-            struct Ctx { void* frames[16]; int n; };
-            Ctx ctx = { {}, 0 };
-            _Unwind_Backtrace(
-                [](_Unwind_Context* uc, void* arg) -> _Unwind_Reason_Code
-                {
-                    Ctx* c = static_cast<Ctx*>(arg);
-                    if (c->n < 16)
-                    {
-                        c->frames[c->n++] = reinterpret_cast<void*>(_Unwind_GetIP(uc));
-                    }
-                    return c->n < 16 ? _URC_NO_REASON : _URC_END_OF_STACK;
-                },
-                &ctx);
-            SDL_Log("[HANGDIAG] %d backtrace frames:", ctx.n);
-            for (int i = 0; i < ctx.n; ++i)
-            {
-                SDL_Log("[HANGDIAG]   frame %d: %p", i, ctx.frames[i]);
-            }
-#endif
-        }
-    }
-    if (s_throttling)
-    {
-        app->unlockContext(cpu);
-        win32::Thread::sleep(1);
-        app->lockContext(cpu);
-    }
-    DWORD result = timeGetTickCount();
-    return result;
-}
-
-DWORD GetTimeZoneInformation(WinApplication* app, x86::CPU& cpu,
-                             LPTIME_ZONE_INFORMATION lpTimeZoneInformation)
-{
-    NFS2_USE(app);
-    NFS2_USE(cpu);
-    NFS2_USE(lpTimeZoneInformation);
-    NFS2_ASSERT(false);
-    return 0;
 }
 
 DWORD GetVersion(WinApplication* app, x86::CPU& cpu)
@@ -963,25 +675,6 @@ void GlobalMemoryStatus(WinApplication* app, x86::CPU& cpu,
     lpBuffer->dwAvailPageFile = 268435456;
     lpBuffer->dwTotalVirtual = 0x7fffffff;
     lpBuffer->dwAvailVirtual = 0x7fffffff;
-}
-
-void InitializeCriticalSection(WinApplication* app, x86::CPU& cpu,
-                               LPCRITICAL_SECTION lpCriticalSection)
-{
-    NFS2_USE(app);
-    NFS2_USE(cpu);
-    *lpCriticalSection = new win32::Mutex("");
-    app->allocateResource(*lpCriticalSection);
-}
-
-void LeaveCriticalSection(WinApplication* app, x86::CPU& cpu,
-                          LPCRITICAL_SECTION lpCriticalSection)
-{
-    NFS2_USE(app);
-    NFS2_USE(cpu);
-    (*lpCriticalSection)->unlock();
-    app->unlockContext(cpu);
-    app->lockContext(cpu);
 }
 
 HMODULE LoadLibraryA(WinApplication* app, x86::CPU& cpu,
@@ -1095,24 +788,6 @@ BOOL PeekConsoleInputA(WinApplication* app, x86::CPU& cpu,
     return 1;
 }
 
-BOOL PulseEvent(WinApplication* app, x86::CPU& cpu, HANDLE hEvent)
-{
-    NFS2_USE(cpu);
-    Event* event = dynamic_cast<Event*>(app->getResource(hEvent));
-    return event->pulse();
-}
-
-BOOL PurgeComm(WinApplication* app, x86::CPU& cpu,
-               HANDLE hFile, DWORD dwFlags)
-{
-    NFS2_USE(app);
-    NFS2_USE(cpu);
-    NFS2_USE(hFile);
-    NFS2_USE(dwFlags);
-    NFS2_ASSERT(false);
-    return 0;
-}
-
 BOOL ReadConsoleInputA(WinApplication* app, x86::CPU& cpu,
                        HANDLE hConsoleInput, PINPUT_RECORD lpBuffer, DWORD nLength,
                        LPDWORD lpNumberOfEventsRead)
@@ -1173,24 +848,6 @@ BOOL RemoveDirectoryA(WinApplication* app, x86::CPU& cpu, LPCSTR lpPathName)
     return 0;
 }
 
-BOOL ResetEvent(WinApplication* app, x86::CPU& cpu, HANDLE hEvent)
-{
-    NFS2_USE(app);
-    NFS2_USE(cpu);
-    NFS2_USE(hEvent);
-    NFS2_ASSERT(false);
-    return 0;
-}
-
-DWORD ResumeThread(WinApplication* app, x86::CPU& cpu,
-                   HANDLE hThread)
-{
-    NFS2_USE(cpu);
-    win32::Thread* thread = dynamic_cast<win32::Thread*>(app->getResource(hThread));
-    thread->resume();
-    return 1;
-}
-
 void RtlUnwind(WinApplication* app, x86::CPU& cpu,
                PVOID TargetFrame, PVOID TargetIp, PEXCEPTION_RECORD ExceptionRecord, PVOID ReturnValue)
 {
@@ -1201,28 +858,6 @@ void RtlUnwind(WinApplication* app, x86::CPU& cpu,
     NFS2_USE(ExceptionRecord);
     NFS2_USE(ReturnValue);
     NFS2_ASSERT(false);
-}
-
-BOOL SetCommState(WinApplication* app, x86::CPU& cpu,
-                  HANDLE hFile, LPDCB lpDCB)
-{
-    NFS2_USE(app);
-    NFS2_USE(cpu);
-    NFS2_USE(hFile);
-    NFS2_USE(lpDCB);
-    NFS2_ASSERT(false);
-    return 0;
-}
-
-BOOL SetCommTimeouts(WinApplication* app, x86::CPU& cpu,
-                     HANDLE hFile, LPCOMMTIMEOUTS lpCommTimeouts)
-{
-    NFS2_USE(app);
-    NFS2_USE(cpu);
-    NFS2_USE(hFile);
-    NFS2_USE(lpCommTimeouts);
-    NFS2_ASSERT(false);
-    return 0;
 }
 
 BOOL SetConsoleCtrlHandler(WinApplication* app, x86::CPU& cpu,
@@ -1299,23 +934,6 @@ UINT SetErrorMode(WinApplication* app, x86::CPU& cpu, UINT uMode)
     return 0;
 }
 
-BOOL SetEvent(WinApplication* app, x86::CPU& cpu,
-              HANDLE hEvent)
-{
-    NFS2_USE(cpu);
-    win32::Event* event = dynamic_cast<win32::Event*>(app->getResource(hEvent));
-    if (event)
-    {
-        event->set();
-        return 1;
-    }
-    else
-    {
-        NFS2_ASSERT(false);
-        return 0;
-    }
-}
-
 BOOL SetFileAttributesA(WinApplication* app, x86::CPU& cpu,
                         LPCSTR lpFileName, DWORD  dwFileAttributes)
 {
@@ -1361,85 +979,12 @@ BOOL SetStdHandle(WinApplication* app, x86::CPU& cpu,
     return 0;
 }
 
-BOOL SetThreadPriority(WinApplication* app, x86::CPU& cpu,
-                       HANDLE hThread, int nPriority)
-{
-    NFS2_USE(app);
-    NFS2_USE(cpu);
-    NFS2_USE(hThread);
-    NFS2_USE(nPriority);
-    return 1;
-}
-
 LPTOP_LEVEL_EXCEPTION_FILTER SetUnhandledExceptionFilter(WinApplication* app, x86::CPU& cpu,
                                                          LPTOP_LEVEL_EXCEPTION_FILTER lpTopLevelExceptionFilter)
 {
     NFS2_USE(app);
     NFS2_USE(cpu);
     NFS2_USE(lpTopLevelExceptionFilter);
-    return 0;
-}
-
-DWORD SleepEx(WinApplication* app, x86::CPU& cpu,
-              DWORD dwMilliseconds, BOOL bAlertable)
-{
-    NFS2_USE(app);
-    NFS2_USE(cpu);
-    NFS2_USE(bAlertable);
-    app->unlockContext(cpu);
-    win32::Thread::sleep(dwMilliseconds);
-    app->lockContext(cpu);
-    return 0;
-}
-
-BOOL TerminateThread(WinApplication* app, x86::CPU& cpu,
-                     HANDLE hThread, DWORD dwExitCode)
-{
-    NFS2_USE(cpu);
-    NFS2_USE(dwExitCode);
-    Thread* thread = dynamic_cast<Thread*>(app->getResource(hThread));
-    app->unlockContext(cpu);
-    thread->terminate();
-    app->lockContext(cpu);
-    return 0;
-}
-
-DWORD TlsAlloc(WinApplication* app, x86::CPU& cpu)
-{
-    NFS2_USE(app);
-    NFS2_USE(cpu);
-    NFS2_ASSERT(false);
-    return 0;
-}
-
-BOOL TlsFree(WinApplication* app, x86::CPU& cpu,
-             DWORD dwTlsIndex)
-{
-    NFS2_USE(app);
-    NFS2_USE(cpu);
-    NFS2_USE(dwTlsIndex);
-    NFS2_ASSERT(false);
-    return 0;
-}
-
-x86::reg32 TlsGetValue(WinApplication* app, x86::CPU& cpu,
-                       DWORD dwTlsIndex)
-{
-    NFS2_USE(app);
-    NFS2_USE(cpu);
-    NFS2_USE(dwTlsIndex);
-    NFS2_ASSERT(false);
-    return 0;
-}
-
-BOOL TlsSetValue(WinApplication* app, x86::CPU& cpu,
-                 DWORD dwTlsIndex, LPVOID lpTlsValue)
-{
-    NFS2_USE(app);
-    NFS2_USE(cpu);
-    NFS2_USE(dwTlsIndex);
-    NFS2_USE(lpTlsValue);
-    NFS2_ASSERT(false);
     return 0;
 }
 
@@ -1548,40 +1093,6 @@ SIZE_T VirtualQuery(WinApplication* app, x86::CPU& cpu,
     lpBuffer->Protect = 0x04; //READWRITE
     lpBuffer->Type = 0x20000; //PRIVATE
     return sizeof(*lpBuffer);
-}
-
-DWORD WaitForMultipleObjectsEx(WinApplication* app, x86::CPU& cpu,
-                               DWORD nCount, const HANDLE *lpHandles, BOOL bWaitAll,
-                               DWORD dwMilliseconds, BOOL bAlertable)
-{
-    NFS2_USE(cpu);
-    NFS2_USE(bAlertable);
-    std::vector<win32::Event*> events(nCount);
-    for (x86::reg32 i = 0; i < nCount; ++i)
-    {
-        events[i] = dynamic_cast<win32::Event*>(app->getResource(lpHandles[i]));
-        if (!events[i])
-        {
-            NFS2_ASSERT(false);
-            return 0xffffffff;
-        }
-    }
-    app->unlockContext(cpu);
-    DWORD result = DWORD(win32::Event::wait(cpu, &events.front(), &events.front() + nCount, bWaitAll, x86::sreg32(dwMilliseconds)));
-    app->lockContext(cpu);
-    return result;
-}
-
-DWORD WaitForSingleObject(WinApplication* app, x86::CPU& cpu,
-                          HANDLE hHandle, DWORD dwMilliseconds)
-{
-    NFS2_USE(cpu);
-    app->unlockContext(cpu);
-    GenericResource* r = app->getResource(hHandle);
-    Event* event = dynamic_cast<win32::Event*>(r);
-    DWORD result = DWORD(win32::Event::wait(cpu, &event, &event + 1, 0, x86::sreg32(dwMilliseconds)));
-    app->lockContext(cpu);
-    return result;
 }
 
 int WideCharToMultiByte(WinApplication* app, x86::CPU& cpu,

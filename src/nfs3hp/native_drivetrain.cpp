@@ -2,14 +2,17 @@
 #include "native_aiplan.h"
 #include "native_controls_race.h"
 #include "native_drivetrain.h"
+#include "native_frontend_sima.h"
 #include "native_guest.h"
 #include "native_racestart.h"
 #include "native_vertices.h"
+#include "native_watcom.h"
 
 #include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <optional>
+#include <type_traits>
 
 /* A car's engine, gears and its driver's inputs, as the car physics' full
  * step (0x4ad7a3) has them each frame: the pedals and the steering eased
@@ -93,7 +96,6 @@ constexpr reg32 kRevsDrop = 0x4a78b6;
 // feedback's kick (0x4714f0) are other files' (their headers), called as C++ (guest::direct).
 constexpr reg32 kChop = 0x4dfd56;           // __CHP: st(0) to an integer, towards 0
 constexpr reg32 kFloor = 0x4f1c30;          // floor of the double on the stack
-constexpr reg32 kSliceHeading = 0x49fee0;   // the track's heading at slice eax
 constexpr reg32 kCarKnock = 0x416d90;       // snd::carKnock: the gear's clunk
 
 // A car's fields and its handling record's: see above.  The torque curve (kHandlingTorque): a float
@@ -235,24 +237,71 @@ std::optional<x86::Float> vectorLength(App* app, CPU& cpu, reg32 vector)
     return x86::Float(length);
 }
 
-/* __CHP: the value to an integer, towards 0, as a whole value; nullopt when the game stopped. */
+/* __CHP: the value to an integer, towards 0, as a whole value; never nullopt (the optional is the
+ * callers' stop signal). */
 std::optional<x86::Float> chop(App* app, CPU& cpu, const x86::Float& value)
 {
-    const KeptRegisters kept(cpu);
-    cpu.fpu.push(value);
-    if (!byAddress(app, cpu, kChop))
-        return std::nullopt;
-    return cpu.fpu.take();
+    return x86::Float(guest::direct<kChop, watcom::clib::chop>(app, cpu, double(value)));
 }
 
-/* The track's heading at the slice; nullopt when the game stopped. */
+/* A native_frontend_* file's typed core called as C++ (guest::direct): nothing (false) when the
+ * game stopped in it (its calls into the game throw fe::Terminated).  tools/game_checks does not
+ * build those files: there it goes by address, through its ByAddress, as the game's code calls it,
+ * every register but eax kept.  A reg32 result is the eax the function leaves: eax set to it (in the
+ * game too); after any other, eax spoilt there, so that code still reading what the callee left in
+ * eax differs there. */
+template <reg32 Address, auto Core, typename... Args>
+auto feCore(App* app, CPU& cpu, Args... args)
+{
+    const auto run = [&] {
+#ifdef NFS_GAME_CHECKS
+        const guest::KeptRegisters kept(cpu);
+        return guest::ByAddress<Core>::template call<Address>(app, cpu, args...);
+#else
+        return guest::direct<Address, Core>(app, cpu, args...);
+#endif
+    };
+    using Result = decltype(run());
+    const auto spoil = [&] {
+#ifdef NFS_GAME_CHECKS
+        cpu.eax = 0x5b0115edu;
+#endif
+    };
+    if constexpr (std::is_void_v<Result>)
+    {
+        try
+        {
+            run();
+        }
+        catch (const fe::Terminated&)
+        {
+            return false;
+        }
+        spoil();
+        return !cpu.terminate;
+    }
+    else
+    {
+        try
+        {
+            const Result result = run();
+            if constexpr (std::is_same_v<Result, x86::reg32>)
+                cpu.eax = result;  // a menu core's result: the eax it leaves, as the call by address does
+            else
+                spoil();
+            return cpu.terminate ? std::optional<Result>() : std::optional<Result>(result);
+        }
+        catch (const fe::Terminated&)
+        {
+            return std::optional<Result>();
+        }
+    }
+}
+
+/* The track's heading at the slice (sima's, 0x49fee0); nullopt when the game stopped. */
 std::optional<reg32> sliceHeading(App* app, CPU& cpu, reg32 slice)
 {
-    const KeptRegisters kept(cpu);
-    cpu.eax = slice;
-    if (!byAddress(app, cpu, kSliceHeading))
-        return std::nullopt;
-    return cpu.eax;
+    return feCore<0x49fee0, frontend::sima::sliceHeading>(app, cpu, slice);
 }
 
 /* The computer's speed at the slice (aiplan's, 0x40e080); nullopt when the game stopped. */

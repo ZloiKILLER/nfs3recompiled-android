@@ -1,4 +1,6 @@
 #include "native_frontend_loopa.h"
+#include "native_watcom.h"
+#include "native_game.h"
 #include "game_settings.h"
 #include "native_controls_input.h"
 #include "native_ea_memory.h"
@@ -23,8 +25,10 @@
 #include "native_frontend_wina.h"
 #include "native_graphics.h"
 #include "native_load_cardb.h"
+#include "port_hud.h"
 #include "port_snd_stream_calls.h"
 #include "port_sound_music.h"
+#include "port_sound_racesetup.h"
 #include <nfs3hp.h>
 #include <fpu.h>
 #include <cstdint>
@@ -115,11 +119,10 @@ constexpr reg32 kSessionMenus = 0xb, kSessionRestart = 0xa, kSessionNext = 0xc;
 // A session's calls.
 constexpr reg32 kTakeDownRace = 0x4a35d0, kCloseNetwork = 0x4a65e0;
 constexpr reg32 kLoadConfig = 0x472980, kRaceMusicStart = 0x4107c0;
-constexpr reg32 kRaceSoundEnd = 0x412b50, kMusicStreamMakeOf = 0x410370;
 
 // A load's calls.
 constexpr reg32 kScreenMode = 0x4bef50, kViewport = 0x4beb80;
-constexpr reg32 kLoadingText = 0x484040, kScreenScales = 0x484b70, kLoadingScreen = 0x494fa0;
+constexpr reg32 kLoadingScreen = 0x494fa0;
 constexpr reg32 kFlushKeys = 0x4f0240;
 constexpr reg32 kLoadWeather = 0x4dcd20, kInitCameras = 0x422cf0;
 
@@ -623,7 +626,7 @@ x86::reg32 frontend::loopa::loadGhost(App* app, CPU& cpu, reg32 name)
         return 0;
     if (fe::direct<0x4e43a0, frontend::eaa::fileSize>(app, cpu, name) > kGhostBytes)
         return 0;
-    guest.call(kFillZero, args({ kLoaded, kGhostBytes }));
+    fe::direct<kFillZero, ea::clearBytes>(guest.app(), guest.cpu(), kLoaded, kGhostBytes);
     fe::direct<0x4f22e0, frontend::eab::fileLoadInto>(app, cpu, name, kLoaded);
     if (fe::direct<0x478100, frontend::loada::savedResolveEntries>(app, cpu, kLoaded) == 0)
         return 0;
@@ -766,10 +769,11 @@ x86::reg32 frontend::loopa::raceLoad(App* app, CPU& cpu)
     guest.leaveEbx(guest.dword(ebp - 0x10));
     guest.leaveEcx(guest.dword(ebp - 0xc));
     fe::direct<0x4352d0, controls::boundPointer>(app, cpu, 0, 0, guest.dword(ebp - 0x10), guest.dword(ebp - 0xc));
-    guest.call(kLoadingText);
-    guest.call(kScreenScales);
+    // The HUD's loading text and scales as C++, eax as the calls by address leave it for the next.
+    cpu.eax = reg32(*fe::direct<0x484040, port::hud::loadingTextOf>(app, cpu, cpu.esp - 4, cpu.eax));
+    cpu.eax = reg32(*fe::direct<0x484b70, port::hud::screenScalesOf>(app, cpu, cpu.esp - 4));
     guest.call(kLoadingScreen);
-    guest.call(kLoadingText);
+    cpu.eax = reg32(*fe::direct<0x484040, port::hud::loadingTextOf>(app, cpu, cpu.esp - 4, cpu.eax));
     guest::direct<0x477a50, recordingStart>(app, cpu);
     // By address: sub_4f0240 reads the eax sub_495230 leaves.
     guest.call(0x495230, args({}, { kProgress5 }));
@@ -886,12 +890,12 @@ x86::reg32 frontend::loopa::raceSession(App* app, CPU& cpu, reg32 mode, reg32 re
     if (guest.dword(kRaceEnd) != 1 && replay == 0 && sreg32(gameSettings(guest).playMode) > 1
         && (guest.word(kNetworkSpoken) != 0 || guest.dword(kNetworkHost) == 0))
         guest.setDword(kRaceEnd, 2);
-    guest.call(kRaceSoundEnd);
+    cpu.eax = reg32(*fe::direct<0x412b50, port::raceSoundEndOf>(app, cpu, cpu.esp - 4));
     fe::direct<0x4109d0, port::musicStopped>(app, cpu, cpu.esp - 4, cpu.eax);
     guest.call(kTakeDownRace, args({ guest.dword(kRaceEnd) != 1 ? reg32(1) : reg32(0) }));
     fe::direct<0x410aa0, port::musicStreamEndOf>(app, cpu, cpu.esp - 4, cpu.eax, cpu.ebx, cpu.ecx);
     cpu.ecx = replay;
-    guest.call(kMusicStreamMakeOf, args({ 0x12c }));
+    cpu.eax = reg32(*fe::direct<0x410370, port::musicStreamOf>(app, cpu, cpu.esp - 4, 0x12cu, replay));
     if (replay == 0 && guest.dword(kRaceEnd) == 0)
         fe::direct<0x455410, frontend::menub::resultsBuild>(app, cpu);
     if (replay != 0)
@@ -942,7 +946,7 @@ x86::reg32 frontend::loopa::gameInit(App* app, CPU& cpu)
     const reg32 heap = fe::direct<0x4f92b0, frontend::wata::heapStart>(app, cpu, kHeapBudget);
     guest.setDword(0x7a1a78, heap);
     if (sreg32(heap) < 0xfce000)
-        guest.call(0x401010, args({}, { kOutOfMemory, heap }));
+        fe::direct<0x401010, ea::error>(app, cpu, kOutOfMemory, guest::Words{ heap });
 
     fe::direct<0x4b5860, frontend::wina::checkLibrary>(app, cpu, guest.dword(kDriverType), guest.dword(kLanguage));
     guest.call(0x4b59c0, args({ guest.dword(kDriverType), guest.dword(kLanguage) }));
@@ -1016,8 +1020,8 @@ x86::reg32 frontend::loopa::fillRootBytes(App* app, CPU& cpu)
     reg32 last = 0;
     for (reg32 i = 0; i < 0x80; ++i)
     {
-        fe::direct<0x4ea920, frontend::simc::squareRoot>(app, cpu, (i << 17) | 0x3f000000);
-        const Float root = guest.fpu().take();
+        // The square root (native_frontend_simc.cpp's), as a double.
+        const double root = fe::direct<0x4ea920, frontend::simc::squareRootOf>(app, cpu, (i << 17) | 0x3f000000);
         const float reciprocal = float(fp::div(1.0, root));
         reg32 bits;
         std::memcpy(&bits, &reciprocal, sizeof bits);
@@ -1037,7 +1041,7 @@ x86::reg32 frontend::loopa::installIsRemote(App* app, CPU& cpu)
     const reg32 word = guest.frame();
     for (reg32 i = 0; i < 6; ++i)
         guest.setByte(word + i, std::uint8_t(guest.byte(0x55fdc0 + i) + 0xd));
-    return guest.call(0x4eb390, args({ 0x7a26b4, word, 6 })) == 0 ? 1 : 0;
+    return fe::direct<0x4eb390, watcom::clib::strncmp>(guest.app(), guest.cpu(), 0x7a26b4, word, 6) == 0 ? 1 : 0;
 }
 
 /* sub_495190: the loading bar's four corners, x and y of each, scaled by the view's size.

@@ -3,7 +3,9 @@
 #include "native_ea_support.h"
 #include "native_ea_threads.h"
 #include "native_guest.h"
+#include "native_watcom.h"
 #include "native_windows.h"
+#include "host_threads.h"
 #include <winapi/kernel32.h>
 
 #include <optional>
@@ -106,12 +108,10 @@ constexpr reg32 kVivCount = 8, kVivHeaderSize = 0xc, kVivEntries = 0x10, kVivEnt
 constexpr reg32 kVivSlack = 0x30, kVivBlockFlags = 0x10, kSeekSet = 0, kVivNameBytes = 0x1d;
 // What is called by address.
 constexpr reg32 kEnterCriticalSection = 0x5344b8, kLeaveCriticalSection = 0x534588;
-constexpr reg32 kVsprintf = 0x4df674, kFillZero = 0x4e070c;
+constexpr reg32 kFillZero = 0x4e070c;
 constexpr reg32 kOpen = 0x4e28d0, kRead = 0x4e2de0;
 constexpr reg32 kTopUp = 0x4ff7c0, kTopUpEnd = 0x4ff7e0, kLoadBlockSize = 0x4ff820, kLoadFlags = 0x4ff830;
 constexpr reg32 kAllocate = 0x4e1620, kFree = 0x4e1890, kLoadWhole = 0x4e0ec0;
-constexpr reg32 kFopen = 0x4edfe8, kFclose = 0x4ee100, kFseek = 0x4e9088, kFread = 0x4e9200;
-constexpr reg32 kMemset = 0x4e0640, kStrrchr = 0x4ee2f0, kStrncpy = 0x4e0e30, kStricmp = 0x4e9ec0;
 
 // The registers Kept keeps.
 constexpr unsigned kKeepEbx = 1, kKeepEcx = 2, kKeepEdx = 4;
@@ -177,6 +177,21 @@ std::optional<reg32> watcom(App* app, CPU& cpu, reg32 target, std::initializer_l
     return cpu.eax;
 }
 
+/* `Core`, the game's `Address`, called as C++ (guest::direct), `arguments` first loaded into
+ * Watcom's registers, eax, edx, ebx and ecx, as the call by address loads them -- the runtime's
+ * functions keep them, so the code after finds them as it did -- and its result left in eax.
+ * Its eax; nullopt when the game stopped in it. */
+template <reg32 Address, auto Core, typename... Args>
+std::optional<reg32> loaded(App* app, CPU& cpu, Args... arguments)
+{
+    guest::loadWatcomArguments(cpu, {reg32(arguments)...});
+    const auto result = guest::direct<Address, Core>(app, cpu, reg32(arguments)...);
+    if (cpu.terminate)
+        return std::nullopt;
+    cpu.eax = reg32(result);
+    return cpu.eax;
+}
+
 /* Win32's function `Function`, handed `handle`: the port's own, called as
  * C++ (native_windows.h); in the check through its import's slot `Slot`,
  * stdcall.  What it gives back in eax.  nullopt when the game stopped in it. */
@@ -228,14 +243,14 @@ std::optional<reg32> vivOpened(App* app, CPU& cpu, reg32 name, reg32 file)
     const GuestFrame frame(cpu, 0x14, 4);
     const reg32 sizeAt = frame - 4;
     const Kept kept(cpu, kKeepEbx | kKeepEcx);
-    const auto stream = watcom(app, cpu, kFopen, {name, kReadBinary});
+    const auto stream = loaded<0x4edfe8, watcom::clib::fopen>(app, cpu, name, kReadBinary);
     if (!stream)
         return std::nullopt;
     put(app, file, *stream);
     if (*stream == 0)
         return 0;
-    if (!watcom(app, cpu, kFseek, {*stream, kVivHeaderSize, kSeekSet})
-        || !watcom(app, cpu, kFread, {sizeAt, 4, 1, at(app, file)}))
+    if (!loaded<0x4e9088, watcom::clib::fseek>(app, cpu, *stream, kVivHeaderSize, kSeekSet)
+        || !loaded<0x4e9200, watcom::clib::fread>(app, cpu, sizeAt, 4u, 1u, at(app, file)))
         return std::nullopt;
     const reg32 bytes = bigEndian(at(app, sizeAt)) + kVivSlack;
     const auto block = watcom(app, cpu, kAllocate, {kNoName, bytes, kVivBlockFlags});
@@ -243,13 +258,14 @@ std::optional<reg32> vivOpened(App* app, CPU& cpu, reg32 name, reg32 file)
         return std::nullopt;
     if (*block == 0)
     {
-        if (!watcom(app, cpu, kFclose, {at(app, file)}))
+        if (!loaded<0x4ee100, watcom::clib::fclose>(app, cpu, at(app, file)))
             return std::nullopt;
         put(app, file, 0);
         return 0;
     }
-    if (!watcom(app, cpu, kMemset, {*block, 0, bytes}) || !watcom(app, cpu, kFseek, {at(app, file), 0, kSeekSet})
-        || !watcom(app, cpu, kFread, {*block, bytes, 1, at(app, file)}))
+    if (!loaded<0x4e0640, watcom::clib::memset>(app, cpu, *block, 0u, bytes)
+        || !loaded<0x4e9088, watcom::clib::fseek>(app, cpu, at(app, file), 0u, kSeekSet)
+        || !loaded<0x4e9200, watcom::clib::fread>(app, cpu, *block, bytes, 1u, at(app, file)))
         return std::nullopt;
     put(app, *block, bigEndian(at(app, *block)));
     put(app, *block + kVivHeaderSize, bigEndian(at(app, *block + kVivHeaderSize)));
@@ -263,7 +279,7 @@ std::optional<reg32> vivClosed(App* app, CPU& cpu, reg32 block, reg32 file)
 {
     if (!watcom(app, cpu, kFree, {block}))
         return std::nullopt;
-    const auto closed = watcom(app, cpu, kFclose, {at(app, file)});
+    const auto closed = loaded<0x4ee100, watcom::clib::fclose>(app, cpu, at(app, file));
     if (!closed)
         return std::nullopt;
     put(app, file, 0);
@@ -282,7 +298,7 @@ std::optional<VivSearch> vivEntry(App* app, CPU& cpu, reg32 header, reg32 wanted
     for (reg32 index = 0; index < at(app, header + kVivCount); ++index)
     {
         const reg32 name = entry + kVivEntryName;
-        const auto differs = watcom(app, cpu, kStricmp, {wanted, name});
+        const auto differs = loaded<0x4e9ec0, watcom::clib::stricmp>(app, cpu, wanted, name);
         if (!differs)
             return std::nullopt;
         if (*differs == 0)
@@ -312,8 +328,8 @@ std::optional<VivSearch> vivFile(App* app, CPU& cpu, reg32 header, reg32 path, r
     const GuestFrame frame(cpu, 0xc, 0x24);
     const reg32 name = frame - 0x24;
     const Kept kept(cpu, kKeepEbx);
-    const auto slash = watcom(app, cpu, kStrrchr, {path, '\\'});
-    if (!slash || !watcom(app, cpu, kStrncpy, {name, *slash != 0 ? *slash + 1 : path, kVivNameBytes}))
+    const auto slash = loaded<0x4ee2f0, watcom::clib::strrchr>(app, cpu, path, reg32('\\'));
+    if (!slash || !loaded<0x4e0e30, watcom::clib::strncpy>(app, cpu, name, *slash != 0 ? *slash + 1 : path, kVivNameBytes))
         return std::nullopt;
     return vivEntry(app, cpu, header, name, offsetTo, sizeTo);
 }
@@ -370,12 +386,12 @@ bool pageCleared(App* app, CPU& cpu, reg32& left)
         return true;
     const Kept kept(cpu, kKeepEcx | kKeepEdx);
     cpu.eax = left;
-    if (!traceLockMade(app, cpu) || !traceLock<kEnterCriticalSection, &win32::kernel32::EnterCriticalSection>(app, cpu))
+    if (!traceLockMade(app, cpu) || !traceLock<kEnterCriticalSection, &host::enterLock>(app, cpu))
         return false;
     for (reg32 offset = 0; offset < kPageBytes; offset += 4)
         put(app, at(app, kMonoPage) + offset, 0);
     cpu.eax = kPageBytes;
-    const auto given = traceLock<kLeaveCriticalSection, &win32::kernel32::LeaveCriticalSection>(app, cpu);
+    const auto given = traceLock<kLeaveCriticalSection, &host::leaveLock>(app, cpu);
     if (!given)
         return false;
     left = *given;
@@ -479,16 +495,16 @@ bool tracePrinted(App* app, CPU& cpu, reg32 format, reg32 arguments)
     const GuestFrame frame(cpu, 0, 0x104);
     const reg32 list = frame - 4, buffer = frame - 0x104;
     const Kept kept(cpu, kKeepEbx | kKeepEcx | kKeepEdx);
-    if (!traceLockMade(app, cpu) || !traceLock<kEnterCriticalSection, &win32::kernel32::EnterCriticalSection>(app, cpu))
+    if (!traceLockMade(app, cpu) || !traceLock<kEnterCriticalSection, &host::enterLock>(app, cpu))
         return false;
     put(app, list, arguments);
-    if (!watcom(app, cpu, kVsprintf, {buffer, format, list}))
+    if (!loaded<0x4df674, watcom::clib::vsprintf>(app, cpu, buffer, format, list))
         return false;
     const auto left = monoText(app, cpu, buffer);
     if (!left)
         return false;
     cpu.eax = *left;
-    return traceLock<kLeaveCriticalSection, &win32::kernel32::LeaveCriticalSection>(app, cpu).has_value();
+    return traceLock<kLeaveCriticalSection, &host::leaveLock>(app, cpu).has_value();
 }
 
 /* The cursor moved to `column` and `row`, if they are on the page. */
@@ -503,11 +519,11 @@ void cursorTo(App* app, reg32 column, reg32 row)
 std::optional<reg32> windowTopSet(App* app, CPU& cpu, reg32 row)
 {
     const Kept kept(cpu, kKeepEcx | kKeepEdx);
-    if (!traceLockMade(app, cpu) || !traceLock<kEnterCriticalSection, &win32::kernel32::EnterCriticalSection>(app, cpu))
+    if (!traceLockMade(app, cpu) || !traceLock<kEnterCriticalSection, &host::enterLock>(app, cpu))
         return std::nullopt;
     if (sreg32(row) >= 0 && sreg32(row) < kRows)
         putByte(app, kMonoTop, reg8(row));
-    return traceLock<kLeaveCriticalSection, &win32::kernel32::LeaveCriticalSection>(app, cpu);
+    return traceLock<kLeaveCriticalSection, &host::leaveLock>(app, cpu);
 }
 
 /* The monitor's page `page`: 0xb0000 + page * 0x8000, kept and back. */
@@ -745,14 +761,14 @@ void monoPrintfAt(win32::WinApplication* app, x86::CPU& cpu)
         const reg32 list = frame - 4, buffer = frame - 0x104;
         const Kept kept(cpu, kKeepEbx | kKeepEcx | kKeepEdx);
         if (!traceLockMade(app, cpu)
-            || !traceLock<kEnterCriticalSection, &win32::kernel32::EnterCriticalSection>(app, cpu))
+            || !traceLock<kEnterCriticalSection, &host::enterLock>(app, cpu))
             return;
         cursorTo(app, column, row);
         put(app, list, arguments);
-        if (!watcom(app, cpu, kVsprintf, {buffer, format, list}) || !monoText(app, cpu, buffer))
+        if (!loaded<0x4df674, watcom::clib::vsprintf>(app, cpu, buffer, format, list) || !monoText(app, cpu, buffer))
             return;
         cpu.eax = at(app, kTraceLock);
-        if (!traceLock<kLeaveCriticalSection, &win32::kernel32::LeaveCriticalSection>(app, cpu))
+        if (!traceLock<kLeaveCriticalSection, &host::leaveLock>(app, cpu))
             return;
     }
     cpu.esp += 4;

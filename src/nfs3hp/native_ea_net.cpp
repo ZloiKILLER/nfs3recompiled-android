@@ -3,8 +3,12 @@
 #include "native_ea_memory.h"
 #include "native_ea_net.h"
 #include "native_ea_threads.h"
+#include "native_game.h"
 #include "native_guest.h"
+#include "native_watcom.h"
+#include "port_snd_stream_calls.h"
 #include "native_windows.h"
+#include "host_threads.h"
 #include <winapi/kernel32.h>
 
 #include <optional>
@@ -163,9 +167,9 @@ constexpr reg32 kQpositionLine = 0x271, kQfindindexLine = 0x30f, kLayerSendLine 
 // Windows' functions, by their imports' slots.
 constexpr reg32 kEnterCriticalSection = 0x5344b8, kLeaveCriticalSection = 0x534588;
 // The game's functions, by address.
-constexpr reg32 kError = 0x401010, kCloseMessages = 0x42d7f0, kFreeNetworkLocks = 0x49a4d0, kSend = 0x4a60e0;
-constexpr reg32 kMachineNumber = 0x4a6650, kMemset = 0x4e0640, kFillZero = 0x4e070c;
-constexpr reg32 kFree = 0x4e1890, kTimers = 0x4e7630, kNetMessage = 0x512180;
+constexpr reg32 kCloseMessages = 0x42d7f0, kFreeNetworkLocks = 0x49a4d0;
+constexpr reg32 kFillZero = 0x4e070c;
+constexpr reg32 kFree = 0x4e1890, kNetMessage = 0x512180;
 constexpr reg32 kConnectionTask = 0x4f5110;
 
 void push(App* app, CPU& cpu, reg32 value)
@@ -241,6 +245,31 @@ std::optional<Regs> callWith(App* app, CPU& cpu, reg32 target, Regs in, std::ini
     return callWithRegisters(cpu, in, [&] { return guest::call(app, cpu, target, words); });
 }
 
+/* A typed core called as C++ (guest::direct, in `call`) the way callWith calls by address: the
+ * four registers loaded from `in` first, as the code has them for the callee; every register as it
+ * was before after it.  What `call` gives back: what the callee leaves, from its result. */
+template <typename Call>
+auto directWith(CPU& cpu, Regs in, Call call) -> decltype(call())
+{
+    const reg32 result = cpu.eax;
+    const Saved kept{cpu.ebx, cpu.ecx, cpu.edx, cpu.esi, cpu.edi, cpu.ebp};
+    cpu.eax = in.eax;
+    cpu.edx = in.edx;
+    cpu.ebx = in.ebx;
+    cpu.ecx = in.ecx;
+    auto left = call();
+    if (cpu.terminate)
+        return left;
+    cpu.eax = result;
+    cpu.ebx = kept.ebx;
+    cpu.ecx = kept.ecx;
+    cpu.edx = kept.edx;
+    cpu.esi = kept.esi;
+    cpu.edi = kept.edi;
+    cpu.ebp = kept.ebp;
+    return left;
+}
+
 /* EnterCriticalSection or LeaveCriticalSection (`Function`) on `lock`, as
  * callWith calls: the port's own, called as C++ (native_windows.h); in the
  * check through its import's slot `Slot`. */
@@ -259,10 +288,15 @@ std::optional<reg32> reportError(App* app, CPU& cpu, reg32 file, reg32 function,
     put(app, kWhereFile, file);
     put(app, kWhereFunction, function);
     put(app, kWhereLine, line);
-    const auto left = callWith(app, cpu, kError, in, words);
-    if (!left)
-        return std::nullopt;
-    return left->eax;
+    guest::Words more({});
+    for (const reg32* word = words.begin() + 1; word < words.end(); ++word)
+        more.word[more.count++] = *word;
+    return directWith(cpu, in, [&]() -> std::optional<reg32> {
+        guest::direct<0x401010, ea::error>(app, cpu, *words.begin(), more);
+        if (cpu.terminate)
+            return std::nullopt;
+        return cpu.eax;
+    });
 }
 
 /* The queue `queue` uninitialized, as the queues report one in `function`
@@ -582,7 +616,7 @@ std::optional<reg32> queueLength(App* app, CPU& cpu, reg32 queue)
 std::optional<Regs> removeFromQueue(App* app, CPU& cpu, reg32 queue, reg32 element, reg32 forNone)
 {
     const reg32 lock = at(app, queue + kQueueLock);
-    const auto entered = lockCall<kEnterCriticalSection, &win32::kernel32::EnterCriticalSection>(
+    const auto entered = lockCall<kEnterCriticalSection, &host::enterLock>(
         app, cpu, lock, {queue, lock, queue, cpu.ecx});
     if (!entered)
         return std::nullopt;
@@ -605,7 +639,7 @@ std::optional<Regs> removeFromQueue(App* app, CPU& cpu, reg32 queue, reg32 eleme
         held.edx = element;
     }
     const reg32 unlock = at(app, queue + kQueueLock);
-    const auto left = lockCall<kLeaveCriticalSection, &win32::kernel32::LeaveCriticalSection>(
+    const auto left = lockCall<kLeaveCriticalSection, &host::leaveLock>(
         app, cpu, unlock, {held.eax, held.edx, queue, unlock});
     if (!left)
         return std::nullopt;
@@ -619,7 +653,7 @@ std::optional<Regs> removeFromQueue(App* app, CPU& cpu, reg32 queue, reg32 eleme
 std::optional<Regs> queuePosition(App* app, CPU& cpu, reg32 queue, reg32 element)
 {
     const reg32 lock = at(app, queue + kQueueLock);
-    const auto entered = lockCall<kEnterCriticalSection, &win32::kernel32::EnterCriticalSection>(
+    const auto entered = lockCall<kEnterCriticalSection, &host::enterLock>(
         app, cpu, lock, {queue, lock, cpu.ebx, cpu.ecx});
     if (!entered)
         return std::nullopt;
@@ -670,7 +704,7 @@ std::optional<Regs> queuePosition(App* app, CPU& cpu, reg32 queue, reg32 element
     if (!found)
         index = 0xffffffff;
     const reg32 unlock = at(app, queue + kQueueLock);
-    const auto left = lockCall<kLeaveCriticalSection, &win32::kernel32::LeaveCriticalSection>(
+    const auto left = lockCall<kLeaveCriticalSection, &host::leaveLock>(
         app, cpu, unlock, {held.eax, held.edx, index, unlock});
     if (!left)
         return std::nullopt;
@@ -683,7 +717,7 @@ std::optional<Regs> queuePosition(App* app, CPU& cpu, reg32 queue, reg32 element
 std::optional<Regs> findInQueue(App* app, CPU& cpu, reg32 queue, reg32 index)
 {
     const reg32 lock = at(app, queue + kQueueLock);
-    const auto entered = lockCall<kEnterCriticalSection, &win32::kernel32::EnterCriticalSection>(
+    const auto entered = lockCall<kEnterCriticalSection, &host::enterLock>(
         app, cpu, lock, {queue, lock, queue, cpu.ecx});
     if (!entered)
         return std::nullopt;
@@ -714,7 +748,7 @@ std::optional<Regs> findInQueue(App* app, CPU& cpu, reg32 queue, reg32 index)
         held.edx = n.left;
     }
     const reg32 unlock = at(app, queue + kQueueLock);
-    const auto left = lockCall<kLeaveCriticalSection, &win32::kernel32::LeaveCriticalSection>(
+    const auto left = lockCall<kLeaveCriticalSection, &host::leaveLock>(
         app, cpu, unlock, {held.eax, held.edx, queue, unlock});
     if (!left)
         return std::nullopt;
@@ -992,7 +1026,7 @@ std::optional<reg32> announceLeft(App* app, CPU& cpu, reg32 machine, const Saved
     if (at(app, kEnding) != 0 || sreg32(machine) > 7 || sreg32(machine) < 0)
         return forgotten;
     const reg32 lock = at(app, kEndingLock);
-    const auto entered = lockCall<kEnterCriticalSection, &win32::kernel32::EnterCriticalSection>(
+    const auto entered = lockCall<kEnterCriticalSection, &host::enterLock>(
         app, cpu, lock, {*forgotten, saved.edx, machine, lock});
     if (!entered)
         return std::nullopt;
@@ -1000,7 +1034,7 @@ std::optional<reg32> announceLeft(App* app, CPU& cpu, reg32 machine, const Saved
     if (word16(app, state) != 0)
     {
         const reg32 unlock = at(app, kEndingLock);
-        const auto left = lockCall<kLeaveCriticalSection, &win32::kernel32::LeaveCriticalSection>(
+        const auto left = lockCall<kLeaveCriticalSection, &host::leaveLock>(
             app, cpu, unlock, {machine * 2, entered->edx, machine, entered->ecx});
         if (!left)
             return std::nullopt;
@@ -1008,13 +1042,15 @@ std::optional<reg32> announceLeft(App* app, CPU& cpu, reg32 machine, const Saved
     }
     putWord16(app, state, kMachineGone);
     const reg32 unlock = at(app, kEndingLock);
-    if (!lockCall<kLeaveCriticalSection, &win32::kernel32::LeaveCriticalSection>(
+    if (!lockCall<kLeaveCriticalSection, &host::leaveLock>(
             app, cpu, unlock, {machine * 2, entered->edx, unlock, entered->ecx}))
         return std::nullopt;
     putByte(app, packet, kMachineLeftPacket);
     copyMemory(app, packet + 2, kMachineStates, kStatesBytes);
     putWord16(app, kStateChanged, 1);
-    const auto sent = callWith(app, cpu, kSend, {0, packet, kMachineLeftBytes, 1});
+    const auto sent = directWith(cpu, {0, packet, kMachineLeftBytes, 1}, [&] {
+        return guest::direct<0x4a60e0, ea::packetSent>(app, cpu, 0u, packet, kMachineLeftBytes);
+    });
     if (!sent)
         return std::nullopt;
     return sent->eax;
@@ -1127,9 +1163,11 @@ std::optional<Regs> sendPacketTo(App* app, CPU& cpu, reg32 connection, reg32 pac
     // The machine of the connection handed (eax) announced gone; `counter`
     // the code's edi, which announceMachineLeft pushes.
     const auto announce = [&](Regs handed, reg32 counter) -> std::optional<Regs> {
-        const auto number = callWith(app, cpu, kMachineNumber, handed);
-        if (!number)
-            return std::nullopt;
+        // What machineNumber leaves: its answer in eax, the rest as handed.
+        const std::optional<Regs> number = directWith(cpu, handed, [&] {
+            return std::optional<Regs>(Regs{guest::direct<0x4a6650, ea::machineOf>(app, cpu, handed.eax), handed.edx,
+                                            handed.ebx, handed.ecx});
+        });
         const reg32 machine = reg32(sreg32(x86::sreg16(reg16(number->eax))));
         const Saved pushed{number->ebx, packet, number->edx, length, counter, frameBase};
         const auto told = announceLeft(app, cpu, machine, pushed);
@@ -1269,9 +1307,9 @@ namespace
 std::optional<reg32> resetNetworkState(App* app, CPU& cpu, reg32 alsoLostToo)
 {
     putWord16(app, kSetUp, 1);
-    if (!callWith(app, cpu, kFillZero, {kStateBlock, kStateBlockBytes, cpu.ebx, alsoLostToo})
-        || !callWith(app, cpu, kFillZero, {kPlayerStates, kStatesBytes, 1, alsoLostToo}))
-        return std::nullopt;
+    guest::direct<0x4e070c, ea::clearBytes>(app, cpu, kStateBlock, kStateBlockBytes);
+    guest::direct<0x4e070c, ea::clearBytes>(app, cpu, kPlayerStates, kStatesBytes);
+    // By address: what it leaves in eax is this one's, which ea::clearBytes does not give back.
     const auto cleared = callWith(app, cpu, kFillZero, {kMachineStates, kStatesBytes, 1, alsoLostToo});
     if (!cleared)
         return std::nullopt;
@@ -1297,7 +1335,16 @@ std::optional<Regs> closeNetworkAt(App* app, CPU& cpu)
     pushRegisters(app, cpu.esp, {cpu.ebx, cpu.edx, cpu.ebp});
     const Lowered frame(cpu, 3 * 4 + 4);
     const reg32 packet = cpu.esp;
-    const auto stopped = callWith(app, cpu, kTimers, {0, cpu.edx, cpu.ebx, cpu.ecx});
+    // The game's timers run (0x4e7630) with 0, the registers as the code has them: their eax.
+    const auto timersRun = [&] {
+        return directWith(cpu, {0, cpu.edx, cpu.ebx, cpu.ecx}, [&]() -> std::optional<Regs> {
+            const port::Result ran = guest::direct<0x4e7630, port::stream::runDueTasks>(app, cpu, cpu.esp - 4, 0u);
+            if (!ran)
+                return std::nullopt;
+            return Regs{reg32(*ran), cpu.edx, cpu.ebx, cpu.ecx};
+        });
+    };
+    const auto stopped = timersRun();
     if (!stopped)
         return std::nullopt;
     reg32 left = stopped->eax;
@@ -1305,7 +1352,9 @@ std::optional<Regs> closeNetworkAt(App* app, CPU& cpu)
     {
         putByte(app, packet, kClosedPacket);
         putWord16(app, packet + 2, kClosedWord);
-        const auto sent = callWith(app, cpu, kSend, {0, packet, kClosedBytes, cpu.ecx});
+        const auto sent = directWith(cpu, {0, packet, kClosedBytes, cpu.ecx}, [&] {
+            return guest::direct<0x4a60e0, ea::packetSent>(app, cpu, 0u, packet, kClosedBytes);
+        });
         if (!sent)
             return std::nullopt;
         left = sent->eax;
@@ -1313,7 +1362,7 @@ std::optional<Regs> closeNetworkAt(App* app, CPU& cpu)
     const auto restored = below(cpu, 4, [&] { return restoreConnections(app, cpu, left); });
     if (!restored)
         return std::nullopt;
-    const auto again = callWith(app, cpu, kTimers, {0, cpu.edx, cpu.ebx, cpu.ecx});
+    const auto again = timersRun();
     if (!again)
         return std::nullopt;
     const auto ended = below(cpu, 4, [&] { return endNetwork(app, cpu, again->eax); });
@@ -1664,8 +1713,7 @@ std::optional<reg32> unpackRuns(App* app, CPU& cpu, reg32 source, reg32 to)
             ++in;
             [[fallthrough]];
         case 2:
-            if (!callWith(app, cpu, kMemset, {to, fill, count, cpu.ecx}))
-                return std::nullopt;
+            guest::direct<0x4e0640, watcom::clib::memset>(app, cpu, to, fill, count);
             left -= count;
             to += count;
             break;
@@ -3323,6 +3371,68 @@ l5100d1:
     cpu.esp += 4;
     return;
 
+}
+
+/* ---- The typed cores of native_ea_net.h's list for the game's other code (guest::direct): the
+ * functions above as their adapters run them. ---- */
+
+reg32 sessionIndexOf(App* app, reg32 id)
+{
+    return findSession(app, id);
+}
+
+std::optional<reg32> connectionDropped(App* app, CPU& cpu, reg32 connection)
+{
+    return dropConnection(app, cpu, connection);
+}
+
+std::optional<reg32> machineLeftAnnounced(App* app, CPU& cpu, reg32 machine)
+{
+    const Saved saved{cpu.ebx, cpu.ecx, cpu.edx, cpu.esi, cpu.edi, cpu.ebp};
+    return announceLeft(app, cpu, machine, saved);
+}
+
+std::optional<reg32> networkReset(App* app, CPU& cpu, reg32 alsoLostToo)
+{
+    return resetNetworkState(app, cpu, alsoLostToo);
+}
+
+std::optional<reg32> networkClosed(App* app, CPU& cpu)
+{
+    const auto closed = closeNetworkAt(app, cpu);
+    if (!closed)
+        return std::nullopt;
+    return closed->eax;
+}
+
+reg32 machineOfPlayerNumber(App* app, reg32 player)
+{
+    return machineOfPlayer(app, reg16(player));
+}
+
+std::optional<reg32> netCallTraced(App* app, CPU& cpu, reg32 name)
+{
+    return traceNet(app, cpu, name);
+}
+
+std::optional<reg32> connectionsRestored(App* app, CPU& cpu, reg32 handed)
+{
+    return restoreConnections(app, cpu, handed);
+}
+
+reg32 queueUnlinked(App* app, reg32 queue, reg32 element)
+{
+    return unlink(app, queue, element);
+}
+
+std::optional<reg32> queueLockFreed(App* app, CPU& cpu, reg32 queue)
+{
+    return freeQueueLock(app, cpu, queue);
+}
+
+std::optional<reg32> queueLengthOf(App* app, CPU& cpu, reg32 queue)
+{
+    return queueLength(app, cpu, queue);
 }
 
 }  // namespace ea

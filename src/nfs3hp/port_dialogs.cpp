@@ -1,4 +1,9 @@
 #include "port_dialogs.h"
+#include "native_watcom.h"
+#include "port_draw2d.h"
+#include "port_shapes.h"
+#include "port_sound_effects.h"
+#include "port_text.h"
 
 #include <algorithm>
 #include <cstdint>
@@ -254,7 +259,50 @@ struct Game
     {
         return callGame(app, cpu, esp, target, a, stack, eax);
     }
+    /* A typed core called as C++ where the game's code calls its address, from `esp`, the registers
+     * loaded as the call by address loads them (`a`) and kept, as the callee keeps them: eax its
+     * result -- for a core that gives none back (the font's), eax as loaded, as its adapter leaves
+     * it; false when the game stopped in it. */
+    template <reg32 Address, auto Core, typename... A>
+    bool direct(reg32 esp, Args a, A... args)
+    {
+        cpu.esp = esp;
+        cpu.eax = a.eax;
+        cpu.edx = a.edx;
+        cpu.ebx = a.ebx;
+        cpu.ecx = a.ecx;
+        if constexpr (std::is_void_v<decltype(guest::direct<Address, Core>(app, cpu, args...))>)
+        {
+            guest::direct<Address, Core>(app, cpu, args...);
+            if (cpu.terminate)
+                return false;
+            eax = a.eax;
+        }
+        else
+        {
+            const auto result = guest::direct<Address, Core>(app, cpu, args...);
+            if (cpu.terminate)
+                return false;
+            eax = valueOf(result);
+        }
+        cpu.eax = eax;
+        return true;
+    }
+    static reg32 valueOf(reg32 value) { return value; }
+    template <class T>
+    static reg32 valueOf(const std::optional<T>& value)
+    {
+        return reg32(*value);
+    }
 };
+
+/* The same for a typed core, called as C++ (Game::direct). */
+#define GAME_DIRECT(address, core, ...)                        \
+    do                                                         \
+    {                                                          \
+        if (!g.template direct<address, core>(__VA_ARGS__))    \
+            return {};                                         \
+    } while (0)
 
 #define GAME(...)                 \
     do                            \
@@ -304,7 +352,7 @@ int32_t chop(CPU& cpu, const Float& value)
 
 bool setFont(Game& g, reg32 at)
 {
-    return g.call(at, kSetFont, {kFont});
+    return g.direct<kSetFont, text::selectFontOf>(at, {kFont}, kFont);
 }
 
 reg32 fadeAlpha(App* app)
@@ -348,21 +396,25 @@ constexpr ArtPart kFocusArt{0x3f0d0000, 0x3f140000, 0x3f1d0000, 0x3f270000};
 bool drawPauseArt(Game& g, reg32 at, int32_t left, int32_t top, int32_t right, int32_t bottom, const ArtPart& part,
                   reg32 colour)
 {
-    return g.call(at, kDrawQuad, {reg32(left), reg32(top), reg32(right), reg32(top)},
-                  {reg32(right), reg32(bottom), reg32(left), reg32(bottom), part.left, part.top, part.right, part.top,
-                   part.right, part.bottom, part.left, part.bottom, kPauseArt(g.app), colour});
+    const draw2d::ArtQuad quad{{left, right, right, left}, {top, top, bottom, bottom},
+                               {part.left, part.right, part.right, part.left},
+                               {part.top, part.top, part.bottom, part.bottom}, kPauseArt(g.app), colour};
+    return g.direct<kDrawQuad, draw2d::texturedQuad>(at, {reg32(left), reg32(top), reg32(right), reg32(top)},
+                                                     at - 4 - 4 * 14, quad);
 }
 
 /* 0x4d8860: a box shaded between its corners' colours; a line, one pixel high. */
 bool drawShaded(Game& g, reg32 at, int32_t x, int32_t y, int32_t width, int32_t height, reg32 c0, reg32 c1, reg32 c2,
                 reg32 c3)
 {
-    return g.call(at, kShadedBox, {reg32(x), reg32(y), reg32(width), reg32(height)}, {c0, c1, c2, c3});
+    const uint32_t colours[4] = {c0, c1, c2, c3};
+    return g.direct<kShadedBox, draw2d::shadedBox>(at, {reg32(x), reg32(y), reg32(width), reg32(height)},
+                                                   at - 4 - 4 * 4, x, y, width, height, colours);
 }
 
 bool playSound(Game& g, reg32 at, reg32 sound, reg32 volume)
 {
-    return g.call(at, kPlaySound, {sound, volume});
+    return g.direct<kPlaySound, playMenuEffectOf>(at, {sound, volume}, entered(at), int32_t(sound), int32_t(volume));
 }
 
 /* ---- The state ---- */
@@ -420,7 +472,8 @@ Result drawBoxCore(Game& g, reg32 esp, reg32 rect)
             return {};
         return int32_t(g.eax);
     }
-    GAME(at, kDrawShape, {kBoxShape(app), reg32(x - 14), reg32(y - 7), colour});
+    GAME_DIRECT(kDrawShape, shapes::drawArt, at, {kBoxShape(app), reg32(x - 14), reg32(y - 7), colour}, entered(at),
+                int32_t(kBoxShape(app)), x - 14, y - 7, colour);
     return int32_t(g.eax);
 }
 
@@ -448,7 +501,8 @@ Result drawLinesCore(Game& g, reg32 esp, int32_t count, reg32 lines, reg32 rect)
             x = chop(cpu, fp::add(integer(middle), Float(31.75)));
             colour = kOpaque | kTextColour;
         }
-        GAME(at, kDrawText, {line, reg32(x), reg32(top + 30 * i), kFont}, {kAlignCentre, colour});
+        GAME_DIRECT(kDrawText, text::menuTextDrawn, at, {line, reg32(x), reg32(top + 30 * i), kFont}, at - 4 - 4 * 2,
+                    line, x, top + 30 * i, kFont, int32_t(kAlignCentre), colour);
     }
     return int32_t(g.eax);
 }
@@ -488,12 +542,16 @@ Result drawButtonsCore(Game& g, reg32 esp, int32_t focus)
         }
         else
         {
-            if (!g.call(at, kDrawShape, {focused ? kFocusShape(app) : kButtonShape(app), reg32(artX), reg32(artY), white})
+            const reg32 art = focused ? kFocusShape(app) : kButtonShape(app);
+            if (!g.direct<kDrawShape, shapes::drawArt>(at, {art, reg32(artX), reg32(artY), white}, entered(at),
+                                                       int32_t(art), int32_t(artX), int32_t(artY), white)
                 || !drawShaded(g, at, b.x - 3, b.y + 1, b.width + 8, 1, edge, solid, solid, edge)
                 || !drawShaded(g, at, b.x - 3, b.y + 16, b.width + 5, 1, edge, solid, solid, edge))
                 return {};
         }
-        GAME(at, kDrawText, {text, reg32(b.x), reg32(b.y), kFont}, {kAlignLeft, focused ? kFocusColour : kTextColour});
+        const reg32 textColour = focused ? kFocusColour : kTextColour;
+        GAME_DIRECT(kDrawText, text::menuTextDrawn, at, {text, reg32(b.x), reg32(b.y), kFont}, at - 4 - 4 * 2, text,
+                    int32_t(b.x), int32_t(b.y), kFont, int32_t(kAlignLeft), textColour);
     }
     return int32_t(g.eax);
 }
@@ -507,7 +565,7 @@ Result drawEditFieldCore(Game& g, reg32 esp, reg32 rect)
     App* app = g.app;
     CPU& cpu = g.cpu;
     const reg32 at = esp - 24 - 0x14;
-    GAME(at, kTextWidth, {kEditText, kFont});
+    GAME_DIRECT(kTextWidth, text::menuTextWidth, at, {kEditText, kFont}, entered(at), kEditText, kFont);
     const int32_t width = int32_t(g.eax);
     const int32_t middle = chop(cpu, fp::add(load(app, rect + kLeft), load(app, rect + kRight))) / 2;
     const int32_t y = chop(cpu, fp::add(fp::add(load(app, rect + kBottom), Float(-30.0)), Float(-60.0)));
@@ -520,11 +578,15 @@ Result drawEditFieldCore(Game& g, reg32 esp, reg32 rect)
         const int32_t fade = sdword(app, 0x661064);
         const reg32 colour = (reg32(int32_t(reg32(fade) * 60) / 255) << 24) + 0x20;
         if (fade >= 255)
-            GAME(at, kFieldBox, {reg32(fieldX), reg32(y - 1), reg32(fieldWidth), 20}, {colour, colour, colour, colour});
+        {
+            const uint32_t colours[4] = {colour, colour, colour, colour};
+            GAME_DIRECT(kFieldBox, draw2d::drawFieldBoxOf, at, {reg32(fieldX), reg32(y - 1), reg32(fieldWidth), 20},
+                        at - 4 - 4 * 4, fieldX, y - 1, fieldWidth, 20, colours);
+        }
     }
     if (!setFont(g, at))
         return {};
-    GAME(at, kTextWidth, {kEditText, kFont});
+    GAME_DIRECT(kTextWidth, text::menuTextWidth, at, {kEditText, kFont}, entered(at), kEditText, kFont);
     const int32_t shownWidth = int32_t(g.eax);
     const int32_t fieldWidth = sdword(app, 0x661070);
     if (shownWidth > fieldWidth)
@@ -536,14 +598,16 @@ Result drawEditFieldCore(Game& g, reg32 esp, reg32 rect)
         if (!inRace(app))
             GAME(at, kSetClip, {reg32(clip), 0, reg32(640 - clip), 480});
     }
-    GAME(at, kDrawText, {kEditText, reg32(x), reg32(y), kFont}, {kAlignLeft, kFocusColour});
+    GAME_DIRECT(kDrawText, text::menuTextDrawn, at, {kEditText, reg32(x), reg32(y), kFont}, at - 4 - 4 * 2, kEditText,
+                x, y, kFont, int32_t(kAlignLeft), kFocusColour);
     const int32_t blink = int32_t(kCursorBlink(app) + 1) % 25;
     kCursorBlink.set(app, reg32(blink));
     if (blink > 12)
     {
         const int32_t cursorX = width + x;
         if (inRace(app))
-            GAME(at, kDrawText, {kCursor, reg32(cursorX), reg32(y), kFont}, {kAlignLeft, kFocusColour});
+            GAME_DIRECT(kDrawText, text::menuTextDrawn, at, {kCursor, reg32(cursorX), reg32(y), kFont}, at - 4 - 4 * 2,
+                        kCursor, cursorX, y, kFont, int32_t(kAlignLeft), kFocusColour);
         else
         {
             const reg32 colour = fadeAlpha(app) + kFocusColour;
@@ -581,22 +645,26 @@ Result drawListCore(Game& g, reg32 esp)
         const reg32 tick = word(app, kListTicks(app) + 4 * reg32(i));
         if (inRace(app))
         {
-            GAME(at, kFillRect,
-                 {reg32(b.x), reg32(b.y), reg32(app->getMemory<int16_t>(lightWidth)),
-                  reg32(app->getMemory<int16_t>(lightHeight))},
-                 {tick != 0 && word(app, tick) != 0 ? 0x8000u : 0x800000u});
+            const int32_t lightW = app->getMemory<int16_t>(lightWidth), lightH = app->getMemory<int16_t>(lightHeight);
+            GAME_DIRECT(kFillRect, draw2d::filled, at, {reg32(b.x), reg32(b.y), reg32(lightW), reg32(lightH)},
+                        at - 4 - 4, int32_t(b.x), int32_t(b.y), lightW, lightH,
+                        tick != 0 && word(app, tick) != 0 ? 0x8000u : 0x800000u);
         }
         else
         {
             const reg32 white = fadeAlpha(app) + kWhite;
             if (tick != 0 && word(app, tick) != 0)
-                GAME(at, kDrawShape, {kTickedShape(app), reg32(b.x - 1), reg32(b.y + 3), white});
+                GAME_DIRECT(kDrawShape, shapes::drawArt, at, {kTickedShape(app), reg32(b.x - 1), reg32(b.y + 3), white},
+                            entered(at), int32_t(kTickedShape(app)), int32_t(b.x - 1), int32_t(b.y + 3), white);
             else
-                GAME(at, kDrawShape, {kUntickedShape(app), reg32(b.x), reg32(tick != 0 ? b.y + 2 : b.y), white});
+                GAME_DIRECT(kDrawShape, shapes::drawArt, at,
+                            {kUntickedShape(app), reg32(b.x), reg32(tick != 0 ? b.y + 2 : b.y), white}, entered(at),
+                            int32_t(kUntickedShape(app)), int32_t(b.x), int32_t(tick != 0 ? b.y + 2 : b.y), white);
             GAME(at, kShapeSize, {kTickedShape(app), lightWidth, lightHeight, colour});
         }
-        GAME(at, kDrawText, {name, reg32(b.x + app->getMemory<int16_t>(lightWidth)), reg32(b.y), kFont},
-             {kAlignLeft, colour});
+        const int32_t nameX = int32_t(b.x + app->getMemory<int16_t>(lightWidth));
+        GAME_DIRECT(kDrawText, text::menuTextDrawn, at, {name, reg32(nameX), reg32(b.y), kFont}, at - 4 - 4 * 2, name,
+                    nameX, int32_t(b.y), kFont, int32_t(kAlignLeft), colour);
     }
     return int32_t(g.eax);
 }
@@ -657,7 +725,7 @@ Result followPointer(Game& g, reg32 at)
         return 0;
     }
     if (under != sdword(app, 0x558b3c))
-        GAME(at, kPlaySound, {kSoundMove, kVolumeTick});
+        GAME_DIRECT(kPlaySound, playMenuEffectOf, at, {kSoundMove, kVolumeTick}, entered(at), int32_t(kSoundMove), int32_t(kVolumeTick));
     kFocus.set(app, reg32(under));
     return 0;
 }
@@ -740,10 +808,13 @@ Result drawDialogHelpCore(Game& g, reg32 esp)
         kDrawColour.set(app, alpha);
         const reg32 x = kHelpX(app), y = kHelpY(app);
         const reg32 w = kHelpWidth(app), h = kHelpHeight(app);
-        GAME(at, kFillBox, {x, y, x + w, y + h}, {alpha + kHelpDepth, alpha + kHelpBoxColour});
-        GAME(at, kBoxBorder, {x, y, w, h}, {alpha});
+        GAME_DIRECT(kFillBox, draw2d::gradient, at, {x, y, x + w, y + h}, at - 4 - 4 * 2, int32_t(x), int32_t(y),
+                    int32_t(x + w), int32_t(y + h), alpha + kHelpDepth, alpha + kHelpBoxColour);
+        GAME_DIRECT(kBoxBorder, draw2d::outline, at, {x, y, w, h}, at - 4 - 4, int32_t(x), int32_t(y), int32_t(w),
+                    int32_t(h), alpha);
         if (inRace(app))
-            GAME(at, kDrawText, {kHelpText(app), x, y, kFont}, {kAlignLeft, kHelpTextColour});
+            GAME_DIRECT(kDrawText, text::menuTextDrawn, at, {kHelpText(app), x, y, kFont}, at - 4 - 4 * 2,
+                        kHelpText(app), int32_t(x), int32_t(y), kFont, int32_t(kAlignLeft), kHelpTextColour);
         else
             GAME(at, kDrawTextWrapped, {kHelpText(app), kFont, 8, x + 7}, {y, kHelpWrap, 0, 0, 0, 0});
         kDrawColour.set(app, kOpaque);
@@ -895,7 +966,7 @@ Result editKeyCore(Game& g, reg32 esp, reg32 key)
         GAME(at, kPointAtButton, {reg32(focus)});
         return 0;
     case kKeyDelete:
-        GAME(at, kMemset, {kEditText, 0, kEditSize});
+        GAME_DIRECT(kMemset, watcom::clib::memset, at, {kEditText, 0, kEditSize}, kEditText, reg32(0), reg32(kEditSize));
         kEditLength.set(app, 0);
         return 0;
     default:
@@ -909,7 +980,7 @@ Result editKeyCore(Game& g, reg32 esp, reg32 key)
     if (kReplaceOnKey(app) != 0)
     {
         kReplaceOnKey.set(app, 0);
-        GAME(at, kMemset, {kEditText, 0, kEditSize});
+        GAME_DIRECT(kMemset, watcom::clib::memset, at, {kEditText, 0, kEditSize}, kEditText, reg32(0), reg32(kEditSize));
         kEditLength.set(app, 0);
     }
     const reg32 length = kEditLength(app) + 1;
@@ -954,7 +1025,7 @@ Result placeEntriesCore(Game& g, reg32 esp, int32_t count, reg32 names)
         int32_t width = 0;
         if (name != 0)
         {
-            GAME(at, kTextWidth, {name, kFont});
+            GAME_DIRECT(kTextWidth, text::menuTextWidth, at, {name, kFont}, entered(at), name, kFont);
             width = int32_t(g.eax);
         }
         setBoxField(app, kEntryBoxes, i, 4, width);
@@ -1149,14 +1220,14 @@ Result listPassCore(Game& g, reg32 esp)
     if (button >= 0 && button < sdword(app, 0x558b30))
     {
         if (button != sdword(app, 0x558b3c))
-            GAME(at, kPlaySound, {kSoundMove, kVolumeTick});
+            GAME_DIRECT(kPlaySound, playMenuEffectOf, at, {kSoundMove, kVolumeTick}, entered(at), int32_t(kSoundMove), int32_t(kVolumeTick));
         kFocus.set(app, reg32(button));
         kListFocus.set(app, reg32(-1));
     }
     else if (entry >= 0 && entry < int32_t(byteAt(app, 0x558c64)))
     {
         if (entry != sdword(app, 0x558c60))
-            GAME(at, kPlaySound, {kSoundMove, kVolumeTick});
+            GAME_DIRECT(kPlaySound, playMenuEffectOf, at, {kSoundMove, kVolumeTick}, entered(at), int32_t(kSoundMove), int32_t(kVolumeTick));
         kListFocus.set(app, reg32(entry));
         kFocus.set(app, reg32(-1));
     }
@@ -1183,19 +1254,19 @@ Result loadDialogArtCore(Game& g, reg32 esp)
 {
     App* app = g.app;
     const reg32 at = esp - 4;
-    GAME(at, kFindShape, {kPopu});
+    GAME_DIRECT(kFindShape, shapes::shapeNamed, at, {kPopu}, entered(at), kPopu);
     kBoxShape.set(app, g.eax);
-    GAME(at, kFindShape, {kBpop});
+    GAME_DIRECT(kFindShape, shapes::shapeNamed, at, {kBpop}, entered(at), kBpop);
     kButtonShape.set(app, g.eax);
-    GAME(at, kFindShape, {kYpop});
+    GAME_DIRECT(kFindShape, shapes::shapeNamed, at, {kYpop}, entered(at), kYpop);
     kFocusShape.set(app, g.eax);
-    GAME(at, kFindShape, {kGlit});
+    GAME_DIRECT(kFindShape, shapes::shapeNamed, at, {kGlit}, entered(at), kGlit);
     kTickedShape.set(app, g.eax);
-    GAME(at, kFindShape, {kRlit});
+    GAME_DIRECT(kFindShape, shapes::shapeNamed, at, {kRlit}, entered(at), kRlit);
     kUntickedShape.set(app, g.eax);
     if ((kDisplayFlags(app) & kNoTranslucency) == 0)
     {
-        GAME(at, kFindShape, {kYel1});
+        GAME_DIRECT(kFindShape, shapes::shapeNamed, at, {kYel1}, entered(at), kYel1);
         kYel1Shape.set(app, g.eax);
     }
     return int32_t(g.eax);

@@ -2,6 +2,15 @@
 #include "port_loop.h"
 #include "diag_hooks.h"
 #include "port_text.h"
+#include "native_ea_memory.h"
+#include "native_frontend_draw.h"
+#include "native_load_cardb.h"
+#include "native_watcom.h"
+#include "port_dialogs.h"
+#include "port_draw2d.h"
+#include "port_menus.h"
+#include "port_sound_effects.h"
+#include "port_sound_music.h"
 
 #include <cstdint>
 #include <cstring>
@@ -416,10 +425,42 @@ struct Game
     {
         return callGame(app, cpu, esp, target, a, stack, eax);
     }
+    /* A typed core called as C++ where the game's code calls its address, from `esp`, the registers
+     * loaded as the call by address loads them (`a`) and kept, as the callee keeps them: eax its
+     * result; false when the game stopped in it. */
+    template <reg32 Address, auto Core, typename... A>
+    bool direct(reg32 esp, Args a, A... args)
+    {
+        cpu.esp = esp;
+        cpu.eax = a.eax;
+        cpu.edx = a.edx;
+        cpu.ebx = a.ebx;
+        cpu.ecx = a.ecx;
+        const auto result = guest::direct<Address, Core>(app, cpu, args...);
+        if (cpu.terminate)
+            return false;
+        eax = valueOf(result);
+        cpu.eax = eax;
+        return true;
+    }
+    static reg32 valueOf(reg32 value) { return value; }
+    template <class T>
+    static reg32 valueOf(const std::optional<T>& value)
+    {
+        return reg32(*value);
+    }
 };
 
 /* A call into the game's code that gives up the function when the game
  * stopped in it. */
+/* The same for a typed core, called as C++ (Game::direct). */
+#define GAME_DIRECT(address, core, ...)                        \
+    do                                                         \
+    {                                                          \
+        if (!g.template direct<address, core>(__VA_ARGS__))    \
+            return {};                                         \
+    } while (0)
+
 #define GAME(...)          \
     do                     \
     {                      \
@@ -435,7 +476,7 @@ struct Game
 
 bool playSound(Game& g, reg32 esp, reg32 sound, reg32 volume)
 {
-    return g.call(esp, kPlaySound, {sound, volume});
+    return g.direct<kPlaySound, playMenuEffectOf>(esp, {sound, volume}, entered(esp), int32_t(sound), int32_t(volume));
 }
 
 /* ---- The selection ---- */
@@ -447,7 +488,8 @@ Result itemUsableCore(Game& g, reg32 esp, reg32 at)
     App* app = g.app;
     if (kNetworkConnected(app) == 0 || gameSettings(app).networkLobby == 0 || kInRace(app) != 0)
         return 1;
-    GAME(esp - 8, kCodelinkMatches, {item(app, at).codelink, kRaceNow});
+    GAME_DIRECT(kCodelinkMatches, menus::codelinkMatched, esp - 8, {item(app, at).codelink, kRaceNow},
+                entered(esp - 8), item(app, at).codelink, kRaceNow, reg32(0));
     return g.eax != 0 ? 1 : 0;
 }
 
@@ -528,7 +570,7 @@ Result afterSelecting(Game& g, reg32 at, reg32 menu, int16_t was, bool forward)
     if (forward && !keepPrevious())
         return {};
     if (screen(app, menu).selected != was)
-        GAME(at, kPlaySound, {kSoundMove, kVolumeFull});
+        GAME_DIRECT(kPlaySound, playMenuEffectOf, at, {kSoundMove, kVolumeFull}, entered(at), int32_t(kSoundMove), int32_t(kVolumeFull));
     if (!forward && !keepPrevious())
         return {};
     g.eax = menu;
@@ -658,7 +700,8 @@ Result escapeButtonCore(Game& g, reg32 esp, reg32 menu, reg32 offset)
         const reg32 codelink = item(app, it).codelink;
         if (item(app, it).type != kButton || codelink == 0 || found != 0)
             continue;
-        GAME(at, kCodelinkMatches, {codelink, kEscape});
+        GAME_DIRECT(kCodelinkMatches, menus::codelinkMatched, at, {codelink, kEscape}, entered(at), codelink, kEscape,
+                    reg32(0));
         if (g.eax != 0 && (item(app, it).state & kDisabledState) == 0)
         {
             found = it;
@@ -730,7 +773,7 @@ Result itemUnderMouseCore(Game& g, reg32 esp, reg32 menu)
     const reg32 at = esp - 40;
     if (kMouseBlocked(app) != 0)
         return -1;
-    GAME(at, kDialogShown);
+    GAME_DIRECT(kDialogShown, dialogs::dialogShownOf, at, {});
     if ((g.eax & 0xff) != 0 || kMouseHeld(app) != 0
         || (screen(app, menu).selected != kNoItem
             && (item(app, menuItem(app, menu, screen(app, menu).selected)).state & kHasKeys) != 0))
@@ -758,7 +801,7 @@ Result itemUnderMouseCore(Game& g, reg32 esp, reg32 menu)
                 continue;
             const int32_t offset = index - firstItem(app, menu);
             if (screen(app, menu).selected != offset && (*state & kGreyAndHide) == 0)
-                GAME(at, kPlaySound, {kSoundMove, kVolumeTick});
+                GAME_DIRECT(kPlaySound, playMenuEffectOf, at, {kSoundMove, kVolumeTick}, entered(at), int32_t(kSoundMove), int32_t(kVolumeTick));
             return offset;
         }
         layer = next;
@@ -875,7 +918,8 @@ Result menuByNameCore(Game& g, reg32 esp, reg32 name)
     const reg32 at = esp - 20;
     for (reg32 index = 0; index < reg32(kScreenCount(app)); ++index)
     {
-        GAME(at, kStrcmp, {name, screen(app, kScreens.address(int32_t(index))).name});
+        GAME_DIRECT(kStrcmp, watcom::clib::strcmp, at, {name, screen(app, kScreens.address(int32_t(index))).name}, name,
+                    screen(app, kScreens.address(int32_t(index))).name);
         if (g.eax == 0)
             return int32_t(kScreens.address(int32_t(index)));
     }
@@ -940,7 +984,7 @@ Result keysTakenCore(Game& g, reg32 esp)
                 return 1;
         }
     }
-    GAME(esp - 8, kDialogShown);
+    GAME_DIRECT(kDialogShown, dialogs::dialogShownOf, esp - 8, {});
     return (g.eax & 0xff) != 0 ? 1 : 0;
 }
 
@@ -990,7 +1034,7 @@ Result handleKeyCore(Game& g, reg32 esp, reg32 menu, reg32 key)
         {
         case kKeyEscape:
         {
-            GAME(at, kPlaySound, {kSoundBack, kVolumeFull});
+            GAME_DIRECT(kPlaySound, playMenuEffectOf, at, {kSoundBack, kVolumeFull}, entered(at), int32_t(kSoundBack), int32_t(kVolumeFull));
             const reg32 offset = at;  // [ebp - 4]
             setWord(app, offset, result);
             NEEDED(button, escapeButtonCore(g, entered(at), menu, offset));
@@ -1009,7 +1053,7 @@ Result handleKeyCore(Game& g, reg32 esp, reg32 menu, reg32 key)
         case kKeyUp:
         case kKeyLeft:
         {
-            GAME(at, kPlaySound, {kSoundMove, kVolumeTick});
+            GAME_DIRECT(kPlaySound, playMenuEffectOf, at, {kSoundMove, kVolumeTick}, entered(at), int32_t(kSoundMove), int32_t(kVolumeTick));
             g.eax = menu;
             NEEDED(r, selectPreviousCore(g, entered(at), menu));
             g.eax = reg32(*r);
@@ -1018,7 +1062,7 @@ Result handleKeyCore(Game& g, reg32 esp, reg32 menu, reg32 key)
         case kKeyRight:
         case kKeyDown:
         {
-            GAME(at, kPlaySound, {kSoundMove, kVolumeTick});
+            GAME_DIRECT(kPlaySound, playMenuEffectOf, at, {kSoundMove, kVolumeTick}, entered(at), int32_t(kSoundMove), int32_t(kVolumeTick));
             g.eax = menu;
             NEEDED(r, selectNextCore(g, entered(at), menu));
             g.eax = reg32(*r);
@@ -1084,7 +1128,7 @@ Result drawItemsCore(Game& g, reg32 esp, reg32 menu)
         }
         else if (layer == 8 && kNetworkConnected(app) != 0)
         {
-            GAME(at, kStrcmp, {screen(app, menu).name, kIpx});
+            GAME_DIRECT(kStrcmp, watcom::clib::strcmp, at, {screen(app, menu).name, kIpx}, screen(app, menu).name, kIpx);
             if (g.eax != 0)
             {
                 GAME(at, kNetworkFrame);
@@ -1113,7 +1157,7 @@ Result leaveScreenCore(Game& g, reg32 esp, reg32 menu, reg32 action)
     {
         if (action != kMoviePlayed)
         {
-            GAME(at, kPlaySound, {kSoundLeave, kVolumeFull});
+            GAME_DIRECT(kPlaySound, playMenuEffectOf, at, {kSoundLeave, kVolumeFull}, entered(at), int32_t(kSoundLeave), int32_t(kVolumeFull));
             if ((kDisplayFlags(app) & kNoTranslucency) == 0)
             {
                 for (kFade.set(app, step); int32_t(kFade(app)) < 500; kFade.set(app, kFade(app) + step))
@@ -1151,28 +1195,28 @@ Result enterScreenCore(Game& g, reg32 esp, reg32 menu)
         if (kFrontendArt(app) == 0)
         {
             const reg32 path = at;  // char[0x100]
-            GAME(at, kSprintf, {}, {path, kQfsFormat, kArtFolder, kMmnu});
-            GAME(at, kLoadShapes, {path, 0});
+            GAME_DIRECT(kSprintf, watcom::clib::sprintf, at, {}, path, kQfsFormat, guest::Words{kArtFolder, kMmnu});
+            GAME_DIRECT(kLoadShapes, frontend::draw::loadQfs, at, {path, 0}, path);
             kFrontendArt.set(app, g.eax);
             if (kFrontendArt(app) == 0)
             {
-                GAME(at, kSprintf, {}, {path, kFshFormat, kArtFolder, kMmnu});
-                GAME(at, kLoadShapes, {path, 0});
+                GAME_DIRECT(kSprintf, watcom::clib::sprintf, at, {}, path, kFshFormat, guest::Words{kArtFolder, kMmnu});
+                GAME_DIRECT(kLoadShapes, frontend::draw::loadQfs, at, {path, 0}, path);
                 kFrontendArt.set(app, g.eax);
             }
         }
         GAME(at, kLoadDialogArt);
         GAME(at, kClearBackground);
-        GAME(at, kStrcmp, {screen(app, menu).name, kOpponent});
+        GAME_DIRECT(kStrcmp, watcom::clib::strcmp, at, {screen(app, menu).name, kOpponent}, screen(app, menu).name, kOpponent);
         bool carScreen = g.eax == 0;
         if (!carScreen)
         {
-            GAME(at, kStrcmp, {screen(app, menu).name, kCar1});
+            GAME_DIRECT(kStrcmp, watcom::clib::strcmp, at, {screen(app, menu).name, kCar1}, screen(app, menu).name, kCar1);
             carScreen = g.eax == 0;
         }
         if (!carScreen)
         {
-            GAME(at, kStrcmp, {screen(app, menu).name, kCar2});
+            GAME_DIRECT(kStrcmp, watcom::clib::strcmp, at, {screen(app, menu).name, kCar2}, screen(app, menu).name, kCar2);
             carScreen = g.eax == 0;
         }
         if (carScreen)
@@ -1246,7 +1290,7 @@ Result nameAnswerCore(Game& g, reg32 esp, reg32 answer, reg32 close, reg32 name,
             GAME(at, kNameValid, {typed});
             if (g.eax == 0)
             {
-                GAME(at, kLanguageText, {defaultText});
+                GAME_DIRECT(0x4d1850, text::lineText, at, {defaultText}, entered(at), int32_t(defaultText), reg32(0));
                 typed = g.eax;
             }
             copyString(app, name, typed);
@@ -1320,7 +1364,7 @@ Result drawHelpCore(Game& g, reg32 esp)
     bool restart = kCurrentMenu(app) != kHelpMenu(app);
     if (!restart)
     {
-        GAME(at, kDialogShown);
+        GAME_DIRECT(kDialogShown, dialogs::dialogShownOf, at, {});
         restart = (g.eax & 0xff) != 0;
     }
     if (restart)
@@ -1342,7 +1386,7 @@ Result drawHelpCore(Game& g, reg32 esp)
     g.eax = reg32(*selected);
     const reg32 index = reg32(*selected);
     bool timing = true;
-    GAME(at, kDialogShown);
+    GAME_DIRECT(kDialogShown, dialogs::dialogShownOf, at, {});
     if ((g.eax & 0xff) != 0 || index == reg32(-1) || index != kHelpItem(app))
         kHelpItem.set(app, reg32(-1));
     else if (kHelpItem(app) != reg32(-1))
@@ -1400,10 +1444,13 @@ Result drawHelpCore(Game& g, reg32 esp)
     const reg32 w = kHelpWidth(app), h = kHelpHeight(app);
     const reg32 alpha = kHelpFade(app) << 24;
     kDrawColour.set(app, alpha);
-    GAME(at, kFillBox, {x, y, x + w, y + h}, {reg32(-100), kHelpBoxColour});
-    GAME(at, kBoxBorder, {x, y, w, h}, {alpha});
+    GAME_DIRECT(kFillBox, draw2d::gradient, at, {x, y, x + w, y + h}, at - 4 - 4 * 2, int32_t(x), int32_t(y),
+                int32_t(x + w), int32_t(y + h), reg32(-100), kHelpBoxColour);
+    GAME_DIRECT(kBoxBorder, draw2d::outline, at, {x, y, w, h}, at - 4 - 4, int32_t(x), int32_t(y), int32_t(w),
+                int32_t(h), alpha);
     if (kInRace(app) != 0)
-        GAME(at, kDrawTextInRace, {kHelpText(app), x, y, kHelpFont}, {0, kHelpTextColour});
+        GAME_DIRECT(kDrawTextInRace, text::menuTextDrawn, at, {kHelpText(app), x, y, kHelpFont}, at - 4 - 4 * 2,
+                    kHelpText(app), int32_t(x), int32_t(y), kHelpFont, 0, kHelpTextColour);
     else
         GAME(at, kDrawTextWrapped, {kHelpText(app), kHelpFont, 8, x + 7}, {y, kHelpWrap, 0, 0, 0, 0});
     kDrawColour.set(app, 0xff000000);
@@ -1535,11 +1582,13 @@ Result fitRaceSettingsCore(Game& g, reg32 esp)
             cops = kNetworkSetting2276(app) == int32_t(kNetworkSettingE5d0(app));
         else if (players == 1)
         {
-            GAME(at, kCarFlag10, {gameSettings(app).players[0].car});
+            GAME_DIRECT(kCarFlag10, load::policeFlag, at, {gameSettings(app).players[0].car},
+                        gameSettings(app).players[0].car);
             cops = g.eax != 0;
             if (cops)
             {
-                GAME(at, kCarFlag10, {gameSettings(app).players[1].car});
+                GAME_DIRECT(kCarFlag10, load::policeFlag, at, {gameSettings(app).players[1].car},
+                            gameSettings(app).players[1].car);
                 cops = g.eax != 0;
             }
         }
@@ -1552,7 +1601,7 @@ Result fitRaceSettingsCore(Game& g, reg32 esp)
     auto shown = [&](reg32 name, bool& is) -> bool {
         if (!g.call(at, kCurrentMenuName, {g.eax, name}))
             return false;
-        if (!g.call(at, kStrcmp, {g.eax, name}))
+        if (!g.direct<kStrcmp, watcom::clib::strcmp>(at, {g.eax, name}, g.eax, name))
             return false;
         is = g.eax == 0;
         return true;
@@ -1609,19 +1658,19 @@ Result fitRaceSettingsCore(Game& g, reg32 esp)
 bool askName(Game& g, reg32 at, reg32 name, reg32 title, reg32 defaultText, reg32 answer)
 {
     App* app = g.app;
-    if (!g.call(at, kLanguageText, {title}))
+    if (!g.direct<0x4d1850, text::lineText>(at, {title}, entered(at), int32_t(title), reg32(0)))
         return false;
     setWord(app, kDialogLines, g.eax);
-    if (!g.call(at, kLanguageText, {kNameDialogLine2}))
+    if (!g.direct<0x4d1850, text::lineText>(at, {kNameDialogLine2}, entered(at), int32_t(kNameDialogLine2), reg32(0)))
         return false;
     setWord(app, kDialogLines + 4, g.eax);
-    if (!g.call(at, kLanguageText, {kNameDialogOk}))
+    if (!g.direct<0x4d1850, text::lineText>(at, {kNameDialogOk}, entered(at), int32_t(kNameDialogOk), reg32(0)))
         return false;
     setWord(app, kDialogButtons, g.eax);
-    if (!g.call(at, kLanguageText, {kNameDialogCancel}))
+    if (!g.direct<0x4d1850, text::lineText>(at, {kNameDialogCancel}, entered(at), int32_t(kNameDialogCancel), reg32(0)))
         return false;
     setWord(app, kDialogButtons + 4, g.eax);
-    if (!g.call(at, kLanguageText, {defaultText}))
+    if (!g.direct<0x4d1850, text::lineText>(at, {defaultText}, entered(at), int32_t(defaultText), reg32(0)))
         return false;
     copyString(app, name, g.eax);
     return g.call(at, kOpenDialog, {2, kDialogLines, 2, kDialogButtons}, {0, name, kPlayerNameLength, 1, answer});
@@ -1659,11 +1708,14 @@ Result menuLoopCore(Game& g, reg32 esp, reg32 name, reg32 history)
     kInRace.set(app, 0);
     kFlagEb10.set(app, 0);
     kFrontendArt.set(app, 0);
-    GAME(at, kSetDisplay, {gameSettings(app).language});
+    GAME_DIRECT(kSetDisplay, text::loadedLanguageText, at, {gameSettings(app).language}, entered(at),
+                int32_t(gameSettings(app).language));
     GAME(at, kResetInput);
     const reg32 afterRace = kAfterRace(app);
-    GAME(at, kStartMusic, {afterRace != 0 ? gameSettings(app).track : reg32(0x16), gameSettings(app).menuMusicVolume, afterRace});
-    GAME(at, kLoadMenus, {name, 1});
+    const reg32 tune = afterRace != 0 ? gameSettings(app).track : reg32(0x16);
+    GAME_DIRECT(kStartMusic, musicStarted, at, {tune, gameSettings(app).menuMusicVolume, afterRace}, entered(at),
+                int32_t(tune), int32_t(gameSettings(app).menuMusicVolume), int32_t(afterRace));
+    GAME_DIRECT(kLoadMenus, menus::menusLoaded, at, {name, 1}, entered(at), name, reg32(1), Args{name, 1});
     kLastAction.set(app, 5);
     for (reg32 i = 0; i < kHistorySize; ++i)
         kHistory.set(app, int32_t(i), 0);
@@ -1692,7 +1744,7 @@ Result menuLoopCore(Game& g, reg32 esp, reg32 name, reg32 history)
         if (word(app, action) != 0)
             setWord(app, action, 3);
         kScreenUp.set(app, 1);
-        GAME(at, kPlaySound, {kSoundEnter, kVolumeFull});
+        GAME_DIRECT(kPlaySound, playMenuEffectOf, at, {kSoundEnter, kVolumeFull}, entered(at), int32_t(kSoundEnter), int32_t(kVolumeFull));
 
         while (word(app, action) == 0)
         {
@@ -1717,7 +1769,7 @@ Result menuLoopCore(Game& g, reg32 esp, reg32 name, reg32 history)
                 NEEDED(drawn, drawItemsCore(g, entered(at), kCurrentMenu(app)));
                 g.eax = reg32(*drawn);
                 setWord(app, action, g.eax);
-                GAME(at, kDialogShown);
+                GAME_DIRECT(kDialogShown, dialogs::dialogShownOf, at, {});
                 if ((g.eax & 0xff) != 0)
                 {
                     GAME(at, kDialogPass);
@@ -1765,7 +1817,7 @@ Result menuLoopCore(Game& g, reg32 esp, reg32 name, reg32 history)
                 if (key != 0)
                 {
                     const reg32 code = reg32(int32_t(int16_t(key)));
-                    GAME(at, kDialogShown);
+                    GAME_DIRECT(kDialogShown, dialogs::dialogShownOf, at, {});
                     if ((g.eax & 0xff) != 0)
                     {
                         GAME(at, kDialogKey, {code});
@@ -1820,7 +1872,7 @@ Result menuLoopCore(Game& g, reg32 esp, reg32 name, reg32 history)
         // The screen left.
         if (kScreenShapes(app) != 0)
         {
-            GAME(at, kFree, {kScreenShapes(app)});
+            GAME_DIRECT(kFree, ea::purgeBlock, at, {kScreenShapes(app)}, kScreenShapes(app));
             kScreenShapes.set(app, 0);
         }
         kScreenUp.set(app, 0);
@@ -1886,7 +1938,7 @@ Result menuLoopCore(Game& g, reg32 esp, reg32 name, reg32 history)
         case kRace:
         case kRace7:
         {
-            GAME(at, kPlaySound, {kSoundStart, kVolumeFull});
+            GAME_DIRECT(kPlaySound, playMenuEffectOf, at, {kSoundStart, kVolumeFull}, entered(at), int32_t(kSoundStart), int32_t(kVolumeFull));
             GAME(at, kBeginFrame);
             g.eax = kCurrentMenu(app);
             NEEDED(drawn, drawItemsCore(g, entered(at), kCurrentMenu(app)));
@@ -1968,12 +2020,12 @@ Result menuLoopCore(Game& g, reg32 esp, reg32 name, reg32 history)
     GAME(at, kCheckMenuFiles);
     if (kFrontendArt(app) != 0)
     {
-        GAME(at, kFree, {kFrontendArt(app)});
+        GAME_DIRECT(kFree, ea::purgeBlock, at, {kFrontendArt(app)}, kFrontendArt(app));
         kFrontendArt.set(app, 0);
     }
     GAME(at, kMenusEnd);
     GAME(at, kCloseDialog);
-    GAME(at, kStopMusic);
+    GAME_DIRECT(kStopMusic, musicStopped, at, {}, entered(at), reg32(0));
     return int32_t(word(app, action));
 }
 

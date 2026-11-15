@@ -7,7 +7,7 @@
 { 0x4853c0, { EAX | EDX, 0, 0, EDX, Kind::Plain } },
 { 0x48eff0, { EAX, 0, 0, 0, Kind::Plain } },
 { 0x49c080, { 0, 0, 0, 0, Kind::Plain } },
-{ 0x4b5e50, { EAX | EBX, 0, 0, EBX, Kind::Plain } },
+{ 0x4b5e50, { EAX, 0, 0, EBX, Kind::Plain } },  // reads eax alone: the message box, then exit(0) -- what exit's finalizers read never reaches the game
 { 0x4b62a0, { 0, 0, 0, 0, Kind::Plain } },
 { 0x4d4080, { EAX | EBX | ECX | EDX, 1, 4, EBX | ECX | EDX, Kind::Plain } },
 { 0x4df740, { 0, 0, 0, 0, Kind::Plain } },

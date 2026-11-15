@@ -10,6 +10,7 @@
 #include "native_trackdata.h"
 #include "native_vertices.h"
 #include "port_hud.h"
+#include "native_watcom.h"
 #include <nfs3hp.h>
 #include <cstring>
 
@@ -216,6 +217,13 @@ x86::reg32 frontend::sima::laneSteer(App* app, CPU& cpu, reg32 car)
 /* sub_4064f0: the pull of an opponent's engine at its speed, onto the x87. */
 x86::reg32 frontend::sima::enginePull(App* app, CPU& cpu, reg32 car)
 {
+    const FloatLeft left = enginePullOf(app, cpu, car);
+    cpu.fpu.push(Float(left.value));
+    return left.eax;
+}
+
+frontend::sima::FloatLeft frontend::sima::enginePullOf(App* app, CPU& cpu, reg32 car)
+{
     Guest guest(app, cpu);
     constexpr std::uint8_t kCarLimited = 0x01, kCarInTraffic = 0x10, kCarSlowed = 0x20;
     constexpr reg32 kDriving = 0x528;
@@ -232,16 +240,10 @@ x86::reg32 frontend::sima::enginePull(App* app, CPU& cpu, reg32 car)
         const Float limit = Float(floatOf(limitBits));
         reg16 status = fp::compare(fp::mul(limit, floatFrom(guest, car + kThrottle)), floatFrom(guest, car + kPedal));
         if (jumpsBelow(status))
-        {
-            guest.pushFloat(0.0f);
-            return withStatus(limitBits, status);
-        }
+            return { 0.0, withStatus(limitBits, status) };
         status = fp::compare(floatFrom(guest, car + kPedal), limit);
         if (jumpsAbove(status))
-        {
-            guest.pushFloat(0.0f);
-            return withStatus(limitBits, status);
-        }
+            return { 0.0, withStatus(limitBits, status) };
     }
     // The speed in m/s, a row of the car's table.
     sreg32 row = fp::toInteger<sreg32>(fp::add(floatFrom(guest, car + kSpeed), doubleAt(guest, kMinusHalf)));
@@ -281,8 +283,7 @@ x86::reg32 frontend::sima::enginePull(App* app, CPU& cpu, reg32 car)
     {
         pull = float(fp::mul(Float(pull), doubleAt(guest, kHalf)));
     }
-    guest.pushFloat(pull);
-    return bitsOf(pull);
+    return { double(pull), bitsOf(pull) };
 }
 
 /* sub_4070c0: how far the way the driver wants to go (sub_406e50) is from the way
@@ -1008,6 +1009,13 @@ x86::reg32 frontend::sima::camerasStep(App* app, CPU& cpu)
  * longest way and a quarter of each other's, onto the x87. */
 x86::reg32 frontend::sima::quickDistance(App* app, CPU& cpu, reg32 a, reg32 b)
 {
+    const FloatLeft left = quickDistanceOf(app, cpu, a, b);
+    cpu.fpu.push(Float(left.value));
+    return left.eax;
+}
+
+frontend::sima::FloatLeft frontend::sima::quickDistanceOf(App* app, CPU& cpu, reg32 a, reg32 b)
+{
     Guest guest(app, cpu);
     constexpr reg32 kQuarter = 0x53bedc;
     reg16 status;
@@ -1021,13 +1029,17 @@ x86::reg32 frontend::sima::quickDistance(App* app, CPU& cpu, reg32 a, reg32 b)
     status = fp::compare(Float(flat), Float(dz));
     const float whole = float(jumpsAbove(status) ? fp::add(fp::mul(Float(dz), quarter), Float(flat))
                                                  : fp::add(fp::mul(Float(flat), quarter), Float(dz)));
-    guest.pushFloat(whole);
-    return withStatus(bitsOf(dz), status);
+    return { double(whole), withStatus(bitsOf(dz), status) };
 }
 
 /* sub_4967e0: a length in the plane without a root, of two sizes on the stack: the
  * larger and a share of the smaller, the share by how near the smaller comes. */
 void frontend::sima::planarLength(App* app, CPU& cpu, reg32 aBits, reg32 bBits)
+{
+    cpu.fpu.push(Float(planarLengthOf(app, cpu, aBits, bBits)));
+}
+
+double frontend::sima::planarLengthOf(App* app, CPU& cpu, reg32 aBits, reg32 bBits)
 {
     Guest guest(app, cpu);
     const float a = floatOf(aBits), b = floatOf(bBits);
@@ -1043,7 +1055,7 @@ void frontend::sima::planarLength(App* app, CPU& cpu, reg32 aBits, reg32 bBits)
         share = kShareLess;
     else if (jumpsAbove(fp::compare(fp::mul(larger, doubleAt(guest, kThreeQuarters)), smaller)))
         share = kShareMore;
-    guest.pushFloat(float(fp::add(fp::mul(smaller, doubleAt(guest, share)), larger)));
+    return double(float(fp::add(fp::mul(smaller, doubleAt(guest, share)), larger)));
 }
 
 // ---------------------------------------------------------------------------
@@ -1083,11 +1095,10 @@ x86::reg32 frontend::sima::sliceHeading(App* app, CPU& cpu, reg32 index)
     const Float scale = doubleAt(guest, kScale);
     const Float x = fp::mul(Float(sreg32(guest.dword(to) - guest.dword(from))), scale);
     const Float z = fp::mul(scale, Float(sreg32(guest.dword(to + 8) - guest.dword(from + 8))));
-    guest::direct<0x4ea9c0, simd::angleOfFloats>(app, cpu, bitsOf(float(x)), bitsOf(float(z)));
-    x86::FPU& fpu = guest.fpu();
-    fpu.push(fp::mul(fpu.take(), doubleAt(guest, kToFixed)));
-    guest.call(kTruncate);
-    return reg32(fp::toInteger<sreg32>(fpu.take()));
+    const double angle = guest::direct<0x4ea9c0, simd::angleOfFloatsValue>(app, cpu, bitsOf(float(x)), bitsOf(float(z)));
+    const double whole =
+        guest::direct<kTruncate, watcom::clib::chop>(app, cpu, double(fp::mul(Float(angle), doubleAt(guest, kToFixed))));
+    return reg32(fp::toInteger<sreg32>(Float(whole)));
 }
 
 /* sub_49ffa0: a car in the race given the track's frame where it is (sub_420230, in

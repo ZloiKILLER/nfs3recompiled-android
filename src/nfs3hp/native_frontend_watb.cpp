@@ -1,4 +1,7 @@
 #include "native_frontend_watb.h"
+#include "native_ea_net.h"
+#include "native_watcom.h"
+#include "native_game.h"
 #include "native_ea_memory.h"
 #include "native_frontend.h"
 #include "native_frontend_eab.h"
@@ -6,10 +9,48 @@
 #include "native_frontend_rendf.h"
 #include "native_frontend_watc.h"
 #include "native_windows.h"
+#include "host_threads.h"
 #include <nfs3hp.h>
 #include <winapi/kernel32.h>
 
 #include <optional>
+#include <type_traits>
+#include <utility>
+#include <cstddef>
+
+namespace nfs3hp
+{
+namespace
+{
+
+/* A typed core called as C++ (fe::direct) whose function changes no register but eax (as
+ * tools/frontend_checks/specs_from_exe.py reads it): the registers left as the call by address
+ * leaves them -- `words` in eax, edx, ebx and ecx as that call loads them, the first `Taken` of
+ * them the core's arguments -- and its result in eax, which the call by address leaves there. */
+template <x86::reg32 Address, auto Core, std::size_t... I>
+auto directOf(win32::WinApplication* app, x86::CPU& cpu, const x86::reg32* words, std::index_sequence<I...>)
+{
+    return fe::direct<Address, Core>(app, cpu, words[I]...);
+}
+
+template <x86::reg32 Address, auto Core, std::size_t Taken, typename... Words>
+x86::reg32 directKept(win32::WinApplication* app, x86::CPU& cpu, Words... words)
+{
+    const x86::reg32 all[] = { x86::reg32(words)..., 0 };
+    x86::reg32* const into[] = { &cpu.eax, &cpu.edx, &cpu.ebx, &cpu.ecx };
+    for (std::size_t i = 0; i < sizeof...(Words) && i < 4; ++i)
+        *into[i] = all[i];
+    const auto result = directOf<Address, Core>(app, cpu, all, std::make_index_sequence<Taken>{});
+    if constexpr (std::is_same_v<std::remove_cv_t<decltype(result)>, x86::reg32>)
+        cpu.eax = result;
+    else
+        cpu.eax = *result;
+    return cpu.eax;
+}
+
+}  // namespace
+}  // namespace nfs3hp
+
 
 /* What lies between the C runtime's modules from 0x4fb800 to 0x517200, decompiled.  The
  * rough map called it the runtime; most of it is EA's graphics library:
@@ -118,6 +159,24 @@ reg32 roundedDepth(reg32 depth)
 }
 
 void reportError(Guest& guest, reg32 file, reg32 function, reg32 line, const fe::Arguments& arguments)
+{
+    guest.setDword(kErrorFile, file);
+    guest.setDword(kErrorFunction, function);
+    guest.setDword(kErrorLine, line);
+    // Error as C++: the registers as the code loads them for it, which it keeps; its format and words
+    // pushed.
+    x86::CPU& cpu = guest.cpu();
+    x86::reg32* const into[] = { &cpu.eax, &cpu.edx, &cpu.ebx, &cpu.ecx };
+    for (std::size_t i = 0; i < arguments.registerCount; ++i)
+        *into[i] = arguments.registers[i];
+    guest::Words words({});
+    for (std::size_t i = 1; i < arguments.stackCount; ++i)
+        words.word[words.count++] = arguments.stack[i];
+    fe::direct<0x401010, ea::error>(guest.app(), cpu, arguments.stack[0], words);
+}
+
+/* The same by address where what Error leaves in eax is handed back, which ea::error does not give. */
+void reportErrorLeft(Guest& guest, reg32 file, reg32 function, reg32 line, const fe::Arguments& arguments)
 {
     guest.setDword(kErrorFile, file);
     guest.setDword(kErrorFunction, function);
@@ -545,7 +604,7 @@ x86::reg32 frontend::watb::initVideoWindow(App* app, CPU& cpu, reg32 argEax, reg
     if (depth == 0)
         depth = 8;
     const reg32 bytesStep = roundedDepth(depth);
-    guest.call(kFillZero, args({ window, 0x38 }));
+    fe::direct<kFillZero, ea::clearBytes>(guest.app(), guest.cpu(), window, 0x38);
     guest.setDword(window, 0x57494e44);   // 'WIND'
     guest.setByte(window + 0x1e, 0xff);
     guest.setDword(window + 4, width);
@@ -565,7 +624,7 @@ x86::reg32 frontend::watb::initVideoWindow(App* app, CPU& cpu, reg32 argEax, reg
     if (rows != 0 && columns != 0)
         return columns;
     guest.leaveEbx(0x54f53c);
-    reportError(guest, 0x54f53c, 0x54f54c, 0x29, args({}, { 0x54f55c, width, height }));
+    reportErrorLeft(guest, 0x54f53c, 0x54f54c, 0x29, args({}, { 0x54f55c, width, height }));
     return guest.eax();
 }
 
@@ -1995,7 +2054,7 @@ x86::reg32 frontend::watb::convertShape(App* app, CPU& cpu, reg32 argEax, reg32 
             keyed = 0;
         }
 
-        guest.call(0x4df690, args({}, { frame, 0x54f970, fromDepth, toDepth }));
+        fe::direct<0x4df690, watcom::clib::sprintf>(guest.app(), guest.cpu(), frame, 0x54f970, guest::Words{fromDepth, toDepth});
         const reg32 pixelBytes = height * rowBytes;
         guest.setDword(kErrorFile, 0x54f7a8);
         guest.setDword(kErrorFunction, 0x54f868);
@@ -2541,7 +2600,7 @@ x86::reg32 frontend::watb::textMono(App* app, CPU& cpu, reg32 argEax, reg32 argE
     case 0x20: plot = 0x50c350; break;
     default:
         guest.leaveEbx(0x54fa18);
-        reportError(guest, 0x54fa18, 0x54fa28, 0xf1, args({}, { 0x54fa34, guest.byte(kWindowDepth) }));
+        reportErrorLeft(guest, 0x54fa18, 0x54fa28, 0xf1, args({}, { 0x54fa34, guest.byte(kWindowDepth) }));
         return guest.eax();
     }
     const reg32 clipLeft = guest.dword(kClipLeft);
@@ -3394,7 +3453,7 @@ x86::reg32 frontend::watb::queueFetch(App* app, CPU& cpu, reg32 argEax, reg32 ar
     const reg32 queue = cpu.eax, test = cpu.edx, argument = cpu.ebx;
     const reg32 lock = guest.dword(queue + 0x18);
     guest.leaveEdx(lock);
-    callImport<kEnterLock, &win32::kernel32::EnterCriticalSection>(guest, cpu, lock);
+    callImport<kEnterLock, &host::enterLock>(guest, cpu, lock);
     if (guest.dword(queue + 0x18) == 0)
     {
         guest.leaveEdx(0x36a);
@@ -3410,14 +3469,14 @@ x86::reg32 frontend::watb::queueFetch(App* app, CPU& cpu, reg32 argEax, reg32 ar
     }
     if (element != 0)
     {
-        if (guest.call(0x50dc20, args({ queue, element })) == 0)
+        if (directKept<0x50dc20, ea::queueUnlinked, 2>(guest.app(), guest.cpu(), queue, element) == 0)
         {
             reportError(guest, 0x54fbb8, 0x54fc94, 0x373, args({}, { 0x54fc9c }));
             element = 0;
         }
     }
     guest.leaveEbx(element);
-    callImport<kLeaveLock, &win32::kernel32::LeaveCriticalSection>(guest, cpu, guest.dword(queue + 0x18));
+    callImport<kLeaveLock, &host::leaveLock>(guest, cpu, guest.dword(queue + 0x18));
     return element;
 }
 
@@ -3448,7 +3507,7 @@ x86::reg32 frontend::watb::freeClosedStreams(App* app, CPU& cpu)
     {
         const reg32 link = guest.dword(kClosedStreams);
         const reg32 next = guest.dword(link);
-        guest.call(kNfree, args({ link }));
+        fe::direct<kNfree, watcom::clib::free>(guest.app(), guest.cpu(), link);
         guest.setDword(kClosedStreams, next);
         if (next == 0)
             break;
@@ -3476,10 +3535,10 @@ x86::reg32 frontend::watb::initStreams(App* app, CPU& cpu, reg32 argEax)
     reg32 inUse = guest.dword(kIob + 0xc);
     while (inUse != 0)
     {
-        reg32 link = guest.call(kNmalloc, args({ kLinkBytes }));
+        reg32 link = fe::direct<kNmalloc, watcom::clib::malloc>(guest.app(), guest.cpu(), kLinkBytes);
         if (link == 0)
         {
-            link = guest.call(kNmalloc, args({ kLinkBytes }));
+            link = fe::direct<kNmalloc, watcom::clib::malloc>(guest.app(), guest.cpu(), kLinkBytes);
             if (link == 0)
                 guest.call(0x511d0c, args({ 0x55057c, 1 }));
         }
@@ -3579,7 +3638,7 @@ x86::reg32 frontend::watb::buildArgv(App* app, CPU& cpu)
     const reg32 length = guest.dword(frame) - guest.dword(kCommandLine);
     const reg32 textBytes = (length + 4) & ~reg32(3);
     const reg32 argvBytes = words << 2;
-    const reg32 memory = guest.call(kNmalloc, args({ (argvBytes + 4 + textBytes + 3) & ~reg32(3) }));
+    const reg32 memory = fe::direct<kNmalloc, watcom::clib::malloc>(guest.app(), guest.cpu(), (argvBytes + 4 + textBytes + 3) & ~reg32(3));
     reg32 count = 0;
     if (memory != 0)
     {
@@ -4387,7 +4446,7 @@ x86::reg32 frontend::watb::formatE(App* app, CPU& cpu, reg32 argEax, reg32 argEd
         if (sreg32(taken) < sreg32(scaleNow))
         {
             const reg32 zeros = scaleNow - taken;
-            guest.call(kMemset, args({ buffer + out, '0', zeros }));
+            fe::direct<kMemset, watcom::clib::memset>(guest.app(), guest.cpu(), buffer + out, '0', zeros);
             out += zeros;
         }
     }
@@ -4402,7 +4461,7 @@ x86::reg32 frontend::watb::formatE(App* app, CPU& cpu, reg32 argEax, reg32 argEd
     {
         const reg32 zeros = reg32(0) - scaleNow;
         leftEcx = out;
-        guest.call(kMemset, args({ buffer + out, '0', zeros }));
+        fe::direct<kMemset, watcom::clib::memset>(guest.app(), guest.cpu(), buffer + out, '0', zeros);
         out += zeros;
     }
     if (positive(precision))

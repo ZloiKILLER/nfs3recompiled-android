@@ -6,6 +6,7 @@
 #include "native_ea_threads.h"
 #include "native_guest.h"
 #include "native_windows.h"
+#include "host_threads.h"
 #include "port_dialogs.h"
 #include "port_sound_music.h"
 #include "port_text.h"
@@ -289,10 +290,10 @@ void glue::noteDigitalControls(App* app, CPU& cpu)
     cpu.ebx = pop(app, cpu);
 }
 
-/* 0x46c9b0: slider eax's value onto the x87's stack -- a range's (kind 2)
- * end edx (0x46afd0), 0 for kind 1, a single one's (0x469520) else -- as a
- * float. */
-void glue::sliderValue(App* app, CPU& cpu, reg32 slider, reg32 end)
+/* 0x46c9b0: slider eax's value -- a range's (kind 2) end edx (0x46afd0), 0
+ * for kind 1, a single one's (0x469520) else -- as a float, which its adapter
+ * leaves on the x87's stack. */
+double glue::sliderValue(App* app, CPU& cpu, reg32 slider, reg32 end)
 {
     cpu.eax = slider;
     cpu.edx = end;
@@ -307,21 +308,22 @@ void glue::sliderValue(App* app, CPU& cpu, reg32 slider, reg32 end)
         cpu.ecx &= 0xffff;
     if (cpu.cx == 2)
     {
-        guest::direct<0x46afd0, draw::twoAxisValue>(app, cpu, cpu.eax, cpu.edx);
+        const double value = guest::direct<0x46afd0, draw::twoAxisValue>(app, cpu, cpu.eax, cpu.edx);
         if (cpu.terminate)
-            return;
-        app->getMemory<float>(ebp - 4) = float(cpu.fpu.pop());
+            return 0.0;
+        app->getMemory<float>(ebp - 4) = float(value);
     }
     else if (cpu.cx != 1)
     {
         cpu.edx = 0;
-        guest::direct<0x469520, draw::sliderStoredValue>(app, cpu, cpu.eax);
+        const double value = guest::direct<0x469520, draw::sliderStoredValue>(app, cpu, cpu.eax);
         if (cpu.terminate)
-            return;
-        app->getMemory<float>(ebp - 4) = float(cpu.fpu.pop());
+            return 0.0;
+        app->getMemory<float>(ebp - 4) = float(value);
     }
-    cpu.fpu.push(x86::Float(app->getMemory<float>(ebp - 4)));
+    const x86::Float value = x86::Float(app->getMemory<float>(ebp - 4));
     leave(app, cpu, {&cpu.ebx, &cpu.ecx});
+    return value;
 }
 
 /* 0x46cac0: the function slider eax's moves go to, edx (+0x78). */
@@ -709,7 +711,7 @@ x86::reg32 glue::nextKey(App* app, CPU& cpu)
     cpu.edx = at(app, kKeyLock);
     cpu.esi = 0;
     cpu.ebx = 0;
-    if (!windows<kEnterCriticalSection, &win32::kernel32::EnterCriticalSection>(app, cpu, cpu.edx))
+    if (!windows<kEnterCriticalSection, &host::enterLock>(app, cpu, cpu.edx))
         return cpu.eax;
     for (;;)
     {
@@ -742,7 +744,7 @@ x86::reg32 glue::nextKey(App* app, CPU& cpu)
         put(app, kKeyRead, cpu.edx);
     }
     cpu.edi = at(app, kKeyLock);
-    if (!windows<kLeaveCriticalSection, &win32::kernel32::LeaveCriticalSection>(app, cpu, cpu.edi))
+    if (!windows<kLeaveCriticalSection, &host::leaveLock>(app, cpu, cpu.edi))
         return cpu.eax;
     cpu.eax = cpu.esi;
     cpu.eax <<= 16;
@@ -767,7 +769,9 @@ void noteDigitalControls(win32::WinApplication* app, x86::CPU& cpu)
 
 void sliderValue(win32::WinApplication* app, x86::CPU& cpu)
 {
-    glue::sliderValue(app, cpu, cpu.eax, cpu.edx);
+    const double value = glue::sliderValue(app, cpu, cpu.eax, cpu.edx);
+    if (!cpu.terminate)
+        cpu.fpu.push(x86::Float(value));
     ret(cpu);
 }
 

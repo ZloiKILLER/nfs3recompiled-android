@@ -1,6 +1,9 @@
 #include "native_ea_memory.h"
 #include "native_ea_net.h"
 #include "native_ea_support.h"
+#include "native_frontend_eaa.h"
+#include "native_frontend_loada.h"
+#include "native_frontend_text.h"
 #include "native_graphics.h"
 #include "native_guest.h"
 #include "native_load_cardb.h"
@@ -9,12 +12,14 @@
 #include "native_vertices.h"
 #include "native_windows.h"
 #include "port_thrash.h"
+#include "native_watcom.h"
 #include <winapi/kernel32.h>
 
 #include <cstddef>
 #include <cstdint>
 #include <initializer_list>
 #include <optional>
+#include <type_traits>
 #include <utility>
 
 /* The game's data: the cars' models and specs -- a car's carp.txt sent and
@@ -115,13 +120,15 @@ constexpr reg32 kSpecPath = 0x564188, kSpecFolder = 0x7a2fb4, kSpecsFolder = 0x5
 // on); fseek, fread; memmove (where what it leaves is); a model made ready;
 // a texture allocated, its pixels given (where what they leave is); vectors
 // less another (what it leaves in edx is); __CHP; memset; a player's name
-// valid; GetModuleFileNameA; unlink, a file's size, access, chmod.
-constexpr reg32 kEndPath = 0x4529a0, kCopyFile = 0x452a00, kNewCarName = 0x43ba20, kSprintf = 0x4df690;
-constexpr reg32 kFopen = 0x4edfe8, kFclose = 0x4ee100, kFwrite = 0x4eebd0, kMkdir = 0x4eb1d0, kStrrchr = 0x4ee2f0;
-constexpr reg32 kFindInViv = 0x43b9d0, kFseek = 0x4e9088, kFread = 0x4e9200, kMoveMemory = 0x4ea4f0;
+// valid; GetModuleFileNameA; unlink, a file's size, access, chmod.  Of these the runtime's
+// (fopen, fclose, mkdir, strrchr, sprintf, fseek, fread, memset), the menus' (a file copied, a
+// file's size: feCore) and a player's name valid are typed, called as C++ (gameCalls).
+constexpr reg32 kEndPath = 0x4529a0, kNewCarName = 0x43ba20;
+constexpr reg32 kFwrite = 0x4eebd0;
+constexpr reg32 kFindInViv = 0x43b9d0, kMoveMemory = 0x4ea4f0;
 constexpr reg32 kModelReady = 0x49cfa0, kAllocTexture = 0x49c600, kUpdateTexture = 0x49c620, kSubtract = 0x4e0000;
-constexpr reg32 kChop = 0x4dfd56, kMemset = 0x4e0640, kNameValid = 0x4721f0, kAccess = 0x4f05f0, kChmod = 0x4ee3c0;
-constexpr reg32 kGetModuleFileName = 0x534544, kUnlink = 0x4e28a0, kFileSize = 0x4e43a0;
+constexpr reg32 kChop = 0x4dfd56, kAccess = 0x4f05f0, kChmod = 0x4ee3c0;
+constexpr reg32 kGetModuleFileName = 0x534544, kUnlink = 0x4e28a0;
 // The rest are the other typed files' (native_load_cardb.h, native_load_saves.h,
 // native_ea_support.h, native_ea_memory.h, native_ea_net.h, native_graphics.h,
 // native_vertices.h), called as C++ (guest::direct): the car's folder marked, a car's record, id,
@@ -226,11 +233,155 @@ std::optional<reg32> callGame(App* app, CPU& cpu, reg32 target, std::initializer
     return cpu.eax;
 }
 
+/* A typed core called as C++ where the code calls it as callGame does: eax, edx, ebx and ecx
+ * loaded from `registers` as the code loads them for the call (a stand-in of the checks may log
+ * them), every register but eax kept across it, and eax after it the core's result (`call`'s),
+ * as callGame leaves them.  Nothing when the game stopped. */
+template <typename Call>
+std::optional<reg32> gameCalls(CPU& cpu, std::initializer_list<reg32> registers, Call call)
+{
+    std::optional<reg32> result;
+    {
+        const KeptRegisters kept(cpu);
+        reg32* const slots[] = {&cpu.eax, &cpu.edx, &cpu.ebx, &cpu.ecx};
+        std::size_t n = 0;
+        for (const reg32 value : registers)
+            *slots[n++] = value;
+        result = call();
+    }
+    if (result)
+        cpu.eax = *result;
+    return result;
+}
+
+// A runtime's core's result, nothing when the game stopped in it.
+std::optional<reg32> unlessStopped(CPU& cpu, reg32 result)
+{
+    if (cpu.terminate)
+        return std::nullopt;
+    return result;
+}
+
+/* A native_frontend_* file's typed core called as C++ (guest::direct): nothing (false) when the
+ * game stopped in it (its calls into the game throw fe::Terminated).  tools/game_checks does not
+ * build those files: there it goes by address, through its ByAddress, as the game's code calls it,
+ * every register but eax kept.  A reg32 result is the eax the function leaves: eax set to it (in the
+ * game too); after any other, eax spoilt there, so that code still reading what the callee left in
+ * eax differs there. */
+template <reg32 Address, auto Core, typename... Args>
+auto feCore(App* app, CPU& cpu, Args... args)
+{
+    const auto run = [&] {
+#ifdef NFS_GAME_CHECKS
+        const guest::KeptRegisters kept(cpu);
+        return guest::ByAddress<Core>::template call<Address>(app, cpu, args...);
+#else
+        return guest::direct<Address, Core>(app, cpu, args...);
+#endif
+    };
+    using Result = decltype(run());
+    const auto spoil = [&] {
+#ifdef NFS_GAME_CHECKS
+        cpu.eax = 0x5b0115edu;
+#endif
+    };
+    if constexpr (std::is_void_v<Result>)
+    {
+        try
+        {
+            run();
+        }
+        catch (const fe::Terminated&)
+        {
+            return false;
+        }
+        spoil();
+        return !cpu.terminate;
+    }
+    else
+    {
+        try
+        {
+            const Result result = run();
+            if constexpr (std::is_same_v<Result, x86::reg32>)
+                cpu.eax = result;  // a menu core's result: the eax it leaves, as the call by address does
+            else
+                spoil();
+            return cpu.terminate ? std::optional<Result>() : std::optional<Result>(result);
+        }
+        catch (const fe::Terminated&)
+        {
+            return std::optional<Result>();
+        }
+    }
+}
+
 /* 0x4e0640: memset of `count` bytes at `to` to 0, as the code calls it (it gives `to` back and
  * keeps every other register); false when the game stopped. */
 bool clearBytes(App* app, CPU& cpu, reg32 to, reg32 count)
 {
-    return callGame(app, cpu, kMemset, {to, 0, count}).has_value();
+    return gameCalls(cpu, {to, 0, count}, [&] {
+               return unlessStopped(cpu, guest::direct<0x4e0640, watcom::clib::memset>(app, cpu, to, 0u, count));
+           }).has_value();
+}
+
+/* The runtime's fopen, fclose, strrchr, mkdir, fseek and fread (native_watcom.h), as the code
+ * calls them; nothing when the game stopped. */
+std::optional<reg32> openFile(App* app, CPU& cpu, reg32 name, reg32 mode)
+{
+    return gameCalls(cpu, {name, mode}, [&] {
+        return unlessStopped(cpu, guest::direct<0x4edfe8, watcom::clib::fopen>(app, cpu, name, mode));
+    });
+}
+
+std::optional<reg32> closeFile(App* app, CPU& cpu, reg32 stream)
+{
+    return gameCalls(cpu, {stream}, [&] {
+        return unlessStopped(cpu, guest::direct<0x4ee100, watcom::clib::fclose>(app, cpu, stream));
+    });
+}
+
+std::optional<reg32> lastOf(App* app, CPU& cpu, reg32 string, reg32 c)
+{
+    return gameCalls(cpu, {string, c}, [&] {
+        return unlessStopped(cpu, guest::direct<0x4ee2f0, watcom::clib::strrchr>(app, cpu, string, c));
+    });
+}
+
+std::optional<reg32> makeFolder(App* app, CPU& cpu, reg32 path)
+{
+    return gameCalls(cpu, {path}, [&] {
+        return unlessStopped(cpu, guest::direct<0x4eb1d0, watcom::clib::mkdir>(app, cpu, path));
+    });
+}
+
+std::optional<reg32> seekFile(App* app, CPU& cpu, reg32 stream, reg32 offset, reg32 whence)
+{
+    return gameCalls(cpu, {stream, offset, whence}, [&] {
+        return unlessStopped(cpu, guest::direct<0x4e9088, watcom::clib::fseek>(app, cpu, stream, offset, whence));
+    });
+}
+
+std::optional<reg32> readFile(App* app, CPU& cpu, reg32 buffer, reg32 size, reg32 count, reg32 stream)
+{
+    return gameCalls(cpu, {buffer, size, count, stream}, [&] {
+        return unlessStopped(cpu, guest::direct<0x4e9200, watcom::clib::fread>(app, cpu, buffer, size, count, stream));
+    });
+}
+
+/* 0x4721f0 (native_frontend_text's): whether `name` will do for a player's, 1 or 0; nothing when
+ * the game stopped. */
+std::optional<reg32> nameWillDo(App* app, CPU& cpu, reg32 name)
+{
+    return gameCalls(cpu, {name}, [&] {
+        return unlessStopped(cpu, guest::direct<0x4721f0, frontend::text::nameValid>(app, cpu, name));
+    });
+}
+
+/* The menus' 0x452a00 (loada's): the file `from` copied to `to`; nothing when the game stopped. */
+std::optional<reg32> copyFile(App* app, CPU& cpu, reg32 to, reg32 from)
+{
+    return gameCalls(cpu, {to, from}, [&] { return feCore<0x452a00, frontend::loada::copyFile>(app, cpu, to, from); });
 }
 
 /* 0x439a50: car `car`'s record, or 0 past the last. */
@@ -332,7 +483,7 @@ std::optional<reg32> beginReceive(App* app, CPU& cpu, reg32 record, reg32 bytes,
     if (!callGame(app, cpu, kEndPath, {kCarpFile}))
         return std::nullopt;
     appendText(app, kCarpFile, kCarpName);
-    const std::optional<reg32> file = callGame(app, cpu, kFopen, {kCarpFile, kWriteMode});
+    const std::optional<reg32> file = openFile(app, cpu, kCarpFile, kWriteMode);
     if (!file)
         return std::nullopt;
     put(app, record + kReceiverFile, *file);
@@ -364,7 +515,7 @@ std::optional<reg32> receiveChunk(App* app, CPU& cpu, reg32 record, reg32 data, 
             return std::nullopt;
         if (*written == 0)
         {
-            if (!callGame(app, cpu, kFclose, {at(app, record + kReceiverFile)}))
+            if (!closeFile(app, cpu, at(app, record + kReceiverFile)))
                 return std::nullopt;
             put(app, record + kReceiverFile, 0);
             put(app, record + kReceiverDone, 1);
@@ -380,7 +531,7 @@ std::optional<reg32> receiveChunk(App* app, CPU& cpu, reg32 record, reg32 data, 
     const reg32 written = at(app, record + kReceiverFile);
     if (written != 0)
     {
-        if (!callGame(app, cpu, kFclose, {written}))
+        if (!closeFile(app, cpu, written))
             return std::nullopt;
         put(app, record + kReceiverFile, 0);
         if (!beginReceive(app, cpu, kReceiver, kNextBytes, kTransferName))
@@ -391,22 +542,22 @@ std::optional<reg32> receiveChunk(App* app, CPU& cpu, reg32 record, reg32 data, 
     copyText(app, folder, kDataPath);
     if (!callGame(app, cpu, kEndPath, {folder, kBackslash}))
         return std::nullopt;
-    const std::optional<reg32> last = callGame(app, cpu, kStrrchr, {folder, kBackslash});
-    if (!last || !guest::direct<0x4385a0, freePlayerFolder>(app, cpu, *last + 1) || !callGame(app, cpu, kMkdir, {folder})
+    const std::optional<reg32> last = lastOf(app, cpu, folder, kBackslash);
+    if (!last || !guest::direct<0x4385a0, freePlayerFolder>(app, cpu, *last + 1) || !makeFolder(app, cpu, folder)
         || !callGame(app, cpu, kEndPath, {folder, kCarpFile}))
         return std::nullopt;
     appendText(app, folder, kCarpName);
-    if (!callGame(app, cpu, kCopyFile, {folder, kCarpFile}))
+    if (!copyFile(app, cpu, folder, kCarpFile))
         return std::nullopt;
     copyText(app, carp, folder);
-    const std::optional<reg32> carpName = callGame(app, cpu, kStrrchr, {carp, kBackslash});
+    const std::optional<reg32> carpName = lastOf(app, cpu, carp, kBackslash);
     if (!carpName)
         return std::nullopt;
     copyText(app, *carpName + 1, kCarVivName);
     // eax as the inlined copy leaves it, the last byte copied (0) in al: the name's stand-in may
     // give it back.
     const std::optional<reg32> viv = callGame(app, cpu, kNewCarName, {*carpName & ~0xffu});
-    if (!viv || !callGame(app, cpu, kCopyFile, {carp, *viv}) || !guest::direct<0x43baa0, appendCarp>(app, cpu, carp)
+    if (!viv || !copyFile(app, cpu, carp, *viv) || !guest::direct<0x43baa0, appendCarp>(app, cpu, carp)
         || !guest::direct<0x439d90, loadCars>(app, cpu))
         return std::nullopt;
     guest::direct<0x43bc00, setLastId>(app, cpu, kTransferTitle);
@@ -463,8 +614,13 @@ constexpr reg32 kCarRecordWord = 0x380;
 /* 0x4df690: sprintf (cdecl), its arguments as given; false when the game stopped. */
 bool print(App* app, CPU& cpu, std::initializer_list<reg32> arguments)
 {
-    const KeptRegisters kept(cpu);
-    return guest::call(app, cpu, kSprintf, arguments);
+    const reg32* const word = arguments.begin();
+    guest::Words rest({});
+    for (std::size_t i = 2; i < arguments.size(); ++i)
+        rest.word[rest.count++] = word[i];
+    return gameCalls(cpu, {}, [&] {
+               return unlessStopped(cpu, guest::direct<0x4df690, watcom::clib::sprintf>(app, cpu, word[0], word[1], rest));
+           }).has_value();
 }
 
 /* 0x4ea290: the file named `name` in the .viv at `viv` found, its place to [place] and its size
@@ -514,16 +670,16 @@ std::optional<reg32> beginSend(App* app, CPU& cpu, reg32 header, reg32 car, reg3
     appendText(app, path, *folder);
     appendText(app, path, kCarpPath);
     copyText(app, viv, path);
-    const std::optional<reg32> vivName = callGame(app, cpu, kStrrchr, {viv, kBackslash});
+    const std::optional<reg32> vivName = lastOf(app, cpu, viv, kBackslash);
     if (!vivName || !print(app, cpu, {*vivName + 1, kCarVivPath}))
         return std::nullopt;
     const std::optional<reg32> opened = guest::direct<0x43b830, ea::vivOpened>(app, cpu, viv, file);
     if (!opened)
         return std::nullopt;
     put(app, kSendViv, *opened);
-    const std::optional<reg32> carpName = callGame(app, cpu, kStrrchr, {path, kBackslash});
+    const std::optional<reg32> carpName = lastOf(app, cpu, path, kBackslash);
     if (!carpName || !guest::direct<0x43b9d0, ea::vivFileFound>(app, cpu, at(app, kSendViv), *carpName + 1, place, size)
-        || !callGame(app, cpu, kFseek, {at(app, file), at(app, place), 0}))
+        || !seekFile(app, cpu, at(app, file), at(app, place), 0))
         return std::nullopt;
     put(app, header + kHeaderSize, at(app, size));
     put(app, header + kHeaderCarWord, at(app, *record + kCarRecordWord));
@@ -656,17 +812,12 @@ void rgbToHsv(App* app, CPU& cpu)
 namespace
 {
 
-/* 0x4dfd56 (__CHP): `value` chopped toward 0 by the game's own, on the x87's stack, and stored as
- * a dword (fistp); nullopt when the game stopped. */
+/* 0x4dfd56 (__CHP): `value` chopped toward 0, and stored as a dword (fistp); never nullopt (the
+ * optional is the callers' stop signal). */
 std::optional<reg32> chopToInteger(App* app, CPU& cpu, const x86::Float& value)
 {
-    const KeptRegisters kept(cpu);
-    cpu.fpu.push(value);
-    if (!byAddress(app, cpu, kChop))
-        return std::nullopt;
-    const reg32 chopped = reg32(fp::toInteger<sreg32>(cpu.fpu.st(0)));
-    cpu.fpu.pop();
-    return chopped;
+    const double whole = guest::direct<kChop, watcom::clib::chop>(app, cpu, double(value));
+    return reg32(fp::toInteger<sreg32>(x86::Float(whole)));
 }
 
 /* 0x49ca50's core: the colour at `hsv` as hue, saturation and brightness to `rgb` as red, green
@@ -876,12 +1027,9 @@ std::optional<NearestLeft> nearestColor(App* app, CPU& cpu, reg32 model, reg32 c
         const double length = guest::direct<0x4e06a0, vertices::vectorLength>(app, cpu, difference);
         if (cpu.terminate)
             return std::nullopt;
-        x86::FPU& fpu = cpu.fpu;
-        fpu.push(length);  // where the call leaves it
-        const float distance = float(fpu.st(0));
-        fpu.compare(fpu.st(0), x86::Float(best));
-        const bool below = (fpu.status.word & 0x100) != 0;
-        fpu.pop();
+        const float distance = float(length);
+        cpu.fpu.compare(x86::Float(length), x86::Float(best));
+        const bool below = (cpu.fpu.status.word & 0x100) != 0;
         if (below)
         {
             nearest = index;
@@ -987,11 +1135,11 @@ std::optional<ColorsLeft> readColors(App* app, CPU& cpu, reg32 name, reg32 color
         return ColorsLeft{*closed, place, findLeft, file};
     }
     const auto seekFrom = [&](reg32 offset) {
-        return callGame(app, cpu, kFseek, {at(app, file), at(app, place), kSeekSet})
-               && callGame(app, cpu, kFseek, {at(app, file), offset, kSeekCurrent});
+        return seekFile(app, cpu, at(app, file), at(app, place), kSeekSet)
+               && seekFile(app, cpu, at(app, file), offset, kSeekCurrent);
     };
     const auto readInto = [&](reg32 to, reg32 bytes) {
-        return callGame(app, cpu, kFread, {to, bytes, 1, at(app, file)}).has_value();
+        return readFile(app, cpu, to, bytes, 1, at(app, file)).has_value();
     };
     if (!seekFrom(kModelColors) || !readInto(read, 4) || !seekFrom(kModelColor) || !readInto(hsv, kFceColorsBytes)
         || !seekFrom(kFceTwelve) || !readInto(twelve, kTwelveBytes)
@@ -1836,7 +1984,7 @@ std::optional<reg32> saveSpecs(App* app, CPU& cpu, reg32 player)
     const reg32 name = specsName(player), table = specsOf(player);
     if (name == 0)
         return 0;
-    const std::optional<reg32> valid = callGame(app, cpu, kNameValid, {name});
+    const std::optional<reg32> valid = nameWillDo(app, cpu, name);
     if (!valid)
         return std::nullopt;
     if (*valid == 0 || table == 0)
@@ -1874,7 +2022,7 @@ std::optional<reg32> playerSpecs(App* app, CPU& cpu, reg32 player)
     const reg32 table = specsOf(player), name = specsName(player);
     if (name == 0)
         return player;
-    const std::optional<reg32> valid = callGame(app, cpu, kNameValid, {name});
+    const std::optional<reg32> valid = nameWillDo(app, cpu, name);
     if (!valid)
         return std::nullopt;
     if (*valid == 0 || table == 0)
@@ -1910,7 +2058,9 @@ std::optional<reg32> playerSpecs(App* app, CPU& cpu, reg32 player)
         const GuestFrame call(cpu, kReturnSlot, 0);
         return saveSpecs(app, cpu, player);
     }
-    const std::optional<reg32> size = callGame(app, cpu, kFileSize, {path, kSizeMode});
+    // The mode in edx as the code loads it, which the size's core does not take.
+    const std::optional<reg32> size =
+        gameCalls(cpu, {path, kSizeMode}, [&] { return feCore<0x4e43a0, frontend::eaa::fileSize>(app, cpu, path); });
     if (!size)
         return std::nullopt;
     const std::optional<reg32> file = guest::direct<0x4e0fe0, ea::loadQuietly>(app, cpu, path, kSizeMode);

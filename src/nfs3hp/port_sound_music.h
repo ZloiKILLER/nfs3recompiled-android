@@ -25,6 +25,9 @@ Result soundExitOf(App* app, CPU& cpu, reg32 esp, const Args& in);
 // The game's 0x410330: the music's CD stream made when the music is on (`ecx` handed on): the stream, else `eax`;
 // esp the frame base.
 Result musicStreamMade(App* app, CPU& cpu, reg32 esp, reg32 eax, reg32 ecx);
+// The game's 0x410370: the music's CD stream of `eax` KB made when the music is on (`ecx` handed on): the
+// stream, else `eax`; esp the frame base.
+Result musicStreamOf(App* app, CPU& cpu, reg32 esp, reg32 eax, reg32 ecx);
 // The game's 0x410460: the menus' tune 0x18 while there is no other asked for; esp the frame base.
 Result musicMenuSixOf(App* app, CPU& cpu, reg32 esp, reg32 eax);
 // The game's 0x4104f0: tune `tune` started at `volume` (`own`: a race's own tune); esp the frame base.
@@ -55,6 +58,17 @@ struct ByAddress<port::soundExitOf>
 // `eax` in eax, `ecx` in ecx (edx and ebx left as they are); eax back.
 template <>
 struct ByAddress<port::musicStreamMade>
+{
+    template <x86::reg32 Address>
+    static port::Result call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32, x86::reg32 eax, x86::reg32 ecx)
+    {
+        return watcomEax(app, cpu, Address, {eax, cpu.edx, cpu.ebx, ecx});
+    }
+};
+
+// `eax` in eax, `ecx` in ecx (edx and ebx left as they are); eax back.
+template <>
+struct ByAddress<port::musicStreamOf>
 {
     template <x86::reg32 Address>
     static port::Result call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32, x86::reg32 eax, x86::reg32 ecx)

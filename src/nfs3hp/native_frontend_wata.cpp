@@ -1,4 +1,7 @@
 #include "native_frontend_wata.h"
+#include "native_ea_net.h"
+#include "native_watcom.h"
+#include "native_game.h"
 #include "native_carstate.h"
 #include "native_controls_input.h"
 #include "native_ea_files.h"
@@ -22,6 +25,7 @@
 #include "port_text.h"
 #include "native_frontend.h"
 #include "native_windows.h"
+#include "host_window.h"
 #include <nfs3hp.h>
 #include <fpu.h>
 #include <winapi/advapi32.h>
@@ -33,6 +37,43 @@ struct SDL_Semaphore;
 #include <cstdint>
 #include <cstring>
 #include <optional>
+#include <type_traits>
+#include <utility>
+#include <cstddef>
+
+namespace nfs3hp
+{
+namespace
+{
+
+/* A typed core called as C++ (fe::direct) whose function changes no register but eax (as
+ * tools/frontend_checks/specs_from_exe.py reads it): the registers left as the call by address
+ * leaves them -- `words` in eax, edx, ebx and ecx as that call loads them, the first `Taken` of
+ * them the core's arguments -- and its result in eax, which the call by address leaves there. */
+template <x86::reg32 Address, auto Core, std::size_t... I>
+auto directOf(win32::WinApplication* app, x86::CPU& cpu, const x86::reg32* words, std::index_sequence<I...>)
+{
+    return fe::direct<Address, Core>(app, cpu, words[I]...);
+}
+
+template <x86::reg32 Address, auto Core, std::size_t Taken, typename... Words>
+x86::reg32 directKept(win32::WinApplication* app, x86::CPU& cpu, Words... words)
+{
+    const x86::reg32 all[] = { x86::reg32(words)..., 0 };
+    x86::reg32* const into[] = { &cpu.eax, &cpu.edx, &cpu.ebx, &cpu.ecx };
+    for (std::size_t i = 0; i < sizeof...(Words) && i < 4; ++i)
+        *into[i] = all[i];
+    const auto result = directOf<Address, Core>(app, cpu, all, std::make_index_sequence<Taken>{});
+    if constexpr (std::is_same_v<std::remove_cv_t<decltype(result)>, x86::reg32>)
+        cpu.eax = result;
+    else
+        cpu.eax = *result;
+    return cpu.eax;
+}
+
+}  // namespace
+}  // namespace nfs3hp
+
 
 /* What sat among the C runtime in the rough map, decompiled, most of it the game's
  * and EA's own libraries:
@@ -199,7 +240,7 @@ reg32 frontend::wata::carDataReadInteger(App* app, CPU& cpu, reg32 line, reg32 w
     gatherNumber(guest, line, wanted, buffer, [&](std::uint8_t c) {
         return isDigit(guest, std::uint8_t(c + 1)) || c == '-';
     });
-    const reg32 value = guest.call(kAtoi, args({ buffer }));
+    const reg32 value = fe::direct<kAtoi, watcom::clib::atoi>(guest.app(), guest.cpu(), buffer);
     reg32 edx = guest.edx();
     for (reg32 at = buffer;; ++at)
     {
@@ -242,8 +283,17 @@ void frontend::carDataReadByte(win32::WinApplication* app, x86::CPU& cpu)
     fe::runWhole(app, cpu, site, [&](Guest&) { return wata::carDataReadByte(app, cpu, line, wanted); });
 }
 
-/* sub_4b07d0: the wanted float of a line of values on the x87, its bits in eax; 0 if what it
- * found has anything but digits, points and minus signs in it. */
+/* A float's bits as the float, as fld dword loads it. */
+static Float floatOfBits(reg32 bits)
+{
+    float value;
+    std::memcpy(&value, &bits, sizeof value);
+    return Float(value);
+}
+
+/* sub_4b07d0: the wanted float of a line of values, its bits in eax (the float itself its adapter
+ * leaves on the x87, as the code does); 0 if what it found has anything but digits, points and minus
+ * signs in it. */
 reg32 frontend::wata::carDataReadFloat(App* app, CPU& cpu, reg32 line, reg32 wanted)
 {
     Guest guest(app, cpu);
@@ -270,7 +320,6 @@ reg32 frontend::wata::carDataReadFloat(App* app, CPU& cpu, reg32 line, reg32 wan
         }
     }
     guest.setDword(result, bits);
-    guest.pushFloat(guest.floatAt(result));
     return bits;
 }
 
@@ -278,7 +327,11 @@ void frontend::carDataReadFloat(win32::WinApplication* app, x86::CPU& cpu)
 {
     static Site site{ "sub_4b07d0", 0, 0, nullptr, 0, fe::kRestoreEbx | fe::kRestoreEcx | fe::kRestoreEsi | fe::kRestoreEdi };
     const reg32 line = cpu.eax, wanted = cpu.edx;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return wata::carDataReadFloat(app, cpu, line, wanted); });
+    fe::runWhole(app, cpu, site, [&](Guest&) {
+        const reg32 bits = wata::carDataReadFloat(app, cpu, line, wanted);
+        cpu.fpu.push(floatOfBits(bits));
+        return bits;
+    });
 }
 
 /* sub_4b08b0: a float of the file as 16.16 fixed point. */
@@ -287,9 +340,9 @@ reg32 frontend::wata::carDataReadFixed(App* app, CPU& cpu, reg32 line, reg32 wan
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 4);
     constexpr reg32 kToFixed = 0x53eac0;    // a double
-    fe::direct<0x4b07d0, carDataReadFloat>(app, cpu, line, wanted);
+    const Float value = floatOfBits(fe::direct<0x4b07d0, carDataReadFloat>(app, cpu, line, wanted));
     const Float scale = Float(app->getMemory<double>(kToFixed));
-    return reg32(fp::toInteger<sreg32>(fp::mul(guest.fpu().pop(), scale)));
+    return reg32(fp::toInteger<sreg32>(fp::mul(value, scale)));
 }
 
 void frontend::carDataReadFixed(win32::WinApplication* app, x86::CPU& cpu)
@@ -334,10 +387,10 @@ reg32 frontend::wata::carDataFindKey(App* app, CPU& cpu, reg32 line, reg32 index
         if (name == 0)
             continue;
         const reg32 number = reg32(sreg32(guest.dword(key + 2)) >> 16);
-        guest.call(kSprintf, args({}, { numbered, kNumberFormat, number }));
-        if (guest.call(kStrstr, args({ line, name })) == 0)
+        fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.cpu(), numbered, kNumberFormat, guest::Words{number});
+        if (fe::direct<kStrstr, watcom::clib::strstr>(guest.app(), guest.cpu(), line, name) == 0)
             continue;
-        if (guest.call(kStrstr, args({ line, numbered })) != 0)
+        if (fe::direct<kStrstr, watcom::clib::strstr>(guest.app(), guest.cpu(), line, numbered) != 0)
         {
             guest.setDword(indexOut, field);
             return 1;
@@ -375,7 +428,7 @@ reg32 frontend::wata::carDataNextLine(App* app, CPU& cpu, reg32 text, reg32 out,
             guest.setDword(kCarFileOffset, position);
             if (c != ' ')
             {
-                const reg32 lowered = guest.call(kTolower, args({ c }));
+                const reg32 lowered = fe::direct<kTolower, watcom::clib::tolower>(guest.app(), guest.cpu(), c);
                 ++written;
                 guest.setByte(out + written - 1, reg8(lowered));
             }
@@ -467,7 +520,7 @@ reg32 frontend::wata::carDataRead(App* app, CPU& cpu, reg32 record, reg32 text, 
     if (text == 0 || length == 0)
         return 0;
     guest.setDword(kCarFileOffset, 0);
-    guest.call(kMemset, args({ kCarFieldRead, 0, kCarFieldCount }));
+    fe::direct<kMemset, watcom::clib::memset>(guest.app(), guest.cpu(), kCarFieldRead, 0, kCarFieldCount);
 
     const auto readField = [&](reg32 index) {
         const CarField& field = kCarFields[index];
@@ -483,8 +536,7 @@ reg32 frontend::wata::carDataRead(App* app, CPU& cpu, reg32 record, reg32 text, 
                 guest.setByte(to + i, reg8(guest.call(kReadByte, args({ line, i }))));
             else
             {
-                fe::direct<0x4b07d0, carDataReadFloat>(app, cpu, line, i);
-                guest.setFloat(to + 4 * i, guest.popFloat());
+                guest.setFloat(to + 4 * i, float(floatOfBits(fe::direct<0x4b07d0, carDataReadFloat>(app, cpu, line, i))));
             }
             if (field.leavesRecordInEdx)
                 guest.leaveEdx(record);
@@ -625,7 +677,7 @@ reg32 frontend::wata::exceptionName(App* app, CPU& cpu, reg32 code)
     case 0x80000004: return 0x53ccfc;
     case 0xc00000fd: return 0x53cd14;
     default:
-        guest.call(kSprintf, args({}, { kUnknownName, kUnknownFormat, code }));
+        fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.cpu(), kUnknownName, kUnknownFormat, guest::Words{code});
         return kUnknownName;
     }
 }
@@ -688,7 +740,7 @@ reg32 frontend::wata::npsDevelopMode(App* app, CPU& cpu)
         return 0;
     callImport<kRegCloseKey, &win32::advapi32::RegCloseKey>(guest, cpu, guest.dword(key));
     for (const reg32 yes : kYes)
-        if (guest.call(kStrcmp, args({ value, yes })) == 0)
+        if (fe::direct<kStrcmp, watcom::clib::strcmp>(guest.app(), guest.cpu(), value, yes) == 0)
             return 1;
     return 0;
 }
@@ -714,7 +766,7 @@ reg32 frontend::wata::npsDllPath(App* app, CPU& cpu, reg32 type)
     if (guest::direct<0x4a5780, npsDevelopMode>(app, cpu) == 1)
     {
         appendString(guest, value, kDevelopSuffix);
-        guest.call(kSprintf, args({}, { note, kUsingFormat, value }));
+        fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.cpu(), note, kUsingFormat, guest::Words{value});
         callImport<kOutputDebugString, &win32::kernel32::OutputDebugStringA>(guest, cpu, note);
     }
     if (callImport<kRegQueryValueEx, &win32::advapi32::RegQueryValueExA>(guest, cpu, guest.dword(key), value, 0, 0, kDllPath, size) != 0)
@@ -755,12 +807,12 @@ reg32 frontend::wata::npsEnsureDll(App* app, CPU& cpu, reg32 type)
             return 1;
         }
         const reg32 error = callImport<kGetLastError, &win32::kernel32::GetLastError>(guest, cpu);
-        guest.call(kSprintf, args({}, { failedText, kLoadFailedFormat, type, guest.dword(kDllNames + 4 * type), kDllPath, error }));
+        fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.cpu(), failedText, kLoadFailedFormat, guest::Words{type, guest.dword(kDllNames + 4 * type), kDllPath, error});
         callImport<kMessageBox, &win32::user32::MessageBoxA>(guest, cpu, 0, failedText, kLoadFailedTitle, 0);
         callImport<kOutputDebugString, &win32::kernel32::OutputDebugStringA>(guest, cpu, failedText);
         return 0;
     }
-    guest.call(kSprintf, args({}, { noPathText, kNoPathFormat, type, guest.dword(kDllNames + 4 * type) }));
+    fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.cpu(), noPathText, kNoPathFormat, guest::Words{type, guest.dword(kDllNames + 4 * type)});
     callImport<kMessageBox, &win32::user32::MessageBoxA>(guest, cpu, 0, noPathText, kNoPathTitle, 0);
     return 0;
 }
@@ -784,8 +836,8 @@ reg32 frontend::wata::installFileRead(App* app, CPU& cpu)
     constexpr reg32 kStreamFlags = 0xc;
     constexpr std::uint8_t kStreamAtEnd = 0x10;
     const reg32 line = guest.frame();
-    guest.call(kMemset, args({ kLines, 0, kLinesBytes }));
-    const reg32 file = guest.call(kFopen, args({ kFileName, kReadMode }));
+    fe::direct<kMemset, watcom::clib::memset>(guest.app(), guest.cpu(), kLines, 0, kLinesBytes);
+    const reg32 file = fe::direct<kFopen, watcom::clib::fopen>(guest.app(), guest.cpu(), kFileName, kReadMode);
     if (file == 0)
         return 0;
     reg32 count = 0;
@@ -799,12 +851,12 @@ reg32 frontend::wata::installFileRead(App* app, CPU& cpu)
         guest.copyString(kLines + (count << kLineStride), line);
         ++count;
     }
-    guest.call(kFclose, args({ file }));
+    fe::direct<kFclose, watcom::clib::fclose>(guest.app(), guest.cpu(), file);
     reg32 language = 0;
     for (; language < kLanguageCount; ++language)
     {
         const reg32 name = guest.dword(kLanguageNames + 4 * language);
-        if (guest.call(kStrncmp, args({ name, kLines, guest.length(name) })) == 0)
+        if (fe::direct<kStrncmp, watcom::clib::strncmp>(guest.app(), guest.cpu(), name, kLines, guest.length(name)) == 0)
             break;
     }
     if (language == kLanguageCount)
@@ -829,7 +881,7 @@ reg32 frontend::wata::findFirstFile(App* app, CPU& cpu, reg32 pattern)
     const reg32 data = guest.frame();
     if (guest.dword(kHandle) != 0xffffffffu)
         callImport<kFindClose, &win32::kernel32::FindClose>(guest, cpu, guest.dword(kHandle));
-    guest.call(kStrncpy, args({ kPattern, pattern, kPathMost }));
+    fe::direct<kStrncpy, watcom::clib::strncpy>(guest.app(), guest.cpu(), kPattern, pattern, kPathMost);
     sreg32 folder = sreg32(guest.length(kPattern));
     while (folder > 0 && guest.byte(kPattern + folder) != '\\' && guest.byte(kPattern + folder) != ':')
         --folder;
@@ -842,8 +894,8 @@ reg32 frontend::wata::findFirstFile(App* app, CPU& cpu, reg32 pattern)
         return 0;
     const reg32 kept = guest.dword(kPatternFolder);
     guest.setByte(kFound + kept, 0);
-    guest.call(kStrncpy, args({ kFound, kPattern, kept }));
-    guest.call(kStrncat, args({ kFound, data + kFoundName, kPathMost }));
+    fe::direct<kStrncpy, watcom::clib::strncpy>(guest.app(), guest.cpu(), kFound, kPattern, kept);
+    fe::direct<kStrncat, watcom::clib::strncat>(guest.app(), guest.cpu(), kFound, data + kFoundName, kPathMost);
     const reg32 attributes = callImport<kGetFileAttributes, &win32::kernel32::GetFileAttributesA>(guest, cpu, kFound);
     if (attributes != 0xffffffffu && (attributes & kFileAttributeDirectory) == 0)
         return kFound;
@@ -877,8 +929,8 @@ reg32 frontend::wata::findNextFile(App* app, CPU& cpu)
         }
         const reg32 kept = guest.dword(kPatternFolder);
         guest.setByte(kFound + kept, 0);
-        guest.call(kStrncpy, args({ kFound, kPattern, kept }));
-        guest.call(kStrncat, args({ kFound, data + kFoundName, kPathMost }));
+        fe::direct<kStrncpy, watcom::clib::strncpy>(guest.app(), guest.cpu(), kFound, kPattern, kept);
+        fe::direct<kStrncat, watcom::clib::strncat>(guest.app(), guest.cpu(), kFound, data + kFoundName, kPathMost);
         const reg32 attributes = callImport<kGetFileAttributes, &win32::kernel32::GetFileAttributesA>(guest, cpu, kFound);
         if (attributes != 0xffffffffu && (attributes & kFileAttributeDirectory) == 0)
             return kFound;
@@ -910,7 +962,7 @@ reg32 frontend::wata::carBadgeColour(App* app, CPU& cpu)
     // The game's code hands it edx as it has it.
         const reg32 name = reg32(*fe::direct<0x4d1850, port::text::lineText>(app, cpu, cpu.esp - 4, std::int32_t(id), cpu.edx));
     for (const Badge& badge : kBadges)
-        if (guest.call(kStrstr, args({ name, badge.word })) != 0)
+        if (fe::direct<kStrstr, watcom::clib::strstr>(guest.app(), guest.cpu(), name, badge.word) != 0)
             return badge.colour;
     return kOtherColour;
 }
@@ -950,12 +1002,12 @@ reg32 frontend::wata::windowCheckField(App* app, CPU& cpu, reg32 window, reg32 v
     if (least == most)
     {
         guest.setDword(kErrorLine, wanted != 0 ? 0x14 : 0x16);
-        guest.call(kError, args({}, { wanted != 0 ? 0x54cf28u : 0x54cf7cu, name, value, least, at4, at8, kindByte, window }));
+        fe::direct<kError, ea::error>(guest.app(), guest.cpu(), wanted != 0 ? 0x54cf28u : 0x54cf7cu, guest::Words{name, value, least, at4, at8, kindByte, window});
     }
     else
     {
         guest.setDword(kErrorLine, wanted != 0 ? 0x1b : 0x1d);
-        guest.call(kError, args({}, { wanted != 0 ? 0x54cfd0u : 0x54d028u, name, value, least, most, at4, at8, kindByte, window }));
+        fe::direct<kError, ea::error>(guest.app(), guest.cpu(), wanted != 0 ? 0x54cfd0u : 0x54d028u, guest::Words{name, value, least, most, at4, at8, kindByte, window});
     }
     return 0;
 }
@@ -1046,7 +1098,7 @@ reg32 frontend::wata::textMeasureBox(App* app, CPU& cpu, reg32 text, sreg32 give
     guest.setDword(kBoxBottom, 0);
     const reg32 length = given > sreg32(kLongest) ? kLongest : reg32(given);
     guest.setByte(copy + length, 0);
-    guest.call(kStrncpy, args({ copy, text, length }));
+    fe::direct<kStrncpy, watcom::clib::strncpy>(guest.app(), guest.cpu(), copy, text, length);
     const reg32 put1 = guest.dword(kPutGlyph), put2 = guest.dword(kPutGlyph2), put3 = guest.dword(kPutGlyph3);
     guest.setDword(kPutGlyph, kMeasureGlyph);
     guest.setDword(kPutGlyph2, 0);
@@ -1111,13 +1163,13 @@ reg32 frontend::wata::lockKeySet(App* app, CPU& cpu, reg32 lock, reg32 wanted)
     {
         return lock;
     }
-    const reg32 state = callImport<kGetKeyState, &win32::user32::GetKeyState>(guest, cpu, key);
+    const reg32 state = callImport<kGetKeyState, &host::keyState>(guest, cpu, key);
     const reg32 lit = state & 1;
     guest.leaveEdx(wanted);
     if (lit == wanted)
         return lit;
-    callImport<kKeybdEvent, &win32::user32::keybd_event>(guest, cpu, key, scan, down, 0);
-    return callImport<kKeybdEvent, &win32::user32::keybd_event>(guest, cpu, key, scan, up, 0);
+    callImport<kKeybdEvent, &host::keyboardEvent>(guest, cpu, key, scan, down, 0);
+    return callImport<kKeybdEvent, &host::keyboardEvent>(guest, cpu, key, scan, up, 0);
 }
 
 void frontend::lockKeySet(win32::WinApplication* app, x86::CPU& cpu)
@@ -1150,7 +1202,7 @@ reg32 frontend::wata::commandLineRead(App* app, CPU& cpu, reg32 count, reg32 wor
     constexpr reg32 kUsage = 0x7a1ba0;
     const reg32 spaces = guest.frame(), word = spaces + 0x100, number = spaces + 0x150;
     bool help = false, understood = false;
-    guest.call(kFillZero, args({ kSettings, kSettingsBytes }));
+    fe::direct<kFillZero, ea::clearBytes>(guest.app(), guest.cpu(), kSettings, kSettingsBytes);
     reg32 at = count;
     for (;;)
     {
@@ -1160,12 +1212,12 @@ reg32 frontend::wata::commandLineRead(App* app, CPU& cpu, reg32 count, reg32 wor
         const reg32 argument = guest.dword(words + 4 * at);
         understood = false;
         for (reg32 i = 0; i < kHelpWordCount; ++i)
-            if (guest.call(kStricmp, args({ argument, guest.dword(kHelpWords + 4 * i) })) == 0)
+            if (fe::direct<kStricmp, watcom::clib::stricmp>(guest.app(), guest.cpu(), argument, guest.dword(kHelpWords + 4 * i)) == 0)
                 help = true;
         if (!help)
             for (reg32 i = 0; i < kFlagCount; ++i)
             {
-                if (guest.call(kStricmp, args({ argument, guest.dword(kFlagNames + 4 * i) })) != 0)
+                if (fe::direct<kStricmp, watcom::clib::stricmp>(guest.app(), guest.cpu(), argument, guest.dword(kFlagNames + 4 * i)) != 0)
                     continue;
                 const reg32 flags = kFlags + 4 * (i / 32);
                 guest.setDword(flags, guest.dword(flags) | (reg32(1) << ((sreg32(i + 1) % 32 - 1) & 31)));
@@ -1175,8 +1227,8 @@ reg32 frontend::wata::commandLineRead(App* app, CPU& cpu, reg32 count, reg32 wor
         guest.copyString(word, argument);
         guest.leaveEdx(words);
         guest.call(kStrupr, args({ word }));
-        if (!understood && guest.call(kStrncmp, args({ word, kNumberedPrefix, 4 })) == 0
-            && guest.call(kSscanf, args({}, { word + 4, kNumberFormat, number })) != 0)
+        if (!understood && fe::direct<kStrncmp, watcom::clib::strncmp>(guest.app(), guest.cpu(), word, kNumberedPrefix, 4) == 0
+            && fe::direct<kSscanf, watcom::clib::sscanf>(guest.app(), guest.cpu(), word + 4, kNumberFormat, guest::Words{number}) != 0)
         {
             const reg32 value = guest.dword(number);
             const reg32 flags = kFlags + 4 * reg32(sreg32(value) / 32);
@@ -1189,7 +1241,7 @@ reg32 frontend::wata::commandLineRead(App* app, CPU& cpu, reg32 count, reg32 wor
             {
                 const reg32 name = guest.dword(kNameWords + 4 * i);
                 const reg32 length = guest.length(name);
-                if (guest.call(kStrncmp, args({ word, name, length })) != 0)
+                if (fe::direct<kStrncmp, watcom::clib::strncmp>(guest.app(), guest.cpu(), word, name, length) != 0)
                     continue;
                 const reg32 rest = word + length;
                 if (i == 0)
@@ -1203,15 +1255,15 @@ reg32 frontend::wata::commandLineRead(App* app, CPU& cpu, reg32 count, reg32 wor
                 }
                 else if (i == 1)
                 {
-                    if (guest.call(kSscanf, args({}, { rest, kNumberFormat, kPort })) != 0)
+                    if (fe::direct<kSscanf, watcom::clib::sscanf>(guest.app(), guest.cpu(), rest, kNumberFormat, guest::Words{kPort}) != 0)
                         understood = true;
                 }
                 else if (i == 2)
                 {
                     understood = true;
-                    guest.call(kStrncpy, args({ kCode, argument + length, kCodeMost }));
+                    fe::direct<kStrncpy, watcom::clib::strncpy>(guest.app(), guest.cpu(), kCode, argument + length, kCodeMost);
                 }
-                else if (guest.call(kSscanf, args({}, { rest, kNumberFormat, kOtherNumbers + 4 * i })) != 0)
+                else if (fe::direct<kSscanf, watcom::clib::sscanf>(guest.app(), guest.cpu(), rest, kNumberFormat, guest::Words{kOtherNumbers + 4 * i}) != 0)
                 {
                     understood = true;
                 }
@@ -1219,10 +1271,10 @@ reg32 frontend::wata::commandLineRead(App* app, CPU& cpu, reg32 count, reg32 wor
         if (understood && !help)
             continue;
 
-        guest.call(kSprintf, args({}, { kUsage, 0x53d6ac, 0x53d6a8, 0x53d69c, 0x53d690 }));
+        fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.cpu(), kUsage, 0x53d6ac, guest::Words{0x53d6a8, 0x53d69c, 0x53d690});
         if (!help)
-            guest.call(kSprintf, args({}, { kUsage + guest.length(kUsage), 0x53d70c, argument }));
-        guest.call(kSprintf, args({}, { kUsage + guest.length(kUsage), 0x53d724 }));
+            fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.cpu(), kUsage + guest.length(kUsage), 0x53d70c, guest::Words{argument});
+        fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.cpu(), kUsage + guest.length(kUsage), 0x53d724, guest::Words({}));
         for (reg32 i = 0; i < kFlagCount; ++i)
         {
             const reg32 name = guest.dword(kFlagNames + 4 * i);
@@ -1232,7 +1284,7 @@ reg32 frontend::wata::commandLineRead(App* app, CPU& cpu, reg32 count, reg32 wor
             for (reg32 c = 0; c < pad; ++c)
                 guest.setByte(spaces + c, ' ');
             guest.setByte(spaces + pad, 0);
-            guest.call(kSprintf, args({}, { kUsage + guest.length(kUsage), 0x53d728, name, spaces, guest.dword(kFlagHelps + 4 * i) }));
+            fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.cpu(), kUsage + guest.length(kUsage), 0x53d728, guest::Words{name, spaces, guest.dword(kFlagHelps + 4 * i)});
         }
         callImport<kMessageBox, &win32::user32::MessageBoxA>(guest, cpu, 0, kUsage, understood ? 0x53d748u : 0x53d734u, 0);
         return 0;
@@ -1266,7 +1318,7 @@ reg32 frontend::wata::discCheck(App* app, CPU& cpu)
         copyDwords(guest, local, texts, 6);
         const reg32 text = guest.dword(local + 4 * guest.dword(kLanguage));
         callImport<kMessageBox, &win32::user32::MessageBoxA>(guest, cpu, 0, text, kTitle, kBoxWarning);
-        guest.call(kExit, args({ 0 }));
+        fe::direct<kExit, watcom::clib::exit>(guest.app(), guest.cpu(), 0);
     };
     copyDwords(guest, pattern, kPathPattern, 2);
     guest.setWord(pattern + 8, guest.word(kPathPattern + 8));
@@ -1323,7 +1375,7 @@ reg32 frontend::wata::driveNumberOfPath(App* app, CPU& cpu, reg32 path)
     constexpr reg32 kToupper = 0x4eede0;
     if (guest.byte(path + 1) != ':')
         return 0xffffffffu;
-    return guest.call(kToupper, args({ guest.byte(path) })) - 'A';
+    return fe::direct<kToupper, watcom::clib::toupper>(guest.app(), guest.cpu(), guest.byte(path)) - 'A';
 }
 
 void frontend::driveNumberOfPath(win32::WinApplication* app, x86::CPU& cpu)
@@ -1365,7 +1417,7 @@ void reportError(Guest& guest, reg32 file, reg32 function, reg32 line, reg32 mes
     guest.setDword(kErrorFile, file);
     guest.setDword(kErrorFunction, function);
     guest.setDword(kErrorLine, line);
-    guest.call(kError, args({}, { message }));
+    fe::direct<kError, ea::error>(guest.app(), guest.cpu(), message, guest::Words({}));
 }
 
 reg32 asyncRecord(const Guest& guest)
@@ -1458,7 +1510,7 @@ reg32 frontend::wata::asyncRunCallbacks(App* app, CPU& cpu)
 {
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 4);
-    if (guest.call(kQueueLength, args({ asyncRecord(guest) + kAsyncDoneCallback })) == 0)
+    if (directKept<0x50e1d0, ea::queueLengthOf, 1>(guest.app(), guest.cpu(), asyncRecord(guest) + kAsyncDoneCallback) == 0)
         return 0;
     for (reg32 request = fe::direct<0x50dff0, netb::qpoplast>(app, cpu, asyncRecord(guest) + kAsyncDoneCallback); request != 0;
          request = fe::direct<0x50dff0, netb::qpoplast>(app, cpu, asyncRecord(guest) + kAsyncDoneCallback))
@@ -1495,7 +1547,7 @@ reg32 frontend::wata::asyncInit(App* app, CPU& cpu, reg32 requests)
     // The class in ebx as the game's code has it.
     const reg32 record = *fe::direct<0x4e1620, ea::reserved>(app, cpu, kTag, bytes, cpu.ebx);
     guest.setDword(kAsync, record);
-    guest.call(kFillZeroes, args({ record, bytes }));
+    fe::direct<kFillZeroes, ea::clearBytes>(guest.app(), guest.cpu(), record, bytes);
     guest.setDword(asyncRecord(guest) + kAsyncSharedBuffer, asyncRecord(guest));
     for (const reg32 queue : { kAsyncFree, kAsyncDone, kAsyncDoneCallback, kAsyncWaiting })
         fe::direct<0x50dcd0, netb::qinit>(app, cpu, asyncRecord(guest) + queue, 0, 0);
@@ -1549,10 +1601,10 @@ reg32 frontend::wata::asyncShutdown(App* app, CPU& cpu)
     asyncDrain(guest, cpu, kAsyncDone);
     asyncDrain(guest, cpu, kAsyncDoneCallback);
     fe::direct<0x4e75e0, port::stream::unscheduleTask>(app, cpu, kAsyncTask);
-    guest.call(kQueueFree, args({ asyncRecord(guest) + kAsyncFree }));
-    guest.call(kQueueFree, args({ asyncRecord(guest) + kAsyncDone }));
-    guest.call(kQueueFree, args({ asyncRecord(guest) + kAsyncWaiting }));
-    guest.call(kQueueFree, args({ asyncRecord(guest) + kAsyncDoneCallback }));
+    directKept<0x50dde0, ea::queueLockFreed, 1>(guest.app(), guest.cpu(), asyncRecord(guest) + kAsyncFree);
+    directKept<0x50dde0, ea::queueLockFreed, 1>(guest.app(), guest.cpu(), asyncRecord(guest) + kAsyncDone);
+    directKept<0x50dde0, ea::queueLockFreed, 1>(guest.app(), guest.cpu(), asyncRecord(guest) + kAsyncWaiting);
+    directKept<0x50dde0, ea::queueLockFreed, 1>(guest.app(), guest.cpu(), asyncRecord(guest) + kAsyncDoneCallback);
     const reg32 file = guest.dword(asyncRecord(guest) + kAsyncFile);
     if (file != 0)
         fe::direct<0x4e2da0, ea::closeChecked>(app, cpu, file);
@@ -1723,7 +1775,7 @@ reg32 frontend::wata::asyncThreadMain(App* app, CPU& cpu)
                 fe::direct<0x4e2da0, ea::closeChecked>(app, cpu, file);
             guest.setDword(asyncRecord(guest) + kAsyncFile, 0);
             guest.setDword(asyncRecord(guest) + kAsyncCurrent, 0);
-            guest.call(kCloseEvent, args({ guest.dword(asyncRecord(guest) + kAsyncEvent) }));
+            directKept<0x4dfc00, ea::eventClosed, 1>(guest.app(), guest.cpu(), guest.dword(asyncRecord(guest) + kAsyncEvent));
             const reg32 record = asyncRecord(guest);
             guest.setDword(record + kAsyncEvent, 0);
             return record;
@@ -2497,7 +2549,7 @@ reg32 frontend::wata::thrashOpenByName(App* app, CPU& cpu, reg32 given)
     }
     else
     {
-        const reg32 fromEnvironment = guest.call(kGetenv, args({ kDriverVariable }));
+        const reg32 fromEnvironment = fe::direct<kGetenv, watcom::clib::getenv>(guest.app(), guest.cpu(), kDriverVariable);
         if (fromEnvironment != 0)
             name = fromEnvironment;
     }
@@ -2542,9 +2594,8 @@ reg32 frontend::wata::heapStart(App* app, CPU& cpu, reg32 size)
 {
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 4);
-    cpu.eax = size;   // sub_4f7900's, as it came
-    guest.leaveEcx(size);
-    const reg32 block = guest.call(0x4f7900);
+    guest.leaveEcx(size);  // read after it, as the code has it
+    const reg32 block = fe::direct<0x4f7900, watcom::clib::malloc>(app, cpu, size);
     guest.setDword(0x5644fc, block);
     return fe::direct<0x4f9270, menz::memClassCreateRam>(app, cpu, block, cpu.ecx);
 }
@@ -2634,11 +2685,11 @@ reg32 frontend::wata::tapiSetup(App* app, CPU& cpu, reg32 wanted)
         guest.setDword(kErrorFile, 0x54da88);
         guest.setDword(kErrorFunction, 0x54da98);
         guest.setDword(kErrorLine, 0x123);
-        guest.call(kError, args({}, { 0x54daa4 }));
+        fe::direct<kError, ea::error>(guest.app(), guest.cpu(), 0x54daa4, guest::Words({}));
         return kFailed;
     }
     const reg32 window = guest.call(kAcquireWindow, args({}, { kGwlHinstance }));
-    const reg32 instance = callImport<kGetWindowLong, &win32::user32::GetWindowLongA>(guest, cpu, window, kGwlHinstance);
+    const reg32 instance = callImport<kGetWindowLong, &host::windowLong>(guest, cpu, window, kGwlHinstance);
     guest.leaveEbx(wanted);
     guest.leaveEcx(instance);
     // By address: the ebx it may leave is read after it, as the second's wanted.
@@ -2761,7 +2812,7 @@ reg32 frontend::wata::bigFileOpenEntry(App* app, CPU& cpu, reg32 big, reg32 sear
     const reg32 entryOffset = guest.frame(), entrySize = entryOffset + 4;
     const reg32 wantedFile = guest.dword(search);
     const bool anyFile = guest.byte(wantedFile) == 0;
-    if (!anyFile && guest.call(kStrcmp, args({ big + 0x14, guest.dword(search) })) != 0)
+    if (!anyFile && fe::direct<kStrcmp, watcom::clib::strcmp>(guest.app(), guest.cpu(), big + 0x14, guest.dword(search)) != 0)
         return 1;
     // By address: the edx it leaves is left at the end.
     if (guest.call(kFindEntry, args({ guest.dword(big + 0x10), guest.dword(search + 4), 0, entryOffset }, { entrySize })) == 0)
@@ -2790,7 +2841,7 @@ reg32 frontend::wata::windowApply(App* app, CPU& cpu)
         guest.setDword(kErrorFile, 0x54b6c8);
         guest.setDword(kErrorFunction, 0x54b6d8);
         guest.setDword(kErrorLine, 0x5d);
-        guest.call(kError, args({}, { 0x54b6e8, guest.byte(kLockedBy) }));
+        fe::direct<0x401010, ea::error>(app, cpu, 0x54b6e8u, guest::Words({ guest.byte(kLockedBy) }));
         guest.leaveEbx(ebx);
         guest.leaveEcx(ecx);
         guest.leaveEdx(edx);
@@ -2957,7 +3008,7 @@ reg32 frontend::wata::skyLoad(App* app, CPU& cpu, reg32 shapes, reg32 shapeName)
     bool ended = false;
     const auto numberAfter = [&](reg32 word) -> sreg32 {
         guest.copyString(buffer, name);
-        const reg32 found = guest.call(kStrstr, args({ buffer, word }));
+        const reg32 found = fe::direct<kStrstr, watcom::clib::strstr>(guest.app(), guest.cpu(), buffer, word);
         if (found == 0)
         {
             ended = true;
@@ -2967,7 +3018,7 @@ reg32 frontend::wata::skyLoad(App* app, CPU& cpu, reg32 shapes, reg32 shapeName)
         while (guest.byte(at) != 0 && isDigit(guest, std::uint8_t(guest.byte(at) + 1)))
             ++at;
         guest.setByte(at, 0);
-        return sreg32(guest.call(kAtoi, args({ found + 1 })));
+        return sreg32(fe::direct<kAtoi, watcom::clib::atoi>(guest.app(), guest.cpu(), found + 1));
     };
     const sreg32 first = numberAfter(kFirstWord);
     if (ended)
@@ -2978,16 +3029,17 @@ reg32 frontend::wata::skyLoad(App* app, CPU& cpu, reg32 shapes, reg32 shapeName)
     const sreg32 third = numberAfter(kThirdWord);
     if (ended)
         return 0;
-    guest.setDword(0x55d29c, guest.call(kStrstr, args({ name, kFogWord })) != 0 ? 1 : 0);
-    guest.setDword(0x55d2a0, guest.call(kStrstr, args({ name, kNoFogWord })) != 0 ? 0 : 1);
-    guest.setDword(0x55d2a4, guest.call(kStrstr, args({ name, kBrightWord })) != 0 ? 1 : 0);
+    guest.setDword(0x55d29c, fe::direct<kStrstr, watcom::clib::strstr>(guest.app(), guest.cpu(), name, kFogWord) != 0 ? 1 : 0);
+    guest.setDword(0x55d2a0, fe::direct<kStrstr, watcom::clib::strstr>(guest.app(), guest.cpu(), name, kNoFogWord) != 0 ? 0 : 1);
+    guest.setDword(0x55d2a4, fe::direct<kStrstr, watcom::clib::strstr>(guest.app(), guest.cpu(), name, kBrightWord) != 0 ? 1 : 0);
 
     const Float toA = Float(app->getMemory<double>(kToRadiansA));
     const Float toB = Float(app->getMemory<double>(kToRadiansB));
     const Float distance = Float(app->getMemory<double>(kDistance));
-    const auto scaled = [&](reg32 slot) {
-        guest.setFloat(slot, float(fp::mul(guest.fpu().pop(), distance)));
-    };
+    // The sine and the cosine (native_frontend_simd.cpp's): what each would leave on the x87's stack.
+    const auto sine = [&](reg32 argument) { return Float(fe::direct<0x4ea930, simd::sineValue>(app, cpu, argument)); };
+    const auto cosine = [&](reg32 argument) { return Float(fe::direct<0x4ea950, simd::cosineValue>(app, cpu, argument)); };
+    const auto scaled = [&](reg32 slot, Float value) { guest.setFloat(slot, float(fp::mul(value, distance))); };
     const Float firstAngle = fp::mul(Float(first), toA);
     const Float thirdAngle = fp::mul(Float(third), toB);
     guest.setFloat(angleBits, float(firstAngle));
@@ -2999,22 +3051,16 @@ reg32 frontend::wata::skyLoad(App* app, CPU& cpu, reg32 shapes, reg32 shapeName)
         std::memcpy(&bits, &value, sizeof bits);
         return bits;
     };
-    fe::direct<0x4ea950, simd::cosine>(app, cpu, angle);
-    Float kept = fp::mul(guest.fpu().pop(), distance);
+    Float kept = fp::mul(cosine(angle), distance);
     const reg32 secondBits = argumentFor(second);
     guest.setFloat(0x55d280, float(kept));
-    fe::direct<0x4ea950, simd::cosine>(app, cpu, secondBits);
-    scaled(0x55d284);
-    fe::direct<0x4ea930, simd::sine>(app, cpu, angle);
-    scaled(0x55d288);
-    fe::direct<0x4ea950, simd::cosine>(app, cpu, angle);
-    kept = fp::mul(guest.fpu().pop(), distance);
+    scaled(0x55d284, cosine(secondBits));
+    scaled(0x55d288, sine(angle));
+    kept = fp::mul(cosine(angle), distance);
     const reg32 besideBits = argumentFor(sreg32(reg32(second) - 0x5a));
     guest.setFloat(0x55d28c, float(kept));
-    fe::direct<0x4ea950, simd::cosine>(app, cpu, besideBits);
-    scaled(0x55d290);
-    fe::direct<0x4ea930, simd::sine>(app, cpu, angle);
-    scaled(0x55d294);
+    scaled(0x55d290, cosine(besideBits));
+    scaled(0x55d294, sine(angle));
     const reg32 result = fe::direct<0x4d4080, rende::loadShapeTexture>(app, cpu, shapes, shapeName, 0x80, 0x6ff9cc, 7);
     guest.setDword(kLoaded, 1);
     return result;

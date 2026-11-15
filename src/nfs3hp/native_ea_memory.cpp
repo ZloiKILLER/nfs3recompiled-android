@@ -1,7 +1,10 @@
 #include "native_ea_memory.h"
 #include "native_ea_threads.h"
+#include "native_game.h"
 #include "native_guest.h"
+#include "native_watcom.h"
 #include "native_windows.h"
+#include "host_threads.h"
 #include <winapi/kernel32.h>
 
 #include <cstdint>
@@ -102,7 +105,7 @@ constexpr reg32 kPurgeName = 0x549ab8, kNotABlock = 0x549ac4;
 constexpr reg32 kCreateLine = 0x11a, kGetFreeLine = 0x1ae, kInvalidSizeLine = 0x2ae, kOutOfMemoryLine = 0x2ed;
 constexpr reg32 kPurgeLine = 0x333;
 // What is called by address.
-constexpr reg32 kError = 0x401010, kFillZero = 0x4e070c, kSprintf = 0x4df690;
+constexpr reg32 kFillZero = 0x4e070c;
 constexpr reg32 kForwardCopy = 0x5033e5;
 constexpr reg32 kEnterCriticalSection = 0x5344b8, kLeaveCriticalSection = 0x534588;
 
@@ -216,10 +219,15 @@ bool error(App* app, CPU& cpu, reg32 function, reg32 line, std::initializer_list
     put(app, kWhereFile, kFileName);
     put(app, kWhereFunction, function);
     put(app, kWhereLine, line);
-    return guest::call(app, cpu, kError, arguments);
+    guest::Words words({});
+    for (const reg32* word = arguments.begin() + 1; word < arguments.end(); ++word)
+        words.word[words.count++] = *word;
+    guest::direct<0x401010, ea::error>(app, cpu, *arguments.begin(), words);
+    return !cpu.terminate;
 }
 
-/* `bytes` at `address` cleared by the game's fill. */
+/* `bytes` at `address` cleared by the game's fill -- by address: where it leaves eax (past what it
+ * cleared) reaches the code's exit, which ea::clearBytes does not give back. */
 bool clear(App* app, CPU& cpu, reg32 address, reg32 bytes)
 {
     const KeptRegisters kept(cpu);
@@ -232,7 +240,8 @@ bool clear(App* app, CPU& cpu, reg32 address, reg32 bytes)
 bool print(App* app, CPU& cpu, reg32 buffer, reg32 format, reg32 name)
 {
     const KeptRegisters kept(cpu);
-    return guest::call(app, cpu, kSprintf, {buffer, format, name});
+    guest::direct<0x4df690, watcom::clib::sprintf>(app, cpu, buffer, format, guest::Words({name}));
+    return !cpu.terminate;
 }
 
 /* EnterCriticalSection or LeaveCriticalSection (`Function`, the import's slot `Slot`) on `lock`:
@@ -576,13 +585,13 @@ std::optional<reg32> reserveBlock(App* app, CPU& cpu, reg32 name, reg32 size, re
     const reg32 cls = classOf(app, flags);
     left = {flags, 0};
     if (const reg32 lock = at(app, cls + kClassLock);
-        lock != 0 && !section<kEnterCriticalSection, &win32::kernel32::EnterCriticalSection>(app, cpu, lock, left.edx))
+        lock != 0 && !section<kEnterCriticalSection, &host::enterLock>(app, cpu, lock, left.edx))
         return std::nullopt;
     if (sreg32(size) < 0)
     {
         if (const reg32 lock = at(app, cls + kClassLock);
             lock != 0
-            && !section<kLeaveCriticalSection, &win32::kernel32::LeaveCriticalSection>(app, cpu, lock, left.edx))
+            && !section<kLeaveCriticalSection, &host::leaveLock>(app, cpu, lock, left.edx))
             return std::nullopt;
         if (at(app, kReportErrors) != 0)
         {
@@ -619,7 +628,7 @@ std::optional<reg32> reserveBlock(App* app, CPU& cpu, reg32 name, reg32 size, re
         {
             reg32 held = at(app, cls + kClassLock);
             if (held != 0
-                && !section<kLeaveCriticalSection, &win32::kernel32::LeaveCriticalSection>(app, cpu, held, held))
+                && !section<kLeaveCriticalSection, &host::leaveLock>(app, cpu, held, held))
                 return std::nullopt;
             left = {kFileName, name};
             if (!error(app, cpu, kReserveName, kOutOfMemoryLine,
@@ -665,7 +674,7 @@ std::optional<reg32> reserveBlock(App* app, CPU& cpu, reg32 name, reg32 size, re
         result = block + kBlockHeader;
     }
     if (const reg32 lock = at(app, cls + kClassLock);
-        lock != 0 && !section<kLeaveCriticalSection, &win32::kernel32::LeaveCriticalSection>(app, cpu, lock, left.edx))
+        lock != 0 && !section<kLeaveCriticalSection, &host::leaveLock>(app, cpu, lock, left.edx))
         return std::nullopt;
     return result;
 }
@@ -693,7 +702,7 @@ std::optional<reg32> purgeBlock(App* app, CPU& cpu, reg32 body)
     // Every register is kept here: what the Windows functions leave in edx is nobody's.
     reg32 scratch = 0;
     if (const reg32 lock = at(app, cls + kClassLock);
-        lock != 0 && !section<kEnterCriticalSection, &win32::kernel32::EnterCriticalSection>(app, cpu, lock, scratch))
+        lock != 0 && !section<kEnterCriticalSection, &host::enterLock>(app, cpu, lock, scratch))
         return std::nullopt;
     reg32 merged = block;
     reg32 before = at(app, block + kBlockPrevious);
@@ -719,7 +728,7 @@ std::optional<reg32> purgeBlock(App* app, CPU& cpu, reg32 body)
     }
     linkFree(app, cls, merged);
     if (const reg32 lock = at(app, cls + kClassLock);
-        lock != 0 && !section<kLeaveCriticalSection, &win32::kernel32::LeaveCriticalSection>(app, cpu, lock, scratch))
+        lock != 0 && !section<kLeaveCriticalSection, &host::leaveLock>(app, cpu, lock, scratch))
         return std::nullopt;
     return 1;
 }
@@ -958,11 +967,16 @@ void memBlockSize(App* app, CPU& cpu)
 
 /* 0x4e15e0: the name of the block at eax, past its body and its class's bytes; 0 for one not
  * named (flag 0x100). */
+reg32 blockNameOf(App* app, reg32 body)
+{
+    const reg32 block = body - kBlockHeader;
+    const reg32 flags = half(app, block + kBlockFlags);
+    return (flags & kNamed) ? classBytes(app, flags) + body + at(app, block + kBlockSize) : 0;
+}
+
 void memBlockName(App* app, CPU& cpu)
 {
-    const reg32 body = cpu.eax, block = body - kBlockHeader;
-    const reg32 flags = half(app, block + kBlockFlags);
-    cpu.eax = (flags & kNamed) ? classBytes(app, flags) + body + at(app, block + kBlockSize) : 0;
+    cpu.eax = blockNameOf(app, cpu.eax);
     cpu.esp += 4;
 }
 

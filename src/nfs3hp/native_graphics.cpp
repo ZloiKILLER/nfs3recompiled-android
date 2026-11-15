@@ -7,13 +7,21 @@
 #include "native_ea_memory.h"
 #include "native_ea_support.h"
 #include "native_ea_threads.h"
+#include "native_frontend.h"
+#include "native_frontend_draw.h"
+#include "native_frontend_simc.h"
+#include "native_frontend_simd.h"
+#include "native_game.h"
 #include "native_guest.h"
 #include "native_graphics.h"
 #include "native_load_cardb.h"
 #include "native_load_saves.h"
 #include "native_raceload.h"
 #include "native_track.h"
+#include "native_watcom.h"
 #include "native_windows.h"
+#include "port_snd_stream_calls.h"
+#include "port_text.h"
 #include "diag_hooks.h"
 #include "thrash.h"
 #include <winapi/advapi32.h>
@@ -145,7 +153,8 @@ private:
 
 constexpr reg32 kError = 0x401010;
 
-/* sub_401010, the game's Error, by address: its text on the stack (cdecl). */
+/* sub_401010, the game's Error, by address: its text on the stack (cdecl).  By address: Error's code
+ * hands what it calls pointers into its frame, which lies 4 bytes lower with the text pushed. */
 bool error(App* app, CPU& cpu, reg32 text)
 {
     return guest::call(app, cpu, kError, {text});
@@ -1155,45 +1164,49 @@ bool copyRect(App* app, CPU& cpu, reg32 rect, reg32 x, reg32 y, reg32 width, reg
     return byAddress(app, cpu, kGetRect);
 }
 
-/* Watcom's __CHP (0x4dfd56), by address, on `value` pushed onto the x87's stack: chopped towards 0,
- * stored as an integer (fistp) and popped.  nullopt when the game stopped. */
+/* Watcom's __CHP (0x4dfd56) on `value`, as C++ (watcom::clib::chop): chopped towards 0 and stored as
+ * an integer (fistp).  nullopt when the game stopped. */
 std::optional<sreg32> chop(App* app, CPU& cpu, x86::Float value)
 {
-    cpu.fpu.push(value);
-    if (!byAddress(app, cpu, kChop))
+    const double whole = guest::direct<kChop, watcom::clib::chop>(app, cpu, double(value));
+    if (cpu.terminate)
         return std::nullopt;
-    const sreg32 whole = fp::toInteger<sreg32>(cpu.fpu.st(0));
-    cpu.fpu.pop();
-    return whole;
+    return fp::toInteger<sreg32>(whole);
 }
 
-/* port_text's text scale set (0x4d1390, stdcall), by address: the last scale onto the x87's stack,
- * dropped (fstp st(0)). */
+/* port_text's text scale set (0x4d1390, stdcall: port::text::textScaleSet): the last scale, which
+ * the code drops (fstp st(0)). */
 bool setTextScale(App* app, CPU& cpu, reg32 scale)
 {
-    if (!guest::call(app, cpu, kSetTextScale, {scale}))
-        return false;
-    cpu.fpu.pop();
-    return true;
+    guest::direct<kSetTextScale, port::text::textScaleSet>(app, cpu, scale);
+    return !cpu.terminate;
 }
 
-/* port_text's languageText (0x4d1850), by address: line eax of the game's text. */
+/* port_text's languageText (0x4d1850: port::text::lineText): line eax of the game's text, edx handed
+ * on as the code has it. */
 std::optional<reg32> languageText(App* app, CPU& cpu, reg32 line)
 {
     cpu.eax = line;
-    return game(app, cpu, kLanguageText);
+    const port::Result text =
+        guest::direct<kLanguageText, port::text::lineText>(app, cpu, cpu.esp - 4, sreg32(line), cpu.edx);
+    if (!text || cpu.terminate)
+        return std::nullopt;
+    cpu.eax = reg32(*text);
+    return cpu.eax;
 }
 
-/* port_text's drawText (0x4d1000), by address: text eax at x edx, row ebx; its width onto the x87's
- * stack, dropped (fstp st(0)). */
+/* port_text's drawText (0x4d1000: port::text::textDrawn): text eax at x edx, row ebx, as the code
+ * has them; its width, which the code drops (fstp st(0)), and eax as it leaves it. */
 bool drawText(App* app, CPU& cpu, reg32 text, reg32 x, reg32 row)
 {
     cpu.eax = text;
     cpu.edx = x;
     cpu.ebx = row;
-    if (!byAddress(app, cpu, kDrawText))
+    const port::text::WidthResult drawn =
+        guest::direct<kDrawText, port::text::textDrawn>(app, cpu, cpu.esp - 4, text, sreg32(x), sreg32(row));
+    if (!drawn || cpu.terminate)
         return false;
-    cpu.fpu.pop();
+    cpu.eax = drawn->eax;
     return true;
 }
 
@@ -1225,7 +1238,10 @@ bool loadingAborted(App* app, CPU& cpu)
     put(app, kTextColour, kAbortedColour);
     put(app, kTextMeasuring, 0);
     const std::optional<reg32> aborted = languageText(app, cpu, kAbortedLine);
-    if (!aborted || !guest::call(app, cpu, kSprintf, {text, kDotsFormat, *aborted}))
+    if (!aborted)
+        return false;
+    cpu.eax = guest::direct<kSprintf, watcom::clib::sprintf>(app, cpu, text, kDotsFormat, guest::Words{*aborted});
+    if (cpu.terminate)
         return false;
     const x86::Float row = fp::mul(x86::Float(scale), x86::Float(floatAt(app, kAbortedRow)));
     cpu.eax = text;
@@ -1695,9 +1711,12 @@ std::optional<reg32> textureMemoryWarned(App* app, CPU& cpu, reg32 type, reg32 i
     }
     const reg32 warning = at(app, (frame - 0x30) + index * 4), name = at(app, (frame - 0x18) + index * 4);
     cpu.eax = memory;
-    if (!guest::call(app, cpu, kFprintf, {kStandardError, kMemoryWarningFormat, name, memory, warning}))
+    const reg32 printed = guest::direct<kFprintf, watcom::clib::fprintf>(app, cpu, kStandardError, kMemoryWarningFormat,
+                                                                         guest::Words{name, memory, warning});
+    if (cpu.terminate)
         return std::nullopt;
-    return cpu.eax;
+    cpu.eax = printed;
+    return printed;
 }
 
 /* 0x4b5ea0: textureMemoryWarned for driver type eax, index edx. */
@@ -1952,8 +1971,8 @@ constexpr reg32 kRemoveTask = 0x4e75e0;        // native_snd_stream's removeSyst
 /* port::removeSystemTask (0x4e75e0), by address: the task's function in eax. */
 bool removeTask(App* app, CPU& cpu, reg32 function)
 {
-    cpu.eax = function;
-    return byAddress(app, cpu, kRemoveTask);
+    cpu.eax = guest::direct<kRemoveTask, port::stream::unscheduleTask>(app, cpu, function);
+    return !cpu.terminate;
 }
 
 /* 0x524650's core: the driver closed, when it is open: its idle task taken off the timer, the
@@ -2430,7 +2449,9 @@ bool screenCaptured(App* app, CPU& cpu)
         put(app, kCaptureNumber, number);
         cpu.eax = name;
         cpu.ecx = number;
-        if (!guest::call(app, cpu, kSprintf, {name, kCaptureName, folder, number}))
+        cpu.eax = guest::direct<kSprintf, watcom::clib::sprintf>(app, cpu, name, kCaptureName,
+                                                                 guest::Words{folder, number});
+        if (cpu.terminate)
             return false;
         const std::optional<bool> exists = guest::direct<0x4e0e60, ea::fileThere>(app, cpu, name);
         if (!exists)
@@ -2499,9 +2520,12 @@ constexpr reg32 kBoxColour = 0x7f000000, kBorderColour = 0xff488cfd;
 std::optional<x86::Float> textWidth(App* app, CPU& cpu, reg32 text)
 {
     cpu.eax = text;
-    if (!byAddress(app, cpu, kTextWidth))
+    const port::text::WidthResult width =
+        guest::direct<kTextWidth, port::text::textMeasuredWithOverhang>(app, cpu, cpu.esp - 4, text);
+    if (!width || cpu.terminate)
         return std::nullopt;
-    return cpu.fpu.pop();
+    cpu.eax = width->eax;
+    return x86::Float(width->value);
 }
 
 /* sub_47d1d0, a box with its border, by address: its four corners (x, y as floats' bits), whether
@@ -2748,7 +2772,8 @@ bool appendBackslash(App* app, CPU& cpu, reg32 path)
 bool appendFormatted(App* app, CPU& cpu, reg32 text, reg32 format, reg32 first, reg32 second)
 {
     cpu.eax = text + stringLengthAt(app, text);
-    return guest::call(app, cpu, kSprintf, {cpu.eax, format, first, second});
+    cpu.eax = guest::direct<kSprintf, watcom::clib::sprintf>(app, cpu, cpu.eax, format, guest::Words{first, second});
+    return !cpu.terminate;
 }
 
 /* 0x494fa0's core: the loading screen put up as a race loads (but with it turned off): the race's
@@ -2804,11 +2829,14 @@ bool loadingScreenShown(App* app, CPU& cpu)
         if (!appendFormatted(app, cpu, name, kCarPictureName, cpu.ecx, 0))
             return false;
     }
+    // Its flags in edx, which loadQfs takes from there.
     cpu.edx = 0x10;
     cpu.eax = name;
-    const std::optional<reg32> qfs = game(app, cpu, kLoadQfs);
-    if (!qfs)
+    const reg32 loaded = guest::direct<kLoadQfs, frontend::draw::loadQfs>(app, cpu, name);
+    if (cpu.terminate)
         return false;
+    cpu.eax = loaded;
+    const std::optional<reg32> qfs = loaded;
     cpu.edx = kLoadingShapeName;
     cpu.ecx = *qfs;
     const std::optional<reg32> shape = game(app, cpu, kBitmapShape);
@@ -3472,25 +3500,51 @@ std::optional<reg32> shapeNamed(App* app, CPU& cpu, reg32 shapes, reg32 name)
     return game(app, cpu, kFindShape);
 }
 
-/* sub_4ea9c0 by address (stdcall): the angle of (x, y) in turns, taken off the x87's stack as the
- * float the code stores it as. */
+/* sub_4ea9c0 (stdcall: simd's angleOfFloatsValue, which leaves every register as it was): the angle
+ * of (x, y) in turns, as the float the code stores it as.  In the checks (NFS_GAME_CHECKS, which do
+ * not build the menus' files) the call by address, its result taken off the x87's stack. */
 std::optional<float> angleOf(App* app, CPU& cpu, float y, float x)
 {
+#ifdef NFS_GAME_CHECKS
     if (!guest::call(app, cpu, kAtan2, {bitsOf(y), bitsOf(x)}))
         return std::nullopt;
     const float angle = float(cpu.fpu.st(0));
     cpu.fpu.count -= 1;
     return angle;
+#else
+    const reg32 eax = cpu.eax;
+    double angle = 0.0;
+    try
+    {
+        angle = guest::direct<kAtan2, frontend::simd::angleOfFloatsValue>(app, cpu, bitsOf(y), bitsOf(x));
+    }
+    catch (const fe::Terminated&)
+    {
+    }
+    if (cpu.terminate)
+        return std::nullopt;
+    cpu.eax = eax;
+    return float(angle);
+#endif
 }
 
-/* sub_4ea920 by address (stdcall): the square root of `value`, taken off the x87's stack as it is. */
+/* sub_4ea920 (stdcall: simc's squareRootOf, which leaves every register as it was): the square root
+ * of `value` as it is.  In the checks (NFS_GAME_CHECKS) the call by address, its result taken off the
+ * x87's stack. */
 std::optional<x86::Float> rootOf(App* app, CPU& cpu, float value)
 {
+#ifdef NFS_GAME_CHECKS
     if (!guest::call(app, cpu, kSquareRoot, {bitsOf(value)}))
         return std::nullopt;
     const x86::Float root = cpu.fpu.st(0);
     cpu.fpu.count -= 1;
     return root;
+#else
+    const double root = guest::direct<kSquareRoot, frontend::simc::squareRootOf>(app, cpu, bitsOf(value));
+    if (cpu.terminate)
+        return std::nullopt;
+    return x86::Float(root);
+#endif
 }
 
 /* An integer as the float fild and fstp make of it. */
@@ -3729,7 +3783,9 @@ bool cabinInstrumentsLoaded(App* app, CPU& cpu)
     if (!carName)
         return false;
     cpu.eax = archiveName;
-    if (!guest::call(app, cpu, kSprintf, {archiveName, kCabinArchiveName, kCarsFolder, *carName}))
+    cpu.eax = guest::direct<kSprintf, watcom::clib::sprintf>(app, cpu, archiveName, kCabinArchiveName,
+                                                             guest::Words{kCarsFolder, *carName});
+    if (cpu.terminate)
         return false;
     const std::optional<bool> exists = guest::direct<0x4e0e60, ea::fileThere>(app, cpu, archiveName);
     if (!exists)

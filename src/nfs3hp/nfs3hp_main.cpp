@@ -37,6 +37,8 @@ void installMenuData();
 void installDisplaySliders(win32::WinApplication* app);
 // port_connect.cpp: the TCP/IP port and this phone's address on the connection screen.
 void installConnectScreen(win32::WinApplication* app);
+// host_video.cpp: ddraw.dll, which the game loads by name for its DirectDrawCreate.
+namespace host { void installVideo(win32::WinApplication* app); }
 
 /* The MAD player runs on the game thread. Android's UI thread only requests
  * that its normal cleanup path run at the next frame boundary. */
@@ -2612,6 +2614,7 @@ int main(int argc, char* argv[])
         nfs3hp::Application app("nfs3.exe");
         nfs3hp::installDisplaySliders(&app);
         nfs3hp::installConnectScreen(&app);
+        nfs3hp::host::installVideo(&app);
         app.addRegistryKey(win32::HKEY_LOCAL_MACHINE, "SOFTWARE\\Electronic Arts\\Need For Speed III", "3D Device Description", new win32::RegistryValue("3Dfx Voodoo 2"));
         app.addRegistryKey(win32::HKEY_LOCAL_MACHINE, "SOFTWARE\\Electronic Arts\\Need For Speed III", "3D Card", new win32::RegistryValue("3Dfx Voodoo 2"));
         //app.addRegistryKey(win32::HKEY_LOCAL_MACHINE, "SOFTWARE\\Electronic Arts\\Need For Speed III", "Thrash Driver", new win32::RegistryValue("softtri"));

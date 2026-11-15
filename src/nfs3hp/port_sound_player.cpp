@@ -1,4 +1,9 @@
 #include "game_settings.h"
+#include "native_ea_support.h"
+#include "native_trackdata.h"
+#include "native_vertices.h"
+#include "port_snd_voices.h"
+#include "port_sound_effects.h"
 #include "port_sound_slice.h"
 
 #include <cstdint>
@@ -13,7 +18,7 @@
  * a comparison with a limit is against the double that lies in the game's
  * data, the revs' integer is the float cut towards 0 (Watcom's __CHP and a
  * fistp).  The dot product of the car's vector with its cell's up comes from
- * the game's own 0x4e01f0, which leaves it on the x87's stack. */
+ * the game's own 0x4e01f0 (vertices::dotProduct), called as C++. */
 namespace nfs3hp
 {
 namespace port
@@ -116,9 +121,9 @@ Result engineSounded(App* app, CPU& cpu, reg32 esp, reg32 car, int32_t distanceS
     else if (throttle < 0)
         throttle = 0;
     // In a tunnel (0x420bf0's, of the car's place and cell): the bus up.
-    const reg32 x = wordAt(app, car + 0x98), y = wordAt(app, car + 0x9c), z = wordAt(app, car + 0xa0);
     const reg32 cell = wordAt(app, car + 0x1c);
-    if (!g.call(kInTunnel, {y, x}, {x, y, z, cell}, eax))
+    g.atCall();
+    if (!tookEax(guest::direct<kInTunnel, trackdata::placeInTunnel>(app, cpu, car + 0x98, cell), eax))
         return {};
     if (eax != 0)
     {
@@ -143,7 +148,10 @@ Result engineSounded(App* app, CPU& cpu, reg32 esp, reg32 car, int32_t distanceS
     // The ground's kind (0x420840's, else the car's +0x18c): some lower the
     // pitch, some (now and then) the gear change's effect.
     g.edi = volume;
-    if (!g.call(kSurfaceUnder, {cell, wordAt(app, car + 0x7c)}, eax))
+    g.atCall();
+    if (!tookEax(cpu, guest::direct<kSurfaceUnder, trackdata::groundUnder>(app, cpu, x86::sreg32(cell),
+                                                                            x86::sreg32(wordAt(app, car + 0x7c))),
+                 eax))
         return {};
     const reg32 kind = eax != 0 ? eax : wordAt(app, car + 0x18c);
     const reg32 ground = kind - 2;
@@ -157,7 +165,11 @@ Result engineSounded(App* app, CPU& cpu, reg32 esp, reg32 car, int32_t distanceS
     }
     // The gear change's effect.
     const auto gearChange = [&](reg32 gearPitch, reg32 gearVolume) {
-        return g.call(kEffectBank, {reg32(kCarBank(app)), 0x1d, inSplit ? side : 0, gearVolume}, {gearPitch}, eax);
+        g.atCall();
+        return tookEax(guest::direct<kEffectBank, bankEffect>(app, cpu, g.esp - 8, kCarBank(app), 0x1d,
+                                                               int32_t(gearVolume), inSplit ? side : 0u,
+                                                               uint8_t(gearPitch)),
+                       eax);
     };
     // The turn of the gear change's counter: false when the game stopped.
     if (gearKind)
@@ -220,18 +232,33 @@ Result engineSounded(App* app, CPU& cpu, reg32 esp, reg32 car, int32_t distanceS
     const reg32 setting = reg32(gameSettings(app).engineVolume);
     const int32_t scale = int32_t((setting + (((setting << 2) - setting) << 3)) * 2);
     const int32_t lead = shape + 0x32;
-    if (!g.call(kSoundVolume, {wordAt(app, first), reg32(imul(scale, engine) >> 14)}, eax))
+    // SND's calls as C++; SNDpitchbend's error text reads ebx as the code has it (0, its
+    // calls' loading of none).
+    const auto soundVolume = [&](reg32 handle, int32_t level) {
+        g.atCall();
+        return tookEax(guest::direct<kSoundVolume, setVolume>(app, cpu, g.esp - 4, handle, level), eax);
+    };
+    const auto pitchBend = [&](reg32 handle, int32_t bend) {
+        g.atCall();
+        cpu.ebx = 0;
+        return tookEax(guest::direct<kPitchBend, setBend>(app, cpu, g.esp - 4, handle, bend), eax);
+    };
+    const auto soundPan = [&](reg32 handle, reg32 to) {
+        g.atCall();
+        return tookEax(guest::direct<kPan, panSound>(app, cpu, g.esp - 4, handle, int32_t(to)), eax);
+    };
+    if (!soundVolume(wordAt(app, first), imul(scale, engine) >> 14))
         return {};
     g.esi = reg32(shape);
-    if (!g.call(kPitchBend, {wordAt(app, first), reg32(pitch)}, eax))
+    if (!pitchBend(wordAt(app, first), pitch))
         return {};
     g.esi = reg32(lead);
-    if (!g.call(kPan, {wordAt(app, first), panned}, eax)
-        || !g.call(kSoundVolume, {wordAt(app, low), reg32(imul(imul(int32_t(setting), lead), rises) >> 14)}, eax)
-        || !g.call(kPitchBend, {wordAt(app, low), reg32(throttle)}, eax) || !g.call(kPan, {wordAt(app, low), panned}, eax)
-        || !g.call(kSoundVolume, {wordAt(app, third), reg32(imul(imul(int32_t(setting), lead), falls) >> 14)}, eax)
-        || !g.call(kPitchBend, {wordAt(app, third), reg32(throttle)}, eax)
-        || !g.call(kPan, {wordAt(app, third), panned}, eax))
+    if (!soundPan(wordAt(app, first), panned)
+        || !soundVolume(wordAt(app, low), imul(imul(int32_t(setting), lead), rises) >> 14)
+        || !pitchBend(wordAt(app, low), throttle) || !soundPan(wordAt(app, low), panned)
+        || !soundVolume(wordAt(app, third), imul(imul(int32_t(setting), lead), falls) >> 14)
+        || !pitchBend(wordAt(app, third), throttle)
+        || !soundPan(wordAt(app, third), panned))
         return {};
     return int32_t(eax);
 }
@@ -271,10 +298,9 @@ void playerCarSound(App* app, CPU& cpu)
     for (reg32 k = 0; k < 3; ++k)
         store<float>(app, up + 4 * k, float(int16_t(int8_t(byteAt(app, cells + cell * 9 * 4 + 0x14 + k)))));
     reg32 eax;
-    float down;
-    if (!g.call(kDotProduct, {car + 0xd8, up, e.ebx, cell}, eax))
+    float down = float(guest::direct<kDotProduct, vertices::dotProduct>(app, cpu, car + 0xd8, up));
+    if (cpu.terminate)
         return;
-    down = float(cpu.fpu.pop());
     const int32_t second = gameSettings(app).backwards;
     if (second != 0)
         down = -down;
@@ -380,10 +406,18 @@ void playerCarSound(App* app, CPU& cpu)
             if (loudness > 0x7d)
             {
                 eax = reg32(k) * 3;
-                if (wordAt(app, car + reg32(k) * 24 + 0x7e8) != 6 && !g.call(kMusicEventResume, {eax}, eax))
-                    return;
+                if (wordAt(app, car + reg32(k) * 24 + 0x7e8) != 6)
+                {
+                    g.atCall();
+                    if (!tookEax(guest::direct<kMusicEventResume, musicEventResumed>(app, cpu, g.esp - 4, eax, 0u), eax))
+                        return;
+                }
             }
-            if (!g.call(kTrace, {eax}, {0x64, 1, 0x536940, reg32(loudness)}, eax))
+            // The game's trace, compiled out (its words, 0x64, 1, 0x536940 and the loudness, the
+            // caller's to push): nothing.
+            g.atCall();
+            guest::direct<kTrace, ea::traceOff>(app, cpu);
+            if (cpu.terminate)
                 return;
             continue;
         }

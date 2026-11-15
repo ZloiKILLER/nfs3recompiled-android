@@ -7,8 +7,6 @@
 #include <SDL3/SDL.h>
 #include <x86.h>
 
-#include <winapi/dsetup.h>
-#include <winapi/ddraw.h>
 #include <algorithm>
 #include <set>
 
@@ -95,8 +93,6 @@ WinApplication::WinApplication(const char* appName, x86::reg32 baseAddress, cons
 {
     /* Place 0 of the method list stands for "no method" in the page table. */
     m_methodList.emplace_back();
-    dsetup::s_dSetupRegistry->registerSymbols(this);
-    ddraw::s_dDrawRegistry->registerSymbols(this);
     Event::init();
     strcpy(&getMemory<char>(m_appName->getBlockStart()), appName);
     getMemory<char>(m_env->getBlockStart()) = 0;

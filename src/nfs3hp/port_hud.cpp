@@ -1,4 +1,8 @@
 #include "game_settings.h"
+#include "native_carstate.h"
+#include "native_graphics.h"
+#include "native_vertices.h"
+#include "native_watcom.h"
 #include "port_hud.h"
 #include "port_text.h"
 
@@ -39,16 +43,62 @@ float bitsToFloat(reg32 bits)
     return value;
 }
 
+/* What a callee called by address left on the x87's stack (Watcom's float result) taken off it:
+ * the one interface to the x87 left here, for callees outside this check's build or another agent's
+ * files this round (the arc tangent, the square root, the sine and cosine, the distance). */
+double tookX87(CPU& cpu)
+{
+    return double(cpu.fpu.take());
+}
+
+/* port_text's functions whose code leaves a value on the x87's stack, as C++ (port_text.h), from the
+ * game's esp `esp` at the call: 0x4d1390's text scale set (the one before back), 0x4d1430's and
+ * 0x4d1480's widths of a text, 0x4d1000's text drawn at edx, ebx (how wide) -- with eax as each
+ * leaves it.  The registers stay as they are, as the adapters give them back. */
+std::optional<double> scaleSetAt(App* app, CPU& cpu, reg32 esp, reg32 scale)
+{
+    cpu.esp = esp;
+    const double before = guest::direct<0x4d1390, text::textScaleSet>(app, cpu, scale);
+    if (cpu.terminate)
+        return std::nullopt;
+    return before;
+}
+
+text::WidthResult measuredAt(App* app, CPU& cpu, reg32 esp, reg32 string)
+{
+    cpu.esp = esp;
+    return guest::direct<0x4d1430, text::textMeasured>(app, cpu, esp - 4, string);
+}
+
+text::WidthResult widthAt(App* app, CPU& cpu, reg32 esp, reg32 string)
+{
+    cpu.esp = esp;
+    return guest::direct<0x4d1480, text::textMeasuredWithOverhang>(app, cpu, esp - 4, string);
+}
+
+text::WidthResult drawnAt(App* app, CPU& cpu, reg32 esp, reg32 string, reg32 edx, reg32 ebx)
+{
+    cpu.esp = esp;
+    return guest::direct<0x4d1000, text::textDrawn>(app, cpu, esp - 4, string, int32_t(edx), int32_t(ebx));
+}
+
+/* Watcom's sprintf (0x4df690) as C++, from the game's esp `esp` at the call: what it gives back. */
+bool sprintfAt(App* app, CPU& cpu, reg32 esp, reg32 buffer, reg32 format, guest::Words words, reg32& result)
+{
+    cpu.esp = esp;
+    result = guest::direct<0x4df690, watcom::clib::sprintf>(app, cpu, buffer, format, words);
+    return !cpu.terminate;
+}
+
 /* ---- 0x484040 ---- */
 
 constexpr reg32 kTextBegin = 0x4d0d50;               // the text started
-constexpr reg32 kSetTextScale = 0x4d1390;            // (float) stdcall: the scale before, on the x87's stack
 constexpr reg32 kTextPrepared = 0x4a33d0;
 constexpr reg32 kTextEnd = 0x4d1310;
 constexpr Var<reg32> kTextColour{0x561b34};
 
 /* The loading screen's text set up: grey, at the scale 1.0 (the old scale
- * the game puts on the x87's stack is dropped). */
+ * the game's code leaves on the x87's stack is dropped). */
 bool loadingText(App* app, CPU& cpu, const Entry& e)
 {
     const reg32 ebp = e.frame(2);
@@ -56,9 +106,8 @@ bool loadingText(App* app, CPU& cpu, const Entry& e)
     if (!callGame(app, cpu, ebp, kTextBegin))
         return false;
     kTextColour.set(app, 0xffa0a0a0);
-    if (!callGame(app, cpu, ebp, kSetTextScale, {}, {0x3f800000}))
+    if (!scaleSetAt(app, cpu, ebp, 0x3f800000))
         return false;
-    cpu.fpu.pop();
     if (!callGame(app, cpu, ebp, kTextPrepared))
         return false;
     return callGame(app, cpu, ebp, kTextEnd);
@@ -185,9 +234,15 @@ bool boxDrawnOf(App* app, CPU& cpu, const Entry& e, reg32& result)
     app->getMemory<reg32>(ebp - 0x18) = edgeB;
     const reg32 base = e.frame(5, 0x24);
     const reg32 colour = kBoxColours(app, int32_t(gauge));
-    return callGame(app, cpu, base, kBoxQuad, {gauge, colour, load<reg32>(app, ebp - 0x14), load<reg32>(app, ebp - 0x10)},
-                    {load<reg32>(app, ebp - 0x14), load<reg32>(app, ebp - 0x10), load<reg32>(app, ebp - 0xc),
-                     load<reg32>(app, ebp - 8), edgeA, edgeA, edgeB, edgeB, e.edx, kBoxText}, result);
+    cpu.esp = base;
+    const Result quad = guest::direct<kBoxQuad, gaugeQuadOf>(
+        app, cpu, base - 4 - 4 * 10, gauge, colour, load<reg32>(app, ebp - 0x14), load<reg32>(app, ebp - 0x10),
+        guest::Words{load<reg32>(app, ebp - 0x14), load<reg32>(app, ebp - 0x10), load<reg32>(app, ebp - 0xc),
+                     load<reg32>(app, ebp - 8), edgeA, edgeA, edgeB, edgeB, e.edx, kBoxText});
+    if (!quad)
+        return false;
+    result = reg32(*quad);
+    return true;
 }
 
 /* ---- Shared by the text-drawing ones ---- */
@@ -207,6 +262,19 @@ constexpr reg32 kFontHeight = 0x4d1540;              // (font): its height
 constexpr reg32 kFontWidth = 0x4d14f0;               // (font)
 constexpr reg32 kAlignedText = 0x4897f0;             // this file's own, stdcall 6 words
 constexpr reg32 kSprintf = 0x4df690;
+
+/* The text aligned (this file's 0x4897f0) as C++, from the game's esp `esp` at the call. */
+bool alignedTextAt(App* app, CPU& cpu, reg32 esp, reg32 text, reg32 scale, reg32 colour, reg32 x, reg32 dx, reg32 y,
+                   reg32 mode, reg32& result)
+{
+    cpu.esp = esp;
+    const Result r = guest::direct<kAlignedText, textAlignedOf>(app, cpu, esp - 4 - 4 * 6, text, scale, colour, x, dx, y,
+                                                                mode);
+    if (!r)
+        return false;
+    result = reg32(*r);
+    return true;
+}
 
 /* fistp after Watcom's __CHP: towards zero, or the x87's "integer indefinite". */
 int32_t chopped(double value)
@@ -256,8 +324,7 @@ bool indicatorGeometry(App* app, CPU& cpu, const Entry& e, reg32& result)
     const double slope = double(app->getMemory<float>(ebp - 0xc)) / double(app->getMemory<float>(ebp - 0x18));
     if (!callGame(app, cpu, base, kArcTangent, {}, {0x3f800000, bitsOfFloat(float(slope))}, ignored))
         return false;
-    const double arc = double(cpu.fpu.st(0));
-    cpu.fpu.pop();
+    const double arc = tookX87(cpu);
     const double inverse = 1.0 / arc;
     const double slope2 = double(app->getMemory<float>(ebp - 0xc)) / double(app->getMemory<float>(ebp - 0x18));
     const double wide = (size * double(kScaleD(app))) * double(kScaleE(app));
@@ -293,17 +360,18 @@ bool textAligned(App* app, CPU& cpu, const Entry& e, reg32& result)
     const reg32 scale = e.arg(app, 0), colour = e.arg(app, 1);
     const reg32 dx = e.arg(app, 3), y = e.arg(app, 4), mode = e.arg(app, 5);
     kTextColour.set(app, colour);
-    if (!callGame(app, cpu, base, kTextScale, {text, dx, y, 0}, {scale}, result))
+    if (!scaleSetAt(app, cpu, base, scale))
         return false;
-    cpu.fpu.pop();
+    result = text;  // eax as it was
     reg32 x;
     if (mode == 1)
     {
-        if (!callGame(app, cpu, base, kTextWidth, {text, dx, y, text}, {}, result))
+        const text::WidthResult measured = widthAt(app, cpu, base, text);
+        if (!measured)
             return false;
+        result = measured->eax;
         app->getMemory<reg32>(ebp - 4) = app->getMemory<reg32>(xAt);
-        const float width = float(cpu.fpu.st(0));
-        cpu.fpu.pop();
+        const float width = float(measured->value);
         app->getMemory<float>(ebp - 8) = width;
         const double sum = double(int32_t(app->getMemory<reg32>(ebp - 4))) + double(width);
         const float limit = float(double(int32_t(kScreenRight(app))));
@@ -317,18 +385,20 @@ bool textAligned(App* app, CPU& cpu, const Entry& e, reg32& result)
         return callGame(app, cpu, base, kTextCentred, {text, dx, y, text}, {}, result);
     else
     {
-        if (!callGame(app, cpu, base, kTextWidth, {text, dx, y, text}, {}, result))
+        const text::WidthResult measured = widthAt(app, cpu, base, text);
+        if (!measured)
             return false;
-        const reg32 sum = app->getMemory<reg32>(xAt) + cpu.edx;
+        result = measured->eax;
+        const reg32 sum = app->getMemory<reg32>(xAt) + dx;  // edx as the width's call leaves it
         app->getMemory<reg32>(ebp - 4) = sum;
-        const double width = double(cpu.fpu.st(0));
-        cpu.fpu.pop();
+        const double width = measured->value;
         app->getMemory<int32_t>(ebp - 4) = chopped((double(int32_t(sum)) - width) * kCentreFactor(app));
         x = app->getMemory<reg32>(ebp - 4);
     }
-    if (!callGame(app, cpu, base, kTextDrawn, {text, x, y, text}, {}, result))
+    const text::WidthResult drawn = drawnAt(app, cpu, base, text, x, y);
+    if (!drawn)
         return false;
-    cpu.fpu.pop();
+    result = drawn->eax;
     return true;
 }
 
@@ -353,10 +423,9 @@ bool percentDrawn(App* app, CPU& cpu, const Entry& e, reg32& result)
     const double scaled = double(bitsToFloat(e.arg(app, 0))) * double(first ? kPercentA(app) : kPercentB(app));
     const int32_t value = chopped(scaled);
     app->getMemory<int32_t>(ebp - 4) = value;
-    if (!callGame(app, cpu, base, kSprintf, {buffer, 0, 0, 0}, {buffer, kPercentFormat, reg32(value), line}, result))
+    if (!sprintfAt(app, cpu, base, buffer, kPercentFormat, guest::Words{reg32(value), line}, result))
         return false;
-    return callGame(app, cpu, base, kAlignedText, {buffer, y, 0, 0},
-                    {e.arg(app, 2), e.arg(app, 3), y, y, e.arg(app, 5), 2}, result);
+    return alignedTextAt(app, cpu, base, buffer, e.arg(app, 2), e.arg(app, 3), y, y, e.arg(app, 5), 2, result);
 }
 
 /* ---- 0x489b30 ---- */
@@ -389,9 +458,8 @@ bool rowsDrawn(App* app, CPU& cpu, const Entry& e, reg32& result)
     app->getMemory<float>(ebp - 0x10) = float(double(top));
     app->getMemory<float>(ebp - 0x14) = float(step);
     reg32 ignored;
-    if (!callGame(app, cpu, base, kTextScale, {e.eax, 0, 0, 0}, {scale}, ignored))
+    if (!scaleSetAt(app, cpu, base, scale))
         return false;
-    cpu.fpu.pop();
     kTextColour.set(app, chosen == 0 ? colourChosen : colourRow);
     const auto advance = [&]() {
         app->getMemory<float>(ebp - 0x10) =
@@ -400,9 +468,9 @@ bool rowsDrawn(App* app, CPU& cpu, const Entry& e, reg32& result)
     const auto lineAt = [&](reg32 text, reg32 ecx) {
         const int32_t y = chopped(double(app->getMemory<float>(ebp - 0x10)));
         app->getMemory<int32_t>(ebp - 0xc) = y;
-        if (!callGame(app, cpu, base, kTextDrawn, {text, reg32(y), x, ecx}, {}, ignored))
+        NFS2_USE(ecx);
+        if (!drawnAt(app, cpu, base, text, reg32(y), x))
             return false;
-        cpu.fpu.pop();
         advance();
         return true;
     };
@@ -414,15 +482,14 @@ bool rowsDrawn(App* app, CPU& cpu, const Entry& e, reg32& result)
         if (!callGame(app, cpu, base, kLanguageText, {0x15a, reg32(y), x, 1}, {}, text))
             return false;
     }
-    if (!callGame(app, cpu, base, kTextDrawn, {text, reg32(chopped(double(app->getMemory<float>(ebp - 0x10)))), x, 1}, {}, ignored))
+    if (!drawnAt(app, cpu, base, text, reg32(chopped(double(app->getMemory<float>(ebp - 0x10)))), x))
         return false;
-    cpu.fpu.pop();
     advance();
     for (int32_t row = 1; row <= count; ++row)
     {
         const reg32 colour = row == chosen ? colourChosen : (row == int32_t(total) - 1 ? colourLast : colourRow);
         kTextColour.set(app, colour);
-        if (!callGame(app, cpu, base, kSprintf, {buffer, 0, x, reg32(row)}, {buffer, kRowFormat, reg32(row)}, ignored))
+        if (!sprintfAt(app, cpu, base, buffer, kRowFormat, guest::Words{reg32(row)}, ignored))
             return false;
         if (!lineAt(buffer, reg32(row)))
             return false;
@@ -432,9 +499,10 @@ bool rowsDrawn(App* app, CPU& cpu, const Entry& e, reg32& result)
     app->getMemory<int32_t>(ebp - 0xc) = y;
     if (!callGame(app, cpu, base, kLanguageText, {0x15b, reg32(y), x, reg32(count + 1)}, {}, text))
         return false;
-    if (!callGame(app, cpu, base, kTextDrawn, {text, reg32(y), x, reg32(count + 1)}, {}, result))
+    const text::WidthResult drawn = drawnAt(app, cpu, base, text, reg32(y), x);
+    if (!drawn)
         return false;
-    cpu.fpu.pop();
+    result = drawn->eax;
     return true;
 }
 
@@ -459,9 +527,9 @@ bool timeDrawn(App* app, CPU& cpu, const Entry& e, reg32& result)
     if (!callGame(app, cpu, base, kLanguageText, {0x15c, 0, 0, 0}, {}, line))
         return false;
     const reg32 tenths = reg32((time / 100) % 10), seconds = reg32(time / 1000);
-    if (!callGame(app, cpu, base, kSprintf, {buffer, 0, 0, 0}, {buffer, format, seconds, tenths, line}, result))
+    if (!sprintfAt(app, cpu, base, buffer, format, guest::Words{seconds, tenths, line}, result))
         return false;
-    if (!callGame(app, cpu, base, kAlignedText, {buffer, x, 0, 0}, {colour, x, y, y, scale, 2}, result))
+    if (!alignedTextAt(app, cpu, base, buffer, colour, x, y, y, scale, 2, result))
         return false;
     reg32 height, width;
     if (!callGame(app, cpu, base, kFontHeight, {0x39, 0, 0, 0}, {}, height))
@@ -481,7 +549,7 @@ bool timeDrawn(App* app, CPU& cpu, const Entry& e, reg32& result)
     app->getMemory<int32_t>(ebp - 4) = middle;
     if (!callGame(app, cpu, base - 4, kLanguageText, {0x15d, 0, 0, 0}, {}, line))
         return false;
-    return callGame(app, cpu, base, kAlignedText, {line, x, 0, 0}, {colourSecond, x, y, y, reg32(middle), 2}, result);
+    return alignedTextAt(app, cpu, base, line, colourSecond, x, y, y, reg32(middle), 2, result);
 }
 
 /* ---- 0x48ea20 ---- */
@@ -506,8 +574,9 @@ bool zoomStepped(App* app, CPU& cpu, const Entry& e, reg32& result)
     app->getMemory<reg32>(ebp - 4) = app->getMemory<reg32>(slots + 0xc);
     app->getMemory<reg32>(ebp - 0x14) = app->getMemory<reg32>(slots);
     app->getMemory<reg32>(ebp - 0x1c) = app->getMemory<reg32>(slots + 8);
-    reg32 record;
-    if (!callGame(app, cpu, base, kCameraTarget, {view, view << 4, mode, view}, {}, record))
+    cpu.esp = base;
+    const reg32 record = guest::direct<kCameraTarget, carstate::targetOfCamera>(app, cpu, view);
+    if (cpu.terminate)
         return false;
     const reg32 second = (app->getMemory<uint8_t>(record + 0x200) & 0x20) != 0 ? 1 : 0;
     const reg32 screens = gameSettings(app).playMode;
@@ -557,8 +626,9 @@ bool paneStepped(App* app, CPU& cpu, const Entry& e, reg32& result)
     const reg32 ebp = e.frame(6);
     const reg32 base = e.frame(6, 8);
     const HeldEbp held(cpu, ebp);
-    reg32 record;
-    if (!callGame(app, cpu, base, kCameraTarget, {view, e.edx, e.ebx, view}, {}, record))
+    cpu.esp = base;
+    const reg32 record = guest::direct<kCameraTarget, carstate::targetOfCamera>(app, cpu, view);
+    if (cpu.terminate)
         return false;
     const reg32 second = (app->getMemory<uint8_t>(record + 0x200) & 0x20) != 0 ? 1 : 0;
     const reg32 first = gameSettings(app).playMode == 1 ? 1 : 0;
@@ -613,8 +683,11 @@ bool paneStepped(App* app, CPU& cpu, const Entry& e, reg32& result)
     kPaneResults.set(app, int32_t(view), pane);
     if (!callGame(app, cpu, base, kPaneSize, {view, height, 0, 0}, {}, result))
         return false;
-    if (!callGame(app, cpu, base, kPaneDrawn, {view, height, 0, 0}, {}, result))
+    cpu.esp = base;
+    const Result drawn = guest::direct<kPaneDrawn, hudPaneSetOf>(app, cpu, base - 4, Args{view, height, 0, 0});
+    if (!drawn)
         return false;
+    result = reg32(*drawn);
     return callGame(app, cpu, base, kViewRefresh, {view, height, 0, 0}, {}, result);
 }
 
@@ -803,15 +876,13 @@ bool labelSet(App* app, CPU& cpu, const Entry& e, reg32& result)
         const int32_t two = chopped(double(app->getMemory<float>(record + 0x7c4)) * scale);
         app->getMemory<int32_t>(ebp - 8) = two;
         // (tools/apply_hud_scale.py: the compact table's short format, the arguments left on the stack.)
-        return callGame(app, cpu, base, kSprintf, {dest, reg32(slot), 0, reg32(two)},
-                        {dest, kLabelFormatShort, reg32(two), third, reg32(one), second, first}, result);
+        return sprintfAt(app, cpu, base, dest, kLabelFormatShort, guest::Words{reg32(two), third, reg32(one), second, first}, result);
     }
     if (!callGame(app, cpu, base, kLanguageText, {wide ? 0x156u : 0x157u, reg32(slot), 0, record}, {}, line))
         return false;
     const int32_t value = chopped(double(app->getMemory<float>(record + 0x7c4)) * scale);
     app->getMemory<int32_t>(ebp - 8) = value;
-    return callGame(app, cpu, base, kSprintf, {dest, reg32(slot), 0, reg32(value)},
-                    {dest, kLabelFormatShort, reg32(value), line}, result);
+    return sprintfAt(app, cpu, base, dest, kLabelFormatShort, guest::Words{reg32(value), line}, result);
 }
 
 /* ---- 0x485c30, 0x485f20, 0x4860b0, 0x4873e0: lines clipped to rectangles ---- */
@@ -1457,6 +1528,7 @@ struct Walk
     CPU& cpu;
     reg32 esp;
     Args r;
+    double value = 0.0;  // what port_text's last call gave back: where the code has it, the x87's st(0)
     template <class Target>
     bool call(Target target, std::initializer_list<reg32> stack = {})
     {
@@ -1465,6 +1537,28 @@ struct Walk
         r.edx = cpu.edx;
         r.ebx = cpu.ebx;
         r.ecx = cpu.ecx;
+        return true;
+    }
+    /* port_text's (scaleSetAt and the rest): the text scale set, the one before into `value`; the
+     * text at eax measured in whole pixels, measured, or drawn at edx, ebx, how wide into `value`
+     * and eax as each leaves it.  The other registers as they were, as their adapters give them back. */
+    bool textScale(reg32 scale)
+    {
+        const std::optional<double> before = scaleSetAt(app, cpu, esp, scale);
+        if (!before)
+            return false;
+        value = *before;
+        return true;
+    }
+    bool textMeasured() { return took(measuredAt(app, cpu, esp, r.eax)); }
+    bool textWidth() { return took(widthAt(app, cpu, esp, r.eax)); }
+    bool textDrawn() { return took(drawnAt(app, cpu, esp, r.eax, r.edx, r.ebx)); }
+    bool took(const text::WidthResult& w)
+    {
+        if (!w)
+            return false;
+        r.eax = w->eax;
+        value = w->value;
         return true;
     }
 };
@@ -1494,36 +1588,30 @@ bool rankDrawn(App* app, CPU& cpu, const Entry& e, reg32& result)
     const auto slot = [&](int i) { return app->getMemory<int32_t>(e.esp + 4 + 4 * reg32(i)); };
     Walk w{app, cpu, base, {colour, e.edx, e.ebx, number}};
     kTextColour.set(app, colour);
-    if (!w.call(kTextScale, {scaleMain}))
+    if (!w.textScale(scaleMain))
         return false;
-    cpu.fpu.pop();
     w.r.eax = buffer;
     if (!w.call(kSprintf, {buffer, kRankFormat, w.r.ecx}))
         return false;
     w.r.eax = buffer;
-    if (!w.call(kTextWidthPx))
+    if (!w.textMeasured())
         return false;
-    const float widthNumber = float(double(cpu.fpu.st(0)));
-    cpu.fpu.pop();
-    if (!w.call(kTextScale, {scaleSuffix}))
+    const float widthNumber = float(w.value);
+    if (!w.textScale(scaleSuffix))
         return false;
-    cpu.fpu.pop();
     w.r.eax = w.r.ecx;
-    if (!w.call(kOrdinalSuffix) || !w.call(kTextWidthPx))
+    if (!w.call(kOrdinalSuffix) || !w.textMeasured())
         return false;
-    const float widths = float(double(cpu.fpu.st(0)) + double(widthNumber));
-    cpu.fpu.pop();
-    if (!w.call(kTextScale, {scaleMain}))
+    const float widths = float(w.value + double(widthNumber));
+    if (!w.textScale(scaleMain))
         return false;
-    cpu.fpu.pop();
     w.r.eax = buffer;
     if (!w.call(kSprintf, {buffer, kRankOfFormat, w.r.edx}))
         return false;
     w.r.eax = buffer;
-    if (!w.call(kTextWidth))
+    if (!w.textWidth())
         return false;
-    const float length = float(double(cpu.fpu.st(0)) + double(widths));
-    cpu.fpu.pop();
+    const float length = float(w.value + double(widths));
     w.r.edx = mode;
     if (mode != 2)
     {
@@ -1532,43 +1620,37 @@ bool rankDrawn(App* app, CPU& cpu, const Entry& e, reg32& result)
         const float limit = float(double(int32_t(kScreenRight(app))));
         if (!jumpBelow(double(x) + double(length), double(limit)))
             slot(3) = x = chopped((double(limit) - double(length)) + double(kRankPadRight(app)));
-        if (!w.call(kTextScale, {scaleMain}))
+        if (!w.textScale(scaleMain))
             return false;
-        cpu.fpu.pop();
         w.r.edx = reg32(x);
         w.r.eax = buffer;
         if (!w.call(kSprintf, {buffer, kRankFormat, w.r.ecx}))
             return false;
         w.r.ebx = y;
         w.r.eax = buffer;
-        if (!w.call(kTextDrawn))
+        if (!w.textDrawn())
             return false;
         w.r.eax = reg32(x);
         w.r.ebx = y;
-        slot(3) = x = chopped(double(cpu.fpu.st(0)) + double(x));
-        cpu.fpu.pop();
-        if (!w.call(kTextScale, {scaleSuffix}))
+        slot(3) = x = chopped(w.value + double(x));
+        if (!w.textScale(scaleSuffix))
             return false;
-        cpu.fpu.pop();
         w.r.eax = w.r.ecx;
         w.r.edx = reg32(x);
-        if (!w.call(kOrdinalSuffix) || !w.call(kTextDrawn))
+        if (!w.call(kOrdinalSuffix) || !w.textDrawn())
             return false;
         w.r.eax = reg32(x);
-        slot(3) = x = chopped(double(cpu.fpu.st(0)) + double(x));
-        cpu.fpu.pop();
-        if (!w.call(kTextScale, {scaleMain}))
+        slot(3) = x = chopped(w.value + double(x));
+        if (!w.textScale(scaleMain))
             return false;
-        cpu.fpu.pop();
         w.r.ebx = y;
         w.r.eax = buffer;
         if (!w.call(kSprintf, {buffer, kRankOfFormat, count}))
             return false;
         w.r.edx = reg32(x);
         w.r.eax = buffer;
-        if (!w.call(kTextDrawn))
+        if (!w.textDrawn())
             return false;
-        cpu.fpu.pop();
         result = w.r.eax;
         return true;
     }
@@ -1576,54 +1658,45 @@ bool rankDrawn(App* app, CPU& cpu, const Entry& e, reg32& result)
     w.r.eax = reg32(x);
     if (jumpBelow(double(x), double(length)))
         slot(4) = x = chopped(double(length) + double(kRankPadLeft(app)));
-    if (!w.call(kTextScale, {scaleMain}))
+    if (!w.textScale(scaleMain))
         return false;
-    cpu.fpu.pop();
     w.r.eax = buffer;
     if (!w.call(kSprintf, {buffer, kRankOfFormat, count}))
         return false;
     w.r.eax = buffer;
-    if (!w.call(kTextWidth))
+    if (!w.textWidth())
         return false;
     w.r.ebx = y;
     w.r.eax = buffer;
-    slot(4) = x = chopped(double(x) - double(cpu.fpu.st(0)));
-    cpu.fpu.pop();
+    slot(4) = x = chopped(double(x) - w.value);
     w.r.edx = reg32(x);
-    if (!w.call(kTextDrawn))
+    if (!w.textDrawn())
         return false;
-    cpu.fpu.pop();
-    if (!w.call(kTextScale, {scaleSuffix}))
+    if (!w.textScale(scaleSuffix))
         return false;
-    cpu.fpu.pop();
     w.r.eax = w.r.ecx;
-    if (!w.call(kOrdinalSuffix) || !w.call(kTextWidth))
+    if (!w.call(kOrdinalSuffix) || !w.textWidth())
         return false;
     w.r.ebx = y;
     w.r.eax = w.r.ecx;
-    slot(4) = x = chopped(double(x) - double(cpu.fpu.st(0)));
-    cpu.fpu.pop();
+    slot(4) = x = chopped(double(x) - w.value);
     w.r.edx = reg32(x);
-    if (!w.call(kOrdinalSuffix) || !w.call(kTextDrawn))
+    if (!w.call(kOrdinalSuffix) || !w.textDrawn())
         return false;
-    cpu.fpu.pop();
-    if (!w.call(kTextScale, {scaleMain}))
+    if (!w.textScale(scaleMain))
         return false;
-    cpu.fpu.pop();
     w.r.eax = buffer;
     if (!w.call(kSprintf, {buffer, kRankFormat, w.r.ecx}))
         return false;
     w.r.eax = buffer;
-    if (!w.call(kTextWidth))
+    if (!w.textWidth())
         return false;
     w.r.ebx = y;
     w.r.eax = buffer;
-    slot(4) = x = chopped(double(x) - double(cpu.fpu.st(0)));
-    cpu.fpu.pop();
+    slot(4) = x = chopped(double(x) - w.value);
     w.r.edx = reg32(x);
-    if (!w.call(kTextDrawn))
+    if (!w.textDrawn())
         return false;
-    cpu.fpu.pop();
     result = w.r.eax;
     return true;
 }
@@ -1685,9 +1758,8 @@ bool drawLabelRows(App* app, CPU& cpu, const Entry& e, reg32& result)
         mouseY = kPaneBottom(app) - int32_t(kCursorY(app));
         kCursorX.set(app, x);
     }
-    if (!w.call(kTextScale, {scale}))
+    if (!w.textScale(scale))
         return false;
-    cpu.fpu.pop();
     w.r.eax = 0x30;
     if (!w.call(kFontWidth))
         return false;
@@ -1713,9 +1785,8 @@ bool drawLabelRows(App* app, CPU& cpu, const Entry& e, reg32& result)
         w.r.edx = reg32(nameX);
         w.r.ebx = reg32(y);
         w.r.eax = target;
-        if (!w.call(kTextDrawn))
+        if (!w.textDrawn())
             return false;
-        cpu.fpu.pop();
         w.r.eax = kind;
         if (kind == 1 || kind == 2 || app->getMemory<reg32>(slotWord + kLabelIds) == 1)
         {
@@ -1738,17 +1809,15 @@ bool drawLabelRows(App* app, CPU& cpu, const Entry& e, reg32& result)
         w.r.edx = reg32(numberX);
         w.r.eax = buffer;
         w.r.ebx = reg32(y);
-        if (!w.call(kTextDrawn))
+        if (!w.textDrawn())
             return false;
-        cpu.fpu.pop();
         if (int32_t(kind) >= 4)
         {
             w.r.eax = label + 4;
             w.r.edx = reg32(labelX);
             w.r.ebx = reg32(y);
-            if (!w.call(kTextDrawn))
+            if (!w.textDrawn())
                 return false;
-            cpu.fpu.pop();
         }
         y += rowStep;
         if (kLabelsOn(app) == 0 || kMenuOpen(app) != 0)
@@ -1825,9 +1894,8 @@ bool drawStandings(App* app, CPU& cpu, const Entry& e, reg32& result)
     const int32_t pad = stored(cpu, inset) + 2;
     const reg32 x = e.arg(app, 1) + reg32(pad);
     w.r.ecx = e.arg(app, 2) + reg32(pad);
-    if (!w.call(kTextScale, {scale}))
+    if (!w.textScale(scale))
         return false;
-    cpu.fpu.pop();
     const double high = (double(int32_t(hudReferenceHeight(app))) * kStandingsHeightA(app)) * kStandingsHeightB(app);
     w.r.eax = 0x49;
     w.r.edx = reg32(chopped(high));
@@ -1846,9 +1914,8 @@ bool drawStandings(App* app, CPU& cpu, const Entry& e, reg32& result)
         w.r.ebx = w.r.ecx;
         w.r.edx = x;
         w.r.eax = word(row);
-        if (!w.call(kTextDrawn))
+        if (!w.textDrawn())
             return false;
-        cpu.fpu.pop();
         kTextColour.set(app, word(row + 0xc));
         const reg32 nameEnd = reg32(kNameWidth(app)) + x;
         w.r.edx = nameEnd;
@@ -1879,18 +1946,16 @@ bool drawStandings(App* app, CPU& cpu, const Entry& e, reg32& result)
                 w.r.eax = kMinusText;
                 w.r.edx = reg32(kNameWidth(app)) + x;
                 w.r.ebx = w.r.ecx;
-                if (!w.call(kTextDrawn))
+                if (!w.textDrawn())
                     return false;
-                cpu.fpu.pop();
             }
             if (int32_t(word(row + 8)) < 0)
             {
                 w.r.eax = kPlusText;
                 w.r.edx = reg32(kNameWidth(app)) + x;
                 w.r.ebx = w.r.ecx;
-                if (!w.call(kTextDrawn))
+                if (!w.textDrawn())
                     return false;
-                cpu.fpu.pop();
             }
             w.r.eax = reg32(kNameWidth(app)) + x;
             w.r.edx = reg32(kValueWidth(app));
@@ -1898,9 +1963,8 @@ bool drawStandings(App* app, CPU& cpu, const Entry& e, reg32& result)
             w.r.edx += w.r.eax;
             w.r.eax = buffer;
         }
-        if (!w.call(kTextDrawn))
+        if (!w.textDrawn())
             return false;
-        cpu.fpu.pop();
         const reg32 used = word(countAt);
         const reg32 rect = kRowRects + 320 * group + 20 * used;
         const int32_t top = int32_t(w.r.ecx);
@@ -2029,10 +2093,9 @@ bool startColumns(App* app, CPU& cpu, const Entry& e, reg32& result)
     // The width of the text at `text`, as the x87 value the width function leaves.
     const auto widthOf = [&](reg32 text, double& width) {
         w.r.eax = text;
-        if (!w.call(kTextWidth))
+        if (!w.textWidth())
             return false;
-        width = double(cpu.fpu.st(0));
-        cpu.fpu.pop();
+        width = w.value;
         return true;
     };
     // The greater of two lines' widths as a float, the second's measured again as the code does.
@@ -2051,9 +2114,8 @@ bool startColumns(App* app, CPU& cpu, const Entry& e, reg32& result)
     };
     kColumnsWidth.set(app, e.arg(app, 0));
     kColumnsHeight.set(app, e.arg(app, 1));
-    if (!w.call(kTextScale, {kTextSize(app)}))
+    if (!w.textScale(kTextSize(app)))
         return false;
-    cpu.fpu.pop();
     float wide;
     if (!widest(kPlusText, kMinusText, wide))
         return false;
@@ -2296,8 +2358,7 @@ bool startMapOutline(App* app, CPU& cpu, const Entry& e, reg32& result)
     }
     if (!w.call(kSquareRoot, {maxSquare}))
         return false;
-    const double root = double(cpu.fpu.st(0));
-    cpu.fpu.pop();
+    const double root = tookX87(cpu);
     app->getMemory<float>(kOutlineInverse) = float(1.0 / root);
     for (int32_t i = 0; i < count; ++i)
     {
@@ -2859,15 +2920,13 @@ bool startHudTables(App* app, CPU& cpu, const Entry& e, reg32& result)
                 return false;
         }
     // The two titles measured: the wider of them, at the HUD's text size.
-    if (!w.call(kTextScale, {app->getMemory<reg32>(0x791b50)}))
+    if (!w.textScale(app->getMemory<reg32>(0x791b50)))
         return false;
-    cpu.fpu.pop();
     const auto measured = [&](reg32 line, double& width2) {
         w.r.eax = line;
-        if (!w.call(kLanguageText) || !w.call(kTextWidth))
+        if (!w.call(kLanguageText) || !w.textWidth())
             return false;
-        width2 = double(cpu.fpu.st(0));
-        cpu.fpu.pop();
+        width2 = w.value;
         return true;
     };
     double first, second, wide;
@@ -3503,8 +3562,7 @@ bool setIndicator(App* app, CPU& cpu, const Entry& e, reg32& result)
         const float pushed = float(x.pop());
         if (!w.call(kArcTangentOf, {0x3f800000, bitsOfFloat(pushed)}))
             return false;
-        x.push(double(cpu.fpu.st(0)));
-        cpu.fpu.pop();
+        x.push(tookX87(cpu));
     }
     x.push(1.0);  // 48a164 fld1
     x.st(1) = (x.st(0)) / (x.st(1));  // 48a166 fdivrp st(1)
@@ -3620,21 +3678,6 @@ bool rawCall(App* app, CPU& cpu, reg32 target, reg32 esp, int words, reg32& eax,
     return true;
 }
 
-/* What a callee left on the x87's stack (a float returned) taken into the function's own. */
-void pullX87(CPU& cpu, int before, X87& x)
-{
-    const int k = cpu.fpu.count - before;
-    if (k <= 0)
-        return;
-    double v[8];
-    for (int i = 0; i < k && i < 8; ++i)
-    {
-        v[i] = double(cpu.fpu.st(0));
-        cpu.fpu.pop();
-    }
-    for (int i = std::min(k, 8) - 1; i >= 0; --i)
-        x.push(v[i]);
-}
 
 
 bool decompGaugeQuad(App* app, CPU& cpu, const Entry& e, reg32& result, reg32& popped_)
@@ -3836,7 +3879,7 @@ L_4876e2:
     esp -= 4; wr32(esp, edi);  // 4877f1 push edi
     eax = rd32((ebp + 6u));  // 4877f2 mov eax, dword ptr [ebp + 6]
     esp -= 4; wr32(esp, eax);  // 4877f5 push eax
-    cpu.ebp = ebp; if (!rawCall(app, cpu, 0x486df0, esp, 10, eax, edx, ebx, ecx)) return false;  // 4877f6 call 0x486df0
+    cpu.ebp = ebp; { cpu.esp = esp + 40u; const Result r_ = guest::direct<0x486df0, floatsQuadOf>(app, cpu, esp - 4u, guest::Words{rd32(esp), rd32(esp + 4u), rd32(esp + 8u), rd32(esp + 12u), rd32(esp + 16u), rd32(esp + 20u), rd32(esp + 24u), rd32(esp + 28u), rd32(esp + 32u), rd32(esp + 36u)}); if (!r_) return false; eax = reg32(*r_); }  // 4877f6 call 0x486df0
     esp += 40u;  // 4877f6 call 0x486df0
     goto L_487a13;  // 4877fb jmp 0x487a13
 L_487800:
@@ -3888,7 +3931,7 @@ L_48783b:
     { const reg32 a_ = edx, b_ = eax; edx = a_ + b_; fl.add(a_, b_); }  // 487885 add edx, eax
     { const reg32 a_ = eax, b_ = ecx; eax = a_ + b_; fl.add(a_, b_); }  // 487887 add eax, ecx
     ecx = (ebp + 0x26u);  // 487889 lea ecx, [ebp + 0x26]
-    cpu.ebp = ebp; if (!rawCall(app, cpu, 0x486340, esp, 2, eax, edx, ebx, ecx)) return false;  // 48788c call 0x486340
+    cpu.ebp = ebp; { cpu.esp = esp + 8u; const Result r_ = guest::direct<0x486340, segmentsMetOf>(app, cpu, esp - 4u, eax, edx, ebx, ecx, rd32(esp), rd32(esp + 4u)); if (!r_) return false; eax = reg32(*r_); }  // 48788c call 0x486340
     esp += 8u;  // 48788c call 0x486340
     fl.logic(eax & eax);  // 487891 test eax, eax
     if (fl.e()) goto L_48799c;  // 487893 je 0x48799c
@@ -4031,7 +4074,7 @@ L_4879ae:
     esp -= 4; wr32(esp, esi);  // 4879fd push esi
     edi = rd32((eax + ebp - 0x25au));  // 4879fe mov edi, dword ptr [eax + ebp - 0x25a]
     esp -= 4; wr32(esp, edi);  // 487a05 push edi
-    cpu.ebp = ebp; if (!rawCall(app, cpu, 0x486df0, esp, 10, eax, edx, ebx, ecx)) return false;  // 487a06 call 0x486df0
+    cpu.ebp = ebp; { cpu.esp = esp + 40u; const Result r_ = guest::direct<0x486df0, floatsQuadOf>(app, cpu, esp - 4u, guest::Words{rd32(esp), rd32(esp + 4u), rd32(esp + 8u), rd32(esp + 12u), rd32(esp + 16u), rd32(esp + 20u), rd32(esp + 24u), rd32(esp + 28u), rd32(esp + 32u), rd32(esp + 36u)}); if (!r_) return false; eax = reg32(*r_); }  // 487a06 call 0x486df0
     esp += 40u;  // 487a06 call 0x486df0
     eax = 0u;  // 487a0b xor eax, eax
     fl.logic(0u);  // 487a0b xor eax, eax
@@ -5433,7 +5476,7 @@ L_487b0d:
     ebx = rd32((ebp + 0x6eu));  // 487b21 mov ebx, dword ptr [ebp + 0x6e]
     edx = rd32((ebp + 0x72u));  // 487b24 mov edx, dword ptr [ebp + 0x72]
     eax = rd32((ebp + 0x7eu));  // 487b27 mov eax, dword ptr [ebp + 0x7e]
-    cpu.ebp = ebp; if (!rawCall(app, cpu, 0x4870c0, esp, 0, eax, edx, ebx, ecx)) return false;  // 487b2a call 0x4870c0
+    cpu.ebp = ebp; { cpu.esp = esp + 0u; const Result r_ = guest::direct<0x4870c0, rectangleQuadOf>(app, cpu, esp - 4u, eax, edx, ebx, ecx); if (!r_) return false; eax = reg32(*r_); }  // 487b2a call 0x4870c0
     esp += 0u;  // 487b2a call 0x4870c0
     goto L_48801c;  // 487b2f jmp 0x48801c
 L_487b34:
@@ -5444,13 +5487,13 @@ L_487b34:
     edx = rd32((ebp + 0x7eu));  // 487b40 mov edx, dword ptr [ebp + 0x7e]
     eax = rd32((ebp + 0x7eu));  // 487b43 mov eax, dword ptr [ebp + 0x7e]
     { const reg32 a_ = edx, b_ = 8u; edx = a_ + b_; fl.add(a_, b_); }  // 487b46 add edx, 8
-    cpu.ebp = ebp; if (!rawCall(app, cpu, 0x485c20, esp, 0, eax, edx, ebx, ecx)) return false;  // 487b49 call 0x485c20
+    cpu.ebp = ebp; { cpu.esp = esp + 0u; const Result r_ = guest::direct<0x485c20, floatsSwappedOf>(app, cpu, esp - 4u, eax, edx); if (!r_) return false; eax = reg32(*r_); }  // 487b49 call 0x485c20
     esp += 0u;  // 487b49 call 0x485c20
     edx = rd32((ebp + 0x7eu));  // 487b4e mov edx, dword ptr [ebp + 0x7e]
     eax = rd32((ebp + 0x7eu));  // 487b51 mov eax, dword ptr [ebp + 0x7e]
     { const reg32 a_ = edx, b_ = 12u; edx = a_ + b_; fl.add(a_, b_); }  // 487b54 add edx, 0xc
     { const reg32 a_ = eax, b_ = 4u; eax = a_ + b_; fl.add(a_, b_); }  // 487b57 add eax, 4
-    cpu.ebp = ebp; if (!rawCall(app, cpu, 0x485c20, esp, 0, eax, edx, ebx, ecx)) return false;  // 487b5a call 0x485c20
+    cpu.ebp = ebp; { cpu.esp = esp + 0u; const Result r_ = guest::direct<0x485c20, floatsSwappedOf>(app, cpu, esp - 4u, eax, edx); if (!r_) return false; eax = reg32(*r_); }  // 487b5a call 0x485c20
     esp += 0u;  // 487b5a call 0x485c20
 L_487b5f:
     fl.sub(rd32((ebp + 0x56u)), 0u);  // 487b5f cmp dword ptr [ebp + 0x56], 0
@@ -5461,13 +5504,13 @@ L_487b5f:
     eax = rd32((ebp + 0x7eu));  // 487b6e mov eax, dword ptr [ebp + 0x7e]
     { const reg32 a_ = edx, b_ = 8u; edx = a_ + b_; fl.add(a_, b_); }  // 487b71 add edx, 8
     { const reg32 a_ = eax, b_ = 16u; eax = a_ + b_; fl.add(a_, b_); }  // 487b74 add eax, 0x10
-    cpu.ebp = ebp; if (!rawCall(app, cpu, 0x485c20, esp, 0, eax, edx, ebx, ecx)) return false;  // 487b77 call 0x485c20
+    cpu.ebp = ebp; { cpu.esp = esp + 0u; const Result r_ = guest::direct<0x485c20, floatsSwappedOf>(app, cpu, esp - 4u, eax, edx); if (!r_) return false; eax = reg32(*r_); }  // 487b77 call 0x485c20
     esp += 0u;  // 487b77 call 0x485c20
     edx = rd32((ebp + 0x7eu));  // 487b7c mov edx, dword ptr [ebp + 0x7e]
     eax = rd32((ebp + 0x7eu));  // 487b7f mov eax, dword ptr [ebp + 0x7e]
     { const reg32 a_ = edx, b_ = 12u; edx = a_ + b_; fl.add(a_, b_); }  // 487b82 add edx, 0xc
     { const reg32 a_ = eax, b_ = 20u; eax = a_ + b_; fl.add(a_, b_); }  // 487b85 add eax, 0x14
-    cpu.ebp = ebp; if (!rawCall(app, cpu, 0x485c20, esp, 0, eax, edx, ebx, ecx)) return false;  // 487b88 call 0x485c20
+    cpu.ebp = ebp; { cpu.esp = esp + 0u; const Result r_ = guest::direct<0x485c20, floatsSwappedOf>(app, cpu, esp - 4u, eax, edx); if (!r_) return false; eax = reg32(*r_); }  // 487b88 call 0x485c20
     esp += 0u;  // 487b88 call 0x485c20
 L_487b8d:
     fl.sub(rd32((ebp + 0x52u)), 0u);  // 487b8d cmp dword ptr [ebp + 0x52], 0
@@ -5477,13 +5520,13 @@ L_487b8d:
     edx = rd32((ebp + 0x7eu));  // 487b99 mov edx, dword ptr [ebp + 0x7e]
     eax = rd32((ebp + 0x7eu));  // 487b9c mov eax, dword ptr [ebp + 0x7e]
     { const reg32 a_ = edx, b_ = 8u; edx = a_ + b_; fl.add(a_, b_); }  // 487b9f add edx, 8
-    cpu.ebp = ebp; if (!rawCall(app, cpu, 0x485c20, esp, 0, eax, edx, ebx, ecx)) return false;  // 487ba2 call 0x485c20
+    cpu.ebp = ebp; { cpu.esp = esp + 0u; const Result r_ = guest::direct<0x485c20, floatsSwappedOf>(app, cpu, esp - 4u, eax, edx); if (!r_) return false; eax = reg32(*r_); }  // 487ba2 call 0x485c20
     esp += 0u;  // 487ba2 call 0x485c20
     edx = rd32((ebp + 0x7eu));  // 487ba7 mov edx, dword ptr [ebp + 0x7e]
     eax = rd32((ebp + 0x7eu));  // 487baa mov eax, dword ptr [ebp + 0x7e]
     { const reg32 a_ = edx, b_ = 12u; edx = a_ + b_; fl.add(a_, b_); }  // 487bad add edx, 0xc
     { const reg32 a_ = eax, b_ = 4u; eax = a_ + b_; fl.add(a_, b_); }  // 487bb0 add eax, 4
-    cpu.ebp = ebp; if (!rawCall(app, cpu, 0x485c20, esp, 0, eax, edx, ebx, ecx)) return false;  // 487bb3 call 0x485c20
+    cpu.ebp = ebp; { cpu.esp = esp + 0u; const Result r_ = guest::direct<0x485c20, floatsSwappedOf>(app, cpu, esp - 4u, eax, edx); if (!r_) return false; eax = reg32(*r_); }  // 487bb3 call 0x485c20
     esp += 0u;  // 487bb3 call 0x485c20
 L_487bb8:
     eax = rd32((ebp + 0x7eu));  // 487bb8 mov eax, dword ptr [ebp + 0x7e]
@@ -5526,21 +5569,21 @@ L_487bb8:
     edx = esi;  // 487c25 mov edx, esi
     wr32((ebp + 0x16u), eax);  // 487c27 mov dword ptr [ebp + 0x16], eax
     eax = (ebp - 0x16u);  // 487c2a lea eax, [ebp - 0x16]
-    cpu.ebp = ebp; if (!rawCall(app, cpu, 0x485f20, esp, 0, eax, edx, ebx, ecx)) return false;  // 487c2d call 0x485f20
+    cpu.ebp = ebp; { cpu.esp = esp + 0u; const Result r_ = guest::direct<0x485f20, segmentClippedOf>(app, cpu, esp - 4u, eax, edx, ebx, ecx); if (!r_) return false; eax = reg32(*r_); }  // 487c2d call 0x485f20
     esp += 0u;  // 487c2d call 0x485f20
     ecx = (ebp + 0x62u);  // 487c32 lea ecx, [ebp + 0x62]
     ebx = (ebp - 0x36u);  // 487c35 lea ebx, [ebp - 0x36]
     wr32((ebp + 0x6au), eax);  // 487c38 mov dword ptr [ebp + 0x6a], eax
     edx = esi;  // 487c3b mov edx, esi
     eax = (ebp - 6u);  // 487c3d lea eax, [ebp - 6]
-    cpu.ebp = ebp; if (!rawCall(app, cpu, 0x485f20, esp, 0, eax, edx, ebx, ecx)) return false;  // 487c40 call 0x485f20
+    cpu.ebp = ebp; { cpu.esp = esp + 0u; const Result r_ = guest::direct<0x485f20, segmentClippedOf>(app, cpu, esp - 4u, eax, edx, ebx, ecx); if (!r_) return false; eax = reg32(*r_); }  // 487c40 call 0x485f20
     esp += 0u;  // 487c40 call 0x485f20
     ecx = (ebp + 0x66u);  // 487c45 lea ecx, [ebp + 0x66]
     ebx = (ebp - 0x26u);  // 487c48 lea ebx, [ebp - 0x26]
     edi = eax;  // 487c4b mov edi, eax
     edx = esi;  // 487c4d mov edx, esi
     eax = (ebp + 0xau);  // 487c4f lea eax, [ebp + 0xa]
-    cpu.ebp = ebp; if (!rawCall(app, cpu, 0x485f20, esp, 0, eax, edx, ebx, ecx)) return false;  // 487c52 call 0x485f20
+    cpu.ebp = ebp; { cpu.esp = esp + 0u; const Result r_ = guest::direct<0x485f20, segmentClippedOf>(app, cpu, esp - 4u, eax, edx, ebx, ecx); if (!r_) return false; eax = reg32(*r_); }  // 487c52 call 0x485f20
     esp += 0u;  // 487c52 call 0x485f20
     fl.sub(rd32((ebp + 0x6au)), 0u);  // 487c57 cmp dword ptr [ebp + 0x6a], 0
     if (fl.e()) goto L_487c69;  // 487c5b je 0x487c69
@@ -5675,7 +5718,7 @@ L_487d62:
     edi = esp;  // 487dad mov edi, esp
     wr32((ebp + 0x36u), eax);  // 487daf mov dword ptr [ebp + 0x36], eax
     for (; ecx != 0; --ecx) { wr32(edi, rd32(esi)); esi += 4; edi += 4; }  // 487db2 rep movsd dword ptr es:[edi], dword ptr [esi]
-    cpu.ebp = ebp; if (!rawCall(app, cpu, 0x486f70, esp, 20, eax, edx, ebx, ecx)) return false;  // 487db4 call 0x486f70
+    cpu.ebp = ebp; { cpu.esp = esp + 40u; const Result r_ = guest::direct<0x486f70, stackQuadOf>(app, cpu, esp - 4u, ecx, guest::Words{rd32(esp), rd32(esp + 4u), rd32(esp + 8u), rd32(esp + 12u), rd32(esp + 16u), rd32(esp + 20u), rd32(esp + 24u), rd32(esp + 28u), rd32(esp + 32u), rd32(esp + 36u)}); if (!r_) return false; eax = reg32(*r_); }  // 487db4 call 0x486f70
     esp += 80u;  // 487db4 call 0x486f70
     eax = rd32((ebp + 0x7eu));  // 487db9 mov eax, dword ptr [ebp + 0x7e]
     eax = rd32((eax));  // 487dbc mov eax, dword ptr [eax]
@@ -5694,7 +5737,7 @@ L_487d62:
     ebx = rd32((ebp + 0x6eu));  // 487de2 mov ebx, dword ptr [ebp + 0x6e]
     wr32((ebp + 0x4eu), eax);  // 487de5 mov dword ptr [ebp + 0x4e], eax
     eax = (ebp + 0x3au);  // 487de8 lea eax, [ebp + 0x3a]
-    cpu.ebp = ebp; if (!rawCall(app, cpu, 0x4870c0, esp, 0, eax, edx, ebx, ecx)) return false;  // 487deb call 0x4870c0
+    cpu.ebp = ebp; { cpu.esp = esp + 0u; const Result r_ = guest::direct<0x4870c0, rectangleQuadOf>(app, cpu, esp - 4u, eax, edx, ebx, ecx); if (!r_) return false; eax = reg32(*r_); }  // 487deb call 0x4870c0
     esp += 0u;  // 487deb call 0x4870c0
     esp = (ebp + 0x82u);  // 487df0 lea esp, [ebp + 0x82]
     ebp = rd32(esp); esp += 4;  // 487df6 pop ebp
@@ -5722,7 +5765,7 @@ L_487dfa:
     edx = rd32((ebp + 0x72u));  // 487e2b mov edx, dword ptr [ebp + 0x72]
     wr32((ebp + 0x4eu), eax);  // 487e2e mov dword ptr [ebp + 0x4e], eax
     eax = (ebp + 0x3au);  // 487e31 lea eax, [ebp + 0x3a]
-    cpu.ebp = ebp; if (!rawCall(app, cpu, 0x4870c0, esp, -3, eax, edx, ebx, ecx)) return false;  // 487e34 call 0x4870c0
+    cpu.ebp = ebp; { cpu.esp = esp + 0u; const Result r_ = guest::direct<0x4870c0, rectangleQuadOf>(app, cpu, esp - 4u, eax, edx, ebx, ecx); if (!r_) return false; eax = reg32(*r_); }  // 487e34 call 0x4870c0
     esp += -12u;  // 487e34 call 0x4870c0
     esp = (ebp + 0x82u);  // 487e39 lea esp, [ebp + 0x82]
     ebp = rd32(esp); esp += 4;  // 487e3f pop ebp
@@ -5759,7 +5802,7 @@ L_487e43:
     edi = esp;  // 487e92 mov edi, esp
     wr32((ebp + 0x36u), eax);  // 487e94 mov dword ptr [ebp + 0x36], eax
     for (; ecx != 0; --ecx) { wr32(edi, rd32(esi)); esi += 4; edi += 4; }  // 487e97 rep movsd dword ptr es:[edi], dword ptr [esi]
-    cpu.ebp = ebp; if (!rawCall(app, cpu, 0x486f70, esp, 7, eax, edx, ebx, ecx)) return false;  // 487e99 call 0x486f70
+    cpu.ebp = ebp; { cpu.esp = esp + 40u; const Result r_ = guest::direct<0x486f70, stackQuadOf>(app, cpu, esp - 4u, ecx, guest::Words{rd32(esp), rd32(esp + 4u), rd32(esp + 8u), rd32(esp + 12u), rd32(esp + 16u), rd32(esp + 20u), rd32(esp + 24u), rd32(esp + 28u), rd32(esp + 32u), rd32(esp + 36u)}); if (!r_) return false; eax = reg32(*r_); }  // 487e99 call 0x486f70
     esp += 28u;  // 487e99 call 0x486f70
     eax = rd32((ebp + 0x7eu));  // 487e9e mov eax, dword ptr [ebp + 0x7e]
     eax = rd32((eax));  // 487ea1 mov eax, dword ptr [eax]
@@ -5778,7 +5821,7 @@ L_487e43:
     edx = rd32((ebp + 0x72u));  // 487ec6 mov edx, dword ptr [ebp + 0x72]
     wr32((ebp + 0x4eu), eax);  // 487ec9 mov dword ptr [ebp + 0x4e], eax
     eax = (ebp + 0x3au);  // 487ecc lea eax, [ebp + 0x3a]
-    cpu.ebp = ebp; if (!rawCall(app, cpu, 0x4870c0, esp, 0, eax, edx, ebx, ecx)) return false;  // 487ecf call 0x4870c0
+    cpu.ebp = ebp; { cpu.esp = esp + 0u; const Result r_ = guest::direct<0x4870c0, rectangleQuadOf>(app, cpu, esp - 4u, eax, edx, ebx, ecx); if (!r_) return false; eax = reg32(*r_); }  // 487ecf call 0x4870c0
     esp += 0u;  // 487ecf call 0x4870c0
     esp = (ebp + 0x82u);  // 487ed4 lea esp, [ebp + 0x82]
     ebp = rd32(esp); esp += 4;  // 487eda pop ebp
@@ -5874,7 +5917,7 @@ L_487f66:
     wr32((ebp + 0x36u), eax);  // 487fad mov dword ptr [ebp + 0x36], eax
 L_487fb0:
     for (; ecx != 0; --ecx) { wr32(edi, rd32(esi)); esi += 4; edi += 4; }  // 487fb0 rep movsd dword ptr es:[edi], dword ptr [esi]
-    cpu.ebp = ebp; if (!rawCall(app, cpu, 0x486f70, esp, 7, eax, edx, ebx, ecx)) return false;  // 487fb2 call 0x486f70
+    cpu.ebp = ebp; { cpu.esp = esp + 40u; const Result r_ = guest::direct<0x486f70, stackQuadOf>(app, cpu, esp - 4u, ecx, guest::Words{rd32(esp), rd32(esp + 4u), rd32(esp + 8u), rd32(esp + 12u), rd32(esp + 16u), rd32(esp + 20u), rd32(esp + 24u), rd32(esp + 28u), rd32(esp + 32u), rd32(esp + 36u)}); if (!r_) return false; eax = reg32(*r_); }  // 487fb2 call 0x486f70
     esp += 28u;  // 487fb2 call 0x486f70
     esp = (ebp + 0x82u);  // 487fb7 lea esp, [ebp + 0x82]
     ebp = rd32(esp); esp += 4;  // 487fbd pop ebp
@@ -5915,7 +5958,7 @@ L_487fd7:
     wr32((ebp + 0x36u), eax);  // 48800f mov dword ptr [ebp + 0x36], eax
     wr32((ebp + 0x2eu), eax);  // 488012 mov dword ptr [ebp + 0x2e], eax
     for (; ecx != 0; --ecx) { wr32(edi, rd32(esi)); esi += 4; edi += 4; }  // 488015 rep movsd dword ptr es:[edi], dword ptr [esi]
-    cpu.ebp = ebp; if (!rawCall(app, cpu, 0x486f70, esp, 4, eax, edx, ebx, ecx)) return false;  // 488017 call 0x486f70
+    cpu.ebp = ebp; { cpu.esp = esp + 40u; const Result r_ = guest::direct<0x486f70, stackQuadOf>(app, cpu, esp - 4u, ecx, guest::Words{rd32(esp), rd32(esp + 4u), rd32(esp + 8u), rd32(esp + 12u), rd32(esp + 16u), rd32(esp + 20u), rd32(esp + 24u), rd32(esp + 28u), rd32(esp + 32u), rd32(esp + 36u)}); if (!r_) return false; eax = reg32(*r_); }  // 488017 call 0x486f70
     esp += 16u;  // 488017 call 0x486f70
 L_48801c:
     esp = (ebp + 0x82u);  // 48801c lea esp, [ebp + 0x82]
@@ -5964,13 +6007,13 @@ L_48b624:
     edx = (ebp - 0x2au);  // 48b62d lea edx, [ebp - 0x2a]
     wr32((ebp + 0x52u), eax);  // 48b630 mov dword ptr [ebp + 0x52], eax
     eax = (ebp - 0x22u);  // 48b633 lea eax, [ebp - 0x22]
-    { const int n0_ = cpu.fpu.count; cpu.ebp = ebp; if (!rawCall(app, cpu, 0x4beb80, esp, 0, eax, edx, ebx, ecx)) return false; pullX87(cpu, n0_, x); }  // 48b636 call 0x4beb80
+    { cpu.ebp = ebp; if (!rawCall(app, cpu, 0x4beb80, esp, 0, eax, edx, ebx, ecx)) return false; }  // 48b636 call 0x4beb80
     esp += 0u;  // 48b636 call 0x4beb80
     eax = rd32((ebp + 0x4au));  // 48b63b mov eax, dword ptr [ebp + 0x4a]
     edx = rd32((0x791ac8u));  // 48b63e mov edx, dword ptr [0x791ac8]
     { const reg32 r_ = eax << 5; eax = r_; fl.logic(r_); }  // 48b644 shl eax, 5
     { const reg32 a_ = eax, b_ = edx; eax = a_ + b_; fl.add(a_, b_); }  // 48b647 add eax, edx
-    { const int n0_ = cpu.fpu.count; cpu.ebp = ebp; if (!rawCall(app, cpu, 0x47fbe0, esp, 0, eax, edx, ebx, ecx)) return false; pullX87(cpu, n0_, x); }  // 48b649 call 0x47fbe0
+    { cpu.ebp = ebp; if (!rawCall(app, cpu, 0x47fbe0, esp, 0, eax, edx, ebx, ecx)) return false; }  // 48b649 call 0x47fbe0
     esp += 0u;  // 48b649 call 0x47fbe0
     x.push(F(edi + 0x98u));  // 48b64e fld dword ptr [edi + 0x98]
     edx = rd32((ebp + 0x4au));  // 48b654 mov edx, dword ptr [ebp + 0x4a]
@@ -6012,13 +6055,13 @@ L_48b624:
     edx = (ebp - 0x9eu);  // 48b6db lea edx, [ebp - 0x9e]
     SF((ebp + 0x6eu), x.st(0));  // 48b6e1 fstp dword ptr [ebp + 0x6e]
     x.pop();  // 48b6e1 fstp dword ptr [ebp + 0x6e]
-    { const int n0_ = cpu.fpu.count; cpu.ebp = ebp; if (!rawCall(app, cpu, 0x4e01f0, esp, 0, eax, edx, ebx, ecx)) return false; pullX87(cpu, n0_, x); }  // 48b6e4 call 0x4e01f0
+    { cpu.ebp = ebp; cpu.esp = esp; x.push(guest::direct<0x4e01f0, vertices::dotProduct>(app, cpu, eax, edx)); if (cpu.terminate) return false; }  // 48b6e4 call 0x4e01f0
     esp += 0u;  // 48b6e4 call 0x4e01f0
     edx = (ebp - 0x9eu);  // 48b6e9 lea edx, [ebp - 0x9e]
     eax = (esi + 0x1a8u);  // 48b6ef lea eax, [esi + 0x1a8]
     SF((ebp + 0x5au), x.st(0));  // 48b6f5 fstp dword ptr [ebp + 0x5a]
     x.pop();  // 48b6f5 fstp dword ptr [ebp + 0x5a]
-    { const int n0_ = cpu.fpu.count; cpu.ebp = ebp; if (!rawCall(app, cpu, 0x4e01f0, esp, 0, eax, edx, ebx, ecx)) return false; pullX87(cpu, n0_, x); }  // 48b6f8 call 0x4e01f0
+    { cpu.ebp = ebp; cpu.esp = esp; x.push(guest::direct<0x4e01f0, vertices::dotProduct>(app, cpu, eax, edx)); if (cpu.terminate) return false; }  // 48b6f8 call 0x4e01f0
     esp += 0u;  // 48b6f8 call 0x4e01f0
     x.push(0.0);  // 48b6fd fldz
     x.fxch(1);  // 48b6ff fxch st(1)
@@ -6072,7 +6115,7 @@ L_48b752:
     { const reg32 a_ = eax, b_ = esi; eax = a_ + b_; fl.add(a_, b_); }  // 48b75e add eax, esi
     ebx = 0u;  // 48b760 xor ebx, ebx
     fl.logic(0u);  // 48b760 xor ebx, ebx
-    { const int n0_ = cpu.fpu.count; cpu.ebp = ebp; if (!rawCall(app, cpu, 0x47fcb0, esp, 0, eax, edx, ebx, ecx)) return false; pullX87(cpu, n0_, x); }  // 48b762 call 0x47fcb0
+    { cpu.ebp = ebp; if (!rawCall(app, cpu, 0x47fcb0, esp, 0, eax, edx, ebx, ecx)) return false; }  // 48b762 call 0x47fcb0
     esp += 0u;  // 48b762 call 0x47fcb0
     goto L_48c0d2;  // 48b767 jmp 0x48c0d2
 L_48b76c:
@@ -6085,7 +6128,7 @@ L_48b76c:
     esp -= 4u;  // 48b778 sub esp, 4
     SF((esp), x.st(0));  // 48b77b fstp dword ptr [esp]
     x.pop();  // 48b77b fstp dword ptr [esp]
-    { const int n0_ = cpu.fpu.count; cpu.ebp = ebp; if (!rawCall(app, cpu, 0x4ea920, esp, 1, eax, edx, ebx, ecx)) return false; pullX87(cpu, n0_, x); }  // 48b77e call 0x4ea920
+    { cpu.ebp = ebp; if (!rawCall(app, cpu, 0x4ea920, esp, 1, eax, edx, ebx, ecx)) return false; x.push(tookX87(cpu)); }  // 48b77e call 0x4ea920
     esp += 4u;  // 48b77e call 0x4ea920
     x.st(0) = (x.st(0)) * (F(0x53b944u));  // 48b783 fmul dword ptr [0x53b944]
     x.st(0) = (x.st(0)) * (D(0x53b94cu));  // 48b789 fmul qword ptr [0x53b94c]
@@ -6185,7 +6228,7 @@ L_48b802:
     esp -= 4; wr32(esp, edx);  // 48b85d push edx
     SF((ebp + 0x62u), x.st(0));  // 48b85e fstp dword ptr [ebp + 0x62]
     x.pop();  // 48b85e fstp dword ptr [ebp + 0x62]
-    { const int n0_ = cpu.fpu.count; cpu.ebp = ebp; if (!rawCall(app, cpu, 0x47d1d0, esp, 10, eax, edx, ebx, ecx)) return false; pullX87(cpu, n0_, x); }  // 48b861 call 0x47d1d0
+    { cpu.ebp = ebp; if (!rawCall(app, cpu, 0x47d1d0, esp, 10, eax, edx, ebx, ecx)) return false; }  // 48b861 call 0x47d1d0
     esp += 40u;  // 48b861 call 0x47d1d0
     x.push(F(ebp + 0x76u));  // 48b866 fld dword ptr [ebp + 0x76]
     x.push(F(ebp + 0x6eu));  // 48b869 fld dword ptr [ebp + 0x6e]
@@ -6209,11 +6252,11 @@ L_48b802:
     ebx = rd32((ebp - 0x16u));  // 48b8a1 mov ebx, dword ptr [ebp - 0x16]
     edx = rd32((ebp - 0xeu));  // 48b8a4 mov edx, dword ptr [ebp - 0xe]
     eax = rd32((ebp - 0x12u));  // 48b8a7 mov eax, dword ptr [ebp - 0x12]
-    { const int n0_ = cpu.fpu.count; cpu.ebp = ebp; if (!rawCall(app, cpu, 0x4bebe0, esp, 0, eax, edx, ebx, ecx)) return false; pullX87(cpu, n0_, x); }  // 48b8aa call 0x4bebe0
+    { cpu.ebp = ebp; if (!rawCall(app, cpu, 0x4bebe0, esp, 0, eax, edx, ebx, ecx)) return false; }  // 48b8aa call 0x4bebe0
     esp += 0u;  // 48b8aa call 0x4bebe0
     edx = 1u;  // 48b8af mov edx, 1
     eax = 104u;  // 48b8b4 mov eax, 0x68
-    { const int n0_ = cpu.fpu.count; cpu.ebp = ebp; if (!rawCall(app, cpu, 0x431900, esp, 0, eax, edx, ebx, ecx)) return false; pullX87(cpu, n0_, x); }  // 48b8b9 call 0x431900
+    { cpu.ebp = ebp; cpu.esp = esp; guest::direct<0x431900, graphics::sendState>(app, cpu, eax, edx); if (cpu.terminate) return false; eax = cpu.eax; }  // 48b8b9 call 0x431900
     esp += 0u;  // 48b8b9 call 0x431900
     x.push(F(0x53b958u));  // 48b8be fld dword ptr [0x53b958]
     x.push(F(ebp + 0x6eu));  // 48b8c4 fld dword ptr [ebp + 0x6e]
@@ -6247,7 +6290,7 @@ L_48b802:
     esp -= 4; wr32(esp, ebx);  // 48b901 push ebx
     wr32((ebp - 0x6au), eax);  // 48b902 mov dword ptr [ebp - 0x6a], eax
     wr32((ebp - 0x62u), eax);  // 48b905 mov dword ptr [ebp - 0x62], eax
-    { const int n0_ = cpu.fpu.count; cpu.ebp = ebp; if (!rawCall(app, cpu, 0x48b2a0, esp, 8, eax, edx, ebx, ecx)) return false; pullX87(cpu, n0_, x); }  // 48b908 call 0x48b2a0
+    { cpu.ebp = ebp; if (!rawCall(app, cpu, 0x48b2a0, esp, 8, eax, edx, ebx, ecx)) return false; }  // 48b908 call 0x48b2a0
     esp += 32u;  // 48b908 call 0x48b2a0
     eax = rd32((esi + 0x1cu));  // 48b90d mov eax, dword ptr [esi + 0x1c]
     { const reg32 a_ = eax, b_ = 200u; eax = a_ - b_; fl.sub(a_, b_); }  // 48b910 sub eax, 0xc8
@@ -6318,7 +6361,7 @@ L_48b952:
     eax = 1u;  // 48b9e4 mov eax, 1
     SF((esp), x.st(0));  // 48b9e9 fstp dword ptr [esp]
     x.pop();  // 48b9e9 fstp dword ptr [esp]
-    { const int n0_ = cpu.fpu.count; cpu.ebp = ebp; if (!rawCall(app, cpu, 0x4e0050, esp, 2, eax, edx, ebx, ecx)) return false; pullX87(cpu, n0_, x); }  // 48b9ec call 0x4e0050
+    { cpu.ebp = ebp; cpu.esp = esp + 8u; guest::direct<0x4e0050, vertices::scaleVectorsBy>(app, cpu, int32_t(eax), edx, bitsToFloat(rd32(esp)), rd32(esp + 4u)); if (cpu.terminate) return false; }  // 48b9ec call 0x4e0050
     esp += 8u;  // 48b9ec call 0x4e0050
     x.push(F(ebp - 0x7au));  // 48b9f1 fld dword ptr [ebp - 0x7a]
     x.push(F(ebp - 0x76u));  // 48b9f4 fld dword ptr [ebp - 0x76]
@@ -6353,19 +6396,19 @@ L_48b952:
     edx = (esi + 0x190u);  // 48ba62 lea edx, [esi + 0x190]
     SF((ebp - 0xa2u), x.st(0));  // 48ba68 fstp dword ptr [ebp - 0xa2]
     x.pop();  // 48ba68 fstp dword ptr [ebp - 0xa2]
-    { const int n0_ = cpu.fpu.count; cpu.ebp = ebp; if (!rawCall(app, cpu, 0x4e01f0, esp, 0, eax, edx, ebx, ecx)) return false; pullX87(cpu, n0_, x); }  // 48ba6e call 0x4e01f0
+    { cpu.ebp = ebp; cpu.esp = esp; x.push(guest::direct<0x4e01f0, vertices::dotProduct>(app, cpu, eax, edx)); if (cpu.terminate) return false; }  // 48ba6e call 0x4e01f0
     esp += 0u;  // 48ba6e call 0x4e01f0
     eax = (ebp - 0xaau);  // 48ba73 lea eax, [ebp - 0xaa]
     edx = (esi + 0x19cu);  // 48ba79 lea edx, [esi + 0x19c]
     SF((ebp - 0x92u), x.st(0));  // 48ba7f fstp dword ptr [ebp - 0x92]
     x.pop();  // 48ba7f fstp dword ptr [ebp - 0x92]
-    { const int n0_ = cpu.fpu.count; cpu.ebp = ebp; if (!rawCall(app, cpu, 0x4e01f0, esp, 0, eax, edx, ebx, ecx)) return false; pullX87(cpu, n0_, x); }  // 48ba85 call 0x4e01f0
+    { cpu.ebp = ebp; cpu.esp = esp; x.push(guest::direct<0x4e01f0, vertices::dotProduct>(app, cpu, eax, edx)); if (cpu.terminate) return false; }  // 48ba85 call 0x4e01f0
     esp += 0u;  // 48ba85 call 0x4e01f0
     eax = (ebp - 0xaau);  // 48ba8a lea eax, [ebp - 0xaa]
     edx = (esi + 0x1a8u);  // 48ba90 lea edx, [esi + 0x1a8]
     SF((ebp - 0x8eu), x.st(0));  // 48ba96 fstp dword ptr [ebp - 0x8e]
     x.pop();  // 48ba96 fstp dword ptr [ebp - 0x8e]
-    { const int n0_ = cpu.fpu.count; cpu.ebp = ebp; if (!rawCall(app, cpu, 0x4e01f0, esp, 0, eax, edx, ebx, ecx)) return false; pullX87(cpu, n0_, x); }  // 48ba9c call 0x4e01f0
+    { cpu.ebp = ebp; cpu.esp = esp; x.push(guest::direct<0x4e01f0, vertices::dotProduct>(app, cpu, eax, edx)); if (cpu.terminate) return false; }  // 48ba9c call 0x4e01f0
     esp += 0u;  // 48ba9c call 0x4e01f0
     SF((ebp - 0x8au), x.st(0));  // 48baa1 fstp dword ptr [ebp - 0x8a]
     x.pop();  // 48baa1 fstp dword ptr [ebp - 0x8a]
@@ -6438,7 +6481,7 @@ L_48b952:
     esp -= 4; wr32(esp, edx);  // 48bb40 push edx
     eax = rd32((ebp - 0x6eu));  // 48bb41 mov eax, dword ptr [ebp - 0x6e]
     esp -= 4; wr32(esp, eax);  // 48bb44 push eax
-    { const int n0_ = cpu.fpu.count; cpu.ebp = ebp; if (!rawCall(app, cpu, 0x48b4a0, esp, 5, eax, edx, ebx, ecx)) return false; pullX87(cpu, n0_, x); }  // 48bb45 call 0x48b4a0
+    { cpu.ebp = ebp; if (!rawCall(app, cpu, 0x48b4a0, esp, 5, eax, edx, ebx, ecx)) return false; }  // 48bb45 call 0x48b4a0
     esp += 20u;  // 48bb45 call 0x48b4a0
 L_48bb4a:
     eax = (ebp - 0x86u);  // 48bb4a lea eax, [ebp - 0x86]
@@ -6459,7 +6502,7 @@ L_48bb4a:
     x.st(0) = -x.st(0);  // 48bb87 fchs
     SF((esp), x.st(0));  // 48bb89 fstp dword ptr [esp]
     x.pop();  // 48bb89 fstp dword ptr [esp]
-    { const int n0_ = cpu.fpu.count; cpu.ebp = ebp; if (!rawCall(app, cpu, 0x4e0050, esp, 2, eax, edx, ebx, ecx)) return false; pullX87(cpu, n0_, x); }  // 48bb8c call 0x4e0050
+    { cpu.ebp = ebp; cpu.esp = esp + 8u; guest::direct<0x4e0050, vertices::scaleVectorsBy>(app, cpu, int32_t(eax), edx, bitsToFloat(rd32(esp)), rd32(esp + 4u)); if (cpu.terminate) return false; }  // 48bb8c call 0x4e0050
     esp += 8u;  // 48bb8c call 0x4e0050
     x.push(F(ebp - 0x7au));  // 48bb91 fld dword ptr [ebp - 0x7a]
     x.push(F(ebp - 0x76u));  // 48bb94 fld dword ptr [ebp - 0x76]
@@ -6494,19 +6537,19 @@ L_48bb4a:
     edx = (esi + 0x190u);  // 48bbf9 lea edx, [esi + 0x190]
     SF((ebp - 0x7eu), x.st(0));  // 48bbff fstp dword ptr [ebp - 0x7e]
     x.pop();  // 48bbff fstp dword ptr [ebp - 0x7e]
-    { const int n0_ = cpu.fpu.count; cpu.ebp = ebp; if (!rawCall(app, cpu, 0x4e01f0, esp, 0, eax, edx, ebx, ecx)) return false; pullX87(cpu, n0_, x); }  // 48bc02 call 0x4e01f0
+    { cpu.ebp = ebp; cpu.esp = esp; x.push(guest::direct<0x4e01f0, vertices::dotProduct>(app, cpu, eax, edx)); if (cpu.terminate) return false; }  // 48bc02 call 0x4e01f0
     esp += 0u;  // 48bc02 call 0x4e01f0
     eax = (ebp - 0x86u);  // 48bc07 lea eax, [ebp - 0x86]
     edx = (esi + 0x19cu);  // 48bc0d lea edx, [esi + 0x19c]
     SF((ebp - 0x92u), x.st(0));  // 48bc13 fstp dword ptr [ebp - 0x92]
     x.pop();  // 48bc13 fstp dword ptr [ebp - 0x92]
-    { const int n0_ = cpu.fpu.count; cpu.ebp = ebp; if (!rawCall(app, cpu, 0x4e01f0, esp, 0, eax, edx, ebx, ecx)) return false; pullX87(cpu, n0_, x); }  // 48bc19 call 0x4e01f0
+    { cpu.ebp = ebp; cpu.esp = esp; x.push(guest::direct<0x4e01f0, vertices::dotProduct>(app, cpu, eax, edx)); if (cpu.terminate) return false; }  // 48bc19 call 0x4e01f0
     esp += 0u;  // 48bc19 call 0x4e01f0
     eax = (ebp - 0x86u);  // 48bc1e lea eax, [ebp - 0x86]
     edx = (esi + 0x1a8u);  // 48bc24 lea edx, [esi + 0x1a8]
     SF((ebp - 0x8eu), x.st(0));  // 48bc2a fstp dword ptr [ebp - 0x8e]
     x.pop();  // 48bc2a fstp dword ptr [ebp - 0x8e]
-    { const int n0_ = cpu.fpu.count; cpu.ebp = ebp; if (!rawCall(app, cpu, 0x4e01f0, esp, 0, eax, edx, ebx, ecx)) return false; pullX87(cpu, n0_, x); }  // 48bc30 call 0x4e01f0
+    { cpu.ebp = ebp; cpu.esp = esp; x.push(guest::direct<0x4e01f0, vertices::dotProduct>(app, cpu, eax, edx)); if (cpu.terminate) return false; }  // 48bc30 call 0x4e01f0
     esp += 0u;  // 48bc30 call 0x4e01f0
     x.push(F(ebp + 0x62u));  // 48bc35 fld dword ptr [ebp + 0x62]
     x.push(F(ebp - 0x92u));  // 48bc38 fld dword ptr [ebp - 0x92]
@@ -6579,7 +6622,7 @@ L_48bb4a:
     esp -= 4; wr32(esp, edx);  // 48bcd2 push edx
     ebx = rd32((ebp - 0x6eu));  // 48bcd3 mov ebx, dword ptr [ebp - 0x6e]
     esp -= 4; wr32(esp, ebx);  // 48bcd6 push ebx
-    { const int n0_ = cpu.fpu.count; cpu.ebp = ebp; if (!rawCall(app, cpu, 0x48b4a0, esp, 5, eax, edx, ebx, ecx)) return false; pullX87(cpu, n0_, x); }  // 48bcd7 call 0x48b4a0
+    { cpu.ebp = ebp; if (!rawCall(app, cpu, 0x48b4a0, esp, 5, eax, edx, ebx, ecx)) return false; }  // 48bcd7 call 0x48b4a0
     esp += 20u;  // 48bcd7 call 0x48b4a0
 L_48bcdc:
     eax = rd32((ebp + 0x3eu));  // 48bcdc mov eax, dword ptr [ebp + 0x3e]
@@ -6637,7 +6680,7 @@ L_48bd17:
     eax = (ebp - 0x7au);  // 48bd68 lea eax, [ebp - 0x7a]
     SF((ebp - 0x72u), x.st(0));  // 48bd6b fstp dword ptr [ebp - 0x72]
     x.pop();  // 48bd6b fstp dword ptr [ebp - 0x72]
-    { const int n0_ = cpu.fpu.count; cpu.ebp = ebp; if (!rawCall(app, cpu, 0x4965b0, esp, 0, eax, edx, ebx, ecx)) return false; pullX87(cpu, n0_, x); }  // 48bd6e call 0x4965b0
+    { cpu.ebp = ebp; if (!rawCall(app, cpu, 0x4965b0, esp, 0, eax, edx, ebx, ecx)) return false; x.push(tookX87(cpu)); }  // 48bd6e call 0x4965b0
     esp += 0u;  // 48bd6e call 0x4965b0
     fl.fcmp(x.st(0), D(0x53b964u));  // 48bd73 fcomp qword ptr [0x53b964]
     x.pop();  // 48bd73 fcomp qword ptr [0x53b964]
@@ -6749,7 +6792,7 @@ L_48be71:
     esp -= 4u;  // 48be80 sub esp, 4
     SF((esp), x.st(0));  // 48be83 fstp dword ptr [esp]
     x.pop();  // 48be83 fstp dword ptr [esp]
-    { const int n0_ = cpu.fpu.count; cpu.ebp = ebp; if (!rawCall(app, cpu, 0x4ea9c0, esp, 2, eax, edx, ebx, ecx)) return false; pullX87(cpu, n0_, x); }  // 48be86 call 0x4ea9c0
+    { cpu.ebp = ebp; if (!rawCall(app, cpu, 0x4ea9c0, esp, 2, eax, edx, ebx, ecx)) return false; x.push(tookX87(cpu)); }  // 48be86 call 0x4ea9c0
     esp += 8u;  // 48be86 call 0x4ea9c0
     x.push(F(ebp + 0x52u));  // 48be8b fld dword ptr [ebp + 0x52]
     x.st(0) = (x.st(0)) * (F(esi + 0x1a8u));  // 48be8e fmul dword ptr [esi + 0x1a8]
@@ -6759,18 +6802,18 @@ L_48be71:
     x.pop();  // 48be9d fstp dword ptr [esp]
     SF((ebp - 0x1au), x.st(0));  // 48bea0 fstp dword ptr [ebp - 0x1a]
     x.pop();  // 48bea0 fstp dword ptr [ebp - 0x1a]
-    { const int n0_ = cpu.fpu.count; cpu.ebp = ebp; if (!rawCall(app, cpu, 0x4ea9c0, esp, 2, eax, edx, ebx, ecx)) return false; pullX87(cpu, n0_, x); }  // 48bea3 call 0x4ea9c0
+    { cpu.ebp = ebp; if (!rawCall(app, cpu, 0x4ea9c0, esp, 2, eax, edx, ebx, ecx)) return false; x.push(tookX87(cpu)); }  // 48bea3 call 0x4ea9c0
     esp += 8u;  // 48bea3 call 0x4ea9c0
     x.st(0) = (F(ebp - 0x1au)) - (x.st(0));  // 48bea8 fsubr dword ptr [ebp - 0x1a]
     SF((ebp + 2u), x.st(0));  // 48beab fstp dword ptr [ebp + 2]
     x.pop();  // 48beab fstp dword ptr [ebp + 2]
     esp -= 4; wr32(esp, rd32((ebp + 2u)));  // 48beae push dword ptr [ebp + 2]
-    { const int n0_ = cpu.fpu.count; cpu.ebp = ebp; if (!rawCall(app, cpu, 0x4ea930, esp, 1, eax, edx, ebx, ecx)) return false; pullX87(cpu, n0_, x); }  // 48beb1 call 0x4ea930
+    { cpu.ebp = ebp; if (!rawCall(app, cpu, 0x4ea930, esp, 1, eax, edx, ebx, ecx)) return false; x.push(tookX87(cpu)); }  // 48beb1 call 0x4ea930
     esp += 4u;  // 48beb1 call 0x4ea930
     esp -= 4; wr32(esp, rd32((ebp + 2u)));  // 48beb6 push dword ptr [ebp + 2]
     SF((ebp - 0x2eu), x.st(0));  // 48beb9 fstp dword ptr [ebp - 0x2e]
     x.pop();  // 48beb9 fstp dword ptr [ebp - 0x2e]
-    { const int n0_ = cpu.fpu.count; cpu.ebp = ebp; if (!rawCall(app, cpu, 0x4ea950, esp, 1, eax, edx, ebx, ecx)) return false; pullX87(cpu, n0_, x); }  // 48bebc call 0x4ea950
+    { cpu.ebp = ebp; if (!rawCall(app, cpu, 0x4ea950, esp, 1, eax, edx, ebx, ecx)) return false; x.push(tookX87(cpu)); }  // 48bebc call 0x4ea950
     esp += 4u;  // 48bebc call 0x4ea950
     x.push(F(ebp + 0x72u));  // 48bec1 fld dword ptr [ebp + 0x72]
     x.fxch(1);  // 48bec4 fxch st(1)
@@ -6873,7 +6916,7 @@ L_48be71:
     x.pop();  // 48bf9b fstp dword ptr [ebp - 0x6e]
     edx = rd32((ebp - 0x6eu));  // 48bf9e mov edx, dword ptr [ebp - 0x6e]
     esp -= 4; wr32(esp, edx);  // 48bfa1 push edx
-    { const int n0_ = cpu.fpu.count; cpu.ebp = ebp; if (!rawCall(app, cpu, 0x47d1d0, esp, 10, eax, edx, ebx, ecx)) return false; pullX87(cpu, n0_, x); }  // 48bfa2 call 0x47d1d0
+    { cpu.ebp = ebp; if (!rawCall(app, cpu, 0x47d1d0, esp, 10, eax, edx, ebx, ecx)) return false; }  // 48bfa2 call 0x47d1d0
     esp += 40u;  // 48bfa2 call 0x47d1d0
     x.push(F(0x53b958u));  // 48bfa7 fld dword ptr [0x53b958]
     x.push(F(ebp + 0x6eu));  // 48bfad fld dword ptr [ebp + 0x6e]
@@ -6987,19 +7030,19 @@ L_48c040:
     edi = rd32((ebp - 0x6eu));  // 48c0a4 mov edi, dword ptr [ebp - 0x6e]
     esp -= 4; wr32(esp, edi);  // 48c0a7 push edi
     wr32((ebp - 0x52u), eax);  // 48c0a8 mov dword ptr [ebp - 0x52], eax
-    { const int n0_ = cpu.fpu.count; cpu.ebp = ebp; if (!rawCall(app, cpu, 0x47d1d0, esp, 10, eax, edx, ebx, ecx)) return false; pullX87(cpu, n0_, x); }  // 48c0ab call 0x47d1d0
+    { cpu.ebp = ebp; if (!rawCall(app, cpu, 0x47d1d0, esp, 10, eax, edx, ebx, ecx)) return false; }  // 48c0ab call 0x47d1d0
     esp += 40u;  // 48c0ab call 0x47d1d0
     ecx = rd32((ebp - 0x1eu));  // 48c0b0 mov ecx, dword ptr [ebp - 0x1e]
     ebx = rd32((ebp - 0xau));  // 48c0b3 mov ebx, dword ptr [ebp - 0xa]
     edx = rd32((ebp - 0x2au));  // 48c0b6 mov edx, dword ptr [ebp - 0x2a]
     eax = rd32((ebp - 0x22u));  // 48c0b9 mov eax, dword ptr [ebp - 0x22]
-    { const int n0_ = cpu.fpu.count; cpu.ebp = ebp; if (!rawCall(app, cpu, 0x4bebe0, esp, 0, eax, edx, ebx, ecx)) return false; pullX87(cpu, n0_, x); }  // 48c0bc call 0x4bebe0
+    { cpu.ebp = ebp; if (!rawCall(app, cpu, 0x4bebe0, esp, 0, eax, edx, ebx, ecx)) return false; }  // 48c0bc call 0x4bebe0
     esp += 0u;  // 48c0bc call 0x4bebe0
     eax = 104u;  // 48c0c1 mov eax, 0x68
     edx = 0u;  // 48c0c6 xor edx, edx
     fl.logic(0u);  // 48c0c6 xor edx, edx
     ebx = 1u;  // 48c0c8 mov ebx, 1
-    { const int n0_ = cpu.fpu.count; cpu.ebp = ebp; if (!rawCall(app, cpu, 0x431900, esp, 0, eax, edx, ebx, ecx)) return false; pullX87(cpu, n0_, x); }  // 48c0cd call 0x431900
+    { cpu.ebp = ebp; cpu.esp = esp; guest::direct<0x431900, graphics::sendState>(app, cpu, eax, edx); if (cpu.terminate) return false; eax = cpu.eax; }  // 48c0cd call 0x431900
     esp += 0u;  // 48c0cd call 0x431900
 L_48c0d2:
     eax = ebx;  // 48c0d2 mov eax, ebx
@@ -7218,7 +7261,7 @@ L_48d6ad:
     edx = rd32((ebp + 0x6au));  // 48d6ad mov edx, dword ptr [ebp + 0x6a]
     eax = rd32((ebp + 0x6eu));  // 48d6b0 mov eax, dword ptr [ebp + 0x6e]
     ecx = rd32((ebp + 0x72u));  // 48d6b3 mov ecx, dword ptr [ebp + 0x72]
-    { const int n0_ = cpu.fpu.count; cpu.ebp = ebp; if (!rawCall(app, cpu, 0x4e8f28, esp, 0, eax, edx, ebx, ecx)) return false; pullX87(cpu, n0_, x); }  // 48d6b6 call 0x4e8f28
+    { cpu.ebp = ebp; if (!rawCall(app, cpu, 0x4e8f28, esp, 0, eax, edx, ebx, ecx)) return false; }  // 48d6b6 call 0x4e8f28
     esp += 0u;  // 48d6b6 call 0x4e8f28
     edi = rd32((ecx + 0x998u));  // 48d6bb mov edi, dword ptr [ecx + 0x998]
     edx = eax;  // 48d6c1 mov edx, eax
@@ -7244,7 +7287,7 @@ L_48d6f6:
     eax = (ebp - 0x1eu);  // 48d70c lea eax, [ebp - 0x1e]
     SF((ebp - 0x1eu), x.st(0));  // 48d70f fstp dword ptr [ebp - 0x1e]
     x.pop();  // 48d70f fstp dword ptr [ebp - 0x1e]
-    { const int n0_ = cpu.fpu.count; cpu.ebp = ebp; if (!rawCall(app, cpu, 0x4ea970, esp, 0, eax, edx, ebx, ecx)) return false; pullX87(cpu, n0_, x); }  // 48d712 call 0x4ea970
+    { cpu.ebp = ebp; if (!rawCall(app, cpu, 0x4ea970, esp, 0, eax, edx, ebx, ecx)) return false; }  // 48d712 call 0x4ea970
     esp += 0u;  // 48d712 call 0x4ea970
 L_48d717:
     eax = (ebp - 0x4eu);  // 48d717 lea eax, [ebp - 0x4e]
@@ -7254,7 +7297,7 @@ L_48d717:
     esp -= 4; wr32(esp, rd32((eax + 0x98u)));  // 48d724 push dword ptr [eax + 0x98]
     eax = rd32((ebp + 0x76u));  // 48d72a mov eax, dword ptr [ebp + 0x76]
     ecx = rd32((ebp + 0x26u));  // 48d72d mov ecx, dword ptr [ebp + 0x26]
-    { const int n0_ = cpu.fpu.count; cpu.ebp = ebp; if (!rawCall(app, cpu, 0x48cb50, esp, 3, eax, edx, ebx, ecx)) return false; pullX87(cpu, n0_, x); }  // 48d730 call 0x48cb50
+    { cpu.ebp = ebp; { cpu.esp = esp + 12u; const Result r_ = guest::direct<0x48cb50, pointTransformedOf>(app, cpu, esp - 4u, eax, rd32(esp), rd32(esp + 4u), rd32(esp + 8u)); if (!r_) return false; eax = reg32(*r_); } }  // 48d730 call 0x48cb50
     esp += 12u;  // 48d730 call 0x48cb50
     fl.sub(ecx, 1065353216u);  // 48d735 cmp ecx, 0x3f800000
     if (fl.le()) goto L_48d7ac;  // 48d73b jle 0x48d7ac
@@ -7579,7 +7622,7 @@ L_48db00:
     ebx = (ebp - 0x1au);  // 48db06 lea ebx, [ebp - 0x1a]
     edx = 1u;  // 48db09 mov edx, 1
     eax = 7942408u;  // 48db0e mov eax, 0x793108
-    { const int n0_ = cpu.fpu.count; cpu.ebp = ebp; if (!rawCall(app, cpu, 0x49bf40, esp, 0, eax, edx, ebx, ecx)) return false; pullX87(cpu, n0_, x); }  // 48db13 call 0x49bf40
+    { cpu.ebp = ebp; if (!rawCall(app, cpu, 0x49bf40, esp, 0, eax, edx, ebx, ecx)) return false; }  // 48db13 call 0x49bf40
     esp += 0u;  // 48db13 call 0x49bf40
     edx = rd32((ebp - 0x1au));  // 48db18 mov edx, dword ptr [ebp - 0x1a]
     eax = rd32((ebp - 0x26u));  // 48db1b mov eax, dword ptr [ebp - 0x26]
@@ -7761,7 +7804,7 @@ L_48dd12:
     wr32((ebp - 0x5eu), eax);  // 48dd6f mov dword ptr [ebp - 0x5e], eax
     eax = rd32((ebp + 0x76u));  // 48dd72 mov eax, dword ptr [ebp + 0x76]
     edi = (ebp - 0x26u);  // 48dd75 lea edi, [ebp - 0x26]
-    { const int n0_ = cpu.fpu.count; cpu.ebp = ebp; if (!rawCall(app, cpu, 0x4873e0, esp, 1, eax, edx, ebx, ecx)) return false; pullX87(cpu, n0_, x); }  // 48dd78 call 0x4873e0
+    { cpu.ebp = ebp; { cpu.esp = esp + 4u; const Result r_ = guest::direct<0x4873e0, strokeOf>(app, cpu, esp - 4u, eax, edx, ebx, ecx, rd32(esp)); if (!r_) return false; eax = reg32(*r_); } }  // 48dd78 call 0x4873e0
     esp += 4u;  // 48dd78 call 0x4873e0
     ebx = rd32((ebp + 0x5eu));  // 48dd7d mov ebx, dword ptr [ebp + 0x5e]
     esi = (ebp - 0x3eu);  // 48dd80 lea esi, [ebp - 0x3e]
@@ -7787,7 +7830,7 @@ L_48dd8e:
     eax = rd32((ebp + 0x76u));  // 48ddaf mov eax, dword ptr [ebp + 0x76]
     SF((esp), x.st(0));  // 48ddb2 fstp dword ptr [esp]
     x.pop();  // 48ddb2 fstp dword ptr [esp]
-    { const int n0_ = cpu.fpu.count; cpu.ebp = ebp; if (!rawCall(app, cpu, 0x48cb50, esp, 3, eax, edx, ebx, ecx)) return false; pullX87(cpu, n0_, x); }  // 48ddb5 call 0x48cb50
+    { cpu.ebp = ebp; { cpu.esp = esp + 12u; const Result r_ = guest::direct<0x48cb50, pointTransformedOf>(app, cpu, esp - 4u, eax, rd32(esp), rd32(esp + 4u), rd32(esp + 8u)); if (!r_) return false; eax = reg32(*r_); } }  // 48ddb5 call 0x48cb50
     esp += 12u;  // 48ddb5 call 0x48cb50
     edx = reg32(int32_t(rd32((0x79c110u))) * int32_t(840u));  // 48ddba imul edx, dword ptr [0x79c110], 0x348
     eax = reg32(int32_t(rd32((0x79c10cu))) * int32_t(420u));  // 48ddc4 imul eax, dword ptr [0x79c10c], 0x1a4
@@ -7908,7 +7951,7 @@ L_48deb3:
     x.pop();  // 48deec fstp dword ptr [ebp - 0x6e]
     SF((ebp - 0x72u), x.st(0));  // 48deef fstp dword ptr [ebp - 0x72]
     x.pop();  // 48deef fstp dword ptr [ebp - 0x72]
-    { const int n0_ = cpu.fpu.count; cpu.ebp = ebp; if (!rawCall(app, cpu, 0x4873e0, esp, 1, eax, edx, ebx, ecx)) return false; pullX87(cpu, n0_, x); }  // 48def2 call 0x4873e0
+    { cpu.ebp = ebp; { cpu.esp = esp + 4u; const Result r_ = guest::direct<0x4873e0, strokeOf>(app, cpu, esp - 4u, eax, edx, ebx, ecx, rd32(esp)); if (!r_) return false; eax = reg32(*r_); } }  // 48def2 call 0x4873e0
     esp += 4u;  // 48def2 call 0x4873e0
     fl.sub(rd32((0x79c10cu)), 0u);  // 48def7 cmp dword ptr [0x79c10c], 0
     if (fl.e()) goto L_48e0ef;  // 48defe je 0x48e0ef
@@ -7945,7 +7988,7 @@ L_48deb3:
     eax = rd32((ebp + 0x76u));  // 48df6e mov eax, dword ptr [ebp + 0x76]
     SF((esp), x.st(0));  // 48df71 fstp dword ptr [esp]
     x.pop();  // 48df71 fstp dword ptr [esp]
-    { const int n0_ = cpu.fpu.count; cpu.ebp = ebp; if (!rawCall(app, cpu, 0x48cb50, esp, 3, eax, edx, ebx, ecx)) return false; pullX87(cpu, n0_, x); }  // 48df74 call 0x48cb50
+    { cpu.ebp = ebp; { cpu.esp = esp + 12u; const Result r_ = guest::direct<0x48cb50, pointTransformedOf>(app, cpu, esp - 4u, eax, rd32(esp), rd32(esp + 4u), rd32(esp + 8u)); if (!r_) return false; eax = reg32(*r_); } }  // 48df74 call 0x48cb50
     esp += 12u;  // 48df74 call 0x48cb50
     ecx = reg32(int32_t(rd32((0x79c110u))) * int32_t(840u));  // 48df79 imul ecx, dword ptr [0x79c110], 0x348
     eax = reg32(int32_t(rd32((0x79c10cu))) * int32_t(420u));  // 48df83 imul eax, dword ptr [0x79c10c], 0x1a4
@@ -8079,7 +8122,7 @@ L_48e0a5:
     x.pop();  // 48e0e1 fstp dword ptr [ebp - 0x7e]
     SF((ebp - 0x82u), x.st(0));  // 48e0e4 fstp dword ptr [ebp - 0x82]
     x.pop();  // 48e0e4 fstp dword ptr [ebp - 0x82]
-    { const int n0_ = cpu.fpu.count; cpu.ebp = ebp; if (!rawCall(app, cpu, 0x4873e0, esp, 1, eax, edx, ebx, ecx)) return false; pullX87(cpu, n0_, x); }  // 48e0ea call 0x4873e0
+    { cpu.ebp = ebp; { cpu.esp = esp + 4u; const Result r_ = guest::direct<0x4873e0, strokeOf>(app, cpu, esp - 4u, eax, edx, ebx, ecx, rd32(esp)); if (!r_) return false; eax = reg32(*r_); } }  // 48e0ea call 0x4873e0
     esp += 4u;  // 48e0ea call 0x4873e0
 L_48e0ef:
     ecx = 0u;  // 48e0ef xor ecx, ecx
@@ -8124,14 +8167,14 @@ L_48e154:
     esp -= 4; wr32(esp, rd32((eax + 0xa0u)));  // 48e15f push dword ptr [eax + 0xa0]
     esp -= 4; wr32(esp, rd32((eax + 0x98u)));  // 48e165 push dword ptr [eax + 0x98]
     eax = rd32((ebp + 0x76u));  // 48e16b mov eax, dword ptr [ebp + 0x76]
-    { const int n0_ = cpu.fpu.count; cpu.ebp = ebp; if (!rawCall(app, cpu, 0x48cb50, esp, 3, eax, edx, ebx, ecx)) return false; pullX87(cpu, n0_, x); }  // 48e16e call 0x48cb50
+    { cpu.ebp = ebp; { cpu.esp = esp + 12u; const Result r_ = guest::direct<0x48cb50, pointTransformedOf>(app, cpu, esp - 4u, eax, rd32(esp), rd32(esp + 4u), rd32(esp + 8u)); if (!r_) return false; eax = reg32(*r_); } }  // 48e16e call 0x48cb50
     esp += 12u;  // 48e16e call 0x48cb50
     esp -= 4; wr32(esp, rd32((0x7930f0u)));  // 48e173 push dword ptr [0x7930f0]
     esp -= 4; wr32(esp, rd32((0x7930f8u)));  // 48e179 push dword ptr [0x7930f8]
     esp -= 4; wr32(esp, rd32((ebp - 0x42u)));  // 48e17f push dword ptr [ebp - 0x42]
     eax = rd32((ebp + 0x76u));  // 48e182 mov eax, dword ptr [ebp + 0x76]
     esp -= 4; wr32(esp, rd32((ebp - 0x46u)));  // 48e185 push dword ptr [ebp - 0x46]
-    { const int n0_ = cpu.fpu.count; cpu.ebp = ebp; if (!rawCall(app, cpu, 0x48cc60, esp, 4, eax, edx, ebx, ecx)) return false; pullX87(cpu, n0_, x); }  // 48e188 call 0x48cc60
+    { cpu.ebp = ebp; { cpu.esp = esp + 16u; const Result r_ = guest::direct<0x48cc60, boxOf>(app, cpu, esp - 4u, eax, edx, rd32(esp), rd32(esp + 4u), rd32(esp + 8u), rd32(esp + 12u)); if (!r_) return false; eax = reg32(*r_); } }  // 48e188 call 0x48cc60
     esp += 16u;  // 48e188 call 0x48cc60
 L_48e18d:
     { const reg32 r_ = ecx + 1u; ecx = r_; fl.arith(r_); }  // 48e18d inc ecx
@@ -8177,7 +8220,7 @@ L_48e221:
     esp -= 4; wr32(esp, rd32((eax + 0xa0u)));  // 48e232 push dword ptr [eax + 0xa0]
     esp -= 4; wr32(esp, rd32((eax + 0x98u)));  // 48e238 push dword ptr [eax + 0x98]
     eax = rd32((ebp + 0x76u));  // 48e23e mov eax, dword ptr [ebp + 0x76]
-    { const int n0_ = cpu.fpu.count; cpu.ebp = ebp; if (!rawCall(app, cpu, 0x48cb50, esp, 3, eax, edx, ebx, ecx)) return false; pullX87(cpu, n0_, x); }  // 48e241 call 0x48cb50
+    { cpu.ebp = ebp; { cpu.esp = esp + 12u; const Result r_ = guest::direct<0x48cb50, pointTransformedOf>(app, cpu, esp - 4u, eax, rd32(esp), rd32(esp + 4u), rd32(esp + 8u)); if (!r_) return false; eax = reg32(*r_); } }  // 48e241 call 0x48cb50
     esp += 12u;  // 48e241 call 0x48cb50
     esp -= 4; wr32(esp, rd32((0x7930e8u)));  // 48e246 push dword ptr [0x7930e8]
     eax = rd32((ebx + 0x5efc48u));  // 48e24c mov eax, dword ptr [ebx + 0x5efc48]
@@ -8187,7 +8230,7 @@ L_48e221:
     eax = rd32((ebp + 0x76u));  // 48e261 mov eax, dword ptr [ebp + 0x76]
     edx = rd32((edx * 4u + 0x793098u));  // 48e264 mov edx, dword ptr [edx*4 + 0x793098]
     esp -= 4; wr32(esp, rd32((ebp - 0x46u)));  // 48e26b push dword ptr [ebp - 0x46]
-    { const int n0_ = cpu.fpu.count; cpu.ebp = ebp; if (!rawCall(app, cpu, 0x48cc60, esp, 4, eax, edx, ebx, ecx)) return false; pullX87(cpu, n0_, x); }  // 48e26e call 0x48cc60
+    { cpu.ebp = ebp; { cpu.esp = esp + 16u; const Result r_ = guest::direct<0x48cc60, boxOf>(app, cpu, esp - 4u, eax, edx, rd32(esp), rd32(esp + 4u), rd32(esp + 8u), rd32(esp + 12u)); if (!r_) return false; eax = reg32(*r_); } }  // 48e26e call 0x48cc60
     esp += 16u;  // 48e26e call 0x48cc60
     fl.sub(rd32((0x55fe3cu)), 0u);  // 48e273 cmp dword ptr [0x55fe3c], 0
     if (fl.e()) goto L_48e315;  // 48e27a je 0x48e315
@@ -8245,7 +8288,7 @@ L_48e31b:
     edx = (ebp - 0xaeu);  // 48e324 lea edx, [ebp - 0xae]
     eax = (ebp - 0x5au);  // 48e32a lea eax, [ebp - 0x5a]
     ecx = rd32((0x793098u));  // 48e32d mov ecx, dword ptr [0x793098]
-    { const int n0_ = cpu.fpu.count; cpu.ebp = ebp; if (!rawCall(app, cpu, 0x477d90, esp, 0, eax, edx, ebx, ecx)) return false; pullX87(cpu, n0_, x); }  // 48e333 call 0x477d90
+    { cpu.ebp = ebp; if (!rawCall(app, cpu, 0x477d90, esp, 0, eax, edx, ebx, ecx)) return false; }  // 48e333 call 0x477d90
     esp += 0u;  // 48e333 call 0x477d90
     eax = (ebp - 0x46u);  // 48e338 lea eax, [ebp - 0x46]
     esp -= 4; wr32(esp, eax);  // 48e33b push eax
@@ -8267,7 +8310,7 @@ L_48e31b:
     SF((esp), x.st(0));  // 48e364 fstp dword ptr [esp]
     x.pop();  // 48e364 fstp dword ptr [esp]
     { const reg32 r_ = ecx & 16777215u; ecx = r_; fl.logic(r_); }  // 48e367 and ecx, 0xffffff
-    { const int n0_ = cpu.fpu.count; cpu.ebp = ebp; if (!rawCall(app, cpu, 0x48cb50, esp, 3, eax, edx, ebx, ecx)) return false; pullX87(cpu, n0_, x); }  // 48e36d call 0x48cb50
+    { cpu.ebp = ebp; { cpu.esp = esp + 12u; const Result r_ = guest::direct<0x48cb50, pointTransformedOf>(app, cpu, esp - 4u, eax, rd32(esp), rd32(esp + 4u), rd32(esp + 8u)); if (!r_) return false; eax = reg32(*r_); } }  // 48e36d call 0x48cb50
     esp += 12u;  // 48e36d call 0x48cb50
     esp -= 4; wr32(esp, rd32((0x7930d8u)));  // 48e372 push dword ptr [0x7930d8]
     { const reg32 r_ = ecx | 2130706432u; ecx = r_; fl.logic(r_); }  // 48e378 or ecx, 0x7f000000
@@ -8276,7 +8319,7 @@ L_48e31b:
     esp -= 4; wr32(esp, rd32((ebp - 0x42u)));  // 48e386 push dword ptr [ebp - 0x42]
     eax = rd32((ebp + 0x76u));  // 48e389 mov eax, dword ptr [ebp + 0x76]
     esp -= 4; wr32(esp, rd32((ebp - 0x46u)));  // 48e38c push dword ptr [ebp - 0x46]
-    { const int n0_ = cpu.fpu.count; cpu.ebp = ebp; if (!rawCall(app, cpu, 0x48cc60, esp, 4, eax, edx, ebx, ecx)) return false; pullX87(cpu, n0_, x); }  // 48e38f call 0x48cc60
+    { cpu.ebp = ebp; { cpu.esp = esp + 16u; const Result r_ = guest::direct<0x48cc60, boxOf>(app, cpu, esp - 4u, eax, edx, rd32(esp), rd32(esp + 4u), rd32(esp + 8u), rd32(esp + 12u)); if (!r_) return false; eax = reg32(*r_); } }  // 48e38f call 0x48cc60
     esp += 16u;  // 48e38f call 0x48cc60
 L_48e394:
     esp -= 4; wr32(esp, rd32((0x7930f4u)));  // 48e394 push dword ptr [0x7930f4]
@@ -8290,7 +8333,7 @@ L_48e394:
     edx = rd32((edx * 4u + 0x793098u));  // 48e3b5 mov edx, dword ptr [edx*4 + 0x793098]
     carry_ = (ecx >> 30) & 1u;  // 48e3bc shl ecx, 2
     { const reg32 r_ = ecx << 2; ecx = r_; fl.logic(r_); }  // 48e3bc shl ecx, 2
-    { const int n0_ = cpu.fpu.count; cpu.ebp = ebp; if (!rawCall(app, cpu, 0x48cc60, esp, 4, eax, edx, ebx, ecx)) return false; pullX87(cpu, n0_, x); }  // 48e3bf call 0x48cc60
+    { cpu.ebp = ebp; { cpu.esp = esp + 16u; const Result r_ = guest::direct<0x48cc60, boxOf>(app, cpu, esp - 4u, eax, edx, rd32(esp), rd32(esp + 4u), rd32(esp + 8u), rd32(esp + 12u)); if (!r_) return false; eax = reg32(*r_); } }  // 48e3bf call 0x48cc60
     esp += 16u;  // 48e3bf call 0x48cc60
     eax = rd32((ecx + 0x5efac8u));  // 48e3c4 mov eax, dword ptr [ecx + 0x5efac8]
     fl.logic(rd8((eax + 0x200u)) & 32u);  // 48e3ca test byte ptr [eax + 0x200], 0x20
@@ -8303,7 +8346,7 @@ L_48e394:
     esp -= 4; wr32(esp, rd32((eax + 0xa0u)));  // 48e3eb push dword ptr [eax + 0xa0]
     esp -= 4; wr32(esp, rd32((eax + 0x98u)));  // 48e3f1 push dword ptr [eax + 0x98]
     eax = rd32((ebp + 0x76u));  // 48e3f7 mov eax, dword ptr [ebp + 0x76]
-    { const int n0_ = cpu.fpu.count; cpu.ebp = ebp; if (!rawCall(app, cpu, 0x48cb50, esp, 3, eax, edx, ebx, ecx)) return false; pullX87(cpu, n0_, x); }  // 48e3fa call 0x48cb50
+    { cpu.ebp = ebp; { cpu.esp = esp + 12u; const Result r_ = guest::direct<0x48cb50, pointTransformedOf>(app, cpu, esp - 4u, eax, rd32(esp), rd32(esp + 4u), rd32(esp + 8u)); if (!r_) return false; eax = reg32(*r_); } }  // 48e3fa call 0x48cb50
     esp += 12u;  // 48e3fa call 0x48cb50
     esp -= 4; wr32(esp, rd32((0x7930e8u)));  // 48e3ff push dword ptr [0x7930e8]
     eax = rd32((ecx + 0x5efac8u));  // 48e405 mov eax, dword ptr [ecx + 0x5efac8]
@@ -8313,7 +8356,7 @@ L_48e394:
     eax = rd32((ebp + 0x76u));  // 48e41a mov eax, dword ptr [ebp + 0x76]
     edx = rd32((edx * 4u + 0x793098u));  // 48e41d mov edx, dword ptr [edx*4 + 0x793098]
     esp -= 4; wr32(esp, rd32((ebp - 0x46u)));  // 48e424 push dword ptr [ebp - 0x46]
-    { const int n0_ = cpu.fpu.count; cpu.ebp = ebp; if (!rawCall(app, cpu, 0x48cc60, esp, 4, eax, edx, ebx, ecx)) return false; pullX87(cpu, n0_, x); }  // 48e427 call 0x48cc60
+    { cpu.ebp = ebp; { cpu.esp = esp + 16u; const Result r_ = guest::direct<0x48cc60, boxOf>(app, cpu, esp - 4u, eax, edx, rd32(esp), rd32(esp + 4u), rd32(esp + 8u), rd32(esp + 12u)); if (!r_) return false; eax = reg32(*r_); } }  // 48e427 call 0x48cc60
     esp += 16u;  // 48e427 call 0x48cc60
     fl.sub(rd32((0x55fe3cu)), 0u);  // 48e42c cmp dword ptr [0x55fe3c], 0
     if (fl.e()) goto L_48e4ce;  // 48e433 je 0x48e4ce
@@ -8372,7 +8415,7 @@ L_48e4ce:
     edx = 5628608u;  // 48e4ee mov edx, 0x55e2c0
     eax = 5628604u;  // 48e4f3 mov eax, 0x55e2bc
     wr32((0x563d3cu), esi);  // 48e4f8 mov dword ptr [0x563d3c], esi
-    { const int n0_ = cpu.fpu.count; cpu.ebp = ebp; if (!rawCall(app, cpu, 0x4dab10, esp, 0, eax, edx, ebx, ecx)) return false; pullX87(cpu, n0_, x); }  // 48e4fe call 0x4dab10
+    { cpu.ebp = ebp; if (!rawCall(app, cpu, 0x4dab10, esp, 0, eax, edx, ebx, ecx)) return false; }  // 48e4fe call 0x4dab10
     esp += 0u;  // 48e4fe call 0x4dab10
     eax = rd32((0x55e2bcu));  // 48e503 mov eax, dword ptr [0x55e2bc]
     esi = rd32((0x7d367cu));  // 48e508 mov esi, dword ptr [0x7d367c]
@@ -8508,15 +8551,15 @@ L_48e687:
     gameSettings(app).viewedPlayer = eax;  // 48e6ae mov dword ptr [0x6fd4f8], eax
     edx = eax;  // 48e6b3 mov edx, eax
     eax = rd32((ebp + 0x76u));  // 48e6b5 mov eax, dword ptr [ebp + 0x76]
-    { const int n0_ = cpu.fpu.count; cpu.ebp = ebp; if (!rawCall(app, cpu, 0x4215c0, esp, 0, eax, edx, ebx, ecx)) return false; pullX87(cpu, n0_, x); }  // 48e6b8 call 0x4215c0
+    { cpu.ebp = ebp; if (!rawCall(app, cpu, 0x4215c0, esp, 0, eax, edx, ebx, ecx)) return false; }  // 48e6b8 call 0x4215c0
     esp += 0u;  // 48e6b8 call 0x4215c0
     eax = rd32((ebp + 0x76u));  // 48e6bd mov eax, dword ptr [ebp + 0x76]
-    { const int n0_ = cpu.fpu.count; cpu.ebp = ebp; if (!rawCall(app, cpu, 0x485640, esp, 0, eax, edx, ebx, ecx)) return false; pullX87(cpu, n0_, x); }  // 48e6c0 call 0x485640
+    { cpu.ebp = ebp; if (!rawCall(app, cpu, 0x485640, esp, 0, eax, edx, ebx, ecx)) return false; }  // 48e6c0 call 0x485640
     esp += 0u;  // 48e6c0 call 0x485640
 L_48e6c5:
     esp -= 4; wr32(esp, 1058642330u);  // 48e6c5 push 0x3f19999a
     edx = rd32((ebp + 0x76u));  // 48e6ca mov edx, dword ptr [ebp + 0x76]
-    { const int n0_ = cpu.fpu.count; cpu.ebp = ebp; if (!rawCall(app, cpu, 0x4d1390, esp, 1, eax, edx, ebx, ecx)) return false; pullX87(cpu, n0_, x); }  // 48e6cd call 0x4d1390
+    { cpu.ebp = ebp; cpu.esp = esp; x.push(guest::direct<0x4d1390, text::textScaleSet>(app, cpu, rd32(esp))); if (cpu.terminate) return false; }  // 48e6cd call 0x4d1390
     esp += 4u;  // 48e6cd call 0x4d1390
     edi = (edx * 4u);  // 48e6d2 lea edi, [edx*4]
     eax = (ecx * 4u);  // 48e6d9 lea eax, [ecx*4]
@@ -8529,7 +8572,7 @@ L_48e6c5:
     eax = rd32((eax + 0x220u));  // 48e6f5 mov eax, dword ptr [eax + 0x220]
     { const reg32 a_ = eax, b_ = 52u; eax = a_ + b_; fl.add(a_, b_); }  // 48e6fb add eax, 0x34
     x.fstp_st(0);  // 48e6fe fstp st(0)
-    { const int n0_ = cpu.fpu.count; cpu.ebp = ebp; if (!rawCall(app, cpu, 0x4d1480, esp, 0, eax, edx, ebx, ecx)) return false; pullX87(cpu, n0_, x); }  // 48e700 call 0x4d1480
+    { cpu.ebp = ebp; cpu.esp = esp; const text::WidthResult w_ = guest::direct<0x4d1480, text::textMeasuredWithOverhang>(app, cpu, esp - 4, eax); if (!w_) return false; eax = w_->eax; x.push(w_->value); }  // 48e700 call 0x4d1480
     esp += 0u;  // 48e700 call 0x4d1480
     x.st(0) = std::trunc(x.st(0));  // __CHP  // 48e705 call 0x4dfd56
     wr32((ebp + 0x1eu), stored(cpu, x.pop()));  // 48e70a fistp dword ptr [ebp + 0x1e]
@@ -8556,7 +8599,7 @@ L_48e726:
     eax = rd32((eax + 0x220u));  // 48e74f mov eax, dword ptr [eax + 0x220]
     edx = esi;  // 48e755 mov edx, esi
     { const reg32 a_ = eax, b_ = 52u; eax = a_ + b_; fl.add(a_, b_); }  // 48e757 add eax, 0x34
-    { const int n0_ = cpu.fpu.count; cpu.ebp = ebp; if (!rawCall(app, cpu, 0x4d1000, esp, 0, eax, edx, ebx, ecx)) return false; pullX87(cpu, n0_, x); }  // 48e75a call 0x4d1000
+    { cpu.ebp = ebp; cpu.esp = esp; const text::WidthResult w_ = guest::direct<0x4d1000, text::textDrawn>(app, cpu, esp - 4, eax, int32_t(edx), int32_t(ebx)); if (!w_) return false; eax = w_->eax; x.push(w_->value); }  // 48e75a call 0x4d1000
     esp += 0u;  // 48e75a call 0x4d1000
     x.fstp_st(0);  // 48e75f fstp st(0)
 L_48e761:
@@ -8570,8 +8613,284 @@ L_48e761:
     return false;
 }
 // (popped = 0
+
+/* The entry a core called as C++ hands its body: the registers as the cpu has them (the core sets those it
+ * is handed), esp the frame base, and the call's stack words written above it, where the call puts them. */
+Entry entryOf(App* app, const CPU& cpu, reg32 esp, const guest::Words& words)
+{
+    Entry e(cpu);
+    e.esp = esp;
+    for (unsigned i = 0; i < words.count; ++i)
+        store<reg32>(app, esp + 4 + 4 * i, words.word[i]);
+    return e;
+}
+
+/* A body's result as its core's. */
+template <class Body>
+Result resultOf(App* app, CPU& cpu, const Entry& e, Body body)
+{
+    reg32 result;
+    if (!body(app, cpu, e, result))
+        return std::nullopt;
+    return int32_t(result);
+}
+
+template <class Body>
+Result decompResultOf(App* app, CPU& cpu, const Entry& e, Body body)
+{
+    reg32 result, popped = 0;
+    if (!body(app, cpu, e, result, popped))
+        return std::nullopt;
+    return int32_t(result);
+}
+
 }  // namespace
 
+/* 0x484040's, as C++: the loading screen's text set up; `eax` back, as it came. */
+Result loadingTextOf(App* app, CPU& cpu, reg32 esp, reg32 eax)
+{
+    Entry e = entryOf(app, cpu, esp, guest::Words{});
+    e.eax = eax;
+    return loadingText(app, cpu, e) ? Result(int32_t(eax)) : std::nullopt;
+}
+
+/* 0x484b70's, as C++: the HUD's four scales set from the screen's width: what the code leaves in eax. */
+Result screenScalesOf(App* app, CPU& cpu, reg32 esp)
+{
+    Entry e = entryOf(app, cpu, esp, guest::Words{});
+    NFS2_USE(cpu);
+    return int32_t(scalesSet(app, e));
+}
+
+/* 0x485c20's, as C++: the float at `b` into `a`, rounded as a float's load and store, and `a`'s old bits into `b`: `a` back. */
+Result floatsSwappedOf(App* app, CPU& cpu, reg32 esp, reg32 a, reg32 b)
+{
+    Entry e = entryOf(app, cpu, esp, guest::Words{});
+    e.eax = a;
+    e.edx = b;
+    NFS2_USE(cpu);
+    NFS2_USE(e);
+    swapFloats(app, a, b);
+    return int32_t(a);
+}
+
+/* 0x485f20's, as C++: segment `segment` clipped to rectangle `rect` into `out`, its flags at `flagsAt`. */
+Result segmentClippedOf(App* app, CPU& cpu, reg32 esp, reg32 segment, reg32 rect, reg32 out, reg32 flagsAt)
+{
+    Entry e = entryOf(app, cpu, esp, guest::Words{});
+    e.eax = segment;
+    e.edx = rect;
+    e.ebx = out;
+    e.ecx = flagsAt;
+    NFS2_USE(cpu);
+    return int32_t(segmentClipped(app, e.frame(3), segment, rect, out, flagsAt));
+}
+
+/* 0x486340's, as C++: where two segments meet (the decompiled code's, its registers as handed). */
+Result segmentsMetOf(App* app, CPU& cpu, reg32 esp, reg32 eax, reg32 edx, reg32 ebx, reg32 ecx, reg32 first, reg32 second)
+{
+    Entry e = entryOf(app, cpu, esp, guest::Words{first, second});
+    e.eax = eax;
+    e.edx = edx;
+    e.ebx = ebx;
+    e.ecx = ecx;
+    return decompResultOf(app, cpu, e, decompSegmentsMet);
+}
+
+/* 0x486df0's, as C++: a quad of a box's floats (its ten words as the call pushes them). */
+Result floatsQuadOf(App* app, CPU& cpu, reg32 esp, const guest::Words& words)
+{
+    Entry e = entryOf(app, cpu, esp, words);
+    return resultOf(app, cpu, e, quadOfBox);
+}
+
+/* 0x486f70's, as C++: a quad from the stack's ten words, `ecx` handed on to the vertices' calls. */
+Result stackQuadOf(App* app, CPU& cpu, reg32 esp, reg32 ecx, const guest::Words& words)
+{
+    Entry e = entryOf(app, cpu, esp, words);
+    e.ecx = ecx;
+    return resultOf(app, cpu, e, cornersFromStack);
+}
+
+/* 0x4870c0's, as C++: a rectangle's quad (its registers as handed). */
+Result rectangleQuadOf(App* app, CPU& cpu, reg32 esp, reg32 eax, reg32 edx, reg32 ebx, reg32 ecx)
+{
+    Entry e = entryOf(app, cpu, esp, guest::Words{});
+    e.eax = eax;
+    e.edx = edx;
+    e.ebx = ebx;
+    e.ecx = ecx;
+    return resultOf(app, cpu, e, cornersOfRectangle);
+}
+
+/* 0x4873e0's, as C++: group `group`'s stroke (mode `mode`) of segment `segment` in `colour` on `surface`, clipped and drawn: `group` back. */
+Result strokeOf(App* app, CPU& cpu, reg32 esp, reg32 group, reg32 mode, reg32 segment, reg32 colour, reg32 surface)
+{
+    Entry e = entryOf(app, cpu, esp, guest::Words{surface});
+    e.eax = group;
+    e.edx = mode;
+    e.ebx = segment;
+    e.ecx = colour;
+    if (!strokeDrawn(app, cpu, e))
+        return std::nullopt;
+    return int32_t(group);
+}
+
+/* 0x487620's, as C++: a gauge's quad clipped (the decompiled code's, its registers as handed, ten words). */
+Result gaugeQuadOf(App* app, CPU& cpu, reg32 esp, reg32 eax, reg32 edx, reg32 ebx, reg32 ecx, const guest::Words& words)
+{
+    Entry e = entryOf(app, cpu, esp, words);
+    e.eax = eax;
+    e.edx = edx;
+    e.ebx = ebx;
+    e.ecx = ecx;
+    return decompResultOf(app, cpu, e, decompGaugeQuad);
+}
+
+/* 0x4897f0's, as C++: text `text` at scale `scale` in `colour`, aligned by `mode` at `x` (+`dx`), `y`; the caller's x written back where the call pushed it. */
+Result textAlignedOf(App* app, CPU& cpu, reg32 esp, reg32 text, reg32 scale, reg32 colour, reg32 x, reg32 dx, reg32 y, reg32 mode)
+{
+    Entry e = entryOf(app, cpu, esp, guest::Words{scale, colour, x, dx, y, mode});
+    e.eax = text;
+    return resultOf(app, cpu, e, textAligned);
+}
+
+/* 0x489b30's, as C++: a list of `count` rows, `chosen` (1 on) and the last (`total` - 1) in colours of their own, between `top` and `bottom` at `x`. */
+Result listRowsOf(App* app, CPU& cpu, reg32 esp, reg32 count, reg32 chosen, reg32 total, reg32 scale, reg32 colourRow, reg32 colourChosen, reg32 colourLast, reg32 top, reg32 bottom, reg32 x)
+{
+    Entry e = entryOf(app, cpu, esp, guest::Words{scale, colourRow, colourChosen, colourLast, top, bottom, x});
+    e.eax = count;
+    e.edx = chosen;
+    e.ebx = total;
+    return resultOf(app, cpu, e, rowsDrawn);
+}
+
+/* 0x489c40's, as C++: `time` (ms) as seconds and tenths with the language's lines, at `x`, `y`. */
+Result timeTextOf(App* app, CPU& cpu, reg32 esp, reg32 time, reg32 colour, reg32 colourSecond, reg32 x, reg32 y, reg32 scale)
+{
+    Entry e = entryOf(app, cpu, esp, guest::Words{colour, colourSecond, x, y, scale});
+    e.eax = time;
+    return resultOf(app, cpu, e, timeDrawn);
+}
+
+/* 0x489d70's, as C++: a percentage of the float `value` (its bits) with the language's line (`first`: the first), drawn aligned. */
+Result percentTextOf(App* app, CPU& cpu, reg32 esp, reg32 value, reg32 first, reg32 scale, reg32 colour, reg32 x, reg32 top)
+{
+    Entry e = entryOf(app, cpu, esp, guest::Words{value, first, scale, colour, x, top});
+    return resultOf(app, cpu, e, percentDrawn);
+}
+
+/* 0x489e00's, as C++: an indicator's quad set (its registers as handed). */
+Result indicatorQuadOf(App* app, CPU& cpu, reg32 esp, reg32 eax, reg32 edx, reg32 ebx, reg32 ecx)
+{
+    Entry e = entryOf(app, cpu, esp, guest::Words{});
+    e.eax = eax;
+    e.edx = edx;
+    e.ebx = ebx;
+    e.ecx = ecx;
+    return resultOf(app, cpu, e, setIndicator);
+}
+
+/* 0x48a220's, as C++: indicator `index`'s corners from `angle` (its bits), in `colour`. */
+Result indicatorGeometryOf(App* app, CPU& cpu, reg32 esp, reg32 index, reg32 angle, reg32 colour)
+{
+    Entry e = entryOf(app, cpu, esp, guest::Words{angle, colour});
+    e.eax = index;
+    return resultOf(app, cpu, e, indicatorGeometry);
+}
+
+/* 0x48a3a0's, as C++: place `place` among `among` with the language's letters. */
+Result rankTextOf(App* app, CPU& cpu, reg32 esp, reg32 place, reg32 among, reg32 scaleSuffix, reg32 scaleMain, reg32 colour, reg32 left, reg32 right, reg32 top, reg32 mode)
+{
+    Entry e = entryOf(app, cpu, esp, guest::Words{scaleSuffix, scaleMain, colour, left, right, top, mode});
+    e.eax = place;
+    e.edx = among;
+    return resultOf(app, cpu, e, rankDrawn);
+}
+
+/* 0x48a660's, as C++: group `group`'s list of labels. */
+Result labelRowsOf(App* app, CPU& cpu, reg32 esp, reg32 group, reg32 scale, reg32 left, reg32 right, reg32 width)
+{
+    Entry e = entryOf(app, cpu, esp, guest::Words{scale, left, right, width});
+    e.eax = group;
+    return resultOf(app, cpu, e, drawLabelRows);
+}
+
+/* 0x48ae70's, as C++: the standings of view `group`. */
+Result standingsOf(App* app, CPU& cpu, reg32 esp, reg32 scale, reg32 left, reg32 width, reg32 group)
+{
+    Entry e = entryOf(app, cpu, esp, guest::Words{scale, left, width, group});
+    return resultOf(app, cpu, e, drawStandings);
+}
+
+/* 0x48b5f0's, as C++: the markers (the decompiled code's, its registers as handed). */
+Result markersOf(App* app, CPU& cpu, reg32 esp, reg32 eax, reg32 edx, reg32 ebx, reg32 ecx)
+{
+    Entry e = entryOf(app, cpu, esp, guest::Words{});
+    e.eax = eax;
+    e.edx = edx;
+    e.ebx = ebx;
+    e.ecx = ecx;
+    return decompResultOf(app, cpu, e, decompMarkers);
+}
+
+/* 0x48cc60's, as C++: gauge `gauge`'s box round (x, y), `width` and `height` from it (floats' bits), `edx` handed on to the quad. */
+Result boxOf(App* app, CPU& cpu, reg32 esp, reg32 gauge, reg32 edx, reg32 x, reg32 y, reg32 width, reg32 height)
+{
+    Entry e = entryOf(app, cpu, esp, guest::Words{x, y, width, height});
+    e.eax = gauge;
+    e.edx = edx;
+    return resultOf(app, cpu, e, boxDrawnOf);
+}
+
+/* 0x48cb50's, as C++: the point at the pushed `x`, `y` moved and turned for gauge `gauge` into `out` (the words changed where the call pushed them): `gauge` back. */
+Result pointTransformedOf(App* app, CPU& cpu, reg32 esp, reg32 gauge, reg32 x, reg32 y, reg32 out)
+{
+    Entry e = entryOf(app, cpu, esp, guest::Words{x, y, out});
+    e.eax = gauge;
+    NFS2_USE(cpu);
+    pointMoved(app, e, gauge, esp + 4, esp + 8, out);
+    return int32_t(gauge);
+}
+
+/* 0x48d110's, as C++: group `group`'s map views set (`edx`, `ebx`, `ecx` as handed). */
+Result hudViewsOf(App* app, CPU& cpu, reg32 esp, reg32 group, reg32 edx, reg32 ebx, reg32 ecx)
+{
+    Entry e = entryOf(app, cpu, esp, guest::Words{});
+    e.eax = group;
+    e.edx = edx;
+    e.ebx = ebx;
+    e.ecx = ecx;
+    return resultOf(app, cpu, e, setHudViews);
+}
+
+/* 0x48d4c0's, as C++: the map's points (the decompiled code's, its registers as handed). */
+Result mapPointsOf(App* app, CPU& cpu, reg32 esp, reg32 eax, reg32 edx, reg32 ebx, reg32 ecx)
+{
+    Entry e = entryOf(app, cpu, esp, guest::Words{});
+    e.eax = eax;
+    e.edx = edx;
+    e.ebx = ebx;
+    e.ecx = ecx;
+    return decompResultOf(app, cpu, e, decompMapPoints);
+}
+
+/* 0x48e790's, as C++: view `view`'s map pane stepped. */
+Result paneStepOf(App* app, CPU& cpu, reg32 esp, reg32 view)
+{
+    Entry e = entryOf(app, cpu, esp, guest::Words{});
+    e.eax = view;
+    return resultOf(app, cpu, e, paneStepped);
+}
+
+/* 0x48ea20's, as C++: view `view`'s zoom stepped (`step` 0 up, 1 down). */
+Result zoomStepOf(App* app, CPU& cpu, reg32 esp, reg32 view, reg32 step)
+{
+    Entry e = entryOf(app, cpu, esp, guest::Words{});
+    e.eax = view;
+    e.edx = step;
+    return resultOf(app, cpu, e, zoomStepped);
+}
 /* 0x4844c0's, as C++ (port_hud.h): setHudPane for group in.eax, the rest of
  * `in` handed on as the caller's edx, ebx and ecx, its frame from `esp`. */
 Result hudPaneSetOf(App* app, CPU& cpu, reg32 esp, const Args& in)

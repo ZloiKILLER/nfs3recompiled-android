@@ -120,16 +120,18 @@ reg32 doubleDivide(App* app, CPU& cpu, reg32 low, reg32 high, reg32 otherLow, re
 reg32 doubleSubtract(App* app, CPU& cpu, reg32 low, reg32 high, reg32 otherLow, reg32 otherHigh);
 // The game's 0x5267ff: Watcom's __FDM: edx:eax times ecx:ebx.
 reg32 doubleMultiply(App* app, CPU& cpu, reg32 low, reg32 high, reg32 otherLow, reg32 otherHigh);
-// The game's 0x526674: the x87's way's end for sub_5267ff: st(0) the answer.
-reg32 doubleProductFromX87(App* app, CPU& cpu);
+// The game's 0x526674: the x87's way's end for sub_5267ff: `product` the answer (st(0), its adapter takes it off).
+reg32 doubleProductFromX87(App* app, CPU& cpu, double product);
 // The game's 0x52699c: edx:eax against ecx:ebx: -1, 0 or 1.
 reg32 doubleCompare(App* app, CPU& cpu, reg32 low, reg32 high, reg32 otherLow, reg32 otherHigh);
 // The game's 0x51f2a0: the runtime's start-up test of the Pentium's FDIV bug.
 reg32 fdivBugCheck(App* app, CPU& cpu);
-// The game's 0x52700c: st(0) divided by a double on the stack, safe from the bug.
-reg32 safeDivide(App* app, CPU& cpu, reg32 divisorLow, reg32 divisorHigh);
-// The game's 0x526f87: st(1) and st(0) put in memory for the careful division, its answer back.
-reg32 safeDivideCall(App* app, CPU& cpu);
+// The game's 0x52700c: `top` (st(0)) divided by a double on the stack, safe from the bug, `below` (st(1)) kept
+// for it; the quotient, which its code leaves in st(0) (eax as it came).
+double safeDivide(App* app, CPU& cpu, double top, double below, reg32 divisorLow, reg32 divisorHigh);
+// The game's 0x526f87: `divisor` (st(0)) and `dividend` (st(1)) put in memory for the careful division; its
+// answer, which its code leaves in their place.
+double safeDivideCall(App* app, CPU& cpu, double dividend, double divisor);
 
 }  // namespace menz
 }  // namespace frontend
@@ -674,8 +676,9 @@ template <>
 struct ByAddress<frontend::menz::doubleProductFromX87>
 {
     template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu)
+    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu, double product)
     {
+        cpu.fpu.push(x86::Float(product));
         return fe::callByAddress(app, cpu, Address, fe::args({}));
     }
 };
@@ -703,23 +706,36 @@ struct ByAddress<frontend::menz::fdivBugCheck>
 };
 
 // The divisor's two words on the stack.
+// `below` and `top` pushed onto the x87's stack, the divisor's words on the guest's (ret 8); the quotient taken
+// off the x87's again, and the slot under it, put back in the one under that, as the code that calls it does.
 template <>
 struct ByAddress<frontend::menz::safeDivide>
 {
     template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 divisorLow, x86::reg32 divisorHigh)
+    static double call(win32::WinApplication* app, x86::CPU& cpu, double top, double below, x86::reg32 divisorLow,
+                       x86::reg32 divisorHigh)
     {
-        return fe::callByAddress(app, cpu, Address, fe::args({}, { divisorLow, divisorHigh }));
+        cpu.fpu.push(x86::Float(below));
+        cpu.fpu.push(x86::Float(top));
+        fe::callByAddress(app, cpu, Address, fe::args({}, { divisorLow, divisorHigh }));
+        const double quotient = double(cpu.fpu.take());
+        const x86::Float above = cpu.fpu.take();
+        cpu.fpu.st(0) = above;
+        return quotient;
     }
 };
 
+// `dividend` and `divisor` pushed onto the x87's stack; the answer in their place taken off it.
 template <>
 struct ByAddress<frontend::menz::safeDivideCall>
 {
     template <x86::reg32 Address>
-    static x86::reg32 call(win32::WinApplication* app, x86::CPU& cpu)
+    static double call(win32::WinApplication* app, x86::CPU& cpu, double dividend, double divisor)
     {
-        return fe::callByAddress(app, cpu, Address, fe::args({}));
+        cpu.fpu.push(x86::Float(dividend));
+        cpu.fpu.push(x86::Float(divisor));
+        fe::callByAddress(app, cpu, Address, fe::args({}));
+        return double(cpu.fpu.take());
     }
 };
 

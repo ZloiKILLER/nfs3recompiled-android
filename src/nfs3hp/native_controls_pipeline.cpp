@@ -3,9 +3,11 @@
 #include "native_controls_input.h"
 #include "native_controls_pipeline.h"
 #include "native_controls_queue.h"
+#include "native_frontend_eaa.h"
 #include "native_guest.h"
 
 #include <optional>
+#include <type_traits>
 
 /* The controls read and turned into the players' actions every frame of a
  * race.  disassemble_nfs3hp.py binds each address to the function of that
@@ -103,7 +105,6 @@ constexpr reg32 kReplayFrames = 0x560104;
 constexpr reg32 kQueueStopped = 0x560108;
 constexpr sreg32 kReplayShown = 2;
 // What is called by address.
-constexpr reg32 kKeyState = 0x4eb1c0;
 
 /* A call as the code makes it: the return address's slot, and esp as the
  * callee leaves it.  False when the game stopped in it. */
@@ -157,14 +158,64 @@ std::optional<reg32> zeroFill(App* app, CPU& cpu, reg32 from, reg32 bytes)
     return cpu.eax;
 }
 
-/* Key `key`'s state (0x4eb1c0), nonzero held. */
+/* A native_frontend_* file's typed core called as C++ (guest::direct): nothing (false) when the
+ * game stopped in it (its calls into the game throw fe::Terminated).  tools/game_checks does not
+ * build those files: there it goes by address, through its ByAddress, as the game's code calls it,
+ * every register but eax kept.  A reg32 result is the eax the function leaves: eax set to it (in the
+ * game too); after any other, eax spoilt there, so that code still reading what the callee left in
+ * eax differs there. */
+template <reg32 Address, auto Core, typename... Args>
+auto feCore(App* app, CPU& cpu, Args... args)
+{
+    const auto run = [&] {
+#ifdef NFS_GAME_CHECKS
+        const guest::KeptRegisters kept(cpu);
+        return guest::ByAddress<Core>::template call<Address>(app, cpu, args...);
+#else
+        return guest::direct<Address, Core>(app, cpu, args...);
+#endif
+    };
+    using Result = decltype(run());
+    const auto spoil = [&] {
+#ifdef NFS_GAME_CHECKS
+        cpu.eax = 0x5b0115edu;
+#endif
+    };
+    if constexpr (std::is_void_v<Result>)
+    {
+        try
+        {
+            run();
+        }
+        catch (const fe::Terminated&)
+        {
+            return false;
+        }
+        spoil();
+        return !cpu.terminate;
+    }
+    else
+    {
+        try
+        {
+            const Result result = run();
+            if constexpr (std::is_same_v<Result, x86::reg32>)
+                cpu.eax = result;  // a menu core's result: the eax it leaves, as the call by address does
+            else
+                spoil();
+            return cpu.terminate ? std::optional<Result>() : std::optional<Result>(result);
+        }
+        catch (const fe::Terminated&)
+        {
+            return std::optional<Result>();
+        }
+    }
+}
+
+/* Key `key`'s state (eaa's, 0x4eb1c0), nonzero held. */
 std::optional<reg32> keyState(App* app, CPU& cpu, reg32 key)
 {
-    const KeptRegisters kept(cpu);
-    cpu.eax = key;
-    if (!byAddress(app, cpu, kKeyState))
-        return std::nullopt;
-    return cpu.eax;
+    return feCore<0x4eb1c0, frontend::eaa::keyStateByte>(app, cpu, key);
 }
 
 /* movsx of a control's low byte: its kind. */

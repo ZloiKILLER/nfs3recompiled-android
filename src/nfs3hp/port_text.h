@@ -94,6 +94,41 @@ reg32 dimmed(App* app, CPU& cpu, reg32 slot, reg32 eax);
 // The game's 0x451960: the menus' key now, a held one repeating when `repeating`; esp the frame base.
 Result menuKeyOf(App* app, CPU& cpu, reg32 esp, reg32 repeating);
 
+/* Those whose code leaves a value on the x87's stack (Watcom's float result): the value comes back
+ * as a double, and eax as the code leaves it; their adapters put it on the x87's stack, and their
+ * ByAddress take it off. */
+struct Width
+{
+    reg32 eax;
+    double value;
+};
+using WidthResult = std::optional<Width>;
+
+/* What 0x4d06f0 is handed: the character's number (0xe0 a font, from the space), its square of the
+ * font's texture, where it goes (x a float), its colour, whether it is only measured. */
+struct Character
+{
+    reg32 number;
+    int32_t textureX, textureY;
+    float x;
+    int32_t y;
+    int32_t width, height;
+    reg32 colour;
+    int32_t measured;
+};
+
+// The game's 0x4d1390 (stdcall 4): the text scale set to `scale` (a float's bits); the one before (eax kept).
+double textScaleSet(App* app, CPU& cpu, reg32 scale);
+// The game's 0x4d06f0 (stdcall 0x18): a character of the fonts queued, unless only measured; how far the next
+// goes.  Its x moves to the quad's left edge in its stack argument's place, esp + 4; esp the frame base.
+WidthResult characterDrawn(App* app, CPU& cpu, reg32 esp, Character ch);
+// The game's 0x4d1430: how wide `text` is, in whole pixels; esp the frame base.
+WidthResult textMeasured(App* app, CPU& cpu, reg32 esp, reg32 text);
+// The game's 0x4d1480: `text` measured, its last character's overhang added; esp the frame base.
+WidthResult textMeasuredWithOverhang(App* app, CPU& cpu, reg32 esp, reg32 text);
+// The game's 0x4d1000: `text` at x, y in the font's colour, or only measured; how wide; esp the frame base.
+WidthResult textDrawn(App* app, CPU& cpu, reg32 esp, reg32 text, int32_t x, int32_t y);
+
 }  // namespace text
 }  // namespace port
 
@@ -223,6 +258,90 @@ struct ByAddress<port::text::menuKeyOf>
     static port::Result call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32, x86::reg32 repeating)
     {
         return watcomEax(app, cpu, Address, {repeating});
+    }
+};
+
+/* What a call by address left: eax, and the value taken off the x87's stack. */
+inline port::text::WidthResult textWidthLeft(x86::CPU& cpu)
+{
+    const x86::reg32 eax = cpu.eax;
+    return port::text::Width{eax, double(cpu.fpu.take())};
+}
+
+// Stdcall: the scale pushed (ret 4); the one before off the x87's stack.
+template <>
+struct ByAddress<port::text::textScaleSet>
+{
+    template <x86::reg32 Address>
+    static double call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 scale)
+    {
+        const KeptRegisters kept(cpu);
+        if (!guest::call(app, cpu, Address, {scale}))
+            return 0.0;
+        return double(cpu.fpu.take());
+    }
+};
+
+// Stdcall: the number in eax, the texture's square in edx and ebx; x (a float's bits), y, the width, the height,
+// the colour and whether only measured pushed (ret 0x18); eax back and the advance off the x87's stack.
+template <>
+struct ByAddress<port::text::characterDrawn>
+{
+    template <x86::reg32 Address>
+    static port::text::WidthResult call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32,
+                                        port::text::Character ch)
+    {
+        const KeptRegisters kept(cpu);
+        cpu.eax = ch.number;
+        cpu.edx = x86::reg32(ch.textureX);
+        cpu.ebx = x86::reg32(ch.textureY);
+        x86::reg32 x;
+        std::memcpy(&x, &ch.x, sizeof x);
+        if (!guest::call(app, cpu, Address,
+                         {x, x86::reg32(ch.y), x86::reg32(ch.width), x86::reg32(ch.height), ch.colour,
+                          x86::reg32(ch.measured)}))
+            return std::nullopt;
+        return textWidthLeft(cpu);
+    }
+};
+
+// The text in eax; eax back and the width off the x87's stack.
+template <>
+struct ByAddress<port::text::textMeasured>
+{
+    template <x86::reg32 Address>
+    static port::text::WidthResult call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32, x86::reg32 text)
+    {
+        if (!watcom(app, cpu, Address, {text}))
+            return std::nullopt;
+        return textWidthLeft(cpu);
+    }
+};
+
+// The text in eax; eax back and the width off the x87's stack.
+template <>
+struct ByAddress<port::text::textMeasuredWithOverhang>
+{
+    template <x86::reg32 Address>
+    static port::text::WidthResult call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32, x86::reg32 text)
+    {
+        if (!watcom(app, cpu, Address, {text}))
+            return std::nullopt;
+        return textWidthLeft(cpu);
+    }
+};
+
+// The text in eax, x in edx, y in ebx; eax back and the width off the x87's stack.
+template <>
+struct ByAddress<port::text::textDrawn>
+{
+    template <x86::reg32 Address>
+    static port::text::WidthResult call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32, x86::reg32 text,
+                                        std::int32_t x, std::int32_t y)
+    {
+        if (!watcom(app, cpu, Address, {text, x86::reg32(x), x86::reg32(y)}))
+            return std::nullopt;
+        return textWidthLeft(cpu);
     }
 };
 

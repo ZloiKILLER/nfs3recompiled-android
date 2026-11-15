@@ -1,10 +1,13 @@
 #include "game_settings.h"
 #include "native_ea_memory.h"
 #include "native_ea_support.h"
+#include "native_frontend_loada.h"
+#include "native_game.h"
 #include "native_guest.h"
 #include "native_load_cardb.h"
 #include "native_load_carmodels.h"
 #include "native_load_track.h"
+#include "native_watcom.h"
 #include "native_windows.h"
 #include <winapi/kernel32.h>
 #include <winapi/ole32.h>
@@ -12,6 +15,7 @@
 #include <cstdint>
 #include <initializer_list>
 #include <optional>
+#include <type_traits>
 
 /* The game's data: the cars' database, read from the carmodel folder (its
  * path at 0x7a28b4) a car's folder at a time.  disassemble_nfs3hp.py binds
@@ -43,11 +47,13 @@
  * registers the code does not keep, as the code does.  The code's frame stays
  * on the guest's stack, at its depth, where a callee is handed an address in
  * it (Frame); the rest of it is C++ locals.  The functions of this file that
- * tools/game_checks stands in for (the folders' and files' walkers,
- * carRecord, carFolder, carIsPolice, loadCarList) are called by address, as is every other function of the game's and Windows' through its
- * imports, their arguments in registers as the code hands them -- but the
- * other typed files' that their headers declare, called as C++
- * (guest::direct). */
+ * tools/game_checks stands in for (the folders' and files' walkers) are
+ * called by address, as is every other function of the game's without a
+ * typed core and Windows' through its imports, their arguments in registers
+ * as the code hands them -- but the typed ones the headers declare (this
+ * file's carRecord, carFolder, carIsPolice, loadCarList too), called as C++
+ * (guest::direct, feCore), their arguments still loaded into the registers
+ * and their answer left in eax as the call by address leaves them. */
 namespace nfs3hp
 {
 namespace load
@@ -121,26 +127,22 @@ constexpr reg32 kBackslash = 0x5c, kWritableMode = 0x180, kSeekStart = 0, kSeekE
 // Windows' functions, by their imports' slots.
 constexpr reg32 kCoCreateGuid = 0x534478, kFindClose = 0x5344c8, kFindFirstFileA = 0x5344cc;
 constexpr reg32 kFindNextFileA = 0x5344d0;
-// The game's functions, by address: a path ended with '\', a file copied,
-// the language's name; a file written whole (its edx is the code's).  The
-// car's specs loaded, a player's settings checked, the .viv's (track's)
-// lookup, its write and its parse, a file loaded, the game's memory, a .viv's
-// opening, look-up and closing are the other files' (native_load_carmodels.h,
-// native_load_track.h, native_ea_support.h, native_ea_memory.h), called as
-// C++ (guest::direct).
-constexpr reg32 kAddSlash = 0x4529a0, kCopyFile = 0x452a00, kLanguageName = 0x478290;
-constexpr reg32 kLanguageNameOf = 0x4782b0;
-constexpr reg32 kError = 0x401010, kSprintf = 0x4df690, kMemset = 0x4e0640, kFillZero = 0x4e070c;
-constexpr reg32 kStrncpy = 0x4e0e30, kWriteWhole = 0x4eebb0;
-constexpr reg32 kFseek = 0x4e9088, kFread = 0x4e9200, kStricmp = 0x4e9ec0, kMkdir = 0x4eb1d0;
-constexpr reg32 kFopen = 0x4edfe8, kFclose = 0x4ee100, kRemove = 0x4ee2e0, kStrrchr = 0x4ee2f0;
-constexpr reg32 kStrcmp = 0x4ee310, kChmod = 0x4ee3c0, kRmdir = 0x4ee400, kFtell = 0x4ee420;
-constexpr reg32 kQsort = 0x4ee4f8, kFwrite = 0x4eebd0;
-// This file's that tools/game_checks stands in for.
+// The game's functions, by address: a path ended with '\'; a file written
+// whole (its edx is the code's); the runtime's ftell, fwrite, remove, chmod and
+// rmdir (no typed cores).  The car's specs loaded, a player's settings checked,
+// the .viv's (track's) lookup, its write and its parse, a file loaded, the
+// game's memory, a .viv's opening, look-up and closing, the runtime's others,
+// EA's fill and Error, the menus' file copied and language's name are the
+// other files' (native_load_carmodels.h, native_load_track.h,
+// native_ea_support.h, native_ea_memory.h, native_watcom.h, native_game.h,
+// native_frontend_loada.h), called as C++ (guest::direct, feCore).
+constexpr reg32 kAddSlash = 0x4529a0, kWriteWhole = 0x4eebb0;
+constexpr reg32 kRemove = 0x4ee2e0, kChmod = 0x4ee3c0, kRmdir = 0x4ee400, kFtell = 0x4ee420, kFwrite = 0x4eebd0;
+// This file's that tools/game_checks stands in for: the folders' and files'
+// walkers by address; carFolder, carIsPolice and the carmodels' natives'
+// (carRecord, loadCarList) as C++ (typed).
 constexpr reg32 kFirstSubfolder = 0x4386b0, kNextSubfolder = 0x4387e0, kFirstFile = 0x438870;
-constexpr reg32 kNextFile = 0x438970, kCarFolder = 0x4392b0, kCarIsPolice = 0x4396b0;
-// And the carmodels' natives' (carRecord, loadCarList).
-constexpr reg32 kCarRecord = 0x439a50, kLoadCarList = 0x439d90;
+constexpr reg32 kNextFile = 0x438970;
 
 sreg32 s(reg32 value)
 {
@@ -270,22 +272,105 @@ std::optional<reg32> call(App* app, CPU& cpu, reg32 target, reg32 eax, reg32 edx
     return call(app, cpu, target, eax, edx, ebx);
 }
 
-/* A function whose arguments are words on the stack, pushed last to first:
- * the caller takes them off after (cdecl), or the callee does (Windows'). */
-std::optional<reg32> pushing(App* app, CPU& cpu, reg32 target, std::initializer_list<reg32> words, bool callerPops)
+/* `Core`, the game's `Address`, a typed function another file's header (or this one's) declares,
+ * called as C++ (guest::direct): its arguments loaded into eax, edx, ebx and ecx first as the code
+ * hands them, which the callee keeps, and its answer left in eax, as the call by address leaves
+ * them.  Nullopt when the game stopped in it. */
+template <reg32 Address, auto Core, typename... Args>
+std::optional<reg32> typed(App* app, CPU& cpu, Args... args)
+{
+    guest::loadWatcomArguments(cpu, {reg32(args)...});
+    const auto answer = guest::direct<Address, Core>(app, cpu, args...);
+    if (cpu.terminate)
+        return std::nullopt;
+    if constexpr (std::is_same_v<std::decay_t<decltype(answer)>, std::optional<reg32>>)
+    {
+        if (!answer)
+            return std::nullopt;
+        cpu.eax = *answer;
+    }
+    else
+        cpu.eax = answer;
+    return cpu.eax;
+}
+
+/* A native_frontend_* file's typed core called as C++ (guest::direct): nothing (false) when the
+ * game stopped in it (its calls into the game throw fe::Terminated).  tools/game_checks does not
+ * build those files: there it goes by address, through its ByAddress, as the game's code calls it,
+ * every register but eax kept.  A reg32 result is the eax the function leaves: eax set to it (in the
+ * game too); after any other, eax spoilt there, so that code still reading what the callee left in
+ * eax differs there. */
+template <reg32 Address, auto Core, typename... Args>
+auto feCore(App* app, CPU& cpu, Args... args)
+{
+    const auto run = [&] {
+#ifdef NFS_GAME_CHECKS
+        const guest::KeptRegisters kept(cpu);
+        return guest::ByAddress<Core>::template call<Address>(app, cpu, args...);
+#else
+        return guest::direct<Address, Core>(app, cpu, args...);
+#endif
+    };
+    using Result = decltype(run());
+    const auto spoil = [&] {
+#ifdef NFS_GAME_CHECKS
+        cpu.eax = 0x5b0115edu;
+#endif
+    };
+    if constexpr (std::is_void_v<Result>)
+    {
+        try
+        {
+            run();
+        }
+        catch (const fe::Terminated&)
+        {
+            return false;
+        }
+        spoil();
+        return !cpu.terminate;
+    }
+    else
+    {
+        try
+        {
+            const Result result = run();
+            if constexpr (std::is_same_v<Result, x86::reg32>)
+                cpu.eax = result;  // a menu core's result: the eax it leaves, as the call by address does
+            else
+                spoil();
+            return cpu.terminate ? std::optional<Result>() : std::optional<Result>(result);
+        }
+        catch (const fe::Terminated&)
+        {
+            return std::optional<Result>();
+        }
+    }
+}
+
+/* feCore with its arguments loaded into eax, edx, ebx and ecx first as the code hands them, and
+ * its answer left in eax, as the call by address leaves them. */
+template <reg32 Address, auto Core, typename... Args>
+std::optional<reg32> menuCall(App* app, CPU& cpu, Args... args)
+{
+    guest::loadWatcomArguments(cpu, {reg32(args)...});
+    const std::optional<reg32> answer = feCore<Address, Core>(app, cpu, args...);
+    if (answer)
+        cpu.eax = *answer;
+    return answer;
+}
+
+/* The runtime's sprintf (0x4df690): the buffer, the format, its arguments, pushed last to first
+ * and taken off after (cdecl).  By address: watcom's core puts its arguments, and so the va_list it
+ * hands vsprintf, a word lower on the guest's stack than the code's call (the check sees it). */
+std::optional<reg32> printTo(App* app, CPU& cpu, std::initializer_list<reg32> words)
 {
     for (auto word = words.end(); word != words.begin();)
         push(app, cpu, *--word);
-    const auto left = result(app, cpu, target);
-    if (left && callerPops)
+    const auto left = result(app, cpu, 0x4df690);
+    if (left)
         cpu.esp += reg32(4 * words.size());
     return left;
-}
-
-/* The runtime's sprintf: the buffer, the format, its arguments. */
-std::optional<reg32> printTo(App* app, CPU& cpu, std::initializer_list<reg32> words)
-{
-    return pushing(app, cpu, kSprintf, words, true);
 }
 
 /* A Windows function (`Function`), handed `words`: the port's own, called as
@@ -299,37 +384,37 @@ std::optional<reg32> windows(App* app, CPU& cpu, Words... words)
 // The runtime's functions the code calls, Watcom's: their answer in eax.
 std::optional<reg32> compareStrings(App* app, CPU& cpu, reg32 a, reg32 b)  // strcmp
 {
-    return call(app, cpu, kStrcmp, a, b);
+    return typed<0x4ee310, watcom::clib::strcmp>(app, cpu, a, b);
 }
 
 std::optional<reg32> compareNoCase(App* app, CPU& cpu, reg32 a, reg32 b)  // stricmp
 {
-    return call(app, cpu, kStricmp, a, b);
+    return typed<0x4e9ec0, watcom::clib::stricmp>(app, cpu, a, b);
 }
 
 std::optional<reg32> lastOf(App* app, CPU& cpu, reg32 string, reg32 c)  // strrchr
 {
-    return call(app, cpu, kStrrchr, string, c);
+    return typed<0x4ee2f0, watcom::clib::strrchr>(app, cpu, string, c);
 }
 
 std::optional<reg32> fillBytes(App* app, CPU& cpu, reg32 to, reg32 value, reg32 bytes)  // memset
 {
-    return call(app, cpu, kMemset, to, value, bytes);
+    return typed<0x4e0640, watcom::clib::memset>(app, cpu, to, value, bytes);
 }
 
 std::optional<reg32> openFile(App* app, CPU& cpu, reg32 path, reg32 mode)
 {
-    return call(app, cpu, kFopen, path, mode);
+    return typed<0x4edfe8, watcom::clib::fopen>(app, cpu, path, mode);
 }
 
 std::optional<reg32> closeFile(App* app, CPU& cpu, reg32 file)
 {
-    return call(app, cpu, kFclose, file);
+    return typed<0x4ee100, watcom::clib::fclose>(app, cpu, file);
 }
 
 std::optional<reg32> seekFile(App* app, CPU& cpu, reg32 file, reg32 offset, reg32 whence)
 {
-    return call(app, cpu, kFseek, file, offset, whence);
+    return typed<0x4e9088, watcom::clib::fseek>(app, cpu, file, offset, whence);
 }
 
 std::optional<reg32> tellFile(App* app, CPU& cpu, reg32 file)
@@ -339,7 +424,7 @@ std::optional<reg32> tellFile(App* app, CPU& cpu, reg32 file)
 
 std::optional<reg32> readFile(App* app, CPU& cpu, reg32 to, reg32 size, reg32 count, reg32 file)
 {
-    return call(app, cpu, kFread, to, size, count, file);
+    return typed<0x4e9200, watcom::clib::fread>(app, cpu, to, size, count, file);
 }
 
 std::optional<reg32> writeFile(App* app, CPU& cpu, reg32 from, reg32 size, reg32 count, reg32 file)
@@ -366,17 +451,17 @@ std::optional<reg32> release(App* app, CPU& cpu, reg32 block)
 // This file's the check stands in for, and the carmodels' carRecord, by their place in the list.
 std::optional<reg32> carRecordAt(App* app, CPU& cpu, reg32 place)
 {
-    return call(app, cpu, kCarRecord, place);
+    return typed<0x439a50, recordAt>(app, cpu, place);
 }
 
 std::optional<reg32> carFolderAt(App* app, CPU& cpu, reg32 place)
 {
-    return call(app, cpu, kCarFolder, place);
+    return typed<0x4392b0, folderOf>(app, cpu, place);
 }
 
 std::optional<reg32> policeAt(App* app, CPU& cpu, reg32 place)
 {
-    return call(app, cpu, kCarIsPolice, place);
+    return typed<0x4396b0, policeFlag>(app, cpu, place);
 }
 
 /* The string at `from`, its 0 too, to `to`, a byte at a time from the first,
@@ -1247,8 +1332,15 @@ std::optional<reg32> checkDuplicates(App* app, CPU& cpu)
             const auto otherId = idOf(app, cpu, other);
             if (!otherId)
                 return std::nullopt;
-            if (alike(app, *id, *otherId, kIdBytes) && !pushing(app, cpu, kError, {kDuplicates}, true))
-                return std::nullopt;
+            if (alike(app, *id, *otherId, kIdBytes))
+            {
+                // Error (0x401010) by address, its word pushed and taken off after (cdecl): ea's core
+                // hands vsprintf a va_list a word lower than the code's call (the check sees it).
+                push(app, cpu, kDuplicates);
+                if (!result(app, cpu, 0x401010))
+                    return std::nullopt;
+                cpu.esp += 4;
+            }
         }
     }
     return left;
@@ -1658,8 +1750,13 @@ std::optional<reg32> buildClassLists(App* app, CPU& cpu)
     const Frame frame(cpu, 4 + 0x14, 8);
     const Kept kept(cpu, kSaveEbx | kSaveEcx | kSaveEdx | kSaveEdi | kSaveEbp);
     const reg32 listed = at(app, kCount) - at(app, kNotListed);
-    if (!call(app, cpu, kFillZero, kClassLists, 0x320) || !call(app, cpu, kFillZero, kClassCounts, 0x10))
-        return std::nullopt;
+    for (const auto& clear : {std::pair<reg32, reg32>{kClassLists, 0x320}, {kClassCounts, 0x10}})
+    {
+        guest::loadWatcomArguments(cpu, {clear.first, clear.second});  // as the code hands them
+        guest::direct<0x4e070c, ea::clearBytes>(app, cpu, clear.first, clear.second);
+        if (cpu.terminate)
+            return std::nullopt;
+    }
     for (reg32 place = 0; s(place) < s(listed); ++place)
     {
         const auto chosen = selectable(app, cpu, place);
@@ -1685,7 +1782,9 @@ std::optional<reg32> buildClassLists(App* app, CPU& cpu)
         put(app, kClassCounts, all);
     }
     for (reg32 list = 0; list < 4; ++list)
-        if (!call(app, cpu, kQsort, kClassLists + kClassListBytes * list, at(app, kClassCounts + 4 * list), 4,
+        // By address: watcom's core sorts in a frame a word lower than the code's call puts qsort's,
+        // and the compare (0x43a4d0) is handed addresses in it (the check sees them).
+        if (!call(app, cpu, 0x4ee4f8, kClassLists + kClassListBytes * list, at(app, kClassCounts + 4 * list), 4,
                   kClassCompare))
             return std::nullopt;
     return at(app, kClassCounts);
@@ -1930,7 +2029,7 @@ std::optional<reg32> loadCars(App* app, CPU& cpu)
             return std::nullopt;
         ++count;
         appendString(app, path, *folder);
-        const auto language = call(app, cpu, kLanguageNameOf, at(app, kLanguage));
+        const auto language = menuCall<0x4782b0, frontend::loada::screenSizeNumberOf>(app, cpu, at(app, kLanguage));
         if (!language || !printTo(app, cpu, {path + stringLength(app, path), kFedataPath, *language}))
             return std::nullopt;
         const auto opened = openFile(app, cpu, path, kReadBinary);
@@ -2045,7 +2144,7 @@ std::optional<reg32> loadCars(App* app, CPU& cpu)
         copyString(app, *record + kRecName, textAt(app, *record + kRecTexts, kNameText));
         copyString(app, *record + kRecFolder, *folder);
         copyString(app, *record + kRecFolderToo, *folder);
-        if (!call(app, cpu, kStrncpy, *record + kRecPrefix, kCar, 4))
+        if (!typed<0x4e0e30, watcom::clib::strncpy>(app, cpu, *record + kRecPrefix, kCar, reg32(4)))
             return std::nullopt;
         put(app, *record + kRecNext, 0);
         appendRecord(app, *record);
@@ -2145,7 +2244,7 @@ std::optional<reg32> copyAsNew(App* app, CPU& cpu, reg32 name, reg32 car)
     cpu.edx = folder + stringLength(app, folder);
     if (!freeFolderName(app, cpu, models, cpu.edx, kHexFolder))
         return std::nullopt;
-    const auto made = call(app, cpu, kMkdir, folder);
+    const auto made = typed<0x4eb1d0, watcom::clib::mkdir>(app, cpu, folder);
     if (!made)
         return std::nullopt;
     if (*made != 0)
@@ -2157,7 +2256,8 @@ std::optional<reg32> copyAsNew(App* app, CPU& cpu, reg32 name, reg32 car)
         return std::nullopt;
     appendString(app, carFolderPath, *carFolder);
     if (!newVivPath(app, cpu, carVivPath, carFolderPath) || !newVivPath(app, cpu, vivPath, folder)
-        || !call(app, cpu, kCopyFile, vivPath, carVivPath) || !newVivPath(app, cpu, vivPath, folder))
+        || !menuCall<0x452a00, frontend::loada::copyFile>(app, cpu, vivPath, carVivPath)
+        || !newVivPath(app, cpu, vivPath, folder))
         return std::nullopt;
     const auto data = guest::direct<0x4e0fe0, ea::loadQuietly>(app, cpu, vivPath, reg32(0x10));
     if (!data)
@@ -2176,7 +2276,7 @@ std::optional<reg32> copyAsNew(App* app, CPU& cpu, reg32 name, reg32 car)
     // The fedata's entry: the name added, a new id.
     for (reg32 language = 0; s(language) < 7; ++language)
     {
-        const auto languageName = result(app, cpu, kLanguageName);
+        const auto languageName = menuCall<0x478290, frontend::loada::screenSizeNumber>(app, cpu);
         if (!languageName || !printTo(app, cpu, {vivPath, kFedataName, *languageName}))
             return std::nullopt;
         const auto entry = guest::direct<0x418fe0, findCached>(app, cpu, viv, vivPath);
@@ -2226,7 +2326,7 @@ std::optional<reg32> copyAsNew(App* app, CPU& cpu, reg32 name, reg32 car)
         return std::nullopt;
     if (!release(app, cpu, *saved))
         return std::nullopt;
-    const auto loaded = result(app, cpu, kLoadCarList);
+    const auto loaded = typed<0x439d90, loadCars>(app, cpu);
     if (!loaded)
         return std::nullopt;
     if (*loaded != 0)

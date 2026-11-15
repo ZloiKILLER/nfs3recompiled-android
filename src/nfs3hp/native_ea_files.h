@@ -39,6 +39,12 @@ std::optional<x86::reg32> surfaceUnlocked(win32::WinApplication* app, x86::CPU& 
 // The game's 0x501110: Windows' pages for the bytes at `bytes` (rounded up there): their address, or
 // 0.
 std::optional<x86::reg32> allocatePages(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 bytes);
+// The game's 0x501180: Windows' pages at `pages` given back: VirtualFree's answer.
+std::optional<x86::reg32> pagesFreed(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 pages);
+// The game's 0x501050, cdecl: a report at `level` -- nothing when above the threshold at `threshold`
+// (0: none) -- of `format` with `words`, sent the way the game set: what the way leaves in eax.
+std::optional<x86::reg32> reportedAt(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 threshold,
+                                     x86::reg32 level, x86::reg32 format, guest::Words words);
 
 }  // namespace ea
 
@@ -145,6 +151,31 @@ struct ByAddress<ea::allocatePages>
     static std::optional<x86::reg32> call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 bytes)
     {
         return watcomEax(app, cpu, Address, {bytes});
+    }
+};
+
+// The pages in eax; VirtualFree's answer back in eax, every other register kept.
+template <>
+struct ByAddress<ea::pagesFreed>
+{
+    template <x86::reg32 Address>
+    static std::optional<x86::reg32> call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 pages)
+    {
+        return watcomEax(app, cpu, Address, {pages});
+    }
+};
+
+// The threshold, the level, the format and the words pushed (the caller takes them off); eax back.
+template <>
+struct ByAddress<ea::reportedAt>
+{
+    template <x86::reg32 Address>
+    static std::optional<x86::reg32> call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 threshold,
+                                          x86::reg32 level, x86::reg32 format, Words words)
+    {
+        if (!guest::call(app, cpu, Address, {threshold, level, format}, words))
+            return std::nullopt;
+        return cpu.eax;
     }
 };
 

@@ -3,6 +3,7 @@
 #include "native_ea_net.h"
 #include "native_guest.h"
 #include "native_windows.h"
+#include "host_threads.h"
 #include <winapi/kernel32.h>
 
 #include <optional>
@@ -677,20 +678,20 @@ std::optional<reg32> sendInput(App* app, CPU& cpu, reg32 actions)
     {
         const reg32 lock = at(app, kNetworkLock);
         putByte(app, packet, kInputPacketType);
-        if (!lockCall<kEnterCriticalSection, &win32::kernel32::EnterCriticalSection>(app, cpu, lock, 0, 0))
+        if (!lockCall<kEnterCriticalSection, &host::enterLock>(app, cpu, lock, 0, 0))
             return std::nullopt;
         const reg32 queued = queuePlayerInput(app, gameSettings(app).localPlayer, actions).answer;
         if (queued == 0 || gameSettings(app).networkGame != 0)
         {
             // Unlocked with the queue's answer in eax, which LeaveCriticalSection may keep.
-            const auto unlocked = lockCall<kLeaveCriticalSection, &win32::kernel32::LeaveCriticalSection>(
+            const auto unlocked = lockCall<kLeaveCriticalSection, &host::leaveLock>(
                 app, cpu, at(app, kNetworkLock), queued, 0);
             if (!unlocked)
                 return std::nullopt;
             return unlocked->answer;
         }
         repeatMissing(app, packet + 1, 0);
-        if (!lockCall<kLeaveCriticalSection, &win32::kernel32::LeaveCriticalSection>(app, cpu, at(app, kNetworkLock), 0,
+        if (!lockCall<kLeaveCriticalSection, &host::leaveLock>(app, cpu, at(app, kNetworkLock), 0,
                                                                                      0))
             return std::nullopt;
         const auto sent = guest::direct<0x4a60e0, ea::packetSent>(app, cpu, 0u, packet, kAllInputsBytes);
@@ -754,7 +755,7 @@ std::optional<Received> receivePacket(App* app, CPU& cpu, reg32 machine, reg32 p
     const reg32 controls = packet + 2;
     if (at(app, kNetworkKind) == kHostKind)
     {
-        if (!lockCall<kEnterCriticalSection, &win32::kernel32::EnterCriticalSection>(app, cpu, at(app, kNetworkLock), 0,
+        if (!lockCall<kEnterCriticalSection, &host::enterLock>(app, cpu, at(app, kNetworkLock), 0,
                                                                                      0))
             return std::nullopt;
         // The player the machine is, a word.
@@ -765,7 +766,7 @@ std::optional<Received> receivePacket(App* app, CPU& cpu, reg32 machine, reg32 p
         // Unlocked with the queue's answer in eax and the lock in edx, which
         // LeaveCriticalSection may keep.
         const reg32 lock = at(app, kNetworkLock);
-        const auto unlocked = lockCall<kLeaveCriticalSection, &win32::kernel32::LeaveCriticalSection>(
+        const auto unlocked = lockCall<kLeaveCriticalSection, &host::leaveLock>(
             app, cpu, lock, queued.answer, lock);
         if (!unlocked)
             return std::nullopt;

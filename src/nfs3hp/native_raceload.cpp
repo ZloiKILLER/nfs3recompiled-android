@@ -7,6 +7,11 @@
 #include "native_ea_net.h"
 #include "native_ea_support.h"
 #include "native_ea_threads.h"
+#include "native_frontend_loada.h"
+#include "native_frontend_menua.h"
+#include "native_frontend_rendd.h"
+#include "native_frontend_simd.h"
+#include "native_frontend_wata.h"
 #include "native_graphics.h"
 #include "native_guest.h"
 #include "native_handling.h"
@@ -16,11 +21,14 @@
 #include "native_racestart.h"
 #include "native_vertices.h"
 #include "native_windows.h"
+#include "host_threads.h"
+#include "native_watcom.h"
 #include <winapi/kernel32.h>
 
 #include <cstdint>
 #include <cstring>
 #include <optional>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -109,12 +117,12 @@ constexpr reg32 kNoName = 0x53732c, kPerformanceName = 0x537330, kTextName = 0x5
 constexpr reg32 kTrafficViv = 0x537348, kPursuitViv = 0x53735c, kKnockoutViv = 0x537378, kCarVivPath = 0x537388;
 // The loading bar's: where the cars start it (75 per cent), 15 per cent for them all.
 constexpr reg32 kBarStart = 0x42960000, kBarCars = 0x537340;
-// What is called by address; the force feedback's handler (a task's).
-constexpr reg32 kReadPerformance = 0x4b1380, kCarModel = 0x439710;
-constexpr reg32 kSprintf = 0x4df690, kLoadingTick = 0x4a33d0, kCarShapes = 0x4b7d30;
-constexpr reg32 kPlaceCar = 0x42bcb0, kCarReset = 0x40cb70, kCarPrepared = 0x4285f0;
-constexpr reg32 kFillZero = 0x4e070c, kCarMade = 0x428700;
-constexpr reg32 kMemset = 0x4e0640, kFreeShapes = 0x4b7eb0, kAddTask = 0x4be250, kRemoveTask = 0x4be2f0;
+// What is called by address -- sprintf (the ecx and edx it leaves, as a cdecl
+// function), the car's shapes, its reset (the eax it leaves), the fill with
+// zeros (the eax and edx it leaves); the force feedback's handler (a task's).
+constexpr reg32 kSprintf = 0x4df690, kCarShapes = 0x4b7d30;
+constexpr reg32 kCarReset = 0x40cb70;
+constexpr reg32 kFillZero = 0x4e070c;
 constexpr reg32 kForceTask = 0x471e10;
 // The race's frame: the track's nodes and their records (0x24 bytes each),
 // the race's frame counter, the camera's car and the race's light.
@@ -148,15 +156,12 @@ constexpr reg32 kFiveTimes = 0x5373bc, kImpulseScale = 0x5537ac, kOneTurn = 0x53
 constexpr reg32 kNinetenths = 0x5373cc, kFastAlong = 0x5537b8, kWallDamping = 0x5537b4, kSlowZ = 0x5373d4;
 constexpr reg32 kThreeQuarters = 0x5373dc, kHalf = 0x5373e4, kFourFifths = 0x5373ec, kFive = 0x5373f4;
 // What else is called by address: a dot product (where its eax is read),
-// vectors added (where the registers it leaves are), a vector crossed, a matrix transposed, turned; the car's speed, atan2,
-// Watcom's __CHP; the messages' box closed, the text's fit, strncpy; the
+// vectors added (where the registers it leaves are); the car's speed (simb's
+// gives back no double); Watcom's __CHP; the messages' box closed; the
 // timers.
 constexpr reg32 kDotProduct = 0x4e01f0, kAddVectors = 0x4dffb0;
-constexpr reg32 kCross = 0x4e0160, kTranspose = 0x4e0110;
-constexpr reg32 kTurnMatrix = 0x4eaab0, kTurnAxes = 0x4ea9e0;
-constexpr reg32 kCarSpeed = 0x4a2bc0, kAtan2 = 0x4ea9c0, kChop = 0x4dfd56;
+constexpr reg32 kCarSpeed = 0x4a2bc0, kChop = 0x4dfd56;
 constexpr reg32 kCloseMessageBox = 0x436cf0;
-constexpr reg32 kTextFits = 0x441900, kStrncpy = 0x4e0e30;
 constexpr reg32 kEnterCriticalSection = 0x5344b8, kLeaveCriticalSection = 0x534588;
 constexpr reg32 kAddTimer = 0x48ee30, kRemoveTimer = 0x48ee90;
 
@@ -320,13 +325,82 @@ constexpr reg32 kBlockFlags = 0x10;
 // The register mask of every register but eax.
 constexpr unsigned kAllButEax = 0x1f;
 
+
+/* A native_frontend_* file's typed core called as C++ (guest::direct): nothing (false) when the
+ * game stopped in it (its calls into the game throw fe::Terminated).  tools/game_checks does not
+ * build those files: there it goes by address, through its ByAddress, as the game's code calls it,
+ * every register but eax kept.  A reg32 result is the eax the function leaves: eax set to it (in the
+ * game too); after any other, eax spoilt there, so that code still reading what the callee left in
+ * eax differs there. */
+template <reg32 Address, auto Core, typename... Args>
+auto feCore(App* app, CPU& cpu, Args... args)
+{
+    const auto run = [&] {
+#ifdef NFS_GAME_CHECKS
+        const guest::KeptRegisters kept(cpu);
+        return guest::ByAddress<Core>::template call<Address>(app, cpu, args...);
+#else
+        return guest::direct<Address, Core>(app, cpu, args...);
+#endif
+    };
+    using Result = decltype(run());
+    const auto spoil = [&] {
+#ifdef NFS_GAME_CHECKS
+        cpu.eax = 0x5b0115edu;
+#endif
+    };
+    if constexpr (std::is_void_v<Result>)
+    {
+        try
+        {
+            run();
+        }
+        catch (const fe::Terminated&)
+        {
+            return false;
+        }
+        spoil();
+        return !cpu.terminate;
+    }
+    else
+    {
+        try
+        {
+            const Result result = run();
+            if constexpr (std::is_same_v<Result, x86::reg32>)
+                cpu.eax = result;  // a menu core's result: the eax it leaves, as the call by address does
+            else
+                spoil();
+            return cpu.terminate ? std::optional<Result>() : std::optional<Result>(result);
+        }
+        catch (const fe::Terminated&)
+        {
+            return std::optional<Result>();
+        }
+    }
+}
+
 // The callees by address, their arguments in the registers and on the
 // guest's stack as the code has them; the registers as each leaves them.
-// The other typed files' as C++ (guest::direct), eax made from what one
-// gives back where the code has it there.  False or nullopt when the game
-// stopped in one.
+// The other typed files' as C++ (guest::direct, or feCore for the menu
+// files'), the registers the code loads for one loaded as it loads them
+// (the callee keeps them) and eax made from what one gives back where the
+// code has it there.  False or nullopt when the game stopped in one.
 
-bool loadingTick(App* app, CPU& cpu) { return guest::call(app, cpu, kLoadingTick); }
+/* An eax the callee gives back made the caller's, as the call by address leaves it. */
+bool leftInEax(CPU& cpu, const std::optional<reg32>& result)
+{
+    if (!result)
+        return false;
+    cpu.eax = *result;
+    return true;
+}
+
+/* The loading's stop check (0x4a33d0, loada's). */
+bool loadingTick(App* app, CPU& cpu)
+{
+    return leftInEax(cpu, feCore<0x4a33d0, frontend::loada::stopCheck>(app, cpu));
+}
 
 /* memset: `bytes` bytes at `to` the byte `value`. */
 bool fill(App* app, CPU& cpu, reg32 to, reg32 value, reg32 bytes)
@@ -334,7 +408,8 @@ bool fill(App* app, CPU& cpu, reg32 to, reg32 value, reg32 bytes)
     cpu.eax = to;
     cpu.edx = value;
     cpu.ebx = bytes;
-    return guest::call(app, cpu, kMemset);
+    cpu.eax = guest::direct<0x4e0640, watcom::clib::memset>(app, cpu, to, value, bytes);
+    return !cpu.terminate;
 }
 
 /* A block of `bytes` allocated, named `name`, with the flags; or 0 (in eax
@@ -357,10 +432,11 @@ bool freeBlock(App* app, CPU& cpu, reg32 block)
     return true;
 }
 
+/* The car's model freed (0x4b7eb0, rendd's). */
 bool freeShapes(App* app, CPU& cpu, reg32 car)
 {
     cpu.eax = car;
-    return guest::call(app, cpu, kFreeShapes);
+    return leftInEax(cpu, feCore<0x4b7eb0, frontend::rendd::freeCarModel>(app, cpu, car));
 }
 
 /* The event `event` set (0x4dfb20), eax what is posted with it as the code
@@ -400,12 +476,22 @@ bool carCall(App* app, CPU& cpu, reg32 target, reg32 car)
     return guest::call(app, cpu, target);
 }
 
-/* racestart::placeOnGrid: the car on the grid at `slot`. */
-bool placeCar(App* app, CPU& cpu, reg32 car, reg32 slot)
+/* The car's block of driving state cleared (0x4285f0, loada's). */
+bool clearDriving(App* app, CPU& cpu, reg32 car)
 {
     cpu.eax = car;
-    cpu.edx = slot;
-    return guest::call(app, cpu, kPlaceCar);
+    return leftInEax(cpu, feCore<0x4285f0, frontend::loada::carClearDriving>(app, cpu, car));
+}
+
+/* racestart::placeOnGrid: the car on the grid at `slot`; eax and edx the car, as it leaves them
+ * (its other registers it keeps). */
+bool placeCar(App* app, CPU& cpu, reg32 car, reg32 slot)
+{
+    if (!guest::direct<0x42bcb0, racestart::placeOnGridOf>(app, cpu, car, slot))
+        return false;
+    cpu.eax = car;
+    cpu.edx = car;
+    return true;
 }
 
 /* The handler `handler` of the car added to the task list `list` at its
@@ -417,7 +503,7 @@ bool addTask(App* app, CPU& cpu, reg32 list, reg32 handler, reg32 car, reg32 pri
     cpu.edx = handler;
     cpu.ebx = car;
     cpu.ecx = priority;
-    return guest::call(app, cpu, kAddTask);
+    return leftInEax(cpu, feCore<0x4be250, frontend::simd::taskListAdd>(app, cpu, list, handler, car, priority));
 }
 
 bool removeTask(App* app, CPU& cpu, reg32 list, reg32 handler, reg32 car)
@@ -425,12 +511,12 @@ bool removeTask(App* app, CPU& cpu, reg32 list, reg32 handler, reg32 car)
     cpu.eax = list;
     cpu.edx = handler;
     cpu.ebx = car;
-    return guest::call(app, cpu, kRemoveTask);
+    return leftInEax(cpu, feCore<0x4be2f0, frontend::loada::listRemove>(app, cpu, list, handler, car));
 }
 
 /* The dot product of the vectors at `a` and `b` (0x4e01f0), off the x87's
  * stack: by address, for a caller that reads what it leaves in eax, which
- * vertices::dotProduct does not give back. */
+ * vertices::dotProduct does not give back (the check's row for it models it). */
 std::optional<Float> dotProduct(App* app, CPU& cpu, reg32 a, reg32 b)
 {
     cpu.eax = a;
@@ -463,7 +549,7 @@ bool findInViv(App* app, CPU& cpu, reg32 viv, reg32 name, reg32 place, reg32 siz
     return true;
 }
 
-/* 0x4b1380: the performance text of `bytes` at `text` read into the
+/* 0x4b1380 (wata's): the performance text of `bytes` at `text` read into the
  * performance record `record`. */
 bool readPerformance(App* app, CPU& cpu, reg32 record, reg32 text, reg32 bytes)
 {
@@ -471,7 +557,7 @@ bool readPerformance(App* app, CPU& cpu, reg32 record, reg32 text, reg32 bytes)
     cpu.edx = text;
     cpu.ebx = bytes;
     cpu.ecx = 0;
-    return guest::call(app, cpu, kReadPerformance);
+    return leftInEax(cpu, feCore<0x4b1380, frontend::wata::carDataRead>(app, cpu, record, text, bytes, 0u));
 }
 
 /* sprintf (cdecl): its words, the buffer first. */
@@ -525,21 +611,23 @@ std::optional<reg32> roadSliceIndex(App* app, CPU& cpu, reg32 node, reg32 speedB
     return slice;
 }
 
-/* atan2 (stdcall) of the floats of those bits, off the x87's stack. */
+/* atan2 (0x4ea9c0, simd's; stdcall) of the floats of those bits; eax as it was, as the callee
+ * leaves it. */
 std::optional<Float> arcTangent(App* app, CPU& cpu, reg32 xBits, reg32 zBits)
 {
-    if (!guest::call(app, cpu, kAtan2, {xBits, zBits}))
+    const reg32 eax = cpu.eax;
+    const std::optional<double> angle = feCore<0x4ea9c0, frontend::simd::angleOfFloatsValue>(app, cpu, xBits, zBits);
+    if (!angle)
         return std::nullopt;
-    return cpu.fpu.take();
+    cpu.eax = eax;
+    return Float(*angle);
 }
 
-/* __CHP: the value to an integer, towards 0, as a whole value. */
+/* __CHP: the value to an integer, towards 0, as a whole value; never nullopt (the optional is the
+ * callers' stop signal). */
 std::optional<Float> chop(App* app, CPU& cpu, Float value)
 {
-    cpu.fpu.push(value);
-    if (!guest::call(app, cpu, kChop))
-        return std::nullopt;
-    return cpu.fpu.take();
+    return Float(guest::direct<kChop, watcom::clib::chop>(app, cpu, double(value)));
 }
 
 /* 0x4dffb0: the vector at `a` and the one at `b` added into `out` (1, the
@@ -569,20 +657,21 @@ bool scaleVectors(App* app, CPU& cpu, reg32 from, reg32 factorBits, reg32 to)
     return !cpu.terminate;
 }
 
-/* 0x4eaab0 or 0x4ea9e0 (stdcall): the matrix at `matrix` turned by the float
- * of those bits. */
-bool turn(App* app, CPU& cpu, reg32 target, reg32 matrix, reg32 angleBits)
+/* 0x4eaab0 or 0x4ea9e0 (simd's rotateY, rotateX; stdcall): the matrix at `matrix` turned by the
+ * float of those bits. */
+template <reg32 Address, auto Core>
+bool turn(App* app, CPU& cpu, reg32 matrix, reg32 angleBits)
 {
     cpu.eax = matrix;
-    return guest::call(app, cpu, target, {angleBits, matrix});
+    return leftInEax(cpu, feCore<Address, Core>(app, cpu, matrix, angleBits, matrix));
 }
 
-/* 0x4e0110: the matrix at `from` transposed into `to`. */
+/* 0x4e0110 (simd's): the matrix at `from` transposed into `to`. */
 bool transpose(App* app, CPU& cpu, reg32 from, reg32 to)
 {
     cpu.eax = from;
     cpu.edx = to;
-    return guest::call(app, cpu, kTranspose);
+    return leftInEax(cpu, feCore<0x4e0110, frontend::simd::transpose>(app, cpu, from, to));
 }
 
 /* 0x4e06a0: the vector at `vector`'s length (vertices::vectorLength). */
@@ -604,22 +693,23 @@ std::optional<Float> vectorLength(App* app, CPU& cpu, reg32 vector)
     return Float(length);
 }
 
-/* 0x4e0160: the vector at `a` crossed with the one at `b`, into `out`. */
+/* 0x4e0160 (simd's): the vector at `a` crossed with the one at `b`, into `out`. */
 bool cross(App* app, CPU& cpu, reg32 a, reg32 b, reg32 out)
 {
     cpu.eax = a;
     cpu.edx = b;
     cpu.ebx = out;
-    return guest::call(app, cpu, kCross);
+    return leftInEax(cpu, feCore<0x4e0160, frontend::simd::cross>(app, cpu, a, b, out));
 }
 
-/* Whether the text at `text` fits a message line (0x441900). */
+/* Whether the text at `text` fits a message line (0x441900, menua's). */
 std::optional<reg32> textFits(App* app, CPU& cpu, reg32 text)
 {
     cpu.eax = text;
-    if (!guest::call(app, cpu, kTextFits))
-        return std::nullopt;
-    return cpu.eax;
+    const std::optional<reg32> fits = feCore<0x441900, frontend::menua::panelLineFits>(app, cpu, text);
+    if (fits)
+        cpu.eax = *fits;
+    return fits;
 }
 
 /* The text at `text` shown as a message line (0x436e10, channel 0); ebx as
@@ -683,7 +773,8 @@ bool copyText(App* app, CPU& cpu, reg32 to, reg32 text, reg32 most)
     cpu.eax = to;
     cpu.edx = text;
     cpu.ebx = most;
-    return guest::call(app, cpu, kStrncpy);
+    cpu.eax = guest::direct<0x4e0e30, watcom::clib::strncpy>(app, cpu, to, text, most);
+    return !cpu.terminate;
 }
 
 /* An event made (0x4dfb00); the event (in eax too). */
@@ -813,7 +904,8 @@ bool readCarPerformance(App* app, CPU& cpu, reg32 car, reg32 name)
     reg32 model = 0;
     if (index >= 0 && index < kCarIndexes)
     {
-        if (!carCall(app, cpu, kCarModel, reg32(index)))
+        cpu.eax = reg32(index);
+        if (!leftInEax(cpu, feCore<0x439710, frontend::loada::carByte3a0>(app, cpu, reg32(index))))
             return false;
         model = cpu.eax;
     }
@@ -849,7 +941,7 @@ bool loadCar(App* app, CPU& cpu, reg32 car, reg32 slot, reg32 performance)
         return true;
     const GuestFrame frame(cpu, 8, 0x110);
     const reg32 shortName = frame - 0x14, textName = frame - 0x110;
-    if (!carCall(app, cpu, kCarPrepared, car))
+    if (!clearDriving(app, cpu, car))
         return false;
     const reg32 index = at(app, at(app, car + kCarChoice) + kChoiceIndex);
     put(app, car + kCarPerformance, performance);
@@ -960,7 +1052,7 @@ bool restartCars(App* app, CPU& cpu)
     {
         const reg32 car = at(app, kCarList + reg32(i) * 4);
         if (!guest::direct<0x42bcb0, racestart::placeOnGridOf>(app, cpu, car, reg32(i))
-            || !guest::direct<0x40cb70, aiplan::resetTraffic>(app, cpu, car) || !carCall(app, cpu, kCarPrepared, car))
+            || !guest::direct<0x40cb70, aiplan::resetTraffic>(app, cpu, car) || !clearDriving(app, cpu, car))
             return false;
     }
     return true;
@@ -1067,7 +1159,8 @@ bool loadCars(App* app, CPU& cpu)
         const reg32 car = kCars + reg32(i) * kCarBytes;
         put(app, car + kCarChoice, choice);
         cpu.edx = reg32(i) * kPerformanceBytes;  // the record's offset, as the code has it then
-        if (!carCall(app, cpu, kCarMade, car))
+        cpu.eax = car;
+        if (!leftInEax(cpu, feCore<0x428700, frontend::loada::carJoinLists>(app, cpu, car)))
             return false;
         {
             const Nested nested(cpu, kEcx);
@@ -1561,7 +1654,8 @@ std::optional<bool> placeLights(App* app, CPU& cpu, reg32 car)
     put(app, car + 0x7a0, 0x41f00000);  // 30
     put(app, car + 0x7a4, 0xff8080ff);
     put(app, car + 0x7a8, 0xffff8080);
-    if (!turn(app, cpu, kTurnMatrix, car + 0x738, floatBits(fraction)) || !transpose(app, cpu, car + 0x738, car + 0x75c))
+    if (!turn<0x4eaab0, frontend::simd::rotateY>(app, cpu, car + 0x738, floatBits(fraction))
+        || !transpose(app, cpu, car + 0x738, car + 0x75c))
         return std::nullopt;
     float back[3];
     backFrom(app, car + 0x780, back);
@@ -1630,7 +1724,7 @@ std::optional<bool> placeShadow(App* app, CPU& cpu, reg32 car)
     put(app, car + 0x6cc, length);
     put(app, car + 0x6d0, colour);
     put(app, car + 0x6c4, 0x3f800000);  // 1
-    if (!turn(app, cpu, kTurnAxes, car + 0x664, angle))
+    if (!turn<0x4ea9e0, frontend::simd::rotateX>(app, cpu, car + 0x664, angle))
         return std::nullopt;
     put(app, car + 0x6d4, 0);
     if (!transpose(app, cpu, car + 0x664, car + 0x688))
@@ -2050,7 +2144,7 @@ bool dropRest(App* app, CPU& cpu, reg32 rest)
 /* The lines' lock let go of and freed (0x4eb360), their head freed and 0. */
 bool dropHead(App* app, CPU& cpu)
 {
-    if (!lockLines<kLeaveCriticalSection, &win32::kernel32::LeaveCriticalSection>(app, cpu)
+    if (!lockLines<kLeaveCriticalSection, &host::leaveLock>(app, cpu)
         || !freeLock(app, cpu, at(app, at(app, kLines) + kHeadLock))
         || !freeBlock(app, cpu, at(app, kLines)))
         return false;
@@ -2061,7 +2155,7 @@ bool dropHead(App* app, CPU& cpu)
 /* 0x42d940: the message lines after the first freed, under their lock. */
 bool clearLines(App* app, CPU& cpu)
 {
-    if (!lockLines<kEnterCriticalSection, &win32::kernel32::EnterCriticalSection>(app, cpu))
+    if (!lockLines<kEnterCriticalSection, &host::enterLock>(app, cpu))
         return false;
     const reg32 head = at(app, kLines);
     if (head != 0)
@@ -2074,7 +2168,7 @@ bool clearLines(App* app, CPU& cpu)
                 return false;
         }
     }
-    return lockLines<kLeaveCriticalSection, &win32::kernel32::LeaveCriticalSection>(app, cpu);
+    return lockLines<kLeaveCriticalSection, &host::leaveLock>(app, cpu);
 }
 
 /* clearLines; every register but eax as the caller had it. */
@@ -2091,7 +2185,7 @@ void clearMessageLines(App* app, CPU& cpu)
 bool showLines(App* app, CPU& cpu)
 {
     const GuestFrame frame(cpu, 0x18, 0);
-    if (!lockLines<kEnterCriticalSection, &win32::kernel32::EnterCriticalSection>(app, cpu))
+    if (!lockLines<kEnterCriticalSection, &host::enterLock>(app, cpu))
         return false;
     const reg32 head = at(app, kLines);
     if (head != 0 && at(app, head + kHeadFirst) != 0)
@@ -2106,7 +2200,7 @@ bool showLines(App* app, CPU& cpu)
         if (rest != 0 && !dropRest(app, cpu, rest))
             return false;
     }
-    return lockLines<kLeaveCriticalSection, &win32::kernel32::LeaveCriticalSection>(app, cpu);
+    return lockLines<kLeaveCriticalSection, &host::leaveLock>(app, cpu);
 }
 
 /* showLines; every register but eax as the caller had it. */
@@ -2122,7 +2216,7 @@ void showMessageLines(App* app, CPU& cpu)
  * [0x55379c], under their lock -- if there is a text and the lines are. */
 bool appendLine(App* app, CPU& cpu, reg32 text)
 {
-    if (!lockLines<kEnterCriticalSection, &win32::kernel32::EnterCriticalSection>(app, cpu))
+    if (!lockLines<kEnterCriticalSection, &host::enterLock>(app, cpu))
         return false;
     const reg32 head = at(app, kLines);
     if (text != 0 && head != 0 && at(app, head + kHeadFirst) != 0)
@@ -2139,7 +2233,7 @@ bool appendLine(App* app, CPU& cpu, reg32 text)
                 put(app, at(app, kLines) + kHeadLast, *line);
         }
     }
-    return lockLines<kLeaveCriticalSection, &win32::kernel32::LeaveCriticalSection>(app, cpu);
+    return lockLines<kLeaveCriticalSection, &host::leaveLock>(app, cpu);
 }
 
 /* appendLine of eax; every register but eax as the caller had it. */
@@ -2158,7 +2252,7 @@ bool closeLines(App* app, CPU& cpu)
     const reg32 head = at(app, kLines);
     if (head == 0)
         return true;
-    if (!lockCall<kEnterCriticalSection, &win32::kernel32::EnterCriticalSection>(app, cpu, cpu.eax,
+    if (!lockCall<kEnterCriticalSection, &host::enterLock>(app, cpu, cpu.eax,
                                                                                  at(app, head + kHeadLock)))
         return false;
     const reg32 first = at(app, at(app, kLines) + kHeadFirst);
@@ -2199,7 +2293,7 @@ bool openLines(App* app, CPU& cpu)
     if (!lock)
         return false;
     put(app, at(app, kLines) + kHeadLock, *lock);
-    if (!lockCall<kEnterCriticalSection, &win32::kernel32::EnterCriticalSection>(app, cpu, *lock, *lock))
+    if (!lockCall<kEnterCriticalSection, &host::enterLock>(app, cpu, *lock, *lock))
         return false;
     put(app, at(app, kLines) + kHeadFirst, 0);
     put(app, at(app, kLines) + kHeadLast, 0);
@@ -2210,7 +2304,7 @@ bool openLines(App* app, CPU& cpu)
         return dropHead(app, cpu);
     put(app, at(app, kLines) + kHeadFirst, *line);
     put(app, at(app, kLines) + kHeadLast, *line);
-    return lockLines<kLeaveCriticalSection, &win32::kernel32::LeaveCriticalSection>(app, cpu);
+    return lockLines<kLeaveCriticalSection, &host::leaveLock>(app, cpu);
 }
 
 /* openLines; every register but eax as the caller had it. */

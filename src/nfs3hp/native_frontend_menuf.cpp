@@ -1,4 +1,6 @@
 #include "native_frontend_menuf.h"
+#include "native_watcom.h"
+#include "native_game.h"
 #include "game_settings.h"
 #include "native_frontend.h"
 #include "native_frontend_menua.h"
@@ -18,11 +20,11 @@
 #include "native_frontend_wina.h"
 #include "native_graphics.h"
 #include "native_windows.h"
+#include "host_window.h"
 #include "port_buttons.h"
 #include "port_loop.h"
 #include "port_shapes.h"
 #include <nfs3hp.h>
-#include <winapi/user32.h>
 #include <cstdint>
 #include <cstring>
 #include <iterator>
@@ -508,7 +510,7 @@ reg32 windows(Guest& guest, x86::CPU& cpu, Words... words)
 void takeHold(Guest& guest, x86::CPU& cpu, reg32 element, std::int32_t own, std::uint16_t key)
 {
     const auto down = [&](std::uint32_t virtualKey) {
-        return (windows<kGetAsyncKeyState, &win32::user32::GetAsyncKeyState>(guest, cpu, virtualKey) & 0x8000) != 0;
+        return (windows<kGetAsyncKeyState, &host::asyncKeyState>(guest, cpu, virtualKey) & 0x8000) != 0;
     };
     const auto hold = [&](reg32 grip) {
         guest.setWord(element + kHeld, 1);
@@ -764,8 +766,8 @@ x86::reg32 frontend::menuf::frontEndStart(App* app, CPU& cpu)
     guest.call(kFlushKeys);
     gameSettings(guest).replayMode = 0;
     gameSettings(guest).lastTickRaced = 0;
-    guest.call(kFillZero, fe::args({ SETTINGS_ADDRESS(knockout), kCarsBytes }));
-    guest.call(kFillZero, fe::args({ SETTINGS_ADDRESS(tournament), kOpponentsBytes }));
+    fe::direct<kFillZero, ea::clearBytes>(guest.app(), guest.cpu(), SETTINGS_ADDRESS(knockout), kCarsBytes);
+    fe::direct<kFillZero, ea::clearBytes>(guest.app(), guest.cpu(), SETTINGS_ADDRESS(tournament), kOpponentsBytes);
     fe::direct<0x477c00, menuc::clearLoadFlag>(app, cpu);
 
     reg32 next = 0;
@@ -862,7 +864,7 @@ x86::reg32 frontend::menuf::startScreenEffects(App* app, CPU& cpu, reg32 item, r
     guest.setDword(kBandColour, kDefaultBandColour);
     guest.leaveEdx(kDefaultBandColour);
     const auto is = [&](const GuestString& screen) {
-        left = guest.call(kStrcmp, fe::args({ shown, screen.address }));
+        left = fe::direct<kStrcmp, watcom::clib::strcmp>(guest.app(), guest.cpu(), shown, screen.address);
         return left == 0;
     };
     const auto bandByCar = [&](reg32 player) {
@@ -888,14 +890,16 @@ x86::reg32 frontend::menuf::startScreenEffects(App* app, CPU& cpu, reg32 item, r
         if (is(kTrackInfo))
         {
             const reg32 trackArt = guest.dword(kTrackArtNames + 4 * gameSettings(guest).track);
-            guest.call(kSprintf, fe::args({}, { path, kTrackArtFormat.address, kTrackArtFolder, trackArt }));
+            fe::direct<kSprintf, watcom::clib::sprintf>(app, cpu, path, kTrackArtFormat.address,
+                                                        guest::Words{kTrackArtFolder, trackArt});
             // The item in ebx handed on (the game's code has the shape's name in edx too, which it does not read).
             const reg32 art = reg32(*fe::direct<0x44ac90, port::buttons::shapesLoaded>(app, cpu, cpu.esp - 4, path, cpu.ebx));
             shape = left = fe::direct<0x4ef1e0, frontend::eab::shapeFileFind>(app, cpu, art, kBackShape.address);
         }
         else if (file != 0)
         {
-            guest.call(kSprintf, fe::args({}, { path, kArtFormat.address, kMenuArtFolder, file }));
+            fe::direct<kSprintf, watcom::clib::sprintf>(app, cpu, path, kArtFormat.address,
+                                                        guest::Words{kMenuArtFolder, file});
             left = reg32(*fe::direct<0x44ac90, port::buttons::shapesLoaded>(app, cpu, cpu.esp - 4, path, cpu.ebx));
             if (shapeName != 0)
                 shape = left = fe::direct<0x4ef1e0, frontend::eab::shapeFileFind>(app, cpu, left, shapeName);

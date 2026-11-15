@@ -1,4 +1,6 @@
 #include "native_frontend_menub.h"
+#include "native_watcom.h"
+#include "native_game.h"
 #include "game_settings.h"
 #include "native_ea_support.h"
 #include "native_frontend.h"
@@ -466,10 +468,10 @@ reg32 recordsCompareBody(Guest& guest, reg32 slotA, reg32 slotB)
         order = byTime();
         break;
     case 2:
-        order = std::int32_t(guest.call(kStricmp, fe::args({ a + record::kDriver, b + record::kDriver })));
+        order = std::int32_t(fe::direct<kStricmp, watcom::clib::stricmp>(guest.app(), guest.cpu(), a + record::kDriver, b + record::kDriver));
         break;
     case 3:
-        order = std::int32_t(guest.call(kStricmp, fe::args({ a + record::kCarName, b + record::kCarName })));
+        order = std::int32_t(fe::direct<kStricmp, watcom::clib::stricmp>(guest.app(), guest.cpu(), a + record::kCarName, b + record::kCarName));
         break;
     case 5:
     {
@@ -512,7 +514,7 @@ reg32 recordsSortByBody(Guest& guest, reg32 key)
         guest.setDword(places + 4 * i, list + 4 + i * kRecordBytes);
     }
     guest.setDword(kRecordsSortKey, key);
-    guest.call(kQsort, fe::args({ places, guest.dword(list), 4, kRecordsCompare }));
+    fe::direct<kQsort, watcom::clib::qsort>(guest.app(), guest.cpu(), places, guest.dword(list), 4, kRecordsCompare);
     std::int32_t rank = 0;
     for (; rank < signedDword(guest, guest.dword(kRecordsList)); ++rank)
     {
@@ -899,7 +901,7 @@ reg32 recordsSheetDrawBody(App* app, CPU& cpu, Guest& guest, reg32 item, reg32 h
         fe::direct<0x4cee40, frontend::menue::timeText>(app, cpu, lap, buffer);
         const reg32 title = reg32(*fe::direct<0x4d1850, port::text::lineText>(app, cpu, cpu.esp - 4, 0xea, cpu.edx));
         constexpr reg32 kHolderFormat = 0x53958c;   // "%s:  %s   %s   %s"
-        guest.call(kSprintf, fe::args({}, { holderLine, kHolderFormat, title, lapDriver, lapLine1, buffer }));
+        fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.cpu(), holderLine, kHolderFormat, guest::Words{title, lapDriver, lapLine1, buffer});
         const std::int32_t x = width + slideX();
         const std::int32_t y = topY() + height + 0x18;
         const bool blink = guest.dword(kRecordsAnimated) != 0
@@ -1351,7 +1353,7 @@ constexpr std::uint32_t kCodeEffect = 5, kCodeVolume = 0x7f;
  * its start.  1 when the code is done.  Ebx left at the next letter. */
 reg32 cheatAdvanceBody(Guest& guest, reg32 key, reg32 progress, reg32 code)
 {
-    const std::int32_t letter = std::int32_t(guest.call(kToUpper, fe::args({ key }))) + kCodeLetterShift;
+    const std::int32_t letter = std::int32_t(fe::direct<kToUpper, watcom::clib::toupper>(guest.app(), guest.cpu(), key)) + kCodeLetterShift;
     if (letter != std::int32_t(guest.byte(code + guest.dword(progress))))
     {
         guest.setDword(progress, 0);
@@ -1378,7 +1380,7 @@ reg32 cheatKeyBody(App* app, CPU& cpu, Guest& guest, reg32 key)
         return key;
 
     // What the calls leave in eax, the last one's: the core called as C++ hands its back.
-    reg32 left = guest.call(kToUpper, fe::args({ key }));
+    reg32 left = fe::direct<kToUpper, watcom::clib::toupper>(guest.app(), guest.cpu(), key);
     const std::int32_t letter = std::int32_t(left);
     const auto effect = [&]() {
         left = reg32(*fe::direct<0x4181d0, port::playMenuEffectOf>(app, cpu, cpu.esp - 4, kCodeEffect, kCodeVolume));
@@ -1521,11 +1523,11 @@ reg32 carArtExistsBody(App* app, CPU& cpu, Guest& guest, reg32 car)
     if (guest.call(kCarFlag4, fe::args({ car })) != 0)
     {
         const reg32 stem = fe::direct<0x439290, frontend::showcase::carFileStem>(app, cpu, car);
-        guest.call(kSprintf, fe::args({}, { path, kOwnFolderFormat, kShowcaseFolder, folder, stem }));
+        fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.cpu(), path, kOwnFolderFormat, guest::Words{kShowcaseFolder, folder, stem});
     }
     else
     {
-        guest.call(kSprintf, fe::args({}, { path, kCarsFormat, kCarsFolder, folder }));
+        fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.cpu(), path, kCarsFormat, guest::Words{kCarsFolder, folder});
     }
     return *fe::direct<0x4e0e60, ea::fileThere>(app, cpu, path) ? 1 : 0;
 }
@@ -1536,10 +1538,10 @@ constexpr GuestString kCompareNames[] = { { 0x539728, "compare" }, { 0x539730, "
 
 reg32 carViewRememberBody(Guest& guest, reg32 name)
 {
-    const reg32 first = guest.call(kStrcmp, fe::args({ name, kCompareNames[0].address }));
+    const reg32 first = fe::direct<kStrcmp, watcom::clib::strcmp>(guest.app(), guest.cpu(), name, kCompareNames[0].address);
     if (first == 0)
         return 0;
-    const reg32 second = guest.call(kStrcmp, fe::args({ name, kCompareNames[1].address }));
+    const reg32 second = fe::direct<kStrcmp, watcom::clib::strcmp>(guest.app(), guest.cpu(), name, kCompareNames[1].address);
     if (second == 0)
         return 0;
     guest.setDword(kCarViewMode, name);
@@ -1802,7 +1804,7 @@ reg32 carCompareLoadArtBody(App* app, CPU& cpu, Guest& guest, reg32 item)
         return 0;
     constexpr reg32 kArtFormat = 0x539864;          // "%scompare.fsh"
     const reg32 path = guest.frame();
-    guest.call(kSprintf, fe::args({}, { path, kArtFormat, kArtFolder }));
+    fe::direct<kSprintf, watcom::clib::sprintf>(app, cpu, path, kArtFormat, guest::Words{kArtFolder});
     const reg32 art = reg32(*fe::direct<0x44ac90, port::buttons::shapesLoaded>(app, cpu, cpu.esp - 4, path, cpu.ebx));
     const auto bar = [&](const GuestString& name) {
         const reg32 shape = fe::direct<0x4ef1e0, frontend::eab::shapeFileFind>(app, cpu, art, name.address);
@@ -1869,7 +1871,7 @@ reg32 tournamentScoreBody(App* app, CPU& cpu, Guest& guest)
         std::int16_t& total = gameSettings(guest).tournament.totals[slotOf(found)];
         total = std::int16_t(std::uint16_t(std::uint16_t(total) + points));
     }
-    guest.call(kFillZero, fe::args({ SETTINGS_ADDRESS(tournament.places), kPlayerWords }));
+    fe::direct<kFillZero, ea::clearBytes>(guest.app(), guest.cpu(), SETTINGS_ADDRESS(tournament.places), kPlayerWords);
     fe::direct<0x455c10, frontend::misc::resultsSort>(app, cpu, 0, 1, 1);
     std::uint16_t place = 0;
     for (reg32 i = 0; i <= 8; ++i)
@@ -1899,7 +1901,7 @@ reg32 knockoutEliminateBody(App* app, CPU& cpu, Guest& guest)
         gameSettings(guest).knockout.stillIn[slotOf(last)] = 0;
         guest.setDword(last + participant::kState, kStateDisqualified);
     }
-    guest.call(kFillZero, fe::args({ SETTINGS_ADDRESS(knockout.places), kPlayerWords }));
+    fe::direct<kFillZero, ea::clearBytes>(guest.app(), guest.cpu(), SETTINGS_ADDRESS(knockout.places), kPlayerWords);
     fe::direct<0x455c10, frontend::misc::resultsSort>(app, cpu, 0, 1, 1);
     reg32 left = 0;
     std::uint16_t place = 0;
@@ -2090,7 +2092,7 @@ reg32 resultsTopSpeedTextBody(App* app, CPU& cpu, Guest& guest, reg32 found, reg
     const float speed = guest.floatAt(found + participant::kTopSpeed);
     const std::uint16_t status = fp::compare(x86::Float(1.0), x86::Float(speed));
     if (!(status & kStatusBelow))
-        return guest.call(kSprintf, fe::args({}, { buffer, kNoSpeed }));
+        return fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.cpu(), buffer, kNoSpeed, guest::Words({}));
     const reg32 units = gameSettings(guest).hud[0].speedometerForm;
     const bool metric = units == 3 || units == 4;
     const reg32 unitName = reg32(*fe::direct<0x4d1850, port::text::lineText>(app, cpu, cpu.esp - 4,
@@ -2098,7 +2100,7 @@ reg32 resultsTopSpeedTextBody(App* app, CPU& cpu, Guest& guest, reg32 found, reg
     const double value = double(fp::mul(x86::Float(speed), x86::Float(guest.floatAt(metric ? kToKmh : kToMph))));
     reg32 words[2];
     std::memcpy(words, &value, sizeof words);
-    return guest.call(kSprintf, fe::args({}, { buffer, kSpeedFormat, words[0], words[1], unitName }));
+    return fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.cpu(), buffer, kSpeedFormat, guest::Words{words[0], words[1], unitName});
 }
 
 /* ---------------------------------------------------------------------------

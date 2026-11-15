@@ -1,9 +1,19 @@
 #include "port_conv.h"
 
+#include "native_frontend_sima.h"
+#include "native_frontend_simb.h"
+#include "native_frontend_simc.h"
+#include "native_frontend_simd.h"
+#include "native_guest.h"
+#include "native_handling.h"
+#include "native_vertices.h"
+
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <optional>
+#include <type_traits>
 
 /* The functions tools/decomp.py wrote (port_conv.h says how). */
 
@@ -103,6 +113,103 @@ bool rawCall(App* app, CPU& cpu, reg32 target, reg32 esp, int words, reg32& eax,
     return true;
 }
 
+/* A call from such a function to a typed core of another file's (its header's), as C++
+ * (guest::direct, feCore): first the registers, ebp and esp as rawCall hands them -- the arguments
+ * on the guest's stack where the code pushed them, the return address's slot 0 -- the core's own
+ * arguments its parameters.  The code's registers are left as they were: only the calls whose
+ * callee leaves every register the code goes on with as it was (but eax where the core gives it
+ * back) are made so. */
+void handOver(App* app, CPU& cpu, reg32 esp, reg32 eax, reg32 edx, reg32 ebx, reg32 ecx, reg32 ebp)
+{
+    cpu.eax = eax;
+    cpu.edx = edx;
+    cpu.ebx = ebx;
+    cpu.ecx = ecx;
+    cpu.ebp = ebp;
+    cpu.esp = esp;
+    app->getMemory<reg32>(esp - 4) = 0;
+}
+
+/* A native_frontend_* file's typed core called as C++ (guest::direct): nothing (false) when the
+ * game stopped in it (its calls into the game throw fe::Terminated).  tools/game_checks does not
+ * build those files: there it goes by address, through its ByAddress, as the game's code calls it,
+ * every register but eax kept.  A reg32 result is the eax the function leaves: eax set to it (in the
+ * game too); after any other, eax spoilt there, so that code still reading what the callee left in
+ * eax differs there. */
+template <reg32 Address, auto Core, typename... Args>
+auto feCore(App* app, CPU& cpu, Args... args)
+{
+    const auto run = [&] {
+#ifdef NFS_GAME_CHECKS
+        const guest::KeptRegisters kept(cpu);
+        return guest::ByAddress<Core>::template call<Address>(app, cpu, args...);
+#else
+        return guest::direct<Address, Core>(app, cpu, args...);
+#endif
+    };
+    using Result = decltype(run());
+    const auto spoil = [&] {
+#ifdef NFS_GAME_CHECKS
+        cpu.eax = 0x5b0115edu;
+#endif
+    };
+    if constexpr (std::is_void_v<Result>)
+    {
+        try
+        {
+            run();
+        }
+        catch (const fe::Terminated&)
+        {
+            return false;
+        }
+        spoil();
+        return !cpu.terminate;
+    }
+    else
+    {
+        try
+        {
+            const Result result = run();
+            if constexpr (std::is_same_v<Result, x86::reg32>)
+                cpu.eax = result;  // a menu core's result: the eax it leaves, as the call by address does
+            else
+                spoil();
+            return cpu.terminate ? std::optional<Result>() : std::optional<Result>(result);
+        }
+        catch (const fe::Terminated&)
+        {
+            return std::optional<Result>();
+        }
+    }
+}
+
+/* A call to another of these functions, as C++: the registers handed over as rawCall hands them, the
+ * callee's core run, and what it leaves on the x87's stack taken into the caller's own (X87).  eax
+ * back as the callee's result; the other registers are as they went in. */
+template <typename Core>
+bool ownCall(Core core, App* app, CPU& cpu, reg32 esp, reg32& eax, reg32 edx, reg32 ebx, reg32 ecx, reg32 ebp, X87& x)
+{
+    cpu.eax = eax;
+    cpu.edx = edx;
+    cpu.ebx = ebx;
+    cpu.ecx = ecx;
+    cpu.ebp = ebp;
+    cpu.esp = esp - 4;
+    app->getMemory<reg32>(esp - 4) = 0;
+    const Entry e(cpu);
+    reg32 result, popped = 0;
+    X87 left;
+    if (!core(app, cpu, e, result, popped, &left))
+        return false;
+    e.back(cpu, result, popped);
+    cpu.esp = esp;
+    eax = result;
+    for (int i = 0; i < left.n; ++i)
+        x.push(left.v[i]);
+    return true;
+}
+
 /* What a callee left on the x87's stack (a float returned) taken into the function's own. */
 void pullX87(CPU& cpu, int before, X87& x)
 {
@@ -119,7 +226,7 @@ void pullX87(CPU& cpu, int before, X87& x)
         x.push(v[i]);
 }
 
-bool core49fe70(App* app, CPU& cpu, const Entry& e, reg32& result, reg32& popped_)
+bool core49fe70(App* app, CPU& cpu, const Entry& e, reg32& result, reg32& popped_, X87* xout)
 {
     reg32 eax = e.eax, ebx = e.ebx, ecx = e.ecx, edx = e.edx, esi = e.esi, edi = e.edi, ebp = e.ebp, esp = e.esp;
     Flags fl;
@@ -167,19 +274,19 @@ bool core49fe70(App* app, CPU& cpu, const Entry& e, reg32& result, reg32& popped
     { const reg32 a_ = edx, b_ = 12u; edx = a_ + b_; fl.add(a_, b_); }  // 49fec9 add edx, 0xc
     { const reg32 a_ = ebx, b_ = eax; ebx = a_ - b_; fl.sub(a_, b_); }  // 49fecc sub ebx, eax
     eax = (ebp - 0xcu);  // 49fece lea eax, [ebp - 0xc]
-    { const int n0_ = cpu.fpu.count; cpu.ebp = ebp; if (!rawCall(app, cpu, 0x41f6e0, esp, 0, eax, edx, ebx, ecx)) return false; pullX87(cpu, n0_, x); }  // 49fed1 call 0x41f6e0
+    { cpu.ebp = ebp; if (!rawCall(app, cpu, 0x41f6e0, esp, 0, eax, edx, ebx, ecx)) return false; }  // 49fed1 call 0x41f6e0
     esp += 0u;  // 49fed1 call 0x41f6e0
     esp = ebp;  // 49fed6 mov esp, ebp
     ebp = rd32(esp); esp += 4;  // 49fed8 pop ebp
     edx = rd32(esp); esp += 4;  // 49fed9 pop edx
     ebx = rd32(esp); esp += 4;  // 49feda pop ebx
-    for (int i_ = 0; i_ < x.n; ++i_) { cpu.fpu.count += 1; cpu.fpu.st(0) = x86::Float(x.v[i_]); }  // 49fedb ret
+    *xout = x;  // 49fedb ret
     result = eax; popped_ = 0u; return true;  // 49fedb ret
     return false;
 }
 
 
-bool core4a00d0(App* app, CPU& cpu, const Entry& e, reg32& result, reg32& popped_)
+bool core4a00d0(App* app, CPU& cpu, const Entry& e, reg32& result, reg32& popped_, X87* xout)
 {
     reg32 eax = e.eax, ebx = e.ebx, ecx = e.ecx, edx = e.edx, esi = e.esi, edi = e.edi, ebp = e.ebp, esp = e.esp;
     Flags fl;
@@ -240,13 +347,13 @@ L_4a0130:
     edx = rd32(esp); esp += 4;  // 4a0138 pop edx
     ecx = rd32(esp); esp += 4;  // 4a0139 pop ecx
     ebx = rd32(esp); esp += 4;  // 4a013a pop ebx
-    for (int i_ = 0; i_ < x.n; ++i_) { cpu.fpu.count += 1; cpu.fpu.st(0) = x86::Float(x.v[i_]); }  // 4a013b ret
+    *xout = x;  // 4a013b ret
     result = eax; popped_ = 0u; return true;  // 4a013b ret
     return false;
 }
 
 
-bool core4a0440(App* app, CPU& cpu, const Entry& e, reg32& result, reg32& popped_)
+bool core4a0440(App* app, CPU& cpu, const Entry& e, reg32& result, reg32& popped_, X87* xout)
 {
     reg32 eax = e.eax, ebx = e.ebx, ecx = e.ecx, edx = e.edx, esi = e.esi, edi = e.edi, ebp = e.ebp, esp = e.esp;
     Flags fl;
@@ -289,21 +396,21 @@ L_4a046d:
     wr32(edi, rd32(esi)); esi += 4; edi += 4;  // 4a047f movsd dword ptr es:[edi], dword ptr [esi]
     wr32(edi, rd32(esi)); esi += 4; edi += 4;  // 4a0480 movsd dword ptr es:[edi], dword ptr [esi]
     wr32(edi, rd32(esi)); esi += 4; edi += 4;  // 4a0481 movsd dword ptr es:[edi], dword ptr [esi]
-    { const int n0_ = cpu.fpu.count; cpu.ebp = ebp; if (!rawCall(app, cpu, 0x4e01f0, esp, 0, eax, edx, ebx, ecx)) return false; pullX87(cpu, n0_, x); }  // 4a0482 call 0x4e01f0
+    { handOver(app, cpu, esp, eax, edx, ebx, ecx, ebp); const double r_ = guest::direct<0x4e01f0, vertices::dotProduct>(app, cpu, eax, edx); if (cpu.terminate) return false; x.push(r_); }  // 4a0482 call 0x4e01f0
     esp += 0u;  // 4a0482 call 0x4e01f0
     x.st(0) = xmul(cpu, x.st(0), F(ecx + 0x114u));  // 4a0487 fmul dword ptr [ecx + 0x114]
     eax = (ebp - 0x28u);  // 4a048d lea eax, [ebp - 0x28]
     edx = (ecx + 0xccu);  // 4a0490 lea edx, [ecx + 0xcc]
     SF((ebp - 0x34u), x.st(0));  // 4a0496 fstp dword ptr [ebp - 0x34]
     x.pop();  // 4a0496 fstp dword ptr [ebp - 0x34]
-    { const int n0_ = cpu.fpu.count; cpu.ebp = ebp; if (!rawCall(app, cpu, 0x4e01f0, esp, 0, eax, edx, ebx, ecx)) return false; pullX87(cpu, n0_, x); }  // 4a0499 call 0x4e01f0
+    { handOver(app, cpu, esp, eax, edx, ebx, ecx, ebp); const double r_ = guest::direct<0x4e01f0, vertices::dotProduct>(app, cpu, eax, edx); if (cpu.terminate) return false; x.push(r_); }  // 4a0499 call 0x4e01f0
     esp += 0u;  // 4a0499 call 0x4e01f0
     x.st(0) = xmul(cpu, x.st(0), F(ecx + 0x118u));  // 4a049e fmul dword ptr [ecx + 0x118]
     eax = (ebp - 0x28u);  // 4a04a4 lea eax, [ebp - 0x28]
     edx = (ecx + 0xd8u);  // 4a04a7 lea edx, [ecx + 0xd8]
     SF((ebp - 0x30u), x.st(0));  // 4a04ad fstp dword ptr [ebp - 0x30]
     x.pop();  // 4a04ad fstp dword ptr [ebp - 0x30]
-    { const int n0_ = cpu.fpu.count; cpu.ebp = ebp; if (!rawCall(app, cpu, 0x4e01f0, esp, 0, eax, edx, ebx, ecx)) return false; pullX87(cpu, n0_, x); }  // 4a04b0 call 0x4e01f0
+    { handOver(app, cpu, esp, eax, edx, ebx, ecx, ebp); const double r_ = guest::direct<0x4e01f0, vertices::dotProduct>(app, cpu, eax, edx); if (cpu.terminate) return false; x.push(r_); }  // 4a04b0 call 0x4e01f0
     esp += 0u;  // 4a04b0 call 0x4e01f0
     x.st(0) = xmul(cpu, x.st(0), F(ecx + 0x11cu));  // 4a04b5 fmul dword ptr [ecx + 0x11c]
     x.push(0.0);  // 4a04bb fldz
@@ -352,11 +459,11 @@ L_4a0506:
     ecx = (ebp - 0x40u);  // 4a0527 lea ecx, [ebp - 0x40]
     wr32((ebp - 0x14u), eax);  // 4a052a mov dword ptr [ebp - 0x14], eax
     eax = 1u;  // 4a052d mov eax, 1
-    { const int n0_ = cpu.fpu.count; cpu.ebp = ebp; if (!rawCall(app, cpu, 0x4e0000, esp, 0, eax, edx, ebx, ecx)) return false; pullX87(cpu, n0_, x); }  // 4a0532 call 0x4e0000
+    { handOver(app, cpu, esp, eax, edx, ebx, ecx, ebp); guest::direct<0x4e0000, vertices::offsetVectorList<false>>(app, cpu, int32_t(eax), edx, ebx, ecx); if (cpu.terminate) return false; }  // 4a0532 call 0x4e0000
     esp += 0u;  // 4a0532 call 0x4e0000
     edx = (ebp - 0x40u);  // 4a0537 lea edx, [ebp - 0x40]
     eax = (ebp - 0x28u);  // 4a053a lea eax, [ebp - 0x28]
-    { const int n0_ = cpu.fpu.count; cpu.ebp = ebp; if (!rawCall(app, cpu, 0x4e01f0, esp, 0, eax, edx, ebx, ecx)) return false; pullX87(cpu, n0_, x); }  // 4a053d call 0x4e01f0
+    { handOver(app, cpu, esp, eax, edx, ebx, ecx, ebp); const double r_ = guest::direct<0x4e01f0, vertices::dotProduct>(app, cpu, eax, edx); if (cpu.terminate) return false; x.push(r_); }  // 4a053d call 0x4e01f0
     esp += 0u;  // 4a053d call 0x4e01f0
     eax = rd32((ebp - 0xcu));  // 4a0542 mov eax, dword ptr [ebp - 0xc]
     wr32((ebp - 4u), eax);  // 4a0545 mov dword ptr [ebp - 4], eax
@@ -385,13 +492,13 @@ L_4a0569:
     edx = rd32(esp); esp += 4;  // 4a0571 pop edx
     ecx = rd32(esp); esp += 4;  // 4a0572 pop ecx
     ebx = rd32(esp); esp += 4;  // 4a0573 pop ebx
-    for (int i_ = 0; i_ < x.n; ++i_) { cpu.fpu.count += 1; cpu.fpu.st(0) = x86::Float(x.v[i_]); }  // 4a0574 ret
+    *xout = x;  // 4a0574 ret
     result = eax; popped_ = 0u; return true;  // 4a0574 ret
     return false;
 }
 
 
-bool core4a0980(App* app, CPU& cpu, const Entry& e, reg32& result, reg32& popped_)
+bool core4a0980(App* app, CPU& cpu, const Entry& e, reg32& result, reg32& popped_, X87* xout)
 {
     reg32 eax = e.eax, ebx = e.ebx, ecx = e.ecx, edx = e.edx, esi = e.esi, edi = e.edi, ebp = e.ebp, esp = e.esp;
     Flags fl;
@@ -423,7 +530,7 @@ bool core4a0980(App* app, CPU& cpu, const Entry& e, reg32& result, reg32& popped
     edi = rd32(esp); esp += 4;  // 4a099e pop edi
     esi = rd32(esp); esp += 4;  // 4a099f pop esi
     ecx = rd32(esp); esp += 4;  // 4a09a0 pop ecx
-    for (int i_ = 0; i_ < x.n; ++i_) { cpu.fpu.count += 1; cpu.fpu.st(0) = x86::Float(x.v[i_]); }  // 4a09a1 ret
+    *xout = x;  // 4a09a1 ret
     result = eax; popped_ = 0u; return true;  // 4a09a1 ret
 L_4a09a2:
     x.push(F(eax + 0x124u));  // 4a09a2 fld dword ptr [eax + 0x124]
@@ -461,13 +568,13 @@ L_4a09a2:
     edi = rd32(esp); esp += 4;  // 4a0a05 pop edi
     esi = rd32(esp); esp += 4;  // 4a0a06 pop esi
     ecx = rd32(esp); esp += 4;  // 4a0a07 pop ecx
-    for (int i_ = 0; i_ < x.n; ++i_) { cpu.fpu.count += 1; cpu.fpu.st(0) = x86::Float(x.v[i_]); }  // 4a0a08 ret
+    *xout = x;  // 4a0a08 ret
     result = eax; popped_ = 0u; return true;  // 4a0a08 ret
     return false;
 }
 
 
-bool core4a0a10(App* app, CPU& cpu, const Entry& e, reg32& result, reg32& popped_)
+bool core4a0a10(App* app, CPU& cpu, const Entry& e, reg32& result, reg32& popped_, X87* xout)
 {
     reg32 eax = e.eax, ebx = e.ebx, ecx = e.ecx, edx = e.edx, esi = e.esi, edi = e.edi, ebp = e.ebp, esp = e.esp;
     Flags fl;
@@ -499,7 +606,7 @@ bool core4a0a10(App* app, CPU& cpu, const Entry& e, reg32& result, reg32& popped
     edi = rd32(esp); esp += 4;  // 4a0a2e pop edi
     esi = rd32(esp); esp += 4;  // 4a0a2f pop esi
     ecx = rd32(esp); esp += 4;  // 4a0a30 pop ecx
-    for (int i_ = 0; i_ < x.n; ++i_) { cpu.fpu.count += 1; cpu.fpu.st(0) = x86::Float(x.v[i_]); }  // 4a0a31 ret
+    *xout = x;  // 4a0a31 ret
     result = eax; popped_ = 0u; return true;  // 4a0a31 ret
 L_4a0a32:
     x.push(F(eax + 0x124u));  // 4a0a32 fld dword ptr [eax + 0x124]
@@ -537,13 +644,13 @@ L_4a0a32:
     edi = rd32(esp); esp += 4;  // 4a0a95 pop edi
     esi = rd32(esp); esp += 4;  // 4a0a96 pop esi
     ecx = rd32(esp); esp += 4;  // 4a0a97 pop ecx
-    for (int i_ = 0; i_ < x.n; ++i_) { cpu.fpu.count += 1; cpu.fpu.st(0) = x86::Float(x.v[i_]); }  // 4a0a98 ret
+    *xout = x;  // 4a0a98 ret
     result = eax; popped_ = 0u; return true;  // 4a0a98 ret
     return false;
 }
 
 
-bool core4a0d20(App* app, CPU& cpu, const Entry& e, reg32& result, reg32& popped_)
+bool core4a0d20(App* app, CPU& cpu, const Entry& e, reg32& result, reg32& popped_, X87* xout)
 {
     reg32 eax = e.eax, ebx = e.ebx, ecx = e.ecx, edx = e.edx, esi = e.esi, edi = e.edi, ebp = e.ebp, esp = e.esp;
     Flags fl;
@@ -568,7 +675,7 @@ bool core4a0d20(App* app, CPU& cpu, const Entry& e, reg32& result, reg32& popped
     ecx = eax;  // 4a0d28 mov ecx, eax
     ebx = edx;  // 4a0d2a mov ebx, edx
     edx = 484u;  // 4a0d2c mov edx, 0x1e4
-    { const int n0_ = cpu.fpu.count; cpu.ebp = ebp; if (!rawCall(app, cpu, 0x4e070c, esp, 0, eax, edx, ebx, ecx)) return false; pullX87(cpu, n0_, x); }  // 4a0d31 call 0x4e070c
+    { cpu.ebp = ebp; if (!rawCall(app, cpu, 0x4e070c, esp, 0, eax, edx, ebx, ecx)) return false; }  // 4a0d31 call 0x4e070c
     esp += 0u;  // 4a0d31 call 0x4e070c
     x.push(F(ebp + 0x14u));  // 4a0d36 fld dword ptr [ebp + 0x14]
     eax = rd32((ebp + 0x14u));  // 4a0d39 mov eax, dword ptr [ebp + 0x14]
@@ -590,7 +697,7 @@ bool core4a0d20(App* app, CPU& cpu, const Entry& e, reg32& result, reg32& popped
     esp -= 4u;  // 4a0d68 sub esp, 4
     SF((esp), x.st(0));  // 4a0d6b fstp dword ptr [esp]
     x.pop();  // 4a0d6b fstp dword ptr [esp]
-    { const int n0_ = cpu.fpu.count; cpu.ebp = ebp; if (!rawCall(app, cpu, 0x4ea920, esp, 1, eax, edx, ebx, ecx)) return false; pullX87(cpu, n0_, x); }  // 4a0d6e call 0x4ea920
+    { handOver(app, cpu, esp, eax, edx, ebx, ecx, ebp); const std::optional<double> r_ = feCore<0x4ea920, frontend::simc::squareRootOf>(app, cpu, rd32(esp)); if (!r_) return false; x.push(*r_); }  // 4a0d6e call 0x4ea920
     esp += 4u;  // 4a0d6e call 0x4ea920
     eax = rd32((ebp + 0x10u));  // 4a0d73 mov eax, dword ptr [ebp + 0x10]
     SF((ecx + 0x120u), x.st(0));  // 4a0d76 fstp dword ptr [ecx + 0x120]
@@ -689,13 +796,13 @@ L_4a0d93:
     ebp = rd32(esp); esp += 4;  // 4a0f29 pop ebp
     ecx = rd32(esp); esp += 4;  // 4a0f2a pop ecx
     ebx = rd32(esp); esp += 4;  // 4a0f2b pop ebx
-    for (int i_ = 0; i_ < x.n; ++i_) { cpu.fpu.count += 1; cpu.fpu.st(0) = x86::Float(x.v[i_]); }  // 4a0f2c ret 0x10
+    *xout = x;  // 4a0f2c ret 0x10
     result = eax; popped_ = 16u; return true;  // 4a0f2c ret 0x10
     return false;
 }
 
 
-bool core4a0f30(App* app, CPU& cpu, const Entry& e, reg32& result, reg32& popped_)
+bool core4a0f30(App* app, CPU& cpu, const Entry& e, reg32& result, reg32& popped_, X87* xout)
 {
     reg32 eax = e.eax, ebx = e.ebx, ecx = e.ecx, edx = e.edx, esi = e.esi, edi = e.edi, ebp = e.ebp, esp = e.esp;
     Flags fl;
@@ -759,7 +866,7 @@ L_4a0f8b:
     { const reg32 a_ = ecx, b_ = 192u; ecx = a_ + b_; fl.add(a_, b_); }  // 4a0fbd add ecx, 0xc0
     edx = ebx;  // 4a0fc3 mov edx, ebx
     eax = ecx;  // 4a0fc5 mov eax, ecx
-    { const int n0_ = cpu.fpu.count; cpu.ebp = ebp; if (!rawCall(app, cpu, 0x4e01f0, esp, 0, eax, edx, ebx, ecx)) return false; pullX87(cpu, n0_, x); }  // 4a0fc7 call 0x4e01f0
+    { handOver(app, cpu, esp, eax, edx, ebx, ecx, ebp); const double r_ = guest::direct<0x4e01f0, vertices::dotProduct>(app, cpu, eax, edx); if (cpu.terminate) return false; x.push(r_); }  // 4a0fc7 call 0x4e01f0
     esp += 0u;  // 4a0fc7 call 0x4e01f0
     x.push(0.0);  // 4a0fcc fldz
     fl.fcmp(x.st(0), x.st(1));  // 4a0fce fcompp
@@ -769,13 +876,13 @@ L_4a0f8b:
     if (fl.ae()) goto L_4a0fe0;  // 4a0fd3 jae 0x4a0fe0
     edx = ebx;  // 4a0fd5 mov edx, ebx
     eax = ecx;  // 4a0fd7 mov eax, ecx
-    { const int n0_ = cpu.fpu.count; cpu.ebp = ebp; if (!rawCall(app, cpu, 0x4e01f0, esp, 0, eax, edx, ebx, ecx)) return false; pullX87(cpu, n0_, x); }  // 4a0fd9 call 0x4e01f0
+    { handOver(app, cpu, esp, eax, edx, ebx, ecx, ebp); const double r_ = guest::direct<0x4e01f0, vertices::dotProduct>(app, cpu, eax, edx); if (cpu.terminate) return false; x.push(r_); }  // 4a0fd9 call 0x4e01f0
     esp += 0u;  // 4a0fd9 call 0x4e01f0
     goto L_4a0feb;  // 4a0fde jmp 0x4a0feb
 L_4a0fe0:
     edx = ebx;  // 4a0fe0 mov edx, ebx
     eax = ecx;  // 4a0fe2 mov eax, ecx
-    { const int n0_ = cpu.fpu.count; cpu.ebp = ebp; if (!rawCall(app, cpu, 0x4e01f0, esp, 0, eax, edx, ebx, ecx)) return false; pullX87(cpu, n0_, x); }  // 4a0fe4 call 0x4e01f0
+    { handOver(app, cpu, esp, eax, edx, ebx, ecx, ebp); const double r_ = guest::direct<0x4e01f0, vertices::dotProduct>(app, cpu, eax, edx); if (cpu.terminate) return false; x.push(r_); }  // 4a0fe4 call 0x4e01f0
     esp += 0u;  // 4a0fe4 call 0x4e01f0
     x.st(0) = -x.st(0);  // 4a0fe9 fchs
 L_4a0feb:
@@ -796,11 +903,11 @@ L_4a0feb:
     ebx = ecx;  // 4a1017 mov ebx, ecx
     eax = edi;  // 4a1019 mov eax, edi
     esi = rd32((ebp - 4u));  // 4a101b mov esi, dword ptr [ebp - 4]
-    { const int n0_ = cpu.fpu.count; cpu.ebp = ebp; if (!rawCall(app, cpu, 0x4e0160, esp, 0, eax, edx, ebx, ecx)) return false; pullX87(cpu, n0_, x); }  // 4a101e call 0x4e0160
+    { handOver(app, cpu, esp, eax, edx, ebx, ecx, ebp); const std::optional<reg32> r_ = feCore<0x4e0160, frontend::simd::cross>(app, cpu, eax, edx, ebx); if (!r_) return false; eax = *r_; }  // 4a101e call 0x4e0160
     esp += 0u;  // 4a101e call 0x4e0160
     eax = ecx;  // 4a1023 mov eax, ecx
     { const reg32 a_ = esi, b_ = 424u; esi = a_ + b_; fl.add(a_, b_); }  // 4a1025 add esi, 0x1a8
-    { const int n0_ = cpu.fpu.count; cpu.ebp = ebp; if (!rawCall(app, cpu, 0x4972f0, esp, 0, eax, edx, ebx, ecx)) return false; pullX87(cpu, n0_, x); }  // 4a102b call 0x4972f0
+    { handOver(app, cpu, esp, eax, edx, ebx, ecx, ebp); const float r_ = guest::direct<0x4972f0, vertices::normaliseVector>(app, cpu, eax); if (cpu.terminate) return false; x.push(double(r_)); }  // 4a102b call 0x4972f0
     esp += 0u;  // 4a102b call 0x4972f0
     ebx = esi;  // 4a1030 mov ebx, esi
     edx = edi;  // 4a1032 mov edx, edi
@@ -816,21 +923,21 @@ L_4a1038:
     ebx = ecx;  // 4a1052 mov ebx, ecx
     edx = edi;  // 4a1054 mov edx, edi
     esi = rd32((ebp - 4u));  // 4a1056 mov esi, dword ptr [ebp - 4]
-    { const int n0_ = cpu.fpu.count; cpu.ebp = ebp; if (!rawCall(app, cpu, 0x4e0160, esp, 0, eax, edx, ebx, ecx)) return false; pullX87(cpu, n0_, x); }  // 4a1059 call 0x4e0160
+    { handOver(app, cpu, esp, eax, edx, ebx, ecx, ebp); const std::optional<reg32> r_ = feCore<0x4e0160, frontend::simd::cross>(app, cpu, eax, edx, ebx); if (!r_) return false; eax = *r_; }  // 4a1059 call 0x4e0160
     esp += 0u;  // 4a1059 call 0x4e0160
     eax = ecx;  // 4a105e mov eax, ecx
     { const reg32 a_ = esi, b_ = 400u; esi = a_ + b_; fl.add(a_, b_); }  // 4a1060 add esi, 0x190
-    { const int n0_ = cpu.fpu.count; cpu.ebp = ebp; if (!rawCall(app, cpu, 0x4972f0, esp, 0, eax, edx, ebx, ecx)) return false; pullX87(cpu, n0_, x); }  // 4a1066 call 0x4972f0
+    { handOver(app, cpu, esp, eax, edx, ebx, ecx, ebp); const float r_ = guest::direct<0x4972f0, vertices::normaliseVector>(app, cpu, eax); if (cpu.terminate) return false; x.push(double(r_)); }  // 4a1066 call 0x4972f0
     esp += 0u;  // 4a1066 call 0x4972f0
     ebx = esi;  // 4a106b mov ebx, esi
     edx = ecx;  // 4a106d mov edx, ecx
     eax = edi;  // 4a106f mov eax, edi
 L_4a1071:
     x.fstp_st(0);  // 4a1071 fstp st(0)
-    { const int n0_ = cpu.fpu.count; cpu.ebp = ebp; if (!rawCall(app, cpu, 0x4e0160, esp, 0, eax, edx, ebx, ecx)) return false; pullX87(cpu, n0_, x); }  // 4a1073 call 0x4e0160
+    { handOver(app, cpu, esp, eax, edx, ebx, ecx, ebp); const std::optional<reg32> r_ = feCore<0x4e0160, frontend::simd::cross>(app, cpu, eax, edx, ebx); if (!r_) return false; eax = *r_; }  // 4a1073 call 0x4e0160
     esp += 0u;  // 4a1073 call 0x4e0160
     eax = esi;  // 4a1078 mov eax, esi
-    { const int n0_ = cpu.fpu.count; cpu.ebp = ebp; if (!rawCall(app, cpu, 0x4972f0, esp, 0, eax, edx, ebx, ecx)) return false; pullX87(cpu, n0_, x); }  // 4a107a call 0x4972f0
+    { handOver(app, cpu, esp, eax, edx, ebx, ecx, ebp); const float r_ = guest::direct<0x4972f0, vertices::normaliseVector>(app, cpu, eax); if (cpu.terminate) return false; x.push(double(r_)); }  // 4a107a call 0x4972f0
     esp += 0u;  // 4a107a call 0x4972f0
     x.fstp_st(0);  // 4a107f fstp st(0)
 L_4a1081:
@@ -840,13 +947,13 @@ L_4a1081:
     esi = rd32(esp); esp += 4;  // 4a1085 pop esi
     ecx = rd32(esp); esp += 4;  // 4a1086 pop ecx
     ebx = rd32(esp); esp += 4;  // 4a1087 pop ebx
-    for (int i_ = 0; i_ < x.n; ++i_) { cpu.fpu.count += 1; cpu.fpu.st(0) = x86::Float(x.v[i_]); }  // 4a1088 ret 4
+    *xout = x;  // 4a1088 ret 4
     result = eax; popped_ = 4u; return true;  // 4a1088 ret 4
     return false;
 }
 
 
-bool core4a1090(App* app, CPU& cpu, const Entry& e, reg32& result, reg32& popped_)
+bool core4a1090(App* app, CPU& cpu, const Entry& e, reg32& result, reg32& popped_, X87* xout)
 {
     reg32 eax = e.eax, ebx = e.ebx, ecx = e.ecx, edx = e.edx, esi = e.esi, edi = e.edi, ebp = e.ebp, esp = e.esp;
     Flags fl;
@@ -876,14 +983,14 @@ bool core4a1090(App* app, CPU& cpu, const Entry& e, reg32& result, reg32& popped
     edx = (esi + 0x1a8u);  // 4a10a0 lea edx, [esi + 0x1a8]
     eax = 1u;  // 4a10a6 mov eax, 1
     esp -= 4; wr32(esp, rd32((esi + 0x11cu)));  // 4a10ab push dword ptr [esi + 0x11c]
-    { const int n0_ = cpu.fpu.count; cpu.ebp = ebp; if (!rawCall(app, cpu, 0x4e0050, esp, 2, eax, edx, ebx, ecx)) return false; pullX87(cpu, n0_, x); }  // 4a10b1 call 0x4e0050
+    { handOver(app, cpu, esp, eax, edx, ebx, ecx, ebp); guest::direct<0x4e0050, vertices::scaleVectorsBy>(app, cpu, int32_t(eax), edx, app->getMemory<float>(esp), rd32(esp + 4u)); if (cpu.terminate) return false; }  // 4a10b1 call 0x4e0050
     esp += 8u;  // 4a10b1 call 0x4e0050
     eax = (ebp - 0x30u);  // 4a10b6 lea eax, [ebp - 0x30]
     esp -= 4; wr32(esp, eax);  // 4a10b9 push eax
     edx = (esi + 0x190u);  // 4a10ba lea edx, [esi + 0x190]
     eax = 1u;  // 4a10c0 mov eax, 1
     esp -= 4; wr32(esp, rd32((esi + 0x114u)));  // 4a10c5 push dword ptr [esi + 0x114]
-    { const int n0_ = cpu.fpu.count; cpu.ebp = ebp; if (!rawCall(app, cpu, 0x4e0050, esp, 2, eax, edx, ebx, ecx)) return false; pullX87(cpu, n0_, x); }  // 4a10cb call 0x4e0050
+    { handOver(app, cpu, esp, eax, edx, ebx, ecx, ebp); guest::direct<0x4e0050, vertices::scaleVectorsBy>(app, cpu, int32_t(eax), edx, app->getMemory<float>(esp), rd32(esp + 4u)); if (cpu.terminate) return false; }  // 4a10cb call 0x4e0050
     esp += 8u;  // 4a10cb call 0x4e0050
     fl.sub(rd32((esi + 0x10cu)), 1061997773u);  // 4a10d0 cmp dword ptr [esi + 0x10c], 0x3f4ccccd
     if (fl.le()) goto L_4a1134;  // 4a10da jle 0x4a1134
@@ -897,7 +1004,7 @@ bool core4a1090(App* app, CPU& cpu, const Entry& e, reg32& result, reg32& popped
     eax = 1u;  // 4a10f7 mov eax, 1
     SF((esp), x.st(0));  // 4a10fc fstp dword ptr [esp]
     x.pop();  // 4a10fc fstp dword ptr [esp]
-    { const int n0_ = cpu.fpu.count; cpu.ebp = ebp; if (!rawCall(app, cpu, 0x4e0050, esp, 2, eax, edx, ebx, ecx)) return false; pullX87(cpu, n0_, x); }  // 4a10ff call 0x4e0050
+    { handOver(app, cpu, esp, eax, edx, ebx, ecx, ebp); guest::direct<0x4e0050, vertices::scaleVectorsBy>(app, cpu, int32_t(eax), edx, app->getMemory<float>(esp), rd32(esp + 4u)); if (cpu.terminate) return false; }  // 4a10ff call 0x4e0050
     esp += 8u;  // 4a10ff call 0x4e0050
     eax = rd32((esi + 0x98u));  // 4a1104 mov eax, dword ptr [esi + 0x98]
     wr32((ebp - 0x3cu), eax);  // 4a110a mov dword ptr [ebp - 0x3c], eax
@@ -909,7 +1016,7 @@ bool core4a1090(App* app, CPU& cpu, const Entry& e, reg32& result, reg32& popped
     edx = (ebp - 0x3cu);  // 4a1122 lea edx, [ebp - 0x3c]
     wr32((ebp - 0x34u), eax);  // 4a1125 mov dword ptr [ebp - 0x34], eax
     eax = 1u;  // 4a1128 mov eax, 1
-    { const int n0_ = cpu.fpu.count; cpu.ebp = ebp; if (!rawCall(app, cpu, 0x4dffb0, esp, 0, eax, edx, ebx, ecx)) return false; pullX87(cpu, n0_, x); }  // 4a112d call 0x4dffb0
+    { handOver(app, cpu, esp, eax, edx, ebx, ecx, ebp); guest::direct<0x4dffb0, vertices::offsetVectorList<true>>(app, cpu, int32_t(eax), edx, ebx, ecx); if (cpu.terminate) return false; }  // 4a112d call 0x4dffb0
     esp += 0u;  // 4a112d call 0x4dffb0
     goto L_4a1158;  // 4a1132 jmp 0x4a1158
 L_4a1134:
@@ -926,31 +1033,31 @@ L_4a1158:
     ebx = (ebp - 0x48u);  // 4a115b lea ebx, [ebp - 0x48]
     edx = (ebp - 0x24u);  // 4a115e lea edx, [ebp - 0x24]
     eax = 1u;  // 4a1161 mov eax, 1
-    { const int n0_ = cpu.fpu.count; cpu.ebp = ebp; if (!rawCall(app, cpu, 0x4dffb0, esp, 0, eax, edx, ebx, ecx)) return false; pullX87(cpu, n0_, x); }  // 4a1166 call 0x4dffb0
+    { handOver(app, cpu, esp, eax, edx, ebx, ecx, ebp); guest::direct<0x4dffb0, vertices::offsetVectorList<true>>(app, cpu, int32_t(eax), edx, ebx, ecx); if (cpu.terminate) return false; }  // 4a1166 call 0x4dffb0
     esp += 0u;  // 4a1166 call 0x4dffb0
     ebx = (ebp - 0x30u);  // 4a116b lea ebx, [ebp - 0x30]
     edx = (ebp - 0x18u);  // 4a116e lea edx, [ebp - 0x18]
     eax = 1u;  // 4a1171 mov eax, 1
     ecx = (esi + 0x1b4u);  // 4a1176 lea ecx, [esi + 0x1b4]
-    { const int n0_ = cpu.fpu.count; cpu.ebp = ebp; if (!rawCall(app, cpu, 0x4e0000, esp, 0, eax, edx, ebx, ecx)) return false; pullX87(cpu, n0_, x); }  // 4a117c call 0x4e0000
+    { handOver(app, cpu, esp, eax, edx, ebx, ecx, ebp); guest::direct<0x4e0000, vertices::offsetVectorList<false>>(app, cpu, int32_t(eax), edx, ebx, ecx); if (cpu.terminate) return false; }  // 4a117c call 0x4e0000
     esp += 0u;  // 4a117c call 0x4e0000
     ebx = (ebp - 0x30u);  // 4a1181 lea ebx, [ebp - 0x30]
     edx = (ebp - 0x18u);  // 4a1184 lea edx, [ebp - 0x18]
     eax = 1u;  // 4a1187 mov eax, 1
     ecx = (esi + 0x1c0u);  // 4a118c lea ecx, [esi + 0x1c0]
-    { const int n0_ = cpu.fpu.count; cpu.ebp = ebp; if (!rawCall(app, cpu, 0x4dffb0, esp, 0, eax, edx, ebx, ecx)) return false; pullX87(cpu, n0_, x); }  // 4a1192 call 0x4dffb0
+    { handOver(app, cpu, esp, eax, edx, ebx, ecx, ebp); guest::direct<0x4dffb0, vertices::offsetVectorList<true>>(app, cpu, int32_t(eax), edx, ebx, ecx); if (cpu.terminate) return false; }  // 4a1192 call 0x4dffb0
     esp += 0u;  // 4a1192 call 0x4dffb0
     ecx = (ebp - 0x18u);  // 4a1197 lea ecx, [ebp - 0x18]
     ebx = (ebp - 0x48u);  // 4a119a lea ebx, [ebp - 0x48]
     edx = (ebp - 0x24u);  // 4a119d lea edx, [ebp - 0x24]
     eax = 1u;  // 4a11a0 mov eax, 1
-    { const int n0_ = cpu.fpu.count; cpu.ebp = ebp; if (!rawCall(app, cpu, 0x4e0000, esp, 0, eax, edx, ebx, ecx)) return false; pullX87(cpu, n0_, x); }  // 4a11a5 call 0x4e0000
+    { handOver(app, cpu, esp, eax, edx, ebx, ecx, ebp); guest::direct<0x4e0000, vertices::offsetVectorList<false>>(app, cpu, int32_t(eax), edx, ebx, ecx); if (cpu.terminate) return false; }  // 4a11a5 call 0x4e0000
     esp += 0u;  // 4a11a5 call 0x4e0000
     ebx = (ebp - 0x30u);  // 4a11aa lea ebx, [ebp - 0x30]
     edx = (ebp - 0x18u);  // 4a11ad lea edx, [ebp - 0x18]
     eax = 1u;  // 4a11b0 mov eax, 1
     ecx = (esi + 0x1ccu);  // 4a11b5 lea ecx, [esi + 0x1cc]
-    { const int n0_ = cpu.fpu.count; cpu.ebp = ebp; if (!rawCall(app, cpu, 0x4e0000, esp, 0, eax, edx, ebx, ecx)) return false; pullX87(cpu, n0_, x); }  // 4a11bb call 0x4e0000
+    { handOver(app, cpu, esp, eax, edx, ebx, ecx, ebp); guest::direct<0x4e0000, vertices::offsetVectorList<false>>(app, cpu, int32_t(eax), edx, ebx, ecx); if (cpu.terminate) return false; }  // 4a11bb call 0x4e0000
     esp += 0u;  // 4a11bb call 0x4e0000
     x.push(F(ebp - 0x18u));  // 4a11c0 fld dword ptr [ebp - 0x18]
     ebx = (ebp - 0x30u);  // 4a11c3 lea ebx, [ebp - 0x30]
@@ -968,7 +1075,7 @@ L_4a1158:
     ecx = (esi + 0x1d8u);  // 4a11e9 lea ecx, [esi + 0x1d8]
     SF((esi + 0x1e0u), x.st(0));  // 4a11ef fstp dword ptr [esi + 0x1e0]
     x.pop();  // 4a11ef fstp dword ptr [esi + 0x1e0]
-    { const int n0_ = cpu.fpu.count; cpu.ebp = ebp; if (!rawCall(app, cpu, 0x4dffb0, esp, 0, eax, edx, ebx, ecx)) return false; pullX87(cpu, n0_, x); }  // 4a11f5 call 0x4dffb0
+    { cpu.ebp = ebp; if (!rawCall(app, cpu, 0x4dffb0, esp, 0, eax, edx, ebx, ecx)) return false; }  // 4a11f5 call 0x4dffb0
     esp += 0u;  // 4a11f5 call 0x4dffb0
     esp = ebp;  // 4a11fa mov esp, ebp
     ebp = rd32(esp); esp += 4;  // 4a11fc pop ebp
@@ -976,13 +1083,13 @@ L_4a1158:
     edx = rd32(esp); esp += 4;  // 4a11fe pop edx
     ecx = rd32(esp); esp += 4;  // 4a11ff pop ecx
     ebx = rd32(esp); esp += 4;  // 4a1200 pop ebx
-    for (int i_ = 0; i_ < x.n; ++i_) { cpu.fpu.count += 1; cpu.fpu.st(0) = x86::Float(x.v[i_]); }  // 4a1201 ret
+    *xout = x;  // 4a1201 ret
     result = eax; popped_ = 0u; return true;  // 4a1201 ret
     return false;
 }
 
 
-bool core4a20c0(App* app, CPU& cpu, const Entry& e, reg32& result, reg32& popped_)
+bool core4a20c0(App* app, CPU& cpu, const Entry& e, reg32& result, reg32& popped_, X87* xout)
 {
     reg32 eax = e.eax, ebx = e.ebx, ecx = e.ecx, edx = e.edx, esi = e.esi, edi = e.edi, ebp = e.ebp, esp = e.esp;
     Flags fl;
@@ -1077,13 +1184,13 @@ L_4a218a:
     esi = rd32(esp); esp += 4;  // 4a2196 pop esi
     edx = rd32(esp); esp += 4;  // 4a2197 pop edx
     ebx = rd32(esp); esp += 4;  // 4a2198 pop ebx
-    for (int i_ = 0; i_ < x.n; ++i_) { cpu.fpu.count += 1; cpu.fpu.st(0) = x86::Float(x.v[i_]); }  // 4a2199 ret
+    *xout = x;  // 4a2199 ret
     result = eax; popped_ = 0u; return true;  // 4a2199 ret
     return false;
 }
 
 
-bool core4a2630(App* app, CPU& cpu, const Entry& e, reg32& result, reg32& popped_)
+bool core4a2630(App* app, CPU& cpu, const Entry& e, reg32& result, reg32& popped_, X87* xout)
 {
     reg32 eax = e.eax, ebx = e.ebx, ecx = e.ecx, edx = e.edx, esi = e.esi, edi = e.edi, ebp = e.ebp, esp = e.esp;
     Flags fl;
@@ -1111,7 +1218,7 @@ bool core4a2630(App* app, CPU& cpu, const Entry& e, reg32& result, reg32& popped
     goto L_4a266e;  // 4a264b jmp 0x4a266e
 L_4a264d:
     eax = edx;  // 4a264d mov eax, edx
-    { const int n0_ = cpu.fpu.count; cpu.ebp = ebp; if (!rawCall(app, cpu, 0x4a00d0, esp, 0, eax, edx, ebx, ecx)) return false; pullX87(cpu, n0_, x); }  // 4a264f call 0x4a00d0
+    if (!ownCall(core4a00d0, app, cpu, esp, eax, edx, ebx, ecx, ebp, x)) return false;  // 4a264f call 0x4a00d0
     esp += 0u;  // 4a264f call 0x4a00d0
     x.push(F(edx + 0x118u));  // 4a2654 fld dword ptr [edx + 0x118]
     x.fxch(1);  // 4a265a fxch st(1)
@@ -1126,13 +1233,13 @@ L_4a266e:
     wr32((edx + 0xa8u), 0u);  // 4a267e mov dword ptr [edx + 0xa8], 0
     ebp = rd32(esp); esp += 4;  // 4a2688 pop ebp
     edx = rd32(esp); esp += 4;  // 4a2689 pop edx
-    for (int i_ = 0; i_ < x.n; ++i_) { cpu.fpu.count += 1; cpu.fpu.st(0) = x86::Float(x.v[i_]); }  // 4a268a ret
+    *xout = x;  // 4a268a ret
     result = eax; popped_ = 0u; return true;  // 4a268a ret
     return false;
 }
 
 
-bool core4a2830(App* app, CPU& cpu, const Entry& e, reg32& result, reg32& popped_)
+bool core4a2830(App* app, CPU& cpu, const Entry& e, reg32& result, reg32& popped_, X87* xout)
 {
     reg32 eax = e.eax, ebx = e.ebx, ecx = e.ecx, edx = e.edx, esi = e.esi, edi = e.edi, ebp = e.ebp, esp = e.esp;
     Flags fl;
@@ -1165,24 +1272,24 @@ bool core4a2830(App* app, CPU& cpu, const Entry& e, reg32& result, reg32& popped
     fl.sub(rd8((ecx + 0x88u)), 0u);  // 4a285a cmp byte ptr [ecx + 0x88], 0
     if (fl.e()) goto L_4a286f;  // 4a2861 je 0x4a286f
     eax = ecx;  // 4a2863 mov eax, ecx
-    { const int n0_ = cpu.fpu.count; cpu.ebp = ebp; if (!rawCall(app, cpu, 0x4a2630, esp, 0, eax, edx, ebx, ecx)) return false; pullX87(cpu, n0_, x); }  // 4a2865 call 0x4a2630
+    if (!ownCall(core4a2630, app, cpu, esp, eax, edx, ebx, ecx, ebp, x)) return false;  // 4a2865 call 0x4a2630
     esp += 0u;  // 4a2865 call 0x4a2630
     goto L_4a2bad;  // 4a286a jmp 0x4a2bad
 L_4a286f:
     eax = ecx;  // 4a286f mov eax, ecx
-    { const int n0_ = cpu.fpu.count; cpu.ebp = ebp; if (!rawCall(app, cpu, 0x4a2260, esp, 0, eax, edx, ebx, ecx)) return false; pullX87(cpu, n0_, x); }  // 4a2871 call 0x4a2260
+    { handOver(app, cpu, esp, eax, edx, ebx, ecx, ebp); const std::optional<reg32> r_ = feCore<0x4a2260, frontend::simb::downforceAndDrag>(app, cpu, eax); if (!r_) return false; eax = *r_; }  // 4a2871 call 0x4a2260
     esp += 0u;  // 4a2871 call 0x4a2260
     eax = ecx;  // 4a2876 mov eax, ecx
-    { const int n0_ = cpu.fpu.count; cpu.ebp = ebp; if (!rawCall(app, cpu, 0x4a00d0, esp, 0, eax, edx, ebx, ecx)) return false; pullX87(cpu, n0_, x); }  // 4a2878 call 0x4a00d0
+    if (!ownCall(core4a00d0, app, cpu, esp, eax, edx, ebx, ecx, ebp, x)) return false;  // 4a2878 call 0x4a00d0
     esp += 0u;  // 4a2878 call 0x4a00d0
     eax = ecx;  // 4a287d mov eax, ecx
     SF((ecx + 0x158u), x.st(0));  // 4a287f fstp dword ptr [ecx + 0x158]
     x.pop();  // 4a287f fstp dword ptr [ecx + 0x158]
-    { const int n0_ = cpu.fpu.count; cpu.ebp = ebp; if (!rawCall(app, cpu, 0x4a21a0, esp, 0, eax, edx, ebx, ecx)) return false; pullX87(cpu, n0_, x); }  // 4a2885 call 0x4a21a0
+    { handOver(app, cpu, esp, eax, edx, ebx, ecx, ebp); const std::optional<reg32> r_ = feCore<0x4a21a0, frontend::simb::hitTunnelRoof>(app, cpu, eax); if (!r_) return false; eax = *r_; }  // 4a2885 call 0x4a21a0
     esp += 0u;  // 4a2885 call 0x4a21a0
     eax = ecx;  // 4a288a mov eax, ecx
     edi = (ebp - 0x5cu);  // 4a288c lea edi, [ebp - 0x5c]
-    { const int n0_ = cpu.fpu.count; cpu.ebp = ebp; if (!rawCall(app, cpu, 0x4a0440, esp, 0, eax, edx, ebx, ecx)) return false; pullX87(cpu, n0_, x); }  // 4a288f call 0x4a0440
+    if (!ownCall(core4a0440, app, cpu, esp, eax, edx, ebx, ecx, ebp, x)) return false;  // 4a288f call 0x4a0440
     esp += 0u;  // 4a288f call 0x4a0440
     esi = (ecx + 0x130u);  // 4a2894 lea esi, [ecx + 0x130]
     SF((ecx + 0x15cu), x.st(0));  // 4a289a fstp dword ptr [ecx + 0x15c]
@@ -1191,7 +1298,7 @@ L_4a286f:
     wr32(edi, rd32(esi)); esi += 4; edi += 4;  // 4a28a2 movsd dword ptr es:[edi], dword ptr [esi]
     wr32(edi, rd32(esi)); esi += 4; edi += 4;  // 4a28a3 movsd dword ptr es:[edi], dword ptr [esi]
     wr32(edi, rd32(esi)); esi += 4; edi += 4;  // 4a28a4 movsd dword ptr es:[edi], dword ptr [esi]
-    { const int n0_ = cpu.fpu.count; cpu.ebp = ebp; if (!rawCall(app, cpu, 0x49fde0, esp, 0, eax, edx, ebx, ecx)) return false; pullX87(cpu, n0_, x); }  // 4a28a5 call 0x49fde0
+    { handOver(app, cpu, esp, eax, edx, ebx, ecx, ebp); const std::optional<reg32> r_ = feCore<0x49fde0, frontend::sima::carTiltedOver>(app, cpu, eax); if (!r_) return false; eax = *r_; }  // 4a28a5 call 0x49fde0
     esp += 0u;  // 4a28a5 call 0x49fde0
     fl.logic(eax & eax);  // 4a28aa test eax, eax
     if (fl.e()) goto L_4a28bc;  // 4a28ac je 0x4a28bc
@@ -1355,21 +1462,21 @@ L_4a2a0c:
     eax = 1u;  // 4a2a3f mov eax, 1
     SF((ebp - 0x28u), x.st(0));  // 4a2a44 fstp dword ptr [ebp - 0x28]
     x.pop();  // 4a2a44 fstp dword ptr [ebp - 0x28]
-    { const int n0_ = cpu.fpu.count; cpu.ebp = ebp; if (!rawCall(app, cpu, 0x4e0050, esp, 2, eax, edx, ebx, ecx)) return false; pullX87(cpu, n0_, x); }  // 4a2a47 call 0x4e0050
+    { handOver(app, cpu, esp, eax, edx, ebx, ecx, ebp); guest::direct<0x4e0050, vertices::scaleVectorsBy>(app, cpu, int32_t(eax), edx, app->getMemory<float>(esp), rd32(esp + 4u)); if (cpu.terminate) return false; }  // 4a2a47 call 0x4e0050
     esp += 8u;  // 4a2a47 call 0x4e0050
     eax = (ebp - 0x50u);  // 4a2a4c lea eax, [ebp - 0x50]
     esp -= 4; wr32(esp, eax);  // 4a2a4f push eax
     edx = (ecx + 0x19cu);  // 4a2a50 lea edx, [ecx + 0x19c]
     eax = 1u;  // 4a2a56 mov eax, 1
     esp -= 4; wr32(esp, rd32((ebp - 0x2cu)));  // 4a2a5b push dword ptr [ebp - 0x2c]
-    { const int n0_ = cpu.fpu.count; cpu.ebp = ebp; if (!rawCall(app, cpu, 0x4e0050, esp, 2, eax, edx, ebx, ecx)) return false; pullX87(cpu, n0_, x); }  // 4a2a5e call 0x4e0050
+    { handOver(app, cpu, esp, eax, edx, ebx, ecx, ebp); guest::direct<0x4e0050, vertices::scaleVectorsBy>(app, cpu, int32_t(eax), edx, app->getMemory<float>(esp), rd32(esp + 4u)); if (cpu.terminate) return false; }  // 4a2a5e call 0x4e0050
     esp += 8u;  // 4a2a5e call 0x4e0050
     eax = (ebp - 0x44u);  // 4a2a63 lea eax, [ebp - 0x44]
     esp -= 4; wr32(esp, eax);  // 4a2a66 push eax
     edx = (ecx + 0x1a8u);  // 4a2a67 lea edx, [ecx + 0x1a8]
     eax = 1u;  // 4a2a6d mov eax, 1
     esp -= 4; wr32(esp, rd32((ebp - 0x28u)));  // 4a2a72 push dword ptr [ebp - 0x28]
-    { const int n0_ = cpu.fpu.count; cpu.ebp = ebp; if (!rawCall(app, cpu, 0x4e0050, esp, 2, eax, edx, ebx, ecx)) return false; pullX87(cpu, n0_, x); }  // 4a2a75 call 0x4e0050
+    { handOver(app, cpu, esp, eax, edx, ebx, ecx, ebp); guest::direct<0x4e0050, vertices::scaleVectorsBy>(app, cpu, int32_t(eax), edx, app->getMemory<float>(esp), rd32(esp + 4u)); if (cpu.terminate) return false; }  // 4a2a75 call 0x4e0050
     esp += 8u;  // 4a2a75 call 0x4e0050
     x.push(F(ecx + 0xa4u));  // 4a2a7a fld dword ptr [ecx + 0xa4]
     x.st(0) = xadd(cpu, x.st(0), F(ebp - 0x50u));  // 4a2a80 fadd dword ptr [ebp - 0x50]
@@ -1433,12 +1540,12 @@ L_4a2b28:
     fl.logic(rd8((ecx + 0x200u)) & 4u);  // 4a2b47 test byte ptr [ecx + 0x200], 4
     if (fl.e()) goto L_4a2b57;  // 4a2b4e je 0x4a2b57
     eax = ecx;  // 4a2b50 mov eax, ecx
-    { const int n0_ = cpu.fpu.count; cpu.ebp = ebp; if (!rawCall(app, cpu, 0x4aa4f4, esp, 0, eax, edx, ebx, ecx)) return false; pullX87(cpu, n0_, x); }  // 4a2b52 call 0x4aa4f4
+    { handOver(app, cpu, esp, eax, edx, ebx, ecx, ebp); guest::direct<0x4aa4f4, handling::matchToSpeed>(app, cpu, eax); if (cpu.terminate) return false; }  // 4a2b52 call 0x4aa4f4
     esp += 0u;  // 4a2b52 call 0x4aa4f4
 L_4a2b57:
     edx = (ebp - 0x5cu);  // 4a2b57 lea edx, [ebp - 0x5c]
     eax = ecx;  // 4a2b5a mov eax, ecx
-    { const int n0_ = cpu.fpu.count; cpu.ebp = ebp; if (!rawCall(app, cpu, 0x4a1ce0, esp, 0, eax, edx, ebx, ecx)) return false; pullX87(cpu, n0_, x); }  // 4a2b5c call 0x4a1ce0
+    { handOver(app, cpu, esp, eax, edx, ebx, ecx, ebp); const std::optional<reg32> r_ = feCore<0x4a1ce0, frontend::simb::reactToSurface>(app, cpu, eax, edx); if (!r_) return false; eax = *r_; }  // 4a2b5c call 0x4a1ce0
     esp += 0u;  // 4a2b5c call 0x4a1ce0
     esp = ebp;  // 4a2b61 mov esp, ebp
     ebp = rd32(esp); esp += 4;  // 4a2b63 pop ebp
@@ -1447,7 +1554,7 @@ L_4a2b57:
     edx = rd32(esp); esp += 4;  // 4a2b66 pop edx
     ecx = rd32(esp); esp += 4;  // 4a2b67 pop ecx
     ebx = rd32(esp); esp += 4;  // 4a2b68 pop ebx
-    for (int i_ = 0; i_ < x.n; ++i_) { cpu.fpu.count += 1; cpu.fpu.st(0) = x86::Float(x.v[i_]); }  // 4a2b69 ret
+    *xout = x;  // 4a2b69 ret
     result = eax; popped_ = 0u; return true;  // 4a2b69 ret
 L_4a2b6a:
     edi = rd32((ebp - 0x54u));  // 4a2b6a mov edi, dword ptr [ebp - 0x54]
@@ -1457,7 +1564,7 @@ L_4a2b6a:
     edx = rd32((ebp - 0x5cu));  // 4a2b72 mov edx, dword ptr [ebp - 0x5c]
     esp -= 4; wr32(esp, edx);  // 4a2b75 push edx
     eax = ecx;  // 4a2b76 mov eax, ecx
-    { const int n0_ = cpu.fpu.count; cpu.ebp = ebp; if (!rawCall(app, cpu, 0x4a1610, esp, -3, eax, edx, ebx, ecx)) return false; pullX87(cpu, n0_, x); }  // 4a2b78 call 0x4a1610
+    { cpu.ebp = ebp; if (!rawCall(app, cpu, 0x4a1610, esp, -3, eax, edx, ebx, ecx)) return false; }  // 4a2b78 call 0x4a1610
     esp += -12u;  // 4a2b78 call 0x4a1610
     esp = ebp;  // 4a2b7d mov esp, ebp
     ebp = rd32(esp); esp += 4;  // 4a2b7f pop ebp
@@ -1466,7 +1573,7 @@ L_4a2b6a:
     edx = rd32(esp); esp += 4;  // 4a2b82 pop edx
     ecx = rd32(esp); esp += 4;  // 4a2b83 pop ecx
     ebx = rd32(esp); esp += 4;  // 4a2b84 pop ebx
-    for (int i_ = 0; i_ < x.n; ++i_) { cpu.fpu.count += 1; cpu.fpu.st(0) = x86::Float(x.v[i_]); }  // 4a2b85 ret
+    *xout = x;  // 4a2b85 ret
     result = eax; popped_ = 0u; return true;  // 4a2b85 ret
 L_4a2b86:
     fl.sub(rd16((ecx + 0x164u)), 0u);  // 4a2b86 cmp word ptr [ecx + 0x164], 0
@@ -1477,7 +1584,7 @@ L_4a2b97:
     { const reg32 r_ = edx + 1u; edx = r_; fl.arith(r_); }  // 4a2b9e inc edx
     eax = ecx;  // 4a2b9f mov eax, ecx
     wr16((ecx + 0x164u), (edx & 0xffffu));  // 4a2ba1 mov word ptr [ecx + 0x164], dx
-    { const int n0_ = cpu.fpu.count; cpu.ebp = ebp; if (!rawCall(app, cpu, 0x4a20c0, esp, -6, eax, edx, ebx, ecx)) return false; pullX87(cpu, n0_, x); }  // 4a2ba8 call 0x4a20c0
+    if (!ownCall(core4a20c0, app, cpu, esp, eax, edx, ebx, ecx, ebp, x)) return false;  // 4a2ba8 call 0x4a20c0
     esp += -24u;  // 4a2ba8 call 0x4a20c0
 L_4a2bad:
     esp = ebp;  // 4a2bad mov esp, ebp
@@ -1487,13 +1594,13 @@ L_4a2bad:
     edx = rd32(esp); esp += 4;  // 4a2bb2 pop edx
     ecx = rd32(esp); esp += 4;  // 4a2bb3 pop ecx
     ebx = rd32(esp); esp += 4;  // 4a2bb4 pop ebx
-    for (int i_ = 0; i_ < x.n; ++i_) { cpu.fpu.count += 1; cpu.fpu.st(0) = x86::Float(x.v[i_]); }  // 4a2bb5 ret
+    *xout = x;  // 4a2bb5 ret
     result = eax; popped_ = 0u; return true;  // 4a2bb5 ret
     return false;
 }
 
 
-bool core4a2c60(App* app, CPU& cpu, const Entry& e, reg32& result, reg32& popped_)
+bool core4a2c60(App* app, CPU& cpu, const Entry& e, reg32& result, reg32& popped_, X87* xout)
 {
     reg32 eax = e.eax, ebx = e.ebx, ecx = e.ecx, edx = e.edx, esi = e.esi, edi = e.edi, ebp = e.ebp, esp = e.esp;
     Flags fl;
@@ -1538,13 +1645,13 @@ bool core4a2c60(App* app, CPU& cpu, const Entry& e, reg32& result, reg32& popped
     x.pop();  // 4a2cb2 fstp dword ptr [eax + 0x98]
 L_4a2cb8:
     ebp = rd32(esp); esp += 4;  // 4a2cb8 pop ebp
-    for (int i_ = 0; i_ < x.n; ++i_) { cpu.fpu.count += 1; cpu.fpu.st(0) = x86::Float(x.v[i_]); }  // 4a2cb9 ret
+    *xout = x;  // 4a2cb9 ret
     result = eax; popped_ = 0u; return true;  // 4a2cb9 ret
     return false;
 }
 
 
-bool core4a2e20(App* app, CPU& cpu, const Entry& e, reg32& result, reg32& popped_)
+bool core4a2e20(App* app, CPU& cpu, const Entry& e, reg32& result, reg32& popped_, X87* xout)
 {
     reg32 eax = e.eax, ebx = e.ebx, ecx = e.ecx, edx = e.edx, esi = e.esi, edi = e.edi, ebp = e.ebp, esp = e.esp;
     Flags fl;
@@ -1598,14 +1705,14 @@ bool core4a2e20(App* app, CPU& cpu, const Entry& e, reg32& result, reg32& popped
     eax = (ebp - 0x2cu);  // 4a2e92 lea eax, [ebp - 0x2c]
     SF((esp), x.st(0));  // 4a2e95 fstp dword ptr [esp]
     x.pop();  // 4a2e95 fstp dword ptr [esp]
-    { const int n0_ = cpu.fpu.count; cpu.ebp = ebp; if (!rawCall(app, cpu, 0x4a2cc0, esp, 4, eax, edx, ebx, ecx)) return false; pullX87(cpu, n0_, x); }  // 4a2e98 call 0x4a2cc0
+    { handOver(app, cpu, esp, eax, edx, ebx, ecx, ebp); const std::optional<reg32> r_ = feCore<0x4a2cc0, frontend::simb::turnMatrix>(app, cpu, eax, rd32(esp), rd32(esp + 4u), rd32(esp + 8u), rd32(esp + 12u)); if (!r_) return false; eax = *r_; }  // 4a2e98 call 0x4a2cc0
     esp += 16u;  // 4a2e98 call 0x4a2cc0
     fl.logic(eax & eax);  // 4a2e9d test eax, eax
     if (fl.e()) goto L_4a2ef7;  // 4a2e9f je 0x4a2ef7
     eax = (ecx + 0xc0u);  // 4a2ea1 lea eax, [ecx + 0xc0]
     edx = (ebp - 0x2cu);  // 4a2ea7 lea edx, [ebp - 0x2c]
     ebx = eax;  // 4a2eaa mov ebx, eax
-    { const int n0_ = cpu.fpu.count; cpu.ebp = ebp; if (!rawCall(app, cpu, 0x4e0280, esp, 0, eax, edx, ebx, ecx)) return false; pullX87(cpu, n0_, x); }  // 4a2eac call 0x4e0280
+    { cpu.ebp = ebp; if (!rawCall(app, cpu, 0x4e0280, esp, 0, eax, edx, ebx, ecx)) return false; }  // 4a2eac call 0x4e0280
     esp += 0u;  // 4a2eac call 0x4e0280
     x.push(F(ecx + 0x94u));  // 4a2eb1 fld dword ptr [ecx + 0x94]
     fl.fcmp(x.st(0), D(0x53c8f4u));  // 4a2eb7 fcomp qword ptr [0x53c8f4]
@@ -1621,21 +1728,21 @@ bool core4a2e20(App* app, CPU& cpu, const Entry& e, reg32& result, reg32& popped
 L_4a2ed4:
     edx = 10u;  // 4a2ed4 mov edx, 0xa
     eax = (ecx + 0xc0u);  // 4a2ed9 lea eax, [ecx + 0xc0]
-    { const int n0_ = cpu.fpu.count; cpu.ebp = ebp; if (!rawCall(app, cpu, 0x4b7840, esp, 0, eax, edx, ebx, ecx)) return false; pullX87(cpu, n0_, x); }  // 4a2edf call 0x4b7840
+    { handOver(app, cpu, esp, eax, edx, ebx, ecx, ebp); const std::optional<reg32> r_ = feCore<0x4b7840, frontend::simc::matrixOrthonormalise>(app, cpu, eax, edx); if (!r_) return false; eax = *r_; }  // 4a2edf call 0x4b7840
     esp += 0u;  // 4a2edf call 0x4b7840
     eax = (eax & 0xffffff00u) | ((rd8((ebp - 8u))) & 0xffu);  // 4a2ee4 mov al, byte ptr [ebp - 8]
     wr32((ecx + 0x94u), 0u);  // 4a2ee7 mov dword ptr [ecx + 0x94], 0
     wr8((ecx + 0x8cu), (eax & 0xffu));  // 4a2ef1 mov byte ptr [ecx + 0x8c], al
 L_4a2ef7:
     eax = ecx;  // 4a2ef7 mov eax, ecx
-    { const int n0_ = cpu.fpu.count; cpu.ebp = ebp; if (!rawCall(app, cpu, 0x4a2690, esp, 0, eax, edx, ebx, ecx)) return false; pullX87(cpu, n0_, x); }  // 4a2ef9 call 0x4a2690
+    { cpu.ebp = ebp; if (!rawCall(app, cpu, 0x4a2690, esp, 0, eax, edx, ebx, ecx)) return false; }  // 4a2ef9 call 0x4a2690
     esp += 0u;  // 4a2ef9 call 0x4a2690
 L_4a2efe:
     esp = ebp;  // 4a2efe mov esp, ebp
     ebp = rd32(esp); esp += 4;  // 4a2f00 pop ebp
     ecx = rd32(esp); esp += 4;  // 4a2f01 pop ecx
     ebx = rd32(esp); esp += 4;  // 4a2f02 pop ebx
-    for (int i_ = 0; i_ < x.n; ++i_) { cpu.fpu.count += 1; cpu.fpu.st(0) = x86::Float(x.v[i_]); }  // 4a2f03 ret
+    *xout = x;  // 4a2f03 ret
     result = eax; popped_ = 0u; return true;  // 4a2f03 ret
     return false;
 }
@@ -1651,104 +1758,169 @@ void fn49fe70(App* app, CPU& cpu)
 {
     const Entry e(cpu);
     reg32 result, popped = 0;
-    if (core49fe70(app, cpu, e, result, popped))
+    X87 x;
+    if (core49fe70(app, cpu, e, result, popped, &x))
+    {
         e.back(cpu, result, popped);
+        for (int i = 0; i < x.n; ++i)
+            cpu.fpu.push(x86::Float(x.v[i]));  // the float the function returns
+    }
 }
 
 void fn4a00d0(App* app, CPU& cpu)
 {
     const Entry e(cpu);
     reg32 result, popped = 0;
-    if (core4a00d0(app, cpu, e, result, popped))
+    X87 x;
+    if (core4a00d0(app, cpu, e, result, popped, &x))
+    {
         e.back(cpu, result, popped);
+        for (int i = 0; i < x.n; ++i)
+            cpu.fpu.push(x86::Float(x.v[i]));  // the float the function returns
+    }
 }
 
 void fn4a0440(App* app, CPU& cpu)
 {
     const Entry e(cpu);
     reg32 result, popped = 0;
-    if (core4a0440(app, cpu, e, result, popped))
+    X87 x;
+    if (core4a0440(app, cpu, e, result, popped, &x))
+    {
         e.back(cpu, result, popped);
+        for (int i = 0; i < x.n; ++i)
+            cpu.fpu.push(x86::Float(x.v[i]));  // the float the function returns
+    }
 }
 
 void fn4a0980(App* app, CPU& cpu)
 {
     const Entry e(cpu);
     reg32 result, popped = 0;
-    if (core4a0980(app, cpu, e, result, popped))
+    X87 x;
+    if (core4a0980(app, cpu, e, result, popped, &x))
+    {
         e.back(cpu, result, popped);
+        for (int i = 0; i < x.n; ++i)
+            cpu.fpu.push(x86::Float(x.v[i]));  // the float the function returns
+    }
 }
 
 void fn4a0a10(App* app, CPU& cpu)
 {
     const Entry e(cpu);
     reg32 result, popped = 0;
-    if (core4a0a10(app, cpu, e, result, popped))
+    X87 x;
+    if (core4a0a10(app, cpu, e, result, popped, &x))
+    {
         e.back(cpu, result, popped);
+        for (int i = 0; i < x.n; ++i)
+            cpu.fpu.push(x86::Float(x.v[i]));  // the float the function returns
+    }
 }
 
 void fn4a0d20(App* app, CPU& cpu)
 {
     const Entry e(cpu);
     reg32 result, popped = 0;
-    if (core4a0d20(app, cpu, e, result, popped))
+    X87 x;
+    if (core4a0d20(app, cpu, e, result, popped, &x))
+    {
         e.back(cpu, result, popped);
+        for (int i = 0; i < x.n; ++i)
+            cpu.fpu.push(x86::Float(x.v[i]));  // the float the function returns
+    }
 }
 
 void fn4a0f30(App* app, CPU& cpu)
 {
     const Entry e(cpu);
     reg32 result, popped = 0;
-    if (core4a0f30(app, cpu, e, result, popped))
+    X87 x;
+    if (core4a0f30(app, cpu, e, result, popped, &x))
+    {
         e.back(cpu, result, popped);
+        for (int i = 0; i < x.n; ++i)
+            cpu.fpu.push(x86::Float(x.v[i]));  // the float the function returns
+    }
 }
 
 void fn4a1090(App* app, CPU& cpu)
 {
     const Entry e(cpu);
     reg32 result, popped = 0;
-    if (core4a1090(app, cpu, e, result, popped))
+    X87 x;
+    if (core4a1090(app, cpu, e, result, popped, &x))
+    {
         e.back(cpu, result, popped);
+        for (int i = 0; i < x.n; ++i)
+            cpu.fpu.push(x86::Float(x.v[i]));  // the float the function returns
+    }
 }
 
 void fn4a20c0(App* app, CPU& cpu)
 {
     const Entry e(cpu);
     reg32 result, popped = 0;
-    if (core4a20c0(app, cpu, e, result, popped))
+    X87 x;
+    if (core4a20c0(app, cpu, e, result, popped, &x))
+    {
         e.back(cpu, result, popped);
+        for (int i = 0; i < x.n; ++i)
+            cpu.fpu.push(x86::Float(x.v[i]));  // the float the function returns
+    }
 }
 
 void fn4a2630(App* app, CPU& cpu)
 {
     const Entry e(cpu);
     reg32 result, popped = 0;
-    if (core4a2630(app, cpu, e, result, popped))
+    X87 x;
+    if (core4a2630(app, cpu, e, result, popped, &x))
+    {
         e.back(cpu, result, popped);
+        for (int i = 0; i < x.n; ++i)
+            cpu.fpu.push(x86::Float(x.v[i]));  // the float the function returns
+    }
 }
 
 void fn4a2830(App* app, CPU& cpu)
 {
     const Entry e(cpu);
     reg32 result, popped = 0;
-    if (core4a2830(app, cpu, e, result, popped))
+    X87 x;
+    if (core4a2830(app, cpu, e, result, popped, &x))
+    {
         e.back(cpu, result, popped);
+        for (int i = 0; i < x.n; ++i)
+            cpu.fpu.push(x86::Float(x.v[i]));  // the float the function returns
+    }
 }
 
 void fn4a2c60(App* app, CPU& cpu)
 {
     const Entry e(cpu);
     reg32 result, popped = 0;
-    if (core4a2c60(app, cpu, e, result, popped))
+    X87 x;
+    if (core4a2c60(app, cpu, e, result, popped, &x))
+    {
         e.back(cpu, result, popped);
+        for (int i = 0; i < x.n; ++i)
+            cpu.fpu.push(x86::Float(x.v[i]));  // the float the function returns
+    }
 }
 
 void fn4a2e20(App* app, CPU& cpu)
 {
     const Entry e(cpu);
     reg32 result, popped = 0;
-    if (core4a2e20(app, cpu, e, result, popped))
+    X87 x;
+    if (core4a2e20(app, cpu, e, result, popped, &x))
+    {
         e.back(cpu, result, popped);
+        for (int i = 0; i < x.n; ++i)
+            cpu.fpu.push(x86::Float(x.v[i]));  // the float the function returns
+    }
 }
 
 // @@ADAPTERS@@

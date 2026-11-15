@@ -23,10 +23,10 @@ using App = win32::WinApplication;
 using CPU = x86::CPU;
 using reg32 = x86::reg32;
 
-// The game's 0x469520: the value of the slider at `slider`, onto the x87's stack.
-void sliderStoredValue(App* app, CPU& cpu, reg32 slider);
-// The game's 0x46afd0: value `end` of the two-axis slider at `slider`, onto the x87's stack.
-void twoAxisValue(App* app, CPU& cpu, reg32 slider, reg32 end);
+// The game's 0x469520: the value of the slider at `slider`, which its code leaves on the x87's stack.
+double sliderStoredValue(App* app, CPU& cpu, reg32 slider);
+// The game's 0x46afd0: value `end` of the two-axis slider at `slider`, which its code leaves on the x87's stack.
+double twoAxisValue(App* app, CPU& cpu, reg32 slider, reg32 end);
 // The game's 0x4956f0: the .qfs file named at `fileName` loaded, the menus' extension put after a name without one.
 reg32 loadQfs(App* app, CPU& cpu, reg32 fileName);
 
@@ -37,15 +37,18 @@ namespace guest
 {
 
 /* Each by address as the game's code calls it: its arguments in eax and edx, every other register
- * as the caller has it.  With cpu.terminate set when the game stopped in it. */
+ * as the caller has it.  With cpu.terminate set when the game stopped in it.  A value the code
+ * leaves on the x87's stack is taken off it. */
 template <>
 struct ByAddress<frontend::draw::sliderStoredValue>
 {
     template <x86::reg32 Address>
-    static void call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 slider)
+    static double call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 slider)
     {
         cpu.eax = slider;
-        guest::call(app, cpu, Address);
+        if (!guest::call(app, cpu, Address))
+            return 0.0;
+        return double(cpu.fpu.take());
     }
 };
 
@@ -53,11 +56,13 @@ template <>
 struct ByAddress<frontend::draw::twoAxisValue>
 {
     template <x86::reg32 Address>
-    static void call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 slider, x86::reg32 end)
+    static double call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 slider, x86::reg32 end)
     {
         cpu.eax = slider;
         cpu.edx = end;
-        guest::call(app, cpu, Address);
+        if (!guest::call(app, cpu, Address))
+            return 0.0;
+        return double(cpu.fpu.take());
     }
 };
 

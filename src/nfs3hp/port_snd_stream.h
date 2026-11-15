@@ -2,6 +2,7 @@
 #define NFS3HP_PORT_SND_STREAM_H
 
 #include "port_snd.h"
+#include "host_threads.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -123,7 +124,7 @@ inline CdStream& cdStream(App* app, reg32 at) { return record<CdStream>(app, at)
 inline Result enterSection(App* app, CPU& cpu, reg32 esp, reg32 section)
 {
     reg32 eax;
-    if (!callWindows<kEnterCriticalSection, &win32::kernel32::EnterCriticalSection>(app, cpu, esp, {section}, eax,
+    if (!callWindows<kEnterCriticalSection, &host::enterLock>(app, cpu, esp, {section}, eax,
                                                                                      section))
         return {};
     return int32_t(eax);
@@ -132,7 +133,7 @@ inline Result enterSection(App* app, CPU& cpu, reg32 esp, reg32 section)
 inline Result leaveSection(App* app, CPU& cpu, reg32 esp, reg32 section)
 {
     reg32 eax;
-    if (!callWindows<kLeaveCriticalSection, &win32::kernel32::LeaveCriticalSection>(app, cpu, esp, {section}, eax,
+    if (!callWindows<kLeaveCriticalSection, &host::leaveLock>(app, cpu, esp, {section}, eax,
                                                                                      section))
         return {};
     return int32_t(eax);

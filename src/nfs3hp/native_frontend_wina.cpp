@@ -1,4 +1,8 @@
 #include "native_frontend_wina.h"
+#include "native_ea_net.h"
+#include "native_watcom.h"
+#include "native_game.h"
+#include "native_ea_files.h"
 #include "native_ea_memory.h"
 #include "native_ea_threads.h"
 #include "native_frontend.h"
@@ -18,14 +22,52 @@ struct SDL_Semaphore;
 #include <lib/thread.h>
 #include <nfs3hp.h>
 #include "native_windows.h"
+#include "host_threads.h"
+#include "host_video.h"
+#include "host_window.h"
 #include <winapi/advapi32.h>
-#include <winapi/ddraw/idirectdraw2.h>
-#include <winapi/gdi32.h>
 #include <winapi/kernel32.h>
 #include <winapi/user32.h>
 #include <winapi/version.h>
 #include <cstdint>
 #include <optional>
+#include <type_traits>
+#include <utility>
+#include <cstddef>
+
+namespace nfs3hp
+{
+namespace
+{
+
+/* A typed core called as C++ (fe::direct) whose function changes no register but eax (as
+ * tools/frontend_checks/specs_from_exe.py reads it): the registers left as the call by address
+ * leaves them -- `words` in eax, edx, ebx and ecx as that call loads them, the first `Taken` of
+ * them the core's arguments -- and its result in eax, which the call by address leaves there. */
+template <x86::reg32 Address, auto Core, std::size_t... I>
+auto directOf(win32::WinApplication* app, x86::CPU& cpu, const x86::reg32* words, std::index_sequence<I...>)
+{
+    return fe::direct<Address, Core>(app, cpu, words[I]...);
+}
+
+template <x86::reg32 Address, auto Core, std::size_t Taken, typename... Words>
+x86::reg32 directKept(win32::WinApplication* app, x86::CPU& cpu, Words... words)
+{
+    const x86::reg32 all[] = { x86::reg32(words)..., 0 };
+    x86::reg32* const into[] = { &cpu.eax, &cpu.edx, &cpu.ebx, &cpu.ecx };
+    for (std::size_t i = 0; i < sizeof...(Words) && i < 4; ++i)
+        *into[i] = all[i];
+    const auto result = directOf<Address, Core>(app, cpu, all, std::make_index_sequence<Taken>{});
+    if constexpr (std::is_same_v<std::remove_cv_t<decltype(result)>, x86::reg32>)
+        cpu.eax = result;
+    else
+        cpu.eax = *result;
+    return cpu.eax;
+}
+
+}  // namespace
+}  // namespace nfs3hp
+
 
 /* The layers under the movie player and over Windows, decompiled:
  *
@@ -54,9 +96,6 @@ namespace
 
 using fe::args;
 using fe::Guest;
-using win32::com::IUnknown;
-using win32::ddraw::IDirectDraw2;
-using win32::ddraw::IDirectDrawSurface;
 using x86::reg32;
 using x86::sreg32;
 
@@ -74,7 +113,7 @@ constexpr reg32 kAdjustRect = 0x5346ec, kSetCursor = 0x534780;
 // version.dll's, by their import thunk (native_import_thunks.inc).
 constexpr reg32 kVersionInfoSize = 0x533e98, kVersionInfo = 0x533e92, kQueryVersionValue = 0x533e8c;
 
-// DirectDraw's methods, by their offset in an object's table (src/lib/winapi/ddraw).
+// DirectDraw's methods, by their offset in an object's table (host_video.h).
 constexpr reg32 kQueryInterface = 0x00, kRelease = 0x08, kCreateSurface = 0x18, kSetCooperativeLevel = 0x50;
 
 // The game's functions, by address.
@@ -171,12 +210,12 @@ reg32 callThunk(Guest& guest, x86::CPU& cpu, Words... words)
 }
 
 /* A method of a DirectDraw object, by its offset in the object's table, the object first on the
- * stack: the port's method called as C++ where the table has it there, else, and in the checks,
- * through the table (native_windows.h, guest::method). */
+ * stack: the host's method called as C++ where the table has it there, else, and in the checks,
+ * through the table (host_video.h, guest::ddraw). */
 template <reg32 Offset, auto Method, typename... Words>
 reg32 callMethod(Guest& guest, x86::CPU& cpu, reg32 object, Words... words)
 {
-    const std::optional<reg32> eax = guest::method<Offset, Method>(guest.app(), cpu, object, words...);
+    const std::optional<reg32> eax = guest::ddraw<Offset, Method>(guest.app(), cpu, object, words...);
     if (!eax)
         throw fe::Terminated();
     return *eax;
@@ -184,12 +223,12 @@ reg32 callMethod(Guest& guest, x86::CPU& cpu, reg32 object, Words... words)
 
 void enterLock(Guest& guest, x86::CPU& cpu, reg32 lock)
 {
-    callImport<kEnterLock, &win32::kernel32::EnterCriticalSection>(guest, cpu, lock);
+    callImport<kEnterLock, &host::enterLock>(guest, cpu, lock);
 }
 
 void leaveLock(Guest& guest, x86::CPU& cpu, reg32 lock)
 {
-    callImport<kLeaveLock, &win32::kernel32::LeaveCriticalSection>(guest, cpu, lock);
+    callImport<kLeaveLock, &host::leaveLock>(guest, cpu, lock);
 }
 
 /* sub_4cf1c0 on a stream's handle, its two out slots at the bottom of the frame:
@@ -239,7 +278,15 @@ void assertFailed(Guest& guest, reg32 sourceFile, reg32 function, reg32 line, co
     guest.setDword(kErrorFile, sourceFile);
     guest.setDword(kErrorFunction, function);
     guest.setDword(kErrorLine, line);
-    guest.call(kError, arguments);
+    // The registers as the code loads them for it, which Error keeps; its format and words pushed.
+    x86::CPU& cpu = guest.cpu();
+    x86::reg32* const into[] = { &cpu.eax, &cpu.edx, &cpu.ebx, &cpu.ecx };
+    for (std::size_t i = 0; i < arguments.registerCount; ++i)
+        *into[i] = arguments.registers[i];
+    guest::Words words({});
+    for (std::size_t i = 1; i < arguments.stackCount; ++i)
+        words.word[words.count++] = arguments.stack[i];
+    fe::direct<0x401010, ea::error>(guest.app(), cpu, arguments.stack[0], words);
 }
 
 /* The lock of the message table, made the first time it is asked for. */
@@ -254,12 +301,12 @@ void messageLockMade(Guest& guest, x86::CPU& cpu)
 /* The system's sticky and filter keys read, and turned off for what they were on. */
 void accessKeysOff(Guest& guest, x86::CPU& cpu)
 {
-    callImport<kSystemParameters, &win32::user32::SystemParametersInfoA>(guest, cpu, 0x10, 0, kStickyKeys, 0);
-    callImport<kSystemParameters, &win32::user32::SystemParametersInfoA>(guest, cpu, 0x54, 0, kFilterKeys, 0);
+    callImport<kSystemParameters, &host::systemParameters>(guest, cpu, 0x10, 0, kStickyKeys, 0);
+    callImport<kSystemParameters, &host::systemParameters>(guest, cpu, 0x54, 0, kFilterKeys, 0);
     if (guest.dword(kStickyKeys) != 0)
-        callImport<kSystemParameters, &win32::user32::SystemParametersInfoA>(guest, cpu, 0x11, 0, 0, 2);
+        callImport<kSystemParameters, &host::systemParameters>(guest, cpu, 0x11, 0, 0, 2);
     if (guest.dword(kFilterKeys) != 0)
-        callImport<kSystemParameters, &win32::user32::SystemParametersInfoA>(guest, cpu, 0x56, 0, 0, 2);
+        callImport<kSystemParameters, &host::systemParameters>(guest, cpu, 0x56, 0, 0, 2);
 }
 
 /* The mouse messages' buttons, as the game keeps them, and the place in the message: its window, its
@@ -610,7 +657,7 @@ x86::reg32 frontend::wina::streamNextFile(App* app, CPU& cpu, reg32 s, reg32 pri
     const reg32 lock = guest.dword(s + stream::kLock);
     cpu.eax = s;
     guest.leaveEdx(lock);
-    callImport<kLeaveLock, &win32::kernel32::LeaveCriticalSection>(guest, cpu, lock);
+    callImport<kLeaveLock, &host::leaveLock>(guest, cpu, lock);
     if (none)
         return guest.eax();
     guest.setDword(s + stream::kWritten, guest.dword(s + stream::kParsed));
@@ -623,7 +670,7 @@ x86::reg32 frontend::wina::streamNextFile(App* app, CPU& cpu, reg32 s, reg32 pri
         guest.setDword(s + stream::kFilePos, guest.dword(record + file::kLength));
         const reg32 path = s + stream::kPath;
         const reg32 name = record + file::kName;
-        if (guest.call(kStrcmp, args({ name, path })) != 0)
+        if (fe::direct<kStrcmp, watcom::clib::strcmp>(guest.app(), guest.cpu(), name, path) != 0)
         {
             guest.copyString(path, name);
             const reg32 open = guest.dword(s + stream::kFile);
@@ -805,7 +852,7 @@ x86::reg32 frontend::wina::streamCreate(App* app, CPU& cpu, reg32 files, reg32 r
     guest.setDword(s + stream::kWritten, ring);
     guest.setDword(s + stream::kFree, guest.dword(s + stream::kFiles));
     guest.setDword(s + stream::kRuleCount, rules);
-    guest.call(kMemset, args({ s + stream::kPath, 0, stream::kFile - stream::kPath }));
+    fe::direct<kMemset, watcom::clib::memset>(guest.app(), guest.cpu(), s + stream::kPath, 0, stream::kFile - stream::kPath);
     guest.setDword(s + stream::kFile, 0);
 
     // The file records, on the free list.
@@ -977,7 +1024,7 @@ x86::reg32 frontend::wina::streamOpenFile(App* app, CPU& cpu, reg32 handle, reg3
     if (record == 0)
         return 0;
     guest.setDword(record + file::kInMemory, 0);
-    guest.call(kStrncpy, args({ record + file::kName, name, kMostName }));
+    fe::direct<kStrncpy, watcom::clib::strncpy>(guest.app(), guest.cpu(), record + file::kName, name, kMostName);
     guest.setDword(record + file::kEndId, endId);
     guest.setDword(record + file::kLength, length);
     guest::direct<0x4cf2f0, streamQueueFile>(app, cpu, s, record);
@@ -1083,7 +1130,7 @@ x86::reg32 frontend::wina::streamCloseFile(App* app, CPU& cpu, reg32 handle, reg
     const reg32 lock = guest.dword(s + stream::kLock);
     guest.leaveEdx(lock);
     cpu.eax = s;
-    callImport<kLeaveLock, &win32::kernel32::LeaveCriticalSection>(guest, cpu, lock);
+    callImport<kLeaveLock, &host::leaveLock>(guest, cpu, lock);
     if (nothing)
         return guest.eax();
 
@@ -1449,7 +1496,7 @@ x86::reg32 frontend::wina::fileOpSetName(App* app, CPU& cpu, reg32 op, reg32 nam
     guest.leaveEdx(size);
     guest.setDword(guest.frame(), size);
     guest.setByte(op + 0xc, guest.byte(op + 0xc) | 1);
-    const reg32 copy = guest.call(0x501110, args({ guest.frame() }));
+    const reg32 copy = *fe::direct<0x501110, ea::allocatePages>(app, cpu, guest.frame());
     guest.setDword(op + 0x2c, copy);
     guest.call(0x4ea4f0, args({ name, copy, guest.edx() }));
     return guest.eax();
@@ -1681,7 +1728,7 @@ x86::reg32 frontend::wina::handlerSet(App* app, CPU& cpu, reg32 message, reg32 h
         {
             const reg32 count = guest.dword(kHandlerCount);
             guest.setDword(row, kPastEnd);
-            guest.call(kQsort, args({ kHandlers, count, 8, kCompareHandlers }));
+            fe::direct<kQsort, watcom::clib::qsort>(guest.app(), guest.cpu(), kHandlers, count, 8, kCompareHandlers);
             guest.setDword(kHandlerCount, guest.dword(kHandlerCount) - 1);
         }
         else
@@ -1699,7 +1746,7 @@ x86::reg32 frontend::wina::handlerSet(App* app, CPU& cpu, reg32 message, reg32 h
             guest.setDword(count * 8 + kHandlers, message);
             guest.setDword(count * 8 + kHandlers + 4, handler);
             guest.setDword(kHandlerCount, count + 1);
-            guest.call(kQsort, args({ kHandlers, count + 1, 8, kCompareHandlers }));
+            fe::direct<kQsort, watcom::clib::qsort>(guest.app(), guest.cpu(), kHandlers, count + 1, 8, kCompareHandlers);
         }
     }
     const reg32 lockAgain = guest.dword(kMessageLock);
@@ -1720,9 +1767,9 @@ x86::reg32 frontend::wina::postMessage(App* app, CPU& cpu, reg32 message, reg32 
     reg32 failed = 0;
     if (send != 0)
     {
-        failed = callImport<0x534778, &win32::user32::SendNotifyMessageA>(guest, cpu, hwnd, message, wParam, lParam);
+        failed = callImport<0x534778, &host::sendNotifyMessage>(guest, cpu, hwnd, message, wParam, lParam);
     }
-    else if (callImport<0x534768, &win32::user32::PostMessageA>(guest, cpu, hwnd, message, wParam, lParam) == 0)
+    else if (callImport<0x534768, &host::postMessage>(guest, cpu, hwnd, message, wParam, lParam) == 0)
     {
         failed = callImport<kLastError, &win32::kernel32::GetLastError>(guest, cpu);
     }
@@ -1759,18 +1806,18 @@ x86::reg32 frontend::wina::movePointer(App* app, CPU& cpu, reg32 window, reg32 x
     guest.setDword(frame + 4, y);
     const reg32 hwnd = guest.dword(window + kWindowHandle);
     guest.leaveEdx(hwnd);
-    if (callImport<kClientToScreen, &win32::user32::ClientToScreen>(guest, cpu, hwnd, frame) != 0)
+    if (callImport<kClientToScreen, &host::clientToScreen>(guest, cpu, hwnd, frame) != 0)
     {
         const reg32 screenY = guest.dword(frame + 4), screenX = guest.dword(frame);
         guest.leaveEcx(screenY);
         guest.leaveEbx(screenX);
-        callImport<0x534784, &win32::user32::SetCursorPos>(guest, cpu, screenX, screenY);
+        callImport<0x534784, &host::setCursorPosition>(guest, cpu, screenX, screenY);
     }
     else
     {
-        callImport<0x534784, &win32::user32::SetCursorPos>(guest, cpu, x, y);
+        callImport<0x534784, &host::setCursorPosition>(guest, cpu, x, y);
     }
-    callImport<kSetCursor, &win32::user32::SetCursor>(guest, cpu, 0);
+    callImport<kSetCursor, &host::setCursor>(guest, cpu, 0);
     return guest.eax();
 }
 
@@ -1806,7 +1853,7 @@ x86::reg32 frontend::wina::pushKey(App* app, CPU& cpu, reg32 key, reg32 scan, re
     const reg32 lockAgain = guest.dword(kKeyLock);
     guest.leaveEbx(lockAgain);
     cpu.eax = quotient;
-    callImport<kLeaveLock, &win32::kernel32::LeaveCriticalSection>(guest, cpu, lockAgain);
+    callImport<kLeaveLock, &host::leaveLock>(guest, cpu, lockAgain);
     return guest.eax();
 }
 
@@ -1875,7 +1922,7 @@ x86::reg32 frontend::wina::keyboardHook(App* app, CPU& cpu, reg32 code, reg32 wP
         }
         else
         {
-            const reg32 state = callImport<0x534738, &win32::user32::GetAsyncKeyState>(guest, cpu, kVkControl);
+            const reg32 state = callImport<0x534738, &host::asyncKeyState>(guest, cpu, kVkControl);
             if (std::int16_t(state) < 0)
             {
                 modifier = 0x1d;
@@ -1898,7 +1945,7 @@ x86::reg32 frontend::wina::keyboardHook(App* app, CPU& cpu, reg32 code, reg32 wP
     }
     if (swallowed != 0)
         return 1;
-    return callImport<0x5346f4, &win32::user32::CallNextHookEx>(guest, cpu, guest.dword(kHookHandle), code, wParam, lParam);
+    return callImport<0x5346f4, &host::callNextHook>(guest, cpu, guest.dword(kHookHandle), code, wParam, lParam);
 }
 
 /* sub_4ccd60: the window has the focus: hook and callback. */
@@ -1915,7 +1962,7 @@ x86::reg32 frontend::wina::onSetFocus(App* app, CPU& cpu, reg32 window, reg32 hw
             guest.setDword(kActive, 1);
             if (wanted != 0 && guest.dword(kHookHandle) == 0)
                 guest.setDword(kHookHandle,
-                               callImport<kSetHook, &win32::user32::SetWindowsHookExA>(guest, cpu, 2, kKeyboardHook, 0, 0));
+                               callImport<kSetHook, &host::setWindowsHook>(guest, cpu, 2, kKeyboardHook, 0, 0));
             if (guest.dword(kFocusCallback) != 0)
                 guest.call(guest.dword(kFocusCallback), args({ 1 }));
         }
@@ -1939,14 +1986,14 @@ x86::reg32 frontend::wina::onKillFocus(App* app, CPU& cpu, reg32, reg32 hwnd, re
             const reg32 hook = guest.dword(kHookHandle);
             if (hook != 0)
             {
-                callImport<kUnhook, &win32::user32::UnhookWindowsHookEx>(guest, cpu, hook);
+                callImport<kUnhook, &host::unhookWindowsHook>(guest, cpu, hook);
                 guest.setDword(kHookHandle, 0);
             }
         }
         if (guest.dword(kFocusCallback) != 0)
             guest.call(guest.dword(kFocusCallback), args({ 0 }));
-        callImport<kShowCursor, &win32::user32::ShowCursor>(guest, cpu, 1);
-        guest.call(0x4e070c, args({ kKeysDown, 0x80 }));
+        callImport<kShowCursor, &host::showCursor>(guest, cpu, 1);
+        fe::direct<0x4e070c, ea::clearBytes>(guest.app(), guest.cpu(), kKeysDown, 0x80);
     }
     return 0;
 }
@@ -1957,7 +2004,7 @@ x86::reg32 frontend::wina::onClose(App* app, CPU& cpu, reg32 window, reg32, reg3
     Guest guest(app, cpu);
     const fe::Frame ownFrame(guest, cpu, 4);
     if (window != 0)
-        callImport<0x53476c, &win32::user32::PostQuitMessage>(guest, cpu, 0);
+        callImport<0x53476c, &host::postQuitMessage>(guest, cpu, 0);
     return 1;
 }
 
@@ -2009,10 +2056,10 @@ x86::reg32 frontend::wina::onMoved(App* app, CPU& cpu, reg32 window, reg32 hwnd,
     {
         const reg32 hwnd = guest.dword(window + kWindowHandle);
         guest.leaveEdx(hwnd);
-        callImport<kClientRect, &win32::user32::GetClientRect>(guest, cpu, hwnd, frame);
+        callImport<kClientRect, &host::clientRect>(guest, cpu, hwnd, frame);
         const reg32 hwndAgain = guest.dword(window + kWindowHandle);
         guest.leaveEcx(hwndAgain);
-        callImport<kClientToScreen, &win32::user32::ClientToScreen>(guest, cpu, hwndAgain, frame);
+        callImport<kClientToScreen, &host::clientToScreen>(guest, cpu, hwndAgain, frame);
         guest.setDword(window + kWindowX, guest.dword(frame));
         guest.setDword(window + kWindowY, guest.dword(frame + 4));
         if (guest.dword(kOnResize) != 0)
@@ -2142,11 +2189,11 @@ x86::reg32 frontend::wina::onPaint(App* app, CPU& cpu, reg32 window, reg32 hwnd,
         if (guest.byte(window + kWindowFullscreen) != 0)
         {
             guest.leaveEcx(other);
-            callImport<kForeground, &win32::user32::SetForegroundWindow>(guest, cpu, other);
+            callImport<kForeground, &host::setForegroundWindow>(guest, cpu, other);
         }
         enterLock(guest, cpu, guest.dword(kGraphicsLock));
-        callImport<0x5346f0, &win32::user32::BeginPaint>(guest, cpu, guest.dword(window + kWindowHandle), frame);
-        callImport<0x534730, &win32::user32::EndPaint>(guest, cpu, guest.dword(window + kWindowHandle), frame);
+        callImport<0x5346f0, &host::beginPaint>(guest, cpu, guest.dword(window + kWindowHandle), frame);
+        callImport<0x534730, &host::endPaint>(guest, cpu, guest.dword(window + kWindowHandle), frame);
         const reg32 lock = guest.dword(kGraphicsLock);
         guest.leaveEdx(lock);
         leaveLock(guest, cpu, lock);
@@ -2191,7 +2238,7 @@ x86::reg32 frontend::wina::windowProc(App* app, CPU& cpu, reg32 hwnd, reg32 mess
     guest.leaveEdx(wParam);
     guest.leaveEcx(hwnd);
     cpu.eax = lParam;
-    return callImport<0x534724, &win32::user32::DefWindowProcA>(guest, cpu, hwnd, message, wParam, lParam);
+    return callImport<0x534724, &host::defaultWindowProcedure>(guest, cpu, hwnd, message, wParam, lParam);
 }
 
 /* sub_4cd350: the window created, fullscreen or framed; its handle.  With none it stays
@@ -2208,9 +2255,9 @@ x86::reg32 frontend::wina::createWindow(App* app, CPU& cpu, reg32 window)
         guest.setDword(window + kWindowX, 0);
         extended = 8;
         guest.setDword(window + kWindowY, 0);
-        width = callImport<kScreenMetric, &win32::user32::GetSystemMetrics>(guest, cpu, 0);
+        width = callImport<kScreenMetric, &host::systemMetrics>(guest, cpu, 0);
         style |= 0x80000000;
-        height = callImport<kScreenMetric, &win32::user32::GetSystemMetrics>(guest, cpu, 1);
+        height = callImport<kScreenMetric, &host::systemMetrics>(guest, cpu, 1);
     }
     else
     {
@@ -2237,20 +2284,20 @@ x86::reg32 frontend::wina::createWindow(App* app, CPU& cpu, reg32 window)
         }
         guest.setDword(frame + 12, guest.dword(frame + 4) + guest.dword(window + 0x18));
         guest.setDword(frame + 8, guest.dword(frame) + guest.dword(window + 0x14));
-        callImport<kAdjustRect, &win32::user32::AdjustWindowRect>(guest, cpu, frame, style, 0);
+        callImport<kAdjustRect, &host::adjustWindowRect>(guest, cpu, frame, style, 0);
         guest.setDword(window + kWindowX, guest.dword(frame));
         guest.setDword(window + kWindowY, guest.dword(frame + 4));
         width = guest.dword(frame + 8) - guest.dword(frame);
         height = guest.dword(frame + 12) - guest.dword(frame + 4);
     }
-    const reg32 created = callImport<0x534704, &win32::user32::CreateWindowExA>(
+    const reg32 created = callImport<0x534704, &host::createWindow>(
         guest, cpu, extended, guest.dword(0x5612a0), guest.dword(0x5612a4), style, guest.dword(window + kWindowX),
         guest.dword(window + kWindowY), width, height, 0, 0, guest.dword(kInstance), 0);
     if (created != 0)
     {
-        callImport<kSetCursor, &win32::user32::SetCursor>(guest, cpu, 0);
+        callImport<kSetCursor, &host::setCursor>(guest, cpu, 0);
         if (guest.byte(window + kWindowFullscreen) != 0)
-            callImport<kShowCursor, &win32::user32::ShowCursor>(guest, cpu, 0);
+            callImport<kShowCursor, &host::showCursor>(guest, cpu, 0);
         guest.setDword(0x564814, 0);
         if (guest.dword(kScanTable) == 0)
         {
@@ -2274,7 +2321,7 @@ x86::reg32 frontend::wina::windowThread(App* app, CPU& cpu)
     guest.setDword(kWindowReady, reg32(*fe::direct<0x4dfb00, ea::newAutoEvent>(app, cpu)));
     // The event in eax as the call before leaves it.
     fe::direct<0x4dfb70, ea::eventWaited>(app, cpu, guest.dword(kWindowReady));
-    guest.call(0x4dfc00, args({ guest.dword(kWindowReady), 0 }));
+    directKept<0x4dfc00, ea::eventClosed, 1>(guest.app(), guest.cpu(), guest.dword(kWindowReady), 0);
     const std::uint8_t fullscreen = guest.byte(kFullscreen);
     guest.setDword(kHwnd, hwnd);
     const reg32 zero = cpu.edx;
@@ -2282,31 +2329,31 @@ x86::reg32 frontend::wina::windowThread(App* app, CPU& cpu)
     guest.setDword(kWindowReady, zero);
     if (fullscreen == 0)
     {
-        callImport<kClientRect, &win32::user32::GetClientRect>(guest, cpu, hwnd, rect);
-        callImport<kClientToScreen, &win32::user32::ClientToScreen>(guest, cpu, hwnd, rect);
+        callImport<kClientRect, &host::clientRect>(guest, cpu, hwnd, rect);
+        callImport<kClientToScreen, &host::clientToScreen>(guest, cpu, hwnd, rect);
         guest.setDword(0x9f3d34, guest.dword(rect));
         guest.setDword(0x9f3d38, guest.dword(rect + 4));
     }
     else
     {
-        callImport<kForeground, &win32::user32::SetForegroundWindow>(guest, cpu, hwnd);
+        callImport<kForeground, &host::setForegroundWindow>(guest, cpu, hwnd);
         guest.setDword(0x9f3d34, 0);
         guest.setDword(0x9f3d38, 0);
     }
-    callImport<0x53477c, &win32::user32::SetActiveWindow>(guest, cpu, hwnd);
+    callImport<0x53477c, &host::setActiveWindow>(guest, cpu, hwnd);
     guest.setDword(kActive, 1);
     for (;;)
     {
         safepoint(app, cpu);
         if (hwnd != guest.dword(kHwnd))
             break;
-        if (callImport<0x53474c, &win32::user32::GetMessageA>(guest, cpu, message, 0, 0, 0) != 0)
+        if (callImport<0x53474c, &host::getMessage>(guest, cpu, message, 0, 0, 0) != 0)
         {
             enterLock(guest, cpu, guest.dword(kMessageLock));
             if (guest.dword(kWantRaw) == 0
                 && guest::direct<0x4ccaa0, keyOfMessage>(app, cpu, guest.dword(message + 4), guest.dword(message + 8)) == 0)
-                callImport<0x5347a4, &win32::user32::TranslateMessage>(guest, cpu, message);
-            callImport<0x53472c, &win32::user32::DispatchMessageA>(guest, cpu, message);
+                callImport<0x5347a4, &host::translateMessage>(guest, cpu, message);
+            callImport<0x53472c, &host::dispatchMessage>(guest, cpu, message);
             leaveLock(guest, cpu, guest.dword(kMessageLock));
         }
         else if (guest.dword(0x56129c) != 0)
@@ -2324,7 +2371,7 @@ x86::reg32 frontend::wina::windowThread(App* app, CPU& cpu)
             guest.setDword(kQuitAsked, 0);
             if (surface != 0 && guest.dword(0x9f38e0) != 0)
                 fe::direct<0x4ecd50, eab::ddrawDisposeDisplay>(app, cpu, kWindow);
-            callImport<0x534728, &win32::user32::DestroyWindow>(guest, cpu, guest.dword(kHwnd));
+            callImport<0x534728, &host::destroyWindow>(guest, cpu, guest.dword(kHwnd));
             guest.setDword(kHwnd, 0);
         }
         if (guest.byte(kFullscreen) != 0)
@@ -2332,11 +2379,11 @@ x86::reg32 frontend::wina::windowThread(App* app, CPU& cpu)
             if (guest::direct<0x4f9120, hasFocus>(app, cpu) != 0)
             {
                 if (guest.call(0x4f9070) == 0)
-                    callImport<kShowCursor, &win32::user32::ShowCursor>(guest, cpu, 0);
+                    callImport<kShowCursor, &host::showCursor>(guest, cpu, 0);
             }
-            else if (callImport<0x53475c, &win32::user32::IsIconic>(guest, cpu, guest.dword(kHwnd)) == 0)
+            else if (callImport<0x53475c, &host::isIconic>(guest, cpu, guest.dword(kHwnd)) == 0)
             {
-                callImport<kForeground, &win32::user32::SetForegroundWindow>(guest, cpu, guest.dword(kHwnd));
+                callImport<kForeground, &host::setForegroundWindow>(guest, cpu, guest.dword(kHwnd));
             }
         }
     }
@@ -2377,17 +2424,17 @@ x86::reg32 frontend::wina::openWindow(App* app, CPU& cpu, reg32 width, reg32 hei
         guest.setDword(frame + 8, 0);
         guest.setDword(frame + 12, 0);
         guest.setDword(frame + 16, instance);
-        const reg32 icon = callImport<0x534760, &win32::user32::LoadIconA>(guest, cpu, instance, guest.dword(0x5612a8));
+        const reg32 icon = callImport<0x534760, &host::loadIcon>(guest, cpu, instance, guest.dword(0x5612a8));
         guest.leaveEdx(0);
         guest.setDword(frame + 20, icon);
         guest.setDword(frame + 24, 0);
-        guest.setDword(frame + 28, callImport<0x53445c, &win32::gdi32::GetStockObject>(guest, cpu, 4));
+        guest.setDword(frame + 28, callImport<0x53445c, &host::stockObject>(guest, cpu, 4));
         guest.setDword(frame + 32, guest.dword(kClassName));
         guest.setDword(frame + 36, guest.dword(kWindowName));
-        if ((callImport<0x534774, &win32::user32::RegisterClassA>(guest, cpu, frame) & 0xffff) == 0)
+        if ((callImport<0x534774, &host::registerClass>(guest, cpu, frame) & 0xffff) == 0)
         {
             const reg32 code = callImport<kLastError, &win32::kernel32::GetLastError>(guest, cpu);
-            guest.call(kError, args({}, { 0x540468, code }));
+            fe::direct<kError, ea::error>(guest.app(), guest.cpu(), 0x540468, guest::Words{code});
             return 0;
         }
         guest.setDword(kKeyLock, *fe::direct<0x4eb2e0, ea::newLock>(app, cpu));
@@ -2426,8 +2473,8 @@ x86::reg32 frontend::wina::openWindow(App* app, CPU& cpu, reg32 width, reg32 hei
     while (guest.dword(kWindowReady) != 0)
     {
         safepoint(app, cpu);
-        guest.call(kSleep, args({ 0 }));
-        guest.call(kSystemTasks, args({ 0 }));
+        fe::direct<0x4df8e0, ea::sleepFor>(app, cpu, 0u);
+        fe::direct<0x4e7630, port::stream::runDueTasks>(app, cpu, cpu.esp - 4, 0u);
     }
     const std::uint8_t fullscreen = guest.byte(kFullscreen);
     guest.leaveEdx((cpu.edx & 0xffff00ffu) | (reg32(fullscreen) << 8));
@@ -2440,7 +2487,7 @@ x86::reg32 frontend::wina::openWindow(App* app, CPU& cpu, reg32 width, reg32 hei
     {
         const reg32 hwnd = guest.dword(kHwnd);
         guest.leaveEdx(hwnd);
-        callImport<kForeground, &win32::user32::SetForegroundWindow>(guest, cpu, hwnd);
+        callImport<kForeground, &host::setForegroundWindow>(guest, cpu, hwnd);
         guest.leaveEcx(0);
         guest::direct<0x4cdbd0, centreWindow>(app, cpu, width, height);
         guest.setDword(kStickyKeys, 0);
@@ -2458,10 +2505,10 @@ x86::reg32 frontend::wina::closeWindow(App* app, CPU& cpu)
         return guest.eax();
     const reg32 sticky = guest.dword(kStickyKeys);
     if (sticky != 0)
-        callImport<kSystemParameters, &win32::user32::SystemParametersInfoA>(guest, cpu, 0x11, sticky, 0, 2);
+        callImport<kSystemParameters, &host::systemParameters>(guest, cpu, 0x11, sticky, 0, 2);
     const reg32 filter = guest.dword(kFilterKeys);
     if (filter != 0)
-        callImport<kSystemParameters, &win32::user32::SystemParametersInfoA>(guest, cpu, 0x56, filter, 0, 2);
+        callImport<kSystemParameters, &host::systemParameters>(guest, cpu, 0x56, filter, 0, 2);
     reg32 left = guest::direct<0x4cc7c0, postMessage>(app, cpu, 0x466, 0, 0, 0);  // what the calls leave in eax
     while (guest.dword(kHwnd) != 0)
     {
@@ -2488,28 +2535,28 @@ x86::reg32 frontend::wina::placeWindow(App* app, CPU& cpu, reg32 left, reg32 top
             cpu.esp -= 4;
             guest.setDword(cpu.esp, 0);
             cpu.eax = left + width;
-            const reg32 style = callImport<0x534758, &win32::user32::GetWindowLongA>(guest, cpu, hwnd, 0xfffffff0);
+            const reg32 style = callImport<0x534758, &host::windowLong>(guest, cpu, hwnd, 0xfffffff0);
     #ifdef NFS_GAME_CHECKS
             // Through the slot: the two words pushed now, over the one pushed first.
-            callImport<kAdjustRect, &win32::user32::AdjustWindowRect>(guest, cpu, frame, style);
+            callImport<kAdjustRect, &host::adjustWindowRect>(guest, cpu, frame, style);
     #else
-            callImport<kAdjustRect, &win32::user32::AdjustWindowRect>(guest, cpu, frame, style, guest.dword(cpu.esp));
+            callImport<kAdjustRect, &host::adjustWindowRect>(guest, cpu, frame, style, guest.dword(cpu.esp));
     #endif
             cpu.esp += 4;
             const reg32 newTop = guest.dword(frame + 4), newLeft = guest.dword(frame);
             guest.leaveEcx(newTop);
             guest.leaveEbx(newLeft);
-            callImport<0x53478c, &win32::user32::SetWindowPos>(guest, cpu, guest.dword(kHwnd), 0, newLeft, newTop,
+            callImport<0x53478c, &host::setWindowPosition>(guest, cpu, guest.dword(kHwnd), 0, newLeft, newTop,
                                                                guest.dword(frame + 8) - newLeft, guest.dword(frame + 12) - newTop, 0x14);
             const reg32 hwnd2 = guest.dword(kHwnd);
             guest.leaveEdx(hwnd2);
-            callImport<kClientRect, &win32::user32::GetClientRect>(guest, cpu, hwnd2, frame);
+            callImport<kClientRect, &host::clientRect>(guest, cpu, hwnd2, frame);
             const reg32 hwnd3 = guest.dword(kHwnd);
             guest.leaveEcx(hwnd3);
-            callImport<kClientToScreen, &win32::user32::ClientToScreen>(guest, cpu, hwnd3, frame);
+            callImport<kClientToScreen, &host::clientToScreen>(guest, cpu, hwnd3, frame);
             const reg32 hwnd4 = guest.dword(kHwnd);
             guest.leaveEbx(hwnd4);
-            callImport<kClientToScreen, &win32::user32::ClientToScreen>(guest, cpu, hwnd4, frame + 8);
+            callImport<kClientToScreen, &host::clientToScreen>(guest, cpu, hwnd4, frame + 8);
             const reg32 clientLeft = guest.dword(frame), clientTop = guest.dword(frame + 4);
             guest.setDword(0x9f38e4, guest.dword(frame + 8) - clientLeft);
             guest.setDword(0x9f3d34, clientLeft);
@@ -2524,9 +2571,9 @@ x86::reg32 frontend::wina::centreWindow(App* app, CPU& cpu, reg32 width, reg32 h
 {
     Guest guest(app, cpu);
     const fe::Frame ownFrame(guest, cpu, 20);
-    const sreg32 spareY = sreg32(callImport<kScreenMetric, &win32::user32::GetSystemMetrics>(guest, cpu, 1) - height);
+    const sreg32 spareY = sreg32(callImport<kScreenMetric, &host::systemMetrics>(guest, cpu, 1) - height);
     const reg32 top = reg32(spareY / 2);
-    const sreg32 spareX = sreg32(callImport<kScreenMetric, &win32::user32::GetSystemMetrics>(guest, cpu, 0) - width);
+    const sreg32 spareX = sreg32(callImport<kScreenMetric, &host::systemMetrics>(guest, cpu, 0) - width);
     const reg32 left = reg32(spareX / 2);
     return guest::direct<0x4cdb10, placeWindow>(app, cpu, left, top, width, height);
 }
@@ -2541,7 +2588,7 @@ x86::reg32 frontend::wina::hookOff(App* app, CPU& cpu)
         const reg32 hook = guest.dword(kHookHandle);
         if (hook != 0)
         {
-            callImport<kUnhook, &win32::user32::UnhookWindowsHookEx>(guest, cpu, hook);
+            callImport<kUnhook, &host::unhookWindowsHook>(guest, cpu, hook);
             guest.setDword(kHookHandle, 0);
             guest.setDword(kHookWanted, 0);
         }
@@ -2560,7 +2607,7 @@ x86::reg32 frontend::wina::hookOn(App* app, CPU& cpu, reg32 alt, reg32 callback)
     guest.setDword(kHookAlt, alt);
     if (hook == 0)
     {
-        const reg32 made = callImport<kSetHook, &win32::user32::SetWindowsHookExA>(guest, cpu, 2, kKeyboardHook, 0, 0);
+        const reg32 made = callImport<kSetHook, &host::setWindowsHook>(guest, cpu, 2, kKeyboardHook, 0, 0);
         guest.setDword(kHookHandle, made);
         guest.setDword(kHookWanted, 1);
     }
@@ -2607,7 +2654,7 @@ x86::reg32 frontend::wina::pointerMoved(App* app, CPU& cpu, reg32 x, reg32 y, re
     const reg32 lock = guest.dword(kMessageLock);
     guest.leaveEbx(lock);
     cpu.eax = kept;
-    callImport<kLeaveLock, &win32::kernel32::LeaveCriticalSection>(guest, cpu, lock);
+    callImport<kLeaveLock, &host::leaveLock>(guest, cpu, lock);
     if (guest.dword(frame) != 0 && guest.dword(0x56446c) != 0)
         guest.call(guest.dword(0x56446c), args({ guest.dword(frame + 4) }));
     return guest.eax();
@@ -2622,7 +2669,7 @@ x86::reg32 frontend::wina::alreadyRunning(App* app, CPU& cpu)
 {
     Guest guest(app, cpu);
     const fe::Frame ownFrame(guest, cpu, 12);
-    return callImport<0x534734, &win32::user32::FindWindowA>(guest, cpu, guest.dword(0x5612a0), 0) != 0 ? 1 : 0;
+    return callImport<0x534734, &host::findWindow>(guest, cpu, guest.dword(0x5612a0), 0) != 0 ? 1 : 0;
 }
 
 /* sub_4a38f0: the file version of the game's exe, its text into the buffer given; 1 when
@@ -2649,7 +2696,7 @@ x86::reg32 frontend::wina::versionText(App* app, CPU& cpu, reg32 buffer, reg32 l
         if (size == 0)
             return 0;
     }
-    const reg32 memory = guest.call(0x4f7900, args({ size }));
+    const reg32 memory = fe::direct<0x4f7900, watcom::clib::malloc>(guest.app(), guest.cpu(), size);
     if (memory == 0)
         return guest.dword(frame + 0x110);
     if (callThunk<kVersionInfo, &win32::version::GetFileVersionInfoA>(guest, cpu, path, guest.dword(handle), cpu.edx,
@@ -2663,10 +2710,10 @@ x86::reg32 frontend::wina::versionText(App* app, CPU& cpu, reg32 buffer, reg32 l
             guest.setDword(frame + 0x110, 1);
             if (count >= guest.dword(frame + 0x114))
                 count = guest.dword(frame + 0x114);
-            guest.call(kStrncpy, args({ guest.dword(frame + 0x10c), guest.dword(value), count }));
+            fe::direct<kStrncpy, watcom::clib::strncpy>(guest.app(), guest.cpu(), guest.dword(frame + 0x10c), guest.dword(value), count);
         }
     }
-    guest.call(0x4f79f0, args({ memory }));
+    fe::direct<0x4f79f0, watcom::clib::free>(guest.app(), guest.cpu(), memory);
     return guest.dword(frame + 0x110);
 }
 
@@ -2675,7 +2722,7 @@ x86::reg32 frontend::wina::tickCount(App* app, CPU& cpu)
 {
     Guest guest(app, cpu);
     const fe::Frame ownFrame(guest, cpu, 12);
-    return callImport<0x534568, &win32::kernel32::GetTickCount>(guest, cpu);
+    return callImport<0x534568, &host::ticks>(guest, cpu);
 }
 
 /* sub_4b5860: DirectX 5 and a sound or graphics library there, or the game says so in
@@ -2695,7 +2742,7 @@ x86::reg32 frontend::wina::checkLibrary(App* app, CPU& cpu, reg32 library, reg32
         copyDwords(guest, names, kNeedsDirectX, 6);
         const reg32 name = guest.dword(names + cpu.edx * 4);
         guest.leaveEdx(name);
-        guest.call(kSprintf, args({}, { text, name }));
+        fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.cpu(), text, name, guest::Words({}));
         callImport<kMessageBox, &win32::user32::MessageBoxA>(guest, cpu, 0, text, kTitle, 0x30);
         fe::direct<0x4f2a7d, eab::exitGameNow>(app, cpu);
     }
@@ -2706,7 +2753,7 @@ x86::reg32 frontend::wina::checkLibrary(App* app, CPU& cpu, reg32 library, reg32
     if (module == 0)
     {
         copyDwords(guest, formats, kNoLibrary, 6);
-        guest.call(kSprintf, args({}, { frame, guest.dword(formats + language * 4), guest.dword(guest.dword(frame + 0x238) + kLibraries) }));
+        fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.cpu(), frame, guest.dword(formats + language * 4), guest::Words{guest.dword(guest.dword(frame + 0x238) + kLibraries)});
         callImport<kMessageBox, &win32::user32::MessageBoxA>(guest, cpu, 0, frame, kTitle, 0x30);
         fe::direct<0x4f2a7d, eab::exitGameNow>(app, cpu);
     }
@@ -2738,6 +2785,7 @@ x86::reg32 frontend::wina::checkMemory(App* app, CPU& cpu, reg32 language)
     callImport<0x534580, &win32::kernel32::GlobalMemoryStatus>(guest, cpu, kStatus);
     const reg32 total = guest.dword(0x7a3acc) + guest.dword(0x7a3ad4);
     guest.leaveEdx(total);
+    // By address: the check holds the hook's words as the code pushes them, which its core does not take.
     guest.call(0x42d500, args({ total >> 20 }, { 0x53fdf0, total >> 20 }));
     if (cpu.edx < kEnoughMemory)
     {
@@ -2788,6 +2836,7 @@ x86::reg32 frontend::wina::thrashDevice(App* app, CPU& cpu, reg32 buffer)
         guest.setDword(0x55fdbc, memory);
         return memory;
     }
+    // By address: the ebx and edx it leaves are left at the end, and its eax handed back.
     guest.call(kStrncpy, args({ buffer, kNoDevice, guest.length(kNoDevice) - 5 }));
     return guest.eax();
 }
@@ -2812,7 +2861,7 @@ x86::reg32 frontend::wina::desktopSetting(App* app, CPU& cpu)
     constexpr reg32 kBuffer = 0x7a3ae0;
     const reg32 frame = guest.frame();
     guest.setDword(frame, 0x100);
-    guest.call(kMemset, args({ kBuffer, 0, 0x100 }));
+    fe::direct<kMemset, watcom::clib::memset>(guest.app(), guest.cpu(), kBuffer, 0, 0x100);
     if (callImport<kRegOpen, &win32::advapi32::RegOpenKeyExA>(guest, cpu, 0x80000001, 0x53feb0, 0, 0xf003f, frame + 4) == 0)
         callImport<kRegQuery, &win32::advapi32::RegQueryValueExA>(guest, cpu, guest.dword(frame + 4), 0x53fef4, 0, 0, kBuffer, frame);
     return kBuffer;
@@ -2850,38 +2899,39 @@ x86::reg32 frontend::wina::directXVersion(App* app, CPU& cpu)
         return freeLibrary(0);
     if (sreg32(guest.call(create, args({}, { 0, directDraw, 0 }))) < 0)
         return freeLibrary(0);
-    if (sreg32(callMethod<kQueryInterface, &IDirectDraw2::QueryInterface>(guest, cpu, guest.dword(directDraw), kDirectDraw2,
+    if (sreg32(callMethod<kQueryInterface, &host::ddraw::drawQueryInterface>(guest, cpu, guest.dword(directDraw), kDirectDraw2,
                                                                           second)) < 0)
     {
-        callMethod<kRelease, &IUnknown::Release>(guest, cpu, guest.dword(directDraw));
+        callMethod<kRelease, &host::ddraw::release>(guest, cpu, guest.dword(directDraw));
         return freeLibrary(1);
     }
     cpu.ebx = 0x6c;
-    callMethod<kRelease, &IUnknown::Release>(guest, cpu, guest.dword(second));
-    guest.call(kMemset, args({ description, 0, cpu.ebx, 0x200 }));
+    callMethod<kRelease, &host::ddraw::release>(guest, cpu, guest.dword(second));
+    fe::direct<0x4e0640, watcom::clib::memset>(app, cpu, description, 0u, cpu.ebx);
+    guest.leaveEcx(0x200);  // as the code loads it for it, which it keeps: read below
     const reg32 object = guest.dword(directDraw);
     guest.setDword(frame + 0xfc, cpu.ecx);
     guest.setDword(description, 0x6c);
     guest.setDword(description + 4, 1);
-    if (sreg32(callMethod<kSetCooperativeLevel, &IDirectDraw2::SetCooperativeLevel>(guest, cpu, object, 0, 8)) < 0)
+    if (sreg32(callMethod<kSetCooperativeLevel, &host::ddraw::drawSetCooperativeLevel>(guest, cpu, object, 0, 8)) < 0)
     {
-        callMethod<kRelease, &IUnknown::Release>(guest, cpu, guest.dword(directDraw));
+        callMethod<kRelease, &host::ddraw::release>(guest, cpu, guest.dword(directDraw));
         return freeLibrary(0);
     }
-    if (sreg32(callMethod<kCreateSurface, &IDirectDraw2::CreateSurface>(guest, cpu, guest.dword(directDraw), description,
+    if (sreg32(callMethod<kCreateSurface, &host::ddraw::drawCreateSurface>(guest, cpu, guest.dword(directDraw), description,
                                                                         surface, 0)) < 0)
     {
-        callMethod<kRelease, &IUnknown::Release>(guest, cpu, guest.dword(directDraw));
+        callMethod<kRelease, &host::ddraw::release>(guest, cpu, guest.dword(directDraw));
         return freeLibrary(0);
     }
-    if (sreg32(callMethod<kQueryInterface, &IDirectDrawSurface::QueryInterface>(guest, cpu, guest.dword(surface), kSurface3,
+    if (sreg32(callMethod<kQueryInterface, &host::ddraw::surfaceQueryInterface>(guest, cpu, guest.dword(surface), kSurface3,
                                                                                 third)) < 0)
     {
-        callMethod<kRelease, &IUnknown::Release>(guest, cpu, guest.dword(directDraw));
+        callMethod<kRelease, &host::ddraw::release>(guest, cpu, guest.dword(directDraw));
         return freeLibrary(3);
     }
-    callMethod<kRelease, &IUnknown::Release>(guest, cpu, guest.dword(surface));
-    callMethod<kRelease, &IUnknown::Release>(guest, cpu, guest.dword(directDraw));
+    callMethod<kRelease, &host::ddraw::release>(guest, cpu, guest.dword(surface));
+    callMethod<kRelease, &host::ddraw::release>(guest, cpu, guest.dword(directDraw));
     return freeLibrary(5);
 }
 
@@ -3203,7 +3253,7 @@ x86::reg32 frontend::wina::queueTakeByPriority(App* app, CPU& cpu, reg32 queue, 
     reg32 taken = 0;
     if (entry != 0 && guest.call(guest.dword(queue + kPriorityOf), args({ entry, guest.dword(queue + kPriorityArg) })) == wanted)
     {
-        if (guest.call(0x50dc20, args({ queue, entry })) != 0)
+        if (directKept<0x50dc20, ea::queueUnlinked, 2>(guest.app(), guest.cpu(), queue, entry) != 0)
         {
             taken = entry;
         }
@@ -3251,7 +3301,7 @@ x86::reg32 frontend::wina::graphicsAskClose(App* app, CPU& cpu)
     const reg32 hwnd = guest.dword(kHwnd);
     const reg32 answer = guest.dword(kGraphicsLock);
     if (hwnd != 0)
-        callImport<0x534798, &win32::user32::ShowWindow>(guest, cpu, hwnd, 6);
+        callImport<0x534798, &host::showWindow>(guest, cpu, hwnd, 6);
     return answer;
 }
 
@@ -3346,7 +3396,7 @@ x86::reg32 frontend::wina::setDirectDraw(App* app, CPU& cpu, reg32 object)
     if (object != 0)
     {
         cpu.eax = guest.dword(object);
-        const reg32 answer = callMethod<kQueryInterface, &IDirectDraw2::QueryInterface>(guest, cpu, object, 0x56b928, kWindow);
+        const reg32 answer = callMethod<kQueryInterface, &host::ddraw::drawQueryInterface>(guest, cpu, object, 0x56b928, kWindow);
         if (answer == 0)
             guest.setDword(kUses, guest.dword(kUses) + 1);
         return answer;
@@ -3355,7 +3405,7 @@ x86::reg32 frontend::wina::setDirectDraw(App* app, CPU& cpu, reg32 object)
     const reg32 table = guest.dword(own);
     guest.leaveEdx(table);
     cpu.eax = own;
-    callMethod<kRelease, &IUnknown::Release>(guest, cpu, own);
+    callMethod<kRelease, &host::ddraw::release>(guest, cpu, own);
     const reg32 uses = guest.dword(kUses) + 1;
     guest.leaveEcx(uses);
     guest.leaveEdx(0);
@@ -3393,7 +3443,7 @@ x86::reg32 frontend::wina::driverMessage(App* app, CPU& cpu, reg32 level, reg32 
     switch (level)
     {
     case 0:
-        guest.call(kError, args({ text }, { text }));
+        fe::direct<0x401010, ea::error>(app, cpu, text, guest::Words({}));
         break;
     case 1:
         guest.call(0x4e08f0, args({ text }, { text }));

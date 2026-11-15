@@ -2,16 +2,26 @@
 #include "native_ea_files.h"
 #include "native_ea_memory.h"
 #include "native_ea_support.h"
+#include "native_frontend_draw.h"
+#include "native_frontend_eab.h"
+#include "native_frontend_loada.h"
+#include "native_frontend_loopb.h"
+#include "native_frontend_renda.h"
+#include "native_frontend_rende.h"
+#include "native_frontend_simd.h"
+#include "native_frontend_wata.h"
 #include "native_guest.h"
 #include "native_load_saves.h"
 #include "native_load_track.h"
 #include "native_raceload.h"
 #include "native_vertices.h"
+#include "native_watcom.h"
 
 #include <cstdint>
 #include <cstring>
 #include <initializer_list>
 #include <optional>
+#include <type_traits>
 #include <utility>
 
 /* The game's data: the race's data files -- the track's paths, its textures,
@@ -126,17 +136,17 @@ constexpr reg32 kSkyName = 0x53b340, kCloudPalette = 0x55d21c, kSunPalette = 0x6
 // splashes' names, their shapes; the weather's count (the horizon's).
 constexpr reg32 kWeatherName = 0x549794, kWeatherPath = 0x7a2934, kDropName = 0x5497a4, kSplashName = 0x5497ac;
 constexpr reg32 kDropShapes = 0x8ca200, kSplashShapes = 0x8ca288, kWeatherCount = 0x8ca1e8;
-// What is called by address.  (The game's memory, a file there and loaded, a .viv's entry
-// located, the trace, a handle read, the fixed sine and cosine and a vector's length are the
-// other typed files', called as C++: native_ea_memory.h, native_ea_support.h,
-// native_load_saves.h, native_raceload.h, native_ea_files.h, native_vertices.h.)
-constexpr reg32 kMemset = 0x4e0640, kStricmp = 0x4e9ec0;
-constexpr reg32 kBigCount = 0x4ea440, kBigName = 0x4ea4a0;
-constexpr reg32 kSprintf = 0x4df690, kLoadingTick = 0x4a33d0;
-constexpr reg32 kLoadShapes = 0x4956f0, kSaveGhostFile = 0x4777d0;
-constexpr reg32 kFseek = 0x4e9088, kFwrite = 0x4eebd0;
-constexpr reg32 kReadNumber = 0x4be020, kChop = 0x4dfd56, kCosine = 0x4ea950, kSine = 0x4ea930;
-constexpr reg32 kFindShape = 0x4d4080, kPlaceSun = 0x47a970, kSkyMade = 0x47ae10;
+// What is called by address: the ghost's saving (0x477a90 leaves the registers as it leaves
+// them) and fwrite (no typed core).  (The game's memory, a file there and loaded, a .viv's entry
+// located, the trace, a handle read, the fixed sine and cosine and a vector's length, the C
+// library's memset, stricmp, sprintf and fseek, the loading's shapes, and the menu files' BIG
+// archive's count and names, the loading bar's tick, the horizon's numbers, a shape's texture,
+// the sky's shape and grid, the sine and cosine are the other typed files', called as C++:
+// native_ea_memory.h, native_ea_support.h, native_load_saves.h, native_raceload.h,
+// native_ea_files.h, native_vertices.h, native_watcom.h, native_frontend_draw.h, and through
+// feCore native_frontend_eab.h, _loada.h, _loopb.h, _rende.h, _wata.h, _renda.h, _simd.h.)
+constexpr reg32 kSaveGhostFile = 0x4777d0, kFwrite = 0x4eebd0;
+constexpr reg32 kChop = 0x4dfd56;
 
 /* The registers as an adapter is handed them, to put back those the game's code pushes and pops. */
 struct Entry
@@ -176,6 +186,60 @@ std::optional<reg32> callGame(App* app, CPU& cpu, reg32 target, std::initializer
     return cpu.eax;
 }
 
+/* A native_frontend_* file's typed core called as C++ (guest::direct): nothing (false) when the
+ * game stopped in it (its calls into the game throw fe::Terminated).  tools/game_checks does not
+ * build those files: there it goes by address, through its ByAddress, as the game's code calls it,
+ * every register but eax kept.  A reg32 result is the eax the function leaves: eax set to it (in the
+ * game too); after any other, eax spoilt there, so that code still reading what the callee left in
+ * eax differs there. */
+template <reg32 Address, auto Core, typename... Args>
+auto feCore(App* app, CPU& cpu, Args... args)
+{
+    const auto run = [&] {
+#ifdef NFS_GAME_CHECKS
+        const guest::KeptRegisters kept(cpu);
+        return guest::ByAddress<Core>::template call<Address>(app, cpu, args...);
+#else
+        return guest::direct<Address, Core>(app, cpu, args...);
+#endif
+    };
+    using Result = decltype(run());
+    const auto spoil = [&] {
+#ifdef NFS_GAME_CHECKS
+        cpu.eax = 0x5b0115edu;
+#endif
+    };
+    if constexpr (std::is_void_v<Result>)
+    {
+        try
+        {
+            run();
+        }
+        catch (const fe::Terminated&)
+        {
+            return false;
+        }
+        spoil();
+        return !cpu.terminate;
+    }
+    else
+    {
+        try
+        {
+            const Result result = run();
+            if constexpr (std::is_same_v<Result, x86::reg32>)
+                cpu.eax = result;  // a menu core's result: the eax it leaves, as the call by address does
+            else
+                spoil();
+            return cpu.terminate ? std::optional<Result>() : std::optional<Result>(result);
+        }
+        catch (const fe::Terminated&)
+        {
+            return std::optional<Result>();
+        }
+    }
+}
+
 /* A block of `bytes` from the game's allocator, named `name`: the block or 0. */
 std::optional<reg32> allocate(App* app, CPU& cpu, reg32 name, reg32 bytes, reg32 flags)
 {
@@ -192,27 +256,38 @@ bool release(App* app, CPU& cpu, reg32 block)
     return guest::direct<0x4e1890, ea::purgeBlock>(app, cpu, block).has_value();
 }
 
-/* memset: `bytes` bytes at `to` set to `value`.  False when the game stopped. */
+/* memset (0x4e0640): `bytes` bytes at `to` set to `value`; edx and ebx as the code loads them,
+ * which memset keeps.  False when the game stopped. */
 bool fill(App* app, CPU& cpu, reg32 to, reg32 value, reg32 bytes)
 {
-    cpu.eax = to;
     cpu.edx = value;
     cpu.ebx = bytes;
-    return callGame(app, cpu, kMemset).has_value();
+    cpu.eax = guest::direct<0x4e0640, watcom::clib::memset>(app, cpu, to, value, bytes);  // as memset leaves it
+    return !cpu.terminate;
 }
 
-/* stricmp of the names at `name` and `other`: 0 when they are alike. */
+/* stricmp (0x4e9ec0) of the names at `name` and `other`: 0 when they are alike; edx as the code
+ * loads it, which stricmp keeps. */
 std::optional<reg32> compareNames(App* app, CPU& cpu, reg32 name, reg32 other)
 {
-    cpu.eax = name;
     cpu.edx = other;
-    return callGame(app, cpu, kStricmp);
+    const reg32 differs = guest::direct<0x4e9ec0, watcom::clib::stricmp>(app, cpu, name, other);
+    if (cpu.terminate)
+        return std::nullopt;
+    return differs;
 }
 
-/* sprintf to `to`, of `format` and what follows it. */
+/* sprintf (0x4df690) to the first word, of the format in the second and what follows it. */
 std::optional<reg32> format(App* app, CPU& cpu, std::initializer_list<reg32> words)
 {
-    return callGame(app, cpu, kSprintf, words);
+    const reg32* const word = words.begin();
+    guest::Words rest({});
+    for (const reg32* w = word + 2; w != words.end(); ++w)
+        rest.word[rest.count++] = *w;
+    const reg32 written = guest::direct<0x4df690, watcom::clib::sprintf>(app, cpu, word[0], word[1], rest);
+    if (cpu.terminate)
+        return std::nullopt;
+    return written;
 }
 
 /* Whether the file named `name` is there. */
@@ -228,10 +303,20 @@ std::optional<reg32> loadFile(App* app, CPU& cpu, reg32 name, reg32 flags)
     return guest::direct<0x4e0ec0, ea::loadWhole>(app, cpu, name, flags);
 }
 
-/* The loading screen's bar ticked on.  False when the game stopped. */
+/* The loading screen's bar ticked on (0x4a33d0, loada's): whether to stop, which its callers
+ * leave in eax as the last call.  Nothing when the game stopped. */
+std::optional<reg32> loadingStop(App* app, CPU& cpu)
+{
+    const std::optional<reg32> stop = feCore<0x4a33d0, frontend::loada::stopCheck>(app, cpu);
+    if (stop)
+        cpu.eax = *stop;
+    return stop;
+}
+
+/* The same, false when the game stopped. */
 bool loadingTick(App* app, CPU& cpu)
 {
-    return callGame(app, cpu, kLoadingTick).has_value();
+    return loadingStop(app, cpu).has_value();
 }
 
 /* A dword turned around: a BIGF archive's big-endian number. */
@@ -785,7 +870,7 @@ std::optional<BigRead> readBig(App* app, CPU& cpu, reg32 cache, reg32 data)
     if (turned(at(app, data)) != kBigMagic)
         return BigRead{0, 0};
     cpu.eax = data;
-    const std::optional<reg32> files = callGame(app, cpu, kBigCount);
+    const std::optional<reg32> files = feCore<0x4ea440, frontend::eab::bigFileCount>(app, cpu, data);
     if (!files)
         return std::nullopt;
     if (*files == 0)
@@ -797,7 +882,7 @@ std::optional<BigRead> readBig(App* app, CPU& cpu, reg32 cache, reg32 data)
         cpu.edx = file;
         cpu.ebx = name;
         cpu.ecx = offset;
-        if (!callGame(app, cpu, kBigName))
+        if (!feCore<0x4ea4a0, frontend::eab::bigFileName>(app, cpu, data, file, name))
             return std::nullopt;
         const std::optional<reg32> found = guest::direct<0x4ea290, locatedEntry>(app, cpu, data, name, file, offset, size);
         if (!found)
@@ -1176,12 +1261,11 @@ bool loadTextures(App* app, CPU& cpu)
             return false;
         path = *shared;
     }
-    cpu.eax = path;
-    cpu.edx = 0;
-    const std::optional<reg32> shapes = callGame(app, cpu, kLoadShapes);
-    if (!shapes)
+    cpu.edx = 0;  // the loading's flags, which it takes in edx
+    const reg32 shapes = guest::direct<0x4956f0, frontend::draw::loadQfs>(app, cpu, path);
+    if (cpu.terminate)
         return false;
-    put(app, kTrackShapes, *shapes);
+    put(app, kTrackShapes, shapes);
     return true;
 }
 
@@ -1206,8 +1290,9 @@ bool writeGhostTo(App* app, CPU& cpu, reg32 stream, reg32 offset)
     cpu.eax = stream;
     cpu.edx = offset;
     cpu.ebx = 0;  // SEEK_SET
-    cpu.ecx = stream;
-    if (!callGame(app, cpu, kFseek))
+    cpu.ecx = stream;  // fwrite's, which fseek keeps
+    guest::direct<0x4e9088, watcom::clib::fseek>(app, cpu, stream, offset, 0);
+    if (cpu.terminate)
         return false;
     cpu.eax = kGhost;
     cpu.edx = at(app, kGhostCount) * kGhostRecordBytes + kGhostBytes;
@@ -1353,26 +1438,16 @@ reg32 bitsOf(float value)
 /* The horizon's next number, its text's place at `text` (moved on past it). */
 std::optional<reg32> readNumber(App* app, CPU& cpu, reg32 text)
 {
-    cpu.eax = text;
-    return callGame(app, cpu, kReadNumber);
+    return feCore<0x4be020, frontend::loopb::readNumber>(app, cpu, text);
 }
 
-/* __CHP: `value` to a whole value, towards 0, on the x87. */
+/* __CHP: `value` to a whole value, towards 0; never nullopt (the optional is the caller's stop
+ * signal). */
 std::optional<x86::Float> chop(App* app, CPU& cpu, x86::Float value)
 {
-    cpu.fpu.push(value);
-    if (!callGame(app, cpu, kChop))
-        return std::nullopt;
-    return cpu.fpu.take();
+    return x86::Float(guest::direct<kChop, watcom::clib::chop>(app, cpu, double(value)));
 }
 
-/* The cosine (0x4ea950) or sine (0x4ea930) of the float `degrees`, from the x87. */
-std::optional<x86::Float> trigonometry(App* app, CPU& cpu, reg32 target, float degrees)
-{
-    if (!callGame(app, cpu, target, {bitsOf(degrees)}))
-        return std::nullopt;
-    return cpu.fpu.take();
-}
 
 /* A 16.16 colour channel's whole part, towards 0 (sar, sbb, sar). */
 reg8 channel(reg32 value)
@@ -1414,22 +1489,22 @@ bool loadSkyShapes(App* app, CPU& cpu, reg32 track)
     cpu.edx = shapes[0];
     cpu.ebx = 0x40;
     cpu.ecx = kCloudPalette;
-    if (!callGame(app, cpu, kFindShape, {7}))
+    if (!feCore<0x4d4080, frontend::rende::loadShapeTexture>(app, cpu, *file, shapes[0], 0x40u, kCloudPalette, 7u))
         return false;
     cpu.eax = *file;
     cpu.edx = shapes[1];
     cpu.ebx = 0x80;
     cpu.ecx = kSunPalette;
-    if (!callGame(app, cpu, kFindShape, {sunColours}))
+    if (!feCore<0x4d4080, frontend::rende::loadShapeTexture>(app, cpu, *file, shapes[1], 0x80u, kSunPalette, sunColours))
         return false;
     cpu.eax = *file;
     cpu.edx = shapes[2];
-    if (!callGame(app, cpu, kPlaceSun))
+    if (!feCore<0x47a970, frontend::wata::skyLoad>(app, cpu, *file, shapes[2]))
         return false;
     put(app, kSunShapes, kSunPalette);
     if (!loadingTick(app, cpu) || !release(app, cpu, *file))
         return false;
-    return callGame(app, cpu, kSkyMade) && loadingTick(app, cpu);
+    return feCore<0x47ae10, frontend::renda::cloudGrid>(app, cpu) && loadingTick(app, cpu);
 }
 
 /* The track's horizon, 3Trnn.hrz (with N at night, W in the weather) in its folder, read number
@@ -1547,11 +1622,11 @@ std::optional<reg32> readHorizon(App* app, CPU& cpu, reg32 track)
         float(fp::mul(x86::Float(sreg32(*number)), x86::Float(app->getMemory<double>(kSunAngleScale))));
     const float distance =
         float(fp::mul(x86::Float(sreg32(distanceNumber)), x86::Float(app->getMemory<double>(kSunDistanceScale))));
-    const std::optional<x86::Float> cosine = trigonometry(app, cpu, kCosine, angle);
+    const std::optional<double> cosine = feCore<0x4ea950, frontend::simd::cosineValue>(app, cpu, bitsOf(angle));
     if (!cosine)
         return std::nullopt;
     putFloat(app, kSunAcross, float(fp::mul(*cosine, x86::Float(distance))));
-    const std::optional<x86::Float> sine = trigonometry(app, cpu, kSine, angle);
+    const std::optional<double> sine = feCore<0x4ea930, frontend::simd::sineValue>(app, cpu, bitsOf(angle));
     if (!sine)
         return std::nullopt;
     putFloat(app, kSunAlong, float(fp::mul(*sine, x86::Float(distance))));
@@ -1685,8 +1760,8 @@ std::optional<reg32> readHorizon(App* app, CPU& cpu, reg32 track)
             colour[i] += step[i];
     }
     put(app, kBandCopy, at(app, kBands + 4));
-    cpu.eax = at(app, kBands + 4);  // as the code has it at the tick, which may leave it
-    const std::optional<reg32> ticked = callGame(app, cpu, kLoadingTick);
+    cpu.eax = at(app, kBands + 4);  // as the code has it at the tick
+    const std::optional<reg32> ticked = loadingStop(app, cpu);
     if (!ticked)
         return std::nullopt;
     // The fog's colour: none, or the bottom's.
@@ -1732,7 +1807,7 @@ bool loadWeather(App* app, CPU& cpu)
             cpu.edx = shape;
             cpu.ebx = 0x20;
             cpu.ecx = kind.second;
-            if (!callGame(app, cpu, kFindShape, {0}))
+            if (!feCore<0x4d4080, frontend::rende::loadShapeTexture>(app, cpu, *file, shape, 0x20u, kind.second, 0u))
                 return false;
         }
     const reg32 block = at(app, kept);

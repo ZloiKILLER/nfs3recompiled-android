@@ -1,14 +1,17 @@
 #include "native_controls_host.h"
 #include "native_controls_input.h"
+#include "native_frontend_wina.h"
 #include "native_guest.h"
 #include "native_windows.h"
+#include "host_threads.h"
+#include "host_window.h"
 #include <winapi/kernel32.h>
-#include <winapi/user32.h>
 
 #include <cstdint>
 #include <initializer_list>
 #include <iterator>
 #include <optional>
+#include <type_traits>
 
 /* The game's side of DirectInput: the devices found and opened, the mouse, the
  * keyboard and the joysticks read, their force-feedback effects.
@@ -104,7 +107,6 @@ constexpr reg32 kMouseFormat = 0x52f020, kJoystickFormat = 0x52f300;
 // What is called.
 constexpr reg32 kCloseHandle = 0x534488, kCreateEvent = 0x534494, kGetModuleHandle = 0x53454c;
 constexpr reg32 kSetCursor = 0x534780, kShowCursor = 0x534794, kSwapMouseButton = 0x53479c;
-constexpr reg32 kMessageHandler = 0x4cc660, kSetMessageHandler = 0x4cc6d0;  // the window's, by message
 constexpr reg32 kPlacePointer = 0x435230;
 constexpr reg32 kJoystickFound = 0x436980;  // EnumDevices' callback
 constexpr reg32 kHideCursor = 0x436930;     // our WM_SETCURSOR handler
@@ -408,16 +410,61 @@ void stopDirectInput(win32::WinApplication* app, x86::CPU& cpu)
 namespace
 {
 
-/* A function of the game's by address (stdcall): its result; nothing when
- * the game stopped. */
-std::optional<reg32> callGame(App* app, CPU& cpu, reg32 address, std::initializer_list<reg32> words)
+
+/* A native_frontend_* file's typed core called as C++ (guest::direct): nothing (false) when the
+ * game stopped in it (its calls into the game throw fe::Terminated).  tools/game_checks does not
+ * build those files: there it goes by address, through its ByAddress, as the game's code calls it,
+ * every register but eax kept.  A reg32 result is the eax the function leaves: eax set to it (in the
+ * game too); after any other, eax spoilt there, so that code still reading what the callee left in
+ * eax differs there. */
+template <reg32 Address, auto Core, typename... Args>
+auto feCore(App* app, CPU& cpu, Args... args)
 {
-    for (auto w = std::rbegin(words); w != std::rend(words); ++w)
-        push(app, cpu, *w);
-    if (!byAddress(app, cpu, address))
-        return std::nullopt;
-    return cpu.eax;
+    const auto run = [&] {
+#ifdef NFS_GAME_CHECKS
+        const guest::KeptRegisters kept(cpu);
+        return guest::ByAddress<Core>::template call<Address>(app, cpu, args...);
+#else
+        return guest::direct<Address, Core>(app, cpu, args...);
+#endif
+    };
+    using Result = decltype(run());
+    const auto spoil = [&] {
+#ifdef NFS_GAME_CHECKS
+        cpu.eax = 0x5b0115edu;
+#endif
+    };
+    if constexpr (std::is_void_v<Result>)
+    {
+        try
+        {
+            run();
+        }
+        catch (const fe::Terminated&)
+        {
+            return false;
+        }
+        spoil();
+        return !cpu.terminate;
+    }
+    else
+    {
+        try
+        {
+            const Result result = run();
+            if constexpr (std::is_same_v<Result, x86::reg32>)
+                cpu.eax = result;  // a menu core's result: the eax it leaves, as the call by address does
+            else
+                spoil();
+            return cpu.terminate ? std::optional<Result>() : std::optional<Result>(result);
+        }
+        catch (const fe::Terminated&)
+        {
+            return std::optional<Result>();
+        }
+    }
 }
+
 
 /* 0x4350a0: the mouse opened, DirectInput started first if it is not: the
  * buttons' swap asked of Windows (and put back), the device made, its
@@ -442,7 +489,7 @@ std::optional<reg32> openTheMouse(App* app, CPU& cpu)
     if (at(app, kMouse) == 0)
     {
         const std::optional<reg32> swapped =
-            callWindows<kSwapMouseButton, &win32::user32::SwapMouseButton>(app, cpu, 1);
+            callWindows<kSwapMouseButton, &host::swapMouseButton>(app, cpu, 1);
         if (!swapped)
             return std::nullopt;
         if (*swapped != 0)
@@ -450,7 +497,7 @@ std::optional<reg32> openTheMouse(App* app, CPU& cpu)
         else
         {
             put(app, kButtonsSwapped, 0);
-            if (!callWindows<kSwapMouseButton, &win32::user32::SwapMouseButton>(app, cpu, 0))
+            if (!callWindows<kSwapMouseButton, &host::swapMouseButton>(app, cpu, 0))
                 return std::nullopt;
         }
         std::optional<reg32> result =
@@ -473,7 +520,7 @@ std::optional<reg32> openTheMouse(App* app, CPU& cpu)
         if (*result == 0)
             return 0;
         const std::optional<reg32> event =
-            callWindows<kCreateEvent, &win32::kernel32::CreateEventA>(app, cpu, 0, 0, 0, 0);
+            callWindows<kCreateEvent, &host::createEvent>(app, cpu, 0, 0, 0, 0);
         if (!event)
             return std::nullopt;
         put(app, kMouseEvent, *event);
@@ -496,11 +543,12 @@ std::optional<reg32> openTheMouse(App* app, CPU& cpu)
             return std::nullopt;
         if (*result != 0)
             return 0;
-        const std::optional<reg32> old = callGame(app, cpu, kMessageHandler, {kSetCursorMessage});
+        // wina's: the window's handler of WM_SETCURSOR, then ours (hideCursor) in its place.
+        const std::optional<reg32> old = feCore<0x4cc660, frontend::wina::handlerOf>(app, cpu, kSetCursorMessage);
         if (!old)
             return std::nullopt;
         put(app, kOldSetCursor, *old);
-        if (!callGame(app, cpu, kSetMessageHandler, {kSetCursorMessage, kHideCursor}))
+        if (!feCore<0x4cc6d0, frontend::wina::handlerSet>(app, cpu, kSetCursorMessage, kHideCursor))
             return std::nullopt;
     }
     if (at(app, kMouse) != 0)
@@ -2131,8 +2179,8 @@ bool noCursor(App* app, CPU& cpu, const reg32 (&words)[6])
         if (!byAddress(app, cpu, at(app, kOldSetCursor)))
             return false;
     }
-    return callWindows<kSetCursor, &win32::user32::SetCursor>(app, cpu, 0)
-           && callWindows<kShowCursor, &win32::user32::ShowCursor>(app, cpu, 0);
+    return callWindows<kSetCursor, &host::setCursor>(app, cpu, 0)
+           && callWindows<kShowCursor, &host::showCursor>(app, cpu, 0);
 }
 
 }  // namespace

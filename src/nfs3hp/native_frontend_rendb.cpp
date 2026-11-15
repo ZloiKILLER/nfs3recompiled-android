@@ -1,4 +1,5 @@
 #include "native_frontend_rendb.h"
+#include "native_watcom.h"
 #include "game_settings.h"
 #include "native_ea_memory.h"
 #include "native_ea_support.h"
@@ -108,7 +109,6 @@ constexpr reg32 kQueueQuad = 0x49bd30;         // eax a queue, edx, ebx, ecx and
 constexpr reg32 kUnqueueQuad = 0x49bdc0;       // likewise
 constexpr reg32 kDrawQuad = 0x4c12e0;          // eax, edx, ebx, ecx its corners
 constexpr reg32 kDrawSegment = 0x4c0b20;       // eax, edx its ends
-constexpr reg32 kChop = 0x4dfd56;              // __CHP: st(0) rounded toward 0
 
 // A corner: 0x20 bytes.  What the clipping functions read of it.
 constexpr reg32 kCornerBytes = 0x20;
@@ -535,7 +535,7 @@ x86::reg32 frontend::rendb::loadHudPictures(App* app, CPU& cpu)
     constexpr reg32 kPlainTexture = 0x791a94, kAlphaTexture = 0x791ae8;
 
     const reg32 path = guest.frame();
-    guest.call(kSprintf, args({}, { path, kFileFormat, kArtFolder }));
+    fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.cpu(), path, kFileFormat, guest::Words{kArtFolder});
     const reg32 file = *fe::direct<0x4e0ec0, ea::loadWhole>(app, cpu, path, 0x10);
     if (file == 0)
         return 0;
@@ -1037,8 +1037,10 @@ x86::reg32 frontend::rendb::drawPursuitMark(App* app, CPU& cpu, reg32 view, reg3
     copyWords(guest, guest.frame(), kBlankQuad, kQuadBytes / 4);
     // The eye in edx for it, as the code loads it there: what this function leaves when it goes no further.
     guest.leaveEdx(view + kViewEye);
-    const reg32 measured = fe::direct<0x4965b0, frontend::sima::quickDistance>(app, cpu, place, view + kViewEye);
-    const Float distance = guest.fpu().take();
+    const frontend::sima::FloatLeft quick =
+        fe::direct<0x4965b0, frontend::sima::quickDistanceOf>(app, cpu, place, view + kViewEye);
+    const reg32 measured = quick.eax;
+    const Float distance = quick.value;
 
     const Float edgeSize = fp::mul(fp::mul(Float(widthStored), floatFrom(guest, kEdgeSize)), perWidth);
     const Float farthest = doubleAt(guest, kFarthest);
@@ -1046,9 +1048,8 @@ x86::reg32 frontend::rendb::drawPursuitMark(App* app, CPU& cpu, reg32 view, reg3
     const Float brightness = fp::mul(nearness, doubleAt(guest, kBrightest));
     const Float perFarthest = doubleAt(guest, kPerFarthest);
     const float square = float(fp::mul(fp::mul(nearness, perFarthest), Float(inner)));
-    guest.fpu().push(fp::mul(perFarthest, brightness));
-    guest.call(kChop);
-    const std::int32_t red = fp::toInteger<sreg32>(guest.fpu().take());
+    const double redChopped = fe::direct<0x4dfd56, watcom::clib::chop>(app, cpu, fp::mul(perFarthest, brightness));
+    const std::int32_t red = fp::toInteger<sreg32>(redChopped);
     const float squareEdge = float(fp::add(edgeSize, Float(square)));
     const reg16 status = fp::compare(distance, farthest);
     // eax as the code leaves it: the distance's, which __CHP keeps, with the x87's status in ax.
@@ -1183,8 +1184,8 @@ x86::reg32 frontend::rendb::turnMatrixToRoad(App* app, CPU& cpu, reg32 car)
         against = float(fp::mul(Float(against), minusOne));
         along = float(fp::mul(minusOne, Float(along)));
     }
-    fe::direct<0x4ea9c0, frontend::simd::angleOfFloats>(app, cpu, bitsOf(along), bitsOf(against));
-    const float turn = foldedTurn(guest, guest.fpu().take());
+    const float turn = foldedTurn(guest, fe::direct<0x4ea9c0, frontend::simd::angleOfFloatsValue>(app, cpu, bitsOf(along),
+                                                                                                 bitsOf(against)));
     fe::direct<0x4eaab0, frontend::simd::rotateY>(app, cpu, frame + kStart, bitsOf(turn), frame + kRotated);
     fe::direct<0x4ea9e0, frontend::simd::rotateX>(app, cpu, frame + kStart, kResultScale, frame + kScaled);
     return guest.call(kMultiply, args({ frame + kRotated, frame + kScaled, kResult }));

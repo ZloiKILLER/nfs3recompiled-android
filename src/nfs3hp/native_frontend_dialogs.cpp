@@ -1,4 +1,5 @@
 #include "native_frontend_dialogs.h"
+#include "native_watcom.h"
 #include "game_settings.h"
 #include "native_frontend.h"
 #include "native_frontend_text.h"
@@ -354,10 +355,12 @@ x86::reg32 frontend::dialogs::buttonRowBox(App* app, CPU& cpu, reg32 count, reg3
  * its bottom, spread evenly across it from kButtonsX.  Ten buttons or more
  * get no boxes.
  *
- * Written as its code is, the registers and the x87 as it leaves them, for
- * its callers' sake: each push and pop to the guest's stack, the truncations
- * by __CHP, the text width and the font the port's (as C++, every register
- * but eax kept as the game's functions keep them).  The arguments go
+ * Written as its code is, the registers as it leaves them, for its callers'
+ * sake: each push and pop to the guest's stack, the truncations by __CHP
+ * (watcom::clib::chop, every register kept, as __CHP keeps them), the text
+ * width and the font the port's (as C++, every register but eax kept as the
+ * game's functions keep them); what its code keeps on the x87's stack in
+ * locals.  The arguments go
  * into the registers its code reads them from; its result is the eax it
  * leaves. */
 x86::reg32 frontend::dialogs::placeButtons(App* app, CPU& cpu, reg32 count, reg32 buttons, reg32 column, reg32 rect)
@@ -374,19 +377,16 @@ x86::reg32 frontend::dialogs::placeButtons(App* app, CPU& cpu, reg32 count, reg3
         cpu.esp += 4;
         return value;
     };
-    auto chop = [&] {
-        cpu.esp -= 4;
-        watcom::CHP(app, cpu);
-        if (cpu.terminate)
-            throw fe::Terminated();
+    auto chop = [&](Float value) {
+        const reg32 eax = cpu.eax;  // __CHP keeps every register
+        const double chopped = fe::direct<0x4dfd56, watcom::clib::chop>(app, cpu, double(value));
+        cpu.eax = eax;
+        return chopped;
     };
     auto setWord = [&](reg32 address, reg32 value) { app->getMemory<x86::reg16>(address) = x86::reg16(value); };
     auto high = [&](reg32 address) { return reg32(sreg32(at(app, address)) >> 16); };  // mov, sar 0x10
     auto loadFloat = [&](reg32 address) { return Float(app->getMemory<float>(address)); };
-    auto fistp = [&](reg32 address) {
-        put(app, address, reg32(fp::toInteger<sreg32>(cpu.fpu.st(0))));
-        cpu.fpu.count -= 1;
-    };
+    auto fistp = [&](reg32 address, double value) { put(app, address, reg32(fp::toInteger<sreg32>(value))); };
     auto half = [](reg32 value) { return reg32((sreg32(value) - (sreg32(value) >> 31)) >> 1); };  // cdq, sub, sar 1
 
     cpu.eax = count;
@@ -409,12 +409,11 @@ x86::reg32 frontend::dialogs::placeButtons(App* app, CPU& cpu, reg32 count, reg3
     if (cpu.edx != 0)
     {
         // A column, up from the box's bottom.
-        cpu.fpu.push(loadFloat(cpu.ecx + kBottom));
+        Float bottom = loadFloat(cpu.ecx + kBottom);
         cpu.edi = 0x280;
-        cpu.fpu.st(0) = fp::add(cpu.fpu.st(0), loadFloat(kMinus15));
+        bottom = fp::add(bottom, loadFloat(kMinus15));
         cpu.ecx = cpu.esi - 1;
-        chop();
-        fistp(ebp - 8);
+        fistp(ebp - 8, chop(bottom));
         for (; sreg32(cpu.ecx) >= 0; --cpu.ecx)
         {
             if (sreg32(cpu.esi) >= kMaxButtons)
@@ -457,12 +456,9 @@ x86::reg32 frontend::dialogs::placeButtons(App* app, CPU& cpu, reg32 count, reg3
     else
     {
         // A row, spread evenly across the box.
-        cpu.fpu.push(loadFloat(cpu.ebx + kRight));
-        cpu.fpu.st(0) = fp::sub(cpu.fpu.st(0), loadFloat(cpu.ecx + kLeft));
-        chop();
-        fistp(ebp - 0x14);
+        fistp(ebp - 0x14, chop(fp::sub(loadFloat(cpu.ebx + kRight), loadFloat(cpu.ecx + kLeft))));
         cpu.eax = at(app, ebp - 0x14);
-        cpu.fpu.push(loadFloat(cpu.ecx + kBottom));
+        Float bottom = loadFloat(cpu.ecx + kBottom);
         cpu.edx = reg32(sreg32(cpu.eax) >> 31);
         cpu.ecx = cpu.esi + 1;
         {
@@ -470,10 +466,9 @@ x86::reg32 frontend::dialogs::placeButtons(App* app, CPU& cpu, reg32 count, reg3
             cpu.eax = reg32(dividend / divisor);
             cpu.edx = reg32(dividend % divisor);
         }
-        cpu.fpu.st(0) = fp::add(cpu.fpu.st(0), loadFloat(kMinus15));
-        cpu.fpu.st(0) = fp::add(cpu.fpu.st(0), loadFloat(kMinus30));
-        chop();
-        fistp(ebp - 8);
+        bottom = fp::add(bottom, loadFloat(kMinus15));
+        bottom = fp::add(bottom, loadFloat(kMinus30));
+        fistp(ebp - 8, chop(bottom));
         put(app, ebp - 0xc, cpu.eax);
         for (cpu.ecx = 0; sreg32(cpu.ecx) < sreg32(cpu.esi); ++cpu.ecx)
         {
@@ -487,9 +482,7 @@ x86::reg32 frontend::dialogs::placeButtons(App* app, CPU& cpu, reg32 count, reg3
             cpu.eax = reg32(*fe::direct<0x452020, port::text::menuTextWidth>(app, cpu, cpu.esp - 4, cpu.eax, cpu.edx));
             setWord(cpu.ecx * 8 + kButtonBoxes + kBoxWidth, cpu.eax);
             cpu.edx = at(app, ebp - 0xc);
-            cpu.fpu.push(loadFloat(cpu.ebx + kLeft));
-            chop();
-            fistp(ebp - 0x14);
+            fistp(ebp - 0x14, chop(loadFloat(cpu.ebx + kLeft)));
             put(app, ebp - 0x14, at(app, ebp - 0x14) + cpu.edx);
             cpu.eax = cpu.edx * cpu.ecx;  // imul: its low 32 bits
             put(app, ebp - 0x14, at(app, ebp - 0x14) + cpu.eax);
@@ -703,7 +696,7 @@ x86::reg32 frontend::dialogs::openEdit(App* app, CPU& cpu, reg32 lineCount, reg3
     setDialogRect(guest, x87, Float(middleXF), Float(middleYF), x87.mul(Float(0.5), Float(width)),
                   x87.mul(Float(linesHeightF), Float(0.5)));
 
-    guest.call(kMemset, fe::args({ kEditText, 0, kEditSize }));
+    fe::direct<kMemset, watcom::clib::memset>(guest.app(), guest.cpu(), kEditText, 0, kEditSize);
     guest.setDword(kEditSource, source);
     guest.setDword(kEditMode, mode);
     guest.setDword(kEditMax, maxLength != 0 && maxLength < kEditSize ? maxLength : kEditSize - 1);
@@ -711,7 +704,7 @@ x86::reg32 frontend::dialogs::openEdit(App* app, CPU& cpu, reg32 lineCount, reg3
         fe::direct<0x443860, frontend::text::lineAllowed>(app, cpu, guest.dword(kEditSource), guest.dword(kEditMode));
     if ((allowed & 0xff) != 0)
     {
-        guest.call(kStrncpy, fe::args({ kEditText, guest.dword(kEditSource), guest.dword(kEditMax) }));
+        fe::direct<kStrncpy, watcom::clib::strncpy>(guest.app(), guest.cpu(), kEditText, guest.dword(kEditSource), guest.dword(kEditMax));
         guest.setDword(kEditLength, guest.length(kEditText));
     }
     else

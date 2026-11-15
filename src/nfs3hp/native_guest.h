@@ -36,19 +36,42 @@ inline void putByte(win32::WinApplication* app, x86::reg32 address, x86::reg8 va
 
 typedef void (*Native)(win32::WinApplication*, x86::CPU&);
 
-/* A call as the game's code makes one: `arguments` pushed below esp, the
- * return address's slot below them, and esp back where it was after it --
- * where a stdcall callee's ret leaves it, and a cdecl one's caller puts it.
- * False when the game stopped in it, with everything left as it is. */
+/* The words a variadic function's caller pushes after the arguments it names
+ * (sprintf's after the buffer and the format), as one value. */
+struct Words
+{
+    static constexpr unsigned kMost = 16;
+    x86::reg32 word[kMost] = {};
+    unsigned count = 0;
+
+    Words(std::initializer_list<x86::reg32> words)
+    {
+        for (const x86::reg32 w : words)
+            if (count < kMost)
+                word[count++] = w;
+    }
+};
+
+/* A call as the game's code makes one: `arguments` pushed below esp, `more`
+ * after them, the return address's slot below them all, and esp back where it
+ * was after it -- where a stdcall callee's ret leaves it, and a cdecl one's
+ * caller puts it.  False when the game stopped in it, with everything left as
+ * it is. */
 template <typename Target>
-bool through(win32::WinApplication* app, x86::CPU& cpu, Target target, std::initializer_list<x86::reg32> arguments)
+bool through(win32::WinApplication* app, x86::CPU& cpu, Target target, std::initializer_list<x86::reg32> arguments,
+             const Words& more = Words({}))
 {
     const x86::reg32 esp = cpu.esp;
-    x86::reg32 slot = esp - 4 * x86::reg32(arguments.size());
+    x86::reg32 slot = esp - 4 * x86::reg32(arguments.size() + more.count);
     cpu.esp = slot - 4;
     for (const x86::reg32 argument : arguments)
     {
         put(app, slot, argument);
+        slot += 4;
+    }
+    for (unsigned i = 0; i < more.count; ++i)
+    {
+        put(app, slot, more.word[i]);
         slot += 4;
     }
     if constexpr (std::is_same_v<Target, Native>)
@@ -71,6 +94,19 @@ inline bool call(win32::WinApplication* app, x86::CPU& cpu, Native target,
                  std::initializer_list<x86::reg32> arguments = {})
 {
     return through(app, cpu, target, arguments);
+}
+
+/* A variadic function's call: `arguments` and then `more` pushed. */
+inline bool call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 target,
+                 std::initializer_list<x86::reg32> arguments, const Words& more)
+{
+    return through(app, cpu, target, arguments, more);
+}
+
+inline bool call(win32::WinApplication* app, x86::CPU& cpu, Native target,
+                 std::initializer_list<x86::reg32> arguments, const Words& more)
+{
+    return through(app, cpu, target, arguments, more);
 }
 
 /* What a caller's frame keeps across a call by address, as Watcom's code does: every register but

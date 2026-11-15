@@ -1,4 +1,5 @@
 #include "native_frontend_view.h"
+#include "native_watcom.h"
 #include "native_ea_memory.h"
 #include "native_ea_support.h"
 #include "native_frontend.h"
@@ -73,7 +74,7 @@ constexpr reg32 kTilesFrame = 20 + kNameBytes;
 reg32 loadTileFile(App* app, CPU& cpu, Guest& guest, reg32 folder, reg32 fileName)
 {
     const reg32 name = guest.frame();
-    guest.call(kSprintf, args({}, { name, kPathFormat.address, folder, fileName }));
+    fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.cpu(), name, kPathFormat.address, guest::Words{folder, fileName});
     return *fe::direct<0x4e0ec0, ea::loadWhole>(app, cpu, name, kLoadFlags);
 }
 
@@ -88,7 +89,7 @@ x86::reg32 frontend::view::makeTiles(App* app, CPU& cpu, reg32 fileName, reg32 f
     const reg32 file = loadTileFile(app, cpu, guest, folder, fileName);
     for (reg32 tile = 0; tile < kTileCount; ++tile)
     {
-        guest.call(kSprintf, args({}, { name, kTileNameFormat.address, tile }));
+        fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.cpu(), name, kTileNameFormat.address, guest::Words{tile});
         // The tile's texture made: (file, name, side, record), the format on the stack.
         fe::direct<0x4d4080, rende::loadShapeTexture>(app, cpu, file, name, kTileSide, kTiles + kTileBytes * tile,
                                                       kTileFormat);
@@ -106,7 +107,7 @@ x86::reg32 frontend::view::fillTiles(App* app, CPU& cpu, reg32 fileName, reg32 f
     const reg32 file = loadTileFile(app, cpu, guest, folder, fileName);
     for (reg32 tile = 0; tile < kTileCount; ++tile)
     {
-        guest.call(kSprintf, args({}, { name, kTileNameFormat.address, tile }));
+        fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.cpu(), name, kTileNameFormat.address, guest::Words{tile});
         const reg32 shape = fe::direct<0x4ef1e0, eab::shapeFileFind>(app, cpu, file, name);
         const reg32 texture = guest.dword(kTiles + kTileBytes * tile + kTileTexture);
         guest.call(kShapeIntoTexture, args({ texture, shape, kTileSide, kTileFormat }));
@@ -158,19 +159,19 @@ x86::reg32 frontend::view::loadInterior(App* app, CPU& cpu)
     const reg32 folder = guest.frame() + kPathBytes;
     const reg32 carFolder = *fe::direct<0x4392b0, load::folderOf>(app, cpu, car);
     const reg32 stem = fe::direct<0x439290, frontend::showcase::carFileStem>(app, cpu, guest.dword(kShownCar));
-    guest.call(kSprintf, args({}, { picture, kInteriorFormat.address, stem }));
+    fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.cpu(), picture, kInteriorFormat.address, guest::Words{stem});
 
     const reg32 screen = fe::direct<0x44ae00, frontend::loop::currentMenuName>(app, cpu);
-    if (guest.call(kStrcmp, args({ screen, kCredits.address })) == 0)
+    if (fe::direct<kStrcmp, watcom::clib::strcmp>(guest.app(), guest.cpu(), screen, kCredits.address) == 0)
     {
         // By the car's number there.  The folder copied is the game's own dead store:
         // both ways on write over it.
-        guest.call(kSprintf, args({}, { picture, kCreditsFormat.address, guest.dword(kShownCar) }));
+        fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.cpu(), picture, kCreditsFormat.address, guest::Words{guest.dword(kShownCar)});
         guest.copyString(folder, kCarRootCommon);
     }
 
     if (guest.call(kCarFlag4, args({ guest.dword(kShownCar) })) != 0)
-        guest.call(kSprintf, args({}, { folder, kCarFolderFormat.address, kCarRootOwn, carFolder }));
+        fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.cpu(), folder, kCarFolderFormat.address, guest::Words{kCarRootOwn, carFolder});
     else
         guest.copyString(folder, kCarRootCommon);
     return guest::direct<0x4647a0, view::fillTiles>(app, cpu, picture, folder);

@@ -1,6 +1,16 @@
 #include "game_settings.h"
 #include "port_view.h"
+#include "port_draw2d.h"
+#include "port_fields.h"
 #include "port_text.h"
+#include "native_collide.h"
+#include "native_ea_memory.h"
+#include "native_ea_support.h"
+#include "native_frontend_glue.h"
+#include "native_frontend_simc.h"
+#include "native_graphics.h"
+#include "native_vertices.h"
+#include "native_watcom.h"
 
 #include <cmath>
 #include <cstdint>
@@ -89,6 +99,40 @@ constexpr reg32 kKind = 0x42;
 constexpr reg32 kFloats = 0x48;
 constexpr reg32 kKindNone = 1;      // no float to give: 0.0
 constexpr reg32 kKindIndexed = 2;   // the float of the index asked for
+
+/* callGame's call of a function with a typed core made as C++ (guest::direct): esp and the
+ * registers set as callGame sets them -- what the code after it reads of them is what the callee,
+ * which keeps them, leaves -- and the core given its own arguments; its result as the core gives it.
+ * A port core's `esp` is the frame base, the game's esp less 4 and the stack words its call pushes. */
+template <reg32 Address, auto Core, typename... Values>
+auto callCore(App* app, CPU& cpu, reg32 esp, const Args& a, Values... values)
+{
+    cpu.esp = esp;
+    cpu.eax = a.eax;
+    cpu.edx = a.edx;
+    cpu.ebx = a.ebx;
+    cpu.ecx = a.ecx;
+    return guest::direct<Address, Core>(app, cpu, values...);
+}
+
+/* Its result taken as callGame takes eax: false when the game stopped. */
+inline bool taken(CPU& cpu, const std::optional<reg32>& value, reg32& result)
+{
+    if (!value || cpu.terminate)
+        return false;
+    result = *value;
+    cpu.eax = *value;
+    return true;
+}
+
+inline bool taken(CPU& cpu, const Result& value, reg32& result)
+{
+    if (!value || cpu.terminate)
+        return false;
+    result = reg32(*value);
+    cpu.eax = result;
+    return true;
+}
 
 float bitsToFloat(reg32 bits)
 {
@@ -222,13 +266,13 @@ constexpr reg32 kCrossProduct = 0x4e01a0;            // (b, a, out): the cross p
  * two edges from its first vertex, each normalized) put in the normals' list at
  * the same number.  The code's scratch is on the game's stack.  False when the
  * game stops in a call. */
-bool edgeTrianglesOf(App* app, CPU& cpu, const Entry& e)
+bool edgeTrianglesAt(App* app, CPU& cpu, reg32 esp, reg32 eax, reg32 edx, reg32 ebx, reg32 ecx, const reg32* words)
 {
-    const uint8_t a = uint8_t(e.eax), b = uint8_t(e.edx), c = uint8_t(e.ebx), d = uint8_t(e.ecx);
-    const reg32 flags = e.arg(app, 0), triangles = e.arg(app, 1), vertices = e.arg(app, 2), normals = e.arg(app, 3);
-    const reg32 width = e.arg(app, 4), more = e.arg(app, 5), face = e.arg(app, 6), counter = e.arg(app, 7);
-    const reg32 ebp = e.frame(3);
-    const reg32 base = e.frame(3, 0x38);
+    const uint8_t a = uint8_t(eax), b = uint8_t(edx), c = uint8_t(ebx), d = uint8_t(ecx);
+    const reg32 flags = words[0], triangles = words[1], vertices = words[2], normals = words[3];
+    const reg32 width = words[4], more = words[5], face = words[6], counter = words[7];
+    const reg32 ebp = esp - 4 * 3;
+    const reg32 base = esp - 4 * 3 - 0x38;
     const HeldEbp held(cpu, ebp);
     const auto local = [&](int32_t offset) { return ebp + reg32(offset); };
     const auto putInt = [&](int32_t offset, reg32 value) { app->getMemory<reg32>(local(offset)) = value; };
@@ -269,10 +313,15 @@ bool edgeTrianglesOf(App* app, CPU& cpu, const Entry& e)
                 float(double(load<float>(app, third + 4 * axis)) - double(load<float>(app, first + 4 * axis)));
             app->getMemory<float>(local(-0x38) + 4 * axis) = difference;
         }
-        if (!callGame(app, cpu, base, kUnitVector, {local(-0x2c), local(-0x2c), 0, 0}))
+        callCore<kUnitVector, vertices::makeUnitVector>(app, cpu, base, {local(-0x2c), local(-0x2c), 0, 0},
+                                                        local(-0x2c), local(-0x2c));
+        if (cpu.terminate)
             return false;
-        if (!callGame(app, cpu, base, kUnitVector, {local(-0x38), local(-0x38), 0, 0}))
+        callCore<kUnitVector, vertices::makeUnitVector>(app, cpu, base, {local(-0x38), local(-0x38), 0, 0},
+                                                        local(-0x38), local(-0x38));
+        if (cpu.terminate)
             return false;
+        // By address: native_frontend_simd's, which tools/game_checks does not build.
         return callGame(app, cpu, base, kCrossProduct,
                         {local(-0x38), local(-0x2c), normals + 12 * app->getMemory<reg32>(counter), 0});
     };
@@ -300,6 +349,14 @@ bool edgeTrianglesOf(App* app, CPU& cpu, const Entry& e)
     return true;
 }
 
+/* edgeTrianglesAt as the adapter has it: the registers and the eight words the caller pushed. */
+bool edgeTrianglesOf(App* app, CPU& cpu, const Entry& e)
+{
+    const reg32 words[8] = {e.arg(app, 0), e.arg(app, 1), e.arg(app, 2), e.arg(app, 3),
+                            e.arg(app, 4), e.arg(app, 5), e.arg(app, 6), e.arg(app, 7)};
+    return edgeTrianglesAt(app, cpu, e.esp, e.eax, e.edx, e.ebx, e.ecx, &words[0]);
+}
+
 /* ---- 0x475240 ---- */
 
 constexpr Var<reg32> kGlyphResource{0x679010};       // the resource last made or loaded
@@ -313,7 +370,7 @@ constexpr reg32 kReserveMemory = 0x4e1620;           // (class, size, flags): a 
 constexpr reg32 kPurgeMemory = 0x4e1890;             // (block)
 constexpr reg32 kMemset = 0x4e0640;                  // (buffer, byte, count)
 constexpr reg32 kSaveFile = 0x4eeae0;                // (name, bytes, size): the cache file written
-constexpr reg32 kEmitEdges = 0x474db0;               // the edge pair emitter, stdcall 8 words
+constexpr reg32 kEmitEdges = 0x474db0;               // the edge pair emitter, stdcall 8 words: edgeTrianglesAt
 
 /* The large glyphs' geometry resource for the font named by `name`: from the
  * cache file the font's name makes when there is one (the header's records
@@ -362,15 +419,22 @@ std::optional<reg32> glyphResourceOf(App* app, CPU& cpu, const Entry& e)
 
     set32(L(0x36), e.edx);
     const reg32 cacheName = L(-0x7a);
-    if (!call(kSprintf, {cacheName, e.edx, e.ebx, name}, {cacheName, kGlyphCacheName, name}, base))
+    result = callCore<kSprintf, watcom::clib::sprintf>(app, cpu, base, {cacheName, e.edx, e.ebx, name}, cacheName,
+                                                       kGlyphCacheName, guest::Words{name});
+    if (cpu.terminate)
         return std::nullopt;
-    if (!call(kFileExists, {cacheName, e.edx, e.ebx, name}, {}, base))
+    const std::optional<bool> there =
+        callCore<kFileExists, ea::fileThere>(app, cpu, base, {cacheName, e.edx, e.ebx, name}, cacheName);
+    if (!there || cpu.terminate)
         return std::nullopt;
+    result = *there ? 1 : 0;
 
     if (result != 0)
     {
         // The baked resource: its records given their pointers into what follows the header.
-        if (!call(kLoadFile, {cacheName, cpu.edx, cpu.ebx, cpu.ecx}, {}, base))
+        if (!taken(cpu, callCore<kLoadFile, ea::loadWhole>(app, cpu, base, {cacheName, cpu.edx, cpu.ebx, cpu.ecx},
+                                                           cacheName, cpu.edx),
+                   result))
             return std::nullopt;
         const reg32 loaded = result;
         kGlyphResource.set(app, loaded);
@@ -401,11 +465,16 @@ std::optional<reg32> glyphResourceOf(App* app, CPU& cpu, const Entry& e)
     setWord(0x46, 0x44268000);
     const reg32 reserveFlags = (app->getMemory<uint8_t>(L(0x36)) & 0x10) != 0 ? 0 : 0x10;
     reg32 total = word(0x6a);
-    if (!call(kReserveMemory, {kGlyphArena, kGlyphHeader, reserveFlags, cpu.ecx}, {}, base))
+    if (!taken(cpu, callCore<kReserveMemory, ea::reserved>(app, cpu, base, {kGlyphArena, kGlyphHeader, reserveFlags,
+                                                                            cpu.ecx},
+                                                           kGlyphArena, kGlyphHeader, reserveFlags),
+               result))
         return std::nullopt;
     kGlyphResource.set(app, result);
     setWord(0x4e, reserveFlags);
-    if (!call(kLoadFile, {cpu.ecx, reserveFlags, cpu.ebx, cpu.ecx}, {}, base))
+    if (!taken(cpu, callCore<kLoadFile, ea::loadWhole>(app, cpu, base, {cpu.ecx, reserveFlags, cpu.ebx, cpu.ecx},
+                                                       cpu.ecx, reserveFlags),
+               result))
         return std::nullopt;
     const reg32 source = result;
     reg32 resource = kGlyphResource(app);
@@ -443,7 +512,9 @@ std::optional<reg32> glyphResourceOf(App* app, CPU& cpu, const Entry& e)
         }
         // The vertices of the glyph: a block for both layers, and the bounds.
         const reg32 verticesSize = 24 * wide;
-        if (!call(kReserveMemory, {kGlyphArena, verticesSize, word(0x4e), verticesSize}, {}, base))
+        if (!taken(cpu, callCore<kReserveMemory, ea::reserved>(app, cpu, base, {kGlyphArena, verticesSize, word(0x4e), verticesSize},
+                                                               kGlyphArena, verticesSize, word(0x4e)),
+                   result))
             return std::nullopt;
         const reg32 vertices = result;
         set32(kGlyphResource(app) + offset + 0x20, vertices);
@@ -489,10 +560,13 @@ std::optional<reg32> glyphResourceOf(App* app, CPU& cpu, const Entry& e)
 
         // The adjacency grid: which edges are used once.
         const reg32 grid_size = word(0x7a) * word(0x7a);
-        if (!call(kReserveMemory, {kGlyphArena, grid_size, word(0x4e), grid_size}, {}, base))
+        if (!taken(cpu, callCore<kReserveMemory, ea::reserved>(app, cpu, base, {kGlyphArena, grid_size, word(0x4e), grid_size},
+                                                               kGlyphArena, grid_size, word(0x4e)),
+                   result))
             return std::nullopt;
         const reg32 grid = result;
-        if (!call(kMemset, {grid, 0, grid_size, 0}, {}, base))
+        result = callCore<kMemset, watcom::clib::memset>(app, cpu, base, {grid, 0, grid_size, 0}, grid, 0u, grid_size);
+        if (cpu.terminate)
             return std::nullopt;
         reg32 edges = 0;
         setWord(0x76, 0);
@@ -528,12 +602,16 @@ std::optional<reg32> glyphResourceOf(App* app, CPU& cpu, const Entry& e)
         // The triangles of the glyph: front, back, and the edges' quads.
         const reg32 trianglesCount = 2 * (word(0x6e) + edges);
         setWord(0x1a, 3 * trianglesCount);
-        if (!call(kReserveMemory, {kGlyphArena, 3 * trianglesCount, word(0x4e), trianglesCount}, {}, base))
+        if (!taken(cpu, callCore<kReserveMemory, ea::reserved>(app, cpu, base, {kGlyphArena, 3 * trianglesCount, word(0x4e), trianglesCount},
+                                                               kGlyphArena, 3 * trianglesCount, word(0x4e)),
+                   result))
             return std::nullopt;
         setWord(0x16, result);
         setWord(0x62, result);
         setWord(0x22, 12 * trianglesCount);
-        if (!call(kReserveMemory, {kGlyphArena, 12 * trianglesCount, word(0x4e), trianglesCount}, {}, base))
+        if (!taken(cpu, callCore<kReserveMemory, ea::reserved>(app, cpu, base, {kGlyphArena, 12 * trianglesCount, word(0x4e), trianglesCount},
+                                                               kGlyphArena, 12 * trianglesCount, word(0x4e)),
+                   result))
             return std::nullopt;
         const reg32 normals = result;
         setWord(0x5e, normals);
@@ -570,14 +648,22 @@ std::optional<reg32> glyphResourceOf(App* app, CPU& cpu, const Entry& e)
             const reg32 triangles = word(0x62), verticesAt = word(0x5a), normalsAt = word(0x5e);
             const reg32 faces = word(0x6e), tt = reg32(t), ww = word(0x7a);
             cursor += 3;
-            if (!call(kEmitEdges, {0, 1, 2, 1}, {grid, triangles, verticesAt, normalsAt, ww, faces, tt, counter}, base))
+            // The emitter as C++ (guest::direct), the registers set as the call by address sets them; its frame
+            // where the game's lies, past the eight words it is handed.
+            const reg32 words[8] = {grid, triangles, verticesAt, normalsAt, ww, faces, tt, counter};
+            const auto emitEdges = [&](Args a) {
+                return callCore<kEmitEdges, edgeTrianglesEmitted>(app, cpu, base, a, base - 4 - 4 * 8, a.eax, a.edx,
+                                                                  a.ebx, a.ecx, &words[0])
+                    && !cpu.terminate;
+            };
+            if (!emitEdges({0, 1, 2, 1}))
                 return std::nullopt;
-            if (!call(kEmitEdges, {1, 2, 1, 0}, {grid, triangles, verticesAt, normalsAt, ww, faces, tt, counter}, base))
+            if (!emitEdges({1, 2, 1, 0}))
                 return std::nullopt;
-            if (!call(kEmitEdges, {2, 0, 0, 2}, {grid, triangles, verticesAt, normalsAt, ww, faces, tt, counter}, base))
+            if (!emitEdges({2, 0, 0, 2}))
                 return std::nullopt;
         }
-        if (!call(kPurgeMemory, {grid, 0, 0, 0}, {}, base))
+        if (!taken(cpu, callCore<kPurgeMemory, ea::purgeBlock>(app, cpu, base, {grid, 0, 0, 0}, grid), result))
             return std::nullopt;
         // The vertices' normals: the sum of the normals of the triangles a vertex is a corner of.
         const reg32 sumX = L(6), sumY = L(0xa), sumZ = L(0xe);
@@ -601,23 +687,27 @@ std::optional<reg32> glyphResourceOf(App* app, CPU& cpu, const Entry& e)
                         float(double(load<float>(app, sumZ)) + double(load<float>(app, normal + 8)));
                 }
             }
-            if (!call(kUnitVector, {sumX, word(0x2e) + 12 * reg32(v), 0, 0}, {}, base))
+            callCore<kUnitVector, vertices::makeUnitVector>(app, cpu, base, {sumX, word(0x2e) + 12 * reg32(v), 0, 0},
+                                                            sumX, word(0x2e) + 12 * reg32(v));
+            if (cpu.terminate)
                 return std::nullopt;
         }
         setWord(0x66, word(0x66) + 1);
     }
 
     // Done with the font's file; the resource is moved into one block.
-    if (!call(kPurgeMemory, {word(0x3e), 0, 0, 0}, {}, base))
+    if (!taken(cpu, callCore<kPurgeMemory, ea::purgeBlock>(app, cpu, base, {word(0x3e), 0, 0, 0}, word(0x3e)), result))
         return std::nullopt;
     resource = kGlyphResource(app);
     set32(resource + 8, word(0x42));
     set32(resource + 0xc, word(0x46));
-    if (!call(kReserveMemory, {kGlyphArena, word(0x6a), word(0x36), kGlyphHeader}, {}, base))
+    if (!taken(cpu, callCore<kReserveMemory, ea::reserved>(app, cpu, base, {kGlyphArena, word(0x6a), word(0x36), kGlyphHeader},
+                                                           kGlyphArena, word(0x6a), word(0x36)),
+               result))
         return std::nullopt;
     const reg32 joined = result;
     copy(joined, resource, kGlyphHeader);
-    if (!call(kPurgeMemory, {resource, 0, 0, 0}, {}, base))
+    if (!taken(cpu, callCore<kPurgeMemory, ea::purgeBlock>(app, cpu, base, {resource, 0, 0, 0}, resource), result))
         return std::nullopt;
     kGlyphResource.set(app, joined);
     cursor = joined + kGlyphHeader;
@@ -635,7 +725,7 @@ std::optional<reg32> glyphResourceOf(App* app, CPU& cpu, const Entry& e)
             const reg32 size = 24 * byteAt(record + 0x13);
             setWord(0x12, size);
             copy(cursor, at32(record + 0x20), size);
-            if (!call(kPurgeMemory, {at32(resource + offset + 0x20), 0, 0, 0}, {}, base))
+            if (!taken(cpu, callCore<kPurgeMemory, ea::purgeBlock>(app, cpu, base, {at32(resource + offset + 0x20), 0, 0, 0}, at32(resource + offset + 0x20)), result))
                 return std::nullopt;
             record = kGlyphResource(app) + offset;
             set32(record + 0x20, cursor);
@@ -649,14 +739,14 @@ std::optional<reg32> glyphResourceOf(App* app, CPU& cpu, const Entry& e)
         {
             const reg32 trianglesSize = 3 * byteAt(record + 0x11);
             copy(cursor, at32(record + 0x2c), trianglesSize);
-            if (!call(kPurgeMemory, {at32(kGlyphResource(app) + offset + 0x2c), 0, 0, 0}, {}, base))
+            if (!taken(cpu, callCore<kPurgeMemory, ea::purgeBlock>(app, cpu, base, {at32(kGlyphResource(app) + offset + 0x2c), 0, 0, 0}, at32(kGlyphResource(app) + offset + 0x2c)), result))
                 return std::nullopt;
             record = kGlyphResource(app) + offset;
             set32(record + 0x2c, cursor);
             cursor += trianglesSize;
             const reg32 normalsSize = 12 * byteAt(record + 0x11);
             copy(cursor, at32(record + 0x24), normalsSize);
-            if (!call(kPurgeMemory, {at32(kGlyphResource(app) + offset + 0x24), 0, 0, 0}, {}, base))
+            if (!taken(cpu, callCore<kPurgeMemory, ea::purgeBlock>(app, cpu, base, {at32(kGlyphResource(app) + offset + 0x24), 0, 0, 0}, at32(kGlyphResource(app) + offset + 0x24)), result))
                 return std::nullopt;
             set32(kGlyphResource(app) + offset + 0x24, cursor);
             cursor += normalsSize;
@@ -698,6 +788,7 @@ bool nearestColour(App* app, CPU& cpu, const Entry& e)
     const reg32 car = app->getMemory<reg32>(object + 0x14);
 
     reg32 count;
+    // By address: what it leaves in ebx, ecx and edx (the game's code does not keep them) is read below.
     if (!callGame(app, cpu, base, kCarColourCount, {car, e.edx, 0, kFarthest}, {}, count))
         return false;
     // What the call leaves in ebx, ecx and edx is what the code goes on with.
@@ -731,10 +822,10 @@ bool nearestColour(App* app, CPU& cpu, const Entry& e)
         putInt(-4, third);
         putFloat(-0x30, green - double(second));
         putFloat(-0x2c, blue - double(third));
-        if (!callGame(app, cpu, base, kVectorLength, {local(-0x34), 0, 0, 0}))
+        cpu.esp = base;
+        const double distance = guest::direct<kVectorLength, vertices::vectorLength>(app, cpu, local(-0x34));
+        if (cpu.terminate)
             return false;
-        const double distance = double(cpu.fpu.st(0));
-        cpu.fpu.pop();
         const float stored = putFloat(-8, distance);
         if (!(distance >= double(app->getMemory<float>(local(-0xc)))))
         {
@@ -885,16 +976,23 @@ uint8_t outcodeOf(App* app, reg32 vertex)
     return bits;
 }
 
-/* The square root the game gives for a float: back from the x87's stack. */
+/* The square root the game gives for a float: simc's squareRootOf, which leaves every register as it
+ * was.  In the checks (NFS_GAME_CHECKS, which do not build the menus' files) the call by address, the
+ * root back from the x87's stack. */
 bool rootOf(App* app, CPU& cpu, reg32 esp, float value, float& root)
 {
     reg32 bits;
     std::memcpy(&bits, &value, sizeof bits);
+#ifdef NFS_GAME_CHECKS
     if (!callGame(app, cpu, esp, kSquareRoot, {}, {bits}))
         return false;
     root = float(cpu.fpu.st(0));
     cpu.fpu.pop();
     return true;
+#else
+    root = float(callCore<kSquareRoot, frontend::simc::squareRootOf>(app, cpu, esp, {}, bits));
+    return !cpu.terminate;
+#endif
 }
 
 /* The ground's grid in a box (x, y, w, h) of the screen: tiles of 16 by 16,
@@ -904,12 +1002,11 @@ bool rootOf(App* app, CPU& cpu, reg32 esp, float value, float& root)
  * (outcodes) and drawn.  The code keeps its working in 0x6c bytes of the game's
  * stack and stores each as it goes; so does this, in the order it does.  False
  * when the game stops in a call. */
-bool drawGrid(App* app, CPU& cpu, const Entry& e)
+bool drawGridAt(App* app, CPU& cpu, reg32 esp, reg32 x, reg32 y, reg32 w, reg32 h, reg32 mapX, reg32 mapY,
+                reg32 scale)
 {
-    const reg32 x = e.eax, y = e.edx, w = e.ebx, h = e.ecx;
-    const reg32 mapX = e.arg(app, 0), mapY = e.arg(app, 1), scale = e.arg(app, 2);
-    const reg32 ebp = e.frame(3);
-    const reg32 base = e.frame(3, 0x6c);
+    const reg32 ebp = esp - 4 * 3;
+    const reg32 base = esp - 4 * 3 - 0x6c;
     const HeldEbp held(cpu, ebp);
     const auto local = [&](int32_t offset) { return ebp + reg32(offset); };
     const auto putInt = [&](int32_t offset, int32_t value) { app->getMemory<int32_t>(local(offset)) = value; };
@@ -952,7 +1049,9 @@ bool drawGrid(App* app, CPU& cpu, const Entry& e)
         app->getMemory<int32_t>(mapY) = halfRange;
     if (-halfRange > app->getMemory<int32_t>(mapY))
         app->getMemory<int32_t>(mapY) = -halfRange;
-    if (!callGame(app, cpu, base, kSetRenderState, {kRenderTextureState, 1, cpu.ebx, cpu.ecx}))
+    callCore<kSetRenderState, graphics::sendState>(app, cpu, base, {kRenderTextureState, 1, cpu.ebx, cpu.ecx},
+                                                   kRenderTextureState, 1u);
+    if (cpu.terminate)
         return false;
     const double distance = double(bitsToFloat(kGridDistance));
     const double floorRadius = double(bitsToFloat(kGridFloor));
@@ -1057,7 +1156,9 @@ bool drawGrid(App* app, CPU& cpu, const Entry& e)
                             app->getMemory<float>(0x55a4c0) = app->getMemory<float>(0x55a4a0);
                             const int32_t tileNumber = column + 5 * row;
                             const reg32 texture = app->getMemory<reg32>(kTileTexture + kTileTextureStride * reg32(tileNumber));
-                            if (!callGame(app, cpu, base, kSetRenderState, {kRenderTile, texture, 0, 0}))
+                            callCore<kSetRenderState, graphics::sendState>(app, cpu, base, {kRenderTile, texture, 0, 0},
+                                                                           kRenderTile, texture);
+                            if (cpu.terminate)
                                 return false;
                             for (int corner = 0; corner < 4; ++corner)
                                 app->getMemory<uint8_t>(vertexAt(corner) + kVertexOutcode) = outcodeOf(app, vertexAt(corner));
@@ -1083,7 +1184,8 @@ bool drawGrid(App* app, CPU& cpu, const Entry& e)
     const reg32 width = app->getMemory<reg32>(local(-0x6c)), height = app->getMemory<reg32>(local(-0x60));
     if (!callGame(app, cpu, base, kSetClip, {left, top, width, height}))
         return false;
-    return callGame(app, cpu, base, kPictureFlush, {left, top, width, height});
+    callCore<kPictureFlush, collide::screenStates>(app, cpu, base, {left, top, width, height});
+    return !cpu.terminate;
 }
 
 /* ---- 0x464fd0 ---- */
@@ -1135,13 +1237,25 @@ std::optional<reg32> frameOfView(App* app, CPU& cpu, const Entry& e)
         const bool translucent = (app->getMemory<uint8_t>(kTranslucency) & 2) != 0;
         const reg32 left = reg32(int16_t(app->getMemory<uint16_t>(object + 6)));
         const reg32 top = reg32(int16_t(app->getMemory<uint16_t>(object + 8)));
-        if (translucent && !callGame(app, cpu, base, kSetRenderState, {6, 1, colour, ecx}))
+        if (translucent)
+        {
+            callCore<kSetRenderState, graphics::sendState>(app, cpu, base, {6, 1, colour, ecx}, 6u, 1u);
+            if (cpu.terminate)
+                return std::nullopt;
+        }
+        if (!callCore<kBoxFrame, draw2d::outline>(app, cpu, base, {left, top, 0x140, 0xc0}, base - 4 - 4,
+                                                  int32_t(left), int32_t(top), 0x140, 0xc0, colour)
+            || cpu.terminate)
             return std::nullopt;
-        if (!callGame(app, cpu, base, kBoxFrame, {left, top, 0x140, 0xc0}, {colour}))
-            return std::nullopt;
-        if (translucent && !callGame(app, cpu, base, kSetRenderState, {6, 0, cpu.ebx, cpu.ecx}))
-            return std::nullopt;
-        if (!callGame(app, cpu, base, kGrid, {left, top, 0x140, 0xc0}, {kMapX.at, kMapY.at, kPanBase.at}))
+        if (translucent)
+        {
+            callCore<kSetRenderState, graphics::sendState>(app, cpu, base, {6, 0, cpu.ebx, cpu.ecx}, 6u, 0u);
+            if (cpu.terminate)
+                return std::nullopt;
+        }
+        if (!callCore<kGrid, gridDrawnAt>(app, cpu, base, {left, top, 0x140, 0xc0}, base - 4 - 4 * 3, left, top,
+                                          reg32(0x140), reg32(0xc0), kMapX.at, kMapY.at, kPanBase.at)
+            || cpu.terminate)
             return std::nullopt;
         if (kDragging(app) == 0)
         {
@@ -1204,8 +1318,9 @@ bool popupMetrics(App* app, CPU& cpu, const Entry& e)
     int32_t step = 0;
     for (; step < rows; ++step)
     {
-        reg32 inBox;
-        if (!callGame(app, cpu, base, kPointerInBox, {box, record, 0, reg32(step)}, {}, inBox))
+        const reg32 inBox =
+            callCore<kPointerInBox, frontend::glue::pointerInBox>(app, cpu, base, {box, record, 0, reg32(step)}, box);
+        if (cpu.terminate)
             return false;
         if (inBox != 0)
             break;
@@ -1233,14 +1348,21 @@ bool popupMetrics(App* app, CPU& cpu, const Entry& e)
         }
     }
     // The panel behind the metrics, and the title over them.
-    if (!callGame(app, cpu, base, kFieldBox,
-                  {reg32(field(1) + 2), reg32(field(0) + 2), reg32(field(2) - 3), metrics * 15 + 0x20}, {0xa0000040, 0xa0000040, 0xd0222222, 0xd0222222}))
+    static const uint32_t kPanelColours[4] = {0xa0000040, 0xa0000040, 0xd0222222, 0xd0222222};
+    if (!callCore<kFieldBox, draw2d::drawFieldBoxOf>(
+            app, cpu, base, {reg32(field(1) + 2), reg32(field(0) + 2), reg32(field(2) - 3), metrics * 15 + 0x20},
+            base - 4 - 4 * 4, int32_t(field(1) + 2), int32_t(field(0) + 2), int32_t(field(2) - 3),
+            int32_t(metrics * 15 + 0x20), kPanelColours)
+        || cpu.terminate)
         return false;
     const reg32 titleY = reg32(field(1) + field(2) / 2), titleX = reg32(field(0) + 8);
     reg32 line;
     if (!callGame(app, cpu, base - 8, kLanguageText, {kTitleLine, titleY, titleX, kFont}, {}, line))
         return false;
-    if (!callGame(app, cpu, base, kDrawText, {line, titleY, titleX, kFont}, {kAlignTitle, kTitleColour}))
+    if (!callCore<kDrawText, text::menuTextDrawn>(app, cpu, base, {line, titleY, titleX, kFont}, base - 4 - 4 * 2, line,
+                                                  int32_t(titleY), int32_t(titleX), kFont, int32_t(kAlignTitle),
+                                                  kTitleColour)
+        || cpu.terminate)
         return false;
     // A line to a metric: its value, written to the buffer and drawn, then its number.
     reg32 edi = reg32(field(0) + 0x18);
@@ -1252,13 +1374,21 @@ bool popupMetrics(App* app, CPU& cpu, const Entry& e)
             return false;
         const reg32 valueColour = reg32(j) == cpu.ebx ? kBestColour : kOtherColour;
         const reg32 valueY = reg32(field(1) + field(2) - 8);
-        if (!callGame(app, cpu, base, kDrawText, {text, valueY, edi, kFont}, {kAlignValue, valueColour}))
+        if (!callCore<kDrawText, text::menuTextDrawn>(app, cpu, base, {text, valueY, edi, kFont}, base - 4 - 4 * 2, text,
+                                                      int32_t(valueY), int32_t(edi), kFont, int32_t(kAlignValue),
+                                                      valueColour)
+            || cpu.terminate)
             return false;
-        if (!callGame(app, cpu, base, kSprintf, {text, valueY, edi, kFont}, {text, kFormat, reg32(j + 1)}))
+        callCore<kSprintf, watcom::clib::sprintf>(app, cpu, base, {text, valueY, edi, kFont}, text, kFormat,
+                                                  guest::Words{reg32(j + 1)});
+        if (cpu.terminate)
             return false;
         const reg32 numberColour = reg32(j) == app->getMemory<reg32>(best) ? kBestColour : kOtherColour;
         const reg32 numberY = reg32(field(1) + 8);
-        if (!callGame(app, cpu, base, kDrawText, {text, numberY, edi, kFont}, {kAlignNumber, numberColour}))
+        if (!callCore<kDrawText, text::menuTextDrawn>(app, cpu, base, {text, numberY, edi, kFont}, base - 4 - 4 * 2,
+                                                      text, int32_t(numberY), int32_t(edi), kFont,
+                                                      int32_t(kAlignNumber), numberColour)
+            || cpu.terminate)
             return false;
         edi += 0xf;
     }
@@ -1344,8 +1474,21 @@ void sectionAheadIsTwo(App* app, CPU& cpu)
 void gridDrawn(App* app, CPU& cpu)
 {
     const Entry e(cpu);
-    if (drawGrid(app, cpu, e))
+    if (drawGridAt(app, cpu, e.esp, e.eax, e.edx, e.ebx, e.ecx, e.arg(app, 0), e.arg(app, 1), e.arg(app, 2)))
         e.back(cpu, e.eax, 12);
+}
+
+/* 0x474db0's and 0x464840's, as C++ (port_view.h). */
+bool edgeTrianglesEmitted(App* app, CPU& cpu, reg32 esp, reg32 eax, reg32 edx, reg32 ebx, reg32 ecx,
+                          const reg32* words)
+{
+    return edgeTrianglesAt(app, cpu, esp, eax, edx, ebx, ecx, words);
+}
+
+bool gridDrawnAt(App* app, CPU& cpu, reg32 esp, reg32 x, reg32 y, reg32 width, reg32 height, reg32 mapX, reg32 mapY,
+                 reg32 scale)
+{
+    return drawGridAt(app, cpu, esp, x, y, width, height, mapX, mapY, scale);
 }
 
 void viewFrame(App* app, CPU& cpu)

@@ -1,5 +1,6 @@
 #include "port_snd.h"
 #include "port_snd_voices.h"
+#include "host_threads.h"
 
 /* EA's SND library, rewritten (port_snd.h says how): its voices -- taken,
  * freed, grouped -- their volume, pan and pitch on the mixer's channels, the
@@ -406,7 +407,7 @@ Result enterAudio(App* app, CPU& cpu, reg32 esp)
             return {};
         eax = reg32(*r);
     }
-    if (!callWindows<kEnterCriticalSection, &win32::kernel32::EnterCriticalSection>(app, cpu, esp - 0xc, {eax}, eax,
+    if (!callWindows<kEnterCriticalSection, &host::enterLock>(app, cpu, esp - 0xc, {eax}, eax,
                                                                                      kLock(app)))
         return {};
     kEntered.set(app, uint8_t(kEntered(app) + 1));
@@ -419,7 +420,7 @@ Result enterAudio(App* app, CPU& cpu, reg32 esp)
 Result leaveAudio(App* app, CPU& cpu, reg32 esp, reg32 eax)
 {
     kEntered.set(app, uint8_t(kEntered(app) - 1));
-    if (!callWindows<kLeaveCriticalSection, &win32::kernel32::LeaveCriticalSection>(app, cpu, esp - 8, {eax}, eax,
+    if (!callWindows<kLeaveCriticalSection, &host::leaveLock>(app, cpu, esp - 8, {eax}, eax,
                                                                                      kLock(app)))
         return {};
     return int32_t(eax);

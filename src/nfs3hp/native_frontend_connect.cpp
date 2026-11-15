@@ -1,4 +1,5 @@
 #include "native_frontend_connect.h"
+#include "native_watcom.h"
 #include "game_settings.h"
 #include "native_ea_memory.h"
 #include "native_ea_net.h"
@@ -11,6 +12,7 @@
 #include "native_frontend_netb.h"
 #include "native_raceload.h"
 #include "native_windows.h"
+#include "host_threads.h"
 #include "port_buttons.h"
 #include "port_dialogs.h"
 #include "port_loop.h"
@@ -21,6 +23,43 @@
 #include <winapi/kernel32.h>
 #include <iterator>
 #include <optional>
+#include <type_traits>
+#include <utility>
+#include <cstddef>
+
+namespace nfs3hp
+{
+namespace
+{
+
+/* A typed core called as C++ (fe::direct) whose function changes no register but eax (as
+ * tools/frontend_checks/specs_from_exe.py reads it): the registers left as the call by address
+ * leaves them -- `words` in eax, edx, ebx and ecx as that call loads them, the first `Taken` of
+ * them the core's arguments -- and its result in eax, which the call by address leaves there. */
+template <x86::reg32 Address, auto Core, std::size_t... I>
+auto directOf(win32::WinApplication* app, x86::CPU& cpu, const x86::reg32* words, std::index_sequence<I...>)
+{
+    return fe::direct<Address, Core>(app, cpu, words[I]...);
+}
+
+template <x86::reg32 Address, auto Core, std::size_t Taken, typename... Words>
+x86::reg32 directKept(win32::WinApplication* app, x86::CPU& cpu, Words... words)
+{
+    const x86::reg32 all[] = { x86::reg32(words)..., 0 };
+    x86::reg32* const into[] = { &cpu.eax, &cpu.edx, &cpu.ebx, &cpu.ecx };
+    for (std::size_t i = 0; i < sizeof...(Words) && i < 4; ++i)
+        *into[i] = all[i];
+    const auto result = directOf<Address, Core>(app, cpu, all, std::make_index_sequence<Taken>{});
+    if constexpr (std::is_same_v<std::remove_cv_t<decltype(result)>, x86::reg32>)
+        cpu.eax = result;
+    else
+        cpu.eax = *result;
+    return cpu.eax;
+}
+
+}  // namespace
+}  // namespace nfs3hp
+
 
 /* The network's menus, decompiled:
  *
@@ -251,10 +290,10 @@ x86::reg32 frontend::connect::openProtocolList(App* app, CPU& cpu, reg32 mode)
 {
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 24);
-    guest.call(kMemset, fe::args({ kListEntries, 0, 0x14 }));
-    guest.call(kMemset, fe::args({ kListEntryHelp, 0, 0x14 }));
-    guest.call(kMemset, fe::args({ kListTitle, 0, 8 }));
-    guest.call(kMemset, fe::args({ kListButtons, 0, 0xc }));
+    fe::direct<kMemset, watcom::clib::memset>(guest.app(), guest.cpu(), kListEntries, 0, 0x14);
+    fe::direct<kMemset, watcom::clib::memset>(guest.app(), guest.cpu(), kListEntryHelp, 0, 0x14);
+    fe::direct<kMemset, watcom::clib::memset>(guest.app(), guest.cpu(), kListTitle, 0, 8);
+    fe::direct<kMemset, watcom::clib::memset>(guest.app(), guest.cpu(), kListButtons, 0, 0xc);
     putText(guest, kListTitle, 0x15);
     putText(guest, kListEntries, 0x1b);
     putText(guest, kListEntries + 4, 0x1c);
@@ -498,7 +537,7 @@ x86::reg32 frontend::connect::modemLabel(App* app, CPU& cpu)
     guest.copyString(kLabel + guest.length(kLabel), kColonSpace.address);
     const x86::reg32 name = kModemNames + gameSettings(guest).chosenModem * kModemNameSize;
     if (name != 0)
-        guest.call(kStrncat, fe::args({ kLabel, name, kLabelSize - guest.length(kLabel) - 1 }));
+        fe::direct<kStrncat, watcom::clib::strncat>(guest.app(), guest.cpu(), kLabel, name, kLabelSize - guest.length(kLabel) - 1);
     guest.setByte(kLabel + kLabelSize - 1, 0);
     return kLabel;
 }
@@ -512,7 +551,7 @@ x86::reg32 frontend::connect::comPortLabel(App* app, CPU& cpu)
     const fe::Frame frame(guest, cpu, 4);
     const x86::reg32 port = gameSettings(guest).comPort + 1;
     const x86::reg32 word = fe::text(guest, kPortWord);
-    guest.call(kSprintf, fe::args({}, { kLabel, kComPortFormat.address, word, port }));
+    fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.cpu(), kLabel, kComPortFormat.address, guest::Words{word, port});
     return kLabel;
 }
 
@@ -1120,7 +1159,7 @@ x86::reg32 frontend::connect::enumerateServices(App* app, CPU& cpu, reg32 baud, 
         const x86::reg32 n = guest.dword(kConnectionCount);
         const x86::reg32 connection = connectionAt(n);
         guest.setDword(connection + kConnectionKind, kKindTcp);
-        guest.call(kStrncpy, fe::args({ connection, kTcpName.address, kConnectionNameEnd + 1 }));
+        fe::direct<kStrncpy, watcom::clib::strncpy>(guest.app(), guest.cpu(), connection, kTcpName.address, kConnectionNameEnd + 1);
         guest.setByte(connection + kConnectionNameEnd, 0);
         copyBytes(guest, connection + kConnectionGuid, kGatherGuid, 16);
         guest.setDword(connection + kConnectionListed, 0);
@@ -1145,17 +1184,17 @@ x86::reg32 frontend::connect::serviceFound(App* app, CPU& cpu, reg32 guid, reg32
     const x86::reg32 n = guest.dword(kConnectionCount);
     const x86::reg32 connection = connectionAt(n);
     const x86::reg32 nameSize = kConnectionNameEnd + 1;
-    if (guest.call(kStrstr, fe::args({ name, kDirectPlay.address })) != 0)
+    if (fe::direct<kStrstr, watcom::clib::strstr>(guest.app(), guest.cpu(), name, kDirectPlay.address) != 0)
     {
-        if (guest.call(kStrstr, fe::args({ name, kIpxName.address })) != 0)
-            guest.call(kStrncpy, fe::args({ connection, kDirectPlayIpx.address, nameSize }));
-        else if (guest.call(kStrstr, fe::args({ name, kTcpName.address })) != 0)
-            guest.call(kStrncpy, fe::args({ connection, kDirectPlayTcp.address, nameSize }));
+        if (fe::direct<kStrstr, watcom::clib::strstr>(guest.app(), guest.cpu(), name, kIpxName.address) != 0)
+            fe::direct<kStrncpy, watcom::clib::strncpy>(guest.app(), guest.cpu(), connection, kDirectPlayIpx.address, nameSize);
+        else if (fe::direct<kStrstr, watcom::clib::strstr>(guest.app(), guest.cpu(), name, kTcpName.address) != 0)
+            fe::direct<kStrncpy, watcom::clib::strncpy>(guest.app(), guest.cpu(), connection, kDirectPlayTcp.address, nameSize);
     }
     else
     {
         guest.setDword(connection + kConnectionKind, kKindIpx);
-        guest.call(kStrncpy, fe::args({ connection, name, nameSize }));
+        fe::direct<kStrncpy, watcom::clib::strncpy>(guest.app(), guest.cpu(), connection, name, nameSize);
     }
     guest.setByte(connection + kConnectionNameEnd, 0);
     copyBytes(guest, connection + kConnectionGuid, guid, 16);
@@ -1181,7 +1220,7 @@ x86::reg32 frontend::connect::listSessions(App* app, CPU& cpu, reg32 lookFor, re
     guest.setByte(none, guest.byte(0x49e06a));
     guest.setWord(kSessionCount, 0);
     copyBytes(guest, blank, 0x49e060, 10);
-    const x86::reg32 index = guest.call(kSessionIndex, fe::args({ kind }));
+    const x86::reg32 index = directKept<0x49f1c0, ea::sessionIndexOf, 1>(guest.app(), guest.cpu(), kind);
     const x86::reg32 current = guest.dword(kCurrentConnection);
     if (current != kind)
     {
@@ -1222,7 +1261,7 @@ x86::reg32 frontend::connect::listSessions(App* app, CPU& cpu, reg32 lookFor, re
         guest.copyString(least, game(i));
         for (std::int32_t j = i; j < count; ++j)
         {
-            if (std::int32_t(guest.call(kStrcmp, fe::args({ least, game(j) }))) > 0)
+            if (std::int32_t(fe::direct<kStrcmp, watcom::clib::strcmp>(guest.app(), guest.cpu(), least, game(j))) > 0)
             {
                 guest.copyString(least, game(j));
                 chosen = j;
@@ -1282,9 +1321,9 @@ x86::reg32 frontend::connect::createSession(App* app, CPU& cpu, reg32 name, reg3
     const x86::reg32 local = guest.frame();          // 0x14 bytes, handed over as the stack has them
     const x86::reg32 none = guest.frame() + 0x10;    // a byte
     guest.setByte(none, guest.byte(0x49e06b));
-    const x86::reg32 index = guest.call(kSessionIndex, fe::args({ kind }));
+    const x86::reg32 index = directKept<0x49f1c0, ea::sessionIndexOf, 1>(guest.app(), guest.cpu(), kind);
     guest::direct<0x49f520, clearPeerSlots>(app, cpu);
-    guest.call(kResetNetwork, fe::args({ 1 }));
+    directKept<0x4a6390, ea::networkReset, 1>(guest.app(), guest.cpu(), 1);
     guest.setDword(kConnectionState, 3);
     guest.setWord(kSessionPlayers, 1);
     guest.setByte(kSessionSetUp, 1);
@@ -1307,7 +1346,7 @@ x86::reg32 frontend::connect::createSession(App* app, CPU& cpu, reg32 name, reg3
                                        port, local, name) == 0)
     {
         fe::messageBox(guest, kNoConnection);
-        guest.call(kResetNetwork, fe::args({ 0 }));
+        directKept<0x4a6390, ea::networkReset, 1>(guest.app(), guest.cpu(), 0);
         return 0;
     }
     guest.setDword(kCurrentConnection, kind);
@@ -1326,10 +1365,10 @@ x86::reg32 frontend::connect::createSession(App* app, CPU& cpu, reg32 name, reg3
         if (created == 0)
         {
             fe::messageBox(guest, kNoConnection);
-            guest.call(kCommRestore);
+            directKept<0x4f5280, ea::connectionsRestored, 1>(guest.app(), guest.cpu(), guest.cpu().eax);
             fe::direct<0x42d7f0, raceload::closeAllMessages>(app, cpu);
             fe::direct<0x49a4d0, frontend::glue::freeNetworkLocks>(app, cpu);
-            guest.call(kResetNetwork, fe::args({ 0 }));
+            directKept<0x4a6390, ea::networkReset, 1>(guest.app(), guest.cpu(), 0);
             return 0;
         }
     }
@@ -1346,8 +1385,8 @@ x86::reg32 frontend::connect::joinSession(App* app, CPU& cpu, reg32 endpoint)
     const fe::Frame frame(guest, cpu, 24 + 4);
     const x86::reg32 none = guest.frame();    // a byte
     guest.setByte(none, guest.byte(0x49e06c));
-    const x86::reg32 index = guest.call(kSessionIndex, fe::args({ guest.dword(kCurrentConnection) }));
-    guest.call(kResetNetwork, fe::args({ 1 }));
+    const x86::reg32 index = directKept<0x49f1c0, ea::sessionIndexOf, 1>(guest.app(), guest.cpu(), guest.dword(kCurrentConnection));
+    directKept<0x4a6390, ea::networkReset, 1>(guest.app(), guest.cpu(), 1);
     guest.setByte(kSessionSetUp, 1);
     guest.setWord(kMachineNumber, kNotYetANumber);
     guest.setWord(kNetworkHost, 0);
@@ -1356,9 +1395,9 @@ x86::reg32 frontend::connect::joinSession(App* app, CPU& cpu, reg32 endpoint)
     const auto lost = [&] {
         fe::messageBox(guest, kNoConnection);
         guest.setWord(kConnectionLost, 1);
-        guest.call(kCommRestore);
+        directKept<0x4f5280, ea::connectionsRestored, 1>(guest.app(), guest.cpu(), guest.cpu().eax);
         guest.setWord(kConnectionLost, 0);
-        guest.call(kCloseNetwork);
+        directKept<0x4a65e0, ea::networkClosed, 0>(guest.app(), guest.cpu());
         return x86::reg32(0);
     };
 
@@ -1373,7 +1412,7 @@ x86::reg32 frontend::connect::joinSession(App* app, CPU& cpu, reg32 endpoint)
         if (std::int32_t(fe::direct<0x4f4ed0, frontend::neta::setGame>(app, cpu, kComm)) <= 0)
         {
             fe::messageBox(guest, kNoConnection);
-            guest.call(kResetNetwork, fe::args({ 0 }));
+            directKept<0x4a6390, ea::networkReset, 1>(guest.app(), guest.cpu(), 0);
             return 0;
         }
         while (guest.dword(kCommJoined) == 0)
@@ -1381,7 +1420,7 @@ x86::reg32 frontend::connect::joinSession(App* app, CPU& cpu, reg32 endpoint)
             if (fe::direct<0x4a65b0, frontend::neta::hostGone>(app, cpu) != 0)
             {
                 guest.call(kEndNetworkGame);
-                guest.call(kResetNetwork, fe::args({ 0 }));
+                directKept<0x4a6390, ea::networkReset, 1>(guest.app(), guest.cpu(), 0);
                 return 0;
             }
         }
@@ -1393,10 +1432,10 @@ x86::reg32 frontend::connect::joinSession(App* app, CPU& cpu, reg32 endpoint)
         fe::messageBox(guest, kNoConnection);
         guest.setWord(kConnectionLost, 1);
         guest.call(kEndNetworkGame);
-        guest.call(kCommRestore);
+        directKept<0x4f5280, ea::connectionsRestored, 1>(guest.app(), guest.cpu(), guest.cpu().eax);
         guest.setWord(kConnectionLost, 0);
         fe::direct<0x49a4d0, frontend::glue::freeNetworkLocks>(app, cpu);
-        guest.call(kResetNetwork, fe::args({ 0 }));
+        directKept<0x4a6390, ea::networkReset, 1>(guest.app(), guest.cpu(), 0);
         return 0;
     }
     while (guest.word(kRosterHere) == 0)
@@ -1425,7 +1464,7 @@ x86::reg32 frontend::connect::useTcp(App* app, CPU& cpu, reg32 player)
     if (current != 0)
         fe::direct<0x4f4e60, frontend::neta::killService>(app, cpu, kComm);
     guest.setDword(kCurrentConnection, 0);
-    const x86::reg32 index = guest.call(kSessionIndex, fe::args({ kKindTcp }));
+    const x86::reg32 index = directKept<0x49f1c0, ea::sessionIndexOf, 1>(guest.app(), guest.cpu(), kKindTcp);
     if (fe::direct<0x4f4d10, frontend::neta::initService>(app, cpu, kComm, 0, kProtocolGuid, connectionAt(index) + kConnectionGuid,
                                        networkPort(), blank, player) == 0)
     {
@@ -1507,7 +1546,7 @@ x86::reg32 frontend::connect::queuePeer(App* app, CPU& cpu, reg32 address)
     const x86::reg32 name = guest.frame();    // 12 bytes
     const x86::reg32 known = guest.dword(kPeersKnown) + 1;
     guest.setDword(kPeersKnown, known);
-    guest.call(kSprintf, fe::args({}, { name, kPeerNameFormat.address, known }));
+    fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.cpu(), name, kPeerNameFormat.address, guest::Words{known});
     guest::direct<0x49f6a0, enqueuePeer>(app, cpu, name, address);
     return 1;
 }
@@ -1657,7 +1696,7 @@ x86::reg32 frontend::connect::shakeHands(App* app, CPU& cpu)
         }
         else
         {
-            const std::int32_t order = std::int32_t(guest.call(kStrcmp, fe::args({ myName, kTheirName })));
+            const std::int32_t order = std::int32_t(fe::direct<kStrcmp, watcom::clib::strcmp>(guest.app(), guest.cpu(), myName, kTheirName));
             if (order == 0)
                 return 0;
             if (order < 0)
@@ -1683,10 +1722,10 @@ x86::reg32 frontend::connect::startConnection(App* app, CPU& cpu, reg32 service)
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 24);
     const auto enterLock = [&] {
-        windows<kEnterLock, &win32::kernel32::EnterCriticalSection>(guest, cpu, guest.dword(kNetworkLock));
+        windows<kEnterLock, &host::enterLock>(guest, cpu, guest.dword(kNetworkLock));
     };
     const auto leaveLock = [&] {
-        windows<kLeaveLock, &win32::kernel32::LeaveCriticalSection>(guest, cpu, guest.dword(kNetworkLock));
+        windows<kLeaveLock, &host::leaveLock>(guest, cpu, guest.dword(kNetworkLock));
     };
     const x86::reg32 mode = gameSettings(guest).playMode;
     if (mode == 2)
@@ -1728,7 +1767,7 @@ x86::reg32 frontend::connect::startConnection(App* app, CPU& cpu, reg32 service)
         {
             guest.setWord(kConnectionLost, 1);
             guest.setWord(kConnectionLostToo, 1);
-            guest.call(kCommRestore);
+            directKept<0x4f5280, ea::connectionsRestored, 1>(guest.app(), guest.cpu(), guest.cpu().eax);
             leaveLock();
             started = 0;
         }
@@ -1747,12 +1786,12 @@ x86::reg32 frontend::connect::startConnection(App* app, CPU& cpu, reg32 service)
                     started = 0;
                     guest.setWord(kConnectionLost, 1);
                     guest.setWord(kConnectionLostToo, 1);
-                    guest.call(kCommRestore);
+                    directKept<0x4f5280, ea::connectionsRestored, 1>(guest.app(), guest.cpu(), guest.cpu().eax);
                     break;
                 }
                 if (guest.word(kConnectionLost) != 0)
                 {
-                    guest.call(kCommRestore);
+                    directKept<0x4f5280, ea::connectionsRestored, 1>(guest.app(), guest.cpu(), guest.cpu().eax);
                     started = 0;
                     break;
                 }
@@ -1766,7 +1805,7 @@ x86::reg32 frontend::connect::startConnection(App* app, CPU& cpu, reg32 service)
         while (guest.byte(kQuit) != 0)
             fe::direct<0x4e7630, port::stream::runDueTasks>(app, cpu, cpu.esp - 4, 0);
         fe::messageBox(guest, kNoConnection);
-        guest.call(kCloseNetwork);
+        directKept<0x4a65e0, ea::networkClosed, 0>(guest.app(), guest.cpu());
     }
     return started;
 }

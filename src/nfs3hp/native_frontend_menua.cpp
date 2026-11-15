@@ -1,4 +1,6 @@
 #include "native_frontend_menua.h"
+#include "native_watcom.h"
+#include "native_game.h"
 #include "game_settings.h"
 #include "native_frontend.h"
 #include "native_frontend_menud.h"
@@ -443,7 +445,7 @@ x86::reg32 frontend::menua::drawBinding(App* app, CPU& cpu, reg32, reg32 binding
     const auto deviceLine = [&] {
         const reg32 device = (binding >> 28) + 1;
         const reg32 name = languageText(guest, cpu, 0x54);
-        guest.call(kSprintf, fe::args({}, { line, kFormatDevice.address, name, device }));
+        fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.cpu(), line, kFormatDevice.address, guest::Words{name, device});
         drawText(guest, cpu, line, x, y, colour);
     };
     switch (lowByte(binding))
@@ -467,7 +469,7 @@ x86::reg32 frontend::menua::drawBinding(App* app, CPU& cpu, reg32, reg32 binding
                                          guest.dword(kButtonsTexture), 0xffffffff }));
         }
         const reg32 name = languageText(guest, cpu, 0x57);
-        guest.call(kSprintf, fe::args({}, { line, kFormatCharacter.address, name, letter }));
+        fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.cpu(), line, kFormatCharacter.address, guest::Words{name, letter});
         drawTextByAddress(guest, line, x, y, colour);  // by address too: the last call leaves its ecx
         return drawShapeByAddress(guest, s16At(guest, kBindingIcons + 2 * icon), x + guest.dword(kBindingWidth), y);
     }
@@ -477,7 +479,7 @@ x86::reg32 frontend::menua::drawBinding(App* app, CPU& cpu, reg32, reg32 binding
         const reg32 button = ((binding << 4) >> 12) + 0x41;
         const reg32 width = guest.dword(kBindingWidth);
         const reg32 name = languageText(guest, cpu, 0x55);
-        guest.call(kSprintf, fe::args({}, { line, kFormatCharacter.address, name, button }));
+        fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.cpu(), line, kFormatCharacter.address, guest::Words{name, button});
         return drawTextByAddress(guest, line, x + width, y, colour);
     }
     case kBindHat:
@@ -490,10 +492,10 @@ x86::reg32 frontend::menua::drawBinding(App* app, CPU& cpu, reg32, reg32 binding
         const reg32 name = languageText(guest, cpu, 0x56);
         if (guest.dword(kInRace) != 0)
         {
-            guest.call(kSprintf, fe::args({}, { line, kFormatHat.address, name, hat, degrees, kDegrees.address }));
+            fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.cpu(), line, kFormatHat.address, guest::Words{name, hat, degrees, kDegrees.address});
             return drawTextByAddress(guest, line, x, y, colour);
         }
-        guest.call(kSprintf, fe::args({}, { line, kFormatCharacter.address, name, hat }));
+        fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.cpu(), line, kFormatCharacter.address, guest::Words{name, hat});
         drawText(guest, cpu, line, x, y, colour);
         x += guest.dword(kBindingWidth);
         return guest.call(kDrawTurnedShape, fe::args({ u(s16At(guest, kHatArrow)), x + 0xc, y + 0xc, 0 },
@@ -600,13 +602,13 @@ void drawControlsList(Guest& guest, x86::CPU& cpu, reg32 item, reg32 pointerWant
 
     const reg32 controls = controlsFor(guest, cpu);
     const reg32 title = languageText(guest, cpu, 0xc8);
-    guest.call(kSprintf, fe::args({}, { line, kFormatPlayer1.address, title }));
+    fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.cpu(), line, kFormatPlayer1.address, guest::Words{title});
     drawText(guest, cpu, line, u(s16At(guest, item + kItemX)) + guest.dword(kColumnLeft),
              u(s16At(guest, item + kItemY)) - 0x1e, kColourPlain);
     if (gameSettings(guest).playMode == 1)
     {
         const reg32 second = languageText(guest, cpu, 0xc8);
-        guest.call(kSprintf, fe::args({}, { line, kFormatPlayer2.address, second }));
+        fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.cpu(), line, kFormatPlayer2.address, guest::Words{second});
         drawText(guest, cpu, line, guest.dword(kColumnLeft) + u(s16At(guest, item + kItemX)) + guest.dword(kPaneGap),
                  u(s16At(guest, item + kItemY)) - 0x1e, kColourPlain);
     }
@@ -674,7 +676,7 @@ x86::reg32 frontend::menua::keyAsBinding(App* app, CPU& cpu, reg32 character)
     if (!reserved && s32(character) >= 0x20
         && (guest.byte(kCharacterFlags + ((character + 1) & 0xff)) & 0x20) == 0)
     {
-        const reg32 upper = guest.call(0x4eede0, fe::args({ character }));
+        const reg32 upper = fe::direct<0x4eede0, watcom::clib::toupper>(guest.app(), guest.cpu(), character);
         binding = (upper << 24) + (u(scan) << 8) + kBindKey;
     }
     if (lowByte(guest.dword(kHeardBinding)) != 0)
@@ -1014,8 +1016,8 @@ x86::reg32 frontend::menua::bindingKeyName(App* app, CPU& cpu, reg32 binding, re
             return name & 0xffffff00;
         }
     }
-    const reg32 upper = guest.call(0x4eede0, fe::args({ binding >> 24 }));
-    return guest.call(kSprintf, fe::args({}, { buffer, kFormatKey.address, upper }));
+    const reg32 upper = fe::direct<0x4eede0, watcom::clib::toupper>(guest.app(), guest.cpu(), binding >> 24);
+    return fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.cpu(), buffer, kFormatKey.address, guest::Words{upper});
 }
 
 /* sub_43d920: where each axis of the devices that are on rests now, for
@@ -2202,7 +2204,7 @@ x86::reg32 frontend::menua::drawPanelMessages(App* app, CPU& cpu, reg32 x, reg32
         guest.leaveEdx(messages);
         if (i >= s32At(guest, messages))
             break;
-        guest.call(0x4e0e30, fe::args({ line, messages + 4 + u(i) * kMessageSize, kLineLength }));
+        fe::direct<0x4e0e30, watcom::clib::strncpy>(guest.app(), guest.cpu(), line, messages + 4 + u(i) * kMessageSize, kLineLength);
         while (guest::direct<0x441900, panelLineFits>(app, cpu, line) == 0 && guest.byte(line) != 0)
             guest.setByte(line + guest.length(line) - 1, 0);
         drawText(guest, cpu, line, x, lineY, kColourChosen);
@@ -2254,9 +2256,9 @@ x86::reg32 frontend::menua::typeInPanel(App* app, CPU& cpu, reg32 pressed)
         const reg32 message = guest.frame();   // char[0x64]
         guest.copyString(message, SETTINGS_ADDRESS(players[0].name));
         guest.copyString(message + guest.length(message), kNameSeparator.address);
-        guest.call(0x4eedf0, fe::args({ message, guest.dword(kTyping), 0x57 }));
+        fe::direct<0x4eedf0, watcom::clib::strncat>(guest.app(), guest.cpu(), message, guest.dword(kTyping), 0x57);
         guest.call(0x42d810, fe::args({ 0x100, message, 0x64 }));
-        guest.call(0x4e0640, fe::args({ guest.dword(kTyping), 0, 0x64 }));
+        fe::direct<0x4e0640, watcom::clib::memset>(guest.app(), guest.cpu(), guest.dword(kTyping), 0, 0x64);
     }
     else if (key == kKeyBackspace || key == kKeyDelete)
     {
@@ -2443,7 +2445,7 @@ x86::reg32 frontend::menua::listModes(App* app, CPU& cpu)
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 8);
     guest.setDword(kModeCount, 0);
-    guest.call(0x4e070c, fe::args({ kModeLines, 0x2a }));
+    fe::direct<0x4e070c, ea::clearBytes>(guest.app(), guest.cpu(), kModeLines, 0x2a);
     return guest.call(0x4bed90, fe::args({ 0x448210 }));
 }
 
@@ -2647,7 +2649,7 @@ reg32 racePauseFollowButton(Guest& guest, x86::CPU& cpu)
         return 3;
     reg32 index = 0;
     while (s32(index) < s32At(guest, kMenuCount)
-           && guest.call(0x4ee310, fe::args({ next, guest.dword(kFirstMenu + fe::menu::kName + index * fe::menu::kSize) })) != 0)
+           && fe::direct<0x4ee310, watcom::clib::strcmp>(guest.app(), guest.cpu(), next, guest.dword(kFirstMenu + fe::menu::kName + index * fe::menu::kSize)) != 0)
         ++index;
     if (s32(index) >= s32At(guest, kMenuCount))
         return 3;
@@ -2798,7 +2800,9 @@ x86::reg32 frontend::menua::addScreenMode(App* app, CPU& cpu, reg32 width, reg32
     guest.setDword(entry + 0xc, depth);
     guest.setDword(entry + 0x10, depthBuffer);
     const reg32 line = entry + 0x14;
-    const reg32 answer = guest.call(0x4df690, fe::args({ depthBuffer, entry }, { line, kModeFormat.address, height, bits, shown }));
+    // The game's code has the buffer flag and the entry in eax and edx, which sprintf does not read.
+    const reg32 answer = fe::direct<0x4df690, watcom::clib::sprintf>(app, cpu, line, kModeFormat.address,
+                                                                     guest::Words{height, bits, shown});
     // What is left in ecx: the buffer flag, or what looking for the line's end made of it.
     reg32 ecx = guest.dword(entry + 0x10);
     if (ecx != 0)

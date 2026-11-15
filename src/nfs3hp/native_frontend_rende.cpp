@@ -1,4 +1,6 @@
 #include "native_frontend_rende.h"
+#include "native_watcom.h"
+#include "native_game.h"
 #include "game_settings.h"
 #include "native_carstate.h"
 #include "native_collide.h"
@@ -809,7 +811,7 @@ x86::reg32 frontend::rende::polygonsSorted(App* app, CPU& cpu, reg32 result, reg
     const fe::Frame ownFrame(guest, cpu, 20 + 0x10);
     static_cast<void>(last);   // the list's last: not read
     const reg32 ebp = guest.frame() + 0x10;
-    guest.call(kFillZero, args({ kSortHeads, kSortBytes }));
+    fe::direct<kFillZero, ea::clearBytes>(guest.app(), guest.cpu(), kSortHeads, kSortBytes);
     guest::direct<0x4c7180, polygonDepths>(app, cpu, list, ebp - 8, ebp - 4);
     guest.setEsi(ebp - 0x10);
     guest::direct<0x4c7260, polygonsIntoBuckets>(app, cpu, list, guest.dword(ebp - 8), guest.dword(ebp - 4));
@@ -1114,13 +1116,13 @@ x86::reg32 frontend::rende::loadParticleTextures(App* app, CPU& cpu, reg32 file)
         if (guest.dword(kKindHasTexture + (kind << 7)) != 0)
         {
             const reg32 format = gameSettings(guest).night != 0 ? kParticleNames[0].address : kParticleNames[1].address;
-            guest.call(kSprintf, args({}, { name, format, kind }));
+            fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.cpu(), name, format, guest::Words{kind});
             guest::direct<0x4d4080, loadShapeTexture>(app, cpu, file, name, kFormat, kTextures + kind * kTextureBytes, 0u);
         }
         left = kind << 7;
         if (guest.dword(kKindHasLit + left) != 0)
         {
-            guest.call(kSprintf, args({}, { name, kParticleNames[2].address, kind }));
+            fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.cpu(), name, kParticleNames[2].address, guest::Words{kind});
             left = guest::direct<0x4d4080, loadShapeTexture>(app, cpu, file, name, kFormat, kLitTextures + kind * kTextureBytes, 0u);
         }
     }
@@ -1381,7 +1383,7 @@ x86::reg32 frontend::rende::loadShapeTexture(App* app, CPU& cpu, reg32 file, reg
     reg32 left = fe::direct<0x4f24e0, frontend::eab::shapeFindHotspot>(app, cpu, shape);
     if (left != 0)
     {
-        left = guest.call(kStrstr, args({ left, kAdditive.address }));
+        left = fe::direct<kStrstr, watcom::clib::strstr>(guest.app(), guest.cpu(), left, kAdditive.address);
         if (left != 0)
         {
             const uint8_t flags = uint8_t(guest.byte(record + kTextureFlags) | kTextureAdditive);
@@ -1516,7 +1518,7 @@ x86::reg32 frontend::rende::loadEffectTextures(App* app, CPU& cpu)
     for (reg32 line = 0; line < kLineCount; ++line)
     {
         guest::direct<0x4a33d0, loada::stopCheck>(app, cpu);
-        guest.call(kSprintf, args({}, { name, 0x549464, line }));
+        fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.cpu(), name, 0x549464, guest::Words{line});
         const reg32 record = kLines + line * kTextureBytes;
         texture(file, name, kFormat16, record, 0);
         guest.setByte(record + kTextureFlags, uint8_t(guest.byte(record + kTextureFlags) | kTextureOwnPalette));
@@ -1744,7 +1746,7 @@ x86::reg32 frontend::rende::clearParticles(App* app, CPU& cpu)
 {
     Guest guest(app, cpu);
     const fe::Frame ownFrame(guest, cpu, 8);
-    guest.call(kFillZero, args({ kParticleStates, kParticleStatesBytes }));
+    fe::direct<kFillZero, ea::clearBytes>(guest.app(), guest.cpu(), kParticleStates, kParticleStatesBytes);
     const reg32 left = guest.call(kFillZero, args({ kFades, kFadesBytes }));
     guest.setDword(kFadeCount, 0);
     guest.setDword(kFadeCount + 4, 0);

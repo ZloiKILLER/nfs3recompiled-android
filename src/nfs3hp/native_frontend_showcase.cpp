@@ -1,4 +1,5 @@
 #include "native_frontend_showcase.h"
+#include "native_watcom.h"
 #include "game_settings.h"
 #include "native_ea_memory.h"
 #include "native_ea_support.h"
@@ -245,10 +246,10 @@ bool formatCarPath(Guest& guest, CPU& cpu, x86::reg32 path, x86::reg32 car, x86:
     if (guest.call(kCarInOwnFolder, args({ car })) != 0)
     {
         const x86::reg32 stem = guest::direct<0x439290, frontend::showcase::carFileStem>(guest.app(), cpu, car);
-        guest.call(kSprintf, args({}, { path, own.address, kCarRootOwn, folder, stem }));
+        fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.cpu(), path, own.address, guest::Words{kCarRootOwn, folder, stem});
         return true;
     }
-    guest.call(kSprintf, args({}, { path, common.address, kCarRootCommon, folder }));
+    fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.cpu(), path, common.address, guest::Words{kCarRootCommon, folder});
     return false;
 }
 
@@ -307,12 +308,12 @@ x86::reg32 loadBackdrop(Guest& guest, CPU& cpu, x86::reg32 menu, x86::reg32 fold
     const x86::reg32 art = fe::direct<0x4956f0, frontend::draw::loadQfs>(guest.app(), cpu, path);
     if (Item mask = fe::findItem(guest, menu, kShowcaseMask))
     {
-        guest.call(kSprintf, args({}, { path, kMaskNumbered.address, guest.dword(kBackdrop) + 1 }));
+        fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.cpu(), path, kMaskNumbered.address, guest::Words{guest.dword(kBackdrop) + 1});
         setItemShape(guest, cpu, mask, art, path, keepTexture ? itemTexture(guest, mask) : 0);
     }
     if (Item back = fe::findItem(guest, menu, kShowcaseBack))
     {
-        guest.call(kSprintf, args({}, { path, kBackNumbered.address, guest.dword(kBackdrop) + 1 }));
+        fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.cpu(), path, kBackNumbered.address, guest::Words{guest.dword(kBackdrop) + 1});
         setItemShape(guest, cpu, back, art, path, keepTexture ? itemTexture(guest, back) : 0);
     }
     return freeBlock(guest, cpu, art);
@@ -339,7 +340,7 @@ x86::reg32 frontend::showcase::resolveCar(App* app, CPU& cpu)
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 12);
     const auto cameFrom = [&](const GuestString& name) {
-        return guest.call(kStrcmp, args({ guest.dword(kCameFrom), name.address })) == 0;
+        return fe::direct<kStrcmp, watcom::clib::strcmp>(guest.app(), guest.cpu(), guest.dword(kCameFrom), name.address) == 0;
     };
     x86::reg32 car;
     if (cameFrom(kCar1Name))
@@ -439,7 +440,7 @@ x86::reg32 stopDescription(Guest& guest)
 /* A photograph's number as its file's name has it: two figures, a leading 0. */
 void formatSlideNumber(Guest& guest, x86::reg32 number, x86::reg32 slide)
 {
-    guest.call(kSprintf, args({}, { number, kSlideNumber.address, slide }));
+    fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.cpu(), number, kSlideNumber.address, guest::Words{slide});
     if (guest.byte(number) == ' ')
         guest.setByte(number, '0');
 }
@@ -451,11 +452,11 @@ void formatSlidePath(Guest& guest, CPU& cpu, x86::reg32 path, x86::reg32 folder,
     {
         const x86::reg32 stem =
             guest::direct<0x439290, frontend::showcase::carFileStem>(guest.app(), cpu, guest.dword(kShownCar));
-        guest.call(kSprintf, args({}, { path, kSlideOwn.address, kCarRootOwn, folder, stem, number }));
+        fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.cpu(), path, kSlideOwn.address, guest::Words{kCarRootOwn, folder, stem, number});
     }
     else
     {
-        guest.call(kSprintf, args({}, { path, kSlideCommon.address, kCarRootCommon, folder, number }));
+        fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.cpu(), path, kSlideCommon.address, guest::Words{kCarRootCommon, folder, number});
     }
 }
 
@@ -526,7 +527,8 @@ x86::reg32 frontend::showcase::slidesEnter(App* app, CPU& cpu, reg32 menu)
             // By address: the ecx it leaves can reach shapeTexture's, handed on.
             guest.call(kFillRect, args({ 0, 0x39, 640, 3 }, { kLineColour }));
             freeBlock(guest, cpu, art);
-            guest.call(kSprintf, args({}, { path, kBandsFile.address, kCarRootCommon }));
+            fe::direct<kSprintf, watcom::clib::sprintf>(app, cpu, path, kBandsFile.address,
+                                                        guest::Words{kCarRootCommon});
             guest.leaveEdx(0x10);
             const x86::reg32 bands = fe::direct<0x4956f0, frontend::draw::loadQfs>(app, cpu, path);
             const x86::reg32 band = fe::direct<0x4ef1e0, frontend::eab::shapeFileFind>(app, cpu, bands, kBand.address);
@@ -604,7 +606,7 @@ x86::reg32 frontend::showcase::historyPage(App* app, CPU& cpu, reg32 backOut, re
     const x86::reg32 text = guest.call(kCarText, args({ guest.dword(kShownCar), guest.dword(kEra) + kFirstHistoryText }));
     if (text == 0 || folder == 0)
         return 0;
-    if (guest.call(kStrncmp, args({ text, kAspid.address, 5 })) == 0)
+    if (fe::direct<kStrncmp, watcom::clib::strncmp>(guest.app(), guest.cpu(), text, kAspid.address, 5) == 0)
         return 0;
     const std::uint32_t length = guest.length(text);
     if (length < 4)
@@ -620,7 +622,7 @@ x86::reg32 frontend::showcase::historyPage(App* app, CPU& cpu, reg32 backOut, re
 
     guest.leaveEdx(0);  // what loadQfs hands on in edx to the file's loader: its flags
     const x86::reg32 art = fe::direct<0x4956f0, frontend::draw::loadQfs>(app, cpu, path);
-    const auto isLstm = [&] { return guest.call(kStrcmp, args({ folder, kLstm.address })) == 0; };
+    const auto isLstm = [&] { return fe::direct<kStrcmp, watcom::clib::strcmp>(guest.app(), guest.cpu(), folder, kLstm.address) == 0; };
     const auto locate = [&](x86::reg32 name) { return guest.call(kLocateShape, args({ art, name })); };
     x86::reg32 maskName;
     if (isLstm() && guest.dword(kEra) == 3)
@@ -635,9 +637,9 @@ x86::reg32 frontend::showcase::historyPage(App* app, CPU& cpu, reg32 backOut, re
     }
     else
     {
-        guest.call(kSprintf, args({}, { path, kBackOfYear.address, year }));
+        fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.cpu(), path, kBackOfYear.address, guest::Words{year});
         guest.setDword(backOut, locate(path));
-        guest.call(kSprintf, args({}, { path, kMaskOfYear.address, year }));
+        fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.cpu(), path, kMaskOfYear.address, guest::Words{year});
         maskName = path;
     }
     guest.setDword(maskOut, locate(maskName));
@@ -753,7 +755,8 @@ x86::reg32 frontend::showcase::comparePicture(App* app, CPU& cpu, reg32 car, reg
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 20 + 0x6c);
     const x86::reg32 path = guest.frame();
-    guest.call(kSprintf, args({}, { path, kTwoStrings.address, kArtFolder, kCompareFile.address }));
+    fe::direct<kSprintf, watcom::clib::sprintf>(app, cpu, path, kTwoStrings.address,
+                                                guest::Words{kArtFolder, kCompareFile.address});
     const x86::reg32 art =
         x86::reg32(*fe::direct<0x44ac90, port::buttons::shapesLoaded>(app, cpu, cpu.esp - 4, path, cpu.ebx));
     const x86::reg32 stem = guest::direct<0x439290, carFileStem>(app, cpu, car);
@@ -761,7 +764,7 @@ x86::reg32 frontend::showcase::comparePicture(App* app, CPU& cpu, reg32 car, reg
     {
         const std::uint8_t c = guest.byte(at);
         if (guest.byte(kCharTraits + std::uint8_t(c + 1)) & kCharUpper)
-            guest.setByte(at, std::uint8_t(guest.call(kTolower, args({ c }))));
+            guest.setByte(at, std::uint8_t(fe::direct<kTolower, watcom::clib::tolower>(guest.app(), guest.cpu(), c)));
     }
     // By address: the ecx it leaves reaches shapeTexture's, handed on.
     const x86::reg32 bitmap = guest.call(kNewBitmap, args({ kWide, kHigh, 0x20, 0x10 }));
@@ -852,7 +855,7 @@ x86::reg32 frontend::showcase::compare2Enter(App* app, CPU& cpu)
     chooseCompareCars(guest, cpu);
     guest.setDword(kCompare5d4, 0);
     guest.setDword(kCompare574, 0);
-    guest.call(kSprintf, args({}, { path, kCompareArt.address, kArtFolder }));
+    fe::direct<kSprintf, watcom::clib::sprintf>(app, cpu, path, kCompareArt.address, guest::Words{kArtFolder});
     const x86::reg32 art =
         x86::reg32(*fe::direct<0x44ac90, port::buttons::shapesLoaded>(app, cpu, cpu.esp - 4, path, cpu.ebx));
     const GuestString& bar = (guest.byte(kDisplayFlags) & kNoTranslucency) ? kBarOpaque : kBarBlended;
@@ -884,8 +887,7 @@ x86::reg32 frontend::showcase::zoomMoved(App* app, CPU& cpu, reg32 slider)
 {
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 8);
-    fe::direct<0x46c9b0, frontend::glue::sliderValue>(app, cpu, slider, 0);
-    const float value = guest.popFloat();
+    const float value = float(fe::direct<0x46c9b0, frontend::glue::sliderValue>(app, cpu, slider, 0));
     x86::reg32 bits;
     std::memcpy(&bits, &value, sizeof bits);
     // By address: the eax it leaves is this function's answer, and its core hands back none.

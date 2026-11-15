@@ -1,4 +1,6 @@
 #include "native_frontend_rendc.h"
+#include "native_watcom.h"
+#include "native_game.h"
 #include "game_settings.h"
 #include "native_aiplan.h"
 #include "native_ea_memory.h"
@@ -140,7 +142,6 @@ reg32 fixedMultiply(reg32 a, reg32 b)
 constexpr reg32 kDrawMirroredRecords = 0x4349d0;
 constexpr reg32 kAppendBackslash = 0x4529a0;
 constexpr reg32 kLoadModel = 0x49d450;
-constexpr reg32 kNearestVertices = 0x49d9d0;
 constexpr reg32 kShadeNormals = 0x49da30;
 constexpr reg32 kEnvironmentCoords = 0x49db70;
 constexpr reg32 kCullPolygons = 0x49dbf0;
@@ -568,14 +569,14 @@ x86::reg32 frontend::rendc::conesLoad(App* app, CPU& cpu)
         {
             guest.setDword(kConeRows + 4 * side,
                            *fe::direct<0x4e1620, ea::reserved>(app, cpu, 0x53bd70, guest.dword(kSliceCount) * kConeBytes, 0));
-            guest.call(kFillZero, args({ coneRow(guest, side), guest.dword(kSliceCount) * kConeBytes }));
+            fe::direct<kFillZero, ea::clearBytes>(guest.app(), guest.cpu(), coneRow(guest, side), guest.dword(kSliceCount) * kConeBytes);
         }
         guest::direct<0x493640, conesPlace>(app, cpu);
     }
     if (guest.dword(kConeModel) == 0)
     {
         const reg32 name = guest.frame();
-        guest.call(kSprintf, args({}, { name, kConeStrings[0].address, 0x7a2934 }));
+        fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.cpu(), name, kConeStrings[0].address, guest::Words{0x7a2934});
         guest.setDword(kConeModel, guest.call(kLoadModel, args({ name, 8, 0 })));
     }
     const reg32 now = guest.dword(kTick);
@@ -729,7 +730,6 @@ x86::reg32 frontend::rendc::conesDraw(App* app, CPU& cpu, reg32 view, reg32 cent
             guest.setFloat(position + 4, float(fp::add(floatIn(guest, position + 4), floatIn(guest, model + 0x2c))));
             guest::direct<0x49de20, modelTransformPart>(app, cpu, model, detail, 0, model + 0xfc + detail * 12, spin, position,
                                                         view + 0x44, view + 0x38, 0);
-            guest.fpu().take();
 
             guest.leaveEdx(objects);
             // `objects` in esi, as the game's code hands it (ByAddress puts it there).
@@ -829,11 +829,11 @@ x86::reg32 frontend::rendc::boltBranch(App* app, CPU& cpu, reg32 parent, reg32 s
     const Float turned = fp::mul(part, Float(sreg32(turn - 2)));
     guest.setFloat(guest.dword(slot) + kNodeAngle, float(fp::add(turned, floatIn(guest, parent + kNodeAngle))));
 
-    fe::direct<0x4ea950, frontend::simd::cosine>(app, cpu, guest.dword(guest.dword(slot) + kNodeAngle));
-    const Float alongX = fp::mul(guest.fpu().take(), floatIn(guest, kBoltStepLength));
+    const Float cosine = fe::direct<0x4ea950, frontend::simd::cosineValue>(app, cpu, guest.dword(guest.dword(slot) + kNodeAngle));
+    const Float alongX = fp::mul(cosine, floatIn(guest, kBoltStepLength));
     guest.setFloat(guest.dword(slot) + kNodePoint, float(fp::add(alongX, floatIn(guest, parent + kNodePoint))));
-    fe::direct<0x4ea930, frontend::simd::sine>(app, cpu, guest.dword(guest.dword(slot) + kNodeAngle));
-    const Float alongZ = fp::mul(guest.fpu().take(), floatIn(guest, kBoltStepLength));
+    const Float sine = fe::direct<0x4ea930, frontend::simd::sineValue>(app, cpu, guest.dword(guest.dword(slot) + kNodeAngle));
+    const Float alongZ = fp::mul(sine, floatIn(guest, kBoltStepLength));
     guest.setFloat(guest.dword(slot) + kNodePoint + 8, float(fp::add(alongZ, floatIn(guest, parent + kNodePoint + 8))));
     guest::direct<0x47adc0, frontend::renda::pointHeight>(app, cpu, guest.dword(slot) + kNodePoint);
 
@@ -1197,10 +1197,11 @@ struct Chain
 }  // namespace
 
 /* sub_49de20: a part's vertices transformed and projected, and its polygons culled: the
- * nearest depth on the x87 (0 for none). */
-x86::reg32 frontend::rendc::modelTransformPart(App* app, CPU& cpu, reg32 model, reg32 part, reg32 givenMatrix0,
-                                              reg32 givenPlace0, reg32 givenMatrix1, reg32 givenPlace1, reg32 givenMatrix2,
-                                              reg32 givenPlace2, reg32 environment)
+ * nearest depth, which its adapter leaves on the x87 (0 for none). */
+frontend::rendc::Nearest frontend::rendc::modelTransformPart(App* app, CPU& cpu, reg32 model, reg32 part,
+                                                             reg32 givenMatrix0, reg32 givenPlace0, reg32 givenMatrix1,
+                                                             reg32 givenPlace1, reg32 givenMatrix2, reg32 givenPlace2,
+                                                             reg32 environment)
 {
     Guest guest(app, cpu);
     const fe::Frame ownFrame(guest, cpu, 12 + 0xe0);
@@ -1224,14 +1225,12 @@ x86::reg32 frontend::rendc::modelTransformPart(App* app, CPU& cpu, reg32 model, 
     if (model == 0)
     {
         guest.leaveEcx(0);
-        guest.pushFloat(0.0f);
-        return redGreen;
+        return { redGreen, 0.0 };
     }
     if (sreg32(part) >= sreg32(guest.dword(model + kModelParts)))
     {
         guest.leaveEcx(model);
-        guest.pushFloat(0.0f);
-        return part;
+        return { part, 0.0 };
     }
 
     const reg32 count = guest.dword(model + part * 4 + kModelPartCount);
@@ -1252,8 +1251,12 @@ x86::reg32 frontend::rendc::modelTransformPart(App* app, CPU& cpu, reg32 model, 
     fe::direct<0x4e0280, vertices::multiplyMatrix>(app, cpu, matrix0, matrix1, firstTwo);
     fe::direct<0x4e0280, vertices::multiplyMatrix>(app, cpu, firstTwo, matrix2, allThree);
 
-    guest.call(kNearestVertices, args({ count, positions, vertices, allThree }, { placed, colour }));
-    const float nearest = float(guest.fpu().take());
+    // The two words the game's call pushes, where it pushes them, for what reads this frame's leftovers
+    // after it (sub_4b8740, after rendd's calls by address).
+    guest.setDword(cpu.esp - 8, placed);
+    guest.setDword(cpu.esp - 4, colour);
+    const float nearest = fe::direct<0x49d9d0, vertices::colouredNearestZ>(app, cpu, sreg32(count), positions, vertices,
+                                                                            allThree, placed, colour);
 
     const reg32 shading = guest.dword(kModelShading);
     guest.leaveEcx(shading);
@@ -1265,14 +1268,14 @@ x86::reg32 frontend::rendc::modelTransformPart(App* app, CPU& cpu, reg32 model, 
         guest.call(kEnvironmentCoords, args({ count, normals, coords, vertices }, { forEnvironment }));
     }
     guest.call(kCullPolygons, args({ model, part, chain.environment }));
-    guest.pushFloat(nearest);
-    return bitsOf(nearest);
+    return { bitsOf(nearest), double(nearest) };
 }
 
 /* sub_49d5c0: all a model's parts, each at its place in the model: the nearest depth among
- * them on the x87.  Its registers and stack go straight on to sub_49de20's stack. */
-x86::reg32 frontend::rendc::modelTransformAll(App* app, CPU& cpu, reg32 model, reg32 matrix1, reg32 place1, reg32 matrix2,
-                                             reg32 place2, reg32 environment)
+ * them, which its adapter leaves on the x87.  Its registers and stack go straight on to sub_49de20's
+ * stack. */
+frontend::rendc::Nearest frontend::rendc::modelTransformAll(App* app, CPU& cpu, reg32 model, reg32 matrix1,
+                                                            reg32 place1, reg32 matrix2, reg32 place2, reg32 environment)
 {
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 12 + 0x14);
@@ -1282,9 +1285,9 @@ x86::reg32 frontend::rendc::modelTransformAll(App* app, CPU& cpu, reg32 model, r
     for (reg32 part = 0; sreg32(part) < sreg32(guest.dword(model + kModelParts)); ++part)
     {
         const reg32 partPlace = model + kModelPartPlaces + part * 12;
-        const reg32 returned = guest::direct<0x49de20, modelTransformPart>(app, cpu, model, part, 0, partPlace, matrix1, place1,
-                                                                           matrix2, place2, environment);
-        const Float depth = guest.fpu().take();
+        const Nearest returned = guest::direct<0x49de20, modelTransformPart>(app, cpu, model, part, 0, partPlace, matrix1,
+                                                                            place1, matrix2, place2, environment);
+        const Float depth = returned.depth;
         const x86::reg16 status = fp::compare(depth, Float(floatOf(nearest)));
         if (isBelow(status))
         {
@@ -1292,10 +1295,9 @@ x86::reg32 frontend::rendc::modelTransformAll(App* app, CPU& cpu, reg32 model, r
             left = nearest;
         }
         else
-            left = withStatus(returned, status);
+            left = withStatus(returned.eax, status);
     }
-    guest.pushFloat(floatOf(nearest));
-    return left;
+    return { left, double(floatOf(nearest)) };
 }
 
 /* sub_49d780: the matrix an environment map turns by, from where the camera looks. */
@@ -1309,16 +1311,16 @@ x86::reg32 frontend::rendc::modelSetEnvironment(App* app, CPU& cpu, reg32 direct
     const reg32 yawMatrix = guest.frame() + 0x24;
     const reg32 pitchMatrix = guest.frame();
 
-    fe::direct<0x4ea9c0, frontend::simd::angleOfFloats>(app, cpu, guest.dword(direction), guest.dword(direction + 8));
-    const Float heading = guest.fpu().take();
+    const Float heading = fe::direct<0x4ea9c0, frontend::simd::angleOfFloatsValue>(app, cpu, guest.dword(direction),
+                                                                                  guest.dword(direction + 8));
     const Float z = floatIn(guest, direction + 8);
     const Float x = floatIn(guest, direction);
     const Float squares = fp::add(fp::mul(z, z), fp::mul(x, x));
     guest.setFloat(yaw, float(fp::add(heading, floatIn(guest, 0x53c68c))));
-    fe::direct<0x4ea920, frontend::simc::squareRoot>(app, cpu, bitsOf(float(squares)));
-    guest.setFloat(flat, float(guest.fpu().take()));
-    fe::direct<0x4ea9c0, frontend::simd::angleOfFloats>(app, cpu, guest.dword(flat), guest.dword(direction + 4));
-    guest.setFloat(pitch, float(fp::add(guest.fpu().take(), doubleAt(guest, 0x53c690))));
+    guest.setFloat(flat, float(fe::direct<0x4ea920, frontend::simc::squareRootOf>(app, cpu, bitsOf(float(squares)))));
+    const Float tilt = fe::direct<0x4ea9c0, frontend::simd::angleOfFloatsValue>(app, cpu, guest.dword(flat),
+                                                                               guest.dword(direction + 4));
+    guest.setFloat(pitch, float(fp::add(tilt, doubleAt(guest, 0x53c690))));
     // The angles by their places in the frame, which the game's code pushes copies of.
     fe::direct<0x4dfde0, ea::rotateAboutY>(app, cpu, yawMatrix, yaw);
     fe::direct<0x4dfd80, ea::rotateAboutX>(app, cpu, pitchMatrix, pitch);
@@ -1715,14 +1717,25 @@ void frontend::rendModelFree(win32::WinApplication* app, x86::CPU& cpu)
     fe::runWhole(app, cpu, site, [&](Guest&) { return rendc::modelFree(app, cpu, model); });
 }
 
-void frontend::rendModelTransformAll(win32::WinApplication* app, x86::CPU& cpu)
+std::optional<double> frontend::rendc::modelTransformAllCalled(App* app, CPU& cpu)
 {
     static fe::Site site{ "sub_49d5c0", 8, 0, nullptr, 0, fe::kRestoreEsi | fe::kRestoreEdi };
     const reg32 model = cpu.eax, matrix1 = cpu.edx, place1 = cpu.ebx, matrix2 = cpu.ecx;
     const reg32 place2 = stackArgument(app, cpu, 0), environment = stackArgument(app, cpu, 1);
+    std::optional<double> depth;
     fe::runWhole(app, cpu, site, [&](Guest&) {
-        return rendc::modelTransformAll(app, cpu, model, matrix1, place1, matrix2, place2, environment);
+        const Nearest nearest = modelTransformAll(app, cpu, model, matrix1, place1, matrix2, place2, environment);
+        depth = nearest.depth;
+        return nearest.eax;
     });
+    return depth;
+}
+
+void frontend::rendModelTransformAll(win32::WinApplication* app, x86::CPU& cpu)
+{
+    const std::optional<double> depth = rendc::modelTransformAllCalled(app, cpu);
+    if (depth)
+        cpu.fpu.push(x86::Float(*depth));
 }
 
 void frontend::rendModelSetAlphas(win32::WinApplication* app, x86::CPU& cpu)
@@ -1760,17 +1773,28 @@ void frontend::rendModelSetColour(win32::WinApplication* app, x86::CPU& cpu)
     fe::runWhole(app, cpu, site, [&](Guest&) { return rendc::modelSetColour(app, cpu, colour); });
 }
 
-void frontend::rendModelTransformPart(win32::WinApplication* app, x86::CPU& cpu)
+std::optional<double> frontend::rendc::modelTransformPartCalled(App* app, CPU& cpu)
 {
     static fe::Site site{ "sub_49de20", 20, 0, nullptr, 0, fe::kRestoreEsi | fe::kRestoreEdi };
     const reg32 model = cpu.eax, part = cpu.edx, matrix0 = cpu.ebx, place0 = cpu.ecx;
     const reg32 matrix1 = stackArgument(app, cpu, 0), place1 = stackArgument(app, cpu, 1);
     const reg32 matrix2 = stackArgument(app, cpu, 2), place2 = stackArgument(app, cpu, 3);
     const reg32 environment = stackArgument(app, cpu, 4);
+    std::optional<double> depth;
     fe::runWhole(app, cpu, site, [&](Guest&) {
-        return rendc::modelTransformPart(app, cpu, model, part, matrix0, place0, matrix1, place1, matrix2, place2,
-                                         environment);
+        const Nearest nearest = modelTransformPart(app, cpu, model, part, matrix0, place0, matrix1, place1, matrix2,
+                                                   place2, environment);
+        depth = nearest.depth;
+        return nearest.eax;
     });
+    return depth;
+}
+
+void frontend::rendModelTransformPart(win32::WinApplication* app, x86::CPU& cpu)
+{
+    const std::optional<double> depth = rendc::modelTransformPartCalled(app, cpu);
+    if (depth)
+        cpu.fpu.push(x86::Float(*depth));
 }
 
 void frontend::rendSkyRandomBetween(win32::WinApplication* app, x86::CPU& cpu)

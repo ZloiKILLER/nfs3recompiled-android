@@ -5,6 +5,26 @@ from .codegen import fpu as fpu_codegen
 from .codegen import fpu_frame
 from .codegen import fpu_stack
 
+import os as _os
+import re as _re
+
+_WINAPI = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), '..', 'include', 'winapi')
+
+
+def provided_header(dll):
+    """Whether the port's Windows (include/winapi) still has the DLL's header."""
+    return _os.path.exists(_os.path.join(_WINAPI, dll + '.h'))
+
+
+def provided(dll, method):
+    """Whether the port's Windows still declares the import: plan step 6 takes them away one by
+    one, and an import it no longer has is not registered."""
+    if not provided_header(dll):
+        return False
+    with open(_os.path.join(_WINAPI, dll + '.h')) as header:
+        return _re.search(r'\b%s\s*\(' % _re.escape(method), header.read()) is not None
+
+
 class Application(Module):
     def __init__(self, application_name, exe_path, rebase_after):
         Module.__init__(self, application_name, exe_path, rebase_after)
@@ -44,10 +64,12 @@ class Application(Module):
                 for dll in dlls:
                     src.write('#include "%s.h"\n' % (dll.application_name))
                 for dll_name, dll_methods in self.dll_imports:
-                    src.write('#include <winapi/%s.h>\n' % dll_name.decode())
+                    if provided_header(dll_name.decode()):
+                        src.write('#include <winapi/%s.h>\n' % dll_name.decode())
                 for dll in dlls:
                     for dll_name, dll_methods in dll.dll_imports:
-                        src.write('#include <winapi/%s.h>\n' % dll_name.decode())
+                        if provided_header(dll_name.decode()):
+                            src.write('#include <winapi/%s.h>\n' % dll_name.decode())
                 src.write('\nnamespace %s\n'
                             '{\n\n' % (app_name))
                 h.write('#ifndef %s_H_\n'
@@ -108,13 +130,18 @@ class Application(Module):
                         function_entry = subroutine.get_entry_point()
                         name = function_names.get(function_entry, 'sub_%x' % function_entry)
                         src.write('    registerMethod(0x%08x, {"<%s>%s", &%s::%s});\n' % (function_entry, dll.application_name, name, dll.application_name, name))
-                for dll_name, dll_methods in self.dll_imports:
-                    for method, address in dll_methods:
-                        src.write('    registerMethod(0x%08x, {"<%s>%s", &win32::Wrapper<decltype(&win32::%s::%s), &win32::%s::%s>::stdcall});\n' % (address, dll_name.decode(), method.decode(), dll_name.decode(), method.decode(), dll_name.decode(), method.decode()))
+                imports = list(self.dll_imports)
                 for dll in dlls:
-                    for dll_name, dll_methods in dll.dll_imports:
-                        for method, address in dll_methods:
-                            src.write('    registerMethod(0x%08x, {"<%s>%s", &win32::Wrapper<decltype(&win32::%s::%s), &win32::%s::%s>::stdcall});\n' % (address, dll_name.decode(), method.decode(), dll_name.decode(), method.decode(), dll_name.decode(), method.decode()))
+                    imports += dll.dll_imports
+                for dll_name, dll_methods in imports:
+                    for method, address in dll_methods:
+                        if not provided(dll_name.decode(), method.decode()):
+                            # gone from the port's Windows (plan step 6): unregistered, so a
+                            # call through the slot is reported as a missing method
+                            src.write('    /* 0x%08x <%s>%s: not in the port\'s Windows */\n' % (
+                                address, dll_name.decode(), method.decode()))
+                            continue
+                        src.write('    registerMethod(0x%08x, {"<%s>%s", &win32::Wrapper<decltype(&win32::%s::%s), &win32::%s::%s>::stdcall});\n' % (address, dll_name.decode(), method.decode(), dll_name.decode(), method.decode(), dll_name.decode(), method.decode()))
 
                 src.write('}\n\n')
                 src.write('void Application::execute()\n'

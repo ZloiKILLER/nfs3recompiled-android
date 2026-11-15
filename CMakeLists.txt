@@ -128,9 +128,7 @@ file(GLOB NFS3HP_DISASM_HEADERS
 file(GLOB LIB_CPP_SOURCES CONFIGURE_DEPENDS
      "${NFS_ROOT_DIR}/src/lib/*.cpp"
      "${NFS_ROOT_DIR}/src/lib/sdl-backend/*.cpp"
-     "${NFS_ROOT_DIR}/src/lib/winapi/*.cpp"
-     "${NFS_ROOT_DIR}/src/lib/winapi/ddraw/*.cpp"
-     "${NFS_ROOT_DIR}/src/lib/winapi/dsound/*.cpp")
+     "${NFS_ROOT_DIR}/src/lib/winapi/*.cpp")
 
 add_library(nfs_core STATIC ${LIB_CPP_SOURCES})
 target_include_directories(nfs_core PRIVATE

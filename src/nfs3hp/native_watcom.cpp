@@ -1,6 +1,7 @@
-#include "native_guest.h"
+#include "native_watcom.h"
 #include "native_watcom_heap.h"
 #include "native_windows.h"
+#include "host_threads.h"
 #include <lib/thread.h>
 #include <winapi/kernel32.h>
 #include <winapi/user32.h>
@@ -120,6 +121,12 @@ void CHP(win32::WinApplication* app, x86::CPU& cpu)
     cpu.esp += 4;
 }
 
+double clib::chop(win32::WinApplication* app, double value)
+{
+    NFS2_USE(app);
+    return std::trunc(value);
+}
+
 /* __GetThreadPtr (0x4ff0ec): the single thread's data, until a second thread
  * starts and the runtime points kGetThreadPtr at its own. */
 void GetThreadPtr(win32::WinApplication* app, x86::CPU& cpu)
@@ -137,11 +144,16 @@ void NullAccess(win32::WinApplication* app, x86::CPU& cpu)
 
 /* memset (clib/memory/c/memset.c, 0x4e0640): eax the buffer, edx the byte,
  * ebx how many; the buffer back. */
+x86::reg32 clib::memset(win32::WinApplication* app, x86::reg32 buffer, x86::reg32 value, x86::reg32 count)
+{
+    if (count != 0)
+        std::memset(&app->getMemory<x86::reg8>(buffer), int(value & 0xff), count);
+    return buffer;
+}
+
 void memset(win32::WinApplication* app, x86::CPU& cpu)
 {
-    if (cpu.ebx != 0)
-        std::memset(&app->getMemory<x86::reg8>(cpu.eax), int(cpu.edx & 0xff), cpu.ebx);
-    returns(cpu, cpu.eax);
+    returns(cpu, clib::memset(app, cpu.eax, cpu.edx, cpu.ebx));
 }
 
 /* __STOSD (clib/cgsupp/a/__stos.asm, 0x4ff4f7): ecx dwords of edx from eax
@@ -183,66 +195,86 @@ void STOSB(win32::WinApplication* app, x86::CPU& cpu)
 
 /* strcmp (clib/string/a/cmp386.asm, 0x4ee310): eax and edx, the strings;
  * -1, 0 or 1 as the first byte that differs, unsigned, is below or above. */
-void strcmp(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 clib::strcmp(win32::WinApplication* app, x86::reg32 a, x86::reg32 b)
 {
-    for (x86::reg32 a = cpu.eax, b = cpu.edx;; ++a, ++b)
+    for (;; ++a, ++b)
     {
         const x86::reg8 c = byte(app, a), d = byte(app, b);
         if (c != d)
-            return returns(cpu, c < d ? 0xffffffff : 1);
+            return c < d ? 0xffffffff : 1;
         if (c == 0)
-            return returns(cpu, 0);
+            return 0;
     }
+}
+
+void strcmp(win32::WinApplication* app, x86::CPU& cpu)
+{
+    returns(cpu, clib::strcmp(app, cpu.eax, cpu.edx));
 }
 
 /* strncmp (clib/string/c/strncmp.c, 0x4eb390): eax and edx, the strings, ebx
  * the most to compare; the first difference of unsigned bytes, or 0. */
-void strncmp(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 clib::strncmp(win32::WinApplication* app, x86::reg32 a, x86::reg32 b, x86::reg32 count)
 {
-    for (x86::reg32 a = cpu.eax, b = cpu.edx, n = cpu.ebx; n != 0; ++a, ++b, --n)
+    for (; count != 0; ++a, ++b, --count)
     {
         const x86::reg8 c = byte(app, a), d = byte(app, b);
         if (c != d)
-            return returns(cpu, x86::reg32(c) - x86::reg32(d));
+            return x86::reg32(c) - x86::reg32(d);
         if (c == 0)
             break;
     }
-    returns(cpu, 0);
+    return 0;
+}
+
+void strncmp(win32::WinApplication* app, x86::CPU& cpu)
+{
+    returns(cpu, clib::strncmp(app, cpu.eax, cpu.edx, cpu.ebx));
 }
 
 /* _stricmp (clib/string/c/stricmp.c, 0x4e9ec0): strcmp's difference, unsigned,
  * with A to Z taken as a to z and nothing else folded. */
-void stricmp(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 clib::stricmp(win32::WinApplication* app, x86::reg32 a, x86::reg32 b)
 {
     const auto lower = [](x86::reg8 c) { return x86::reg8(c >= 'A' && c <= 'Z' ? c + 0x20 : c); };
-    for (x86::reg32 a = cpu.eax, b = cpu.edx;; ++a, ++b)
+    for (;; ++a, ++b)
     {
         const x86::reg8 c = lower(byte(app, a)), d = lower(byte(app, b));
         if (c != d || d == 0)
-            return returns(cpu, x86::reg32(c) - x86::reg32(d));
+            return x86::reg32(c) - x86::reg32(d);
     }
+}
+
+void stricmp(win32::WinApplication* app, x86::CPU& cpu)
+{
+    returns(cpu, clib::stricmp(app, cpu.eax, cpu.edx));
 }
 
 /* strncpy (clib/string/c/strncpy.c, 0x4e0e30): eax the buffer, edx the
  * string, ebx how many bytes: the string, then zeros to make up the count. */
+x86::reg32 clib::strncpy(win32::WinApplication* app, x86::reg32 buffer, x86::reg32 string, x86::reg32 count)
+{
+    x86::reg32 to = buffer, from = string;
+    for (; count != 0 && byte(app, from) != 0; --count)
+        putByte(app, to++, byte(app, from++));
+    for (; count != 0; --count)
+        putByte(app, to++, 0);
+    return buffer;
+}
+
 void strncpy(win32::WinApplication* app, x86::CPU& cpu)
 {
-    x86::reg32 to = cpu.eax, from = cpu.edx, n = cpu.ebx;
-    for (; n != 0 && byte(app, from) != 0; --n)
-        putByte(app, to++, byte(app, from++));
-    for (; n != 0; --n)
-        putByte(app, to++, 0);
-    returns(cpu, cpu.eax);
+    returns(cpu, clib::strncpy(app, cpu.eax, cpu.edx, cpu.ebx));
 }
 
 /* strncat (clib/string/c/strncat.c, 0x4eedf0): eax the string, edx what to add,
  * ebx at most how much of it; always ended. */
-void strncat(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 clib::strncat(win32::WinApplication* app, x86::reg32 string, x86::reg32 added, x86::reg32 count)
 {
-    x86::reg32 to = cpu.eax;
+    x86::reg32 to = string;
     while (byte(app, to) != 0)
         ++to;
-    for (x86::reg32 from = cpu.edx, n = cpu.ebx; n != 0; --n, ++to, ++from)
+    for (x86::reg32 from = added; count != 0; --count, ++to, ++from)
     {
         const x86::reg8 c = byte(app, from);
         putByte(app, to, c);
@@ -250,44 +282,58 @@ void strncat(win32::WinApplication* app, x86::CPU& cpu)
             break;
     }
     putByte(app, to, 0);
-    returns(cpu, cpu.eax);
+    return string;
+}
+
+void strncat(win32::WinApplication* app, x86::CPU& cpu)
+{
+    returns(cpu, clib::strncat(app, cpu.eax, cpu.edx, cpu.ebx));
 }
 
 /* strrchr (clib/string/c/strrchr.c, 0x4ee2f0): eax the string, dl the byte;
  * where it is last, the end included, or 0. */
-void strrchr(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 clib::strrchr(win32::WinApplication* app, x86::reg32 string, x86::reg32 c)
 {
-    const x86::reg8 wanted = x86::reg8(cpu.edx);
+    const x86::reg8 wanted = x86::reg8(c);
     x86::reg32 found = 0;
-    for (x86::reg32 at = cpu.eax;; ++at)
+    for (x86::reg32 at = string;; ++at)
     {
-        const x86::reg8 c = byte(app, at);
-        if (c == wanted)
+        const x86::reg8 here = byte(app, at);
+        if (here == wanted)
             found = at;
-        if (c == 0)
+        if (here == 0)
             break;
     }
-    returns(cpu, found);
+    return found;
+}
+
+void strrchr(win32::WinApplication* app, x86::CPU& cpu)
+{
+    returns(cpu, clib::strrchr(app, cpu.eax, cpu.edx));
 }
 
 /* strstr (clib/string/c/strstr.c, 0x4e0820): eax the string, edx what to look
  * for; where it first is, or 0 -- the string itself for an empty one. */
-void strstr(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 clib::strstr(win32::WinApplication* app, x86::reg32 string, x86::reg32 wanted)
 {
-    const x86::reg32 text = cpu.eax, wanted = cpu.edx;
     x86::reg32 length = 0;
     while (byte(app, wanted + length) != 0)
         ++length;
-    for (x86::reg32 at = text;; ++at)
+    for (x86::reg32 at = string;; ++at)
     {
         x86::reg32 same = 0;
         while (same < length && byte(app, at + same) == byte(app, wanted + same))
             ++same;
         if (same == length)
-            return returns(cpu, at);
+            return at;
         if (byte(app, at) == 0)
-            return returns(cpu, 0);
+            return 0;
     }
+}
+
+void strstr(win32::WinApplication* app, x86::CPU& cpu)
+{
+    returns(cpu, clib::strstr(app, cpu.eax, cpu.edx));
 }
 
 /* __setbits (clib/string/c/setbits.c, 0x50c540): eax 32 bytes, made the set
@@ -354,30 +400,40 @@ void strupr(win32::WinApplication* app, x86::CPU& cpu)
 
 /* toupper and tolower (clib/char/c, 0x4eede0 and 0x4f0ae0): eax a character,
  * moved between a-z and A-Z; anything else as it is. */
-void toupper(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 clib::toupper(win32::WinApplication* app, x86::reg32 c)
 {
     NFS2_USE(app);
-    const x86::sreg32 c = x86::sreg32(cpu.eax);
-    returns(cpu, c >= 'a' && c <= 'z' ? cpu.eax - 0x20 : cpu.eax);
+    const x86::sreg32 value = x86::sreg32(c);
+    return value >= 'a' && value <= 'z' ? c - 0x20 : c;
+}
+
+x86::reg32 clib::tolower(win32::WinApplication* app, x86::reg32 c)
+{
+    NFS2_USE(app);
+    const x86::sreg32 value = x86::sreg32(c);
+    return value >= 'A' && value <= 'Z' ? c + 0x20 : c;
+}
+
+void toupper(win32::WinApplication* app, x86::CPU& cpu)
+{
+    returns(cpu, clib::toupper(app, cpu.eax));
 }
 
 void tolower(win32::WinApplication* app, x86::CPU& cpu)
 {
-    NFS2_USE(app);
-    const x86::sreg32 c = x86::sreg32(cpu.eax);
-    returns(cpu, c >= 'A' && c <= 'Z' ? cpu.eax + 0x20 : cpu.eax);
+    returns(cpu, clib::tolower(app, cpu.eax));
 }
 
 /* atoi and atol (clib/convert/c, 0x4f0430 and 0x4f0490, the same code): the
  * number at eax, past white space, a sign and then digits as _IsTable has
  * them, in 32 bits as it wraps.  The table is looked up at the character
  * plus one in a byte: 0xff at EOF's place. */
-void atoi(win32::WinApplication* app, x86::CPU& cpu)
+x86::reg32 clib::atoi(win32::WinApplication* app, x86::reg32 string)
 {
     const auto is = [&](x86::reg8 c, x86::reg8 what) {
         return (byte(app, kIsTable + x86::reg8(c + 1)) & what) != 0;
     };
-    x86::reg32 at = cpu.eax;
+    x86::reg32 at = string;
     while (is(byte(app, at), kSpace))
         ++at;
     const x86::reg8 sign = byte(app, at);
@@ -386,7 +442,12 @@ void atoi(win32::WinApplication* app, x86::CPU& cpu)
     x86::reg32 value = 0;
     for (; is(byte(app, at), kDigit); ++at)
         value = value * 10 + byte(app, at) - '0';
-    returns(cpu, sign == '-' ? 0 - value : value);
+    return sign == '-' ? 0 - value : value;
+}
+
+void atoi(win32::WinApplication* app, x86::CPU& cpu)
+{
+    returns(cpu, clib::atoi(app, cpu.eax));
 }
 
 void atol(win32::WinApplication* app, x86::CPU& cpu)
@@ -1702,7 +1763,7 @@ bool currentTime(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 entry, x8
 {
     const x86::reg32 local = entry - 0x1c;  // ebx, ecx, edx; a SYSTEMTIME
     cpu.esp = local;
-    if (!windows<kGetLocalTime, &win32::kernel32::GetLocalTime>(app, cpu, local))
+    if (!windows<kGetLocalTime, &host::localTime>(app, cpu, local))
         return false;
     auto word16 = [app, local](x86::reg32 offset) { return x86::reg32(app->getMemory<x86::reg16>(local + offset)); };
     put(app, tm + kYear, word16(0) - 1900);
@@ -3217,7 +3278,7 @@ x86::reg32 handlesFull(win32::WinApplication* app)
 bool fakeHandle(win32::WinApplication* app, x86::CPU& cpu, x86::reg32& handle)
 {
     const Frame frame(cpu, 8);  // ecx, edx
-    if (!windows<kCreateEventA, &win32::kernel32::CreateEventA>(app, cpu, 0, 0, 0, 0))
+    if (!windows<kCreateEventA, &host::createEvent>(app, cpu, 0, 0, 0, 0))
         return false;
     handle = cpu.eax;
     if (handle == 0)
@@ -6575,7 +6636,7 @@ void tzWindows(win32::WinApplication* app, x86::CPU& cpu)
     setHigh8(cpu.edx, byte(app, kZoneDone) | 2);
     cpu.eax = local;
     putByte(app, kZoneDone, reg8(cpu.edx >> 8));
-    if (!windows<kGetTimeZoneInformation, &win32::kernel32::GetTimeZoneInformation>(app, cpu, cpu.eax))
+    if (!windows<kGetTimeZoneInformation, &host::timeZone>(app, cpu, cpu.eax))
         return;
     if (cpu.eax == 0 || cpu.eax > 2)
         return back();
@@ -7009,7 +7070,7 @@ void sleep(win32::WinApplication* app, x86::CPU& cpu)
     push(app, cpu, cpu.edx);
     cpu.edx = cpu.eax;
     cpu.eax *= 1000;
-    if (!windows<kSleepEx, &win32::kernel32::SleepEx>(app, cpu, cpu.eax, 0))
+    if (!windows<kSleepEx, &host::sleep>(app, cpu, cpu.eax, 0))
         return;
     cpu.edx = pop(app, cpu);
     cpu.ecx = pop(app, cpu);
@@ -11437,7 +11498,7 @@ void initThread(win32::WinApplication* app, x86::CPU& cpu)
     {
         cpu.edx = 0;
         put(app, cpu.eax + 0xc, 1);
-        if (!direct(app, cpu, stackLimits) || !windows<kGetCurrentThreadId, &win32::kernel32::GetCurrentThreadId>(app, cpu))
+        if (!direct(app, cpu, stackLimits) || !windows<kGetCurrentThreadId, &host::currentThreadId>(app, cpu))
             return;
         put(app, cpu.ebx + 0xda, cpu.eax);
     }
@@ -12148,6 +12209,144 @@ void reporterror(win32::WinApplication* app, x86::CPU& cpu)
         return;
     cpu.ebx = pop(app, cpu);
     cpu.esp += 4;
+}
+
+/* ---- The formatted ones as typed functions (native_watcom.h): the functions
+ * above run as the game's code ran them, their words pushed below esp as its
+ * call pushed them, without the dispatch by address.  Every register kept but
+ * eax, as their code keeps them. ---- */
+
+namespace
+{
+
+/* A cdecl function of the runtime called as C++ (guest::direct), the return address's slot already
+ * under esp: the words pushed where the game's call pushes them, over that slot, so the function's
+ * frame -- and the va_list it points into it -- lies where its code has it (as ea::error). */
+x86::reg32 variadic(win32::WinApplication* app, x86::CPU& cpu, guest::Native function,
+                 std::initializer_list<x86::reg32> named, const guest::Words& words)
+{
+    cpu.esp += 4;
+    if (!call(app, cpu, function, named, words))
+        return 0;
+    cpu.esp -= 4;
+    return cpu.eax;
+}
+
+}  // namespace
+
+x86::reg32 clib::sprintf(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 buffer, x86::reg32 format,
+                         guest::Words words)
+{
+    return variadic(app, cpu, &watcom::sprintf, {buffer, format}, words);
+}
+
+x86::reg32 clib::fprintf(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 stream, x86::reg32 format,
+                         guest::Words words)
+{
+    return variadic(app, cpu, &watcom::fprintf, {stream, format}, words);
+}
+
+x86::reg32 clib::sscanf(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 string, x86::reg32 format,
+                        guest::Words words)
+{
+    return variadic(app, cpu, &watcom::sscanf, {string, format}, words);
+}
+
+namespace
+{
+
+/* A function of the runtime run as the game's code calls it: `registers` into eax, edx, ebx and
+ * ecx in turn, every other register kept, eax back -- 0 when the game stopped in it. */
+x86::reg32 runs(win32::WinApplication* app, x86::CPU& cpu, guest::Native function,
+                std::initializer_list<x86::reg32> registers)
+{
+    const guest::KeptRegisters kept(cpu);
+    x86::reg32* const into[] = {&cpu.eax, &cpu.edx, &cpu.ebx, &cpu.ecx};
+    unsigned i = 0;
+    for (const x86::reg32 value : registers)
+        *into[i++] = value;
+    return call(app, cpu, function) ? cpu.eax : 0;
+}
+
+}  // namespace
+
+x86::reg32 clib::vsprintf(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 buffer, x86::reg32 format,
+                          x86::reg32 arguments)
+{
+    return runs(app, cpu, &watcom::vsprintf, {buffer, format, arguments});
+}
+
+x86::reg32 clib::malloc(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 size)
+{
+    return runs(app, cpu, &watcom::nmalloc, {size});
+}
+
+x86::reg32 clib::free(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 block)
+{
+    return runs(app, cpu, &watcom::nfree, {block});
+}
+
+x86::reg32 clib::realloc(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 block, x86::reg32 size)
+{
+    return runs(app, cpu, &watcom::nrealloc, {block, size});
+}
+
+x86::reg32 clib::calloc(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 count, x86::reg32 size)
+{
+    return runs(app, cpu, &watcom::calloc, {count, size});
+}
+
+x86::reg32 clib::fopen(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 name, x86::reg32 mode)
+{
+    return runs(app, cpu, &watcom::fopen, {name, mode});
+}
+
+x86::reg32 clib::fclose(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 stream)
+{
+    return runs(app, cpu, &watcom::fclose, {stream});
+}
+
+x86::reg32 clib::fread(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 buffer, x86::reg32 size,
+                       x86::reg32 count, x86::reg32 stream)
+{
+    return runs(app, cpu, &watcom::fread, {buffer, size, count, stream});
+}
+
+x86::reg32 clib::fseek(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 stream, x86::reg32 offset,
+                       x86::reg32 whence)
+{
+    return runs(app, cpu, &watcom::fseek, {stream, offset, whence});
+}
+
+x86::reg32 clib::qsort(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 base, x86::reg32 count,
+                       x86::reg32 size, x86::reg32 compare)
+{
+    return runs(app, cpu, &watcom::qsort, {base, count, size, compare});
+}
+
+x86::reg32 clib::strtok(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 string, x86::reg32 parts)
+{
+    return runs(app, cpu, &watcom::strtok, {string, parts});
+}
+
+x86::reg32 clib::rand(win32::WinApplication* app, x86::CPU& cpu)
+{
+    return runs(app, cpu, &watcom::rand, {});
+}
+
+x86::reg32 clib::getenv(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 name)
+{
+    return runs(app, cpu, &watcom::getenv, {name});
+}
+
+x86::reg32 clib::exit(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 status)
+{
+    return runs(app, cpu, &watcom::exit, {status});
+}
+
+x86::reg32 clib::mkdir(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 path)
+{
+    return runs(app, cpu, &watcom::mkdir, {path});
 }
 
 }  // namespace watcom

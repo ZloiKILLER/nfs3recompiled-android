@@ -3183,6 +3183,12 @@ void depthBucketsNative(win32::WinApplication* app, x86::CPU& cpu)
 
 }  // namespace
 
+/* sub_49d9d0's core: colourObjectNearest's nearest z, which its adapter leaves on the x87 stack. */
+float colouredNearestZ(App* app, CPU& cpu, i32 count, reg32 in, reg32 out, reg32 matrix, reg32 position, reg32 colour)
+{
+    return asFloat(colourObjectNearest(app, singleNearest(cpu), count, in, matrix, position, out, colour).nearest);
+}
+
 /* sub_4e01f0's work: (a0 b0 + a1 b1) + a2 b2 of the vectors at a and b, as wide as the x87 holds
  * it. */
 double dotProduct(App* app, reg32 a, reg32 b)

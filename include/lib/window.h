@@ -72,7 +72,7 @@ public:
 
     /* Live keyboard state, indexed by the same Win32 virtual-key code that
      * getMessage() already computes into MSG::wParam for WM_KEYDOWN/KEYUP.
-     * Backs GetAsyncKeyState/GetKeyState (winapi/user32.cpp), which upstream
+     * Backs GetAsyncKeyState/GetKeyState (src/nfs3hp/host_window.cpp), which upstream
      * hard-returned 0 -- always "not pressed" -- regardless of real input. */
     static bool isKeyDown(int vkCode);
 

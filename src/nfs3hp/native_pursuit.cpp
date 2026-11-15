@@ -4,14 +4,20 @@
 #include "native_aiplan.h"
 #include "native_collide.h"
 #include "native_ea_support.h"
+#include "native_frontend_loada.h"
+#include "native_frontend_neta.h"
+#include "native_frontend_tail.h"
 #include "native_guest.h"
 #include "native_load_cardb.h"
 #include "native_pursuit.h"
 #include "native_racestart.h"
+#include "native_watcom.h"
+#include "port_fields.h"
 
 #include <cstdint>
 #include <cstring>
 #include <optional>
+#include <type_traits>
 
 /* Hot Pursuit's police, native whole: the cops' and the speeders' speeds in
  * a pursuit and the cop's state from frame to frame, the radio's phrases and
@@ -104,19 +110,22 @@ constexpr reg32 kRaceFrame = 0x7d3684;
 constexpr reg32 kNodeCount = 0x5dd940, kNodes = 0x5dd948;
 // The class records of the pursuit (0x18 bytes), by the car's +0x30.
 constexpr reg32 kClassKind = 0x552274, kClassFlag = 0x552278, kClassKeen = 0x55227c;
-// What is called by address: the game's; and of the typed files' those whose eax an adapter here
-// leaves, which their headers give only as whether (a cop near, a node within reach, the cop held,
-// the car driven on), or that the code hands words on the guest's stack (the debug text, the
-// tunnel's test, which takes a copy of the place).
+// What is called by address: the game's, the lane votes (0x40de30, its adapter's NFS_CAR_TRACE
+// record), strncpy (whose edx namePhrase leaves); and of the typed files' those whose eax an adapter
+// here leaves, which their headers give only as whether (a cop near, a node within reach, the cop
+// held, the car driven on), or that the code hands words on the guest's stack (the debug text, the
+// tunnel's test, which takes a copy of the place).  The menu files' (the radar, the places named,
+// the car put on its node and settled, the car ticketed: feCore), memset, strstr and the car's
+// chosen colour are called as C++, the eax they leave put back.
 constexpr reg32 kCopNear = 0x40f050, kInReach = 0x40f000, kResetHeld = 0x404b90, kCopFinish = 0x40de30;
 constexpr reg32 kSpeedLimit = 0x40cd80;
 constexpr reg32 kDebugText = 0x42d520, kMonoPrint = 0x4e08f0;
-constexpr reg32 kRadar = 0x4c8040, kSpeechLine = 0x4c85a0, kNearestPlace = 0x4c8550, kOtherPlace = 0x4c8470;
-constexpr reg32 kTicketed = 0x4c7fd0, kRandom = 0x4e0d88, kStrncpy = 0x4e0e30, kStrstr = 0x4e0820;
-constexpr reg32 kMemset = 0x4e0640, kChop = 0x4dfd56;
+constexpr reg32 kSpeechLine = 0x4c85a0;
+constexpr reg32 kRandom = 0x4e0d88, kStrncpy = 0x4e0e30;
+constexpr reg32 kChop = 0x4dfd56;
 constexpr reg32 kCarColour = 0x439780;
-constexpr reg32 kCarColours = 0x439790, kEndPath = 0x4529a0, kVoiceBankLoad = 0x413750;
-constexpr reg32 kPlaceOnNode = 0x428d60, kInTunnel = 0x420bf0, kSettle = 0x428970;
+constexpr reg32 kEndPath = 0x4529a0, kVoiceBankLoad = 0x413750;
+constexpr reg32 kInTunnel = 0x420bf0;
 
 void push(App* app, CPU& cpu, reg32 value)
 {
@@ -134,6 +143,80 @@ bool byAddress(App* app, CPU& cpu, reg32 target)
     cpu.esp -= 4;
     app->dynamic_call(target, cpu);
     return !cpu.terminate;
+}
+
+/* A native_frontend_* file's typed core called as C++ (guest::direct): nothing (false) when the
+ * game stopped in it (its calls into the game throw fe::Terminated).  tools/game_checks does not
+ * build those files: there it goes by address, through its ByAddress, as the game's code calls it,
+ * every register but eax kept.  A reg32 result is the eax the function leaves: eax set to it (in the
+ * game too); after any other, eax spoilt there, so that code still reading what the callee left in
+ * eax differs there. */
+template <reg32 Address, auto Core, typename... Args>
+auto feCore(App* app, CPU& cpu, Args... args)
+{
+    const auto run = [&] {
+#ifdef NFS_GAME_CHECKS
+        const guest::KeptRegisters kept(cpu);
+        return guest::ByAddress<Core>::template call<Address>(app, cpu, args...);
+#else
+        return guest::direct<Address, Core>(app, cpu, args...);
+#endif
+    };
+    using Result = decltype(run());
+    const auto spoil = [&] {
+#ifdef NFS_GAME_CHECKS
+        cpu.eax = 0x5b0115edu;
+#endif
+    };
+    if constexpr (std::is_void_v<Result>)
+    {
+        try
+        {
+            run();
+        }
+        catch (const fe::Terminated&)
+        {
+            return false;
+        }
+        spoil();
+        return !cpu.terminate;
+    }
+    else
+    {
+        try
+        {
+            const Result result = run();
+            if constexpr (std::is_same_v<Result, x86::reg32>)
+                cpu.eax = result;  // a menu core's result: the eax it leaves, as the call by address does
+            else
+                spoil();
+            return cpu.terminate ? std::optional<Result>() : std::optional<Result>(result);
+        }
+        catch (const fe::Terminated&)
+        {
+            return std::optional<Result>();
+        }
+    }
+}
+
+/* A result put in eax too, as the call by address left it there. */
+std::optional<reg32> leftInEax(CPU& cpu, std::optional<reg32> eax)
+{
+    if (eax)
+        cpu.eax = *eax;
+    return eax;
+}
+
+/* 0x439790 (port::fields'): model's chosen colour for player, in eax too; nullopt when the game
+ * stopped.  Its esp the call's (no words pushed). */
+std::optional<reg32> chosenColour(App* app, CPU& cpu, reg32 model, reg32 player)
+{
+    const port::Result colour =
+        guest::direct<0x439790, port::fields::chosenColour>(app, cpu, cpu.esp - 4, model, std::int32_t(player));
+    if (!colour || cpu.terminate)
+        return std::nullopt;
+    cpu.eax = reg32(*colour);
+    return cpu.eax;
 }
 
 // The game's constants as the x87 loads them.
@@ -645,7 +728,8 @@ std::optional<FactorLeft> radarFactorOf(App* app, CPU& cpu, reg32 car)
         return FactorLeft{1.0f, car};
     if (half(app, 0x7a22da) != 0 && s(gameSettings(app).humanCount) <= s(at(app, car + kCarIndex)))
         return FactorLeft{1.0f, car};
-    const std::optional<reg32> word = call(app, cpu, kRadar, record, at(app, car + kCarIndex));
+    const std::optional<reg32> word =
+        leftInEax(cpu, feCore<0x4c8040, frontend::neta::playerControls>(app, cpu, record, at(app, car + kCarIndex)));
     if (!word)
         return std::nullopt;
     if (*word == 0)
@@ -1645,7 +1729,7 @@ std::optional<reg32> loadRacerBanksOf(App* app, CPU& cpu, reg32 handedOn)
         if ((index == 0 || index == 1) && playMode == 1)
         {
             const std::optional<reg32> own = call(app, cpu, kCarColour, model);
-            const std::optional<reg32> custom = own ? call(app, cpu, kCarColours, model, index) : std::nullopt;
+            const std::optional<reg32> custom = own ? chosenColour(app, cpu, model, index) : std::nullopt;
             if (!custom)
                 return std::nullopt;
             if (*own == *custom)
@@ -1659,7 +1743,7 @@ std::optional<reg32> loadRacerBanksOf(App* app, CPU& cpu, reg32 handedOn)
         else if (gameSettings(app).localPlayer == index)
         {
             const std::optional<reg32> own = call(app, cpu, kCarColour, model);
-            const std::optional<reg32> custom = own ? call(app, cpu, kCarColours, model, 0) : std::nullopt;
+            const std::optional<reg32> custom = own ? chosenColour(app, cpu, model, 0) : std::nullopt;
             if (!custom)
                 return std::nullopt;
             if (*own == *custom)
@@ -1673,7 +1757,9 @@ std::optional<reg32> loadRacerBanksOf(App* app, CPU& cpu, reg32 handedOn)
         else
         {
             const std::optional<reg32> name = guest::direct<0x439250, load::nameOf>(app, cpu, model);
-            const std::optional<reg32> pace = name ? call(app, cpu, kStrstr, *name, kPaceName) : std::nullopt;
+            const std::optional<reg32> pace =
+                name ? std::optional<reg32>(cpu.eax = guest::direct<0x4e0820, watcom::clib::strstr>(app, cpu, *name, kPaceName))
+                     : std::nullopt;
             if (!pace)
                 return std::nullopt;
             if (*pace != 0)
@@ -2319,13 +2405,11 @@ struct LocationLeft
     reg32 edx;
 };
 
-/* __CHP: the value to an integer, towards 0, as a whole value; nullopt when the game stopped. */
+/* __CHP: the value to an integer, towards 0, as a whole value; never nullopt (the optional is the
+ * callers' stop signal). */
 std::optional<Float> chop(App* app, CPU& cpu, Float value)
 {
-    cpu.fpu.push(value);
-    if (!byAddress(app, cpu, kChop))
-        return std::nullopt;
-    return cpu.fpu.take();
+    return Float(guest::direct<kChop, watcom::clib::chop>(app, cpu, double(value)));
 }
 
 /* Where the car is said to be, by its voice (`whom` 1) or the dispatcher (0): the dispatcher repeats the
@@ -2374,7 +2458,7 @@ std::optional<LocationLeft> sayLocationOf(App* app, CPU& cpu, reg32 whom, reg32 
     const reg32 size = speed > 0 ? reg32(speed) : 0u - reg32(speed);
     const reg32 ahead = reg32(std::int64_t(s(size)) / 6) * at(app, kRadioLoad);
     const reg32 onto = reg32(std::int64_t(s(at(app, car + kCarNode) + ahead + ahead)) % s(at(app, kNodeCount)));
-    const std::optional<reg32> nearest = call(app, cpu, kNearestPlace, onto, record);
+    const std::optional<reg32> nearest = leftInEax(cpu, feCore<0x4c8550, frontend::tail::placeAtNode>(app, cpu, onto, record));
     if (!nearest)
         return std::nullopt;
     // The same voice spoke last of the same place: what the code's compares leave in eax and edx.
@@ -2404,7 +2488,7 @@ std::optional<LocationLeft> sayLocationOf(App* app, CPU& cpu, reg32 whom, reg32 
         put(app, voice() * 4 + kVoicePrefix, 0);
         return LocationLeft{voice(), said};
     }
-    const std::optional<reg32> next = call(app, cpu, kOtherPlace, onto, record);
+    const std::optional<reg32> next = leftInEax(cpu, feCore<0x4c8470, frontend::tail::placeNearNode>(app, cpu, onto, record));
     if (!next)
         return std::nullopt;
     if (*next == 0)
@@ -3142,7 +3226,7 @@ std::optional<ResetLeft> resetOnTrackOf(App* app, CPU& cpu, reg32 car, reg32 rec
     }
     else if (target < 0)
         target += s(count);
-    if (!call(app, cpu, kPlaceOnNode, car, reg32(target)))
+    if (!leftInEax(cpu, feCore<0x428d60, frontend::loada::carPlaceOnRoad>(app, cpu, car, reg32(target))))
         return std::nullopt;
     float height = f32At(app, kResetHeight);
     // eax at the call as the code leaves it there, the last word it pushes through it (+0xa0): a
@@ -3175,11 +3259,12 @@ std::optional<ResetLeft> resetOnTrackOf(App* app, CPU& cpu, reg32 car, reg32 rec
     putFloat(app, car + kCarVelocity, float(fp::mul(fp::mul(heading(0), scale), Float(speed))));
     putFloat(app, car + kCarVelocity + 4, float(fp::mul(fp::mul(heading(1), scale), Float(speed))));
     putFloat(app, car + kCarVelocity + 8, float(fp::mul(fp::mul(scale, heading(2)), Float(speed))));
-    if (!call(app, cpu, kSettle, car))
+    if (!leftInEax(cpu, feCore<0x428970, frontend::loada::carReset>(app, cpu, car)))
         return std::nullopt;
     put(app, car + kCarSettleFrames, 0x40);
     put(app, car + kCarSettleFramesToo, 0x20);
-    const std::optional<reg32> ticketed = call(app, cpu, kTicketed, at(app, car + kCarIndex));
+    const std::optional<reg32> ticketed =
+        leftInEax(cpu, feCore<0x4c7fd0, frontend::neta::clearRing>(app, cpu, at(app, car + kCarIndex)));
     if (!ticketed)
         return std::nullopt;
     return ResetLeft{*ticketed, nodes};
@@ -3214,7 +3299,8 @@ std::optional<reg32> copRestartOf(App* app, CPU& cpu, reg32 cop)
         return std::nullopt;
     if (*active == 0)
         return 0;
-    if (!call(app, cpu, kMemset, kStartScores, 0, kStartScoresSize))
+    cpu.eax = guest::direct<0x4e0640, watcom::clib::memset>(app, cpu, kStartScores, 0, kStartScoresSize);
+    if (cpu.terminate)
         return std::nullopt;
     app->getMemory<reg16>(cop + kCarPursuitFlags) = reg16(half(app, cop + kCarPursuitFlags) & kRestartMarks);
     if (at(app, cop + kCarCopState) != kCopChasing)

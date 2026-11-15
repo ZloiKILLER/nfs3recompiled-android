@@ -1,10 +1,15 @@
 #include <nfs3hp.h>
+#include "native_ea_memory.h"
+#include "native_ea_support.h"
+#include "native_guest.h"
+#include "native_load_track.h"
 #include "native_thrash.h"
 #include <lib/memmap.h>
 #include <SDL3/SDL.h>
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <optional>
 #include <utility>
 #include <vector>
 
@@ -37,7 +42,7 @@ namespace nfs3hp
 namespace
 {
 
-inline x86::reg8* guest(win32::WinApplication* app)
+inline x86::reg8* memoryOf(win32::WinApplication* app)
 {
     return &app->getMemory<x86::reg8>(0);
 }
@@ -176,7 +181,7 @@ inline void moveDwords(x86::reg8* m, x86::reg32 to, x86::reg32 from, x86::reg32 
  * edi and ebp are the caller's again. */
 void refpackNative(win32::WinApplication* app, x86::CPU& cpu)
 {
-    x86::reg8* m = guest(app);
+    x86::reg8* m = memoryOf(app);
     const x86::reg32 source = cpu.eax;
     if (source == 0)
     {
@@ -287,7 +292,7 @@ void refpackNative(win32::WinApplication* app, x86::CPU& cpu)
  * address goes over the header's first doubleword.  Returns the FCE in eax. */
 void fceRecordsNative(win32::WinApplication* app, x86::CPU& cpu)
 {
-    x86::reg8* m = guest(app);
+    x86::reg8* m = memoryOf(app);
     const Saved saved(cpu);
     const x86::reg32 entryEsp = cpu.esp;
     const x86::reg32 fce = cpu.eax;
@@ -298,15 +303,13 @@ void fceRecordsNative(win32::WinApplication* app, x86::CPU& cpu)
     write32(m, frame - 0x10, data);
     cpu.ebp = frame;
     cpu.esp = frame - 0x14;
-    cpu.eax = 0x53c60c;
-    cpu.ebx = 0;
     cpu.ecx = fce;
-    cpu.edx = size;
     cpu.esi = data;
-    if (!call(app, cpu, 0x4e1620))
+    const std::optional<x86::reg32> reserved = guest::direct<0x4e1620, ea::reserved>(app, cpu, 0x53c60cu, size, 0u);
+    if (!reserved || cpu.terminate)
         return;
-    const x86::reg32 records = cpu.eax;
-    m = guest(app);
+    const x86::reg32 records = *reserved;
+    m = memoryOf(app);
     write32(m, fce, records);
 
     x86::reg32 part = 0;
@@ -461,13 +464,14 @@ void frdNative(win32::WinApplication* app, x86::CPU& cpu)
     cpu.esp = frame - 0x24;
 
     // The file's name (sub_41d8a0, "%s...%s.frd"), and the file (sub_4e0ec0).
-    cpu.eax = 0x536c64;
-    cpu.edx = 0x10;
-    if (!call(app, cpu, 0x41d8a0))
+    const std::optional<x86::reg32> name = guest::direct<0x41d8a0, load::trackFile>(app, cpu, 0x536c64u);
+    if (!name || cpu.terminate)
         return;
-    if (!call(app, cpu, 0x4e0ec0))
+    const std::optional<x86::reg32> loaded = guest::direct<0x4e0ec0, ea::loadWhole>(app, cpu, *name, 0x10u);
+    if (!loaded || cpu.terminate)
         return;
-    FrdReader r{app, guest(app)};
+    cpu.eax = *loaded;
+    FrdReader r{app, memoryOf(app)};
     write32(r.m, 0x5dd078, cpu.eax);
     write32(r.m, 0x5dd07c, cpu.eax);
 
@@ -580,8 +584,10 @@ void frdNative(win32::WinApplication* app, x86::CPU& cpu)
         cpu.esi = piece;
         cpu.edi = edi;
         cpu.esp = frame - 0x24;
-        if (!call(app, cpu, 0x4e1890))
+        const std::optional<x86::reg32> purged = guest::direct<0x4e1890, ea::purgeBlock>(app, cpu, file);
+        if (!purged || cpu.terminate)
             return;
+        cpu.eax = *purged;
     }
     else
     {
@@ -631,7 +637,7 @@ void extendNeighbours(win32::WinApplication* app)
         const char* value = SDL_getenv("NFS_TRACK_NEIGHBOURS");
         return !value || SDL_strcmp(value, "0") != 0;
     }();
-    x86::reg8* m = guest(app);
+    x86::reg8* m = memoryOf(app);
     const x86::sreg32 last = x86::sreg32(read32(m, 0x5dd83c));
     if (!on || last < 0 || last >= 2000)
         return;

@@ -1,4 +1,6 @@
 #include "game_settings.h"
+#include "port_snd_play.h"
+#include "port_snd_voices.h"
 #include "port_sound_slice.h"
 #include "port_sound_racesetup.h"
 
@@ -210,10 +212,9 @@ void raceSoundInit(App* app, CPU& cpu)
  * code burns as it did), the sounds stopped, the banks removed and their
  * copies freed, the bus down, the music stopped, the master volume back,
  * the speech ended, the menus' volumes and music setting back. */
-void raceSoundEnd(App* app, CPU& cpu)
+Result raceSoundEndOf(App* app, CPU& cpu, reg32 esp)
 {
-    const Entry e(cpu);
-    const reg32 frame = e.frame(2);
+    const reg32 frame = esp - 2 * 4;
     const HeldEbp ebp(cpu, frame);
     Game g(app, cpu, frame);
     reg32 eax = 0;
@@ -227,30 +228,40 @@ void raceSoundEnd(App* app, CPU& cpu)
             turns = turns + 1;
         }
         if (!g.call(kSetMasterVolume, {reg32(level)}, eax))
-            return;
+            return std::nullopt;
         if (--level < 0)
             break;
     }
     if (kEffectsOn(app) != 0)
     {
-        if (!g.call(kStopAllSounds, {eax}, eax) || !g.call(kRemoveBanks, {0xffffffff}, eax))
-            return;
+        g.atCall();
+        if (!tookEax(guest::direct<kStopAllSounds, stopAllSounds>(app, cpu, g.esp - 4), eax))
+            return std::nullopt;
+        g.atCall();
+        if (!tookEax(guest::direct<kRemoveBanks, removeEveryBank>(app, cpu, g.esp - 4, -1), eax))
+            return std::nullopt;
         const Result freed = banksFreed(app, cpu, frame - 4);
         if (!freed)
-            return;
+            return std::nullopt;
         eax = reg32(*freed);
     }
     if (kBusUsed(app) != 0 && !g.call(kBusDown, {eax}, eax))
-        return;
+        return std::nullopt;
     const Result stopped = musicStopped(app, cpu, frame - 4, eax);
     if (!stopped)
-        return;
+        return std::nullopt;
     if (!g.call(kSetMasterVolume, {0x7f}, eax) || !g.call(kCarsRestore, {eax}, eax))
-        return;
+        return std::nullopt;
     gameSettings(app).effectsVolume = kEffectsKept(app);
     gameSettings(app).engineVolume = kEngineKept(app);
     kMusicOn.set(app, kMusicOnKept(app));
-    e.back(cpu, reg32(kMusicOnKept(app)));
+    return kMusicOnKept(app);
+}
+
+void raceSoundEnd(App* app, CPU& cpu)
+{
+    const Entry e(cpu);
+    e.finish(cpu, raceSoundEndOf(app, cpu, e.esp));
 }
 
 }  // namespace port

@@ -1,4 +1,5 @@
 #include "native_frontend_pause.h"
+#include "native_watcom.h"
 #include "game_settings.h"
 #include "native_carstate.h"
 #include "native_controls_devices.h"
@@ -187,7 +188,7 @@ x86::reg32 frontend::pause::seriesSaveExists(App* app, CPU& cpu, reg32 name)
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 4 + 0x100);
     const x86::reg32 path = guest.frame();   // char[0x100]
-    guest.call(kSprintf, fe::args({}, { path, kSeriesPath.address, kSavesFolder, name }));
+    fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.cpu(), path, kSeriesPath.address, guest::Words{kSavesFolder, name});
     return *fe::direct<0x4e0e60, ea::fileThere>(app, cpu, path) ? 1 : 0;
 }
 
@@ -198,7 +199,7 @@ namespace
 x86::reg32 keptExists(Guest& guest, CPU& cpu, x86::reg32 name, const GuestString& extension)
 {
     const x86::reg32 path = guest.frame();   // char[0x100]
-    guest.call(kSprintf, fe::args({}, { path, kKeptPath.address, kSavesFolder, name, extension.address }));
+    fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.cpu(), path, kKeptPath.address, guest::Words{kSavesFolder, name, extension.address});
     return *fe::direct<0x4e0e60, ea::fileThere>(guest.app(), cpu, path) ? 1 : 0;
 }
 
@@ -207,7 +208,7 @@ x86::reg32 keptExists(Guest& guest, CPU& cpu, x86::reg32 name, const GuestString
 x86::reg32 writeSave(App* app, CPU& cpu, Guest& guest, x86::reg32 name, const GuestString& pathFormat)
 {
     const x86::reg32 path = guest.frame();   // char[0x100]
-    guest.call(kSprintf, fe::args({}, { path, pathFormat.address, kSavesFolder, name }));
+    fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.cpu(), path, pathFormat.address, guest::Words{kSavesFolder, name});
     const x86::reg32 copy =
         *fe::direct<0x4e1620, ea::reserved>(app, cpu, kNoName.address, kSaveImageSize, kReserveFlags);
     if (copy == 0)
@@ -838,8 +839,7 @@ x86::reg32 frontend::pause::intensityMoved(App* app, CPU& cpu, reg32 item)
     const x86::reg32 shown = fe::direct<0x44a660, frontend::loop::shownNow>(app, cpu, item);
     if (shown == 0)
         return shown;
-    fe::direct<0x46c9b0, frontend::glue::sliderValue>(app, cpu, item, x86::reg32(0));
-    gameSettings(guest).alphaIntensity = guest.popFloat();
+    gameSettings(guest).alphaIntensity = float(fe::direct<0x46c9b0, frontend::glue::sliderValue>(app, cpu, item, x86::reg32(0)));
     // eax as the slider's value leaves it: the slider, which its code keeps there.
     return item;
 }
@@ -855,9 +855,8 @@ x86::reg32 mapSizeMoved(Guest& guest, CPU& cpu, x86::reg32 item, x86::reg32 scal
     const x86::reg32 shown = fe::direct<0x44a660, frontend::loop::shownNow>(guest.app(), cpu, item);
     if (shown == 0)
         return shown;
-    fe::direct<0x46c9b0, frontend::glue::sliderValue>(guest.app(), cpu, item, x86::reg32(0));
+    const x86::Float value = fe::direct<0x46c9b0, frontend::glue::sliderValue>(guest.app(), cpu, item, x86::reg32(0));
     fe::X87 x87(guest);
-    const x86::Float value = guest.fpu().pop();
     size = float(x87.add(x87.mul(value, x87.load(scale)), x86::Float(1.0)));
     return item;
 }

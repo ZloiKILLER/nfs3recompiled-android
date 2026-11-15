@@ -1,5 +1,9 @@
-#include "native_guest.h"
+#include "native_game.h"
+#include "native_ea_threads.h"
+#include "native_watcom.h"
 #include "native_windows.h"
+#include "host_threads.h"
+#include "host_window.h"
 #include <winapi/kernel32.h>
 #include <winapi/user32.h>
 #include <cstring>
@@ -61,8 +65,6 @@ constexpr x86::reg32 kShowCursor = 0x534794;
  * sprintf. */
 constexpr x86::reg32 kStdout = 0x566f72;    // the FILE, __iob[1]
 constexpr x86::reg32 kVfprintf = 0x4ff014;  // (stream, format, the va_list's address)
-constexpr x86::reg32 kVsprintf = 0x4df674;  // (buffer, format, the va_list's address)
-constexpr x86::reg32 kSprintf = 0x4df690;   // cdecl (buffer, format, ...)
 constexpr x86::reg32 kFflush = 0x4f7d70;    // (stream)
 
 /* Where an Error comes from, for its text: each holds a file's name, a
@@ -101,15 +103,14 @@ constexpr x86::reg32 kErrorLock = 0x564418;    // called before the box: a criti
 constexpr x86::reg32 kErrorBefore = 0x56441c;  // called before the box, after that
 constexpr x86::reg32 kErrorPrintOk = 0x564400; // OK pressed: the text to stdout, then kErrorOk called
 constexpr x86::reg32 kErrorOk = 0x564404;
-/* The game's way out. */
-constexpr x86::reg32 kOnMainThread = 0x4df930;  // eax 0: whether this is the game's main thread
-constexpr x86::reg32 kExit = 0x4dfd04;          // exit(eax), the game's
 
 /* `format` with the file, line and function at `where` into `buffer`, then
  * on the end of Error's text, as Error's code does it -- the copy inline. */
 bool addWhere(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 buffer, x86::reg32 where, x86::reg32 format)
 {
-    if (!call(app, cpu, kSprintf, {buffer, format, at(app, where), at(app, where + 8), at(app, where + 4)}))
+    guest::direct<0x4df690, watcom::clib::sprintf>(app, cpu, buffer, format,
+                                                   guest::Words({at(app, where), at(app, where + 8), at(app, where + 4)}));
+    if (cpu.terminate)
         return false;
     x86::reg32 to = kErrorText;
     while (app->getMemory<x86::reg8>(to) != 0)
@@ -158,10 +159,12 @@ void Error(win32::WinApplication* app, x86::CPU& cpu)
     {
         const x86::reg32 arguments = frame - 8;  // its va_list
         put(app, arguments, esp + 8);
+        // Its arguments in eax, edx and ebx, as the call by address loads them.
         cpu.eax = kErrorText;
         cpu.edx = format;
         cpu.ebx = arguments;
-        if (!call(app, cpu, kVsprintf))
+        guest::direct<0x4df674, watcom::clib::vsprintf>(app, cpu, kErrorText, format, arguments);
+        if (cpu.terminate)
             return;
     }
     else
@@ -203,7 +206,7 @@ void Error(win32::WinApplication* app, x86::CPU& cpu)
     }
     if (const x86::reg32 before = at(app, kErrorBefore); before != 0 && !call(app, cpu, before))
         return;
-    if (!windows<kShowCursor, &win32::user32::ShowCursor>(app, cpu, 1))
+    if (!windows<kShowCursor, &host::showCursor>(app, cpu, 1))
         return;
     // MB_OKCANCEL | MB_ICONEXCLAMATION | MB_SYSTEMMODAL | MB_SETFOREGROUND
     if (!windows<kMessageBoxA, &win32::user32::MessageBoxA>(app, cpu, 0, kErrorText, kErrorCaption, 0x11031))
@@ -213,15 +216,17 @@ void Error(win32::WinApplication* app, x86::CPU& cpu)
         if (!call(app, cpu, Message, {kJustText, kErrorText}) || !call(app, cpu, at(app, kErrorOk)))
             return;
     }
-    if (lock != 0 && !windows<kLeaveCriticalSection, &win32::kernel32::LeaveCriticalSection>(app, cpu, lock))
+    if (lock != 0 && !windows<kLeaveCriticalSection, &host::leaveLock>(app, cpu, lock))
         return;
-    cpu.eax = 0;
-    if (!call(app, cpu, kOnMainThread))
+    const std::optional<bool> onMainThread = guest::direct<0x4df930, ea::isThreadNow>(app, cpu, 0u);
+    if (!onMainThread)
         return;
-    if (cpu.eax != 0)
+    cpu.eax = *onMainThread ? 1 : 0;
+    if (*onMainThread)
     {
         cpu.eax = 0;
-        if (!call(app, cpu, kExit))
+        guest::direct<0x4dfd04, watcom::clib::exit>(app, cpu, 0u);
+        if (cpu.terminate)
             return;
     }
     else if (!windows<kExitProcess, &win32::kernel32::ExitProcess>(app, cpu, cpu.eax))
@@ -435,7 +440,7 @@ void audiofocushandler(win32::WinApplication* app, x86::CPU& cpu)
     const x86::reg32 ebx = cpu.ebx, ecx = cpu.ecx, edx = cpu.edx, ebp = cpu.ebp;
     const x86::reg32 focus = cpu.eax;
     cpu.esp = esp - 0x10;  // below the four registers it keeps
-    if (!windows<kEnterCriticalSection, &win32::kernel32::EnterCriticalSection>(app, cpu, at(app, kSoundLock)))
+    if (!windows<kEnterCriticalSection, &host::enterLock>(app, cpu, at(app, kSoundLock)))
         return;
     if (focus != 0)
     {
@@ -457,7 +462,7 @@ void audiofocushandler(win32::WinApplication* app, x86::CPU& cpu)
     {
         return;
     }
-    if (!windows<kLeaveCriticalSection, &win32::kernel32::LeaveCriticalSection>(app, cpu, at(app, kSoundLock)))
+    if (!windows<kLeaveCriticalSection, &host::leaveLock>(app, cpu, at(app, kSoundLock)))
         return;
     cpu.ebx = ebx;
     cpu.ecx = ecx;
@@ -473,9 +478,9 @@ void SoundServeHandler(win32::WinApplication* app, x86::CPU& cpu)
     const x86::reg32 esp = cpu.esp;
     const x86::reg32 ecx = cpu.ecx, edx = cpu.edx;
     cpu.esp = esp - 8;  // below the two registers it keeps
-    if (!windows<kEnterCriticalSection, &win32::kernel32::EnterCriticalSection>(app, cpu, at(app, kSoundLock))
+    if (!windows<kEnterCriticalSection, &host::enterLock>(app, cpu, at(app, kSoundLock))
         || !call(app, cpu, at(app, kSoundServe))
-        || !windows<kLeaveCriticalSection, &win32::kernel32::LeaveCriticalSection>(app, cpu, at(app, kSoundLock)))
+        || !windows<kLeaveCriticalSection, &host::leaveLock>(app, cpu, at(app, kSoundLock)))
         return;
     cpu.ecx = ecx;
     cpu.edx = edx;
@@ -720,8 +725,8 @@ void THRASH_opendll(win32::WinApplication* app, x86::CPU& cpu)
     put(app, kRendererModule, cpu.eax);
     if (cpu.eax == 0)
     {
-        if (!call(app, cpu, kSprintf, {path, 0x54d3a0 /* "%sa" */, name})
-            || !windows<kLoadLibraryA, &win32::kernel32::LoadLibraryA>(app, cpu, path))
+        guest::direct<0x4df690, watcom::clib::sprintf>(app, cpu, path, 0x54d3a0u /* "%sa" */, guest::Words({name}));
+        if (cpu.terminate || !windows<kLoadLibraryA, &win32::kernel32::LoadLibraryA>(app, cpu, path))
             return;
         put(app, kRendererModule, cpu.eax);
     }
@@ -854,10 +859,10 @@ void fillCore(win32::WinApplication* app, x86::CPU& cpu)
         const bool x87 = (pattern & 0xff) != 0xff && (pattern & 0xff) == (pattern >> 8 & 0xff);
         if (x87)
         {
+            // fld qword, and each fst qword stores the double it holds: a local here.
             double loaded;
             std::memcpy(&loaded, unit, 8);
-            cpu.fpu.push(x86::Float(loaded));
-            const double stored = double(cpu.fpu.st(0));
+            const double stored = double(x86::Float(loaded));
             std::memcpy(unit, &stored, 8);
         }
         // 32 at a time: sub edx, 0x20 until it goes negative; then 8 at a time
@@ -879,8 +884,6 @@ void fillCore(win32::WinApplication* app, x86::CPU& cpu)
             at += 8;
             left -= 8;
         }
-        if (x87)
-            cpu.fpu.count -= 1;  // fstp st(0)
         const x86::reg32 before = x86::reg32(left);
         left += 8;
         // add edx, 8
@@ -932,6 +935,33 @@ void fillZero(win32::WinApplication* app, x86::CPU& cpu)
     fillCore(app, cpu);
     cpu.ebx = ebx;
     cpu.esp += 4;
+}
+
+/* fillCore's bytes when all four of the pattern are one value: each step, the
+ * alignment's, the 32 and 8 at a time and the tail's, writes that value, and
+ * the steps together cover the count exactly -- the x87's load and store change
+ * no such double (a NaN would need 0xff, which takes the dwords' path).  A count
+ * with its top bit set fills nothing, as fillCore's signed tests have it. */
+void ea::clearBytes(win32::WinApplication* app, x86::reg32 at, x86::reg32 count)
+{
+    if (x86::sreg32(count) > 0)
+        std::memset(&app->getMemory<x86::reg8>(at), 0, count);
+}
+
+void ea::fillBytes(win32::WinApplication* app, x86::reg32 at, x86::reg32 count, x86::reg32 value)
+{
+    if (x86::sreg32(count) > 0)
+        std::memset(&app->getMemory<x86::reg8>(at), int(value & 0xff), count);
+}
+
+void ea::error(win32::WinApplication* app, x86::CPU& cpu, x86::reg32 format, guest::Words words)
+{
+    // Called as C++ (guest::direct), the return address's slot already under esp: the words pushed
+    // where the game's call pushes them, over that slot, so Error's frame lies where its code has it.
+    cpu.esp += 4;
+    const bool returned = guest::call(app, cpu, &Error, {format}, words);
+    if (returned)
+        cpu.esp -= 4;
 }
 
 

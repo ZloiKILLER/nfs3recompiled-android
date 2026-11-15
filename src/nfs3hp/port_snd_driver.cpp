@@ -1,4 +1,5 @@
 #include "port_snd_stream.h"
+#include "host_threads.h"
 
 #include <cstdint>
 
@@ -100,7 +101,7 @@ Result leaveAllLocks(App* app, CPU& cpu, reg32 esp, reg32 eax)
     while (int8_t(kEntered(app)) > 0)
     {
         kEntered.set(app, uint8_t(kEntered(app) - 1));
-        if (!callWindows<kLeaveCriticalSection, &win32::kernel32::LeaveCriticalSection>(
+        if (!callWindows<kLeaveCriticalSection, &host::leaveLock>(
                 app, cpu, esp - 2 * 4, {eax, kLock(app), cpu.ebx, cpu.ecx}, eax, kLock(app)))
             return {};
     }

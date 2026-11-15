@@ -1,4 +1,5 @@
 #include "native_frontend_loopb.h"
+#include "native_watcom.h"
 #include "game_settings.h"
 #include "native_carstate.h"
 #include "native_collide.h"
@@ -829,7 +830,8 @@ x86::reg32 frontend::loopb::readNumber(App* app, CPU& cpu, reg32 cursor)
         answer = isNumber(at);
     }
     guest.setByte(digits + count, reg8(answer));
-    const reg32 value = guest.call(kAtoi, args({ digits, at }));
+    guest.leaveEdx(at);  // as the game's code loads it for the call, which atoi does not read
+    const reg32 value = fe::direct<kAtoi, watcom::clib::atoi>(guest.app(), guest.cpu(), digits);
     guest.setDword(cursor, at);
     return value;
 }
@@ -1231,7 +1233,7 @@ x86::reg32 frontend::loopb::standingsUpdate(App* app, CPU& cpu)
     if (count != 0)
     {
         guest.setDword(kRacers, count);
-        guest.call(kQsort, args({ kStandings, count, 4, kCompareCars }));
+        fe::direct<kQsort, watcom::clib::qsort>(guest.app(), guest.cpu(), kStandings, count, 4, kCompareCars);
         count = guest.dword(kRacers);
         eax = 0;
         for (reg32 i = 0; sreg32(i) < sreg32(count); ++i)
@@ -1380,11 +1382,13 @@ x86::reg32 frontend::loopb::carTask(App* app, CPU& cpu, reg32 car)
             }
             else
             {
-                const Float cap = underTopSpeed(guest, car, guest.call(kRand, args({ eax })));
+                guest.cpu().eax = eax;  // as the code has it at the call, which rand does not read
+                const Float cap = underTopSpeed(guest, car, fe::direct<kRand, watcom::clib::rand>(guest.app(), guest.cpu()));
                 const Float speed = floatIn(guest, speedAt);
                 const reg16 under = fp::compare(cap, speed);
                 eax = withStatus(guest.dword(car + kCarStats), under);
-                const Float kept = jumpsBelow(under) ? underTopSpeed(guest, car, guest.call(kRand, args({ eax }))) : speed;
+                guest.cpu().eax = eax;  // as the code has it at the call, which rand does not read
+                const Float kept = jumpsBelow(under) ? underTopSpeed(guest, car, fe::direct<kRand, watcom::clib::rand>(guest.app(), guest.cpu())) : speed;
                 guest.setFloat(car + guest.dword(car + kCarLap) * 4 + kCarLapSpeeds, float(kept));
             }
             eax = guest.dword(car + kCarLap) << 2;

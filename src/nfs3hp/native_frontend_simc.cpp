@@ -1,4 +1,5 @@
 #include "native_frontend_simc.h"
+#include "native_watcom.h"
 #include "game_settings.h"
 #include "native_controls_input.h"
 #include "native_frontend.h"
@@ -371,8 +372,7 @@ x86::reg32 simc::quatFromMatrix(App* app, CPU& cpu, reg32 matrix, reg32 out)
     const fe::Frame locals(guest, cpu, 0x58);
     const auto element = [&](reg32 row, reg32 column) { return matrix + 12 * row + 4 * column; };
     const auto rootOf = [&](Float value) {
-        guest::direct<0x4ea920, squareRoot>(app, cpu, bitsOf(float(value)));
-        return guest.fpu().take();
+        return Float(guest::direct<0x4ea920, squareRootOf>(app, cpu, bitsOf(float(value))));
     };
 
     const Float sum = fp::add(fp::add(fldAt(guest, element(0, 0)), fldAt(guest, element(1, 1))), fldAt(guest, element(2, 2)));
@@ -676,11 +676,14 @@ void simTurnAboutLastRow(win32::WinApplication* app, x86::CPU& cpu)
 }
 
 /* sub_4ea920: the square root of the float on the stack, onto the x87's. */
-void simc::squareRoot(App*, CPU& cpu, reg32 value)
+double simc::squareRootOf(App*, reg32 value)
 {
-    const Float root = fp::sqrt(fromBits(value));
-    cpu.fpu.count += 1;
-    cpu.fpu.st(0) = root;
+    return fp::sqrt(fromBits(value));
+}
+
+void simc::squareRoot(App* app, CPU& cpu, reg32 value)
+{
+    cpu.fpu.push(Float(squareRootOf(app, value)));
 }
 
 void simSquareRoot(win32::WinApplication* app, x86::CPU& cpu)
@@ -1496,15 +1499,15 @@ x86::reg32 simc::viewLoadCar(App* app, CPU& cpu)
     const reg32 carFolder = *fe::direct<0x4392b0, load::folderOf>(app, cpu, guest.dword(kCar));
     guest.setDword(kCarShown, guest.dword(kCar));
     const reg32 stem = fe::direct<0x439290, showcase::carFileStem>(app, cpu, guest.dword(kCar));
-    guest.call(kSprintf, args({}, { file, kFileFormat, stem }));
+    fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.cpu(), file, kFileFormat, guest::Words{stem});
     const reg32 menu = fe::direct<0x44ae00, loop::currentMenuName>(app, cpu);
-    if (guest.call(kStrcmp, args({ menu, kCredits })) == 0)
+    if (fe::direct<kStrcmp, watcom::clib::strcmp>(guest.app(), guest.cpu(), menu, kCredits) == 0)
     {
-        guest.call(kSprintf, args({}, { file, kNumberedFormat, guest.dword(kCar) }));
+        fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.cpu(), file, kNumberedFormat, guest::Words{guest.dword(kCar)});
         guest.copyString(folder, kInteriorRoot);
     }
     if (guest.call(kCarFlag, args({ guest.dword(kCar) })) != 0)
-        guest.call(kSprintf, args({}, { folder, kFolderFormat, kCarsRoot, carFolder }));
+        fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.cpu(), folder, kFolderFormat, guest::Words{kCarsRoot, carFolder});
     else
         guest.copyString(folder, kInteriorRoot);
     // The game's code hands it the ebx it has and 1.0 in ecx too, which it does not read: there as

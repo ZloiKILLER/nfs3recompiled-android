@@ -76,6 +76,37 @@ struct WindowsFunction<R (*)(win32::WinApplication*, x86::CPU&, T...)>
     }
 };
 
+/* The port's own host functions (src/nfs3hp/host_*.h, plan step 6) in the import's place: one
+ * that needs neither the CPU (it never waits, so never lets the guest context go) nor the
+ * application, or the application alone.  The words become its parameters the same way. */
+template <typename R, typename... T>
+struct WindowsFunction<R (*)(win32::WinApplication*, T...)>
+{
+    template <R (*Fn)(win32::WinApplication*, T...), typename... W>
+    static void call(win32::WinApplication* app, x86::CPU& cpu, W... words)
+    {
+        static_assert(sizeof...(T) == sizeof...(W), "every word the host function takes");
+        if constexpr (std::is_void_v<R>)
+            Fn(app, WindowsWord<T>::of(app, x86::reg32(words))...);
+        else
+            cpu.eax = x86::reg32(Fn(app, WindowsWord<T>::of(app, x86::reg32(words))...));
+    }
+};
+
+template <typename R, typename... T>
+struct WindowsFunction<R (*)(T...)>
+{
+    template <R (*Fn)(T...), typename... W>
+    static void call(win32::WinApplication* app, x86::CPU& cpu, W... words)
+    {
+        static_assert(sizeof...(T) == sizeof...(W), "every word the host function takes");
+        if constexpr (std::is_void_v<R>)
+            Fn(WindowsWord<T>::of(app, x86::reg32(words))...);
+        else
+            cpu.eax = x86::reg32(Fn(WindowsWord<T>::of(app, x86::reg32(words))...));
+    }
+};
+
 template <x86::reg32 Slot, auto Fn, typename... W>
 inline std::optional<x86::reg32> windows(win32::WinApplication* app, x86::CPU& cpu, W... words)
 {
@@ -104,6 +135,60 @@ inline std::optional<x86::reg32> thunked(win32::WinApplication* app, x86::CPU& c
         return std::nullopt;
 #endif
     return cpu.eax;
+}
+
+/* A call of Windows the port answers with its own host code (src/nfs3hp/host_*.h, plan step 6),
+ * in host terms rather than the import's words:
+ *
+ *     guest::host<kGetTickCount>(app, cpu, {}, [&] { return host::ticks(); })
+ *
+ * In the game `body` runs and what it gives back, if anything, is eax.  In tools/game_checks
+ * (NFS_GAME_CHECKS) the call goes through the import's slot with the game's words, as the code it
+ * stands for made it, for the check's stand-in; `body` is never instantiated there, so the host
+ * code need not be in the check's build.  hostThunk: the same by the import thunk's address.
+ * nullopt when the game stopped in it. */
+template <typename Body>
+inline std::optional<x86::reg32> hostBody(x86::CPU& cpu, Body& body)
+{
+    if constexpr (std::is_void_v<decltype(body())>)
+        body();
+    else
+        cpu.eax = x86::reg32(body());
+    if (cpu.terminate)
+        return std::nullopt;
+    return cpu.eax;
+}
+
+template <x86::reg32 Slot, typename Body>
+inline std::optional<x86::reg32> host(win32::WinApplication* app, x86::CPU& cpu,
+                                      std::initializer_list<x86::reg32> words, Body&& body)
+{
+#ifdef NFS_GAME_CHECKS
+    (void)body;
+    if (!call(app, cpu, at(app, Slot), words))
+        return std::nullopt;
+    return cpu.eax;
+#else
+    (void)app;
+    (void)words;
+    return hostBody(cpu, body);
+#endif
+}
+
+template <x86::reg32 Thunk, typename Body>
+inline std::optional<x86::reg32> hostThunk(win32::WinApplication* app, x86::CPU& cpu,
+                                           std::initializer_list<x86::reg32> words, Body&& body)
+{
+#ifdef NFS_GAME_CHECKS
+    (void)body;
+    if (!call(app, cpu, Thunk, words))
+        return std::nullopt;
+    return cpu.eax;
+#else
+    (void)app;
+    (void)words;
+    return hostBody(cpu, body);
+#endif
 }
 
 template <typename F>

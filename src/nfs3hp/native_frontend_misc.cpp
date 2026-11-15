@@ -1,4 +1,6 @@
 #include "native_frontend_misc.h"
+#include "native_watcom.h"
+#include "native_game.h"
 #include "game_settings.h"
 #include "native_controls_input.h"
 #include "native_ea_memory.h"
@@ -176,7 +178,11 @@ constexpr GuestString kCameraCancel{ 0x53a7fc, "CANCEL_CAMERA_OPTIONS" };
 /* sub_45d920, camera as it opens: the views kept for Cancel. */
 x86::reg32 cameraOnEnterBody(Guest& guest, x86::reg32 menu)
 {
-    guest.call(kDimBackground, fe::args({}, { kFloat0_6 }));
+    // The shade where the original pushes it, just under the frame: dimmed rewrites it there.  eax as
+    // the caller has it, handed on.
+    const x86::reg32 shade = guest.frame() - 4;
+    guest.setDword(shade, kFloat0_6);
+    fe::direct<kDimBackground, port::text::dimmed>(guest.app(), guest.cpu(), shade, guest.eax());
     for (x86::reg32 i = 0; i < std::size(kCameraViewsKept); ++i)
         guest.setDword(kCameraViewsKept[i], gameSettings(guest).cameraViewsChosen[i]);
     if (Item escape = fe::findItem(guest, menu, kCameraEscapeItem))
@@ -193,8 +199,16 @@ x86::reg32 cameraOnExitBody(Guest& guest, x86::reg32 menu)
     const std::int32_t first = signedWord(guest, menu + fe::menu::kFirstItem);
     const std::int32_t selected = signedWord(guest, menu + fe::menu::kSelected);
     const x86::reg32 item = fe::item::kTable + fe::item::kSize * x86::reg32(first + selected);
-    if (guest.dword(item) == 5
-        && guest.call(kCodelinkMatches, fe::args({ guest.dword(item + fe::item::kCodelink), kCameraCancel.address })) != 0)
+    bool cancel = false;
+    if (guest.dword(item) == 5)
+    {
+        cancel = *fe::direct<kCodelinkMatches, port::menus::codelinkMatched>(guest.app(), guest.cpu(),
+                                                                              guest.cpu().esp - 4,
+                                                                              guest.dword(item + fe::item::kCodelink),
+                                                                              kCameraCancel.address, guest.cpu().ebx) != 0;
+        guest.leaveEdx(kCameraCancel.address);  // as the call by address leaves it: loaded, given back as it came
+    }
+    if (cancel)
     {
         for (x86::reg32 i = 0; i < std::size(kCameraViewsKept); ++i)
             gameSettings(guest).cameraViewsChosen[i] = guest.dword(kCameraViewsKept[i]);
@@ -364,8 +378,8 @@ x86::reg32 frontend::misc::setupAskRace(App* app, CPU& cpu, x86::reg32 canCancel
     const x86::reg32 network = gameSettings(guest).networkGame != 0 ? 1 : 0;
     guest.setDword(kLine, 0);
     guest.setDword(kRaceDialogCanCancel, canCancel);
-    guest.call(kMemset, fe::args({ kButtons, 0, 0x14 }));
-    guest.call(kMemset, fe::args({ kHelp, 0, 0x14 }));
+    fe::direct<kMemset, watcom::clib::memset>(guest.app(), guest.cpu(), kButtons, 0, 0x14);
+    fe::direct<kMemset, watcom::clib::memset>(guest.app(), guest.cpu(), kHelp, 0, 0x14);
     guest.setDword(kLine, fe::text(guest, 0x10f));
     guest.setDword(kButtons, fe::text(guest, 0xd5));
     guest.setDword(kButtons + 4, fe::text(guest, 0xdc));
@@ -443,7 +457,7 @@ x86::reg32 frontend::misc::setupIsCurrent(App* app, CPU& cpu)
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 8);
     const x86::reg32 menu = fe::direct<0x44aeb0, port::loop::currentMenuOf>(app, cpu);
-    return guest.call(kStricmp, fe::args({ guest.dword(menu + fe::menu::kName), kSetupName.address })) == 0 ? 1 : 0;
+    return fe::direct<kStricmp, watcom::clib::stricmp>(guest.app(), guest.cpu(), guest.dword(menu + fe::menu::kName), kSetupName.address) == 0 ? 1 : 0;
 }
 
 /* sub_452de0: the web site's question answered: Yes leaves the menus for it,
@@ -674,8 +688,7 @@ x86::reg32 frontend::misc::resultsCompare(App* app, CPU& cpu, x86::reg32 aAt, x8
         break;
     }
     case 8:
-        order = std::int32_t(guest.call(kStricmp, fe::args({ guest.dword(a + kPartCar) + 0x34,
-                                                             guest.dword(b + kPartCar) + 0x34 })));
+        order = std::int32_t(fe::direct<kStricmp, watcom::clib::stricmp>(guest.app(), guest.cpu(), guest.dword(a + kPartCar) + 0x34, guest.dword(b + kPartCar) + 0x34));
         break;
     default:
         break;
@@ -705,7 +718,7 @@ x86::reg32 frontend::misc::resultsSort(App* app, CPU& cpu, x86::reg32 group, x86
     guest.setDword(kSortKey, key);
     guest.setDword(kSortDescending, descending);
     const x86::reg32 count = guest.dword(kGroupCounts + 4 * group);
-    guest.call(kQsort, fe::args({ sorted, count, 4, kCompareParticipants }));
+    fe::direct<kQsort, watcom::clib::qsort>(guest.app(), guest.cpu(), sorted, count, 4, kCompareParticipants);
     const std::int32_t n = signedDword(guest, kGroupCounts + 4 * group);
     if (n <= 0)
     {
@@ -1290,7 +1303,7 @@ x86::reg32 frontend::misc::postgameOnEnter(App* app, CPU& cpu, x86::reg32 menu)
     {
         const x86::reg32 trackName = fe::text(guest, x86::reg32(signedWord(guest, kTrackNameIds + 2 * gameSettings(guest).track)));
         const x86::reg32 lapsWord = fe::text(guest, 5);
-        guest.call(kSprintf, fe::args({}, { kTrackLine, kPgTrackFormat.address, gameSettings(guest).laps, lapsWord, trackName }));
+        fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.cpu(), kTrackLine, kPgTrackFormat.address, guest::Words{gameSettings(guest).laps, lapsWord, trackName});
         trackAndLaps.setText(kTrackLine);
     }
     const x86::reg32 records = fe::findItem(guest, menu, kPgRecords).address();
@@ -1638,11 +1651,11 @@ x86::reg32 frontend::misc::loadSaveKnockoutInfo(App* app, CPU& cpu, x86::reg32 p
         const x86::reg32 car = playerCarOf(guest, file);
         const x86::reg32 kind = fe::text(guest, 0xd7);
         const x86::reg32 levelName = fe::text(guest, level);
-        guest.call(kSprintf, fe::args({}, { kDescription, kTwoFormat.address, levelName, kind }));
+        fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.cpu(), kDescription, kTwoFormat.address, guest::Words{levelName, kind});
         const x86::reg32 trackName = fe::text(guest, x86::reg32(track + 0x66));
-        guest.call(kSprintf, fe::args({}, { kDescriptionLine2, kPlain.address, trackName }));
+        fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.cpu(), kDescriptionLine2, kPlain.address, guest::Words{trackName});
         const x86::reg32 carName = *fe::direct<0x439250, load::nameOf>(app, cpu, car);
-        guest.call(kSprintf, fe::args({}, { kDescriptionLine3, kPlain.address, carName }));
+        fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.cpu(), kDescriptionLine3, kPlain.address, guest::Words{carName});
     }
     return *fe::direct<0x4e1890, ea::purgeBlock>(app, cpu, file);
 }
@@ -1667,14 +1680,14 @@ x86::reg32 frontend::misc::loadSaveTournamentInfo(App* app, CPU& cpu, x86::reg32
         const x86::reg32 car = playerCarOf(guest, file);
         const x86::reg32 kind = fe::text(guest, 0xd6);
         const x86::reg32 levelName = fe::text(guest, level);
-        guest.call(kSprintf, fe::args({}, { kDescription, kTwoFormat.address, levelName, kind }));
+        fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.cpu(), kDescription, kTwoFormat.address, guest::Words{levelName, kind});
         const x86::reg32 trackName = fe::text(guest, x86::reg32(track + 0x66));
-        guest.call(kSprintf, fe::args({}, { kDescriptionLine2, kPlain.address, trackName }));
+        fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.cpu(), kDescriptionLine2, kPlain.address, guest::Words{trackName});
         const x86::reg32 carName = *fe::direct<0x439250, load::nameOf>(app, cpu, car);
-        guest.call(kSprintf, fe::args({}, { kDescriptionLine3, kPlain.address, carName }));
+        fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.cpu(), kDescriptionLine3, kPlain.address, guest::Words{carName});
         const x86::reg32 points = x86::reg32(signedWord(guest, file + 0x190e));
         const x86::reg32 pointsWord = fe::text(guest, 0xf0);
-        guest.call(kSprintf, fe::args({}, { kDescriptionLine4, kRaceFormat.address, pointsWord, points }));
+        fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.cpu(), kDescriptionLine4, kRaceFormat.address, guest::Words{pointsWord, points});
     }
     return *fe::direct<0x4e1890, ea::purgeBlock>(app, cpu, file);
 }
@@ -1695,11 +1708,11 @@ x86::reg32 frontend::misc::loadSaveGhostInfo(App* app, CPU& cpu, x86::reg32 path
     {
         const x86::reg32 car = playerCarOf(guest, file);
         const x86::reg32 trackName = fe::text(guest, x86::reg32(track + 0x66));
-        guest.call(kSprintf, fe::args({}, { kDescription, kPlain.address, trackName }));
+        fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.cpu(), kDescription, kPlain.address, guest::Words{trackName});
         const x86::reg32 lapsWord = fe::text(guest, 5);
-        guest.call(kSprintf, fe::args({}, { kDescriptionLine2, kLapsFormat.address, guest.dword(file + 0x1974), lapsWord }));
+        fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.cpu(), kDescriptionLine2, kLapsFormat.address, guest::Words{guest.dword(file + 0x1974), lapsWord});
         const x86::reg32 carName = *fe::direct<0x439250, load::nameOf>(app, cpu, car);
-        guest.call(kSprintf, fe::args({}, { kDescriptionLine3, kPlain.address, carName }));
+        fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.cpu(), kDescriptionLine3, kPlain.address, guest::Words{carName});
     }
     return *fe::direct<0x4e1890, ea::purgeBlock>(app, cpu, file);
 }
@@ -1877,7 +1890,7 @@ x86::reg32 frontend::misc::loadSaveLoadNow(App* app, CPU& cpu)
     if (selected < 0)
         return 0;
     const x86::reg32 path = guest.frame();      // char[0xfc]
-    guest.call(kSprintf, fe::args({}, { path, kKeptNameFormat.address, kKeptFolder, selectedName(guest, list) }));
+    fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.cpu(), path, kKeptNameFormat.address, guest::Words{kKeptFolder, selectedName(guest, list)});
     const x86::reg32 kind = guest.dword(kShownKind);
     if (kind > 3)
         return 2;
@@ -1885,7 +1898,7 @@ x86::reg32 frontend::misc::loadSaveLoadNow(App* app, CPU& cpu)
     if (kind == 0)
     {
         const x86::reg32 keptName = fe::text(guest, 0x143);
-        if (guest.call(kStrcmp, fe::args({ selectedName(guest, guest.dword(kReplayList)), keptName })) == 0)
+        if (fe::direct<kStrcmp, watcom::clib::strcmp>(guest.app(), guest.cpu(), selectedName(guest, guest.dword(kReplayList)), keptName) == 0)
             guest.setByte(path, 0);
         else if (guest.byte(path) != 0)
             appendExtension(guest, path, kExtReplay);
@@ -1923,7 +1936,7 @@ x86::reg32 frontend::misc::loadSaveDeleteSelected(App* app, CPU& cpu)
         guest.setByte(kDeleteName, 0);
         return list & 0xffff00ff;
     }
-    guest.call(kSprintf, fe::args({}, { kDeleteName, kKeptNameFormat.address, kKeptFolder, selectedName(guest, list) }));
+    fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.cpu(), kDeleteName, kKeptNameFormat.address, guest::Words{kKeptFolder, selectedName(guest, list)});
     const x86::reg32 kind = guest.dword(kShownKind);
     if (kind <= 3)
     {
@@ -1995,7 +2008,7 @@ x86::reg32 frontend::misc::loadSaveDrawDescription(App* app, CPU& cpu, x86::reg3
     const std::int32_t itemY = signedWord(guest, item + fe::item::kY);
     const x86::reg32 title = guest.frame();     // char[0x100]
     const x86::reg32 heading = fe::text(guest, 0x1e0);
-    guest.call(kSprintf, fe::args({}, { title, kBoxTitleFormat.address, heading }));
+    fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.cpu(), title, kBoxTitleFormat.address, guest::Words{heading});
     // A line of the menus' text, port_text.cpp's (stdcall, the alignment and the colour pushed): its eax.
     const auto draw = [&](x86::reg32 text, std::int32_t x, std::int32_t y, x86::reg32 colour) {
         return x86::reg32(
@@ -2030,14 +2043,14 @@ x86::reg32 frontend::misc::loadSaveSelectionMoved(App* app, CPU& cpu, reg32 /*li
     if (selected >= signedDword(guest, list + kListCount) || selected < 0)
         return list;
     const x86::reg32 path = guest.frame();      // char[0xfc]
-    guest.call(kSprintf, fe::args({}, { path, kKeptNameFormat.address, kKeptFolder, selectedName(guest, list) }));
+    fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.cpu(), path, kKeptNameFormat.address, guest::Words{kKeptFolder, selectedName(guest, list)});
     const x86::reg32 kind = guest.dword(kShownKind);
     if (kind > 3)
         return kind;
     if (kind == 0)
     {
         const x86::reg32 keptName = fe::text(guest, 0x143);
-        if (guest.call(kStrcmp, fe::args({ selectedName(guest, guest.dword(kReplayList)), keptName })) == 0)
+        if (fe::direct<kStrcmp, watcom::clib::strcmp>(guest.app(), guest.cpu(), selectedName(guest, guest.dword(kReplayList)), keptName) == 0)
             guest.setByte(path, 0);
         else if (guest.byte(path) != 0)
             appendExtension(guest, path, kExtReplay);
@@ -2058,7 +2071,7 @@ x86::reg32 frontend::misc::loadSaveOnEnter(App* app, CPU& cpu, x86::reg32 menu)
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 16);
     guest.setDword(kReplayList, 0);
-    guest.call(kFillZero, fe::args({ kDescription, kDescriptionBytes }));
+    fe::direct<kFillZero, ea::clearBytes>(guest.app(), guest.cpu(), kDescription, kDescriptionBytes);
     if (Item box = fe::findItem(guest, menu, kLsBox))
         guest.setDword(box.address() + kOnDrawBox, 0x4470e0);
     if (Item list = fe::findItem(guest, menu, kLsReplays))
@@ -2111,7 +2124,7 @@ x86::reg32 frontend::misc::loadSaveOnFrame(App* app, CPU& cpu, x86::reg32 menu)
             // The race just over has a line in the list, and no file.
             const x86::reg32 keptName = fe::text(guest, 0x143);
             const x86::reg32 name = selectedName(guest, guest.dword(kReplayList));
-            close = guest.call(kStrcmp, fe::args({ name, keptName })) == 0;
+            close = fe::direct<kStrcmp, watcom::clib::strcmp>(guest.app(), guest.cpu(), name, keptName) == 0;
         }
         if (close)
             Item(guest, guest.dword(kDeleteButton)).setDisabled(true);
@@ -2254,7 +2267,7 @@ x86::reg32 frontend::misc::creditsRenderPage(App* app, CPU& cpu, x86::reg32 prev
             fe::direct<0x4ef3f0, eab::shapeDrawKeyed>(app, cpu, picture, 0x19c, 0x4c);
             const x86::reg32 name = guest.frame() + 0x14;   // char[]
             const x86::reg32 number = x86::reg32(signedDword(guest, kCreditsPage) % 5 + 1);
-            guest.call(kSprintf, fe::args({}, { name, kCrSignature.address, number }));
+            fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.cpu(), name, kCrSignature.address, guest::Words{number});
             const x86::reg32 signature = guest.call(kLocateShape, fe::args({ guest.dword(kCreditsArt), name }));
             if (signature != 0)
                 fe::direct<0x4ef3f0, eab::shapeDrawKeyed>(app, cpu, signature, 0x19c, 0xfa);
@@ -2451,10 +2464,10 @@ x86::reg32 frontend::misc::creditsOnEnter(App* app, CPU& cpu, x86::reg32 menu)
     const x86::reg32 name = guest.frame();      // char[0x100]
     if (Item more = fe::findItem(guest, menu, kCrMore))
     {
-        guest.call(kSprintf, fe::args({}, { name, kCrMoreFormat.address, kMoviesFolder, 0 }));
-        const x86::reg32 file = guest.call(kFopen, fe::args({ name, kCrRb.address }));
+        fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.cpu(), name, kCrMoreFormat.address, guest::Words{kMoviesFolder, 0});
+        const x86::reg32 file = fe::direct<kFopen, watcom::clib::fopen>(guest.app(), guest.cpu(), name, kCrRb.address);
         if (file != 0)
-            guest.call(kFclose, fe::args({ file }));
+            fe::direct<kFclose, watcom::clib::fclose>(guest.app(), guest.cpu(), file);
         else
             more.setDisabled(true);
     }
@@ -2462,9 +2475,9 @@ x86::reg32 frontend::misc::creditsOnEnter(App* app, CPU& cpu, x86::reg32 menu)
         next.setOnClick(kNextPage);
     if (Item previous = fe::findItem(guest, menu, kCrPrevious))
         previous.setOnClick(kPreviousPage);
-    guest.call(kSprintf, fe::args({}, { name, kCrFont.address, kFontsFolder }));
+    fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.cpu(), name, kCrFont.address, guest::Words{kFontsFolder});
     guest.setDword(kCreditsFont, *fe::direct<0x4e0ec0, ea::loadWhole>(app, cpu, name, 0x10));
-    guest.call(kSprintf, fe::args({}, { name, gameSettings(guest).language == 0 ? kCrItalics.address : kCrItalics10.address, kFontsFolder }));
+    fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.cpu(), name, gameSettings(guest).language == 0 ? kCrItalics.address : kCrItalics10.address, guest::Words{kFontsFolder});
     guest.setDword(kCreditsItalics, *fe::direct<0x4e0ec0, ea::loadWhole>(app, cpu, name, 0x10));
     return 0;
 }
@@ -2503,7 +2516,7 @@ x86::reg32 frontend::misc::creditsOnFrame(App* app, CPU& cpu, x86::reg32 menu)
     };
     if (guest.dword(kCreditsArt) == 0)
     {
-        guest.call(kSprintf, fe::args({}, { name, kCrArtFormat.address, kArtFolder }));
+        fe::direct<kSprintf, watcom::clib::sprintf>(app, cpu, name, kCrArtFormat.address, guest::Words{kArtFolder});
         // The art's shapes loaded, port_buttons.cpp's (ebx handed on as the code has it).
         const port::Result art =
             fe::direct<0x44ac90, port::buttons::shapesLoaded>(app, cpu, cpu.esp - 4, name, cpu.ebx);
@@ -2649,7 +2662,7 @@ x86::reg32 frontend::misc::credits1ShowPage(App* app, CPU& cpu, x86::reg32 nextB
     const fe::Frame frame(guest, cpu, 24);
     Item sub = fe::findItem(guest, fe::direct<0x44aeb0, port::loop::currentMenuOf>(app, cpu), kGlamSub);
     const x86::reg32 title = fe::text(guest, glamText(guest, guest.dword(kGlamPage)));
-    guest.call(kSprintf, fe::args({}, { kGlamTitle, kGlamPlain.address, title }));
+    fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.cpu(), kGlamTitle, kGlamPlain.address, guest::Words{title});
     sub.setText(kGlamTitle);
     const x86::reg32 language = gameSettings(guest).language;
     const x86::reg32 next = x86::reg32((signedDword(guest, kGlamPage) + 1) % 4);
@@ -2662,8 +2675,8 @@ x86::reg32 frontend::misc::credits1ShowPage(App* app, CPU& cpu, x86::reg32 nextB
     }
     else
     {
-        guest.call(kSprintf, fe::args({}, { kGlamNextTitle, kGlamNextFormat.address, nextTitle }));
-        left = guest.eax();
+        left = fe::direct<kSprintf, watcom::clib::sprintf>(app, cpu, kGlamNextTitle, kGlamNextFormat.address,
+                                                           guest::Words{nextTitle});
     }
     guest.setDword(nextButton + fe::item::kText, kGlamNextTitle);
     return left;

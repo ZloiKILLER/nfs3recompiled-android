@@ -1,4 +1,6 @@
 #include "native_frontend_loada.h"
+#include "native_watcom.h"
+#include "native_game.h"
 #include "game_settings.h"
 #include "native_aiplan.h"
 #include "native_ea_memory.h"
@@ -240,7 +242,9 @@ reg32 allCopsColour(Guest& guest)
 {
     for (;;)
     {
-        const reg32 colour = guest.call(kRand) & 7;
+        const reg32 random = fe::direct<kRand, watcom::clib::rand>(guest.app(), guest.cpu());
+        guest.cpu().eax = random;  // as the call by address leaves it: the code after reads it there
+        const reg32 colour = random & 7;
         if (colour != 0 && colour != 2 && colour != 3)
             return colour;
     }
@@ -440,7 +444,7 @@ x86::reg32 frontend::loada::rosterEntryHuman(App* app, CPU& cpu, reg32 entry, re
     }
     guest.setDword(entry + kEntryKind, 1);
     copyDwords(guest, entry + 0x24, settings + 0x20, 3);
-    guest.call(kStrncpy, args({ entry + kEntryName, settings + 0x40, 0xb }));
+    fe::direct<kStrncpy, watcom::clib::strncpy>(guest.app(), guest.cpu(), entry + kEntryName, settings + 0x40, 0xb);
     guest.setDword(entry + kEntryPlace, place);
     const bool ownTuning = sreg32(gameSettings(guest).playMode) <= 1 && gameSettings(guest).raceType != 1 && gameSettings(guest).raceType != 2;
     copyDwords(guest, entry + kEntryTuning, ownTuning ? settings + 0x50 : kDefaultTuning, 7);
@@ -475,7 +479,7 @@ x86::reg32 frontend::loada::rosterEntryCop(App* app, CPU& cpu, reg32 entry, reg3
     guest.setDword(entry + kEntryKind, 8);
     guest.setDword(entry + 0x30, guest::direct<0x473570, rosterPickCopDriver>(app, cpu, index));
     const reg32 name = guest.call(kDriverNameOf, args({ entry }));
-    guest.call(kStrncpy, args({ entry + kEntryName, name, 0xb }));
+    fe::direct<kStrncpy, watcom::clib::strncpy>(guest.app(), guest.cpu(), entry + kEntryName, name, 0xb);
     copyDefaultsAndExtras(guest, entry);
     return entry;
 }
@@ -501,7 +505,7 @@ x86::reg32 frontend::loada::rosterEntryOpponent(App* app, CPU& cpu, reg32 entry,
     guest.setDword(entry + 0x30, guest::direct<0x473550, rosterPickOpponentDriver>(app, cpu, place));
     guest.setDword(entry + kEntryPlace, place);
     const reg32 name = guest.call(kDriverNameOf, args({ entry }));
-    guest.call(kStrncpy, args({ entry + kEntryName, name, 0xb }));
+    fe::direct<kStrncpy, watcom::clib::strncpy>(guest.app(), guest.cpu(), entry + kEntryName, name, 0xb);
     if (guest.byte(kRaceFlags) & kRaceFlagAllCops)
     {
         const reg32 frame = guest.frame();
@@ -642,7 +646,7 @@ x86::reg32 frontend::loada::rosterBuildRegular(App* app, CPU& cpu)
     Guest guest(app, cpu);
     const fe::Frame ownFrame(guest, cpu, 0x1c);
     clearCounts(guest);
-    guest.call(kFillZero, args({ SETTINGS_ADDRESS(playersDone), 8 }));
+    fe::direct<kFillZero, ea::clearBytes>(guest.app(), guest.cpu(), SETTINGS_ADDRESS(playersDone), 8);
     copyDwords(guest, SETTINGS_ADDRESS(raceOptionComputerDrives), SETTINGS_ADDRESS(chosenOptions), 6);
     gameSettings(guest).raceOptionPursuit = 0;
     reg32 place = 0;
@@ -722,7 +726,7 @@ x86::reg32 frontend::loada::rosterBuildTournament(App* app, CPU& cpu)
     Guest guest(app, cpu);
     const fe::Frame ownFrame(guest, cpu, 0x24);
     gameSettings(guest).seriesRace = 1;
-    guest.call(kFillZero, args({ SETTINGS_ADDRESS(raceOptionComputerDrives), 0x1c }));
+    fe::direct<kFillZero, ea::clearBytes>(guest.app(), guest.cpu(), SETTINGS_ADDRESS(raceOptionComputerDrives), 0x1c);
     if (gameSettings(guest).knockout.stage == 0)
     {
         guest::direct<0x473ac0, rosterTournamentTracks>(app, cpu);
@@ -731,7 +735,7 @@ x86::reg32 frontend::loada::rosterBuildTournament(App* app, CPU& cpu)
         gameSettings(guest).knockout.stillIn[0] = 0x10;  // the game's loop goes one word past the table
         for (reg32 i = 0; i < 0x10; ++i)
             gameSettings(guest).knockout.stillIn[i] = 1;
-        guest.call(kFillZero, args({ SETTINGS_ADDRESS(playersDone), 8 }));
+        fe::direct<kFillZero, ea::clearBytes>(guest.app(), guest.cpu(), SETTINGS_ADDRESS(playersDone), 8);
     }
     if (gameSettings(guest).seriesVariant == 1)
         chooseSides(app, cpu, guest, std::int32_t(gameSettings(guest).knockout.stage));
@@ -847,13 +851,13 @@ x86::reg32 frontend::loada::rosterBuildKnockout(App* app, CPU& cpu)
     constexpr reg32 kStageTrack = 0x55d004;
     gameSettings(guest).seriesRace = 1;
     gameSettings(guest).track = guest.dword(kStageTrack + 4 * reg32(std::int32_t(gameSettings(guest).tournament.stage)));
-    guest.call(kFillZero, args({ SETTINGS_ADDRESS(raceOptionComputerDrives), 0x1c }));
+    fe::direct<kFillZero, ea::clearBytes>(guest.app(), guest.cpu(), SETTINGS_ADDRESS(raceOptionComputerDrives), 0x1c);
     if (gameSettings(guest).tournament.stage == 0)
     {
         for (reg32 i = 0; i < 0x10; ++i)
             gameSettings(guest).tournament.places[i] = std::uint16_t(i);
         gameSettings(guest).tournament.raceScores[0] = 0x10;  // the game's loop goes one word past the table
-        guest.call(kFillZero, args({ SETTINGS_ADDRESS(playersDone), 8 }));
+        fe::direct<kFillZero, ea::clearBytes>(guest.app(), guest.cpu(), SETTINGS_ADDRESS(playersDone), 8);
     }
     clearCounts(guest);
     gameSettings(guest).laps = sreg32(gameSettings(guest).playMode) > 1 ? 2 : 4;
@@ -946,7 +950,7 @@ x86::reg32 frontend::loada::rosterBuildHotPursuit(App* app, CPU& cpu)
     gameSettings(guest).raceOptionHazard = 0;
     gameSettings(guest).raceOptionPursuit = gameSettings(guest).pursuitOption;
     gameSettings(guest).raceOptionSimulation = 0;
-    guest.call(kFillZero, args({ SETTINGS_ADDRESS(playersDone), 8 }));
+    fe::direct<kFillZero, ea::clearBytes>(guest.app(), guest.cpu(), SETTINGS_ADDRESS(playersDone), 8);
 
     const auto countKind = [&](bool police) {
         reg32& count = police ? gameSettings(guest).copCount : gameSettings(guest).humanCount;
@@ -1390,7 +1394,7 @@ x86::reg32 frontend::loada::carReset(App* app, CPU& cpu, reg32 car)
     // The game's code hands it 0x20 in edx too, which it does not read.
     guest.setDword(car + kCarLane,
                    fe::direct<0x40e2b0, aiplan::roadSlice>(app, cpu, guest.dword(car + kCarSlice), floatOf(guest.dword(car + 0xbc))));
-    guest.call(kFillZero, args({ car + 0x168, 0x20 }));
+    fe::direct<kFillZero, ea::clearBytes>(guest.app(), guest.cpu(), car + 0x168, 0x20);
     guest.setWord(car + 0x164, 1);
     guest.setDword(car + 0x168, 0);
     guest.setDword(car + 0x16c, 0);
@@ -1803,7 +1807,7 @@ x86::reg32 frontend::loada::carCompareNames(App* app, CPU& cpu, reg32 a, reg32 b
     Guest guest(app, cpu);
     const fe::Frame ownFrame(guest, cpu, 4);
     const reg32 second = guest.dword(b) + 0x10;
-    return guest.call(0x4ee310, args({ guest.dword(a) + 0x10, second }));
+    return fe::direct<0x4ee310, watcom::clib::strcmp>(guest.app(), guest.cpu(), guest.dword(a) + 0x10, second);
 }
 
 void frontend::loadingCarCompareNames(win32::WinApplication* app, x86::CPU& cpu)
@@ -1870,7 +1874,7 @@ x86::reg32 frontend::loada::carFilterLists(App* app, CPU& cpu, reg32 flags, reg3
         return left.eax;
     };
     const auto memset1 = [&](reg32 at, reg32 bytes) {
-        left.eax = guest.call(kMemset, args({ at, 1, bytes }));
+        left.eax = fe::direct<kMemset, watcom::clib::memset>(guest.app(), guest.cpu(), at, 1, bytes);
         left.edx = guest.edx();
     };
     if (flags & 2)
@@ -2135,14 +2139,14 @@ x86::reg32 frontend::loada::copyFile(App* app, CPU& cpu, reg32 to, reg32 from)
     constexpr reg32 kFopen = 0x4edfe8;
     constexpr reg32 kRead = 0x539604, kWrite = 0x539608;   // "rb", "wb"
     const reg32 buffer = guest.frame();
-    const reg32 source = guest.call(kFopen, args({ from, kRead }));
-    const reg32 target = guest.call(kFopen, args({ to, kWrite }));
+    const reg32 source = fe::direct<kFopen, watcom::clib::fopen>(guest.app(), guest.cpu(), from, kRead);
+    const reg32 target = fe::direct<kFopen, watcom::clib::fopen>(guest.app(), guest.cpu(), to, kWrite);
     if (source == 0 || target == 0)
         return 0xffffffffu;
     reg32 failed = 0;
     for (;;)
     {
-        const reg32 got = guest.call(0x4e9200, args({ buffer, 1, 0x200, source }));
+        const reg32 got = fe::direct<0x4e9200, watcom::clib::fread>(guest.app(), guest.cpu(), buffer, 1, 0x200, source);
         if (got == 0)
             break;
         if (got != guest.call(0x4eebd0, args({ buffer, 1, got, target })))
@@ -2151,8 +2155,8 @@ x86::reg32 frontend::loada::copyFile(App* app, CPU& cpu, reg32 to, reg32 from)
             break;
         }
     }
-    guest.call(0x4ee100, args({ source }));
-    guest.call(0x4ee100, args({ target }));
+    fe::direct<0x4ee100, watcom::clib::fclose>(guest.app(), guest.cpu(), source);
+    fe::direct<0x4ee100, watcom::clib::fclose>(guest.app(), guest.cpu(), target);
     return failed;
 }
 
@@ -2247,7 +2251,7 @@ x86::reg32 frontend::loada::savedNameEntries(App* app, CPU& cpu, reg32 saved)
         const sreg32 car = sreg32(guest.dword(entry + 0x1a00));
         if (car < 0 || car > 0x31)
         {
-            guest.call(kMemset, args({ entry + 0x19ec, 0xff, 0x10 }));
+            fe::direct<kMemset, watcom::clib::memset>(guest.app(), guest.cpu(), entry + 0x19ec, 0xff, 0x10);
             continue;
         }
         const reg32 id = *fe::direct<0x439520, load::idOf>(app, cpu, reg32(car));
@@ -2634,7 +2638,7 @@ x86::reg32 frontend::loada::copLoadModel(App* app, CPU& cpu)
     guest.setDword(0x55fe28, guest.dword(0x7d3684));
     const reg32 track = gameSettings(guest).track;
     const reg32 format = track > 8 ? 0x53ff90 : kFormats[track];
-    guest.call(0x4df690, args({}, { name, format, kCarsFolder }));
+    fe::direct<0x4df690, watcom::clib::sprintf>(guest.app(), guest.cpu(), name, format, guest::Words{kCarsFolder});
     const reg32 model = guest.call(0x49d450, args({ name, 0x20, 0 }));
     guest.setDword(0x55fe2c, model);
     return model;

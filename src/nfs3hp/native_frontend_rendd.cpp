@@ -1,4 +1,6 @@
 #include "native_frontend_rendd.h"
+#include "native_game.h"
+#include "native_watcom.h"
 #include "game_settings.h"
 #include "native_carstate.h"
 #include "native_ea_memory.h"
@@ -177,7 +179,6 @@ constexpr reg32 kSmallestDepth = 0x37800080;
 // ---------------------------------------------------------------------------
 
 constexpr reg32 kCreateArena = 0x4b56e0;       // eax where its size is
-constexpr reg32 kChopTop = 0x4dfd56;           // __CHP: st(0) rounded toward zero
 constexpr reg32 kLog = 0x401010;               // the game's printf to its log
 constexpr reg32 kCompareNoCase = 0x4eb390;     // eax, edx, ebx the most
 constexpr reg32 kEndModelBatch = 0x49d640;
@@ -186,7 +187,6 @@ constexpr reg32 kTransformPoints = 0x4e0430;   // eax how many, edx them, ebx a 
 constexpr reg32 kRotationY = 0x4dfde0;
 constexpr reg32 kRotationZ = 0x4dfe40;
 constexpr reg32 kMultiplyMatrices = 0x4e0280;  // eax by edx to ebx
-constexpr reg32 kRandomFraction = 0x4eb230;    // on the x87
 constexpr reg32 kGunFire = 0x42cff0;           // eax the car: how far through its flash, on the x87
 constexpr reg32 kFlare = 0x492370;             // eax a view; the stack the point, colour, size...
 constexpr reg32 kLightFlare = 0x491bc0;        // likewise, a record of the road's light back
@@ -319,7 +319,7 @@ x86::reg32 frontend::rendd::chooseDriver(App* app, CPU& cpu, reg32 chosen)
         // The count lives just past the name's 0x40 bytes: its low byte ends a name that fills them.
         guest.setDword(name + 0x40, driver);
         const reg32 length = guest.length(name);
-        if (guest.call(kCompareNoCase, args({ guest.dword(kDriverNames + 4 * driver), name, length })) == 0)
+        if (fe::direct<kCompareNoCase, watcom::clib::strncmp>(guest.app(), guest.cpu(), guest.dword(kDriverNames + 4 * driver), name, length) == 0)
             break;
     }
     if (driver == kDriverNameCount)
@@ -788,9 +788,7 @@ x86::reg32 frontend::rendd::carLights(App* app, CPU& cpu, reg32 view, reg32 car,
         const double past = fp::add(double(time), floatOf(guest, kRingOffset));
         const double spinWhole = fp::add(speedDot, 1.0);
         const double fadeIn = fp::mul(past, floatOf(guest, kRingScale));
-        guest.fpu().push(spinWhole);
-        guest.call(kChopTop);
-        const sreg32 spin = fistp(guest.fpu().pop());
+        const sreg32 spin = fistp(fe::direct<0x4dfd56, watcom::clib::chop>(app, cpu, spinWhole));
         const float faded = float(fadeIn);
         float ring = 0.0f;
         if (sreg32(bitsOf(faded)) >= 0x3f800000 || isBelow(fp::compare(0.0, double(faded))))
@@ -1020,12 +1018,14 @@ x86::reg32 frontend::rendd::bodyShake(App* app, CPU& cpu, reg32 car, reg32 acros
     constexpr reg32 kHalfFloat = 0x540048;
     if (carWheelStamp(app, car, across ? 3u : 2u) == guest.dword(kFrameCount))
         return car;
-    guest.call(kRandomFraction);
+    // eax as the code leaves it: the random fraction's call keeps it.
+    const reg32 eax = guest.eax();
+    const double fraction = double(*fe::direct<0x4eb230, ea::randomFractionOf>(app, cpu));
     const reg32 roughness = car + 0x930;
-    const double random = fp::mul(guest.fpu().pop(), floatOf(guest, roughness));
+    const double random = fp::mul(fraction, floatOf(guest, roughness));
     const double centre = fp::mul(floatOf(guest, roughness), floatOf(guest, kHalfFloat));
     guest.setFloat(car + (across ? 0x940 : 0x93c), float(fp::sub(random, centre)));
-    return guest.eax();
+    return eax;
 }
 
 void frontend::rendBodyShake(win32::WinApplication* app, x86::CPU& cpu)
@@ -1338,8 +1338,9 @@ x86::reg32 frontend::rendd::replayPose(App* app, CPU& cpu, reg32 view, reg32 car
     reg32 measured = 0;
     const auto distance = [&](reg32 from, reg32 to) {
         guest.leaveEdx(to);   // as the call by address leaves it
-        measured = fe::direct<0x4965b0, frontend::sima::quickDistance>(app, cpu, from, to);
-        return guest.fpu().pop();
+        const frontend::sima::FloatLeft quick = fe::direct<0x4965b0, frontend::sima::quickDistanceOf>(app, cpu, from, to);
+        measured = quick.eax;
+        return quick.value;
     };
     if (isBelow(fp::compare(distance(car + kCarPlace, place), floatOf(guest, kNearCar)))
         && isBelow(fp::compare(distance(car + kCarAxes, axes), doubleOf(guest, kNearAxis)))
@@ -1390,7 +1391,6 @@ x86::reg32 frontend::rendd::replayPose(App* app, CPU& cpu, reg32 view, reg32 car
     const auto part = [&](reg32 which, reg32 offset, reg32 flag) {
         fe::direct<0x49de20, frontend::rendc::modelTransformPart>(app, cpu, model, which, 0u, model + offset, axes, place,
                                                                   view + 0x44, view + 0x38, flag);
-        guest.fpu().pop();
     };
     switch (detail)
     {
@@ -1611,13 +1611,44 @@ inline void carFrame(Guest& guest, reg32 car, reg32 matrix, reg32 place, reg32 r
     guest.setFloat(place + 4, float(fp::add(floatOf(guest, place + 4), floatOf(guest, raise))));
 }
 
-/* The whole car as one part of its model; the x87's result, what sub_4b8740 sizes by, kept.  By
- * address: sub_4b8740 after it reads what is left in its frame, which a C++ call, pushing none of
- * the five stack arguments, would leave 20 bytes up. */
+/* sub_49de20 called as the game's code calls it, `arguments` in the registers and pushed: sub_4b8740
+ * after it reads what is left in its frame, which a C++ call (fe::direct), pushing none of the five
+ * stack arguments, would leave 20 bytes up -- and the registers it leaves.  Its depth back.  In the
+ * game the call made as Guest::call makes it, rendc's modelTransformPartCalled in place of the jump
+ * by address, which leaves everything as the call does; in the checks the call by address itself,
+ * the depth taken off the x87's stack. */
+double partByAddress(Guest& guest, const fe::Arguments& arguments)
+{
+    x86::CPU& cpu = guest.cpu();
+#ifdef NFS_FRONTEND_CHECKS
+    guest.call(kDrawModelPart, arguments);
+    return double(cpu.fpu.take());
+#else
+    reg32* const registers[4] = { &cpu.eax, &cpu.edx, &cpu.ebx, &cpu.ecx };
+    for (std::size_t i = 0; i < arguments.registerCount; ++i)
+        *registers[i] = arguments.registers[i];
+    const reg32 esp = cpu.esp;
+    for (std::size_t i = arguments.stackCount; i-- > 0;)
+    {
+        cpu.esp -= 4;
+        guest.setDword(cpu.esp, arguments.stack[i]);
+    }
+    // The return address's slot, left unwritten as the generated code leaves it.
+    cpu.esp -= 4;
+    const std::optional<double> depth = frontend::rendc::modelTransformPartCalled(guest.app(), cpu);
+    if (!depth)
+        throw fe::Terminated();
+    cpu.esp = esp;
+    return *depth;
+#endif
+}
+
+/* The whole car as one part of its model; its depth, what sub_4b8740 sizes by, kept.  By address
+ * (partByAddress). */
 inline reg32 drawWhole(Guest& guest, reg32 model, reg32 view, reg32 part, reg32 offset, reg32 matrix, reg32 place, reg32 flag)
 {
-    guest.call(kDrawModelPart, args({ model, part, 0, model + offset }, { matrix, place, view + 0x44, view + 0x38, flag }));
-    return bitsOf(float(guest.fpu().pop()));
+    return bitsOf(float(partByAddress(guest, args({ model, part, 0, model + offset },
+                                                  { matrix, place, view + 0x44, view + 0x38, flag }))));
 }
 
 }
@@ -1710,40 +1741,24 @@ x86::reg32 frontend::rendd::carNear(App* app, CPU& cpu, reg32 car, reg32 view)
     const reg32 shade = guest::direct<0x4ba350, carShade>(app, cpu, view, car, colour);
     carFrame(guest, car, axes, place, kRaise);
     guest::direct<0x4b93c0, bodyLean>(app, cpu, car, lean, axes);
-    // By address: sub_4b8740 at the end reads what is left in its frame, which a C++ call, pushing
-    // none of the five stack arguments, would leave 20 bytes up.
+    // By address (partByAddress): sub_4b8740 at the end reads what is left in its frame, which a
+    // C++ call, pushing none of the five stack arguments, would leave 20 bytes up.
     const auto part = [&](reg32 which, reg32 offset, reg32 turn, reg32 flag) {
-        guest.call(kDrawModelPart, args({ model, which, turn, model + offset }, { axes, place, view + 0x44, view + 0x38, flag }));
+        return partByAddress(guest, args({ model, which, turn, model + offset }, { axes, place, view + 0x44, view + 0x38, flag }));
     };
-    part(5, 0x138, lean, shade);
-    const reg32 size = bitsOf(float(guest.fpu().pop()));
+    const reg32 size = bitsOf(float(part(5, 0x138, lean, shade)));
     if (guest.dword(car + kCarLightsOn) != 0)
-    {
         part(0xc, 0x18c, lean, shade);
-        guest.fpu().pop();
-    }
     guest::direct<0x4b9140, frontWheelTurn>(app, cpu, car, wheel, 0u);
     if ((guest.byte(car + kWheelsHidden) & 1) == 0)
-    {
         part(6, 0x144, wheel, 0);
-        guest.fpu().pop();
-    }
     if ((guest.byte(car + kWheelsHidden) & 2) == 0)
-    {
         part(7, 0x150, wheel, 0);
-        guest.fpu().pop();
-    }
     guest::direct<0x4b9280, rearWheelTurn>(app, cpu, car, wheel);
     if ((guest.byte(car + kWheelsHidden) & 8) == 0)
-    {
         part(8, 0x15c, wheel, 0);
-        guest.fpu().pop();
-    }
     if ((guest.byte(car + kWheelsHidden) & 4) == 0)
-    {
         part(9, 0x168, wheel, 0);
-        guest.fpu().pop();
-    }
     // The game's code hands it the place in ecx too, which the lights take.
     fe::direct<0x4e0280, vertices::multiplyMatrix>(app, cpu, lean, axes, bodyTurn);
     // By address: sub_4b8740 reads what is left in its frame from before (an unknown light's size,
@@ -2077,7 +2092,7 @@ x86::reg32 frontend::rendd::arenaTake(App* app, CPU& cpu, reg32 slot, reg32 byte
     const reg32 used = guest.dword(kArenaNext) - guest.dword(kArena);
     if (sreg32(used) <= sreg32(guest.dword(kArenaSize)))
         return 1;
-    guest.call(kLog, args({}, { kOutOfArena }));
+    fe::direct<kLog, ea::error>(guest.app(), guest.cpu(), kOutOfArena, guest::Words({}));
     return 0;
 }
 

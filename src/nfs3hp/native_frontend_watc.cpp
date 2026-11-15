@@ -1,4 +1,6 @@
 #include "native_frontend_watc.h"
+#include "native_game.h"
+#include "native_watcom.h"
 #include "native_frontend_eaa.h"
 #include "native_frontend_eab.h"
 #include "native_frontend_menz.h"
@@ -7,6 +9,7 @@
 #include "native_frontend_wina.h"
 #include "native_frontend.h"
 #include "native_windows.h"
+#include "host_threads.h"
 #include <nfs3hp.h>
 #include <winapi/kernel32.h>
 
@@ -139,7 +142,7 @@ constexpr reg32 kScreenWidth = 0x564ff8, kScreenHeight = 0x564ffc;
 /* A semaphore of the runtime's: its lock taken (sub_51e71c's body). */
 reg32 lockSemaphore(Guest& guest, x86::CPU& cpu, reg32 semaphore)
 {
-    const reg32 thread = callImport<kGetCurrentThreadId, &win32::kernel32::GetCurrentThreadId>(guest, cpu);
+    const reg32 thread = callImport<kGetCurrentThreadId, &host::currentThreadId>(guest, cpu);
     if (thread != guest.dword(semaphore + 8))
     {
         if (guest.dword(semaphore + 4) == 0)
@@ -153,7 +156,7 @@ reg32 lockSemaphore(Guest& guest, x86::CPU& cpu, reg32 semaphore)
             }
             guest::direct<0x51e780, frontend::watc::unlock>(guest.app(), cpu, kLockOfLocks);
         }
-        callImport<kEnterCriticalSection, &win32::kernel32::EnterCriticalSection>(guest, cpu, guest.dword(semaphore));
+        callImport<kEnterCriticalSection, &host::enterLock>(guest, cpu, guest.dword(semaphore));
         guest.setDword(semaphore + 8, thread);
     }
     guest.setDword(semaphore + 0xc, guest.dword(semaphore + 0xc) + 1);
@@ -171,7 +174,7 @@ reg32 unlockSemaphore(Guest& guest, x86::CPU& cpu, reg32 semaphore)
         {
             const reg32 section = guest.dword(semaphore);
             guest.setDword(semaphore + 8, 0);
-            return callImport<kLeaveCriticalSection, &win32::kernel32::LeaveCriticalSection>(guest, cpu, section);
+            return callImport<kLeaveCriticalSection, &host::leaveLock>(guest, cpu, section);
         }
     }
     return semaphore;
@@ -183,7 +186,7 @@ reg32 giveBackTlsIndex(Guest& guest, x86::CPU& cpu)
     const reg32 index = guest.dword(kTlsIndex);
     if (index != 0xffffffff)
     {
-        callImport<kTlsFree, &win32::kernel32::TlsFree>(guest, cpu, index);
+        callImport<kTlsFree, &host::tlsFree>(guest, cpu, index);
         guest.setDword(kTlsIndex, 0xffffffff);
     }
     return guest.eax();
@@ -250,7 +253,7 @@ reg32 frontend::watc::setOsHandle(App* app, CPU& cpu, reg32 osHandle, reg32 hand
     }
     else
     {
-        table = guest.call(kNrealloc, args({ table, bytes + 4 }));
+        table = fe::direct<kNrealloc, watcom::clib::realloc>(guest.app(), guest.cpu(), table, bytes + 4);
         const reg32 count = guest.dword(kHandleCount);
         if (s(count) < s(handle))
         {
@@ -336,10 +339,10 @@ reg32 frontend::watc::newSemaphore(App* app, CPU& cpu)
     }
     else
     {
-        section = guest.call(kCalloc, args({ 1, 0x18 }));
+        section = fe::direct<kCalloc, watcom::clib::calloc>(guest.app(), guest.cpu(), 1, 0x18);
         if (section == 0)
             guest.call(kFatalError, args({ 0x55138c, 1 }));
-        const reg32 list = guest.call(kNrealloc, args({ guest.dword(kExtraSemaphores), (guest.dword(kExtraSemaphoreCount) + 1) << 2 }));
+        const reg32 list = fe::direct<kNrealloc, watcom::clib::realloc>(guest.app(), guest.cpu(), guest.dword(kExtraSemaphores), (guest.dword(kExtraSemaphoreCount) + 1) << 2);
         guest.setDword(kExtraSemaphores, list);
         if (list == 0)
             guest.call(kFatalError, args({ 0x5513b0, 1 }));
@@ -347,7 +350,7 @@ reg32 frontend::watc::newSemaphore(App* app, CPU& cpu)
         guest.setDword(guest.dword(kExtraSemaphores) + count * 4, section);
         guest.setDword(kExtraSemaphoreCount, count + 1);
     }
-    callImport<kInitializeCriticalSection, &win32::kernel32::InitializeCriticalSection>(guest, cpu, section);
+    callImport<kInitializeCriticalSection, &host::initLock>(guest, cpu, section);
     return section;
 }
 
@@ -368,7 +371,7 @@ reg32 frontend::watc::deleteKeptSemaphores(App* app, CPU& cpu)
         do
         {
             ++i;
-            callImport<kDeleteCriticalSection, &win32::kernel32::DeleteCriticalSection>(guest, cpu, section);
+            callImport<kDeleteCriticalSection, &host::deleteLock>(guest, cpu, section);
             section += 0x18;
         } while (s(i) < s(guest.dword(kStaticSemaphoreCount)));
     }
@@ -393,14 +396,14 @@ reg32 frontend::watc::deleteExtraSemaphores(App* app, CPU& cpu)
         {
             const reg32 offset = i * 4;
             ++i;
-            callImport<kDeleteCriticalSection, &win32::kernel32::DeleteCriticalSection>(
+            callImport<kDeleteCriticalSection, &host::deleteLock>(
                 guest, cpu, guest.dword(guest.dword(kExtraSemaphores) + offset));
-            guest.call(kNfree, args({ guest.dword(guest.dword(kExtraSemaphores) + offset) }));
+            fe::direct<kNfree, watcom::clib::free>(guest.app(), guest.cpu(), guest.dword(guest.dword(kExtraSemaphores) + offset));
         } while (s(i) < s(guest.dword(kExtraSemaphoreCount)));
     }
     const reg32 list = guest.dword(kExtraSemaphores);
     if (list != 0)
-        guest.call(kNfree, args({ list }));
+        fe::direct<kNfree, watcom::clib::free>(guest.app(), guest.cpu(), list);
     return guest.eax();
 }
 
@@ -651,7 +654,7 @@ reg32 frontend::watc::threadData(App* app, CPU& cpu)
     const fe::Frame frame(guest, cpu, 16);
     // In esi across what follows, as the code keeps it.
     cpu.esi = callImport<kGetLastError, &win32::kernel32::GetLastError>(guest, cpu);
-    reg32 data = callImport<kTlsGetValue, &win32::kernel32::TlsGetValue>(guest, cpu, guest.dword(kTlsIndex));
+    reg32 data = callImport<kTlsGetValue, &host::tlsGet>(guest, cpu, guest.dword(kTlsIndex));
     if (data == 0)
         data = guest.call(0x525e10);   // by address: the esi its fatal error's path leaves is read after it
     else if (guest.byte(data + 0x53) != 0)
@@ -675,13 +678,13 @@ reg32 frontend::watc::allocTlsIndex(App* app, CPU& cpu)
     reg32 index = guest.dword(kTlsIndex);
     if (index == 0xffffffff)
     {
-        index = callImport<kTlsAlloc, &win32::kernel32::TlsAlloc>(guest, cpu);
+        index = callImport<kTlsAlloc, &host::tlsAlloc>(guest, cpu);
         if (guest.word(kWinVersion) >= 0x8000 && guest.byte(kWinMajor) < 4)
         {
             while (index != 0xffffffff && index <= 2)
             {
                 guest.setDword(kTlsIndex, index);
-                index = callImport<kTlsAlloc, &win32::kernel32::TlsAlloc>(guest, cpu);
+                index = callImport<kTlsAlloc, &host::tlsAlloc>(guest, cpu);
             }
         }
     }
@@ -707,10 +710,10 @@ reg32 frontend::watc::attachThread(App* app, CPU& cpu)
         return 0;
     if (fe::direct<0x525f20, addThread>(app, cpu, guest.dword(data + 0xda), data) == 0)
     {
-        guest.call(kNfree, args({ data }));
+        fe::direct<kNfree, watcom::clib::free>(guest.app(), guest.cpu(), data);
         return 0;
     }
-    callImport<kTlsSetValue, &win32::kernel32::TlsSetValue>(guest, cpu, guest.dword(kTlsIndex), data);
+    callImport<kTlsSetValue, &host::tlsSet>(guest, cpu, guest.dword(kTlsIndex), data);
     return 1;
 }
 
@@ -728,12 +731,12 @@ reg32 frontend::watc::detachThread(App* app, CPU& cpu, reg32 closeIt)
     const reg32 index = guest.dword(kTlsIndex);
     if (index == 0xffffffff)
         return guest.eax();
-    const reg32 data = callImport<kTlsGetValue, &win32::kernel32::TlsGetValue>(guest, cpu, index);
+    const reg32 data = callImport<kTlsGetValue, &host::tlsGet>(guest, cpu, index);
     if (data == 0)
         return 0;
     const reg32 thread = guest.dword(data + 0xde);
     guest::direct<0x525f84, removeThread>(app, cpu, guest.dword(data + 0xda));
-    callImport<kTlsSetValue, &win32::kernel32::TlsSetValue>(guest, cpu, guest.dword(kTlsIndex), 0);
+    callImport<kTlsSetValue, &host::tlsSet>(guest, cpu, guest.dword(kTlsIndex), 0);
     if (thread != 0 && closeIt != 0)
         callImport<kCloseHandle, &win32::kernel32::CloseHandle>(guest, cpu, thread);
     return guest.eax();
@@ -812,7 +815,7 @@ reg32 frontend::watc::initThreads(App* app, CPU& cpu)
     const reg32 data = guest.dword(kMainThreadData);
     guest.setDword(0x5677a0, cpu.edi);
     guest::direct<0x525f20, addThread>(app, cpu, guest.dword(data + 0xda), data);
-    callImport<kTlsSetValue, &win32::kernel32::TlsSetValue>(guest, cpu, guest.dword(kTlsIndex), guest.dword(kMainThreadData));
+    callImport<kTlsSetValue, &host::tlsSet>(guest, cpu, guest.dword(kTlsIndex), guest.dword(kMainThreadData));
     guest.setDword(kThreadDataGetter, 0x51e7a8);
     return guest.eax();
 }
@@ -1199,7 +1202,7 @@ reg32 frontend::watc::shapeRowBytes(App* app, CPU& cpu, reg32 shape)
         guest.setDword(kErrorFile, 0x551b0c);
         guest.setDword(kErrorFunction, 0x551b1c);
         guest.setDword(kErrorLine, 0x35);
-        guest.call(kError, args({}, { 0x551b2c, type }));
+        fe::direct<0x401010, ea::error>(app, cpu, 0x551b2cu, guest::Words({ type }));
         cpu.ebx = ebx;
         cpu.esi = esi;
     }
@@ -1468,14 +1471,14 @@ reg32 frontend::watc::initEnviron(App* app, CPU& cpu)
     reg32 bytes = end - block;
     if (bytes == 0)
         bytes = 1;
-    const reg32 copy = guest.call(kNmalloc, args({ bytes }));
+    const reg32 copy = fe::direct<kNmalloc, watcom::clib::malloc>(guest.app(), guest.cpu(), bytes);
     if (copy != 0)
     {
         guest.setDword(kEnvironCopy, copy);
-        const reg32 list = guest.call(kNmalloc, args({ strings * 5 + 4 }));
+        const reg32 list = fe::direct<kNmalloc, watcom::clib::malloc>(guest.app(), guest.cpu(), strings * 5 + 4);
         if (list == 0)
         {
-            guest.call(kNfree, args({ copy }));
+            fe::direct<kNfree, watcom::clib::free>(guest.app(), guest.cpu(), copy);
         }
         else
         {
@@ -1496,7 +1499,7 @@ reg32 frontend::watc::initEnviron(App* app, CPU& cpu)
             offset += 4;
             guest.setDword(kEnvironFlags, list + offset);
             guest.setDword(kEnviron, list);
-            guest.call(kMemset, args({ list + offset, 0, count }));
+            fe::direct<kMemset, watcom::clib::memset>(guest.app(), guest.cpu(), list + offset, 0, count);
         }
     }
     return guest::direct<0x52bdb0, inheritHandles>(app, cpu);
@@ -1518,13 +1521,13 @@ reg32 frontend::watc::freeEnviron(App* app, CPU& cpu)
     const reg32 list = guest.dword(kEnviron);
     if (list != 0)
     {
-        guest.call(kNfree, args({ list }));
+        fe::direct<kNfree, watcom::clib::free>(guest.app(), guest.cpu(), list);
         guest.setDword(kEnviron, 0);
     }
     const reg32 copy = guest.dword(kEnvironCopy);
     if (copy != 0)
     {
-        guest.call(kNfree, args({ copy }));
+        fe::direct<kNfree, watcom::clib::free>(guest.app(), guest.cpu(), copy);
         guest.setDword(kEnvironCopy, 0);
     }
     const reg32 block = guest.dword(kEnvironmentBlock);
@@ -1545,7 +1548,7 @@ reg32 frontend::watc::setMbcp(App* app, CPU& cpu, reg32 asked)
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 40);
     constexpr reg32 kLeadBytes = 0xa0b210, kIsMultibyte = 0xa0b200, kCodePage = 0x56b0b8;
-    const auto clearTable = [&] { guest.call(kMemset, args({ kLeadBytes, 0, 0x101 })); };
+    const auto clearTable = [&] { fe::direct<kMemset, watcom::clib::memset>(guest.app(), guest.cpu(), kLeadBytes, 0, 0x101); };
     reg32 page = asked;
     if (asked == 0xffffffff)
         page = callImport<kGetAcp, &win32::kernel32::GetACP>(guest, cpu);
@@ -1616,7 +1619,7 @@ reg32 frontend::watc::attachThisThread(App* app, CPU& cpu)
     reg32 data = 0;
     cpu.eax = 0;   // on through it to sub_51e7ec: no block of its own
     if (fe::direct<0x51e888, attachThread>(app, cpu) != 0)
-        data = callImport<kTlsGetValue, &win32::kernel32::TlsGetValue>(guest, cpu, guest.dword(kTlsIndex));
+        data = callImport<kTlsGetValue, &host::tlsGet>(guest, cpu, guest.dword(kTlsIndex));
     if (data == 0)
         guest.call(kFatalError, args({ 0x551ef0, 1 }));
     return data;
@@ -1634,20 +1637,20 @@ reg32 frontend::watc::resizeThreadData(App* app, CPU& cpu)
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 24);
     guest.call(guest.dword(kLockThreads));
-    const reg32 thread = callImport<kGetCurrentThreadId, &win32::kernel32::GetCurrentThreadId>(guest, cpu);
+    const reg32 thread = callImport<kGetCurrentThreadId, &host::currentThreadId>(guest, cpu);
     reg32 node = guest.dword(kThreadList);
     while (node != 0 && thread != guest.dword(node + 4))
         node = guest.dword(node);
     reg32 data;
     if (guest.dword(node + 0xc) != 0)
     {
-        data = guest.call(kNrealloc, args({ guest.dword(node + 8), guest.dword(kThreadDataSize) }));
+        data = fe::direct<kNrealloc, watcom::clib::realloc>(guest.app(), guest.cpu(), guest.dword(node + 8), guest.dword(kThreadDataSize));
         if (data == 0)
             guest.call(kFatalError, args({ 0x551f18, 1 }));
     }
     else
     {
-        data = guest.call(kCalloc, args({ 1, guest.dword(kThreadDataSize) }));
+        data = fe::direct<kCalloc, watcom::clib::calloc>(guest.app(), guest.cpu(), 1, guest.dword(kThreadDataSize));
         if (data == 0)
             guest.call(kFatalError, args({ 0x551f40, 1 }));
         const reg32 old = guest.dword(node + 8);
@@ -1659,7 +1662,7 @@ reg32 frontend::watc::resizeThreadData(App* app, CPU& cpu)
     guest.setByte(data + 0x52, 1);
     guest.setByte(data + 0x53, 0);
     guest.setDword(data + 0xf0, size);
-    callImport<kTlsSetValue, &win32::kernel32::TlsSetValue>(guest, cpu, guest.dword(kTlsIndex), data);
+    callImport<kTlsSetValue, &host::tlsSet>(guest, cpu, guest.dword(kTlsIndex), data);
     guest.call(guest.dword(kUnlockThreads));
     return data;
 }
@@ -1677,14 +1680,14 @@ reg32 frontend::watc::addThread(App* app, CPU& cpu, reg32 thread, reg32 data)
     const fe::Frame frame(guest, cpu, 12);
     guest.call(guest.dword(kLockThreads));
     reg32 added = 0;
-    const reg32 node = guest.call(kCalloc, args({ 1, 0x10 }));
+    const reg32 node = fe::direct<kCalloc, watcom::clib::calloc>(guest.app(), guest.cpu(), 1, 0x10);
     guest.leaveEdx(node);
     if (node != 0)
     {
         cpu.eax = data;   // on through it to the hook
         if (fe::direct<0x52c824, threadStartHook>(app, cpu) != 0)
         {
-            guest.call(kNfree, args({ node }));
+            fe::direct<kNfree, watcom::clib::free>(guest.app(), guest.cpu(), node);
         }
         else
         {
@@ -1720,9 +1723,9 @@ reg32 frontend::watc::removeThread(App* app, CPU& cpu, reg32 thread)
         if (thread == guest.dword(node + 4))
         {
             if (guest.dword(node + 0xc) != 0)
-                guest.call(kNfree, args({ guest.dword(node + 8) }));
+                fe::direct<kNfree, watcom::clib::free>(guest.app(), guest.cpu(), guest.dword(node + 8));
             guest.setDword(link, guest.dword(node));
-            guest.call(kNfree, args({ node }));
+            fe::direct<kNfree, watcom::clib::free>(guest.app(), guest.cpu(), node);
             break;
         }
     }
@@ -1747,7 +1750,7 @@ reg32 frontend::watc::freeThreadList(App* app, CPU& cpu)
     {
         const reg32 owned = guest.dword(node + 0xc), next = guest.dword(node);
         if (owned != 0)
-            guest.call(kNfree, args({ guest.dword(node + 8) }));
+            fe::direct<kNfree, watcom::clib::free>(guest.app(), guest.cpu(), guest.dword(node + 8));
         guest.call(kNfree, args({ node }));
         node = next;
     }
@@ -2062,12 +2065,12 @@ void frontend::watcHookThreadSignals(win32::WinApplication* app, x86::CPU& cpu)
     fe::runWhole(app, cpu, site, [&](Guest&) { return watc::hookThreadSignals(app, cpu); });
 }
 
-/* sub_52b523: pow's bad cases: the error reported, or 0 where the answer is 0 with no error. */
-reg32 frontend::watc::powError(App* app, CPU& cpu, reg32 arguments)
+/* sub_52b523: pow's bad cases: the error reported, or 0 where the answer is 0 with no error; the
+ * answer, which its adapter leaves on the x87's stack as the code does. */
+double frontend::watc::powError(App* app, CPU& cpu, reg32 arguments)
 {
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 0x1c);
-    const reg32 entryEax = guest.eax();
     const reg32 x = arguments, y = arguments + 8;
     const auto doubleAt = [&](reg32 at) { return app->getMemory<double>(at); };
     const std::uint8_t kind = guest.byte(arguments + 0x10);
@@ -2090,18 +2093,22 @@ reg32 frontend::watc::powError(App* app, CPU& cpu, reg32 arguments)
     double answer = 0.0;
     if (code != 0)
     {
+        // The runtime's error report (native_watcom.cpp's) by address: its answer off the x87's stack.
         guest.call(0x5243b1, args({ code, x, y }));
         answer = double(guest.fpu().pop());
     }
-    guest.fpu().push(x86::Float(answer));
-    return entryEax;
+    return answer;
 }
 
 void frontend::watcPowError(win32::WinApplication* app, x86::CPU& cpu)
 {
     static fe::Site site = makeSite("sub_52b523", 0x14, 0, kEbx | kEcx | kEdx);
     const reg32 arguments = cpu.esp + 4;
-    fe::runWhole(app, cpu, site, [&](Guest&) { return watc::powError(app, cpu, arguments); });
+    fe::runWhole(app, cpu, site, [&](Guest&) {
+        const reg32 eax = cpu.eax;  // as it came
+        cpu.fpu.push(x86::Float(watc::powError(app, cpu, arguments)));
+        return eax;
+    });
 }
 
 // ---------------------------------------------------------------------------
@@ -2305,7 +2312,7 @@ reg32 frontend::watc::printAtCell(App* app, CPU& cpu, reg32 arguments)
     const reg32 buffer = guest.frame();
     const reg32 x = guest.dword(arguments) << 3, y = guest.dword(arguments + 4) << 3;
     guest.setDword(buffer + 0x100, arguments + 12);
-    guest.call(kVsprintf, args({ buffer, guest.dword(arguments + 8), buffer + 0x100 }));
+    fe::direct<kVsprintf, watcom::clib::vsprintf>(guest.app(), guest.cpu(), buffer, guest.dword(arguments + 8), buffer + 0x100);
     const reg32 result = fe::direct<0x52e4e0, textAt>(app, cpu, buffer, x, y);
     guest.setDword(buffer + 0x100, 0);
     return result;
@@ -2538,11 +2545,11 @@ reg32 frontend::watc::printInWindow(App* app, CPU& cpu, reg32 arguments)
         guest.setDword(kErrorFile, 0x552050);
         guest.setDword(kErrorFunction, 0x552060);
         guest.setDword(kErrorLine, 0x72);
-        guest.call(kError, args({}, { 0x552074 }));
+        fe::direct<kError, ea::error>(guest.app(), guest.cpu(), 0x552074, guest::Words({}));
         cpu.edi = edi;
     }
     guest.setDword(buffer + 0x100, arguments + 12);
-    guest.call(kVsprintf, args({ buffer, guest.dword(arguments + 8), buffer + 0x100 }));
+    fe::direct<kVsprintf, watcom::clib::vsprintf>(guest.app(), guest.cpu(), buffer, guest.dword(arguments + 8), buffer + 0x100);
     fe::direct<0x4ead20, wata::windowApply>(app, cpu);
     fe::direct<0x52e420, wina::textStart>(app, cpu);
     fe::direct<0x52e4e0, textAt>(app, cpu, buffer, x, y);
@@ -2643,7 +2650,7 @@ reg32 frontend::watc::inheritHandles(App* app, CPU& cpu)
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 40);
     const reg32 buffer = guest.frame();
-    reg32 at = guest.call(0x50ead0, args({ 0x5520b8 }));
+    reg32 at = fe::direct<0x50ead0, watcom::clib::getenv>(guest.app(), guest.cpu(), 0x5520b8);
     if (at == 0)
         return 0;
     // A field up to its separator as a number; `at` past the separator.
@@ -2661,7 +2668,7 @@ reg32 frontend::watc::inheritHandles(App* app, CPU& cpu)
             }
         }
         const reg32 length = stop - at;
-        guest.call(kStrncpy, args({ buffer, at, length }));
+        fe::direct<kStrncpy, watcom::clib::strncpy>(guest.app(), guest.cpu(), buffer, at, length);
         guest.setByte(buffer + length, 0);
         const reg32 value = guest::direct<0x52e660, stringToLongSigned>(app, cpu, buffer, 0, 0x10);
         at = stop + 1;
@@ -2698,14 +2705,14 @@ reg32 frontend::watc::clearEnviron(App* app, CPU& cpu)
             continue;
         const reg32 index = sar(at - guest.dword(kEnviron), 2);
         if (guest.byte(index + guest.dword(kEnvironFlags)) != 0)
-            guest.call(kNfree, args({ string }));
+            fe::direct<kNfree, watcom::clib::free>(guest.app(), guest.cpu(), string);
         guest.setDword(at, 0);
     }
     reg32 list;
     if (guest.dword(kEnvironFlags) == 0)
-        list = guest.call(kNmalloc, args({ 5 }));
+        list = fe::direct<kNmalloc, watcom::clib::malloc>(guest.app(), guest.cpu(), 5);
     else
-        list = guest.call(kNrealloc, args({ guest.dword(kEnviron), 5 }));
+        list = fe::direct<kNrealloc, watcom::clib::realloc>(guest.app(), guest.cpu(), guest.dword(kEnviron), 5);
     if (list == 0)
         return 0xffffffff;
     guest.setDword(kEnviron, list);
@@ -2989,7 +2996,7 @@ reg32 frontend::watc::digitValue(App* app, CPU& cpu, std::uint8_t c)
     const fe::Frame frame(guest, cpu, 4);
     if (c >= '0' && c <= '9')
         return reg32(c) - 0x30;
-    const std::uint8_t lower = std::uint8_t(guest.call(0x4f0ae0, args({ c })));
+    const std::uint8_t lower = std::uint8_t(fe::direct<0x4f0ae0, watcom::clib::tolower>(guest.app(), guest.cpu(), c));
     if (lower >= 'a' && lower <= 'z')
         return reg32(lower) - 0x57;
     return 0x25;
@@ -3013,7 +3020,7 @@ reg32 frontend::watc::putEnvironment(App* app, CPU& cpu, reg32 text)
     if (equals == 0 || equals == text)
         return kFailed;
     const reg32 nameLength = equals - text;
-    const reg32 name = guest.call(kNmalloc, args({ nameLength + 1 }));
+    const reg32 name = fe::direct<kNmalloc, watcom::clib::malloc>(guest.app(), guest.cpu(), nameLength + 1);
     if (name == 0)
         return kFailed;
     copyUp(guest, name, text, nameLength);
@@ -3023,18 +3030,18 @@ reg32 frontend::watc::putEnvironment(App* app, CPU& cpu, reg32 text)
     reg32 value = 0;
     if (valueLength != 0)
     {
-        value = guest.call(kNmalloc, args({ valueLength + 1 }));
+        value = fe::direct<kNmalloc, watcom::clib::malloc>(guest.app(), guest.cpu(), valueLength + 1);
         if (value == 0)
         {
-            guest.call(kNfree, args({ name }));
+            fe::direct<kNfree, watcom::clib::free>(guest.app(), guest.cpu(), name);
             return kFailed;
         }
         copyUp(guest, value, from, valueLength);
         guest.setByte(value + valueLength, 0);
     }
     const reg32 set = callImport<kSetEnvironmentVariable, &win32::kernel32::SetEnvironmentVariableA>(guest, cpu, name, value);
-    guest.call(kNfree, args({ name }));
-    guest.call(kNfree, args({ value }));
+    fe::direct<kNfree, watcom::clib::free>(guest.app(), guest.cpu(), name);
+    fe::direct<kNfree, watcom::clib::free>(guest.app(), guest.cpu(), value);
     if (set == 0)
         return kFailed;
     if (guest::direct<0x52e88c, environSet>(app, cpu, text) != 0)
@@ -3042,7 +3049,7 @@ reg32 frontend::watc::putEnvironment(App* app, CPU& cpu, reg32 text)
     if (guest.dword(kWideEnviron) == 0)
         return 0;
     const reg32 characters = guest.call(kMbslen, args({ text })) + 1;
-    const reg32 wide = guest.call(kNmalloc, args({ 2 * characters }));
+    const reg32 wide = fe::direct<kNmalloc, watcom::clib::malloc>(guest.app(), guest.cpu(), 2 * characters);
     if (wide == 0)
     {
         guest.call(0x500f8c, args({ 5 }));
@@ -3050,7 +3057,7 @@ reg32 frontend::watc::putEnvironment(App* app, CPU& cpu, reg32 text)
     }
     if (guest.call(0x518080, args({ wide, text, characters })) == kFailed)
     {
-        guest.call(kNfree, args({ wide }));
+        fe::direct<kNfree, watcom::clib::free>(guest.app(), guest.cpu(), wide);
         return kFailed;
     }
     return guest.call(0x52c178, args({ wide }));
@@ -3095,7 +3102,7 @@ reg32 frontend::watc::environSet(App* app, CPU& cpu, reg32 text)
     {
         if (removing)
             return 0;
-        list = guest.call(kNmalloc, args({ 9 }));
+        list = fe::direct<kNmalloc, watcom::clib::malloc>(guest.app(), guest.cpu(), 9);
         if (list == 0)
             return kFailed;
         guest.setDword(kEnviron, list);
@@ -3121,17 +3128,17 @@ reg32 frontend::watc::environSet(App* app, CPU& cpu, reg32 text)
             const reg32 flags = guest.dword(kEnvironFlags);
             if (flags == 0)
             {
-                const reg32 grown = guest.call(kNmalloc, args({ listBytes + flagCount }));
+                const reg32 grown = fe::direct<kNmalloc, watcom::clib::malloc>(guest.app(), guest.cpu(), listBytes + flagCount);
                 list = grown;
                 if (grown == 0)
                     return kFailed;
                 copyUp(guest, grown, guest.dword(kEnviron), index * 4);
                 guest.setDword(kEnvironFlags, listBytes + grown);
-                guest.call(kMemset, args({ listBytes + grown, 0, flagCount }));
+                fe::direct<kMemset, watcom::clib::memset>(guest.app(), guest.cpu(), listBytes + grown, 0, flagCount);
             }
             else
             {
-                list = guest.call(kNrealloc, args({ list, listBytes + flagCount }));
+                list = fe::direct<kNrealloc, watcom::clib::realloc>(guest.app(), guest.cpu(), list, listBytes + flagCount);
                 if (list == 0)
                     return kFailed;
                 const reg32 moved = listBytes + list;
@@ -3173,8 +3180,8 @@ reg32 frontend::watc::environFind(App* app, CPU& cpu, reg32 name, reg32 removing
         bool same = false;
         for (;;)
         {
-            const reg32 upperOwn = guest.call(kToupper, args({ guest.byte(string) }));
-            const reg32 upperWanted = guest.call(kToupper, args({ guest.byte(wanted) }));
+            const reg32 upperOwn = fe::direct<kToupper, watcom::clib::toupper>(guest.app(), guest.cpu(), guest.byte(string));
+            const reg32 upperWanted = fe::direct<kToupper, watcom::clib::toupper>(guest.app(), guest.cpu(), guest.byte(wanted));
             if (upperOwn != upperWanted)
                 break;
             if (guest.byte(string) == '=')
@@ -3213,7 +3220,7 @@ reg32 frontend::watc::environFind(App* app, CPU& cpu, reg32 name, reg32 removing
         if (flags != 0)
         {
             if (guest.byte(index + flags) != 0)
-                guest.call(kNfree, args({ removed }));
+                fe::direct<kNfree, watcom::clib::free>(guest.app(), guest.cpu(), removed);
             const reg32 count = sar(last - guest.dword(kEnviron), 2);
             guest.call(kMemmove, args({ last, guest.dword(kEnvironFlags), count }));
             guest.setDword(kEnvironFlags, last);
@@ -3253,7 +3260,9 @@ reg32 frontend::watc::threadStart(App* app, CPU& cpu, reg32 parameters)
         cpu.esp -= (guest.dword(kThreadDataSize) + 3) & 0xfffffffc;
         const reg32 data = cpu.esp;
         guest.leaveEcx(data);
-        guest.call(kMemset, args({ data, 0, guest.dword(kThreadDataSize) }));
+        const reg32 size = guest.dword(kThreadDataSize);
+        fe::direct<0x4e0640, watcom::clib::memset>(app, cpu, data, 0u, size);
+        guest.leaveEbx(size);  // as the code loads it for it, which it keeps
         guest.setDword(data + 0xf0, guest.dword(kThreadDataSize));
         cpu.eax = data;   // on through it to sub_51e7ec: the block to take
         if (fe::direct<0x51e888, attachThread>(app, cpu) == 0)
@@ -3261,7 +3270,7 @@ reg32 frontend::watc::threadStart(App* app, CPU& cpu, reg32 parameters)
     }
     const reg32 own = guest.call(guest.dword(kThreadDataGetter)) + 0xde;
     guest.setDword(parameters + 0x10, own);
-    callImport<kSetEvent, &win32::kernel32::SetEvent>(guest, cpu, guest.dword(parameters + 0xc));
+    callImport<kSetEvent, &host::setEvent>(guest, cpu, guest.dword(parameters + 0xc));
     guest.call(0x51f0d0, args({ frame }));
     guest.call(guest.dword(kThreadOnStart));
     guest.call(guest.dword(frame + 8), args({ argument }));
@@ -3291,16 +3300,16 @@ reg32 frontend::watc::beginThread(App* app, CPU& cpu, reg32 function, reg32 stac
     }
     guest.setDword(frame + 0x20, function);
     guest.setDword(frame + 0x24, cpu.ebx);
-    guest.setDword(frame + 0x28, callImport<kGetCurrentThread, &win32::kernel32::GetCurrentThread>(guest, cpu));
+    guest.setDword(frame + 0x28, callImport<kGetCurrentThread, &host::currentThread>(guest, cpu));
     guest.setDword(frame + 0x30, 0);
     copyUp(guest, frame, kEventName, 9);
-    const reg32 thread = callImport<kGetCurrentThreadId, &win32::kernel32::GetCurrentThreadId>(guest, cpu);
+    const reg32 thread = callImport<kGetCurrentThreadId, &host::currentThreadId>(guest, cpu);
     guest.call(0x51e0ec, args({ thread, frame + 8, 0x10 }));
     cpu.eax = frame;
-    const reg32 event = callImport<kCreateEvent, &win32::kernel32::CreateEventA>(guest, cpu, 0, 0, 0, frame);
+    const reg32 event = callImport<kCreateEvent, &host::createEvent>(guest, cpu, 0, 0, 0, frame);
     guest.setDword(frame + 0x2c, event);
     cpu.eax = frame + 0x20;
-    const reg32 handle = callImport<kCreateThread, &win32::kernel32::CreateThread>(
+    const reg32 handle = callImport<kCreateThread, &host::createThread>(
         guest, cpu, 0, (stackSize + 0xfff) & 0xfffff000, 0x52eb70, frame + 0x20, 0, frame + 0x34);
     guest.leaveEbx(handle);
     if (handle == 0)
@@ -3309,7 +3318,7 @@ reg32 frontend::watc::beginThread(App* app, CPU& cpu, reg32 function, reg32 stac
     }
     else
     {
-        callImport<kWaitForSingleObject, &win32::kernel32::WaitForSingleObject>(guest, cpu, guest.dword(frame + 0x2c), 0xffffffff);
+        callImport<kWaitForSingleObject, &host::waitOne>(guest, cpu, guest.dword(frame + 0x2c), 0xffffffff);
         const reg32 slot = guest.dword(frame + 0x30);
         if (slot != 0)
             guest.setDword(slot, handle);
@@ -3341,7 +3350,7 @@ reg32 frontend::watc::endThread(App* app, CPU& cpu)
         cpu.eax = 1;   // as the game's code hands it
         fe::direct<0x51e8dc, detachThread>(app, cpu, 1);
     }
-    callImport<kExitThread, &win32::kernel32::ExitThread>(guest, cpu, 0);
+    callImport<kExitThread, &host::exitThread>(guest, cpu, 0);
     return guest.eax();
 }
 

@@ -16,6 +16,9 @@ namespace port
 
 // The game's 0x4136e0: the race's first bank loaded into slot 0: its handle; esp the frame base.
 Result raceBankLoadOf(App* app, CPU& cpu, reg32 esp);
+// The game's 0x412b50: the race's sound ended (the master volume faded out, everything stopped and freed, the
+// music stopped, the menus' volumes back): the music's setting kept; esp the frame base.
+Result raceSoundEndOf(App* app, CPU& cpu, reg32 esp);
 
 }  // namespace port
 
@@ -25,6 +28,17 @@ namespace guest
 // Nothing handed over; the handle in eax.
 template <>
 struct ByAddress<port::raceBankLoadOf>
+{
+    template <x86::reg32 Address>
+    static port::Result call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32)
+    {
+        return watcomEax(app, cpu, Address, {});
+    }
+};
+
+// Nothing handed over; eax back.
+template <>
+struct ByAddress<port::raceSoundEndOf>
 {
     template <x86::reg32 Address>
     static port::Result call(win32::WinApplication* app, x86::CPU& cpu, x86::reg32)

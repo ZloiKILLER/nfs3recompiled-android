@@ -62,6 +62,8 @@ public:
     Guest(win32::WinApplication* app, x86::CPU& cpu) : m_app(app), m_cpu(cpu) {}
 
     win32::WinApplication* app() const { return m_app; }
+    /* The guest's processor, for a direct call (fe::direct) from code that has only the Guest. */
+    x86::CPU& cpu() const { return m_cpu; }
 
     std::uint8_t byte(x86::reg32 address) const { return m_app->getMemory<x86::reg8>(address); }
     std::uint16_t word(x86::reg32 address) const { return m_app->getMemory<x86::reg16>(address); }
@@ -195,9 +197,10 @@ public:
     static x86::Float integer(std::int32_t value) { return x86::Float(x86::sreg32(value)); }
     x86::Float load(x86::reg32 address) const { return x86::Float(m_guest.floatAt(address)); }
 
-    x86::Float add(const x86::Float& a, const x86::Float& b) { return m_fpu.add(a, b); }
-    x86::Float sub(const x86::Float& a, const x86::Float& b) { return m_fpu.sub(a, b); }
-    x86::Float mul(const x86::Float& a, const x86::Float& b) { return m_fpu.mul(a, b); }
+    // The game's single precision, to the bit, with nothing of the x87 behind it (fp::, fpu.h).
+    x86::Float add(const x86::Float& a, const x86::Float& b) { return fp::add(a, b); }
+    x86::Float sub(const x86::Float& a, const x86::Float& b) { return fp::sub(a, b); }
+    x86::Float mul(const x86::Float& a, const x86::Float& b) { return fp::mul(a, b); }
 
     /* fcom a, b and what a jump after it reads: ja, and jb (true unordered). */
     bool above(const x86::Float& a, const x86::Float& b);

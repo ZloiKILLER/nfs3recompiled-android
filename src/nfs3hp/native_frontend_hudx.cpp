@@ -318,6 +318,7 @@ x86::reg32 frontend::hudx::stepZoom(App* app, CPU& cpu, reg32 step)
 {
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 12);
+    // By address: the function goes out with the ebx, esi and edi sub_48ea20 leaves.
     reg32 result = guest.call(kZoomStepped, args({ 0, step }));
     if (gameSettings(guest).playMode == 1)
         result = guest.call(kZoomStepped, args({ 1, step }));
@@ -397,7 +398,10 @@ constexpr reg32 kFontCharacters = 0xe0;
 }  // namespace
 
 /* sub_4d10e0: a text ending at x, at the y in ebx.  The width comes off the
- * x87's stack into the sum; what kDrawText leaves there is dropped. */
+ * x87's stack into the sum; what kDrawText leaves there is dropped.  Both by
+ * address: the drawing's y is the ebx the width's call leaves, and this
+ * function leaves the registers as the drawing does (the menu check's world
+ * has both clobber them; port_text's keep them). */
 x86::reg32 frontend::hudx::drawTextToRightEdge(App* app, CPU& cpu, reg32 text, reg32 right, reg32 y)
 {
     Guest guest(app, cpu);
@@ -458,11 +462,12 @@ x86::reg32 frontend::hudx::groupDropLast(App* app, CPU& cpu, reg32 group)
     return offset;
 }
 
-/* sub_497590 (stdcall 8): the length of the vector x, y on the stack, on the x87's stack.
- * eax comes back as it went: the function saves it. */
-void frontend::hudx::vectorLength(App* app, CPU& cpu, reg32 xBits, reg32 yBits)
+/* sub_497590 (stdcall 8): the length of the vector x, y on the stack (its adapter leaves it on the
+ * x87's stack).  eax comes back as it went: the function saves it. */
+double frontend::hudx::vectorLength(App* app, CPU& cpu, reg32 xBits, reg32 yBits)
 {
-    Guest guest(app, cpu);
+    NFS2_USE(app);
+    NFS2_USE(cpu);
     float xValue, yValue;
     std::memcpy(&xValue, &xBits, sizeof xValue);
     std::memcpy(&yValue, &yBits, sizeof yValue);
@@ -470,7 +475,7 @@ void frontend::hudx::vectorLength(App* app, CPU& cpu, reg32 xBits, reg32 yBits)
     const Float y(yValue);
     const Float xSquared = fp::mul(x, x);
     const Float ySquared = fp::mul(y, y);
-    guest.fpu().push(fp::sqrt(fp::add(xSquared, ySquared)));
+    return fp::sqrt(fp::add(xSquared, ySquared));
 }
 
 /* ---------------------------------------------------------------------------
@@ -574,7 +579,7 @@ void frontend::hudVectorLength(win32::WinApplication* app, x86::CPU& cpu)
     static fe::Site site{ "sub_497590", 8, 0, nullptr, 0, 0 };
     const reg32 x = app->getMemory<reg32>(cpu.esp + 4), y = app->getMemory<reg32>(cpu.esp + 8);
     fe::runWhole(app, cpu, site, [&](Guest&) {
-        hudx::vectorLength(app, cpu, x, y);
+        cpu.fpu.push(x86::Float(hudx::vectorLength(app, cpu, x, y)));
         return cpu.eax;
     });
 }

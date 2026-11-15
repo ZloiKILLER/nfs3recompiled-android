@@ -1,12 +1,16 @@
-#include <winapi/wsock32.h>
-#include <x86.h>
+#include "host_net.h"
+
+#include <lib/memmap.h>
+#include <lib/mutex.h>
 #include <lib/socket.h>
+#include <lib/winapp.h>
 #include <SDL3/SDL.h>
 #include <cstring>
 #include <string>
 #include <vector>
 
-/* Winsock 1.1 as the game uses it, on the host's sockets (lib/socket.h).
+/* Winsock 1.1 as the game uses it, on the host's sockets (lib/socket.h); until plan step 6 it was
+ * the port's Windows' wsock32 (src/lib/winapi), moved here as it was.
  *
  * TCP/IP races are the game's own protocol on a real TCP connection, so a phone
  * plays with the original game and the Modern Patch on a PC alike.
@@ -22,11 +26,16 @@
  * broadcast node goes to every network's broadcast address.  A datagram carries
  * the game's data and nothing else. */
 
-namespace win32 { namespace wsock32
+namespace nfs3hp
+{
+namespace host
 {
 
 namespace
 {
+
+using win32::Socket;
+using win32::WinApplication;
 
 constexpr int kInterrupted = 10004;
 constexpr int kFault = 10014;
@@ -35,6 +44,7 @@ constexpr int kWouldBlock = 10035;
 constexpr int kNotSocket = 10038;
 constexpr int kOperationNotSupported = 10045;
 constexpr int kFamilyNotSupported = 10047;
+constexpr int kSystemNotReady = 10091;
 constexpr int kHostNotFound = 11001;
 
 constexpr x86::reg32 kInvalidSocket = 0xffffffff;
@@ -58,11 +68,11 @@ int failWith(int error)
  * +120 and its name at +256. */
 x86::reg32 scratch()
 {
-    static MemMap* s_scratch = new MemMap(4096);
+    static win32::MemMap* s_scratch = new win32::MemMap(4096);
     return s_scratch->getBlockStart();
 }
 
-Socket* find(WinApplication* app, SOCKET s)
+Socket* find(WinApplication* app, x86::reg32 s)
 {
     Socket* socket = dynamic_cast<Socket*>(app->getResource(s));
     if (!socket || socket->closed())
@@ -93,7 +103,7 @@ public:
     Unlocked(WinApplication* app, x86::CPU& cpu)
         :   m_app(app)
         ,   m_cpu(cpu)
-        ,   m_held(static_cast<Mutex*>(app->getMemory<Mutex*>(cpu.efs + 8)) != nullptr)
+        ,   m_held(static_cast<win32::Mutex*>(app->getMemory<win32::Mutex*>(cpu.efs + 8)) != nullptr)
     {
         if (m_held)
             m_app->unlockContext(m_cpu);
@@ -146,34 +156,24 @@ int blocking(WinApplication* app, x86::CPU& cpu, Socket* socket, int event, Call
     }
 }
 
-const uint8_t* bytes(const sockaddr* address)
-{
-    return reinterpret_cast<const uint8_t*>(address->sa_data);
-}
-
-uint8_t* bytes(sockaddr* address)
-{
-    return reinterpret_cast<uint8_t*>(address->sa_data);
-}
-
 /* sockaddr_in: the port and then the address, both in network order. */
-bool readInet(const sockaddr* address, int length, uint32_t* ip, uint16_t* port)
+bool readInet(const NetAddress* address, int length, uint32_t* ip, uint16_t* port)
 {
     if (!address || length < kInetLength)
         return failWith(kFault) == 0;
-    if (address->sa_family != kInetFamily)
+    if (address->family != kInetFamily)
         return failWith(kFamilyNotSupported) == 0;
-    const uint8_t* data = bytes(address);
+    const uint8_t* data = address->data;
     *port = uint16_t((data[0] << 8) | data[1]);
     std::memcpy(ip, data + 2, 4);
     return true;
 }
 
-void writeInet(sockaddr* address, uint32_t ip, uint16_t port)
+void writeInet(NetAddress* address, uint32_t ip, uint16_t port)
 {
     std::memset(address, 0, kInetLength);
-    address->sa_family = kInetFamily;
-    uint8_t* data = bytes(address);
+    address->family = kInetFamily;
+    uint8_t* data = address->data;
     data[0] = uint8_t(port >> 8);
     data[1] = uint8_t(port);
     std::memcpy(data + 2, &ip, 4);
@@ -188,13 +188,13 @@ struct IpxAddress
     bool broadcast;
 };
 
-bool readIpx(const sockaddr* address, int length, IpxAddress* ipx)
+bool readIpx(const NetAddress* address, int length, IpxAddress* ipx)
 {
     if (!address || length < kIpxLength)
         return failWith(kFault) == 0;
-    if (address->sa_family != kIpxFamily)
+    if (address->family != kIpxFamily)
         return failWith(kFamilyNotSupported) == 0;
-    const uint8_t* data = bytes(address);
+    const uint8_t* data = address->data;
     ipx->broadcast = true;
     for (int i = 4; i < 10; ++i)
         ipx->broadcast = ipx->broadcast && data[i] == 0xff;
@@ -203,11 +203,11 @@ bool readIpx(const sockaddr* address, int length, IpxAddress* ipx)
     return true;
 }
 
-void writeIpx(sockaddr* address, uint32_t ip, uint16_t socket)
+void writeIpx(NetAddress* address, uint32_t ip, uint16_t socket)
 {
     std::memset(address, 0, kIpxLength);
-    address->sa_family = kIpxFamily;
-    uint8_t* data = bytes(address);
+    address->family = kIpxFamily;
+    uint8_t* data = address->data;
     std::memcpy(data + 4, &ip, 4);
     data[10] = uint8_t(socket >> 8);
     data[11] = uint8_t(socket);
@@ -255,23 +255,22 @@ void traceData(Socket* socket, const char* what, x86::reg32 handle, const char* 
     SDL_Log("[NET] %s 0x%x %d: %d%s %s", what, unsigned(handle), asked, result, where, bytes);
 }
 
-}
+}  // namespace
 
-int select(WinApplication* app, x86::CPU& cpu, int nfds,
-           fd_set* readfds, fd_set* writefds, fd_set* exceptfds,
-           const timeval *timeout)
+int socketSelect(WinApplication* app, x86::CPU& cpu, int count, NetSet* reading, NetSet* writing,
+                 NetSet* failing, const NetTimeval* timeout)
 {
-    NFS2_USE(nfds);
+    NFS2_USE(count);
     std::vector<Socket*> sockets;
     std::vector<x86::reg32> handles;
     std::vector<int> want;
-    auto collect = [&](const fd_set* set, int event) {
+    auto collect = [&](const NetSet* set, int event) {
         if (!set)
             return true;
-        const unsigned listed = set->fd_count < FD_SETSIZE_WSA ? set->fd_count : FD_SETSIZE_WSA;
+        const unsigned listed = set->count < kNetSetSize ? set->count : kNetSetSize;
         for (unsigned i = 0; i < listed; ++i)
         {
-            const x86::reg32 handle = set->fd_array[i];
+            const x86::reg32 handle = set->sockets[i];
             size_t at = 0;
             while (at < handles.size() && handles[at] != handle)
                 ++at;
@@ -293,18 +292,18 @@ int select(WinApplication* app, x86::CPU& cpu, int nfds,
         }
         return true;
     };
-    if (!collect(readfds, Socket::Readable) || !collect(writefds, Socket::Writable)
-        || !collect(exceptfds, Socket::Failed))
+    if (!collect(reading, Socket::Readable) || !collect(writing, Socket::Writable)
+        || !collect(failing, Socket::Failed))
         return -1;
 
-    const int count = int(sockets.size());
+    const int listed = int(sockets.size());
     std::vector<int> have(sockets.size(), 0);
     /* Into the log each time a thread asks select about a different set of
      * sockets than it last did: what it waits for on each, R, W or E. */
     {
         thread_local std::string t_lastAsked;
         std::string asked;
-        for (int i = 0; i < count; ++i)
+        for (int i = 0; i < listed; ++i)
         {
             char one[32];
             SDL_snprintf(one, sizeof(one), " 0x%x:%s%s%s", unsigned(handles[size_t(i)]),
@@ -323,20 +322,20 @@ int select(WinApplication* app, x86::CPU& cpu, int nfds,
     for (Socket* socket : sockets)
         ++socket->users;
     int ready = 0;
-    if (!timeout || timeout->tv_sec > 0 || timeout->tv_usec > 0)
+    if (!timeout || timeout->seconds > 0 || timeout->microseconds > 0)
     {
         /* Waited out with the guest lock let go, a little at a time, so a
          * socket closed meanwhile is let go of soon. */
         const Uint64 start = SDL_GetTicks();
-        const Uint64 limit = timeout ? Uint64(timeout->tv_sec > 0 ? timeout->tv_sec : 0) * 1000
-                                           + Uint64(timeout->tv_usec > 0 ? timeout->tv_usec : 0) / 1000
+        const Uint64 limit = timeout ? Uint64(timeout->seconds > 0 ? timeout->seconds : 0) * 1000
+                                           + Uint64(timeout->microseconds > 0 ? timeout->microseconds : 0) / 1000
                                      : ~Uint64(0);
         Unlocked unlocked(app, cpu);
         for (;;)
         {
             const Uint64 spent = SDL_GetTicks() - start;
             const Uint64 left = spent < limit ? limit - spent : 0;
-            ready = Socket::poll(sockets.data(), want.data(), have.data(), count, int(left < 20 ? left : 20));
+            ready = Socket::poll(sockets.data(), want.data(), have.data(), listed, int(left < 20 ? left : 20));
             if (ready != 0 || left == 0)
                 break;
             bool closed = false;
@@ -348,7 +347,7 @@ int select(WinApplication* app, x86::CPU& cpu, int nfds,
     }
     else
     {
-        ready = Socket::poll(sockets.data(), want.data(), have.data(), count, 0);
+        ready = Socket::poll(sockets.data(), want.data(), have.data(), listed, 0);
     }
     for (Socket* socket : sockets)
         --socket->users;
@@ -360,7 +359,7 @@ int select(WinApplication* app, x86::CPU& cpu, int nfds,
         if (++s_logged <= 40)
         {
             std::string got;
-            for (int i = 0; i < count; ++i)
+            for (int i = 0; i < listed; ++i)
             {
                 if (!have[size_t(i)])
                     continue;
@@ -377,34 +376,34 @@ int select(WinApplication* app, x86::CPU& cpu, int nfds,
     /* Each set keeps the sockets that have its event; the result counts a
      * socket once for every set it stays in. */
     int total = 0;
-    auto keep = [&](fd_set* set, int event) {
+    auto keep = [&](NetSet* set, int event) {
         if (!set)
             return;
-        const unsigned listed = set->fd_count < FD_SETSIZE_WSA ? set->fd_count : FD_SETSIZE_WSA;
+        const unsigned inSet = set->count < kNetSetSize ? set->count : kNetSetSize;
         unsigned kept = 0;
-        for (unsigned i = 0; i < listed; ++i)
+        for (unsigned i = 0; i < inSet; ++i)
         {
-            const x86::reg32 handle = set->fd_array[i];
+            const x86::reg32 handle = set->sockets[i];
             for (size_t at = 0; at < handles.size(); ++at)
             {
                 if (handles[at] == handle && (have[at] & event))
                 {
-                    set->fd_array[kept++] = handle;
+                    set->sockets[kept++] = handle;
                     break;
                 }
             }
         }
-        set->fd_count = kept;
+        set->count = kept;
         total += int(kept);
     };
-    keep(readfds, Socket::Readable);
-    keep(writefds, Socket::Writable);
-    keep(exceptfds, Socket::Failed);
+    keep(reading, Socket::Readable);
+    keep(writing, Socket::Writable);
+    keep(failing, Socket::Failed);
     return total;
 }
 
-int sendto(WinApplication* app, x86::CPU& cpu, SOCKET s, const char* buf, int len,
-           int flags, const sockaddr* to, int tolen)
+int socketSendTo(WinApplication* app, x86::CPU& cpu, x86::reg32 s, const char* buf, int len, int flags,
+                 const NetAddress* to, int tolen)
 {
     Socket* socket = find(app, s);
     if (!socket)
@@ -443,10 +442,8 @@ int sendto(WinApplication* app, x86::CPU& cpu, SOCKET s, const char* buf, int le
     return sent;
 }
 
-int getsockname(WinApplication* app, x86::CPU& cpu,
-                SOCKET s, sockaddr* name, int* namelen)
+int socketName(WinApplication* app, x86::reg32 s, NetAddress* name, int* namelen)
 {
-    NFS2_USE(cpu);
     Socket* socket = find(app, s);
     if (!socket)
         return -1;
@@ -465,10 +462,8 @@ int getsockname(WinApplication* app, x86::CPU& cpu,
     return 0;
 }
 
-int bind(WinApplication* app, x86::CPU& cpu,
-         SOCKET s, const sockaddr* name, int namelen)
+int socketBind(WinApplication* app, x86::reg32 s, const NetAddress* name, int namelen)
 {
-    NFS2_USE(cpu);
     Socket* socket = find(app, s);
     if (!socket)
         return -1;
@@ -495,50 +490,34 @@ int bind(WinApplication* app, x86::CPU& cpu,
     return result;
 }
 
-unsigned short htons(WinApplication* app, x86::CPU& cpu, unsigned short hostshort)
+unsigned short byteSwap16(unsigned short value)
 {
-    NFS2_USE(app);
-    NFS2_USE(cpu);
-    return (hostshort >> 8) | (hostshort << 8);
+    return (value >> 8) | (value << 8);
 }
 
-unsigned short ntohs(WinApplication* app, x86::CPU& cpu, unsigned short netshort)
+std::uint32_t addressParse(const char* text)
 {
-    NFS2_USE(app);
-    NFS2_USE(cpu);
-    return (netshort >> 8) | (netshort << 8);
+    return Socket::parseAddress(text);
 }
 
-unsigned long inet_addr(WinApplication* app, x86::CPU& cpu, const char *cp)
+x86::reg32 addressText(WinApplication* app, x86::reg32 address)
 {
-    NFS2_USE(app);
-    NFS2_USE(cpu);
-    return Socket::parseAddress(cp);
-}
-
-Packed<char> inet_ntoa(WinApplication* app, x86::CPU& cpu, x86::reg32 in)
-{
-    NFS2_USE(cpu);
     const x86::reg32 at = scratch();
     char text[16];
-    std::memcpy(&app->getMemory<char>(at), dotted(in, text), sizeof(text));
-    return Packed<char>(at);
+    std::memcpy(&app->getMemory<char>(at), dotted(address, text), sizeof(text));
+    return at;
 }
 
-int gethostname(WinApplication* app, x86::CPU& cpu, char *name, int namelen)
+int hostName(char* name, int namelen)
 {
-    NFS2_USE(app);
-    NFS2_USE(cpu);
     if (!name || namelen < int(sizeof(kHostName)))
         return failWith(kFault);
     std::memcpy(name, kHostName, sizeof(kHostName));
     return 0;
 }
 
-int setsockopt(WinApplication* app, x86::CPU& cpu,
-               SOCKET s, int level, int optname, const char *optval, int optlen)
+int socketSetOption(WinApplication* app, x86::reg32 s, int level, int optname, const char* optval, int optlen)
 {
-    NFS2_USE(cpu);
     Socket* socket = find(app, s);
     if (!socket)
         return -1;
@@ -547,7 +526,7 @@ int setsockopt(WinApplication* app, x86::CPU& cpu,
     return socket->setOption(level, optname, optval, optlen);
 }
 
-int closesocket(WinApplication* app, x86::CPU& cpu, SOCKET s)
+int socketClose(WinApplication* app, x86::CPU& cpu, x86::reg32 s)
 {
     Socket* socket = dynamic_cast<Socket*>(app->getResource(s));
     if (!socket || socket->closed())
@@ -575,9 +554,8 @@ int closesocket(WinApplication* app, x86::CPU& cpu, SOCKET s)
     return 0;
 }
 
-SOCKET socket(WinApplication* app, x86::CPU& cpu, int af, int type, int protocol)
+x86::reg32 socketOpen(WinApplication* app, int af, int type, int protocol)
 {
-    NFS2_USE(cpu);
     NFS2_USE(protocol);
     Socket::Kind kind = Socket::Stream;
     bool ipx = false;
@@ -605,32 +583,28 @@ SOCKET socket(WinApplication* app, x86::CPU& cpu, int af, int type, int protocol
     return app->allocateResource(result);
 }
 
-int WSACleanup(WinApplication* app, x86::CPU& cpu)
+int netCleanup()
 {
-    NFS2_USE(app);
-    NFS2_USE(cpu);
     return 0;
 }
 
-int WSAStartup(WinApplication* app, x86::CPU& cpu, WORD wVersionRequired, LPWSADATA lpWSAData)
+int netStartup(std::uint16_t version, NetStartup* data)
 {
-    NFS2_USE(app);
-    NFS2_USE(cpu);
-    NFS2_USE(wVersionRequired);
-    if (!lpWSAData)
+    NFS2_USE(version);
+    if (!data)
         return kFault;
-    lpWSAData->wVersion = 0x0101;
-    lpWSAData->wHighVersion = 0x0101;
-    lpWSAData->iMaxSockets = 64;
-    lpWSAData->iMaxUdpDg = 1600;
-    lpWSAData->lpVendorInfo = Packed<char>();
-    lpWSAData->szDescription[0] = 0;
-    lpWSAData->szSystemStatus[0] = 0;
-    return Socket::startup() ? 0 : 10091; // WSASYSNOTREADY
+    data->version = 0x0101;
+    data->highVersion = 0x0101;
+    data->maxSockets = 64;
+    data->maxUdpDatagram = 1600;
+    data->vendorInfo = 0;
+    data->description[0] = 0;
+    data->systemStatus[0] = 0;
+    return Socket::startup() ? 0 : kSystemNotReady;
 }
 
-int recvfrom(WinApplication* app, x86::CPU& cpu, SOCKET s, char* buf, int len,
-             int flags, sockaddr* from, int* fromlen)
+int socketRecvFrom(WinApplication* app, x86::CPU& cpu, x86::reg32 s, char* buf, int len, int flags,
+                   NetAddress* from, int* fromlen)
 {
     Socket* socket = find(app, s);
     if (!socket)
@@ -657,7 +631,7 @@ int recvfrom(WinApplication* app, x86::CPU& cpu, SOCKET s, char* buf, int len,
     return got;
 }
 
-Packed<hostent> gethostbyname(WinApplication* app, x86::CPU& cpu, const char *name)
+x86::reg32 hostByName(WinApplication* app, x86::CPU& cpu, const char* name)
 {
     uint32_t address = 0;
     bool found = false;
@@ -674,7 +648,7 @@ Packed<hostent> gethostbyname(WinApplication* app, x86::CPU& cpu, const char *na
     if (!found)
     {
         Socket::setLastError(kHostNotFound);
-        return Packed<hostent>();
+        return 0;
     }
     const x86::reg32 at = scratch();
     const x86::reg32 entry = at + 64;
@@ -692,19 +666,17 @@ Packed<hostent> gethostbyname(WinApplication* app, x86::CPU& cpu, const char *na
     app->getMemory<x86::reg32>(addresses) = first;
     app->getMemory<x86::reg32>(addresses + 4) = 0;
     app->getMemory<x86::reg32>(first) = address;
-    return Packed<hostent>(entry);
+    return entry;
 }
 
-int ioctlsocket(WinApplication* app, x86::CPU& cpu, SOCKET s,
-                x86::sreg32 cmd, x86::reg32* argp)
+int socketControl(WinApplication* app, x86::reg32 s, x86::reg32 cmd, x86::reg32* argp)
 {
-    NFS2_USE(cpu);
     Socket* socket = find(app, s);
     if (!socket)
         return -1;
     if (!argp)
         return failWith(kFault);
-    switch (x86::reg32(cmd))
+    switch (cmd)
     {
     case 0x8004667e: // FIONBIO
         socket->nonBlocking = *argp != 0;
@@ -725,9 +697,8 @@ int ioctlsocket(WinApplication* app, x86::CPU& cpu, SOCKET s,
     }
 }
 
-int listen(WinApplication* app, x86::CPU& cpu, SOCKET s, int backlog)
+int socketListen(WinApplication* app, x86::reg32 s, int backlog)
 {
-    NFS2_USE(cpu);
     Socket* socket = find(app, s);
     if (!socket)
         return -1;
@@ -740,17 +711,15 @@ int listen(WinApplication* app, x86::CPU& cpu, SOCKET s, int backlog)
     return result;
 }
 
-int shutdown(WinApplication* app, x86::CPU& cpu, SOCKET s, int how)
+int socketShutdown(WinApplication* app, x86::reg32 s, int how)
 {
-    NFS2_USE(cpu);
     Socket* socket = find(app, s);
     if (!socket)
         return -1;
     return socket->shutdown(how);
 }
 
-int connect(WinApplication* app, x86::CPU& cpu, SOCKET s,
-            const sockaddr *name, int namelen)
+int socketConnect(WinApplication* app, x86::CPU& cpu, x86::reg32 s, const NetAddress* name, int namelen)
 {
     Socket* socket = find(app, s);
     if (!socket)
@@ -776,8 +745,7 @@ int connect(WinApplication* app, x86::CPU& cpu, SOCKET s,
     return 0;
 }
 
-SOCKET accept(WinApplication* app, x86::CPU& cpu, SOCKET s,
-              sockaddr *addr, int* addrlen)
+x86::reg32 socketAccept(WinApplication* app, x86::CPU& cpu, x86::reg32 s, NetAddress* addr, int* addrlen)
 {
     Socket* listening = find(app, s);
     if (!listening)
@@ -802,22 +770,20 @@ SOCKET accept(WinApplication* app, x86::CPU& cpu, SOCKET s,
     return app->allocateResource(accepted);
 }
 
-int __WSAFDIsSet(WinApplication* app, x86::CPU& cpu, SOCKET fd, fd_set* set)
+int socketIsSet(x86::reg32 fd, NetSet* set)
 {
-    NFS2_USE(app);
-    NFS2_USE(cpu);
     if (!set)
         return 0;
-    const unsigned count = set->fd_count < FD_SETSIZE_WSA ? set->fd_count : FD_SETSIZE_WSA;
+    const unsigned count = set->count < kNetSetSize ? set->count : kNetSetSize;
     for (unsigned i = 0; i < count; ++i)
     {
-        if (set->fd_array[i] == fd)
+        if (set->sockets[i] == fd)
             return 1;
     }
     return 0;
 }
 
-int send(WinApplication* app, x86::CPU& cpu, SOCKET s, const char* buf, int len, int flags)
+int socketSend(WinApplication* app, x86::CPU& cpu, x86::reg32 s, const char* buf, int len, int flags)
 {
     Socket* socket = find(app, s);
     if (!socket)
@@ -830,7 +796,7 @@ int send(WinApplication* app, x86::CPU& cpu, SOCKET s, const char* buf, int len,
     return sent;
 }
 
-int recv(WinApplication* app, x86::CPU& cpu, SOCKET s, char* buf, int len, int flags)
+int socketRecv(WinApplication* app, x86::CPU& cpu, x86::reg32 s, char* buf, int len, int flags)
 {
     Socket* socket = find(app, s);
     if (!socket)
@@ -843,11 +809,61 @@ int recv(WinApplication* app, x86::CPU& cpu, SOCKET s, char* buf, int len, int f
     return got;
 }
 
-int WSAGetLastError(WinApplication* app, x86::CPU& cpu)
+int netLastError()
 {
-    NFS2_USE(app);
-    NFS2_USE(cpu);
     return Socket::lastError();
 }
 
-}}
+/* The serial port: none on the host (what the port's Windows answered before step 6). */
+int serialGetState(x86::reg32 handle, x86::reg32 dcb)
+{
+    NFS2_USE(handle);
+    NFS2_USE(dcb);
+    NFS2_ASSERT(false);
+    return 0;
+}
+
+int serialSetState(x86::reg32 handle, x86::reg32 dcb)
+{
+    NFS2_USE(handle);
+    NFS2_USE(dcb);
+    NFS2_ASSERT(false);
+    return 0;
+}
+
+int serialSetTimeouts(x86::reg32 handle, x86::reg32 timeouts)
+{
+    NFS2_USE(handle);
+    NFS2_USE(timeouts);
+    NFS2_ASSERT(false);
+    return 0;
+}
+
+int serialGetProperties(x86::reg32 handle, x86::reg32 properties)
+{
+    NFS2_USE(handle);
+    NFS2_USE(properties);
+    NFS2_ASSERT(false);
+    return 0;
+}
+
+int serialPurge(x86::reg32 handle, x86::reg32 flags)
+{
+    NFS2_USE(handle);
+    NFS2_USE(flags);
+    NFS2_ASSERT(false);
+    return 0;
+}
+
+int serialOverlappedResult(x86::reg32 handle, x86::reg32 overlapped, x86::reg32 transferred, x86::reg32 wait)
+{
+    NFS2_USE(handle);
+    NFS2_USE(overlapped);
+    NFS2_USE(transferred);
+    NFS2_USE(wait);
+    NFS2_ASSERT(false);
+    return 0;
+}
+
+}  // namespace host
+}  // namespace nfs3hp

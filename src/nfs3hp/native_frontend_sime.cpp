@@ -1,4 +1,5 @@
 #include "native_frontend_sime.h"
+#include "native_game.h"
 #include "game_settings.h"
 #include "native_carstate.h"
 #include "native_ea_memory.h"
@@ -435,8 +436,8 @@ x86::reg32 frontend::sime::makeRootTable(App* app, CPU& cpu)
     reg32 entry = 0;
     for (reg32 i = 0; i < kRootTableEntries; ++i)
     {
-        guest::direct<0x4ea920, simc::squareRoot>(app, cpu, (i << 17) | 0x3f000000u);
-        const float inverse = float(fp::div(1.0, guest.fpu().pop()));
+        const double root = guest::direct<0x4ea920, simc::squareRootOf>(app, cpu, (i << 17) | 0x3f000000u);
+        const float inverse = float(fp::div(1.0, root));
         entry = ((bitsOf(inverse) + 0x2000u) >> 15) & 0xff;
         guest.setByte(kRootTable + i, std::uint8_t(entry));
     }
@@ -969,10 +970,10 @@ x86::reg32 frontend::sime::spawnParticle(App* app, CPU& cpu, reg32 kind, reg32 o
     guest.setFloat(particle + kParticleGrowth, float(fp::mul(floatFrom(guest, shape + kKindGrowth), Float(scale))));
     guest.setFloat(particle + kParticleAngle, float(randomFraction(cpu, guest)));
     guest.setFloat(particle + kParticleSpin, float(fp::mul(floatFrom(guest, shape + kKindSpin), Float(scale))));
-    guest::direct<0x4ea950, simd::cosine>(app, cpu, guest.dword(particle + kParticleAngle));
-    guest.setFloat(particle + kParticleCosine, float(guest.fpu().pop()));
-    guest::direct<0x4ea930, simd::sine>(app, cpu, guest.dword(particle + kParticleAngle));
-    guest.setFloat(particle + kParticleSine, float(guest.fpu().pop()));
+    guest.setFloat(particle + kParticleCosine,
+                   float(guest::direct<0x4ea950, simd::cosineValue>(app, cpu, guest.dword(particle + kParticleAngle))));
+    guest.setFloat(particle + kParticleSine,
+                   float(guest::direct<0x4ea930, simd::sineValue>(app, cpu, guest.dword(particle + kParticleAngle))));
     guest.setFloat(particle + kParticleChance, float(randomFraction(cpu, guest)));
     guest.setDword(particle + kParticleSwirl, guest.dword(shape + kKindSwirl));
     guest.setFloat(particle + kParticleSwirlRate, float(floatFrom(guest, shape + kKindSwirlRate)));
@@ -1331,10 +1332,10 @@ x86::reg32 frontend::sime::dropsOnView(App* app, CPU& cpu, reg32 player, reg32 o
         const Float shrink = fp::mul(randomFraction(cpu, guest), fp::mul(Float(size), doubleAt(guest, kHalf)));
         const float sizeNow = float(fp::sub(size, shrink));
         const float angle = float(randomFraction(cpu, guest));
-        guest::direct<0x4ea930, simd::sine>(app, cpu, bitsOf(angle));
-        const float sine = float(fp::mul(guest.fpu().pop(), Float(sizeNow)));
-        guest::direct<0x4ea950, simd::cosine>(app, cpu, bitsOf(angle));
-        const Float cosine = fp::mul(guest.fpu().pop(), Float(sizeNow));
+        const float sine =
+            float(fp::mul(guest::direct<0x4ea930, simd::sineValue>(app, cpu, bitsOf(angle)), Float(sizeNow)));
+        const Float cosine =
+            fp::mul(guest::direct<0x4ea950, simd::cosineValue>(app, cpu, bitsOf(angle)), Float(sizeNow));
 
         guest.setFloat(slot + kDropX, x);
         guest.setFloat(slot + kDropY, y);
@@ -1566,7 +1567,7 @@ x86::reg32 frontend::sime::wheelMarksResetAtLoad(App* app, CPU& cpu)
 {
     Guest guest(app, cpu);
     const fe::Frame locals(guest, cpu, 8);
-    guest.call(kFillZero, args({ kWheelMarks, kWheelMarksBytes }));
+    fe::direct<kFillZero, ea::clearBytes>(guest.app(), guest.cpu(), kWheelMarks, kWheelMarksBytes);
     return fe::direct<0x4a33d0, loada::stopCheck>(app, cpu);
 }
 

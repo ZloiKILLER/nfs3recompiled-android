@@ -1,4 +1,5 @@
 #include "native_frontend_hudr.h"
+#include "native_watcom.h"
 #include "game_settings.h"
 #include "native_carstate.h"
 #include "native_frontend.h"
@@ -8,6 +9,7 @@
 #include "native_frontend_loopb.h"
 #include "native_frontend_rendb.h"
 #include "native_graphics.h"
+#include "port_hud.h"
 #include "port_text.h"
 #include <nfs3hp.h>
 #include <cstring>
@@ -79,8 +81,6 @@ constexpr std::uint8_t kKeepsEbxEcxEsiEdi = fe::kRestoreEbx | kKeepsEcxEsiEdi;
 // The game's functions, by address.
 constexpr reg32 kSprintf = 0x4df690;
 constexpr reg32 kCharacterHeight = 0x4d1540;   // eax a character
-constexpr reg32 kAlignedText = 0x4897f0;       // eax the text; the stack a TextPlace
-constexpr reg32 kDrawPlaceWithLetters = 0x48a3a0;
 constexpr reg32 kQueueQuad = 0x49bd30;         // eax a queue, edx, ebx, ecx and the stack its corners
 constexpr reg32 kUnqueueQuad = 0x49bdc0;       // likewise
 constexpr reg32 kFlushQueue = 0x49be40;        // eax a queue
@@ -258,6 +258,7 @@ x86::reg32 frontend::hudr::rebuildElement(App* app, CPU& cpu, reg32 view, reg32 
         return guest::direct<0x481570, hudz::layNothing>(app, cpu, view);
     case kMap:
     case kCopMap:
+        // By address: the function goes out with the edx sub_48d110 leaves.
         guest.call(kBuildMapViews, args({ view, width, height }));
         return guest.call(kBuildMapPanel, args({ view }));
     case kMarkers:
@@ -330,15 +331,6 @@ constexpr reg32 kLightsB = 0x749a44;
 constexpr reg32 kListWidths = 0x724780;        // by view
 
 // The port's functions the elements end in.
-constexpr reg32 kDrawSpeedText = 0x489d70;
-constexpr reg32 kDrawListRows = 0x489b30;      // eax how many, edx the one chosen, ebx 0
-constexpr reg32 kUpdateNeedle = 0x48a220;
-constexpr reg32 kDrawRevText = 0x489c40;
-constexpr reg32 kSetRevNeedle = 0x489e00;      // eax a view, edx the revs, ebx their limit, ecx the colour
-constexpr reg32 kDrawStandings = 0x48ae70;
-constexpr reg32 kDrawLabelRows = 0x48a660;
-constexpr reg32 kDrawMapPoints = 0x48d4c0;     // eax a view, edx the car
-constexpr reg32 kSetMarkers = 0x48b5f0;        // eax a view, edx and ebx the car, ecx the colour
 constexpr reg32 kDrawMeter = 0x48c0e0;
 constexpr reg32 kDrawLights = 0x48c7c0;
 
@@ -367,12 +359,19 @@ struct Element
     }
 };
 
+/* The HUD's text drawn aligned (port_hud's), as C++: what it gives back in eax. */
+reg32 alignedText(Guest& guest, reg32 text, reg32 scale, reg32 colour, reg32 x, reg32 dx, reg32 y, reg32 mode)
+{
+    return reg32(*fe::direct<0x4897f0, port::hud::textAlignedOf>(guest.app(), guest.cpu(), guest.cpu().esp - 4 - 4 * 6, text,
+                                                                 scale, colour, x, dx, y, mode));
+}
+
 /* A line of the language's text at its place, the box read before the line. */
 reg32 drawLanguageLine(Guest& guest, x86::CPU& cpu, fe::Arguments place, std::uint32_t line)
 {
-    place.registers[0] = languageLine(guest, cpu, line);
-    place.registerCount = 1;
-    return guest.call(kAlignedText, place);
+    const reg32 text = languageLine(guest, cpu, line);
+    return alignedText(guest, text, place.stack[0], place.stack[1], place.stack[2], place.stack[3], place.stack[4],
+                       place.stack[5]);
 }
 
 /* The gears' list down a speedometer's side: the chosen one and the last in
@@ -384,9 +383,15 @@ reg32 drawGearRows(const Element& e, reg32 left, reg32 right, reg32 bottom)
     const reg32 scale = guest.dword(kScaleLarge);
     const reg32 gear = guest.byte(e.car + kCarGear);
     const reg32 gears = guest.dword(guest.dword(e.car + kCarData) + kDataGears) - 2;
-    if (leftAlone)
-        return guest.call(kDrawListRows, args({ gears, gear, 0 }, { scale, kColourRow, kColourGrey, 0, left, right, bottom }));
-    return guest.call(kDrawListRows, args({ gears, gear, 0 }, { scale, e.colour, e.colour, e.colour, left, right, bottom }));
+    const reg32 drawn = leftAlone
+        ? reg32(*fe::direct<0x489b30, port::hud::listRowsOf>(guest.app(), e.cpu, e.cpu.esp - 4 - 4 * 7, gears, gear, 0u, scale,
+                                                             kColourRow, kColourGrey, 0u, left, right, bottom))
+        : reg32(*fe::direct<0x489b30, port::hud::listRowsOf>(guest.app(), e.cpu, e.cpu.esp - 4 - 4 * 7, gears, gear, 0u, scale,
+                                                             e.colour, e.colour, e.colour, left, right, bottom));
+    // edx and ebx as the call by address leaves them.
+    guest.leaveEdx(gear);
+    guest.leaveEbx(0);
+    return drawn;
 }
 
 /* The frame around the element's item, for the one the editor's pointer is on. */
@@ -403,7 +408,8 @@ reg32 drawSpeedFigures(const Element& e)
     const reg32 seat = (gameSettings(guest).playMode == 1 ? 1 : 0) + e.view;
     const reg32 form = gameSettings(guest).hudOf(seat, formOf(guest, e.car)).speedometerForm;
     const reg32 firstUnits = form == 1 || form == 2 ? 1 : 0;
-    guest.call(kDrawSpeedText, args({}, { kFullScaleSpeed, firstUnits, guest.dword(kScaleLabel), e.colour, e.box(kBoxRight), e.top }));
+    fe::direct<0x489d70, port::hud::percentTextOf>(guest.app(), e.cpu, e.cpu.esp - 4 - 4 * 6, kFullScaleSpeed, firstUnits,
+                                                   guest.dword(kScaleLabel), e.colour, e.box(kBoxRight), e.top);
     X87 x87(guest);
     const Float left = X87::integer(std::int32_t(e.box(kBoxLeft)));
     const Float right = X87::integer(std::int32_t(e.box(kBoxRight)));
@@ -422,7 +428,8 @@ reg32 drawSpeedDial(const Element& e)
     const reg32 view = e.view;
     const reg32 seat = view + (gameSettings(guest).playMode == 1 ? 1 : 0);
     const reg32 form = formOf(guest, e.car);
-    guest.call(kUpdateNeedle, args({ view }, { kFullScaleSpeed, e.colour }));
+    fe::direct<0x48a220, port::hud::indicatorGeometryOf>(guest.app(), e.cpu, e.cpu.esp - 4 - 4 * 2, view, kFullScaleSpeed,
+                                                         e.colour);
     guest::direct<0x481170, frontend::hudz::placeDialArt>(guest.app(), e.cpu, seat, form,
                                                          guest.dword(kSpeedVertices) + (view << 8));
     fe::direct<0x47fbe0, frontend::rendb::queueEightQuads>(guest.app(), e.cpu, guest.dword(kSpeedGroup) + (view << 5));
@@ -443,8 +450,9 @@ reg32 drawSpeedDial(const Element& e)
 reg32 drawRevFigures(const Element& e)
 {
     Guest& guest = e.guest;
-    return guest.call(kDrawRevText, args({ guest.dword(e.car + kCarRevs) },
-                                         { guest.dword(kScaleLabel), guest.dword(kScaleLarge), e.colour, e.box(kBoxRight), e.top }));
+    return reg32(*fe::direct<0x489c40, port::hud::timeTextOf>(guest.app(), e.cpu, e.cpu.esp - 4 - 4 * 5,
+                                                              guest.dword(e.car + kCarRevs), guest.dword(kScaleLabel),
+                                                              guest.dword(kScaleLarge), e.colour, e.box(kBoxRight), e.top));
 }
 
 /* Kind 3: the tachometer: its corners' texture coordinates for the size of its
@@ -505,7 +513,12 @@ reg32 drawRevDial(const Element& e)
     const reg32 quad = guest.dword(kRevQuads) + view * 7;
     queueQuad(guest, kDialQueue, quad);
     const reg32 limit = guest.dword(guest.dword(e.car + kCarData) + kDataRevLimit);
-    guest.call(kSetRevNeedle, args({ view, guest.dword(e.car + kCarRevs), limit, e.colour }));
+    const reg32 revs = guest.dword(e.car + kCarRevs);
+    fe::direct<0x489e00, port::hud::indicatorQuadOf>(guest.app(), e.cpu, e.cpu.esp - 4, view, revs, limit, e.colour);
+    // edx, ebx and ecx as the call by address leaves them.
+    guest.leaveEdx(revs);
+    guest.leaveEbx(limit);
+    guest.leaveEcx(e.colour);
     guest.call(kFlushQueue, args({ kDialQueue }));
     const reg32 unqueued = unqueueQuad(guest, kDialQueue, quad);
     if (!e.cardWithAlpha())
@@ -544,7 +557,11 @@ reg32 drawPlace(const Element& e)
     }
     const reg32 large = guest.dword(kScaleLarge);
     const reg32 among = fe::direct<0x4cdee0, frontend::loopb::racerCount>(guest.app(), e.cpu);
-    return guest.call(kDrawPlaceWithLetters, args({ guest.dword(kPosition), among }, { large, small, e.colour, left, right, e.top, e.alignment }));
+    const reg32 drawn = reg32(*fe::direct<0x48a3a0, port::hud::rankTextOf>(guest.app(), e.cpu, e.cpu.esp - 4 - 4 * 7,
+                                                                          guest.dword(kPosition), among, large, small, e.colour,
+                                                                          left, right, e.top, e.alignment));
+    guest.leaveEdx(among);  // as the call by address leaves it
+    return drawn;
 }
 
 /* The panel behind a list: its quad queued, on a card without alpha. */
@@ -582,7 +599,8 @@ reg32 drawStandings(const Element& e)
     fe::direct<0x47ee80, frontend::rendb::prepareStandings>(guest.app(), e.cpu, e.car);
     guest::direct<0x4853c0, frontend::hudr::rebuildElement>(guest.app(), e.cpu, e.view, kStandings);
     queueListPanel(e);
-    guest.call(kDrawStandings, args({}, { guest.dword(kScaleRows), e.box(kBoxLeft), guest.dword(kListWidths + e.view * 4), e.view }));
+    fe::direct<0x48ae70, port::hud::standingsOf>(guest.app(), e.cpu, e.cpu.esp - 4 - 4 * 4, guest.dword(kScaleRows),
+                                                 e.box(kBoxLeft), guest.dword(kListWidths + e.view * 4), e.view);
     return frameListPanel(e);
 }
 
@@ -591,7 +609,8 @@ reg32 drawLabelRows(const Element& e)
 {
     Guest& guest = e.guest;
     queueListPanel(e);
-    guest.call(kDrawLabelRows, args({ e.view }, { guest.dword(kScaleRows), e.box(kBoxLeft), e.box(kBoxRight), guest.dword(kListWidths + e.view * 4) }));
+    fe::direct<0x48a660, port::hud::labelRowsOf>(guest.app(), e.cpu, e.cpu.esp - 4 - 4 * 4, e.view, guest.dword(kScaleRows),
+                                                 e.box(kBoxLeft), e.box(kBoxRight), guest.dword(kListWidths + e.view * 4));
     return frameListPanel(e);
 }
 
@@ -602,7 +621,8 @@ reg32 drawMap(const Element& e)
 {
     Guest& guest = e.guest;
     const reg32 view = e.view;
-    guest.call(kDrawMapPoints, args({ view, e.car }));
+    fe::direct<0x48d4c0, port::hud::mapPointsOf>(guest.app(), e.cpu, e.cpu.esp - 4, view, e.car, e.cpu.ebx, e.cpu.ecx);
+    guest.leaveEdx(e.car);  // as the call by address leaves it
     fe::direct<0x47fbe0, frontend::rendb::queueEightQuads>(guest.app(), e.cpu, guest.dword(kMapGroup) + (view << 5));
     if (!e.cardWithAlpha())
     {
@@ -745,7 +765,15 @@ x86::reg32 frontend::hudr::drawElement(App* app, CPU& cpu, reg32 item)
     case kCopMap:
         return drawMap(e);
     case kMarkers:
-        return guest.call(kSetMarkers, args({ view, car, car, e.leftAlone() ? kMarkersColour : colour }));
+    {
+        const reg32 markerColour = e.leftAlone() ? kMarkersColour : colour;
+        const reg32 set = reg32(*fe::direct<0x48b5f0, port::hud::markersOf>(app, cpu, cpu.esp - 4, view, car, car, markerColour));
+        // edx, ebx and ecx as the call by address leaves them.
+        guest.leaveEdx(car);
+        guest.leaveEbx(car);
+        guest.leaveEcx(markerColour);
+        return set;
+    }
     case kRatioSecond:
         return guest::direct<0x489a50, drawRatio>(app, cpu, guest.dword(car + kCarRatioB), gameSettings(guest).pursuitWinCount,
                                                   small, colour, e.box(kBoxLeft), e.box(kBoxRight), top, alignment);
@@ -766,7 +794,6 @@ namespace
  * The map's pane: sub_48e920
  * ------------------------------------------------------------------------- */
 
-constexpr reg32 kPaneStep = 0x48e790;          // eax a view
 
 }  // namespace
 
@@ -777,7 +804,7 @@ x86::reg32 frontend::hudr::stepMapPanes(App* app, CPU& cpu)
 {
     Guest guest(app, cpu);
     const fe::Frame frame(guest, cpu, 24 + 8);
-    const reg32 stepped = guest.call(kPaneStep, args({ 0 }));
+    const reg32 stepped = reg32(*fe::direct<0x48e790, port::hud::paneStepOf>(app, cpu, cpu.esp - 4, 0u));
     if (gameSettings(guest).playMode != 1)
         return stepped;
     const reg32 firstForm = formOf(guest, cameraTarget(guest, cpu, 0));
@@ -795,7 +822,7 @@ x86::reg32 frontend::hudr::stepMapPanes(App* app, CPU& cpu)
             if (firstAtTop == atTop(secondBox))
                 return firstAtTop;
         }
-        guest.call(kPaneStep, args({ 1 }));
+        fe::direct<0x48e790, port::hud::paneStepOf>(app, cpu, cpu.esp - 4, 1u);
     }
 }
 
@@ -855,8 +882,7 @@ x86::reg32 frontend::hudr::formatTime(App* app, CPU& cpu, reg32 buffer, reg32 ti
     const std::int32_t seconds = magnitude / kTicksPerSecond;
     const std::int32_t hundredths = (magnitude % kTicksPerSecond) * 100 / kTicksPerSecond;
     const reg32 format = guest.dword(kTimeFormats + gameSettings(guest).language * 4);
-    const reg32 written = guest.call(kSprintf, args({}, { buffer, format, reg32(seconds / kSecondsPerMinute),
-                                                          reg32(seconds % kSecondsPerMinute), reg32(hundredths) }));
+    const reg32 written = fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.cpu(), buffer, format, guest::Words{reg32(seconds / kSecondsPerMinute), reg32(seconds % kSecondsPerMinute), reg32(hundredths)});
     guest.leaveEdx(0);
     return written;
 }
@@ -880,7 +906,7 @@ TextPlace textPlaceOf(win32::WinApplication* app, const x86::CPU& cpu)
 
 reg32 drawPlaced(Guest& guest, reg32 buffer, const TextPlace& place)
 {
-    return guest.call(kAlignedText, args({ buffer }, { place.scale, place.colour, place.left, place.right, place.top, place.how }));
+    return alignedText(guest, buffer, place.scale, place.colour, place.left, place.right, place.top, place.how);
 }
 
 }  // namespace
@@ -917,17 +943,17 @@ x86::reg32 frontend::hudr::drawPercentAndCount(App* app, CPU& cpu, reg32 percent
     const TextPlace place{ scale, colour, left, right, top, how };
     const reg32 buffer = guest.frame();
     const reg32 line = languageLine(guest, cpu, kPercentLine);
-    guest.call(kSprintf, args({}, { buffer, kPercentFormat.address, percent, line }));
+    fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.cpu(), buffer, kPercentFormat.address, guest::Words{percent, line});
     drawPlaced(guest, buffer, place);
     if (count == 1)
     {
         const reg32 one = languageLine(guest, cpu, kCountOfOneLine);
-        guest.call(kSprintf, args({}, { buffer, one }));
+        fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.cpu(), buffer, one, guest::Words({}));
     }
     else
     {
         const reg32 many = languageLine(guest, cpu, kCountLine);
-        guest.call(kSprintf, args({}, { buffer, kCountFormat.address, count, many }));
+        fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.cpu(), buffer, kCountFormat.address, guest::Words{count, many});
     }
     TextPlace below = place;
     below.top = place.top + guest.call(kCharacterHeight, args({ kPercentSign }));
@@ -957,9 +983,9 @@ x86::reg32 frontend::hudr::drawLaps(App* app, CPU& cpu, reg32 done, reg32 total,
     const reg32 buffer = guest.frame();
     const reg32 line = languageLine(guest, cpu, kLapsLine);
     if (gameSettings(guest).language == kLanguageWordFirst)
-        guest.call(kSprintf, args({}, { buffer, kLapsWordFirst.address, line, done, total }));
+        fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.cpu(), buffer, kLapsWordFirst.address, guest::Words{line, done, total});
     else
-        guest.call(kSprintf, args({}, { buffer, kLapsWordLast.address, done, total, line }));
+        fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.cpu(), buffer, kLapsWordLast.address, guest::Words{done, total, line});
     const reg32 drawn = drawPlaced(guest, buffer, place);
     guest.leaveEdx(place.left);
     return drawn;
@@ -982,7 +1008,7 @@ x86::reg32 frontend::hudr::drawRatio(App* app, CPU& cpu, reg32 done, reg32 total
     const TextPlace place{ scale, colour, left, right, top, how };
     const reg32 buffer = guest.frame();
     const reg32 line = languageLine(guest, cpu, kRatioLine);
-    guest.call(kSprintf, args({}, { buffer, kRatioFormat.address, line, done, total }));
+    fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.cpu(), buffer, kRatioFormat.address, guest::Words{ line, done, total });
     const reg32 drawn = drawPlaced(guest, buffer, place);
     guest.leaveEdx(place.how);
     return drawn;
@@ -1009,7 +1035,7 @@ x86::reg32 frontend::hudr::drawPlaceAmong(App* app, CPU& cpu, reg32 place, reg32
     const reg32 language = gameSettings(guest).language;
     const reg32 format = language == kLanguagePos ? kPlaceFormatPos.address
         : language == kLanguageOf ? kPlaceFormatOf.address : kPlaceFormat.address;
-    guest.call(kSprintf, args({}, { buffer, format, place, among }));
+    fe::direct<kSprintf, watcom::clib::sprintf>(guest.app(), guest.cpu(), buffer, format, guest::Words{ place, among });
     const reg32 drawn = drawPlaced(guest, buffer, at);
     guest.leaveEdx(at.left);
     return drawn;
